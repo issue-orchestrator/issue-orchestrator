@@ -472,7 +472,7 @@ class RecordingBoardSnapshotProvider:
     ) -> BoardSnapshot:
         self.calls.append(focus_issue)
         # Recorded so tests can assert the launch boundary passes the OWNED
-        # cohort down rather than letting the provider infer it (#6780 R4).
+        # cohort down rather than letting the provider infer it (#6780).
         self.cohort_calls.append(tuple(problem_cohort))
         if self.error is not None:
             raise self.error
@@ -2847,7 +2847,7 @@ class TestPendingSessionQueuesTriageIntake:
     def test_retain_triage_for_retry_is_bounded_by_the_owner(self):
         """Retryable launch failures retain the item; the owner bounds retries.
 
-        The queued investigation is the only durable record, so retention is
+        The queued investigation is the only cross-tick record, so retention is
         the default — but bounded: the owner signals EXHAUSTED on the
         TRIAGE_LAUNCH_RETRY_LIMIT-th failure so a genuinely broken input
         cannot relaunch-loop forever. EXHAUSTED does NOT remove the item here
@@ -3453,7 +3453,7 @@ class TestLaunchTriageIssueSessionFlavors:
     ):
         """Authority is the PRODUCER's grant; board failures are context only.
 
-        #6780 R4 F1: authority used to be read back out of the board
+        #6780: authority used to be read back out of the board
         snapshot's failure list. That list merges the live buffer plus every
         pending failure investigation, so an unrelated failing issue (#99
         here) silently joined the storm review's act-level scope and could be
@@ -3517,7 +3517,7 @@ class TestLaunchTriageIssueSessionFlavors:
     def test_periodic_health_review_gains_no_cohort_from_pending_failures(
         self, launcher_bundle, mock_repo_host, mock_events, tmp_path
     ):
-        """A periodic review may PROPOSE, never act (#6780 R4 F1).
+        """A periodic review may PROPOSE, never act (#6780).
 
         Its grant carries no cohort. Failures on the board at launch time —
         here a pending investigation for #99 — must not become act-level
@@ -3575,7 +3575,7 @@ class TestLaunchTriageIssueSessionFlavors:
         A marker-labeled anchor can also be picked up as an ordinary issue, so
         no launch scope arrives. The cohort then comes from the durable ledger
         keyed by the anchor — still a dedicated surface, never the board's
-        failure list (#6780 R4 F1). Fixing F1 must not silently strip the
+        failure list (#6780). Fixing F1 must not silently strip the
         authority of an anchor that reaches launch by this path.
         """
         from issue_orchestrator.domain.triage_session import (
@@ -4481,7 +4481,7 @@ class TestTriageProducerToLaunchBoundary:
         mock_command_runner,
         tmp_path,
     ):
-        """#6780 R4 F1 — the exact scenario, end to end through the real queue.
+        """#6780 — the exact scenario, end to end through the real queue.
 
         A 3-issue storm escalates while an older investigation for #99 is
         still pending. Intake correctly leaves that investigation queued, so
@@ -4564,7 +4564,7 @@ class TestTriageProducerToLaunchBoundary:
         mock_command_runner,
         tmp_path,
     ):
-        """#6780 R3 F2 — a storm anchor keeps its cohort authority across a restart.
+        """#6780 — a storm anchor keeps its cohort authority across a restart.
 
         The cohort is created on tick N and only reaches the agent at launch.
         If the orchestrator dies in between, the in-memory pending queue is
@@ -4696,7 +4696,7 @@ class TestTriageProducerToLaunchBoundary:
         mock_command_runner,
         tmp_path,
     ):
-        """A recovered PERIODIC anchor recovers no cohort (#6780 R3 F2).
+        """A recovered PERIODIC anchor recovers no cohort (#6780).
 
         Only a storm records a ledger row, so the same recovery path must not
         manufacture act-level scope for an interval-created review — its

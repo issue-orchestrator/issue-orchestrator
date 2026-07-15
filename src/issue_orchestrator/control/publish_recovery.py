@@ -374,14 +374,18 @@ class PublishRecoveryService:
         self._clear_retry_terminal_state(issue_number)
 
     def _clear_retry_terminal_state(self, issue_number: int) -> None:
-        """Drop the locators AND the run's triage launch-authority row.
+        """Drop the locators AND both of the run's triage ledger rows.
 
         A publish-retryable failure keeps the authority row alive so the
         retry's re-entry into ``CompletionProcessor.process`` can re-validate
         the launch scope; once the retry reaches its own terminal (success
         finalization, existing-PR recovery, or abandonment) the run is truly
-        over and the row must not outlive it (#6769 F3). ``discard`` is a
-        no-op for non-triage runs.
+        over and the rows must not outlive it (#6769 F3). This is the
+        publish-failure counterpart of
+        :func:`discard_triage_authority_after_completion` — skipped on exactly
+        this path, so it owes the same PAIR of releases: dropping only the
+        run-keyed row orphans a storm anchor's cohort row (#6780). Both
+        ``discard`` calls are no-ops for non-triage runs.
         """
         locators = self._locator_store.get(issue_number)
         if locators is not None:
@@ -389,6 +393,7 @@ class PublishRecoveryService:
                 run_id=locators.run_assets.run_id,
                 session_name=locators.run_assets.session_name,
             )
+        self._triage_authority.discard_storm_cohort(anchor_issue_number=issue_number)
         self._locator_store.clear(issue_number)
 
     # ------------------------------------------------------------------

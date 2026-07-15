@@ -32,7 +32,7 @@ class BoardSnapshotProvider(Protocol):
         investigations); ``None`` for batch reviews.
 
         ``problem_cohort`` is the health review's OWNED act-level remit,
-        supplied by the launch boundary that holds the grant (#6780 R4). It is
+        supplied by the launch boundary that holds the grant (#6780). It is
         stamped onto the snapshot as a dedicated surface rather than inferred
         from ``recent_failures``, which is board CONTEXT and includes
         unrelated pending investigations. Empty for every other flavor and for

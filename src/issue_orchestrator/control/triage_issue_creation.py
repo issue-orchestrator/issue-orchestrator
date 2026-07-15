@@ -20,6 +20,7 @@ from .actions import (
     CreateTriageIssueAction,
     CreateTriageProposalIssueAction,
 )
+from .health_review_trigger import has_health_review_marker
 from .label_manager import triage_issue_label_metadata
 from .triage_issue_policy import resolve_triage_milestone_number
 
@@ -209,7 +210,19 @@ def apply_create_triage_issue(
     events.publish(
         make_trace_event(
             EventName.TRIAGE_ISSUE_CREATED,
-            {"issue_number": issue_number, "pr_count": action.pr_count},
+            {
+                "issue_number": issue_number,
+                "pr_count": action.pr_count,
+                # Why this anchor exists, and what it consumed. A storm
+                # escalation collapses N individual investigations into one
+                # review; without these the only trace of that decision is log
+                # text, which UI and tests must never parse. ``health_review``
+                # reads the marker label — the same crash-safe variant rule the
+                # queue intake and launcher re-derive the flavor from.
+                "trigger": action.reason,
+                "storm_problem_count": len(action.storm_problems),
+                "health_review": has_health_review_marker(action.labels),
+            },
         )
     )
     finalization_error = _finalize_ledger_backed_creation(

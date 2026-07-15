@@ -1118,7 +1118,7 @@ class TestClearDiscoveredFacts:
             DiscoveredFailure(issue_number=4, issue_title="Test", failure_reason="failed")
         ]
 
-        clear_discovered_facts(sample_orchestrator_state, Config())
+        clear_discovered_facts(sample_orchestrator_state, Config(), tick_paused=False)
 
         # All lists should be empty
         assert len(sample_orchestrator_state.discovered_reviews) == 0
@@ -1153,7 +1153,7 @@ class TestClearDiscoveredFacts:
             ),
         ]
 
-        clear_discovered_facts(sample_orchestrator_state, Config())
+        clear_discovered_facts(sample_orchestrator_state, Config(), tick_paused=False)
 
         assert len(sample_orchestrator_state.immediate_cleanups) == 0
 
@@ -1172,7 +1172,7 @@ class TestClearDiscoveredFacts:
             )
         ]
 
-        clear_discovered_facts(sample_orchestrator_state, Config())
+        clear_discovered_facts(sample_orchestrator_state, Config(), tick_paused=False)
 
         # Non-discovered fields should be untouched
         assert sample_orchestrator_state.paused is True
@@ -1475,6 +1475,13 @@ class TestOrchestratorSupportApplyPlan:
 # =============================================================================
 
 
+def _unpaused_tick(state):
+    """The snapshot of a normal running tick — the input the clear keys off."""
+    from issue_orchestrator.control.planner_types import OrchestratorSnapshot
+
+    return OrchestratorSnapshot.from_state(issues=(), state=state)
+
+
 class TestOrchestratorSupportClearDiscoveredFacts:
     """Tests for OrchestratorSupport.clear_discovered_facts method.
 
@@ -1530,8 +1537,9 @@ class TestOrchestratorSupportClearDiscoveredFacts:
             ),
         ]
 
-        # Call the instance method (not the module-level function)
-        support.clear_discovered_facts()
+        # Call the instance method (not the module-level function), passing
+        # the tick's own snapshot — the read that decides retention.
+        support.clear_discovered_facts(_unpaused_tick(sample_orchestrator_state))
 
         assert len(sample_orchestrator_state.immediate_cleanups) == 0
 
@@ -1591,7 +1599,7 @@ class TestOrchestratorSupportClearDiscoveredFacts:
             ImmediateCleanup(issue_number=5, terminal_id="t", worktree_path="p", reason="r")
         ]
 
-        support.clear_discovered_facts()
+        support.clear_discovered_facts(_unpaused_tick(sample_orchestrator_state))
 
         assert len(sample_orchestrator_state.discovered_reviews) == 0
         assert len(sample_orchestrator_state.discovered_awaiting_merge_reconciliations) == 0
@@ -1623,7 +1631,7 @@ class TestUpdateStateAfterAction:
         """Create support with accessible state.
 
         A real in-memory triage authority is wired because the storm collapse
-        is bound to DURABLE cohort persistence (#6780 R3): the composition
+        is bound to DURABLE cohort persistence (#6780): the composition
         root always supplies the store, and without one intake declines to
         retire the individual investigations.
         """
@@ -2113,6 +2121,17 @@ class TestUpdateStateAfterAction:
         return planner.plan(snapshot)
 
     @staticmethod
+    def _tick_snapshot(support):
+        """The snapshot THIS tick planned from — including its paused read."""
+        from issue_orchestrator.control.planner_types import OrchestratorSnapshot
+
+        return OrchestratorSnapshot.from_state(
+            issues=(),
+            state=support.state,
+            discovered_failures=tuple(support.state.discovered_failures),
+        )
+
+    @staticmethod
     def _queued_investigation_numbers(support) -> list[int]:
         return sorted(
             t.issue_number
@@ -2123,7 +2142,7 @@ class TestUpdateStateAfterAction:
     def test_escalated_storm_collapses_investigations_into_anchor_cohort(
         self, support_with_state
     ):
-        """End-to-end (#6780 R2 F1) happy path: the cohort is queued FIRST, then
+        """End-to-end (#6780) happy path: the cohort is queued FIRST, then
         the created anchor's intake collapses it — leaving exactly one pending
         health review carrying ``problem_cohort`` and zero leftover individual
         investigations. Persist-first must not double-book the work.
@@ -2134,7 +2153,7 @@ class TestUpdateStateAfterAction:
         plan = self._plan_storm_tick(support_with_state, config)
 
         self._apply_via_plan(support_with_state, list(plan.actions), issue_number=999)
-        clear_discovered_facts(support_with_state.state, config)
+        clear_discovered_facts(support_with_state.state, config, tick_paused=False)
 
         assert self._queued_investigation_numbers(support_with_state) == []
         (queued,) = support_with_state.state.pending_triage_reviews
@@ -2144,7 +2163,7 @@ class TestUpdateStateAfterAction:
     def test_storm_investigations_survive_a_failed_anchor_create(
         self, support_with_state
     ):
-        """End-to-end (#6780 R2 F1): the anchor create FAILS at apply time (a
+        """End-to-end (#6780): the anchor create FAILS at apply time (a
         GitHub outage/rate-limit/permission error), so no intake runs and no
         cohort is persisted. The queued investigations must therefore remain —
         binding suppression to a create the planner merely *planned* would drop
@@ -2167,7 +2186,7 @@ class TestUpdateStateAfterAction:
         support_with_state.apply_plan(
             Plan(actions=tuple(plan.actions), skipped=()), MagicMock()
         )
-        clear_discovered_facts(support_with_state.state, config)
+        clear_discovered_facts(support_with_state.state, config, tick_paused=False)
 
         assert support_with_state.state.discovered_failures == []
         assert self._queued_investigation_numbers(support_with_state) == [41, 42, 43]
@@ -2175,7 +2194,7 @@ class TestUpdateStateAfterAction:
     def test_paused_storm_retains_cohort_facts_across_the_tick(
         self, support_with_state
     ):
-        """End-to-end (#6780 R2 F1): a paused tick plans nothing and applies
+        """End-to-end (#6780): a paused tick plans nothing and applies
         nothing (``apply_plan`` breaks on paused), so the discovered facts must
         be RETAINED rather than cleared. A session that fails while paused is
         discovered exactly once — clearing here would lose the cohort forever,
@@ -2189,16 +2208,69 @@ class TestUpdateStateAfterAction:
 
         assert plan.actions == ()
         self._apply_via_plan(support_with_state, list(plan.actions))
-        clear_discovered_facts(support_with_state.state, config)
+        clear_discovered_facts(support_with_state.state, config, tick_paused=True)
 
         assert [
             f.issue_number for f in support_with_state.state.discovered_failures
         ] == [41, 42, 43]
 
+    def test_retention_follows_the_tick_when_operator_resumes_mid_tick(
+        self, support_with_state
+    ):
+        """The operator RESUMES between this tick's snapshot and its clear.
+
+        The tick planned from ``paused=True`` — an empty plan that consumed
+        nothing — so its facts must survive, even though ``state.paused`` now
+        reads False. ``state.paused`` is mutated from the web thread and the
+        clear is separated from the snapshot by a fetch, planning and apply, so
+        a fresh read here decides retention from a DIFFERENT tick's pause state
+        and wipes a cohort nothing recorded.
+        """
+        config = self._storm_config()
+        support_with_state.state.paused = True
+        plan = self._plan_storm_tick(support_with_state, config)
+        tick = self._tick_snapshot(support_with_state)
+        assert plan.actions == ()
+        assert tick.paused is True
+
+        support_with_state.state.paused = False
+
+        support_with_state.clear_discovered_facts(tick)
+
+        assert [
+            f.issue_number for f in support_with_state.state.discovered_failures
+        ] == [41, 42, 43]
+
+    def test_retention_follows_the_tick_when_operator_pauses_mid_apply(
+        self, support_with_state
+    ):
+        """The operator PAUSES after the anchor create already applied.
+
+        The tick planned and applied unpaused, and intake has already collapsed
+        the cohort into the anchor — the facts ARE consumed and must be
+        cleared. Retaining them (what a fresh ``state.paused`` read does) leaves
+        every member in ``discovered_failures`` with its investigation already
+        retired, so the next tick re-queues each one individually while the
+        anchor still owns it in its cohort: the exact double-work the
+        escalation exists to prevent.
+        """
+        config = self._storm_config()
+        plan = self._plan_storm_tick(support_with_state, config)
+        tick = self._tick_snapshot(support_with_state)
+        assert tick.paused is False
+        self._apply_via_plan(support_with_state, list(plan.actions), issue_number=999)
+
+        support_with_state.state.paused = True
+
+        support_with_state.clear_discovered_facts(tick)
+
+        assert support_with_state.state.discovered_failures == []
+        assert self._queued_investigation_numbers(support_with_state) == []
+
     def test_deferred_storm_investigations_survive_apply_and_fact_clear(
         self, support_with_state
     ):
-        """End-to-end (#6780 R2 F1): when a storm cannot escalate (here an
+        """End-to-end (#6780): when a storm cannot escalate (here an
         already-pending health review blocks a new anchor), the queued
         investigations survive the end-of-tick discovered-fact clear — the
         cohort is NOT lost.
@@ -2223,7 +2295,7 @@ class TestUpdateStateAfterAction:
         self._apply_via_plan(support_with_state, list(plan.actions))
         # The end-of-tick fact clear runs unconditionally; the fallback
         # investigations must have migrated to the durable pending queue.
-        clear_discovered_facts(support_with_state.state, config)
+        clear_discovered_facts(support_with_state.state, config, tick_paused=False)
 
         assert support_with_state.state.discovered_failures == []
         assert self._queued_investigation_numbers(support_with_state) == [41, 42, 43]
@@ -2231,7 +2303,7 @@ class TestUpdateStateAfterAction:
     def test_storm_collapse_declines_when_the_cohort_cannot_be_persisted(
         self, support_with_state, caplog
     ):
-        """End-to-end (#6780 R3 F2): the durable cohort write FAILS at intake.
+        """End-to-end (#6780): the durable cohort write FAILS at intake.
 
         Collapsing retires the per-issue investigations, so it may only happen
         once the cohort is somewhere that outlives this process. When the
@@ -2253,7 +2325,9 @@ class TestUpdateStateAfterAction:
             self._apply_via_plan(
                 support_with_state, list(plan.actions), issue_number=999
             )
-        clear_discovered_facts(support_with_state.state, config, authority)
+        clear_discovered_facts(
+            support_with_state.state, config, authority, tick_paused=False
+        )
 
         assert self._queued_investigation_numbers(support_with_state) == [41, 42, 43]
         (anchor,) = [

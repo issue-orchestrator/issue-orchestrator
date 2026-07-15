@@ -42,19 +42,21 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True, slots=True)
 class ReactiveTriagePlan:
-    """Outcome of the tech-lead reaction for one tick (#6780 R2).
+    """Outcome of the tech-lead reaction for one tick (#6780).
 
     ``actions`` ALWAYS queues the individual investigations the classifier
     selected, and appends the storm/periodic health-review anchor when one can
     be created. Queue-then-collapse is deliberate: the pending queue is the
-    only durable carrier of a problem once ``discovered_failures`` is cleared
-    at end of tick, so the cohort is persisted FIRST and a successfully created
-    anchor collapses it at intake (``_queue_anchor_by_marker`` removes the
-    superseded investigations and stamps ``problem_cohort`` onto the pending
-    health review in one step). Planning the anchor *instead of* the
-    investigations would lose the cohort whenever the create never lands —
-    a GitHub failure or the triage cooldown, both invisible to the planner
-    (F1/A1).
+    only CROSS-TICK carrier of a problem once ``discovered_failures`` is
+    cleared at end of tick (it is in-memory only — failure investigations have
+    no GitHub anchor and are not recovered on restart — so it outlives the
+    tick, not the process). The cohort is therefore persisted FIRST, and a
+    successfully created anchor collapses it at intake
+    (``_queue_anchor_by_marker`` removes the superseded investigations and
+    stamps ``problem_cohort`` onto the pending health review in one step).
+    Planning the anchor *instead of* the investigations would lose the cohort
+    whenever the create never lands — a GitHub failure or the triage cooldown,
+    both invisible to the planner.
 
     ``suppressed_issue_numbers`` governs LAUNCH timing only, never retention:
     it holds back already-queued member investigations on the tick the cohort
@@ -73,10 +75,10 @@ def plan_reactive_triage(
     *,
     workflow: "Optional[TriageWorkflow]",
 ) -> ReactiveTriagePlan:
-    """Map the tech-lead reaction onto persist-first actions (#6780 R2 F1/A1).
+    """Map the tech-lead reaction onto persist-first actions (#6780).
 
     The individual investigations are queued unconditionally — they are the
-    durable carrier of each problem once the tick-scoped
+    cross-tick carrier of each problem once the tick-scoped
     ``discovered_failures`` buffer is cleared. The storm anchor is appended
     AFTER them, so that on a successful create the intake owner
     (``_queue_anchor_by_marker``) collapses the cohort atomically: it removes
@@ -84,13 +86,13 @@ def plan_reactive_triage(
     pending health review, from which the launch authority's
     ``problem_issue_numbers`` later derive.
 
-    Suppression is therefore never the thing that decides retention (F1):
-    every path that leaves the cohort without an anchor — an existing or
-    pending health review, no capacity, paused, a failed GitHub create, or
-    the apply-time triage cooldown — leaves the individual investigations
-    queued, and they self-heal into one consolidated health review on a later
-    tick once an anchor can be created. Only the intake owner, which alone
-    knows the cohort was persisted, retires them (A1).
+    Suppression is therefore never the thing that decides retention: every
+    path that leaves the cohort without an anchor — an existing or pending
+    health review, no capacity, paused, a failed GitHub create, or the
+    apply-time triage cooldown — leaves the individual investigations queued,
+    and they self-heal into one consolidated health review on a later tick
+    once an anchor can be created. Only the intake owner, which alone knows
+    the cohort was persisted, retires them.
     """
     health_review_action = plan_health_review_creation(
         snapshot, config, workflow=workflow, storm_problems=reaction.storm_problems
@@ -133,7 +135,6 @@ def plan_health_review_creation(
         active_session_count=snapshot.active_count,
         paused=snapshot.paused,
         storm_problems=storm_problems,
-        issues=snapshot.issues,
     )
 
 
@@ -146,7 +147,7 @@ def plan_failure_investigations(
     warrant an individual investigation (config gate, dependency explanation,
     dedup against the pending queue); this maps each survivor to a
     ``QueueTriageAction``. Called either directly (no storm) or as the storm
-    fallback when the cohort could not be escalated (#6780 R2).
+    fallback when the cohort could not be escalated (#6780).
     """
     actions: list[Action] = []
     for failure in failures:

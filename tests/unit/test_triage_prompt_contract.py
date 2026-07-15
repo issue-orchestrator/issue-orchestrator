@@ -233,7 +233,7 @@ def test_restart_safe_shipped_fix_evidence_is_synchronized(variant: str) -> None
 def test_health_flow_teaches_cohort_scoped_act_level_authority(
     variant: str,
 ) -> None:
-    """#6780 R5 F3: the prompt must match the runtime act-level scope rule.
+    """#6780: the prompt must match the runtime act-level scope rule.
 
     The orchestrator records a health review's act-level authority from its
     OWNED cohort and rejects `reset_retry`/`kill_hung_session` proposals for

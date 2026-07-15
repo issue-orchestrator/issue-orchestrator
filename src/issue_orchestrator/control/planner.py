@@ -181,7 +181,7 @@ class Planner:
         actions: list[Action] = []
         skipped: list[SkippedItem] = []
         reaction = self._triage_reactions.assess(snapshot)
-        # Reactive triage is one ATOMIC decision (#6780 R2 F1/A1) owned by
+        # Reactive triage is one ATOMIC decision (#6780) owned by
         # reactive_triage_planning: storm escalation vs individual
         # investigations, computed once so suppression is bound to actual
         # cohort persistence. Computing it here (before the paused
@@ -197,7 +197,7 @@ class Planner:
             # Returning actions here would be dead code: apply_plan refuses to
             # apply anything while paused. The discovered facts a paused tick
             # cannot act on are instead RETAINED by clear_discovered_facts, so
-            # a storm cohort survives the pause (#6780 R2 F1). The health-review
+            # a storm cohort survives the pause (#6780). The health-review
             # gate already ran above for its TRIAGE_SKIPPED emission (#6763).
             return Plan.empty()
 
@@ -301,7 +301,7 @@ class Planner:
             plan_context,
             # Suppress individual investigation launches only when the cohort
             # was actually escalated this tick; on a deferred storm the fallback
-            # investigations must be allowed to launch (#6780 R2 F1).
+            # investigations must be allowed to launch (#6780).
             suppressed_triage_issue_numbers=reactive.suppressed_issue_numbers,
         )
         actions.extend(launch_actions)
@@ -922,8 +922,8 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                            issue_number, pr_number)
 
         # 2. Immediate cleanups - ready to execute now, EXCEPT run assets that
-        # pending/active triage work still references (#6771 round 3, #6780
-        # R3 F1): cleaning those up before the investigation or health review
+        # pending/active triage work still references (#6771, #6780):
+        # cleaning those up before the investigation or health review
         # launches deletes the artifact hints it was queued to read. The hold
         # set comes from the triage-problem-artifact owner in the fact
         # gatherer, which is also what retains these entries across the

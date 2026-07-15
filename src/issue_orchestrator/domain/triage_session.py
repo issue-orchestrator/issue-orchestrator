@@ -201,7 +201,7 @@ class TriageAssignment:
 
 @dataclass(frozen=True, slots=True)
 class TriageLaunchScope:
-    """What the PRODUCER boundary grants one triage session run (#6780 R4).
+    """What the PRODUCER boundary grants one triage session run (#6780).
 
     The queued item knows which variant it is and — for a problem storm —
     exactly which issues the review owns. This value object carries that
@@ -214,7 +214,7 @@ class TriageLaunchScope:
     investigation, and every pending health review's cohort, so deriving
     ``problem_issue_numbers`` from it silently widened a review's act-level
     scope to unrelated issues that merely happened to be failing at launch
-    (R4 F1/A1) — and handed a PERIODIC review act-level scope it should never
+    — and handed a PERIODIC review act-level scope it should never
     have.
 
     Issue numbers, not ``DiscoveredFailure`` objects: a scope conveys

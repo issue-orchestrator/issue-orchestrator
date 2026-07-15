@@ -1659,13 +1659,13 @@ class PendingTriageReview:
     retryable_launch_failures: int = 0
 
     def launch_scope(self) -> TriageLaunchScope:
-        """The typed grant this queued item hands the launch boundary (#6780 R4).
+        """The typed grant this queued item hands the launch boundary (#6780).
 
         The queue item is the producer that knows both the variant and, for a
         storm, the exact cohort the review owns. Handing that grant down means
         the launch authority is built from the OWNED cohort instead of being
         inferred from the board snapshot, whose failure list also contains
-        unrelated pending investigations (R4 F1/A1).
+        unrelated pending investigations.
         """
         return TriageLaunchScope(
             flavor=self.flavor,

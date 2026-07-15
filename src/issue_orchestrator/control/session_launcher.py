@@ -795,7 +795,7 @@ class SessionLauncher:
             active_sessions: Current active sessions (for conflict detection)
             triage_scope: For triage-agent sessions, the producer's typed
                 grant: which triage variant this launch is, plus the problem
-                cohort a health review owns (ADR-0031, #6780 R4). Unset for
+                cohort a health review owns (ADR-0031, #6780). Unset for
                 ordinary issues, and for a triage anchor picked up outside the
                 pending queue — the flavor then comes from the marker label and
                 the cohort from the durable ledger.

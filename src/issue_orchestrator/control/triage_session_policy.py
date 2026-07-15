@@ -139,7 +139,7 @@ def _resolve_health_review_cohort(
     triage_authority: "TriageAuthorityStore",
     issue: "Issue",
 ) -> tuple[int, ...]:
-    """The act-level cohort a health review owns (#6780 R4 F1/A1).
+    """The act-level cohort a health review owns (#6780).
 
     Single owner for "what may this review act on", with two ordered sources —
     both DEDICATED cohort surfaces, never the board snapshot:

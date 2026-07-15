@@ -1705,7 +1705,7 @@ class TestPlanHealthReviewIssueCreation:
         The cohort is also queued as individual investigations in the same
         plan: the anchor's intake collapses them on a successful create, so
         persisting first is what keeps the problems recoverable if the create
-        never lands (#6780 R2 F1). See TestReactiveTriageStormEscalation.
+        never lands (#6780). See TestReactiveTriageStormEscalation.
         """
         planner, config = self._make_planner(interval_minutes=0)
         config.triage.health_review.storm_threshold = 3
@@ -1844,11 +1844,11 @@ class TestPlanHealthReviewIssueCreation:
 
 
 class TestReactiveTriageStormEscalation:
-    """Persist-first storm escalation (#6780 R2 F1/A1).
+    """Persist-first storm escalation (#6780).
 
     The cohort is ALWAYS queued as individual investigations — the pending
-    queue is the only durable carrier of a problem once discovered_failures is
-    cleared at end of tick — and the anchor is planned after them, so a
+    queue is the only cross-tick carrier of a problem once discovered_failures
+    is cleared at end of tick — and the anchor is planned after them, so a
     successful create collapses them at intake. Every path that leaves the
     cohort without an anchor (existing/pending health review, no capacity, a
     failed create, the apply-time cooldown) therefore keeps the investigations
@@ -1902,7 +1902,7 @@ class TestReactiveTriageStormEscalation:
         investigations AND plans the anchor, with the QUEUE_TRIAGE actions
         ordered strictly BEFORE the create. Intake collapses them on a
         successful create; if the create never lands, those queued items are
-        what keeps the cohort alive (#6780 R2 F1)."""
+        what keeps the cohort alive (#6780)."""
         planner, _ = self._planner()
 
         plan = planner.plan(make_snapshot(discovered_failures=self._cohort()))
@@ -1918,6 +1918,16 @@ class TestReactiveTriageStormEscalation:
         assert action_types.index(ActionType.CREATE_TRIAGE_ISSUE) > last_queue
 
     def test_storm_defers_to_investigations_when_anchor_already_open(self):
+        """A not-due tick with an open anchor must not mint a second one.
+
+        ``health_review_due=False`` alongside a populated
+        ``existing_health_review_issue`` is exactly what the gatherer produces
+        on a storm-only tick, because the storm — not just due-ness — arms the
+        anchor scan. See
+        ``TestFactGathererHealthReviewFacts::test_storm_arms_anchor_scan_when_interval_is_not_due``
+        for the gatherer-driven half of this contract; this half asserts the
+        planner honours the fact.
+        """
         from issue_orchestrator.domain.models import TriageFacts
 
         planner, _ = self._planner()
@@ -1972,7 +1982,7 @@ class TestReactiveTriageStormEscalation:
         code that reports work it never does. The cohort instead survives
         because clear_discovered_facts retains facts on a paused tick — see
         TestClearDiscoveredFacts and the paused end-to-end coverage in
-        test_orchestrator_support (#6780 R2 F1)."""
+        test_orchestrator_support (#6780)."""
         planner, _ = self._planner()
 
         plan = planner.plan(
@@ -2938,7 +2948,7 @@ class TestFailureInvestigationCleanupLifecycle:
         PendingSessionQueues(state).queue_failure_investigation(
             42, "Investigate: Broken thing (failed)", failure=failure
         )
-        clear_discovered_facts(state, config)
+        clear_discovered_facts(state, config, tick_paused=False)
         assert [c.issue_number for c in state.immediate_cleanups] == [42], (
             "the held cleanup must survive the end-of-tick fact clear"
         )
@@ -2952,7 +2962,7 @@ class TestFailureInvestigationCleanupLifecycle:
         assert all(Path(h).exists() for h in queued.failure.artifact_hints), (
             "the investigation must launch with readable artifact hints"
         )
-        clear_discovered_facts(state, config)
+        clear_discovered_facts(state, config, tick_paused=False)
         assert [c.issue_number for c in state.immediate_cleanups] == [42]
 
         # Tick 3 — investigation active: launch consumed the queue item and
@@ -2963,7 +2973,7 @@ class TestFailureInvestigationCleanupLifecycle:
         )
         plan = plan_tick()
         assert cleanup_actions(plan) == []
-        clear_discovered_facts(state, config)
+        clear_discovered_facts(state, config, tick_paused=False)
         assert [c.issue_number for c in state.immediate_cleanups] == [42]
 
         # Tick 4 — investigation completed: the hold releases by
@@ -2974,12 +2984,12 @@ class TestFailureInvestigationCleanupLifecycle:
             (a.issue_number, a.worktree_path, a.remove_worktrees)
             for a in cleanup_actions(plan)
         ] == [(42, str(worktree), True)]
-        clear_discovered_facts(state, config)
+        clear_discovered_facts(state, config, tick_paused=False)
         assert state.immediate_cleanups == []
 
 
 class TestStormCohortCleanupLifecycle:
-    """End-to-end lifecycle of the STORM-COHORT cleanup hold (#6780 R3 F1).
+    """End-to-end lifecycle of the STORM-COHORT cleanup hold (#6780).
 
     A storm collapses the per-issue failure investigations into one health-
     review anchor, so from that moment nothing in the queue is keyed by the
@@ -3094,7 +3104,7 @@ class TestStormCohortCleanupLifecycle:
             None,
             authority,
         )
-        clear_discovered_facts(state, config, authority)
+        clear_discovered_facts(state, config, authority, tick_paused=False)
 
         assert [t.issue_number for t in state.pending_triage_reviews] == [999], (
             "the collapse must leave exactly the anchor queued"
@@ -3108,7 +3118,7 @@ class TestStormCohortCleanupLifecycle:
         # Tick 2 — anchor PENDING launch: the cohort holds every member's
         # worktree, and the hints the review will read are still on disk.
         assert cleanup_numbers(plan_tick()) == []
-        clear_discovered_facts(state, config, authority)
+        clear_discovered_facts(state, config, authority, tick_paused=False)
         (queued,) = state.pending_triage_reviews
         assert all(
             Path(hint).exists()
@@ -3124,7 +3134,7 @@ class TestStormCohortCleanupLifecycle:
             make_session(make_issue(999, labels=["agent:triage"]))
         )
         assert cleanup_numbers(plan_tick()) == []
-        clear_discovered_facts(state, config, authority)
+        clear_discovered_facts(state, config, authority, tick_paused=False)
         assert sorted(c.issue_number for c in state.immediate_cleanups) == [
             41,
             42,
@@ -3143,7 +3153,7 @@ class TestStormCohortCleanupLifecycle:
             for a in plan.actions
             if a.action_type == ActionType.CLEANUP_SESSION
         )
-        clear_discovered_facts(state, config, authority)
+        clear_discovered_facts(state, config, authority, tick_paused=False)
         assert state.immediate_cleanups == []
 
     def test_inert_cohort_row_does_not_hold_cleanup_forever(self, tmp_path):

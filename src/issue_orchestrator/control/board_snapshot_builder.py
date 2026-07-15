@@ -105,7 +105,7 @@ class BoardSnapshotBuilder:
         is NOT derived from ``failures``: the failure list is deliberately
         broad context (live buffer + every pending investigation + every
         pending cohort), so reading authority back out of it granted reviews
-        scope over unrelated issues (#6780 R4 F1/A1). Unlike the other list
+        scope over unrelated issues (#6780). Unlike the other list
         fields it is not truncated — a cohort is a small, exact grant, and
         silently dropping a member would shrink authority rather than bound a
         display.
@@ -354,7 +354,7 @@ class StateBoardSnapshotProvider:
         that owns the grant; this provider never derives it. The merged
         failure list below is deliberately WIDER than the cohort — it is the
         context a reviewer reads — which is exactly why authority must not be
-        read back out of it (#6780 R4 F1/A1).
+        read back out of it (#6780).
         """
         state = self._state_getter()
         return self._builder.build(

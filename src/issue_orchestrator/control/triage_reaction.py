@@ -7,7 +7,10 @@ This is the single policy owner for the reactive side of ADR-0031:
   explain it as healthy waiting on a tracked open issue, and only when the
   blocked issue has downstream dependents;
 * a time-bounded cohort at or above the configured storm threshold suppresses
-  per-issue investigations and requests one unscheduled health review.
+  per-issue investigations and requests one unscheduled health review. Cohort
+  membership is a strict subset of the problems an investigation covers: a
+  problem too minor to investigate individually cannot make the board look
+  stormy, because there would be nothing for the escalation to suppress.
 
 The classifier is pure and deterministic. It consumes the immutable planner
 snapshot plus an injected clock and returns facts for the planner to map onto
@@ -18,22 +21,43 @@ owner boundaries.
 
 from __future__ import annotations
 
+import enum
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Callable, Iterable, Mapping
 
 from ..domain.dependency_gates import Gate, GateBlockReason
 from ..domain.models import DiscoveredFailure, Session, SessionStatus
-from ..domain.session_key import TaskKind
 from .dependency_gate_snapshot import build_successor_index
 from .triage_session_policy import is_triage_session
 
 if TYPE_CHECKING:
+    from ..domain.models import OrchestratorState
     from ..infra.config import Config
     from ..ports import Issue
     from .dependency_evaluator import DependencyEvaluator
     from .label_manager import LabelManager
     from .planner_types import OrchestratorSnapshot
+
+
+class ProblemDisposition(enum.Enum):
+    """What this tick does about one observed problem.
+
+    The three buckets are exhaustive and decided in ONE pass, so cohort
+    membership and investigation queuing can never drift apart the way two
+    independently-ordered filters can.
+    """
+
+    IGNORED = "ignored"
+    """Not acted on: a block dependency policy explains, or a block with no
+    downstream dependents. Carries no carrier and therefore joins no cohort."""
+
+    PENDING = "pending"
+    """Already queued as an investigation. Needs no new request, but its queue
+    entry is a carrier, so it may join a cohort."""
+
+    INVESTIGATE = "investigate"
+    """Queue a new individual investigation for it."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,14 +68,18 @@ class TriageReaction:
     ``storm_problems`` is the time-bounded cohort when the storm threshold is
     met (empty otherwise) — the escalation candidate.
 
+    Every cohort member is backed by a carrier: membership requires a
+    disposition of INVESTIGATE (queued by this tick's plan) or PENDING (already
+    queued). A problem nothing individually investigates cannot join a cohort,
+    because a cohort is a SUPPRESSION of individual investigations — collapsing
+    a member that has no investigation to suppress would drop the problem
+    entirely once the tick-scoped discovered-fact buffer is cleared.
+
     When a storm is present BOTH collections are populated: the classifier does
-    NOT decide suppression by zeroing ``investigations``. The individual
-    investigations are always queued, because the pending queue is the only
-    durable carrier of a problem once the discovered-fact buffer is cleared at
-    end of tick. Retiring them belongs solely to the anchor-intake owner, which
-    alone knows the cohort was actually persisted — a classifier that dropped
-    them up front would lose the problems on every path where the anchor never
-    lands (#6780 R2 F1/A1).
+    NOT decide suppression by zeroing ``investigations``. Retiring them belongs
+    solely to the anchor-intake owner, which alone knows the cohort was actually
+    persisted — a classifier that dropped them up front would lose the problems
+    on every path where the anchor never lands.
     """
 
     investigations: tuple[DiscoveredFailure, ...] = ()
@@ -60,6 +88,65 @@ class TriageReaction:
     @property
     def storm_issue_numbers(self) -> frozenset[int]:
         return frozenset(problem.issue_number for problem in self.storm_problems)
+
+
+def storm_possible(state: "OrchestratorState", config: "Config") -> bool:
+    """Over-approximate whether ``state`` could escalate a storm this tick.
+
+    Pure over state and config, so fact gathering can arm the open-anchor scan
+    BEFORE making any GitHub call — the scan is what makes anchor dedup work on
+    a storm-only tick, where the periodic interval is never due.
+
+    Deliberately an over-approximation: it skips the window, dependency and
+    dependents filters :meth:`TriageReactionPolicy.assess` applies. Arming a
+    scan for a storm that then fails to materialise costs one extra scan on a
+    tick that already has problems on the board; failing to arm one mints a
+    duplicate anchor.
+    """
+    if not (config.triage_review_on_failure and config.triage_review_agent):
+        return False
+    threshold = config.triage.health_review.storm_threshold
+    if threshold <= 0:
+        return False
+    candidates = {failure.issue_number for failure in state.discovered_failures}
+    candidates.update(
+        item.issue_number
+        for item in state.pending_triage_reviews
+        if item.failure is not None
+    )
+    return len(candidates) >= threshold
+
+
+@dataclass(frozen=True, slots=True)
+class _ClassifiedProblem:
+    """One problem's disposition plus whether it falls inside the storm window."""
+
+    problem: DiscoveredFailure
+    disposition: ProblemDisposition
+    in_storm_window: bool
+
+    @property
+    def cohort_eligible(self) -> bool:
+        """True only for a windowed problem that has an investigation carrier.
+
+        This is the single place the cohort/investigation relationship is
+        decided, which is what makes ``storm_problems`` a subset of "problems
+        an investigation covers" by construction.
+        """
+        return self.in_storm_window and self.disposition in (
+            ProblemDisposition.INVESTIGATE,
+            ProblemDisposition.PENDING,
+        )
+
+
+def _sorted_problems(
+    items: "Iterable[_ClassifiedProblem]",
+) -> tuple[DiscoveredFailure, ...]:
+    return tuple(
+        sorted(
+            (item.problem for item in items), key=lambda problem: problem.issue_number
+        )
+    )
 
 
 _REACTIVE_SESSION_STATUSES = frozenset(
@@ -82,10 +169,14 @@ def record_completed_session_problem(
     Completion coordinates mechanics; this reaction owner decides which
     terminal outcomes are problem facts. Artifact gathering stays lazy so a
     successful or non-worker session performs no filesystem work.
+
+    Task kind does NOT filter here: a failed rework or review session is a
+    problem on the board exactly as a failed coding session is, and rework
+    agents reporting ``coding-done blocked`` are a reaction trigger this model
+    exists to serve. Triage's own sessions are excluded below — that check, not
+    task kind, is what prevents triage self-recursion.
     """
     if status not in _REACTIVE_SESSION_STATUSES:
-        return
-    if session.key.task is not TaskKind.CODE:
         return
     if is_triage_session(triage_agent, session.issue.agent_type):
         return
@@ -133,6 +224,31 @@ class TriageReactionPolicy:
         ):
             return TriageReaction()
 
+        classified = self._classify(snapshot)
+        investigations = _sorted_problems(
+            item
+            for item in classified
+            if item.disposition is ProblemDisposition.INVESTIGATE
+        )
+        cohort = _sorted_problems(item for item in classified if item.cohort_eligible)
+
+        threshold = self._config.triage.health_review.storm_threshold
+        if threshold > 0 and len(cohort) >= threshold:
+            # Report BOTH the cohort and the individual fallback. Suppressing
+            # the individual investigations is the planner's decision, made at
+            # the boundary that also knows whether the cohort was durably
+            # persisted to a health-review anchor; a suppression not backed by
+            # a persisted cohort would lose the problems at the end-of-tick
+            # discovered-fact clear.
+            return TriageReaction(
+                investigations=investigations, storm_problems=cohort
+            )
+        return TriageReaction(investigations=investigations)
+
+    def _classify(
+        self, snapshot: "OrchestratorSnapshot"
+    ) -> tuple["_ClassifiedProblem", ...]:
+        """Bucket every observed problem exactly once."""
         now = self._clock()
         pending = {
             item.issue_number: item.failure
@@ -146,50 +262,50 @@ class TriageReactionPolicy:
         problems = {**pending, **discovered}
         issue_by_number = {issue.number: issue for issue in snapshot.issues}
         successors = build_successor_index(snapshot.issues)
-
-        storm_candidates: list[DiscoveredFailure] = []
-        investigations: list[DiscoveredFailure] = []
         already_queued = {item.issue_number for item in snapshot.pending_triage}
 
-        for problem in problems.values():
-            is_block = problem.failure_reason == "blocked"
-            if is_block and self._is_explained_block(
-                problem, issue_by_number.get(problem.issue_number)
-            ):
-                continue
-
-            # A zero timestamp is a compatibility value on legacy queue
-            # entries. A problem discovered in THIS snapshot is current; an
-            # already-pending legacy entry has no trustworthy observation time
-            # and therefore cannot count toward a time-bounded storm.
-            observed_now = problem.issue_number in discovered
-            if self._inside_storm_window(problem, now, observed_now=observed_now):
-                storm_candidates.append(problem)
-
-            if problem.issue_number in already_queued:
-                continue
-            if is_block and not successors.get(problem.issue_number):
-                continue
-            investigations.append(problem)
-
-        sorted_investigations = tuple(
-            sorted(investigations, key=lambda item: item.issue_number)
-        )
-        threshold = self._config.triage.health_review.storm_threshold
-        if threshold > 0 and len(storm_candidates) >= threshold:
-            # Report BOTH the cohort and the individual fallback. Suppressing
-            # the individual investigations is the planner's decision, made at
-            # the boundary that also knows whether the cohort was durably
-            # persisted to a health-review anchor (#6780 R2 F1/A1); a
-            # suppression not backed by a persisted cohort would lose the
-            # problems at the end-of-tick discovered-fact clear.
-            return TriageReaction(
-                investigations=sorted_investigations,
-                storm_problems=tuple(
-                    sorted(storm_candidates, key=lambda item: item.issue_number)
+        return tuple(
+            _ClassifiedProblem(
+                problem=problem,
+                disposition=self._disposition(
+                    problem,
+                    issue=issue_by_number.get(problem.issue_number),
+                    successors=successors,
+                    already_queued=already_queued,
+                ),
+                # A zero timestamp is a compatibility value on legacy queue
+                # entries. A problem discovered in THIS snapshot is current; an
+                # already-pending legacy entry has no trustworthy observation
+                # time and therefore cannot count toward a time-bounded storm.
+                in_storm_window=self._inside_storm_window(
+                    problem, now, observed_now=problem.issue_number in discovered
                 ),
             )
-        return TriageReaction(investigations=sorted_investigations)
+            for problem in problems.values()
+        )
+
+    def _disposition(
+        self,
+        problem: DiscoveredFailure,
+        *,
+        issue: "Issue | None",
+        successors: Mapping[int, object],
+        already_queued: set[int],
+    ) -> ProblemDisposition:
+        is_block = problem.failure_reason == "blocked"
+        if is_block and self._is_explained_block(problem, issue):
+            return ProblemDisposition.IGNORED
+        if problem.issue_number in already_queued:
+            return ProblemDisposition.PENDING
+        if is_block and not successors.get(problem.issue_number):
+            # Nothing downstream is waiting, so this earns no investigation —
+            # and therefore no cohort seat either. Were it counted toward a
+            # storm, the escalation would collapse a problem that has no
+            # investigation to collapse INTO, losing it at the end-of-tick
+            # clear and making a leaf-only board escalate forever without ever
+            # investigating anything.
+            return ProblemDisposition.IGNORED
+        return ProblemDisposition.INVESTIGATE
 
     def _is_explained_block(
         self, problem: DiscoveredFailure, issue: "Issue | None"

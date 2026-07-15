@@ -275,7 +275,7 @@ def arm_health_review_session(
 
     ``problem_issue_numbers`` is the OWNED cohort (act-level authority);
     ``context_failure_numbers`` are unrelated failures that appear on the
-    board but grant nothing (#6780 R4 F1). Cohort members also appear in
+    board but grant nothing (#6780). Cohort members also appear in
     ``recent_failures`` — that list is the board a reviewer reads, and it is
     a superset of the grant, which is exactly why authority is carried on its
     own surface.
@@ -1235,7 +1235,15 @@ class TestDecisionTargetScope:
     def test_health_reset_retry_accepts_snapshot_problem_cohort(
         self, tmp_path: Path
     ) -> None:
+        """A health review CAN propose reset_retry for a cohort member.
+
+        Asserted symmetrically with its negative twin: the acceptance criterion
+        is that the proposal WORKS, so this checks the typed
+        ``ResetRetryIssueAction`` is actually planned for the member — not
+        merely that the completion was not rejected.
+        """
         config = make_triage_config(tmp_path)
+        config.triage.authority.reset_retry = "execute"
         session = make_triage_session(tmp_path)
         arm_health_review_session(
             config, session, problem_issue_numbers=(41, 42, 43)
@@ -1262,6 +1270,15 @@ class TestDecisionTargetScope:
         )
 
         assert error is None
+
+        actions = make_planner(config).generate_completion_actions(
+            session, SessionStatus.COMPLETED
+        )
+
+        assert _rejections(actions) == []
+        [reset] = [a for a in actions if isinstance(a, ResetRetryIssueAction)]
+        assert reset.issue_number == 42
+        assert reset.proposal_id == "A1"
 
     def test_health_reset_retry_rejects_issue_outside_snapshot_cohort(
         self, tmp_path: Path
@@ -1299,7 +1316,7 @@ class TestDecisionTargetScope:
     def test_context_only_failures_do_not_widen_health_act_level_scope(
         self, tmp_path: Path
     ) -> None:
-        """Unrelated board failures are context, not authority (#6780 R4 F1).
+        """Unrelated board failures are context, not authority (#6780).
 
         #99 is on the board because its own investigation is pending. The
         health review can SEE it, but reset_retry'ing it is out of scope —
@@ -1345,7 +1362,7 @@ class TestDecisionTargetScope:
         """The tamper check reads the cohort surface, not the failure list.
 
         A snapshot whose ``recent_failures`` legitimately exceed the grant
-        must NOT read as tampering (#6780 R4 F1) — otherwise every storm
+        must NOT read as tampering (#6780) — otherwise every storm
         review launched alongside an unrelated pending investigation would
         fail its own completion.
         """

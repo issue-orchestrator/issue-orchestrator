@@ -255,10 +255,13 @@ def plan_health_review_issue_creation(
     active_session_count: int,
     paused: bool,
     storm_problems: Sequence["DiscoveredFailure"] = (),
-    issues: Sequence["Issue"] = (),
 ) -> Optional[CreateTriageIssueAction]:
-    """Plan the health-review anchor creation when due, not duplicated, and
-    allowed by the owned paused/capacity gate.
+    """Plan the health-review anchor creation when triggered, not duplicated,
+    and allowed by the owned paused/capacity gate.
+
+    Two triggers reach here: the elapsed periodic interval, and a problem storm
+    (which fires when the interval is NOT due, and is the only trigger at all
+    under ``interval_minutes=0``).
 
     Dedup layers: the open marker-labeled anchor (GitHub, crash-safe), the
     pending-launch queue (covers the window before the label scan refreshes;
@@ -267,6 +270,15 @@ def plan_health_review_issue_creation(
     ``facts.health_review_due``). The gate runs last so TRIAGE_SKIPPED is
     only emitted when a creation would otherwise happen; due-ness persists
     (no stamp), so creation retries once the gate opens.
+
+    ``facts.existing_health_review_issue`` is the ONLY open-anchor rule, for
+    both triggers: the fact gatherer arms its scan on due-ness OR
+    :func:`storm_possible`, so a storm-only tick populates the fact too. There
+    is deliberately no fallback scan over the runnable issue queue — that queue
+    excludes anything belonging to an active session or session history, so an
+    anchor that is open and RUNNING is absent from it, and a second rule that
+    disagrees with this one on exactly the storm path is how duplicate anchors
+    get minted.
 
     Anchor shaping (labels including the marker, configured priority title,
     milestone intent) comes from the ``triage_issue_policy`` owner — the same
@@ -278,15 +290,6 @@ def plan_health_review_issue_creation(
     existing_health_review_issue = (
         facts.existing_health_review_issue if facts is not None else None
     )
-    if existing_health_review_issue is None:
-        existing_health_review_issue = next(
-            (
-                issue.number
-                for issue in issues
-                if issue.state == "open" and has_health_review_marker(issue.labels)
-            ),
-            None,
-        )
     if existing_health_review_issue is not None:
         logger.debug(
             "Planner: health-review anchor #%d already open",
@@ -372,10 +375,10 @@ def _persist_storm_cohort(
     issue_number: int,
     storm_problems: tuple["DiscoveredFailure", ...],
 ) -> bool:
-    """Record the cohort durably; True when the anchor now owns it (#6780 R3).
+    """Record the cohort durably; True when the anchor now owns it (#6780).
 
     The durable write comes BEFORE the collapse for the same reason the
-    planner queues the individual investigations first (R2 F1/A1): collapsing
+    planner queues the individual investigations first: collapsing
     retires the per-issue investigations, so it may only happen once the
     cohort is somewhere that outlives this process. In-memory
     ``problem_cohort`` alone cannot carry it — a crash between anchor creation
@@ -448,8 +451,8 @@ def queue_recovered_triage_anchor(
     authority, manifest labels on completion. No timestamp stamping: the
     anchor already exists; ``last_health_review_at`` records creation time.
 
-    A storm anchor also recovers its COHORT from the durable ledger (#6780
-    R3 F2). The cohort is the anchor's act-level authority: the queued item
+    A storm anchor also recovers its COHORT from the durable ledger (#6780).
+    The cohort is the anchor's act-level authority: the queued item
     hands it to launch as a ``TriageLaunchScope``, which becomes
     ``TriageLaunchAuthority.problem_issue_numbers``. Recovering without it
     (the in-memory queue is gone after a crash, and the issue BODY is mutable
@@ -535,7 +538,7 @@ def recover_pending_triage_anchors(
         # The ADR-0031 §4 marker label declares the anchor's variant; the
         # owner routes it (#6768 B5: queued flavor reaches launch verbatim)
         # and rehydrates a storm anchor's cohort from the durable ledger
-        # (#6780 R3 F2: the recovered anchor must keep its act-level scope).
+        # (#6780: the recovered anchor must keep its act-level scope).
         outcome = queue_recovered_triage_anchor(state, issue, triage_authority)
         if outcome is TriageQueueOutcome.DUPLICATE:
             print(f"  triage issue #{issue.number}: Already queued")

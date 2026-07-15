@@ -258,7 +258,7 @@ class BoardSnapshot:
     def problem_issue_numbers(self) -> frozenset[int]:
         """The health review's OWNED problem cohort — its act-level remit.
 
-        This is the dedicated cohort surface (#6780 R4 F1/A1), deliberately
+        This is the dedicated cohort surface (#6780), deliberately
         NOT derived from ``recent_failures``. Those are board CONTEXT: the
         provider merges the live failure buffer plus every pending failure
         investigation and every pending health-review cohort, so a review

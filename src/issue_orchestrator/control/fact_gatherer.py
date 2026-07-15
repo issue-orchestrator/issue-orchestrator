@@ -37,6 +37,7 @@ from .health_review_trigger import (
     health_review_due,
     health_review_interval_minutes,
 )
+from .triage_reaction import storm_possible
 
 if TYPE_CHECKING:
     from ..ports.issue import Issue
@@ -219,22 +220,28 @@ class FactGatherer:
           * BATCH fields, gated by ``triage_review_threshold`` (via the watch
             label);
           * HEALTH-REVIEW fields, gated by
-            ``triage.health_review.interval_minutes``;
+            ``triage.health_review.interval_minutes`` when the periodic review
+            is due, and independently by :func:`storm_possible` so an
+            unscheduled storm escalation can dedup its anchor on a tick the
+            interval is not due (including ``interval_minutes=0``, which
+            disables only the periodic trigger);
           * PROPOSAL fields (approved-op execution + terminal-op cleanup
             candidates), armed by the triage agent's local op ledger and
             reconciled whenever it holds an op — INDEPENDENT of the batch
             review threshold (#6779 R12), so a manual-approval / default
             (threshold=0) proposal still advances and self-heals.
 
-        GitHub API discipline shapes every read here: due-ness is pure interval
-        math computed FIRST, so a health-only configuration that is not yet due
-        makes ZERO GitHub calls (no anchor fact can affect planning until the
-        review is due); the exhaustive triage-agent scan runs only when the
-        batch trigger is armed OR the local op ledger has proposals to
+        GitHub API discipline shapes every read here: due-ness and storm
+        possibility are pure state/config math computed FIRST, so a health-only
+        configuration that is neither due nor holding enough problems to storm
+        makes ZERO GitHub calls (no anchor fact can affect planning until one
+        of the two can fire); the exhaustive triage-agent scan runs only when
+        the batch trigger is armed OR the local op ledger has proposals to
         reconcile (an empty ledger has nothing to approve or clean up, so no
         scan is worth making). A due health review also uses that exhaustive scan
         so its snapshot includes open case files while still deduplicating its
-        anchor. Observation only: milestone ASSEMBLY policy
+        anchor, and a possible storm uses it for that same dedup on a tick the
+        interval is not due. Observation only: milestone ASSEMBLY policy
         (strategy choice, explicit name -> number resolution) belongs to
         planning and the create-issue applier boundary (#6769 round 3) — no
         milestone API reads happen here.
@@ -245,6 +252,13 @@ class FactGatherer:
         batch_armed = bool(watch_label)
         triage_agent_configured = bool(self.config.triage_review_agent)
         health_armed = health_review_interval_minutes(self.config) > 0
+        # A storm can fire an anchor on a tick the interval is NOT due — and a
+        # storm-only configuration (interval_minutes=0) is never due at all.
+        # Arming the scan on the storm predicate is what keeps
+        # ``existing_health_review_issue`` trustworthy on those ticks; without
+        # it the dedup fact is unconditionally None and every storm mints a
+        # duplicate anchor. Pure state/config math, so it costs no API call.
+        storm_armed = storm_possible(state, self.config)
 
         # The act-level PROPOSAL machinery is armed by having a triage agent, so
         # it reconciles INDEPENDENT of the batch review threshold (#6779 R12):
@@ -257,7 +271,7 @@ class FactGatherer:
             if triage_agent_configured and self.triage_authority is not None
             else {}
         )
-        if not batch_armed and not health_armed and not ops:
+        if not batch_armed and not health_armed and not ops and not storm_armed:
             return None
 
         due = health_review_due(
@@ -275,14 +289,15 @@ class FactGatherer:
         # (health armed but not due, no batch, empty ledger) leaves this False
         # and its empty ``case_files`` must NOT wipe the retained projection.
         case_files_scanned = False
-        if batch_armed or ops or due:
+        if batch_armed or ops or due or storm_armed:
             # The ONE exhaustive open triage-agent scan classifies batch +
             # health anchors, open proposals, approved ops, and absent-ledger
-            # cleanup candidates in a single reconcile (#6778/#6779 R2/R4/R12).
+            # cleanup candidates in a single reconcile (#6778/#6779).
             # It runs when the batch trigger is armed OR the ledger has ops to
             # reconcile — decoupling proposal advancement from the batch
             # threshold. A due health review also needs this scan so its board
-            # snapshot includes every open pattern case file (#6781).
+            # snapshot includes every open pattern case file (#6781), and a
+            # possible storm needs it to dedup its anchor (#6780).
             (
                 batch_anchor,
                 existing_health_review_issue,
@@ -523,7 +538,7 @@ def triage_problem_artifact_hold_issue_numbers(
     - a queued health review carries it in its ``problem_cohort`` — a storm
       collapses the per-issue investigations into ONE anchor, so after that
       collapse the cohort is the only thing still naming those artifacts
-      (#6780 R3 F1: holding only failure investigations let the collapsed
+      (#6780: holding only failure investigations let the collapsed
       members' worktrees be cleaned up before the review could read them);
     - an active triage session is investigating it; or
     - an active health review OWNS it via the durable storm-cohort ledger.
@@ -547,7 +562,12 @@ def triage_problem_artifact_hold_issue_numbers(
     for item in state.pending_triage_reviews:
         if item.flavor is TriageSessionFlavor.FAILURE_INVESTIGATION:
             held.add(item.issue_number)
-        held.update(problem.issue_number for problem in item.problem_cohort)
+        # The item's in-memory ``problem_cohort`` is deliberately NOT read
+        # here. It is non-empty only when the ledger write succeeded (intake
+        # stamps it from the same persisted tuple; recovery sources it FROM the
+        # ledger), so the row this anchor references below already holds every
+        # member. Reading both would give the same answer from two sources and
+        # invite them to drift.
         referenced_anchors.add(item.issue_number)
     for session in state.active_sessions:
         if is_triage_session(config.triage_review_agent, session.issue.agent_type):
@@ -580,6 +600,8 @@ def clear_discovered_facts(
     state: "OrchestratorState",
     config: Config,
     triage_authority: "Optional[TriageAuthorityStore]" = None,
+    *,
+    tick_paused: bool,
 ) -> None:
     """Clear tick-scoped fact buffers, retaining held immediate cleanups.
 
@@ -591,14 +613,25 @@ def clear_discovered_facts(
     skip and the end-of-tick retention can never disagree about which
     artifacts are still referenced.
 
-    A PAUSED tick retains every fact (#6780 R2 F1). The clear exists to drop
-    facts the tick consumed, but a paused tick consumes none: the Planner
-    returns an empty plan and ``apply_plan`` refuses to apply actions while
-    paused. Clearing would silently discard problems that nothing recorded —
-    a session that fails while paused is discovered exactly once, so a dropped
-    storm cohort could never be recovered, even after resume.
+    A PAUSED tick retains every fact. The clear exists to drop facts the tick
+    consumed, but a paused tick consumes none: the Planner returns an empty
+    plan and ``apply_plan`` refuses to apply actions while paused. Clearing
+    would silently discard problems that nothing recorded — a session that
+    fails while paused is discovered exactly once, so a dropped storm cohort
+    could never be recovered, even after resume.
+
+    ``tick_paused`` MUST be the tick's own ``snapshot.paused`` — the same read
+    the Planner decided from — and never a fresh read of live ``state.paused``.
+    The two differ: ``state.paused`` is mutated from the web thread, and this
+    call is separated from the snapshot by a network fetch, planning and apply.
+    Re-reading it would decide retention from one tick's plan and another
+    tick's pause state, in both directions: an operator resuming mid-tick would
+    wipe facts the empty plan never consumed, and one pausing mid-apply would
+    retain facts a partially-applied plan already collapsed into an anchor —
+    re-queuing every cohort member individually on resume while the anchor
+    still owns it.
     """
-    if state.paused:
+    if tick_paused:
         return
     held = triage_problem_artifact_hold_issue_numbers(state, config, triage_authority)
     retained = [c for c in state.immediate_cleanups if c.issue_number in held]
