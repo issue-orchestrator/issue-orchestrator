@@ -35,7 +35,14 @@ function _renderLifecycleCommandAttr(command) {
 
 function _lifecycleCommandFromElement(element) {
     if (!element || !element.dataset) return null;
-    if (!element.dataset.lifecycleCommand) return null;
+    // Absent vs present-but-empty are different facts, and only the
+    // first one is quiet.  An absent attribute means the element
+    // carries no Command — nothing to report.  A present attribute is
+    // owned by ``uiContractJson``, INCLUDING ``data-lifecycle-command=""``:
+    // an empty value is a render bug that would otherwise look like a
+    // dead control, so it must reach the reader and get its diagnostic.
+    // Testing truthiness here would collapse the two, because '' is falsy.
+    if (element.dataset.lifecycleCommand === undefined) return null;
     return uiContractJson.fromDataset(element, 'lifecycleCommand', LIFECYCLE_COMMAND_SCHEMA);
 }
 
