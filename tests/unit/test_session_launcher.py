@@ -97,7 +97,10 @@ from issue_orchestrator.domain.board_snapshot import (
     BoardFailure,
     BoardSnapshot,
 )
-from issue_orchestrator.domain.triage_session import TriageSessionFlavor
+from issue_orchestrator.domain.triage_session import (
+    TriageLaunchScope,
+    TriageSessionFlavor,
+)
 from issue_orchestrator.domain.state_machines.issue_machine import IssueStateMachine, IssueState
 from issue_orchestrator.domain.state_machines.session_machine import SessionStateMachine, SessionState
 from issue_orchestrator.domain.state_machines.review_machine import ReviewStateMachine, ReviewState
@@ -458,17 +461,26 @@ class RecordingBoardSnapshotProvider:
 
     def __init__(self, error: Exception | None = None):
         self.calls: list[int | None] = []
+        self.cohort_calls: list[tuple[int, ...]] = []
         self.error = error
         self.recent_failures: list[BoardFailure] = []
 
-    def snapshot(self, focus_issue: int | None) -> BoardSnapshot:
+    def snapshot(
+        self,
+        focus_issue: int | None,
+        problem_cohort: tuple[int, ...] = (),
+    ) -> BoardSnapshot:
         self.calls.append(focus_issue)
+        # Recorded so tests can assert the launch boundary passes the OWNED
+        # cohort down rather than letting the provider infer it (#6780 R4).
+        self.cohort_calls.append(tuple(problem_cohort))
         if self.error is not None:
             raise self.error
         return BoardSnapshot(
             generated_at="2026-07-10T00:00:00",
             orchestrator_paused=False,
             recent_failures=list(self.recent_failures),
+            problem_cohort=list(problem_cohort),
         )
 
 
@@ -2972,7 +2984,7 @@ class TestOrchestratorLaunchTriageSession:
         issue = call.args[0]
         assert issue.number == 789
         assert "agent:web" in issue.labels
-        assert call.kwargs["triage_flavor"] is flavor
+        assert call.kwargs["triage_scope"].flavor is flavor
 
     def test_successful_launch_removes_item_from_queue(self, sample_config, tmp_path):
         """Reviewer scenario: a launched item must not stay queued (#6768 r4)."""
@@ -3212,7 +3224,9 @@ class TestLaunchTriageIssueSessionFlavors:
         result = launcher_bundle.launcher.launch_issue_session(
             issue,
             active_sessions=[],
-            triage_flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+            triage_scope=TriageLaunchScope(
+                flavor=TriageSessionFlavor.FAILURE_INVESTIGATION
+            ),
         )
 
         assert result.success is True
@@ -3304,7 +3318,9 @@ class TestLaunchTriageIssueSessionFlavors:
         result = launcher_bundle.launcher.launch_issue_session(
             issue,
             active_sessions=[],
-            triage_flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+            triage_scope=TriageLaunchScope(
+                flavor=TriageSessionFlavor.FAILURE_INVESTIGATION
+            ),
         )
 
         assert result.success is True
@@ -3432,11 +3448,18 @@ class TestLaunchTriageIssueSessionFlavors:
         assert authority.problem_issue_numbers == ()
         assert authority.allowed_targets() == frozenset({905})
 
-    def test_health_authority_records_exact_snapshot_problem_cohort(
+    def test_health_authority_records_the_granted_cohort_not_board_failures(
         self, launcher_bundle, mock_repo_host, mock_events, tmp_path
     ):
-        """Producer-side contract: one snapshot instance supplies both the
-        agent-visible file and immutable act-level authority (#6780)."""
+        """Authority is the PRODUCER's grant; board failures are context only.
+
+        #6780 R4 F1: authority used to be read back out of the board
+        snapshot's failure list. That list merges the live buffer plus every
+        pending failure investigation, so an unrelated failing issue (#99
+        here) silently joined the storm review's act-level scope and could be
+        reset_retry'd by it. The grant must decide the scope, and unrelated
+        failures must stay visible as context without widening it.
+        """
         from issue_orchestrator.domain.triage_session import (
             HEALTH_REVIEW_MARKER_LABEL,
         )
@@ -3449,9 +3472,133 @@ class TestLaunchTriageIssueSessionFlavors:
             BoardFailure(43, "Problem 43", "failed", []),
             BoardFailure(41, "Problem 41", "blocked", []),
             BoardFailure(42, "Problem 42", "timed_out", []),
+            # NOT in the grant: an unrelated investigation that happens to be
+            # pending. Context for the reviewer, never authority.
+            BoardFailure(99, "Unrelated pending investigation", "failed", []),
         ]
         issue = Issue(
             number=905,
+            title="Health Review — problem storm",
+            labels=["agent:triage", HEALTH_REVIEW_MARKER_LABEL],
+            repo="test/repo",
+        )
+
+        result = launcher_bundle.launcher.launch_issue_session(
+            issue,
+            active_sessions=[],
+            triage_scope=TriageLaunchScope(
+                flavor=TriageSessionFlavor.HEALTH_REVIEW,
+                problem_issue_numbers=(41, 42, 43),
+            ),
+        )
+
+        assert result.success is True
+        assert provider.cohort_calls == [(41, 42, 43)], (
+            "the launch boundary must hand the owned cohort to the provider"
+        )
+        run_dir = self._started_run_dir(mock_events)
+        snapshot = BoardSnapshot.read(
+            run_dir / "triage-data" / "board-snapshot.json"
+        )
+        assert 99 in {f.issue_number for f in snapshot.recent_failures}, (
+            "unrelated failures stay on the board as context"
+        )
+        authority = SqliteTriageAuthorityStore.for_repo(config.repo_root).load(
+            run_id=result.session.run_assets.run_id,
+            session_name=result.session.run_assets.session_name,
+        )
+        assert authority is not None
+        assert authority.problem_issue_numbers == (41, 42, 43)
+        assert authority.allowed_act_level_targets() == frozenset({41, 42, 43})
+        assert snapshot.problem_issue_numbers() == frozenset({41, 42, 43}), (
+            "the snapshot's cohort surface is the grant, not its failure list"
+        )
+
+    def test_periodic_health_review_gains_no_cohort_from_pending_failures(
+        self, launcher_bundle, mock_repo_host, mock_events, tmp_path
+    ):
+        """A periodic review may PROPOSE, never act (#6780 R4 F1).
+
+        Its grant carries no cohort. Failures on the board at launch time —
+        here a pending investigation for #99 — must not become act-level
+        authority just because the review happened to start while they were
+        queued.
+        """
+        from issue_orchestrator.domain.triage_session import (
+            HEALTH_REVIEW_MARKER_LABEL,
+        )
+
+        config = launcher_bundle.launcher.config
+        self._enable_triage_agent(config, tmp_path)
+        provider = launcher_bundle.board_snapshot_provider
+        assert isinstance(provider, RecordingBoardSnapshotProvider)
+        provider.recent_failures = [
+            BoardFailure(99, "Unrelated pending investigation", "failed", []),
+        ]
+        issue = Issue(
+            number=906,
+            title="Health Review — walk the floor",
+            labels=["agent:triage", HEALTH_REVIEW_MARKER_LABEL],
+            repo="test/repo",
+        )
+
+        result = launcher_bundle.launcher.launch_issue_session(
+            issue,
+            active_sessions=[],
+            triage_scope=TriageLaunchScope(
+                flavor=TriageSessionFlavor.HEALTH_REVIEW
+            ),
+        )
+
+        assert result.success is True
+        authority = SqliteTriageAuthorityStore.for_repo(config.repo_root).load(
+            run_id=result.session.run_assets.run_id,
+            session_name=result.session.run_assets.session_name,
+        )
+        assert authority is not None
+        assert authority.problem_issue_numbers == ()
+        assert authority.allowed_act_level_targets() == frozenset()
+        run_dir = self._started_run_dir(mock_events)
+        snapshot = BoardSnapshot.read(
+            run_dir / "triage-data" / "board-snapshot.json"
+        )
+        assert [f.issue_number for f in snapshot.recent_failures] == [99], (
+            "the periodic review still SEES the failing issue as context"
+        )
+        assert snapshot.problem_issue_numbers() == frozenset()
+
+    def test_marker_label_pickup_takes_its_cohort_from_the_ledger(
+        self, launcher_bundle, mock_repo_host, mock_events, tmp_path
+    ):
+        """A storm anchor launched WITHOUT a grant keeps its exact cohort.
+
+        A marker-labeled anchor can also be picked up as an ordinary issue, so
+        no launch scope arrives. The cohort then comes from the durable ledger
+        keyed by the anchor — still a dedicated surface, never the board's
+        failure list (#6780 R4 F1). Fixing F1 must not silently strip the
+        authority of an anchor that reaches launch by this path.
+        """
+        from issue_orchestrator.domain.triage_session import (
+            HEALTH_REVIEW_MARKER_LABEL,
+        )
+
+        config = launcher_bundle.launcher.config
+        self._enable_triage_agent(config, tmp_path)
+        store = SqliteTriageAuthorityStore.for_repo(config.repo_root)
+        store.record_storm_cohort(
+            anchor_issue_number=907,
+            cohort=tuple(
+                DiscoveredFailure(number, f"Problem {number}", "failed")
+                for number in (41, 42, 43)
+            ),
+        )
+        provider = launcher_bundle.board_snapshot_provider
+        assert isinstance(provider, RecordingBoardSnapshotProvider)
+        provider.recent_failures = [
+            BoardFailure(99, "Unrelated pending investigation", "failed", []),
+        ]
+        issue = Issue(
+            number=907,
             title="Health Review — problem storm",
             labels=["agent:triage", HEALTH_REVIEW_MARKER_LABEL],
             repo="test/repo",
@@ -3462,19 +3609,15 @@ class TestLaunchTriageIssueSessionFlavors:
         )
 
         assert result.success is True
-        run_dir = self._started_run_dir(mock_events)
-        snapshot = BoardSnapshot.read(
-            run_dir / "triage-data" / "board-snapshot.json"
-        )
-        authority = SqliteTriageAuthorityStore.for_repo(config.repo_root).load(
+        authority = store.load(
             run_id=result.session.run_assets.run_id,
             session_name=result.session.run_assets.session_name,
         )
         assert authority is not None
-        assert authority.problem_issue_numbers == (41, 42, 43)
-        assert authority.allowed_act_level_targets() == frozenset({41, 42, 43})
-        assert snapshot.problem_issue_numbers() == frozenset({41, 42, 43})
-
+        assert authority.flavor is TriageSessionFlavor.HEALTH_REVIEW
+        assert authority.problem_issue_numbers == (41, 42, 43), (
+            "the ledger is the fallback cohort source, not the board snapshot"
+        )
 
     def test_health_review_anchor_launches_as_health_flavor(
         self, launcher_bundle, mock_repo_host, mock_events, tmp_path
@@ -4327,6 +4470,89 @@ class TestTriageProducerToLaunchBoundary:
             (f.issue_number, f.failure_reason, f.artifact_hints)
             for f in snapshot.recent_failures
         ] == [(904, "timed_out", [str(diagnostic)])]
+
+    def test_storm_authority_excludes_an_unrelated_pending_investigation(
+        self,
+        sample_config,
+        mock_events,
+        mock_repo_host,
+        mock_worktree_manager,
+        mock_working_copy,
+        mock_command_runner,
+        tmp_path,
+    ):
+        """#6780 R4 F1 — the exact scenario, end to end through the real queue.
+
+        A 3-issue storm escalates while an older investigation for #99 is
+        still pending. Intake correctly leaves that investigation queued, so
+        the REAL StateBoardSnapshotProvider merges #99 into the launch
+        snapshot's failures alongside the cohort. Authority derived from that
+        list would let the health review reset_retry/kill_hung_session #99 —
+        an issue it does not own. The grant must decide.
+        """
+        state = OrchestratorState()
+        provider = StateBoardSnapshotProvider(
+            BoardSnapshotBuilder(
+                timeline_reader=lambda issue, limit: [],
+                log_tail_provider=lambda lines: [],
+                case_file_reader=lambda: (),
+                shipped_fix_reader=lambda limit: (),
+                clock=lambda: datetime(2026, 7, 10, 12, 0, 0),
+            ),
+            lambda: state,
+        )
+        launcher_bundle = _build_launcher_bundle(
+            sample_config,
+            mock_events,
+            mock_repo_host,
+            mock_worktree_manager,
+            mock_working_copy,
+            mock_command_runner,
+            board_snapshot_provider=provider,
+        )
+        config = launcher_bundle.launcher.config
+        TestLaunchTriageIssueSessionFlavors._enable_triage_agent(config, tmp_path)
+
+        queues = PendingSessionQueues(state)
+        # The unrelated investigation that survives the storm collapse.
+        queues.queue_failure_investigation(
+            99,
+            "Investigate: Unrelated thing (failed)",
+            failure=DiscoveredFailure(99, "Unrelated thing", "failed"),
+        )
+        queues.queue_health_review(
+            905,
+            "Health Review — problem storm",
+            problem_cohort=tuple(
+                DiscoveredFailure(number, f"Problem {number}", "failed")
+                for number in (41, 42, 43)
+            ),
+        )
+        (queued,) = [
+            item
+            for item in state.pending_triage_reviews
+            if item.flavor is TriageSessionFlavor.HEALTH_REVIEW
+        ]
+
+        session = self._launch(queued, state, launcher_bundle)
+
+        run_dir = TestLaunchTriageIssueSessionFlavors._started_run_dir(mock_events)
+        snapshot = BoardSnapshot.read(
+            run_dir / "triage-data" / "board-snapshot.json"
+        )
+        assert 99 in {f.issue_number for f in snapshot.recent_failures}, (
+            "the unrelated failure is real board context and must stay visible"
+        )
+        authority = SqliteTriageAuthorityStore.for_repo(config.repo_root).load(
+            run_id=session.run_assets.run_id,
+            session_name=session.run_assets.session_name,
+        )
+        assert authority is not None
+        assert authority.problem_issue_numbers == (41, 42, 43)
+        assert authority.allowed_act_level_targets() == frozenset({41, 42, 43}), (
+            "#99 is context, not act-level authority"
+        )
+        assert snapshot.problem_issue_numbers() == frozenset({41, 42, 43})
 
     def test_recovered_storm_anchor_launches_with_its_original_cohort_authority(
         self,

@@ -14,7 +14,12 @@ from .dependency_gates import DependencyGateSnapshot
 from .issue_key import IssueKey, GitHubIssueKey, parse_external_id
 from .session_key import SessionKey, TaskKind  # re-exported for callers
 from .session_run import SessionRunAssets
-from .triage_session import ApprovedTriageOp, TriageCaseFileSummary, TriageSessionFlavor
+from .triage_session import (
+    ApprovedTriageOp,
+    TriageCaseFileSummary,
+    TriageLaunchScope,
+    TriageSessionFlavor,
+)
 
 if TYPE_CHECKING:
     from ..ports.issue import Issue as IssueProtocol
@@ -1652,6 +1657,23 @@ class PendingTriageReview:
     # is the ONLY durable record of the investigation, so transient prep
     # failures retain it instead of dropping it.
     retryable_launch_failures: int = 0
+
+    def launch_scope(self) -> TriageLaunchScope:
+        """The typed grant this queued item hands the launch boundary (#6780 R4).
+
+        The queue item is the producer that knows both the variant and, for a
+        storm, the exact cohort the review owns. Handing that grant down means
+        the launch authority is built from the OWNED cohort instead of being
+        inferred from the board snapshot, whose failure list also contains
+        unrelated pending investigations (R4 F1/A1).
+        """
+        return TriageLaunchScope(
+            flavor=self.flavor,
+            problem_issue_numbers=tuple(
+                sorted({problem.issue_number for problem in self.problem_cohort})
+            ),
+        )
+
     def __post_init__(self) -> None:
         if self.flavor is TriageSessionFlavor.FAILURE_INVESTIGATION and self.failure is None:
             raise ValueError(

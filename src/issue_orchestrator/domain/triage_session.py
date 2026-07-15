@@ -199,6 +199,57 @@ class TriageAssignment:
         return cls.from_dict(json.loads(path.read_text()))
 
 
+@dataclass(frozen=True, slots=True)
+class TriageLaunchScope:
+    """What the PRODUCER boundary grants one triage session run (#6780 R4).
+
+    The queued item knows which variant it is and — for a problem storm —
+    exactly which issues the review owns. This value object carries that
+    grant across the launch command boundary (queue -> routing -> launcher ->
+    ``prepare_triage_session_data``) so the authority record is built from the
+    OWNED cohort rather than inferred downstream.
+
+    It exists because the board snapshot is the wrong place to infer authority
+    from: that surface merges the live failure buffer, every pending failure
+    investigation, and every pending health review's cohort, so deriving
+    ``problem_issue_numbers`` from it silently widened a review's act-level
+    scope to unrelated issues that merely happened to be failing at launch
+    (R4 F1/A1) — and handed a PERIODIC review act-level scope it should never
+    have.
+
+    Issue numbers, not ``DiscoveredFailure`` objects: a scope conveys
+    AUTHORITY (which issues may be acted on). The failure detail those issues
+    carry is board CONTEXT, and travels in the snapshot.
+    """
+
+    flavor: TriageSessionFlavor
+    problem_issue_numbers: tuple[int, ...] = ()
+
+    def __post_init__(self) -> None:
+        if (
+            self.problem_issue_numbers
+            and self.flavor is not TriageSessionFlavor.HEALTH_REVIEW
+        ):
+            raise ValueError(
+                "TriageLaunchScope problem_issue_numbers are valid only for a "
+                "health review; other flavors derive scope from their focus "
+                "issue or PR manifest"
+            )
+        if any(
+            isinstance(number, bool) or number <= 0
+            for number in self.problem_issue_numbers
+        ):
+            raise ValueError(
+                "TriageLaunchScope problem_issue_numbers must contain positive ints"
+            )
+        if self.problem_issue_numbers != tuple(
+            sorted(set(self.problem_issue_numbers))
+        ):
+            raise ValueError(
+                "TriageLaunchScope problem_issue_numbers must be sorted and unique"
+            )
+
+
 @dataclass(frozen=True)
 class TriageLaunchAuthority:
     """Orchestrator-owned launch scope for one triage session run.

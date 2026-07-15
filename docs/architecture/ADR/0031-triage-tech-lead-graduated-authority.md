@@ -223,15 +223,30 @@ nothing, so it retains its discovered facts instead of clearing them. A problem
 is discovered exactly once, so any suppression not matched by a persisted
 cohort would drop it permanently.
 
-A storm-created anchor carries its typed problem cohort through the pending
-queue into the launch-time board snapshot. The orchestrator derives
-`TriageLaunchAuthority.problem_issue_numbers` from that exact snapshot instance
-and persists it outside the agent-writable worktree. A health review may issue
-act-level `reset_retry`/`kill_hung_session` proposals only for that immutable
-cohort; general comments and escalations remain anchor-scoped. Completion
-re-reads the worktree snapshot solely as tamper evidence and rejects any
-problem-set divergence before accepting the decision. Execution-time
-precondition checks still apply independently to each cohort action.
+A storm-created anchor owns a typed problem cohort, persisted durably at
+anchor creation and rehydrated by startup recovery, so the grant survives a
+restart between creation and launch. The queued item hands that cohort across
+the launch boundary as a `TriageLaunchScope`, and the orchestrator records
+`TriageLaunchAuthority.problem_issue_numbers` from that grant, outside the
+agent-writable worktree.
+
+Authority is NOT inferred from the board snapshot. That snapshot's
+`recent_failures` is deliberately broad CONTEXT — it merges the live failure
+buffer, every pending failure investigation, and every pending cohort — so
+reading authority back out of it widened a review's act-level scope to
+unrelated issues that merely happened to be failing at launch, and handed a
+periodic review a cohort it should never have. The snapshot therefore carries
+the grant on its own dedicated `problem_cohort` surface, distinct from the
+failures it displays.
+
+A health review may issue act-level `reset_retry`/`kill_hung_session`
+proposals only for that immutable cohort; general comments and escalations
+remain anchor-scoped. A periodic health review owns no cohort: it walks the
+board and proposes, but acts on nothing. Completion re-reads the worktree
+snapshot's cohort surface solely as tamper evidence and rejects divergence
+from the recorded authority; context failures exceeding the grant are expected
+and are not tampering. Execution-time precondition checks still apply
+independently to each cohort action.
 
 ### 5. Sequencing and scope boundaries
 

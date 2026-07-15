@@ -30,6 +30,7 @@ from ..domain.triage_session import (
     TRIAGE_ASSIGNMENT_FILENAME,
     TriageAssignment,
     TriageLaunchAuthority,
+    TriageLaunchScope,
     TriageSessionFlavor,
 )
 from .completion_pr_collision import NoCommitsBetweenError
@@ -132,6 +133,37 @@ def prepare_triage_manifest(
     return manifest
 
 
+def _resolve_health_review_cohort(
+    triage_scope: "TriageLaunchScope | None",
+    *,
+    triage_authority: "TriageAuthorityStore",
+    issue: "Issue",
+) -> tuple[int, ...]:
+    """The act-level cohort a health review owns (#6780 R4 F1/A1).
+
+    Single owner for "what may this review act on", with two ordered sources —
+    both DEDICATED cohort surfaces, never the board snapshot:
+
+    1. the producer's grant, when the review was launched from the pending
+       queue (the normal path). The queued item knows its own cohort;
+    2. otherwise the durable cohort ledger, keyed by the anchor issue. A
+       marker-labeled anchor can also be picked up as an ordinary issue, which
+       carries no grant — reading the ledger keeps a storm anchor's authority
+       exact on that path too, rather than silently dropping it.
+
+    The two cannot disagree: intake persists to the ledger BEFORE stamping the
+    queue item, and startup recovery hydrates the queue item FROM the ledger.
+
+    Returns empty for a periodic health review — it owns no cohort, so it may
+    propose but not act. Reading authority from ``BoardSnapshot`` instead
+    (as this did before) handed it every unrelated failure on the board.
+    """
+    if triage_scope is not None:
+        return triage_scope.problem_issue_numbers
+    cohort = triage_authority.load_storm_cohort(anchor_issue_number=issue.number)
+    return tuple(sorted({problem.issue_number for problem in cohort or ()}))
+
+
 def prepare_triage_session_data(
     *,
     config: "Config",
@@ -141,7 +173,7 @@ def prepare_triage_session_data(
     board_snapshot_provider: "BoardSnapshotProvider",
     issue: "Issue",
     ctx: "WorktreeContext",
-    triage_flavor: TriageSessionFlavor | None,
+    triage_scope: "TriageLaunchScope | None",
 ) -> None:
     """Prepare per-flavor triage session inputs (ADR-0031).
 
@@ -154,18 +186,18 @@ def prepare_triage_session_data(
     record persisted outside the agent-writable worktree, keyed by this
     run's identity, which completion reads as the only scope authority
     (#6761 re-review F1). Health reviews record no focus/manifest scope plus
-    the problem-issue cohort derived from the exact board snapshot written for
-    the session (#6780); act-level proposals may target only that cohort.
+    their OWNED problem cohort (#6780); act-level proposals may target only
+    that cohort.
 
-    Flavor resolution: an explicit ``triage_flavor`` wins (the pending-queue
-    launch path forwards the producer-declared flavor); otherwise the
+    Flavor resolution: an explicit ``triage_scope`` wins (the pending-queue
+    launch path forwards the producer-declared grant); otherwise the
     ADR-0031 §4 marker label on the anchor issue selects HEALTH_REVIEW
     (labels are the crash-safe truth a restart recovers from); otherwise
     BATCH_REVIEW.
     """
     if not is_triage_session(config.triage_review_agent, issue.agent_type):
         return
-    flavor = triage_flavor or (
+    flavor = (triage_scope.flavor if triage_scope is not None else None) or (
         TriageSessionFlavor.HEALTH_REVIEW
         if HEALTH_REVIEW_MARKER_LABEL in issue.labels
         else TriageSessionFlavor.BATCH_REVIEW
@@ -195,11 +227,15 @@ def prepare_triage_session_data(
     assignment.write(assignment_path)
     ctx.update_manifest({"triage_assignment": str(assignment_path)})
     focus_issue = issue.number if focused else None
-    board_snapshot = board_snapshot_provider.snapshot(focus_issue)
     problem_issue_numbers = (
-        tuple(sorted(board_snapshot.problem_issue_numbers()))
+        _resolve_health_review_cohort(
+            triage_scope, triage_authority=triage_authority, issue=issue
+        )
         if flavor is TriageSessionFlavor.HEALTH_REVIEW
         else ()
+    )
+    board_snapshot = board_snapshot_provider.snapshot(
+        focus_issue, problem_issue_numbers
     )
     triage_authority.record(
         run_id=ctx.run.run_id,

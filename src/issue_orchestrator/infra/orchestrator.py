@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, ClassVar, Optional, cast
 if TYPE_CHECKING:
     from ..control.planner_types import Plan
     from ..control.session_manager import SessionRef, SessionType
-    from ..domain.triage_session import TriageSessionFlavor
+    from ..domain.triage_session import TriageLaunchScope
     from ..ports.session_runner import DiscoveredSession
     from .e2e_db import E2ERun
 
@@ -377,8 +377,8 @@ class Orchestrator:
                 sessions_root,
             )
 
-    def launch_session(self, issue: Issue, *, triage_flavor: "TriageSessionFlavor | None" = None) -> Optional[Session]:
-        return _launch_session(issue, self.state, self._session_launcher, self.deps.session_restorer, triage_flavor=triage_flavor)
+    def launch_session(self, issue: Issue, *, triage_scope: "TriageLaunchScope | None" = None) -> Optional[Session]:
+        return _launch_session(issue, self.state, self._session_launcher, self.deps.session_restorer, triage_scope=triage_scope)
     def handle_session_completion(self, session: Session, status: SessionStatus) -> None: _handle_session_completion(session, status, self.state, self._completion_handler, self.deps.action_applier, self.observer, self.deps.worktree_manager, self._kill_session, self.config, self.deps.session_output, publish_recovery=self.deps.publish_recovery)
 
     def tick(self) -> bool:

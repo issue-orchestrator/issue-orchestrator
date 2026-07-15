@@ -54,7 +54,7 @@ from ..domain.dependency_gates import Gate
 from .worktree_context import WorktreeContext
 from .stack_base import StackBaseDecision
 from ..infra.validation_state import DEFAULT_RETRY_TEMPLATE
-from ..domain.triage_session import TriageSessionFlavor
+from ..domain.triage_session import TriageLaunchScope
 from .triage_session_policy import is_triage_session, prepare_triage_session_data
 from ..ports import (
     ManifestDownloader,
@@ -719,7 +719,7 @@ class SessionLauncher:
         self,
         issue: "IssueProtocol",
         ctx: WorktreeContext,
-        triage_flavor: TriageSessionFlavor | None,
+        triage_scope: "TriageLaunchScope | None",
     ) -> None:
         """Delegate per-flavor triage launch preparation to the ADR-0031 owner."""
         prepare_triage_session_data(
@@ -730,7 +730,7 @@ class SessionLauncher:
             board_snapshot_provider=self._board_snapshot_provider,
             issue=issue,
             ctx=ctx,
-            triage_flavor=triage_flavor,
+            triage_scope=triage_scope,
         )
 
     def _discard_triage_authority_after_failed_launch(
@@ -780,7 +780,7 @@ class SessionLauncher:
         issue: "IssueProtocol",
         active_sessions: list[Session],
         *,
-        triage_flavor: TriageSessionFlavor | None = None,
+        triage_scope: "TriageLaunchScope | None" = None,
     ) -> LaunchResult:
         """Launch a session for an issue.
 
@@ -793,8 +793,12 @@ class SessionLauncher:
         Args:
             issue: The issue to work on
             active_sessions: Current active sessions (for conflict detection)
-            triage_flavor: For triage-agent sessions, which triage variant this
-                launch is (defaults to batch review when unset; ADR-0031)
+            triage_scope: For triage-agent sessions, the producer's typed
+                grant: which triage variant this launch is, plus the problem
+                cohort a health review owns (ADR-0031, #6780 R4). Unset for
+                ordinary issues, and for a triage anchor picked up outside the
+                pending queue — the flavor then comes from the marker label and
+                the cohort from the durable ledger.
 
         Returns:
             LaunchResult with session if successful
@@ -924,7 +928,7 @@ class SessionLauncher:
         # the prompt calls board-snapshot.json authoritative — so prep
         # failure fails the launch loudly (setup-command seam).
         try:
-            self._prepare_triage_session_data(issue, ctx, triage_flavor)
+            self._prepare_triage_session_data(issue, ctx, triage_scope)
         except Exception as e:
             return self._fail_launch_for_triage_prep(
                 issue, ctx, session_name, worktree_path, claim, e

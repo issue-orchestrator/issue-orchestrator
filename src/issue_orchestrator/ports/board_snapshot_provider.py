@@ -21,11 +21,22 @@ from ..domain.board_snapshot import BoardSnapshot
 class BoardSnapshotProvider(Protocol):
     """Builds a point-in-time board snapshot for a launching session."""
 
-    def snapshot(self, focus_issue: int | None) -> BoardSnapshot:
+    def snapshot(
+        self,
+        focus_issue: int | None,
+        problem_cohort: tuple[int, ...] = (),
+    ) -> BoardSnapshot:
         """Return a bounded snapshot of the current orchestrator board.
 
         ``focus_issue`` pins that issue's timeline extract first (failure
         investigations); ``None`` for batch reviews.
+
+        ``problem_cohort`` is the health review's OWNED act-level remit,
+        supplied by the launch boundary that holds the grant (#6780 R4). It is
+        stamped onto the snapshot as a dedicated surface rather than inferred
+        from ``recent_failures``, which is board CONTEXT and includes
+        unrelated pending investigations. Empty for every other flavor and for
+        a periodic health review.
         """
         ...
 
@@ -40,8 +51,13 @@ class NullBoardSnapshotProvider:
     wiring regressions.
     """
 
-    def snapshot(self, _focus_issue: int | None) -> BoardSnapshot:
+    def snapshot(
+        self,
+        _focus_issue: int | None,
+        problem_cohort: tuple[int, ...] = (),
+    ) -> BoardSnapshot:
         return BoardSnapshot(
             generated_at=datetime.now().isoformat(),
             orchestrator_paused=False,
+            problem_cohort=list(problem_cohort),
         )

@@ -22,7 +22,7 @@ from ..domain.models import (
     PendingValidationRetry,
     Session,
 )
-from ..domain.triage_session import TriageSessionFlavor
+from ..domain.triage_session import TriageLaunchScope, TriageSessionFlavor
 from ..events import EventName
 from ..infra.config import Config
 from ..ports import EventSink, Issue as IssueProtocol, make_trace_event
@@ -425,7 +425,7 @@ def orchestrator_launch_triage_session(
     result = session_launcher.launch_issue_session(
         Issue(triage.issue_number, triage.title, [agent]),
         state.active_sessions,
-        triage_flavor=triage.flavor,
+        triage_scope=triage.launch_scope(),
     )
     if result.success and result.session:
         append_unique_active_sessions(state.active_sessions, [result.session])
@@ -624,11 +624,11 @@ def orchestrator_launch_session(
     session_launcher: SessionLauncher,
     session_restorer: "SessionRestorer | None" = None,
     *,
-    triage_flavor: TriageSessionFlavor | None = None,
+    triage_scope: TriageLaunchScope | None = None,
 ) -> Optional[Session]:
     """Launch an issue session and update active-session tracking."""
     result = session_launcher.launch_issue_session(
-        issue, state.active_sessions, triage_flavor=triage_flavor
+        issue, state.active_sessions, triage_scope=triage_scope
     )
     if result.success and result.session:
         append_unique_active_sessions(state.active_sessions, [result.session])

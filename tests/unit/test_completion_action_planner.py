@@ -269,8 +269,17 @@ def arm_health_review_session(
     session: Session,
     *,
     problem_issue_numbers: tuple[int, ...] = (),
+    context_failure_numbers: tuple[int, ...] = (),
 ) -> None:
-    """Plant the snapshot, assignment, and immutable health authority."""
+    """Plant the snapshot, assignment, and immutable health authority.
+
+    ``problem_issue_numbers`` is the OWNED cohort (act-level authority);
+    ``context_failure_numbers`` are unrelated failures that appear on the
+    board but grant nothing (#6780 R4 F1). Cohort members also appear in
+    ``recent_failures`` — that list is the board a reviewer reads, and it is
+    a superset of the grant, which is exactly why authority is carried on its
+    own surface.
+    """
     plant_triage_assignment(
         session, TriageAssignment(flavor=TriageSessionFlavor.HEALTH_REVIEW)
     )
@@ -284,8 +293,9 @@ def arm_health_review_session(
                 failure_reason="failed",
                 artifact_hints=[],
             )
-            for number in problem_issue_numbers
+            for number in (*problem_issue_numbers, *context_failure_numbers)
         ],
+        problem_cohort=list(problem_issue_numbers),
     ).write(session.run_dir / "triage-data" / "board-snapshot.json")
     record_authority(
         config,
@@ -1285,9 +1295,93 @@ class TestDecisionTargetScope:
         assert error is not None
         assert "immutable snapshot problem cohort (#41, #42, #43)" in error
 
+    def test_context_only_failures_do_not_widen_health_act_level_scope(
+        self, tmp_path: Path
+    ) -> None:
+        """Unrelated board failures are context, not authority (#6780 R4 F1).
+
+        #99 is on the board because its own investigation is pending. The
+        health review can SEE it, but reset_retry'ing it is out of scope —
+        before this fix the launch authority absorbed every board failure and
+        this completion was accepted.
+        """
+        config = make_triage_config(tmp_path)
+        session = make_triage_session(tmp_path)
+        arm_health_review_session(
+            config,
+            session,
+            problem_issue_numbers=(41, 42, 43),
+            context_failure_numbers=(99,),
+        )
+        _plant_decision_with_actions(
+            session,
+            [
+                {
+                    "id": "A1",
+                    "action_type": "reset_retry",
+                    "target_number": 99,
+                    "body": "Reset an issue this review does not own.",
+                    "finding_ids": ["T1"],
+                }
+            ],
+        )
+
+        error = triage_decision_processing_error(
+            config,
+            triage_authority=SqliteTriageAuthorityStore.for_repo(config.repo_root),
+            run_dir=session.run_dir,
+            run_id=session.run_assets.run_id,
+            session_name=session.run_assets.session_name,
+        )
+
+        assert error is not None
+        assert "immutable snapshot problem cohort (#41, #42, #43)" in error
+
+    def test_context_only_failures_still_pass_the_tamper_check(
+        self, tmp_path: Path
+    ) -> None:
+        """The tamper check reads the cohort surface, not the failure list.
+
+        A snapshot whose ``recent_failures`` legitimately exceed the grant
+        must NOT read as tampering (#6780 R4 F1) — otherwise every storm
+        review launched alongside an unrelated pending investigation would
+        fail its own completion.
+        """
+        config = make_triage_config(tmp_path)
+        session = make_triage_session(tmp_path)
+        arm_health_review_session(
+            config,
+            session,
+            problem_issue_numbers=(41, 42, 43),
+            context_failure_numbers=(99,),
+        )
+        _plant_decision_with_actions(
+            session,
+            [
+                {
+                    "id": "A1",
+                    "action_type": "reset_retry",
+                    "target_number": 42,
+                    "body": "Reset a cohort member.",
+                    "finding_ids": ["T1"],
+                }
+            ],
+        )
+
+        error = triage_decision_processing_error(
+            config,
+            triage_authority=SqliteTriageAuthorityStore.for_repo(config.repo_root),
+            run_dir=session.run_dir,
+            run_id=session.run_assets.run_id,
+            session_name=session.run_assets.session_name,
+        )
+
+        assert error is None
+
     def test_health_snapshot_problem_set_tampering_is_rejected(
         self, tmp_path: Path
     ) -> None:
+        """Rewriting the snapshot's COHORT surface is still caught."""
         config = make_triage_config(tmp_path)
         session = make_triage_session(tmp_path)
         arm_health_review_session(
@@ -1299,6 +1393,7 @@ class TestDecisionTargetScope:
             recent_failures=[
                 BoardFailure(99, "Injected problem", "failed", [])
             ],
+            problem_cohort=[99],
         ).write(session.run_dir / "triage-data" / "board-snapshot.json")
 
         error = triage_decision_processing_error(
