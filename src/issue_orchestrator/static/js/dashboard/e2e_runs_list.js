@@ -14,9 +14,15 @@
 //
 // The runs list itself is eager: ``renderE2ERunsList`` mounts on
 // ``DOMContentLoaded`` from inline JSON at ``#recentE2ERunsData``.
+// Both that bootstrap and the ``/api/e2e-runs/recent`` refresh are
+// validated against ``RecentE2ERunsPayload`` through ``uiContractJson``
+// (issue #6337), so the renderer below only ever sees contract-shaped
+// data and does not re-check it.
 
 (function () {
     if (typeof window === 'undefined') return;
+
+    const RECENT_E2E_RUNS_SCHEMA = 'RecentE2ERunsPayload';
 
     // ── Tone helpers ─────────────────────────────────────────────
     // OutcomeBadge is owned by the projection (PR #6333).  The shared
@@ -243,11 +249,15 @@
             });
             return;
         }
-        let payload = null;
-        try {
-            payload = JSON.parse(dataNode.textContent || '{}');
-        } catch (_) {
-            payload = { runs: [] };
+        // Contract-validated inline bootstrap (issue #6337).  A payload
+        // that doesn't satisfy ``RecentE2ERunsPayload`` renders the empty
+        // state rather than a half-built list: the old ``catch`` swallowed
+        // malformed SSR data into ``{runs: []}`` with no diagnostic, so a
+        // server-side payload bug looked exactly like "no runs yet".
+        const payload = uiContractJson.fromInlineScript(dataNode, RECENT_E2E_RUNS_SCHEMA);
+        if (!payload) {
+            root.innerHTML = '<div class="e2e-runs-list-empty">No E2E run history.</div>';
+            return;
         }
         root.innerHTML = renderE2ERunsList(payload);
     }
@@ -257,8 +267,10 @@
         if (!root) return;
         const query = limit ? `?limit=${encodeURIComponent(limit)}` : '';
         const res = await fetch(`/api/e2e-runs/recent${query}`);
-        const payload = await res.json().catch(() => ({ runs: [] }));
+        // HTTP status is the caller's concern; shape is the contract's.
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const payload = await uiContractJson.fromResponse(res, RECENT_E2E_RUNS_SCHEMA, '/api/e2e-runs/recent');
+        if (!payload) throw new Error('E2E runs payload failed contract validation');
         root.innerHTML = renderE2ERunsList(payload);
     }
 

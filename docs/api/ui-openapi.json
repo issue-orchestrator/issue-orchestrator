@@ -2805,6 +2805,12 @@
         ],
         "discriminator": {"propertyName": "kind"}
       },
+      "LifecycleCommandPayload": {
+        "anyOf": [
+          {"$ref": "#/components/schemas/TimelineCommandPayload"},
+          {"$ref": "#/components/schemas/DialogActionCommandPayload"}
+        ]
+      },
       "E2ERunResultCountsPayload": {
         "type": "object",
         "additionalProperties": false,

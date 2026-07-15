@@ -4269,3 +4269,99 @@ def test_tech_lead_status_text_wraps_rather_than_clipping_the_reason() -> None:
         body = _last_css_rule_body(css, selector)
         assert "overflow-wrap" in body
         assert "white-space: normal" in body
+# ── Browser runtime validation for UI JSON payloads (issue #6337) ────
+
+UI_CONTRACT_JSON_JS = ROOT / "src" / "issue_orchestrator" / "static" / "js" / "ui_contract_json.js"
+UI_CONTRACT_VALIDATORS_JS = (
+    ROOT / "src" / "issue_orchestrator" / "static" / "js" / "ui-contracts.validators.js"
+)
+
+
+def test_dashboard_loads_contract_validators_before_json_consuming_chunks() -> None:
+    """The generated validators + shared reader must load before any chunk
+    that ingests JSON.
+
+    Load order is the whole wire-up: ``ui_contract_json.js`` throws at load
+    if the validators are missing, and ``lifecycle_commands.js`` calls
+    ``uiContractJson`` at dispatch time. If these tags drift below the
+    chunk loop, every contract-validated boundary breaks at once.
+    """
+    html = _read(DASHBOARD_TEMPLATE)
+
+    validators_tag = '<script src="/static/js/ui-contracts.validators.js"></script>'
+    reader_tag = '<script src="/static/js/ui_contract_json.js"></script>'
+    chunk_loop = '<script src="/static/js/dashboard/{{ chunk }}"></script>'
+
+    assert validators_tag in html, "dashboard must load the generated browser validators"
+    assert reader_tag in html, "dashboard must load the shared contract JSON reader"
+    assert html.index(validators_tag) < html.index(reader_tag), (
+        "ui_contract_json.js requires uiContractValidators at load time"
+    )
+    assert html.index(reader_tag) < html.index(chunk_loop), (
+        "contract readers must load before the dashboard chunks that use them"
+    )
+
+
+def test_lifecycle_commands_parse_json_through_the_contract_reader() -> None:
+    """``data-lifecycle-command`` must not be hand-parsed or hand-checked.
+
+    Both are the failure this layer removes: a raw ``JSON.parse`` skips
+    validation entirely, and a hand-rolled ``command.run_id &&`` guard
+    duplicates a contract rule that can then drift from the schema. The
+    dispatcher's remaining guards are DOM/context concerns, not shape.
+    """
+    src = (DASHBOARD_JS_DIR / "lifecycle_commands.js").read_text(encoding="utf-8")
+
+    assert "uiContractJson.fromDataset(" in src, "data-* payload must go through the shared reader"
+    assert "'LifecycleCommandPayload'" in src, (
+        "dispatcher must name the generated command-union contract schema"
+    )
+    assert "JSON.parse(" not in src, "lifecycle commands must not hand-parse JSON"
+
+    # Shape guards the contract now owns must not come back.
+    for duplicated in (
+        "&& command.run_id",
+        "&& command.issue_number",
+        "&& command.run_dir",
+        "&& command.path",
+        "&& command.view",
+        "&& command.artifact_path",
+        "&& command.artifact_type",
+    ):
+        assert duplicated not in src, (
+            f"{duplicated!r} duplicates a required-field rule owned by the generated contract"
+        )
+
+
+def test_e2e_runs_list_json_boundaries_are_contract_validated() -> None:
+    """Both runs-list JSON boundaries — the inline SSR bootstrap and the
+    refresh endpoint — validate before rendering.
+
+    The pre-#6337 code swallowed a malformed bootstrap into ``{runs: []}``,
+    which rendered "no runs" for what was actually a payload bug.
+    """
+    src = (DASHBOARD_JS_DIR / "e2e_runs_list.js").read_text(encoding="utf-8")
+
+    assert "uiContractJson.fromInlineScript(" in src, "inline bootstrap must be contract-validated"
+    assert "uiContractJson.fromResponse(" in src, "refresh response must be contract-validated"
+    assert "'RecentE2ERunsPayload'" in src or "RECENT_E2E_RUNS_SCHEMA" in src
+    assert "JSON.parse(" not in src, "runs list must not hand-parse JSON"
+
+
+def test_contract_reader_exposes_every_browser_json_boundary() -> None:
+    """The shared reader must cover all four ingestion shapes.
+
+    If one is missing, that boundary grows its own bespoke parsing again —
+    which is how the scattered checks this issue removes got there.
+    """
+    src = UI_CONTRACT_JSON_JS.read_text(encoding="utf-8")
+    for reader in ("fromDataset", "fromInlineScript", "fromResponse", "fromEventData", "fromValue"):
+        assert f"        {reader}," in src, f"shared reader must export {reader}"
+    assert "setViolationReporter" in src, "diagnostics must be redirectable by the host/tests"
+
+
+def test_generated_validators_are_not_hand_edited() -> None:
+    src = UI_CONTRACT_VALIDATORS_JS.read_text(encoding="utf-8")
+    assert src.startswith("// This file is generated from docs/api/ui-openapi.json."), (
+        "generated validators must carry the do-not-edit header"
+    )

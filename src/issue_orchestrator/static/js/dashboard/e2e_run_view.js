@@ -27,10 +27,17 @@
 // The single ownership rule this enforces: row-targeting policy
 // lives in this function, nowhere else.
 function resolveRowCommandContext(runId, triggerEl) {
-    // Strict-Number gate: mirrors the typed Pydantic Command's
-    // ``strict=True`` invariant.  Reject string, boolean, NaN,
-    // null/undefined, etc. before any conversion — only a real
-    // JS number that is a positive integer is accepted.
+    // This function owns the CONTEXTUAL invariant the contract cannot
+    // express: that a command targets the DOM row that dispatched it
+    // (issue #6337).  Payload shape is not our job — commands reaching
+    // the handlers below already satisfy the generated
+    // ``TimelineCommandPayload`` schema, which requires run_id to be an
+    // integer >= 1.
+    //
+    // The strict-Number gate stays as this owner's own precondition, not
+    // as a mirror of the contract: it is what makes the row comparison
+    // below meaningful for any caller, and it keeps a non-number from
+    // reaching Number() coercion.
     if (typeof runId !== 'number' || !Number.isInteger(runId) || runId <= 0) {
         return null;
     }

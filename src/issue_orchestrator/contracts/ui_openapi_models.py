@@ -1958,6 +1958,8 @@ E2ETestExecutionPayload: TypeAlias = PassedE2ETestExecutionPayload | FailedE2ETe
 
 HistoricalIntakeOutcomePayload: TypeAlias = HistoricalIntakeParkedPayload | HistoricalIntakeRefusedPayload | HistoricalIntakeValidationFailedPayload
 
+LifecycleCommandPayload: TypeAlias = TimelineCommandPayload | DialogActionCommandPayload
+
 LifecycleTimelineContainerPayload: TypeAlias = DashboardTimelineContainerPayload | E2ESuiteTimelineContainerPayload
 
 ReviewStagePayload: TypeAlias = ReviewNotReachedPayload | ReviewSkippedPayload | ReviewRunningPayload | ReviewApprovedPayload | ReviewChangesRequestedPayload | ReviewFailedPayload | MissingReviewEvidencePayload

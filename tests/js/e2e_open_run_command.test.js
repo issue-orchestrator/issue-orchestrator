@@ -24,6 +24,14 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
+// Real generated validators + fail-closed reader (issue #6337): the
+// modules under test validate their JSON payloads through this.
+const {
+    captureContractViolations,
+    resetContractViolationReporter,
+    uiContractJson,
+} = require('./ui_contract_test_support.js');
+
 function _baseStubs() {
     const calls = {
         expandE2ERunRow: [],
@@ -37,6 +45,7 @@ function _baseStubs() {
     };
     return {
         ctx: {
+            uiContractJson,
             console,
             URLSearchParams,
             window: {},
@@ -89,7 +98,7 @@ function _loadDispatcher() {
 
 test('open_e2e_run command dispatches to expandE2ERunRow with the run_id (#6334)', () => {
     const { ctx, calls } = _loadDispatcher();
-    ctx.runLifecycleCommand({ kind: 'open_e2e_run', run_id: 88 });
+    ctx.runLifecycleCommand({ kind: 'open_e2e_run', label: 'Open E2E Run', run_id: 88 });
     assert.strictEqual(calls.expandE2ERunRow.length, 1);
     assert.strictEqual(calls.expandE2ERunRow[0].runId, 88);
     // No expand_run_details → handler receives ``{ expandRunDetails: false }``.
@@ -100,6 +109,7 @@ test('open_e2e_run command forwards expand_run_details when true', () => {
     const { ctx, calls } = _loadDispatcher();
     ctx.runLifecycleCommand({
         kind: 'open_e2e_run',
+        label: 'Open E2E Run',
         run_id: 88,
         expand_run_details: true,
     });
@@ -107,32 +117,61 @@ test('open_e2e_run command forwards expand_run_details when true', () => {
     assert.strictEqual(calls.expandE2ERunRow[0].opts.expandRunDetails, true);
 });
 
-test('open_e2e_run command treats non-boolean expand_run_details as false', () => {
+// ── Contract-enforced rejections (issue #6337) ────────────────────
+//
+// These four cases used to be "the dispatcher's truthy guard happens to
+// swallow it".  They are now the generated ``OpenE2ERunCommandPayload``
+// contract being enforced in the browser: ``expand_run_details`` is a
+// boolean, ``run_id`` is an integer with ``minimum: 1``, and ``label``
+// is required.  Each rejection must fire no handler AND report once —
+// the old guard was silent, which made a malformed payload look
+// identical to a dead button.
+
+test('open_e2e_run command rejects a non-boolean expand_run_details', () => {
     const { ctx, calls } = _loadDispatcher();
+    const violations = captureContractViolations();
     ctx.runLifecycleCommand({
         kind: 'open_e2e_run',
+        label: 'Open E2E Run',
         run_id: 88,
         expand_run_details: 'yes-as-string',
     });
-    assert.strictEqual(calls.expandE2ERunRow.length, 1);
-    assert.strictEqual(calls.expandE2ERunRow[0].opts.expandRunDetails, false);
+    assert.strictEqual(calls.expandE2ERunRow.length, 0,
+        'a string expand_run_details is a contract violation, not a falsy "false"');
+    assert.strictEqual(violations.length, 1);
+    assert.match(violations[0].errors.join(' '), /expand_run_details: expected boolean/);
+    resetContractViolationReporter();
 });
 
 test('open_e2e_run command without run_id does NOT fire the handler', () => {
-    // The dispatcher guards on ``command.run_id`` being truthy.
-    // Missing run_id → guard fails → fall through.  This matches the
-    // existing pattern for every other command kind (e.g. the
-    // ``open_issue_timeline`` guard checks ``command.issue_number``).
     const { ctx, calls } = _loadDispatcher();
-    ctx.runLifecycleCommand({ kind: 'open_e2e_run' });
+    const violations = captureContractViolations();
+    ctx.runLifecycleCommand({ kind: 'open_e2e_run', label: 'Open E2E Run' });
     assert.strictEqual(calls.expandE2ERunRow.length, 0,
         'expandE2ERunRow must NOT fire without a run_id');
+    assert.match(violations[0].errors.join(' '), /run_id: required property is missing/);
+    resetContractViolationReporter();
 });
 
-test('open_e2e_run command with run_id=0 does NOT fire the handler (falsy guard)', () => {
+test('open_e2e_run command with run_id=0 does NOT fire the handler (contract minimum is 1)', () => {
     const { ctx, calls } = _loadDispatcher();
-    ctx.runLifecycleCommand({ kind: 'open_e2e_run', run_id: 0 });
+    const violations = captureContractViolations();
+    ctx.runLifecycleCommand({ kind: 'open_e2e_run', label: 'Open E2E Run', run_id: 0 });
     assert.strictEqual(calls.expandE2ERunRow.length, 0);
+    assert.match(violations[0].errors.join(' '), /run_id: expected >= 1, got 0/);
+    resetContractViolationReporter();
+});
+
+test('open_e2e_run command with a string run_id does NOT fire the handler (no coercion)', () => {
+    // A wire payload carrying "88" must not be silently normalized to 88:
+    // the contract says integer, and the generated Python model is strict
+    // for the same reason.
+    const { ctx, calls } = _loadDispatcher();
+    const violations = captureContractViolations();
+    ctx.runLifecycleCommand({ kind: 'open_e2e_run', label: 'Open E2E Run', run_id: '88' });
+    assert.strictEqual(calls.expandE2ERunRow.length, 0);
+    assert.match(violations[0].errors.join(' '), /run_id: expected integer, got string "88"/);
+    resetContractViolationReporter();
 });
 
 

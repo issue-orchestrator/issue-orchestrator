@@ -36,6 +36,14 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
+// Real generated validators + fail-closed reader (issue #6337): the
+// modules under test validate their JSON payloads through this.
+const {
+    captureContractViolations,
+    resetContractViolationReporter,
+    uiContractJson,
+} = require('./ui_contract_test_support.js');
+
 const DASHBOARD_JS_DIR = path.join(
     __dirname,
     '../../src/issue_orchestrator/static/js/dashboard',
@@ -65,6 +73,7 @@ function _baseStubs() {
             .replace(/&/g, '&amp;').replace(/"/g, '&quot;'),
         _humanizeSnakeCase: (s) => String(s || ''),
         showToast: () => {},
+        uiContractJson,
         formatTimestamp: (value) => `local:${value}`,
         // Canonical viewer helpers — the row loader calls into them.
         // Default to identity-shaped stubs; individual tests can
@@ -463,4 +472,97 @@ test('expandE2ERunRow: missing row toasts and returns false (no modal fallback)'
     assert.strictEqual(opened, false);
     assert.strictEqual(toasts.length, 1);
     assert.ok(toasts[0].msg.includes('Run #999'));
+});
+
+
+// ── Contract-validated JSON boundaries (issue #6337) ──────────────
+//
+// This module ingests the runs list from two boundaries — the inline
+// ``#recentE2ERunsData`` bootstrap the template renders, and the
+// ``/api/e2e-runs/recent`` refresh.  Both validate against
+// ``RecentE2ERunsPayload`` before rendering.
+//
+// The old code swallowed a malformed bootstrap into ``{runs: []}`` with
+// no diagnostic, so a server-side payload bug was indistinguishable from
+// "no runs yet".  These tests pin the replacement: render the empty
+// state, and say so.
+
+function _mountStubs(dataNodeText, extra = {}) {
+    const root = { innerHTML: '' };
+    const dataNode = { id: 'recentE2ERunsData', textContent: dataNodeText };
+    const stubs = _baseStubs();
+    stubs.document = {
+        ...stubs.document,
+        readyState: 'complete',
+        getElementById: (id) => {
+            if (id === 'e2eRunsListRoot') return root;
+            if (id === 'recentE2ERunsData') return dataNodeText === null ? null : dataNode;
+            return null;
+        },
+    };
+    return { stubs: { ...stubs, ...extra }, root };
+}
+
+function _loadWithMount(dataNodeText, extra = {}) {
+    const { stubs, root } = _mountStubs(dataNodeText, extra);
+    const ctx = _loadRunsListModule(stubs);
+    return { ctx, root };
+}
+
+test('inline bootstrap: a contract-valid payload renders the runs list', () => {
+    const violations = captureContractViolations();
+    const { root } = _loadWithMount('{"runs": []}');
+    assert.deepEqual(violations, [], 'a valid bootstrap must not report a violation');
+    assert.match(root.innerHTML, /e2e-runs-list/);
+    resetContractViolationReporter();
+});
+
+test('inline bootstrap: a contract-violating payload renders the empty state and reports once', () => {
+    const violations = captureContractViolations();
+    // ``runs`` must be an array of run summaries, not an object.
+    const { root } = _loadWithMount('{"runs": {"88": "nope"}}');
+    assert.strictEqual(violations.length, 1);
+    assert.strictEqual(violations[0].schemaName, 'RecentE2ERunsPayload');
+    assert.match(root.innerHTML, /No E2E run history/);
+    resetContractViolationReporter();
+});
+
+test('inline bootstrap: unparseable JSON renders the empty state, never a partial list', () => {
+    const violations = captureContractViolations();
+    const { root } = _loadWithMount('{"runs": [');
+    assert.strictEqual(violations.length, 1);
+    assert.match(violations[0].detail, /not valid JSON/);
+    assert.match(root.innerHTML, /No E2E run history/);
+    resetContractViolationReporter();
+});
+
+test('refresh fetch: a contract-valid response renders the runs list', async () => {
+    const { ctx, root } = _loadWithMount('{"runs": []}', {
+        fetch: async () => ({ ok: true, url: '/api/e2e-runs/recent', text: async () => '{"runs": []}' }),
+    });
+    const violations = captureContractViolations();
+    await ctx.refreshE2ERunsList();
+    assert.deepEqual(violations, []);
+    assert.match(root.innerHTML, /e2e-runs-list/);
+    resetContractViolationReporter();
+});
+
+test('refresh fetch: a contract-violating response rejects and does not render', async () => {
+    const { ctx, root } = _loadWithMount('{"runs": []}', {
+        fetch: async () => ({
+            ok: true,
+            url: '/api/e2e-runs/recent',
+            text: async () => '{"runs": [], "surprise": true}',
+        }),
+    });
+    const violations = captureContractViolations();
+    root.innerHTML = '<div class="sentinel"></div>';
+    await assert.rejects(
+        () => ctx.refreshE2ERunsList(),
+        /failed contract validation/,
+    );
+    assert.strictEqual(violations.length, 1);
+    assert.match(violations[0].errors.join(' '), /surprise: unexpected property/);
+    assert.match(root.innerHTML, /sentinel/, 'a rejected payload must not mutate the rendered list');
+    resetContractViolationReporter();
 });

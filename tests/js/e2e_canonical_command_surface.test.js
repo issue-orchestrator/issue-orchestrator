@@ -31,6 +31,14 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
+// Real generated validators + fail-closed reader (issue #6337): the
+// modules under test validate their JSON payloads through this.
+const {
+    captureContractViolations,
+    resetContractViolationReporter,
+    uiContractJson,
+} = require('./ui_contract_test_support.js');
+
 const DASHBOARD_JS_DIR = path.join(
     __dirname,
     '../../src/issue_orchestrator/static/js/dashboard',
@@ -51,6 +59,7 @@ function _baseStubs() {
         _humanizeSnakeCase: (s) => String(s || '')
             .split('_').map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join(' '),
         showToast: () => {},
+        uiContractJson,
     };
 }
 
@@ -426,11 +435,13 @@ test('dispatch: open_issue_timeline → openIssueTimeline(issue, null, {e2eRunId
     const ctx = loadDispatcherWithSpies();
     ctx.runLifecycleCommand({
         kind: 'open_issue_timeline',
+        label: 'Open Timeline',
         issue_number: 4503,
         scope_kind: 'dashboard',
     });
     ctx.runLifecycleCommand({
         kind: 'open_issue_timeline',
+        label: 'Open Timeline',
         issue_number: 7777,
         scope_kind: 'e2e_run',
         e2e_run_id: 88,
@@ -461,25 +472,35 @@ test('dispatch: open_session_recording → openAgentLogAction with the right arg
     assert.deepEqual(call[5], { round_index: 2, session_role: 'coder' });
 });
 
-test('dispatch: open_review_transcript → openReviewTranscript with the right args', () => {
+// ``open_review_transcript`` is NOT a TimelineCommand kind (issue
+// #6337).  It only ever existed as an ``action.type`` in the legacy
+// timeline action pipeline (``runTimelineEventAction`` in timeline.js),
+// which still dispatches it — see review_artifact_actions.test.js.  The
+// lifecycle dispatcher carried a branch for it that no producer could
+// reach: ``TimelineCommandPayload`` has no such variant, and no Python
+// command class emits one.  The generated validator now proves that, so
+// both the branch and this test's old "it dispatches" assertion are
+// gone; what remains is the guarantee that it stays unreachable.
+test('dispatch: open_review_transcript is not a Command kind — rejected, not routed', () => {
     const ctx = loadDispatcherWithSpies();
+    const violations = captureContractViolations();
     ctx.runLifecycleCommand({
         kind: 'open_review_transcript',
+        label: 'Review Transcript',
         issue_number: 100,
         run_dir: '/tmp/run-100',
-        round_index: 1,
-        transcript_role: 'reviewer',
     });
-    assert.deepEqual(ctx.calls, [[
-        'openReviewTranscript', 100, '/tmp/run-100',
-        { round_index: 1, transcript_role: 'reviewer' }, 'toast',
-    ]]);
+    assert.deepEqual(ctx.calls, [], 'no handler may run for a non-contract kind');
+    assert.strictEqual(violations.length, 1);
+    assert.match(violations[0].errors.join(' '), /no contract variant matches string "open_review_transcript"/);
+    resetContractViolationReporter();
 });
 
 test('dispatch: open_validation_details → openValidationFailure with the right args', () => {
     const ctx = loadDispatcherWithSpies();
     ctx.runLifecycleCommand({
         kind: 'open_validation_details',
+        label: 'Validation',
         issue_number: 4244,
         run_dir: '/tmp/run-4244',
     });
@@ -492,26 +513,61 @@ test('dispatch: open_completion_record → openPath with the right path', () => 
     const ctx = loadDispatcherWithSpies();
     ctx.runLifecycleCommand({
         kind: 'open_completion_record',
+        label: 'Completion Record',
         path: '/tmp/run-42/completion-record.json',
     });
     assert.deepEqual(ctx.calls, [['openPath', '/tmp/run-42/completion-record.json']]);
 });
 
-test('dispatch: malformed Command (no kind) is a silent no-op (no toast spam)', () => {
+// Malformed payloads used to be a SILENT no-op here.  Issue #6337
+// replaced that with one observable diagnostic per rejection: a silent
+// no-op is indistinguishable from "the feature is broken" when you're
+// staring at a button that does nothing.
+test('dispatch: malformed Command fails closed with a diagnostic, runs no handler', () => {
     const ctx = loadDispatcherWithSpies();
+    const violations = captureContractViolations();
     ctx.runLifecycleCommand({});
     ctx.runLifecycleCommand(null);
     ctx.runLifecycleCommand({ kind: '' });
-    assert.deepEqual(ctx.calls, []);
+    assert.deepEqual(ctx.calls, [], 'no handler may run for a malformed Command');
+    assert.strictEqual(violations.length, 3, 'each rejection reports exactly once');
+    resetContractViolationReporter();
 });
 
-test('dispatch: unknown kind toasts a warning (visible signal, no crash)', () => {
+// Two distinct failure modes, two distinct diagnostics — on purpose.
+// A kind the CONTRACT doesn't define is bad wire data (validator
+// rejection).  A kind the contract defines but this dispatcher has no
+// branch for is an unimplemented affordance (warning toast).  Collapsing
+// them would tell a developer "unsupported command" when the real
+// problem is a malformed payload.
+test('dispatch: a kind outside the contract is rejected as a payload violation', () => {
+    const ctx = loadDispatcherWithSpies();
+    const toasts = [];
+    const violations = captureContractViolations();
+    ctx.showToast = (msg, severity) => toasts.push([msg, severity]);
+    ctx.runLifecycleCommand({ kind: 'this_is_not_a_command', label: 'Nope' });
+    assert.deepEqual(ctx.calls, []);
+    assert.deepEqual(toasts, [], 'contract rejections report through the contract path, not the dispatcher warning');
+    assert.strictEqual(violations.length, 1);
+    assert.match(violations[0].errors.join(' '), /no contract variant matches string "this_is_not_a_command"/);
+    resetContractViolationReporter();
+});
+
+test('dispatch: a contract kind with no dispatcher branch toasts a warning (visible signal, no crash)', () => {
     const ctx = loadDispatcherWithSpies();
     const toasts = [];
     ctx.showToast = (msg, severity) => toasts.push([msg, severity]);
-    ctx.runLifecycleCommand({ kind: 'this_is_not_a_command' });
+    // ``show_event_details`` is a real TimelineCommandPayload variant
+    // whose affordance lives in the timeline action pipeline, so the
+    // lifecycle dispatcher has no branch for it.
+    ctx.runLifecycleCommand({
+        kind: 'show_event_details',
+        label: 'Event Details',
+        event_ref: 'evt-1',
+    });
+    assert.deepEqual(ctx.calls, []);
     assert.strictEqual(toasts.length, 1);
-    assert.match(toasts[0][0], /Unsupported lifecycle command: this_is_not_a_command/);
+    assert.match(toasts[0][0], /Unsupported lifecycle command: show_event_details/);
     assert.strictEqual(toasts[0][1], 'warning');
 });
 
