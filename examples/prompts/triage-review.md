@@ -248,11 +248,18 @@ Compact `triage-decision.json` example:
   `needs-*`, `*-reviewed`, `*-failed`, `publish-*`, `blocked*`, `agent:*`,
   or `triage:*` corrupts orchestrator label truth (matching is
   case-insensitive).
-- Targets are scoped to what you were launched to audit: `post_comment`,
-  `escalate_to_human`, `reset_retry`, and `kill_hung_session` may only
-  target the manifest PRs or your own tracking issue (batch review), or the
-  `focus_issue_number` (failure investigation). Any other target is
-  rejected. `create_issue` and `flag_pattern` carry no target.
+- Targets are scoped to what you were launched to audit, and the scope
+  splits by action kind:
+  - `post_comment` and `escalate_to_human` may only target the manifest
+    PRs or your own tracking issue (batch review), the `focus_issue_number`
+    (failure investigation), or THIS tracking issue (health review).
+  - Act-level `reset_retry` and `kill_hung_session` may only target the
+    `focus_issue_number` (failure investigation), or an issue number listed
+    in the snapshot's `problem_cohort` (health review). A batch review owns
+    no act-level target at all: manifest entries are PRs and the anchor is
+    bookkeeping, so resetting either would hit the wrong entity.
+  Any other target is rejected at completion. `create_issue` and
+  `flag_pattern` carry no target.
 - `flag_pattern` requires a stable `pattern_signature` (a short reusable slug
   naming the recurring pattern). Both `flag_pattern` and
   root-cause/design-review `create_issue` actions may carry an `area` naming

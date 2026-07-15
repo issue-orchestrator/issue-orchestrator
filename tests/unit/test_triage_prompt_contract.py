@@ -273,6 +273,67 @@ def test_health_flow_teaches_cohort_scoped_act_level_authority(
 
 
 @pytest.mark.parametrize("variant", sorted(PROMPT_VARIANTS))
+def test_generic_target_scope_rule_matches_the_two_scope_runtime_split(
+    variant: str,
+) -> None:
+    """#6780 round-2 F1: the GENERIC artifact rule must not contradict the flow.
+
+    ``test_health_flow_teaches_cohort_scoped_act_level_authority`` only reads
+    the Health Review Flow section, so the later generic rule under Required
+    Output Artifacts kept telling every agent that act-level proposals "may
+    only target the manifest PRs or your own tracking issue ... or the
+    `focus_issue_number`. Any other target is rejected." A storm review could
+    therefore be launched holding cohort authority and still be instructed
+    that its authorized cohort targets were invalid.
+
+    The rule mirrors the runtime two-scope split
+    (``TriageLaunchAuthority.allowed_targets`` vs
+    ``allowed_act_level_targets``), which is DISJOINT for a health review:
+    anchor for post_comment/escalate_to_human, cohort for act-level.
+    """
+    section = _flow_section(
+        PROMPT_VARIANTS[variant], "Required Output Artifacts (MANDATORY)"
+    )
+
+    # The superseded single-scope rule must be gone: it lumped the act-level
+    # verbs in with the anchor-scoped ones and never named the cohort.
+    assert "and `kill_hung_session` may only\n  target the manifest PRs" not in (
+        section
+    ), f"{variant} generic rule still forbids the health review's cohort targets"
+    # The generic rule must name the health-review act-level authority.
+    assert "`problem_cohort` (health review)" in section, (
+        f"{variant} generic rule does not name problem_cohort act-level authority"
+    )
+    # Anchor-scoped verbs stay anchor-scoped, including in a health review.
+    assert "THIS tracking issue (health review)" in section, (
+        f"{variant} generic rule does not keep post_comment anchor-scoped"
+    )
+    # A batch review's act-level scope is empty at runtime (frozenset()), so
+    # the prompt must not invite a manifest-PR/anchor reset (#6764 F1).
+    assert "no act-level target at all" in section, (
+        f"{variant} generic rule does not teach that batch owns no act-level target"
+    )
+
+
+def test_generic_rule_act_level_verbs_match_the_domain_contract() -> None:
+    """The generic rule names the REAL act-level verbs, not a drifted alias.
+
+    Pins the prompt's act-level list to ``ACT_LEVEL_TRIAGE_ACTIONS`` so a new
+    act-level action type cannot be added to the runtime scope check while the
+    generic prompt rule silently keeps teaching the old pair.
+    """
+    from issue_orchestrator.domain.triage_artifacts import ACT_LEVEL_TRIAGE_ACTIONS
+
+    for variant, text in sorted(PROMPT_VARIANTS.items()):
+        section = _flow_section(text, "Required Output Artifacts (MANDATORY)")
+        act_level_rule = section[section.index("- Act-level ") :]
+        for action_type in sorted(ACT_LEVEL_TRIAGE_ACTIONS):
+            assert f"`{action_type}`" in act_level_rule, (
+                f"{variant} generic act-level rule does not name {action_type}"
+            )
+
+
+@pytest.mark.parametrize("variant", sorted(PROMPT_VARIANTS))
 def test_board_snapshot_fields_document_the_cohort_surface(variant: str) -> None:
     """The snapshot field list must distinguish context from authority."""
     text = PROMPT_VARIANTS[variant]
