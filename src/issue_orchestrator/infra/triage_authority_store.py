@@ -39,6 +39,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
+from ..domain.models import DiscoveredFailure
 from ..domain.triage_session import (
     StoredTriageOp,
     TriageLaunchAuthority,
@@ -49,11 +50,19 @@ from ..ports.triage_authority import (
     TriageOpConflictError,
     TriagePatternConflictError,
     TriageShippedFixConflictError,
+    TriageStormCohortConflictError,
 )
 from .repo_identity import state_dir
 from .sqlite_connection import open_sqlite
 
 logger = logging.getLogger(__name__)
+
+
+def _cohort_from_payload(payload: str) -> tuple[DiscoveredFailure, ...]:
+    """Rehydrate a stored cohort payload into typed failure facts."""
+    return tuple(
+        DiscoveredFailure.from_dict(item) for item in json.loads(payload)
+    )
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS triage_launch_authority (
@@ -79,6 +88,11 @@ CREATE TABLE IF NOT EXISTS triage_shipped_fixes (
     pr_url TEXT NOT NULL,
     area TEXT NOT NULL,
     merged_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS triage_storm_cohorts (
+    anchor_issue_number INTEGER PRIMARY KEY,
+    cohort TEXT NOT NULL,
+    recorded_at TEXT NOT NULL
 );
 """
 
@@ -333,6 +347,84 @@ class SqliteTriageAuthorityStore:
         ).fetchall()
         return tuple(
             (str(row["signature"]), int(row["issue_number"])) for row in rows
+        )
+
+    # -- Problem-storm cohorts (#6780) ------------------------------------
+
+    def record_storm_cohort(
+        self, *, anchor_issue_number: int, cohort: tuple[DiscoveredFailure, ...]
+    ) -> None:
+        """Persist an anchor's problem cohort (create-once).
+
+        Identical cohort for an existing anchor: no-op. Different cohort:
+        :class:`TriageStormCohortConflictError` — the cohort is the health
+        review's act-level authority and the retention scope for the members'
+        run artifacts, so it must never silently change after creation.
+        """
+        payload = json.dumps(
+            [problem.to_dict() for problem in cohort], sort_keys=True
+        )
+        with self._transaction() as tx:
+            row = tx.execute(
+                "SELECT cohort FROM triage_storm_cohorts"
+                " WHERE anchor_issue_number = ?",
+                (anchor_issue_number,),
+            ).fetchone()
+            if row is not None:
+                if json.dumps(json.loads(row[0]), sort_keys=True) == payload:
+                    return
+                raise TriageStormCohortConflictError(
+                    f"a different storm cohort is already recorded for anchor"
+                    f" issue #{anchor_issue_number}"
+                )
+            tx.execute(
+                "INSERT INTO triage_storm_cohorts (anchor_issue_number, cohort,"
+                " recorded_at) VALUES (?, ?, ?)",
+                (
+                    anchor_issue_number,
+                    payload,
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+        logger.info(
+            "[triage] Recorded storm cohort for anchor #%d: %d problem issue(s)",
+            anchor_issue_number,
+            len(cohort),
+        )
+
+    def load_storm_cohort(
+        self, *, anchor_issue_number: int
+    ) -> tuple[DiscoveredFailure, ...] | None:
+        """Return an anchor's persisted cohort, or None when absent."""
+        conn = self._get_connection()
+        row = conn.execute(
+            "SELECT cohort FROM triage_storm_cohorts WHERE anchor_issue_number = ?",
+            (anchor_issue_number,),
+        ).fetchone()
+        if row is None:
+            return None
+        return _cohort_from_payload(row["cohort"])
+
+    def discard_storm_cohort(self, *, anchor_issue_number: int) -> None:
+        """Remove an anchor's cohort row. No-op if absent (retention owner)."""
+        with self._transaction() as tx:
+            tx.execute(
+                "DELETE FROM triage_storm_cohorts WHERE anchor_issue_number = ?",
+                (anchor_issue_number,),
+            )
+
+    def list_storm_cohorts(
+        self,
+    ) -> tuple[tuple[int, tuple[DiscoveredFailure, ...]], ...]:
+        """All (anchor_issue_number, cohort) rows — the cleanup-hold read."""
+        conn = self._get_connection()
+        rows = conn.execute(
+            "SELECT anchor_issue_number, cohort FROM triage_storm_cohorts"
+            " ORDER BY anchor_issue_number",
+        ).fetchall()
+        return tuple(
+            (int(row["anchor_issue_number"]), _cohort_from_payload(row["cohort"]))
+            for row in rows
         )
 
     # -- Shipped-fix operational memory (#6781 amendment) -----------------

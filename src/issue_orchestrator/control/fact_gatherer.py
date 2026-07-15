@@ -493,34 +493,49 @@ class FactGatherer:
             close_tabs=close_tabs,
             remove_worktrees=remove_wt,
             immediate_cleanups=immediate_tuples,
-            held_issue_numbers=failure_investigation_hold_issue_numbers(
-                state, self.config
+            held_issue_numbers=triage_problem_artifact_hold_issue_numbers(
+                state, self.config, self.triage_authority
             ),
         )
 
 
-def failure_investigation_hold_issue_numbers(
-    state: "OrchestratorState", config: Config
+def triage_problem_artifact_hold_issue_numbers(
+    state: "OrchestratorState",
+    config: Config,
+    triage_authority: "Optional[TriageAuthorityStore]" = None,
 ) -> frozenset[int]:
     """Issues whose failed-session run assets must be held from cleanup.
 
-    Owner of the single lifecycle rule for #6771 round 3: a failed session
-    records its ``ImmediateCleanup`` in the same pass that records the
-    ``DiscoveredFailure``, but the failure investigation launches on a LATER
-    tick — removing the worktree first deletes every artifact hint the
-    investigation was queued to read. The rule is evaluated fresh from state
-    at both consuming seams (``gather_cleanup_facts`` so the Planner skips
-    held cleanups, and ``clear_discovered_facts`` so held entries survive the
-    end-of-tick fact clear). Hold while the failure is still referenced by:
+    Owner of the single lifecycle rule for "triage problem artifacts currently
+    referenced by pending or active triage work". A failed session records its
+    ``ImmediateCleanup`` in the same pass that records the
+    ``DiscoveredFailure``, but the triage work that reads those artifacts
+    launches on a LATER tick — removing the worktree first deletes every
+    artifact hint the work was queued to read (#6771 round 3). The rule is
+    evaluated fresh from state at both consuming seams (``gather_cleanup_facts``
+    so the Planner skips held cleanups, and ``clear_discovered_facts`` so held
+    entries survive the end-of-tick fact clear).
 
-    - a failure discovered this tick (triage-on-failure will queue it),
-    - a queued (pending) failure investigation, or
-    - an active triage session investigating the issue.
+    A problem's artifacts are referenced while ANY of these hold:
 
-    The hold releases by re-evaluation, with no dedicated release seam: once
-    the investigation completes — or is dropped on exhaustion, or its queue
-    action fails — none of the conditions match and the retained cleanup is
-    planned normally on the next tick.
+    - it was discovered this tick (triage-on-failure will queue it);
+    - a queued failure investigation targets it;
+    - a queued health review carries it in its ``problem_cohort`` — a storm
+      collapses the per-issue investigations into ONE anchor, so after that
+      collapse the cohort is the only thing still naming those artifacts
+      (#6780 R3 F1: holding only failure investigations let the collapsed
+      members' worktrees be cleaned up before the review could read them);
+    - an active triage session is investigating it; or
+    - an active health review OWNS it via the durable storm-cohort ledger.
+      A launched review's queue item is gone, so the ledger is what proves
+      its run still references the members' artifacts.
+
+    Ledger rows are intersected with anchors that are actually pending or
+    active, which is what keeps this owner's release semantics intact: the
+    hold releases by re-evaluation, with no dedicated release seam. Once the
+    triage work completes — or is dropped on exhaustion, or its queue action
+    fails — nothing matches and the retained cleanup is planned normally on
+    the next tick, even if a row outlived its anchor.
     """
     from ..domain.triage_session import TriageSessionFlavor
     from .triage_session_policy import is_triage_session
@@ -528,16 +543,20 @@ def failure_investigation_hold_issue_numbers(
     if not (config.triage_review_on_failure and config.triage_review_agent):
         return frozenset()
     held = {failure.issue_number for failure in state.discovered_failures}
-    held.update(
-        item.issue_number
-        for item in state.pending_triage_reviews
-        if item.flavor is TriageSessionFlavor.FAILURE_INVESTIGATION
-    )
-    held.update(
-        session.issue.number
-        for session in state.active_sessions
-        if is_triage_session(config.triage_review_agent, session.issue.agent_type)
-    )
+    referenced_anchors: set[int] = set()
+    for item in state.pending_triage_reviews:
+        if item.flavor is TriageSessionFlavor.FAILURE_INVESTIGATION:
+            held.add(item.issue_number)
+        held.update(problem.issue_number for problem in item.problem_cohort)
+        referenced_anchors.add(item.issue_number)
+    for session in state.active_sessions:
+        if is_triage_session(config.triage_review_agent, session.issue.agent_type):
+            held.add(session.issue.number)
+            referenced_anchors.add(session.issue.number)
+    if triage_authority is not None:
+        for anchor, cohort in triage_authority.list_storm_cohorts():
+            if anchor in referenced_anchors:
+                held.update(problem.issue_number for problem in cohort)
     return frozenset(held)
 
 
@@ -557,13 +576,20 @@ _DISCOVERED_FACT_ATTRS: tuple[str, ...] = (
 )
 
 
-def clear_discovered_facts(state: "OrchestratorState", config: Config) -> None:
+def clear_discovered_facts(
+    state: "OrchestratorState",
+    config: Config,
+    triage_authority: "Optional[TriageAuthorityStore]" = None,
+) -> None:
     """Clear tick-scoped fact buffers, retaining held immediate cleanups.
 
-    Immediate cleanups referenced by a pending/active failure investigation
-    are retained across the clear (#6771 round 3): the Planner skipped them
-    this tick via ``CleanupFacts.held_issue_numbers``, and dropping them here
-    would leak the worktree forever once the hold releases.
+    Immediate cleanups referenced by pending/active triage work are retained
+    across the clear (#6771 round 3): the Planner skipped them this tick via
+    ``CleanupFacts.held_issue_numbers``, and dropping them here would leak the
+    worktree forever once the hold releases. Both seams read the SAME owner
+    (:func:`triage_problem_artifact_hold_issue_numbers`), so the plan-time
+    skip and the end-of-tick retention can never disagree about which
+    artifacts are still referenced.
 
     A PAUSED tick retains every fact (#6780 R2 F1). The clear exists to drop
     facts the tick consumed, but a paused tick consumes none: the Planner
@@ -574,7 +600,7 @@ def clear_discovered_facts(state: "OrchestratorState", config: Config) -> None:
     """
     if state.paused:
         return
-    held = failure_investigation_hold_issue_numbers(state, config)
+    held = triage_problem_artifact_hold_issue_numbers(state, config, triage_authority)
     retained = [c for c in state.immediate_cleanups if c.issue_number in held]
     for attr in _DISCOVERED_FACT_ATTRS:
         getattr(state, attr).clear()

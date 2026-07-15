@@ -23,7 +23,6 @@ Usage:
 import logging
 import re
 import time
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Optional
 
 from ..infra.config import Config
@@ -37,7 +36,6 @@ from ..domain.post_publish_escalation import build_post_publish_escalation_comme
 from ..domain.triage_session import TriageSessionFlavor
 
 if TYPE_CHECKING:
-    from ..domain.models import DiscoveredFailure
     from .provider_resilience import ProviderResilienceManager
     from .label_manager import LabelManager
 from .scheduler import Scheduler
@@ -63,7 +61,6 @@ from .actions import (
     QueueReviewAction,
     QueueRetrospectiveReviewAction,
     QueueReworkAction,
-    QueueTriageAction,
     CreateTriageIssueAction,
     DiscardTerminalTriageProposalOpsAction,
     EnqueueToMergeQueueAction,
@@ -78,9 +75,9 @@ from .awaiting_merge_post_publish_policy import (
     build_post_publish_validation_comment,
     POST_PUBLISH_VALIDATION_SOURCE,
 )
-from .health_review_trigger import plan_health_review_issue_creation
+from .reactive_triage_planning import plan_reactive_triage
 from .triage_proposals import plan_approved_triage_op_executions
-from .triage_reaction import TriageReaction, TriageReactionPolicy
+from .triage_reaction import TriageReactionPolicy
 from .reconciliation import build_expected_for_mutation
 from .planner_types import OrchestratorSnapshot, Plan, PlanContext, SkippedItem
 from .triage_issue_policy import (
@@ -90,32 +87,6 @@ from .triage_issue_policy import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True, slots=True)
-class _ReactiveTriagePlan:
-    """Outcome of the tech-lead reaction for one tick (#6780 R2).
-
-    ``actions`` ALWAYS queues the individual investigations the classifier
-    selected, and appends the storm/periodic health-review anchor when one can
-    be created. Queue-then-collapse is deliberate: the pending queue is the
-    only durable carrier of a problem once ``discovered_failures`` is cleared
-    at end of tick, so the cohort is persisted FIRST and a successfully created
-    anchor collapses it at intake (``_queue_anchor_by_marker`` removes the
-    superseded investigations and stamps ``problem_cohort`` onto the pending
-    health review in one step). Planning the anchor *instead of* the
-    investigations would lose the cohort whenever the create never lands —
-    a GitHub failure or the triage cooldown, both invisible to the planner
-    (F1/A1).
-
-    ``suppressed_issue_numbers`` governs LAUNCH timing only, never retention:
-    it holds back already-queued member investigations on the tick the cohort
-    is escalated, since intake is about to collapse them. If the anchor create
-    then fails, those items simply remain queued and launch on a later tick.
-    """
-
-    actions: tuple[Action, ...]
-    suppressed_issue_numbers: frozenset[int]
 
 
 class Planner:
@@ -210,12 +181,15 @@ class Planner:
         actions: list[Action] = []
         skipped: list[SkippedItem] = []
         reaction = self._triage_reactions.assess(snapshot)
-        # Reactive triage is one ATOMIC decision (#6780 R2 F1/A1): storm
-        # escalation vs individual investigations, computed once so suppression
-        # is bound to actual cohort persistence. Computing it here (before the
-        # paused early-return) also runs the health-review gate exactly once,
-        # so its TRIAGE_SKIPPED still fires while paused.
-        reactive = self._plan_reactive_triage(snapshot, reaction)
+        # Reactive triage is one ATOMIC decision (#6780 R2 F1/A1) owned by
+        # reactive_triage_planning: storm escalation vs individual
+        # investigations, computed once so suppression is bound to actual
+        # cohort persistence. Computing it here (before the paused
+        # early-return) also runs the health-review gate exactly once, so its
+        # TRIAGE_SKIPPED still fires while paused.
+        reactive = plan_reactive_triage(
+            snapshot, reaction, self.config, workflow=self.triage_workflow
+        )
 
         # Check if paused
         if snapshot.paused:
@@ -680,70 +654,6 @@ class Planner:
                 plan_context.record_remove(issue.number, label)
         return actions
 
-    def _plan_health_review_creation(
-        self,
-        snapshot: OrchestratorSnapshot,
-        *,
-        storm_problems: tuple["DiscoveredFailure", ...] = (),
-    ) -> Optional[CreateTriageIssueAction]:
-        """Plan the periodic health-review anchor creation (ADR-0031 §4).
-
-        Policy lives in health_review_trigger; the TriageWorkflow owns the
-        paused/capacity gate and its TRIAGE_SKIPPED emissions (#6763).
-        """
-        if not self.triage_workflow:
-            return None
-        return plan_health_review_issue_creation(
-            snapshot.triage_facts,
-            snapshot.pending_triage,
-            self.config,
-            workflow=self.triage_workflow,
-            active_session_count=snapshot.active_count,
-            paused=snapshot.paused,
-            storm_problems=storm_problems,
-            issues=snapshot.issues,
-        )
-
-    def _plan_reactive_triage(
-        self, snapshot: OrchestratorSnapshot, reaction: TriageReaction
-    ) -> _ReactiveTriagePlan:
-        """Map the tech-lead reaction onto persist-first actions (#6780 R2 F1/A1).
-
-        The individual investigations are queued unconditionally — they are the
-        durable carrier of each problem once the tick-scoped
-        ``discovered_failures`` buffer is cleared. The storm anchor is appended
-        AFTER them, so that on a successful create the intake owner
-        (``_queue_anchor_by_marker``) collapses the cohort atomically: it
-        removes the superseded investigations and stamps ``problem_cohort``
-        onto the pending health review, from which the launch authority's
-        ``problem_issue_numbers`` later derive.
-
-        Suppression is therefore never the thing that decides retention (F1):
-        every path that leaves the cohort without an anchor — an existing or
-        pending health review, no capacity, paused, a failed GitHub create, or
-        the apply-time triage cooldown — leaves the individual investigations
-        queued, and they self-heal into one consolidated health review on a
-        later tick once an anchor can be created. Only the intake owner, which
-        alone knows the cohort was persisted, retires them (A1).
-        """
-        health_review_action = self._plan_health_review_creation(
-            snapshot, storm_problems=reaction.storm_problems
-        )
-        actions = self._plan_failure_investigations(reaction.investigations)
-        if health_review_action is not None:
-            actions.append(health_review_action)
-        # Hold back already-queued member launches only on the tick the cohort
-        # is actually escalated; intake is about to collapse them into the
-        # anchor. A deferred storm suppresses nothing.
-        suppressed = (
-            reaction.storm_issue_numbers
-            if reaction.storm_problems and health_review_action is not None
-            else frozenset()
-        )
-        return _ReactiveTriagePlan(
-            actions=tuple(actions), suppressed_issue_numbers=suppressed
-        )
-
     def _plan_triage_issue_creation(self, snapshot: OrchestratorSnapshot) -> Optional[CreateTriageIssueAction]:
         """Plan triage issue creation if threshold is met."""
         if not snapshot.triage_facts:
@@ -977,40 +887,6 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
             )
         return actions
 
-    def _plan_failure_investigations(
-        self, failures: tuple["DiscoveredFailure", ...]
-    ) -> list[Action]:
-        """Queue one focused triage investigation per discovered failure.
-
-        The classifier (``TriageReactionPolicy``) already decided which
-        failures warrant an individual investigation (config gate, dependency
-        explanation, dedup against the pending queue); this maps each survivor
-        to a ``QueueTriageAction``. Called either directly (no storm) or as the
-        storm fallback when the cohort could not be escalated (#6780 R2).
-
-        Returns:
-            List of QueueTriageAction for failures to investigate
-        """
-        actions: list[Action] = []
-
-        if not failures:
-            return actions
-        for failure in failures:
-            actions.append(QueueTriageAction(
-                issue_number=failure.issue_number,
-                title=f"Investigate: {failure.issue_title} ({failure.failure_reason})",
-                # Preserve the typed failure context across the queue boundary:
-                # discovered_failures is cleared after planning, but the queued
-                # investigation launches on a later tick and its board snapshot
-                # must still contain its own triggering failure.
-                failure=failure,
-                reason=f"Session failed with status '{failure.failure_reason}'",
-            ))
-            logger.info("Planner: queuing triage for failed issue #%d (%s)",
-                       failure.issue_number, failure.failure_reason)
-
-        return actions
-
     def _plan_cleanups(self, snapshot: OrchestratorSnapshot) -> list[Action]:
         """Plan cleanup actions for completed sessions.
 
@@ -1045,16 +921,18 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                 logger.info("Planner: deferred cleanup for issue #%d (PR #%d reviewed)",
                            issue_number, pr_number)
 
-        # 2. Immediate cleanups - ready to execute now, EXCEPT run assets a
-        # pending/active failure investigation still references (#6771 round
-        # 3): cleaning those up before the investigation launches deletes the
-        # artifact hints it was queued to read. Held entries survive the
-        # end-of-tick fact clear and are re-planned once the hold releases.
+        # 2. Immediate cleanups - ready to execute now, EXCEPT run assets that
+        # pending/active triage work still references (#6771 round 3, #6780
+        # R3 F1): cleaning those up before the investigation or health review
+        # launches deletes the artifact hints it was queued to read. The hold
+        # set comes from the triage-problem-artifact owner in the fact
+        # gatherer, which is also what retains these entries across the
+        # end-of-tick fact clear; they are re-planned once the hold releases.
         for cleanup in facts.immediate_cleanups:
             if cleanup.issue_number in facts.held_issue_numbers:
                 logger.info(
-                    "Planner: holding cleanup for issue #%d — a failure "
-                    "investigation still references its run assets",
+                    "Planner: holding cleanup for issue #%d — pending or active "
+                    "triage work still references its run assets",
                     cleanup.issue_number,
                 )
                 continue

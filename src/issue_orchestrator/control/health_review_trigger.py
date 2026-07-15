@@ -16,11 +16,16 @@ Single owner for the trigger side of the health-review lifecycle:
   queue through the owning :class:`PendingSessionQueues` operation for the
   variant the marker label declares (batch vs health — #6768 round 3 typed
   intake), and stamp/persist ``state.last_health_review_at`` so neither the
-  next tick nor a restart double-fires;
+  next tick nor a restart double-fires. A problem-storm anchor additionally
+  records its cohort in the durable ledger (``TriageAuthorityStore``) BEFORE
+  collapsing the superseded per-issue investigations — the collapse is
+  earned by persistence, never assumed (#6780);
 - **restart reconciliation**: hydrate ``last_health_review_at`` from the
   durable store AND the newest marker-labeled anchor issue — the issues are
   the crash-safe truth (ADR-0013), so a store persist failure can never
-  re-fire the review before the interval elapses.
+  re-fire the review before the interval elapses. A recovered storm anchor
+  also rehydrates its cohort from the ledger: labels prove the anchor
+  EXISTS, but they cannot carry which problems it owns (#6780).
 
 The anchor issue then rides the existing batch-issue lifecycle: it is picked
 up like any triage-agent issue, the launcher derives the HEALTH_REVIEW flavor
@@ -362,30 +367,78 @@ def _queue_anchor_by_marker(
     return queues.queue_batch_review(issue_number, title)
 
 
+def _persist_storm_cohort(
+    triage_authority: "Optional[TriageAuthorityStore]",
+    issue_number: int,
+    storm_problems: tuple["DiscoveredFailure", ...],
+) -> bool:
+    """Record the cohort durably; True when the anchor now owns it (#6780 R3).
+
+    The durable write comes BEFORE the collapse for the same reason the
+    planner queues the individual investigations first (R2 F1/A1): collapsing
+    retires the per-issue investigations, so it may only happen once the
+    cohort is somewhere that outlives this process. In-memory
+    ``problem_cohort`` alone cannot carry it — a crash between anchor creation
+    and launch recovers the anchor from its label with no cohort at all.
+
+    A store failure is contained rather than raised: the anchor issue ALREADY
+    exists on GitHub, so this cannot be reported as an apply failure (same
+    rule as :func:`record_health_review_creation`). Returning False keeps the
+    individual investigations queued, so the problems are still worked —
+    degraded to per-issue triage, never dropped, never silent.
+    """
+    if not storm_problems or triage_authority is None:
+        return False
+    try:
+        triage_authority.record_storm_cohort(
+            anchor_issue_number=issue_number, cohort=storm_problems
+        )
+    except Exception:
+        logger.error(
+            "Failed to persist the storm cohort for health-review anchor #%d; "
+            "keeping the %d individual failure investigation(s) queued instead "
+            "of collapsing them into an anchor that cannot prove its scope",
+            issue_number,
+            len(storm_problems),
+            exc_info=True,
+        )
+        return False
+    return True
+
+
 def intake_created_triage_anchor(
     action: CreateTriageIssueAction,
     issue_number: int,
     state: "OrchestratorState",
     store: "Optional[QueueCacheStore]",
+    triage_authority: "Optional[TriageAuthorityStore]" = None,
 ) -> "TriageQueueOutcome":
     """Route a successfully created triage anchor into the pending queue.
 
-    Health creations additionally stamp/persist ``last_health_review_at``
-    (:func:`record_health_review_creation` keys off the marker label).
+    A storm anchor first records its cohort in the durable ledger, which is
+    what earns it the right to collapse the individual investigations; see
+    :func:`_persist_storm_cohort`. Health creations additionally stamp/persist
+    ``last_health_review_at`` (:func:`record_health_review_creation` keys off
+    the marker label).
     """
+    persisted = _persist_storm_cohort(
+        triage_authority, issue_number, action.storm_problems
+    )
     outcome = _queue_anchor_by_marker(
         state,
         issue_number,
         action.title,
         action.labels,
-        storm_problems=action.storm_problems,
+        storm_problems=action.storm_problems if persisted else (),
     )
     record_health_review_creation(action, state, store)
     return outcome
 
 
 def queue_recovered_triage_anchor(
-    state: "OrchestratorState", issue: "Issue"
+    state: "OrchestratorState",
+    issue: "Issue",
+    triage_authority: "Optional[TriageAuthorityStore]" = None,
 ) -> "TriageQueueOutcome":
     """Route a recovered open anchor into the pending queue (startup).
 
@@ -394,8 +447,34 @@ def queue_recovered_triage_anchor(
     BATCH_REVIEW would relaunch it as a batch audit — manifest prep, batch
     authority, manifest labels on completion. No timestamp stamping: the
     anchor already exists; ``last_health_review_at`` records creation time.
+
+    A storm anchor also recovers its COHORT from the durable ledger (#6780
+    R3 F2). The cohort is the anchor's act-level authority: launch derives
+    ``TriageLaunchAuthority.problem_issue_numbers`` from the board snapshot,
+    which merges the pending item's ``problem_cohort``. Recovering without it
+    (the in-memory queue is gone after a crash, and the issue BODY is mutable
+    human documentation, never authority) would launch a health review that
+    rejects every proposal for the very issues that triggered it.
     """
-    return _queue_anchor_by_marker(state, issue.number, issue.title, issue.labels)
+    cohort = (
+        triage_authority.load_storm_cohort(anchor_issue_number=issue.number)
+        if triage_authority is not None
+        else None
+    )
+    if cohort:
+        logger.info(
+            "Recovered storm cohort for health-review anchor #%d: %d problem "
+            "issue(s)",
+            issue.number,
+            len(cohort),
+        )
+    return _queue_anchor_by_marker(
+        state,
+        issue.number,
+        issue.title,
+        issue.labels,
+        storm_problems=cohort or (),
+    )
 
 
 def recover_pending_triage_anchors(
@@ -454,8 +533,10 @@ def recover_pending_triage_anchors(
             print(f"  triage issue #{issue.number}: Already running")
             continue
         # The ADR-0031 §4 marker label declares the anchor's variant; the
-        # owner routes it (#6768 B5: queued flavor reaches launch verbatim).
-        outcome = queue_recovered_triage_anchor(state, issue)
+        # owner routes it (#6768 B5: queued flavor reaches launch verbatim)
+        # and rehydrates a storm anchor's cohort from the durable ledger
+        # (#6780 R3 F2: the recovered anchor must keep its act-level scope).
+        outcome = queue_recovered_triage_anchor(state, issue, triage_authority)
         if outcome is TriageQueueOutcome.DUPLICATE:
             print(f"  triage issue #{issue.number}: Already queued")
             continue

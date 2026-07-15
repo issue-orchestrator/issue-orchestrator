@@ -250,6 +250,7 @@ class Orchestrator:
             get_review_machine=self._get_review_machine,
             kill_session=lambda name: _kill_session(name, self.deps.session_manager, self.deps.events),
             queue_cache_store=self.deps.queue_cache_store,
+            triage_authority=self.deps.triage_authority,
         )
 
     def _get_session_name(self, number: int, session_type: str = "issue") -> str: return get_session_name(number, session_type)

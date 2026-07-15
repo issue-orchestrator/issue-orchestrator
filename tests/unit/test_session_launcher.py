@@ -193,8 +193,12 @@ class MockRepositoryHost:
         state: str = "open",
         limit: int = 100,
         required_stable_ids: set[str] | None = None,
+        exhaustive: bool = False,
     ) -> list[Issue]:
-        del milestone, required_stable_ids
+        # ``exhaustive`` asks the real adapter to raise rather than return a
+        # partial page; this mock always returns the complete in-memory set,
+        # so it is accepted and ignored (the port declares it — #6779 R17).
+        del milestone, required_stable_ids, exhaustive
         self.list_issues_calls.append((labels, state, limit))
         candidates = [
             self.get_issue(issue_number)
@@ -4323,6 +4327,196 @@ class TestTriageProducerToLaunchBoundary:
             (f.issue_number, f.failure_reason, f.artifact_hints)
             for f in snapshot.recent_failures
         ] == [(904, "timed_out", [str(diagnostic)])]
+
+    def test_recovered_storm_anchor_launches_with_its_original_cohort_authority(
+        self,
+        sample_config,
+        mock_events,
+        mock_repo_host,
+        mock_worktree_manager,
+        mock_working_copy,
+        mock_command_runner,
+        tmp_path,
+    ):
+        """#6780 R3 F2 — a storm anchor keeps its cohort authority across a restart.
+
+        The cohort is created on tick N and only reaches the agent at launch.
+        If the orchestrator dies in between, the in-memory pending queue is
+        gone and the anchor comes back from its LABEL alone. Recovery must
+        rehydrate the cohort from the durable ledger, because launch authority
+        is derived from the board snapshot, which merges the pending item's
+        ``problem_cohort`` — recovering empty would launch a health review
+        that rejects every proposal for the issues that triggered it.
+
+        Drives the real chain through real SQLite: intake -> restart ->
+        recover -> launch -> TriageLaunchAuthority.
+        """
+        from issue_orchestrator.control.actions import CreateTriageIssueAction
+        from issue_orchestrator.control.health_review_trigger import (
+            intake_created_triage_anchor,
+            recover_pending_triage_anchors,
+        )
+        from issue_orchestrator.domain.triage_session import (
+            HEALTH_REVIEW_MARKER_LABEL,
+        )
+
+        authority_store = SqliteTriageAuthorityStore.for_repo(
+            sample_config.repo_root
+        )
+        cohort = tuple(
+            DiscoveredFailure(
+                issue_number=number,
+                issue_title=f"Problem {number}",
+                failure_reason="failed",
+                artifact_hints=(str(tmp_path / f"diagnostic-{number}.md"),),
+                observed_at=1_000.0,
+            )
+            for number in (41, 42, 43)
+        )
+
+        # Tick N (pre-crash process): the anchor is created and intake
+        # persists the cohort before collapsing the investigations.
+        pre_crash_state = OrchestratorState()
+        intake_created_triage_anchor(
+            CreateTriageIssueAction(
+                title="Health Review — problem storm",
+                body="Problem storm",
+                labels=("agent:triage", HEALTH_REVIEW_MARKER_LABEL),
+                pr_count=0,
+                storm_problems=cohort,
+            ),
+            905,
+            pre_crash_state,
+            None,
+            authority_store,
+        )
+
+        # ---- CRASH: everything in memory is lost. ----
+        state = OrchestratorState()
+        provider = StateBoardSnapshotProvider(
+            BoardSnapshotBuilder(
+                timeline_reader=lambda issue, limit: [],
+                log_tail_provider=lambda lines: [],
+                case_file_reader=lambda: (),
+                shipped_fix_reader=lambda limit: (),
+                clock=lambda: datetime(2026, 7, 10, 12, 0, 0),
+            ),
+            lambda: state,
+        )
+        launcher_bundle = _build_launcher_bundle(
+            sample_config,
+            mock_events,
+            mock_repo_host,
+            mock_worktree_manager,
+            mock_working_copy,
+            mock_command_runner,
+            board_snapshot_provider=provider,
+        )
+        config = launcher_bundle.launcher.config
+        TestLaunchTriageIssueSessionFlavors._enable_triage_agent(config, tmp_path)
+        # The open anchor comes back from its marker label — the only
+        # crash-safe truth a restart has.
+        mock_repo_host.issues = {
+            905: Issue(
+                number=905,
+                title="Health Review — problem storm",
+                labels=["agent:triage", HEALTH_REVIEW_MARKER_LABEL],
+                repo="test/repo",
+            )
+        }
+
+        # Startup recovery rehydrates the anchor AND its cohort.
+        recover_pending_triage_anchors(
+            state,
+            repository_host=mock_repo_host,
+            config=config,
+            session_exists=lambda name: False,
+            triage_authority=authority_store,
+        )
+
+        (queued,) = state.pending_triage_reviews
+        assert queued.issue_number == 905
+        assert queued.flavor is TriageSessionFlavor.HEALTH_REVIEW
+        assert queued.problem_cohort == cohort, (
+            "the recovered anchor must carry the same typed cohort it was "
+            "created with, hints included"
+        )
+
+        # Launch: the snapshot merges the recovered cohort, and the trusted
+        # authority record scopes act-level proposals to those same issues.
+        session = self._launch(queued, state, launcher_bundle)
+
+        run_dir = TestLaunchTriageIssueSessionFlavors._started_run_dir(mock_events)
+        snapshot = BoardSnapshot.read(
+            run_dir / "triage-data" / "board-snapshot.json"
+        )
+        assert snapshot.problem_issue_numbers() == frozenset({41, 42, 43})
+        authority = authority_store.load(
+            run_id=session.run_assets.run_id,
+            session_name=session.run_assets.session_name,
+        )
+        assert authority is not None
+        assert authority.flavor is TriageSessionFlavor.HEALTH_REVIEW
+        assert authority.problem_issue_numbers == (41, 42, 43)
+        assert authority.allowed_act_level_targets() == frozenset({41, 42, 43})
+
+    def test_recovered_periodic_anchor_has_no_cohort_authority(
+        self,
+        sample_config,
+        mock_events,
+        mock_repo_host,
+        mock_worktree_manager,
+        mock_working_copy,
+        mock_command_runner,
+        tmp_path,
+    ):
+        """A recovered PERIODIC anchor recovers no cohort (#6780 R3 F2).
+
+        Only a storm records a ledger row, so the same recovery path must not
+        manufacture act-level scope for an interval-created review — its
+        remit is to walk the board, not to remediate a specific cohort.
+        """
+        from issue_orchestrator.control.health_review_trigger import (
+            recover_pending_triage_anchors,
+        )
+        from issue_orchestrator.domain.triage_session import (
+            HEALTH_REVIEW_MARKER_LABEL,
+        )
+
+        authority_store = SqliteTriageAuthorityStore.for_repo(
+            sample_config.repo_root
+        )
+        launcher_bundle = _build_launcher_bundle(
+            sample_config,
+            mock_events,
+            mock_repo_host,
+            mock_worktree_manager,
+            mock_working_copy,
+            mock_command_runner,
+        )
+        config = launcher_bundle.launcher.config
+        TestLaunchTriageIssueSessionFlavors._enable_triage_agent(config, tmp_path)
+        mock_repo_host.issues = {
+            906: Issue(
+                number=906,
+                title="Health Review — walk the floor",
+                labels=["agent:triage", HEALTH_REVIEW_MARKER_LABEL],
+                repo="test/repo",
+            )
+        }
+
+        state = OrchestratorState()
+        recover_pending_triage_anchors(
+            state,
+            repository_host=mock_repo_host,
+            config=config,
+            session_exists=lambda name: False,
+            triage_authority=authority_store,
+        )
+
+        (queued,) = state.pending_triage_reviews
+        assert queued.flavor is TriageSessionFlavor.HEALTH_REVIEW
+        assert queued.problem_cohort == ()
 
     def test_queue_triage_action_without_failure_context_fails_fast(self):
         """The action boundary rejects failure investigations lacking context.

@@ -464,6 +464,13 @@ def discard_triage_authority_after_completion(
     the launch authority. The row is retained then;
     ``PublishRecoveryService`` discards it at the retry's own terminal
     (success finalization or issue abandonment).
+
+    A storm anchor's cohort row (#6780) is discarded on the same terminal.
+    It is keyed by the ANCHOR issue rather than run identity, because it
+    outlives any single run: it is recorded at anchor creation, before a run
+    exists, and rehydrates the pending review after a restart. Its readers
+    intersect it with live pending/active triage work, so dropping it here is
+    what releases the cohort's held run artifacts for cleanup.
     """
     if not is_triage_session(config.triage_review_agent, session.issue.agent_type):
         return
@@ -473,6 +480,7 @@ def discard_triage_authority_after_completion(
         run_id=session.run_assets.run_id,
         session_name=session.run_assets.session_name,
     )
+    triage_authority.discard_storm_cohort(anchor_issue_number=session.issue.number)
 
 
 def _manifest_label_actions(

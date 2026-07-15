@@ -1517,6 +1517,45 @@ class DiscoveredFailure:
     issue_body: str = ""
     issue_milestone: str | None = None
 
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize for the durable storm-cohort ledger (#6780).
+
+        A storm cohort outlives the process that discovered it: the anchor is
+        created on tick N and the health review may launch after a restart, so
+        the ledger must round-trip the WHOLE fact — ``artifact_hints`` above
+        all, since the recovered board snapshot projects them verbatim.
+        """
+        return {
+            "issue_number": self.issue_number,
+            "issue_title": self.issue_title,
+            "failure_reason": self.failure_reason,
+            "artifact_hints": list(self.artifact_hints),
+            "observed_at": self.observed_at,
+            "blocking_label": self.blocking_label,
+            "issue_body": self.issue_body,
+            "issue_milestone": self.issue_milestone,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "DiscoveredFailure":
+        """Rehydrate a ledger row. Missing keys raise (fail-fast).
+
+        The orchestrator writes every key in :meth:`to_dict`, so an absent one
+        means a corrupt or hand-edited row — never a shape to paper over with
+        defaults that would silently launch a health review with a truncated
+        cohort.
+        """
+        return cls(
+            issue_number=data["issue_number"],
+            issue_title=data["issue_title"],
+            failure_reason=data["failure_reason"],
+            artifact_hints=tuple(data["artifact_hints"]),
+            observed_at=data["observed_at"],
+            blocking_label=data["blocking_label"],
+            issue_body=data["issue_body"],
+            issue_milestone=data["issue_milestone"],
+        )
+
 
 @dataclass(frozen=True)
 class ImmediateCleanup:

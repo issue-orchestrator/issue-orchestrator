@@ -1620,7 +1620,17 @@ class TestUpdateStateAfterAction:
         mock_repository_host,
         sample_event_context,
     ):
-        """Create support with accessible state."""
+        """Create support with accessible state.
+
+        A real in-memory triage authority is wired because the storm collapse
+        is bound to DURABLE cohort persistence (#6780 R3): the composition
+        root always supplies the store, and without one intake declines to
+        retire the individual investigations.
+        """
+        from issue_orchestrator.ports.triage_authority import (
+            InMemoryTriageAuthorityStore,
+        )
+
         mock_config = MagicMock()
         mock_config.cleanup = MagicMock()
         mock_config.cleanup.without_triage = MagicMock()
@@ -1642,6 +1652,7 @@ class TestUpdateStateAfterAction:
             cleanup_manager=MagicMock(),
             get_review_machine=Mock(),
             kill_session=Mock(),
+            triage_authority=InMemoryTriageAuthorityStore(),
         )
 
     @staticmethod
@@ -2216,6 +2227,44 @@ class TestUpdateStateAfterAction:
 
         assert support_with_state.state.discovered_failures == []
         assert self._queued_investigation_numbers(support_with_state) == [41, 42, 43]
+
+    def test_storm_collapse_declines_when_the_cohort_cannot_be_persisted(
+        self, support_with_state, caplog
+    ):
+        """End-to-end (#6780 R3 F2): the durable cohort write FAILS at intake.
+
+        Collapsing retires the per-issue investigations, so it may only happen
+        once the cohort is somewhere that outlives this process. When the
+        ledger write fails the anchor still exists on GitHub — it cannot be
+        reported as an apply failure — so the collapse simply does not happen:
+        the individual investigations stay queued and the problems are still
+        worked, degraded rather than dropped, and loudly.
+        """
+        from issue_orchestrator.control.fact_gatherer import clear_discovered_facts
+
+        config = self._storm_config()
+        authority = MagicMock()
+        authority.record_storm_cohort.side_effect = RuntimeError("disk full")
+        authority.list_storm_cohorts.return_value = ()
+        support_with_state.triage_authority = authority
+        plan = self._plan_storm_tick(support_with_state, config)
+
+        with caplog.at_level("ERROR"):
+            self._apply_via_plan(
+                support_with_state, list(plan.actions), issue_number=999
+            )
+        clear_discovered_facts(support_with_state.state, config, authority)
+
+        assert self._queued_investigation_numbers(support_with_state) == [41, 42, 43]
+        (anchor,) = [
+            t
+            for t in support_with_state.state.pending_triage_reviews
+            if t.flavor is TriageSessionFlavor.HEALTH_REVIEW
+        ]
+        assert anchor.problem_cohort == (), (
+            "an anchor that could not persist its cohort must not claim one"
+        )
+        assert "storm cohort" in caplog.text
 
     def test_marker_labeled_creation_survives_store_persist_failure(
         self, support_with_state, caplog
