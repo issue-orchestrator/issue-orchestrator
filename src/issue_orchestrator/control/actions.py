@@ -365,6 +365,11 @@ class CreateTriageIssueAction(Action):
     # here, so the applier reports the decision instead of re-deriving it from
     # marker labels at the creation boundary (#6780).
     flavor: TriageSessionFlavor = TriageSessionFlavor.BATCH_REVIEW
+    # The board fingerprint the health-review trigger fired on, carried to the
+    # post-creation stamp so "reviewed" records what justified the review, not a
+    # recompute against a board that by then holds this anchor. "" (batch, or no
+    # facts) means never-reviewed: fails toward reviewing (ADR-0031 §4, #6793).
+    health_review_fingerprint: str = ""
     action_type: ActionType = field(default=ActionType.CREATE_TRIAGE_ISSUE, init=False)
 
 

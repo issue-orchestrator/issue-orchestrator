@@ -34,7 +34,7 @@ from ..ports import EventSink,  make_trace_event
 from .health_review_trigger import (
     classify_triage_anchor_issues,
     discover_open_triage_anchor_issues,
-    health_review_due,
+    health_review_decision,
     health_review_interval_minutes,
 )
 from .triage_reaction import storm_possible
@@ -274,9 +274,13 @@ class FactGatherer:
         if not batch_armed and not health_armed and not ops and not storm_armed:
             return None
 
-        due = health_review_due(
+        # The decision carries the board it was decided on, so anchor creation
+        # can stamp that exact value instead of recomputing a board that has
+        # moved on by then (#6793).
+        health_decision = health_review_decision(
             self.config, state, time.time() if now is None else now
         )
+        due = health_decision.due
 
         existing_triage_issue: Optional[int] = None
         existing_health_review_issue: Optional[int] = None
@@ -322,6 +326,7 @@ class FactGatherer:
             source_labels=frozenset(all_labels),
             source_milestones=tuple(source_milestones),
             health_review_due=due,
+            health_review_fingerprint=health_decision.fingerprint,
             existing_health_review_issue=existing_health_review_issue,
             approved_triage_ops=approved_ops,
             absent_proposal_op_candidates=absent_op_candidates,
