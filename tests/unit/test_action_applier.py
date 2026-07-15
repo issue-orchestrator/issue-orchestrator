@@ -33,7 +33,17 @@ from issue_orchestrator.control.actions import (
 )
 from issue_orchestrator.control.session_history import SessionHistoryOwner
 from issue_orchestrator.control.session_manager import SessionType
-from issue_orchestrator.domain.models import Issue, Session, AgentConfig, SessionHistoryEntry
+from issue_orchestrator.domain.models import (
+    AgentConfig,
+    DiscoveredFailure,
+    Issue,
+    Session,
+    SessionHistoryEntry,
+)
+from issue_orchestrator.domain.triage_session import (
+    HEALTH_REVIEW_MARKER_LABEL,
+    TriageSessionFlavor,
+)
 from issue_orchestrator.events import EventName
 from issue_orchestrator.ports.claim_manager import ClaimManager
 from issue_orchestrator.ports.triage_authority import InMemoryTriageAuthorityStore
@@ -1416,6 +1426,40 @@ class TestCreateTriageIssueAction:
         assert result.success
         assert result.details["issue_number"] == 100
         mock_repository_host.create_issue.assert_called_once()
+
+    def test_storm_health_review_creation_emits_flavor_and_trigger(
+        self, applier, mock_repository_host, mock_events
+    ):
+        """Storm escalation is machine-observable without parsing log text."""
+        mock_repository_host.create_issue.return_value = {"number": 100}
+        trigger = "problem storm: 3 issues inside settle window"
+        action = CreateTriageIssueAction(
+            title="Repository health review",
+            body="Review this problem cohort",
+            labels=(HEALTH_REVIEW_MARKER_LABEL,),
+            storm_problems=(
+                DiscoveredFailure(41, "Problem 41", "failed"),
+                DiscoveredFailure(42, "Problem 42", "failed"),
+                DiscoveredFailure(43, "Problem 43", "failed"),
+            ),
+            reason=trigger,
+        )
+
+        result = applier.apply(action)
+
+        assert result.success
+        [created] = [
+            call.args[0]
+            for call in mock_events.publish.call_args_list
+            if call.args[0].name == EventName.TRIAGE_ISSUE_CREATED.value
+        ]
+        assert created.data == {
+            "issue_number": 100,
+            "pr_count": 0,
+            "trigger": trigger,
+            "storm_problem_count": 3,
+            "flavor": TriageSessionFlavor.HEALTH_REVIEW.value,
+        }
 
     def test_create_triage_issue_no_repo_host(self, applier):
         """Test triage issue creation without repository host."""
