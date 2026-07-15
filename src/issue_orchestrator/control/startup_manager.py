@@ -25,7 +25,7 @@ import logging
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Callable, Iterator, Optional, Sequence
+from typing import TYPE_CHECKING, Callable, Generator, Optional, Sequence
 
 from ..infra.analysis import analyze_issue, IssueState
 from ..infra.config import Config
@@ -174,7 +174,7 @@ class StartupManager:
                 logger.warning("[startup] Label action failed: %s", result.error)
 
     @contextmanager
-    def _phase(self, name: str, timings: dict[str, float]) -> Iterator[None]:
+    def _phase(self, name: str, timings: dict[str, float]) -> Generator[None, None, None]:
         """Time a startup phase and record into ``timings`` keyed by ``name``.
 
         Logs the elapsed time at INFO so cold-start cost is visible in the

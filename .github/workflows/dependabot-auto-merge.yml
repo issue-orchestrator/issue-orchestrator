@@ -1,0 +1,54 @@
+name: dependabot-auto-merge
+
+# Enables auto-merge on Dependabot PRs whose dependencies CI actually exercises.
+#
+# This gates on CI coverage, not on semver. A semver-major is upstream's
+# statement about *their* API compatibility; it says nothing about our exposure,
+# which is governed entirely by whether our suite touches the dependency. The
+# repo has proof in both directions: starlette 1.0.1 -> 1.3.1 was a *minor* that
+# broke route registration outright, while the github-actions majors are
+# self-proving (if checkout breaks, CI cannot even start). So majors are
+# auto-merged here alongside minors and patches.
+#
+# npm (packages/vscode) is deliberately excluded: `make test-vscode` self-skips
+# on GitHub Actions, so CI compiles the extension (validate-vscode) but never
+# runs it. A green check there is weaker evidence than for the Python buckets.
+# That bucket is verified by `make deps-batch` locally, where the real extension
+# harness runs. Delete the npm exclusion once CI runs the extension tests.
+#
+# Auto-merge is not a bypass: it waits for the required checks, and the merge
+# queue re-runs validate-* against the real merge result before landing.
+
+on: pull_request_target
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    if: github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Fetch Dependabot metadata
+        id: meta
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98  # v3.1.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Enable auto-merge for CI-covered ecosystems
+        if: |
+          steps.meta.outputs.package-ecosystem == 'uv' ||
+          steps.meta.outputs.package-ecosystem == 'github_actions'
+        run: gh pr merge --auto --squash "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Explain why npm is held for local verification
+        if: steps.meta.outputs.package-ecosystem == 'npm'
+        run: |
+          echo "::notice::Holding ${{ steps.meta.outputs.dependency-names }} for local verification."
+          echo "CI cannot run the VS Code extension harness (test-vscode self-skips on Actions),"
+          echo "so this bucket is verified by 'make deps-batch' locally instead of auto-merged."

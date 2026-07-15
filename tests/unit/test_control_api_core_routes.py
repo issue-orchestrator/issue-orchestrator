@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from tests.unit import test_control_api as _support
+from tests.unit.route_helpers import route_path_counts
 from tests.unit.test_control_api import *  # noqa: F403
 
 globals().update(
@@ -31,11 +32,7 @@ class TestRouteRegistration:
             "/control/orchestrator/ai_diagnose",
             "/control/orchestrator/log_tail",
         }
-        counts = Counter(
-            route.path
-            for route in control_app.routes
-            if route.path in orchestrator_paths
-        )
+        counts = route_path_counts(control_app, orchestrator_paths)
 
         assert counts == Counter({path: 1 for path in orchestrator_paths})
 
@@ -47,11 +44,7 @@ class TestRouteRegistration:
             "/control/shutdown/update",
             "/control/shutdown/force",
         }
-        counts = Counter(
-            route.path
-            for route in control_app.routes
-            if route.path in shutdown_paths
-        )
+        counts = route_path_counts(control_app, shutdown_paths)
 
         assert counts == Counter({path: 1 for path in shutdown_paths})
 
@@ -64,11 +57,7 @@ class TestRouteRegistration:
             "/api/issues/{issue_number}/dismiss",
             "/api/issues/{issue_number}/close",
         }
-        counts = Counter(
-            route.path
-            for route in control_app.routes
-            if route.path in issue_paths
-        )
+        counts = route_path_counts(control_app, issue_paths)
 
         assert counts == Counter({path: 1 for path in issue_paths})
 
@@ -89,11 +78,7 @@ class TestRouteRegistration:
             "/control/tools/labels/init",
             "/control/tools/worktrees/cleanup",
         }
-        counts = Counter(
-            route.path
-            for route in control_app.routes
-            if route.path in extracted_paths
-        )
+        counts = route_path_counts(control_app, extracted_paths)
 
         expected = Counter({path: 1 for path in extracted_paths})
         expected["/control/goal_pilot/runs"] = 2

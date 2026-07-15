@@ -19,6 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       python: ${{ steps.filter.outputs.python }}
+      node: ${{ steps.filter.outputs.node }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
 
@@ -41,6 +42,9 @@ jobs:
               - .github/workflows/**
               - '**/AGENTS.md'
               - '**/CLAUDE.md'
+            node:
+              - packages/vscode/**
+              - .github/workflows/**
 
   validate-fast:
     needs: changes
@@ -98,3 +102,33 @@ jobs:
           make test-integration-agent
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Type-checks the VS Code extension. `make test-vscode` self-skips on GitHub
+  # Actions because its harness downloads VS Code and needs a display, which
+  # left packages/vscode with no CI coverage at all -- npm dependency PRs went
+  # green without anything having compiled them. `tsc` needs no display and
+  # catches the type-level breakage (typescript, @types/*) that makes up most of
+  # that risk. Runtime extension behavior is still only covered by local
+  # `make validate` / `make deps-batch`.
+  validate-vscode:
+    needs: changes
+    if: github.event_name == 'merge_group' || needs.changes.outputs.node == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: packages/vscode/package-lock.json
+
+      - name: Install extension dependencies
+        run: npm ci
+        working-directory: packages/vscode
+
+      - name: Type-check extension
+        run: npm run compile
+        working-directory: packages/vscode

@@ -2,7 +2,10 @@
 
 # ruff: noqa: F403,F405
 
+from collections import Counter
+
 from tests.unit import test_web as _support
+from tests.unit.route_helpers import route_path_counts
 from tests.unit.test_web import *  # noqa: F403
 
 globals().update(
@@ -13,9 +16,7 @@ class TestWebRouteRegistration:
     """Guard extracted web route families against accidental deregistration."""
 
     def test_extracted_operator_and_log_routes_are_registered_once(self):
-        route_paths = [getattr(route, "path", None) for route in app.routes]
-
-        for path in [
+        expected_paths = [
             "/api/log/{issue_number}",
             "/api/log/local/{issue_number}",
             "/api/host/reveal-worktree/{issue_number}",
@@ -26,8 +27,11 @@ class TestWebRouteRegistration:
             "/api/reset-retry",
             "/api/retrospective-review/preflight",
             "/api/retrospective-review",
-        ]:
-            assert route_paths.count(path) == 1
+        ]
+
+        counts = route_path_counts(app, expected_paths)
+
+        assert counts == Counter({path: 1 for path in expected_paths})
 
 
 

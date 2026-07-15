@@ -4,6 +4,18 @@ import * as os from "os";
 import { fileURLToPath } from "url";
 import { runTests } from "@vscode/test-electron";
 
+// Pin the VS Code build under test. Left unset, @vscode/test-electron resolves
+// "stable", so every VS Code release invalidated the cache and forced a fresh
+// ~273MB download -- which then blew the default 15s idle timeout and failed
+// `make test-vscode` outright. Pinning keeps the harness reproducible and lets
+// the shared cache actually hit; bump deliberately. Must stay at or above the
+// `engines.vscode` floor in package.json.
+const DEFAULT_VSCODE_VERSION = "1.128.1";
+
+// Generous idle timeout so a cold cache (CI, new machine, version bump) can
+// still complete the download rather than aborting mid-stream.
+const DOWNLOAD_IDLE_TIMEOUT_MS = 120_000;
+
 async function main(): Promise<void> {
   const currentFile = fileURLToPath(import.meta.url);
   const currentDir = path.dirname(currentFile);
@@ -22,6 +34,8 @@ async function main(): Promise<void> {
   fs.mkdirSync(cachePath, { recursive: true });
 
   await runTests({
+    version: process.env.IO_VSCODE_TEST_VERSION ?? DEFAULT_VSCODE_VERSION,
+    timeout: DOWNLOAD_IDLE_TIMEOUT_MS,
     extensionDevelopmentPath,
     extensionTestsPath,
     cachePath,
