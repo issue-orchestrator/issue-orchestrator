@@ -746,7 +746,7 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.9" },
     { name = "sse-starlette", specifier = ">=1.6" },
     { name = "tenacity", specifier = ">=8.0" },
-    { name = "textual", specifier = ">=0.40" },
+    { name = "textual", specifier = ">=8.2.7" },
     { name = "transitions", specifier = ">=0.9" },
     { name = "uvicorn", specifier = ">=0.24" },
 ]
@@ -2018,7 +2018,7 @@ wheels = [
 
 [[package]]
 name = "textual"
-version = "7.4.0"
+version = "8.2.7"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "markdown-it-py", extra = ["linkify"] },
@@ -2028,9 +2028,9 @@ dependencies = [
     { name = "rich" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/64/8d/2fbd6b8652f4cabf9cb0852d7af1aa45b6cad32d0f50735856e8f9e41719/textual-7.4.0.tar.gz", hash = "sha256:1a9598e485492f9a8f033c7ec5e59528df3ab0742fda925681acf78b0fb210de", size = 1592252, upload-time = "2026-01-25T19:57:04.624Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/9b/7a/c519db0aba5024f86e71e9631810bfdd6866ed2c8695bd7fa34b90e7ef59/textual-8.2.7.tar.gz", hash = "sha256:658f568ff81e30ed43890c3e07520390e5cf1b4763822006e060656b0a88f105", size = 1859249, upload-time = "2026-05-19T10:52:49.531Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ab/9c/4169ccffed6d53f78e3175eae0cd649990071c6e24b6ad8830812ebab726/textual-7.4.0-py3-none-any.whl", hash = "sha256:41a066cae649654d4ecfe53b8316f5737c0042d1693ce50690b769a7840780ac", size = 717985, upload-time = "2026-01-25T19:57:02.966Z" },
+    { url = "https://files.pythonhosted.org/packages/a8/f5/c1e18bc0707300a0e90204343abbf7d7acd6fb7ebe03a6d4893b99a234b8/textual-8.2.7-py3-none-any.whl", hash = "sha256:4caaa13a90bc4cf9c6c862c067ccd34fe84e9c161710a2a907a8026313b6bd73", size = 731129, upload-time = "2026-05-19T10:52:51.773Z" },
 ]
 
 [[package]]
