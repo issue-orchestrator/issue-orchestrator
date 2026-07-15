@@ -1676,6 +1676,9 @@ class TestPlanHealthReviewIssueCreation:
         assert action.title == "Health Review — walk the floor"
         assert "agent:triage" in action.labels
         assert HEALTH_REVIEW_MARKER_LABEL in action.labels
+        # The owner states the variant on the action; the creation boundary
+        # reports that decision rather than re-reading the marker label (#6780).
+        assert action.flavor is TriageSessionFlavor.HEALTH_REVIEW
         assert action.pr_count == 0
         assert "board snapshot" in action.body.lower()
         assert "ADR-0031" in action.body
@@ -1731,6 +1734,7 @@ class TestPlanHealthReviewIssueCreation:
         [action] = self._create_actions(plan)
         assert tuple(p.issue_number for p in action.storm_problems) == (1, 2, 3)
         assert action.reason == "problem storm: 3 issues inside settle window"
+        assert action.flavor is TriageSessionFlavor.HEALTH_REVIEW
         assert "instead of" in action.body
         # Persist-first: the cohort is queued ahead of the anchor that retires it.
         assert sorted(

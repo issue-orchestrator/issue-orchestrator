@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Callable
 
-from ..domain.triage_session import PROPOSED_TRIAGE_LABEL, TriageSessionFlavor
+from ..domain.triage_session import PROPOSED_TRIAGE_LABEL
 from ..events import EventName
 from ..ports import make_trace_event
 from .actions import (
@@ -20,7 +20,6 @@ from .actions import (
     CreateTriageIssueAction,
     CreateTriageProposalIssueAction,
 )
-from .health_review_trigger import has_health_review_marker
 from .label_manager import triage_issue_label_metadata
 from .triage_issue_policy import resolve_triage_milestone_number
 
@@ -215,16 +214,12 @@ def apply_create_triage_issue(
                 # Why this anchor exists, and what it consumed. A storm
                 # escalation collapses N individual investigations into one
                 # review; without these the only trace of that decision is log
-                # text, which UI and tests must never parse. ``flavor``
-                # reads the marker label — the same crash-safe variant rule the
-                # queue intake and launcher re-derive the flavor from.
+                # text, which UI and tests must never parse. ``flavor`` is the
+                # authoring owner's decision, carried on the action — this
+                # boundary reports it and never reinterprets marker labels.
                 "trigger": action.reason,
                 "storm_problem_count": len(action.storm_problems),
-                "flavor": (
-                    TriageSessionFlavor.HEALTH_REVIEW.value
-                    if has_health_review_marker(action.labels)
-                    else TriageSessionFlavor.BATCH_REVIEW.value
-                ),
+                "flavor": action.flavor.value,
             },
         )
     )

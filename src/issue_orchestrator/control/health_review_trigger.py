@@ -335,6 +335,9 @@ def plan_health_review_issue_creation(
         milestone=milestone,
         storm_problems=tuple(storm_problems),
         reason=trigger_reason,
+        # This owner decides the variant; the marker label in ``labels`` is the
+        # crash-safe restatement of the same decision for recovery/intake.
+        flavor=TriageSessionFlavor.HEALTH_REVIEW,
     )
 
 

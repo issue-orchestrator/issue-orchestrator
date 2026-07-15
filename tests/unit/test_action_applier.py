@@ -1443,6 +1443,7 @@ class TestCreateTriageIssueAction:
                 DiscoveredFailure(43, "Problem 43", "failed"),
             ),
             reason=trigger,
+            flavor=TriageSessionFlavor.HEALTH_REVIEW,
         )
 
         result = applier.apply(action)
@@ -1460,6 +1461,38 @@ class TestCreateTriageIssueAction:
             "storm_problem_count": 3,
             "flavor": TriageSessionFlavor.HEALTH_REVIEW.value,
         }
+
+    @pytest.mark.parametrize(
+        "flavor",
+        [TriageSessionFlavor.BATCH_REVIEW, TriageSessionFlavor.HEALTH_REVIEW],
+    )
+    def test_creation_reports_the_authored_flavor_without_reading_labels(
+        self, applier, mock_repository_host, mock_events, flavor
+    ):
+        """The creation boundary reports the owner's decision verbatim.
+
+        Marker labels are the recovery/intake restatement of the variant, not
+        this boundary's input: classifying here would put health-review
+        lifecycle policy in the generic applier (#6780).
+        """
+        mock_repository_host.create_issue.return_value = {"number": 100}
+        action = CreateTriageIssueAction(
+            title="Anchor",
+            body="Body",
+            # Deliberately contradicts the flavor for BATCH_REVIEW: a label the
+            # applier must not interpret.
+            labels=(HEALTH_REVIEW_MARKER_LABEL,),
+            reason="trigger",
+            flavor=flavor,
+        )
+
+        assert applier.apply(action).success
+        [created] = [
+            call.args[0]
+            for call in mock_events.publish.call_args_list
+            if call.args[0].name == EventName.TRIAGE_ISSUE_CREATED.value
+        ]
+        assert created.data["flavor"] == flavor.value
 
     def test_create_triage_issue_no_repo_host(self, applier):
         """Test triage issue creation without repository host."""
