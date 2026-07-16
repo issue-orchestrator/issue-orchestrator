@@ -1365,6 +1365,10 @@ class TriageFacts:
     # above: triage.health_review.interval_minutes gates these while
     # triage_review_threshold gates only the batch fields.
     health_review_due: bool = False  # Interval elapsed since the last health review
+    # The board fingerprint ``health_review_due`` was decided against. Travels
+    # with the verdict so anchor creation records the board it fired on rather
+    # than recomputing against a board that has since changed (#6793).
+    health_review_fingerprint: str = ""
     existing_health_review_issue: Optional[int] = None  # Open marker-labeled anchor issue
     # Approved gated triage proposals (#6778): open issues that carry a
     # StoredTriageOp but no longer carry the proposed-triage gate label,
@@ -1833,6 +1837,13 @@ class OrchestratorState:
     # health_review_trigger owner on successful anchor creation, hydrated at
     # startup from the queue-cache meta store so restarts do not double-fire.
     last_health_review_at: float = 0.0
+    # Fingerprint of the reviewable board (blocked issues, active sessions +
+    # their hung flags, pending-queue depths, cycle failures) as of the last
+    # health review. The periodic trigger fires only when the interval has
+    # elapsed AND this differs from the current board's fingerprint, so an idle
+    # orchestrator does not re-walk an unchanged board (ADR-0031 §4). "" means
+    # never reviewed / a fresh cache — which makes the next due review fire.
+    last_reviewed_board_fingerprint: str = ""
     def retrospective_review_in_flight_issue_numbers(self) -> set[int]:
         """Issues already queued, discovered, or actively under retrospective review."""
 

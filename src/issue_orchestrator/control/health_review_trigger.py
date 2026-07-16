@@ -6,7 +6,10 @@ Single owner for the trigger side of the health-review lifecycle:
   fact gathering and startup recovery (one eligibility rule for both paths),
   plus the marker-scoped dedup lookup (the ``HEALTH_REVIEW_MARKER_LABEL`` is
   the crash-safe dedup key, ADR-0013);
-- **due policy**: the interval math against ``state.last_health_review_at``;
+- **due policy**: the interval math against ``state.last_health_review_at``
+  AND a board-change gate — the review fires only when the reviewable board
+  differs from the fingerprint recorded at the last review, so an idle
+  orchestrator never re-walks an unchanged board (the storm trigger is exempt);
 - **planning**: the anchor-issue creation action when the review is due, no
   open anchor or pending launch already covers it, and the owned
   paused/capacity gate (``TriageWorkflow``) says go — anchor shaping (labels,
@@ -37,11 +40,13 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Callable, Iterable, Optional, Sequence
 
 from ..domain.triage_session import HEALTH_REVIEW_MARKER_LABEL, TriageSessionFlavor
 from .actions import CreateTriageIssueAction
+from .board_review_fingerprint import board_review_fingerprint
 from .triage_issue_policy import (
     apply_triage_priority_prefix,
     health_review_issue_labels,
@@ -116,14 +121,71 @@ def health_review_interval_minutes(config: "Config") -> int:
     return config.triage.health_review.interval_minutes
 
 
+@dataclass(frozen=True)
+class HealthReviewDecision:
+    """The periodic trigger's verdict AND the board it was decided on.
+
+    The two travel together on purpose. The fingerprint that justified firing a
+    review is the one that must later be recorded as reviewed — recomputing it
+    at stamp time reads a board that has already moved on (the anchor has been
+    created and queued by then, which is itself a board change), so the stamp
+    would record a transient state the board never returns to and the gate would
+    never suppress anything. Deciding and recording from one value makes the
+    gate self-consistent by construction.
+    """
+
+    due: bool
+    # The board as of the decision. "" means "nothing reviewable on the board".
+    fingerprint: str
+
+
+def health_review_decision(
+    config: "Config", state: "OrchestratorState", now: float
+) -> HealthReviewDecision:
+    """Decide whether the periodic review fires, and on which board.
+
+    Gates, in order:
+
+    1. the configured interval has elapsed since the last review (a debounce
+       floor); and
+    2. the current board fingerprint is non-empty AND differs from the one
+       recorded at the last review.
+
+    So a quiet orchestrator does not re-walk an unchanged board, an empty board
+    is never walked, and the first review after startup (no recorded
+    fingerprint) fires to clear the backlog. The #6780 problem-storm trigger is
+    independent of this gate, but still carries this fingerprint so a storm
+    review also records the board it walked.
+
+    The fingerprint is computed even when the review is NOT due, because the
+    storm trigger fires on exactly those ticks (including at
+    ``interval_minutes=0``, where it is the only trigger) and must record the
+    board it walked.
+    """
+    fingerprint = board_review_fingerprint(state, now)
+    interval_minutes = health_review_interval_minutes(config)
+    if interval_minutes <= 0:
+        return HealthReviewDecision(due=False, fingerprint=fingerprint)
+    if now - state.last_health_review_at < interval_minutes * 60:
+        return HealthReviewDecision(due=False, fingerprint=fingerprint)
+    if not fingerprint:
+        return HealthReviewDecision(due=False, fingerprint=fingerprint)
+    return HealthReviewDecision(
+        due=fingerprint != state.last_reviewed_board_fingerprint,
+        fingerprint=fingerprint,
+    )
+
+
 def health_review_due(
     config: "Config", state: "OrchestratorState", now: float
 ) -> bool:
-    """True when the configured interval has elapsed since the last review."""
-    interval_minutes = health_review_interval_minutes(config)
-    if interval_minutes <= 0:
-        return False
-    return now - state.last_health_review_at >= interval_minutes * 60
+    """True when the periodic review is due AND the board has unreviewed change.
+
+    Thin read of :func:`health_review_decision` for callers that only need the
+    verdict. Anything that goes on to CREATE the review must use the decision
+    itself, so the fingerprint it fired on is the one recorded as reviewed.
+    """
+    return health_review_decision(config, state, now).due
 
 
 def has_health_review_marker(labels: Iterable[str]) -> bool:
@@ -338,6 +400,13 @@ def plan_health_review_issue_creation(
         # This owner decides the variant; the marker label in ``labels`` is the
         # crash-safe restatement of the same decision for recovery/intake.
         flavor=TriageSessionFlavor.HEALTH_REVIEW,
+        # Carry the board this fired on through to the post-creation stamp.
+        # Both triggers record it: a storm review walks the board too, so the
+        # periodic gate must count it as reviewed. Absent facts leave it "" —
+        # "never reviewed", which fails toward reviewing.
+        health_review_fingerprint=(
+            facts.health_review_fingerprint if facts is not None else ""
+        ),
     )
 
 
@@ -574,14 +643,29 @@ def record_health_review_creation(
         return
     stamped_at = time.time() if now is None else now
     state.last_health_review_at = stamped_at
+    # Record the board the trigger DECIDED on, carried verbatim on the action —
+    # never a fresh recompute. By now the anchor has been created and queued
+    # into state.pending_triage_reviews, which is itself part of the board, so
+    # recomputing here would stamp a transient state that only exists between
+    # creation and launch and that the board never returns to. The gate would
+    # then never match and would re-fire every interval forever — the exact
+    # waste this trigger exists to prevent.
+    #
+    # "" (a storm anchor planned without facts) means "never reviewed", which
+    # makes the next due review fire: fail toward reviewing, never toward
+    # silent suppression.
+    state.last_reviewed_board_fingerprint = action.health_review_fingerprint
     if store is None:
         return
     try:
         store.save_last_health_review_at(stamped_at)
+        store.save_last_reviewed_board_fingerprint(
+            state.last_reviewed_board_fingerprint
+        )
     except Exception:
         logger.warning(
-            "Failed to persist last_health_review_at; a restart will reconcile "
-            "the interval from the anchor issue's creation time",
+            "Failed to persist health-review markers; a restart reconciles the "
+            "interval from the anchor issue and re-reviews on any board change",
             exc_info=True,
         )
 
@@ -606,6 +690,13 @@ def hydrate_last_health_review_at(
     """
     stored = store.load_last_health_review_at() if store is not None else 0.0
     state.last_health_review_at = stored
+    # Rehydrate the reviewed-board fingerprint so a restart does not re-walk an
+    # unchanged board. There is no anchor-issue truth for it (unlike the
+    # timestamp), so a lost value stays "" and the next due review fires — the
+    # fail-toward-reviewing side.
+    state.last_reviewed_board_fingerprint = (
+        store.load_last_reviewed_board_fingerprint() if store is not None else ""
+    )
     if health_review_interval_minutes(config) <= 0:
         return
     anchored = most_recent_health_anchor_created_at(repository_host, config)
