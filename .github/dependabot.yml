@@ -1,14 +1,14 @@
 version: 2
 
-# Grouping/auto-merge policy is keyed on CI coverage, not on semver.
+# Grouping policy is keyed on CI coverage, not on semver. There is no
+# auto-merge: a human merges these PRs. See the dependency-upgrades skill for
+# which are safe to merge on a green check vs which need local verification.
 #
 # semver-major is upstream's statement about *their* API compatibility; it says
 # nothing about our exposure, which is governed by whether CI exercises the
-# dependency. So majors are grouped and auto-merged wherever CI is load-bearing
-# (uv, github-actions -- see .github/workflows/dependabot-auto-merge.yml), and
-# npm is held back entirely because `test-vscode` cannot run the extension
-# harness in CI. The npm bucket is verified by `make deps-batch` locally, where
-# the full VS Code test harness actually runs.
+# dependency. uv and github-actions are covered by `validate-fast`. npm is not
+# (CI compiles the extension but `test-vscode` cannot run its harness on
+# Actions), so the npm bucket is verified via `make deps-batch` locally.
 #
 # Majors live in their own group per ecosystem purely for failure isolation:
 # a group is one PR, so folding majors into the minor/patch PR lets a single

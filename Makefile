@@ -231,12 +231,17 @@ deps-batch: ensure-uv
 	$(UV) lock --upgrade
 	@echo "==> Upgrading Python dependencies (tools/semgrep)..."
 	cd tools/semgrep && $(UV) lock --upgrade
-ifdef MAJOR
+# ifeq on the exact value, not ifdef: ifdef tests presence, so `MAJOR=0` would
+# still take the major-rewrite branch. Require MAJOR=1 explicitly.
+ifeq ($(MAJOR),1)
 	@echo "==> Upgrading VS Code extension dependencies (including majors)..."
 	cd packages/vscode && npx --yes npm-check-updates -u && npm install
-else
+else ifeq ($(MAJOR),)
 	@echo "==> Upgrading VS Code extension dependencies (within ranges)..."
 	cd packages/vscode && npm update
+else
+	@echo "deps-batch: MAJOR must be unset or 1, got '$(MAJOR)'." >&2
+	@exit 2
 endif
 	@echo "==> Syncing Python environment..."
 	$(UV) sync --frozen --all-extras
