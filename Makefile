@@ -243,8 +243,14 @@ endif
 	@$(GMAKE) --no-print-directory semgrep-venv
 	@touch .venv/.deps-synced
 	@echo ""
-	@echo "==> Verifying with full local validate (includes test-vscode)..."
-	@$(GMAKE) --no-print-directory validate
+	@echo "==> Verifying with the full required suite (agent lane + test-vscode)..."
+	@# validate-pr-raw, not validate: `validate` stops at _validate-impl and omits
+	@# _validate-agent-impl, so it would skip the live claude/codex lane -- exactly
+	@# the lane CI already cannot run. That lane is the whole reason this batch is
+	@# verified locally, so skipping it here would leave pexpect-class dependencies
+	@# (agent spawning) covered by nothing at all. -raw avoids seeding the
+	@# SHA-keyed pre-push cache from an uncommitted tree.
+	@$(GMAKE) --no-print-directory validate-pr-raw
 	@echo ""
 	@echo "==> Upgraded manifests:"
 	@git diff --stat -- uv.lock tools/semgrep/uv.lock packages/vscode/package.json packages/vscode/package-lock.json

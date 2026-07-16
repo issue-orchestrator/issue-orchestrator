@@ -38,9 +38,23 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Enable auto-merge for CI-covered ecosystems
+        # Auto-merge uv + github-actions, EXCEPT dependencies whose only real
+        # coverage is the live-agent lane (test-simulated-agent /
+        # test-integration-agent), which CI cannot run because the runner has no
+        # claude/codex CLI. `pexpect` drives agent PTY spawning
+        # (execution/agent_runner.py) and its PTY tests skip on GitHub, so a
+        # green check here would be misleading -- route it through
+        # `make deps-batch` instead, where that lane actually runs.
+        #
+        # dependency-names is a comma-separated string, so contains() is a
+        # substring test. For grouped PRs the whole group is held whenever it
+        # includes a denylisted name -- intended: the batch upgrades the group
+        # together anyway, so that week the group gets local agent-lane coverage.
+        # Keep AGENT_LANE_ONLY_DEPS in sync with the skill's denylist.
         if: |
-          steps.meta.outputs.package-ecosystem == 'uv' ||
-          steps.meta.outputs.package-ecosystem == 'github_actions'
+          (steps.meta.outputs.package-ecosystem == 'uv' ||
+           steps.meta.outputs.package-ecosystem == 'github_actions') &&
+          !contains(steps.meta.outputs.dependency-names, 'pexpect')
         run: gh pr merge --auto --squash "$PR_URL"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
@@ -52,3 +66,14 @@ jobs:
           echo "::notice::Holding ${{ steps.meta.outputs.dependency-names }} for local verification."
           echo "CI cannot run the VS Code extension harness (test-vscode self-skips on Actions),"
           echo "so this bucket is verified by 'make deps-batch' locally instead of auto-merged."
+
+      - name: Explain why an agent-lane dependency is held
+        if: |
+          (steps.meta.outputs.package-ecosystem == 'uv' ||
+           steps.meta.outputs.package-ecosystem == 'github_actions') &&
+          contains(steps.meta.outputs.dependency-names, 'pexpect')
+        run: |
+          echo "::notice::Holding ${{ steps.meta.outputs.dependency-names }} for local verification."
+          echo "This PR touches a dependency whose coverage lives in the live-agent lane,"
+          echo "which CI cannot run (no claude/codex CLI on the runner). Verify via"
+          echo "'make deps-batch' locally, where test-integration-agent actually runs."
