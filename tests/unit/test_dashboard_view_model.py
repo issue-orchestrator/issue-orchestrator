@@ -63,6 +63,16 @@ def _make_agent_config() -> AgentConfig:
     )
 
 
+def test_normalize_status_reason_drops_none_and_blank_values():
+    # Production-parity regression (#6816): the dashboard normalizes a session
+    # history entry's status_reason before rendering. A missing reason (None) and
+    # a whitespace-only reason ("   ") must both collapse to None so the UI shows
+    # no stray/blank detail line instead of an empty string. Locking this in
+    # guards the status-normalization control path against silent regressions.
+    assert _normalize_status_reason(None) is None
+    assert _normalize_status_reason("   ") is None
+
+
 def test_view_model_active_session_and_dashboard_data():
     config = _make_config()
     agent_config = _make_agent_config()
