@@ -142,17 +142,23 @@ filtering:
 
 triage:
   inherit_labels: ["io-e2e-test-data", "test-data"]
-  # Graduated act-level authority (ADR-0031). Defaults keep destructive actions in
-  # shadow: post_comment/create_issue/flag_pattern = execute; reset_retry &
-  # kill_hung_session = propose (surfaced as would-have-done, no mutation). Watch
-  # the `triage.action_proposed` events, then graduate when trusted:
-  #   authority:
-  #     reset_retry: execute         # wired to the scratch-reset owner (#6764/#6777)
-  #     # kill_hung_session: execute # still a startup error until fully wired
-  # Periodic "walk the board" health review — uses the single session slot when due
-  # (deduped, skips at capacity). Off by default; enable for the proactive cadence:
-  #   health_review:
-  #     interval_minutes: 240
+  # Graduated act-level authority (ADR-0031). reset_retry is wired to the
+  # scratch-reset owner (#6764/#6777) and graduated to execute; kill_hung_session
+  # stays a gated proposal (execute is still a startup error until fully wired).
+  authority:
+    reset_retry: execute
+  # Periodic "walk the board" health review — uses the single session slot when
+  # due (deduped, skips at capacity).
+  health_review:
+    interval_minutes: 60
+  # Tech-lead attention sweep (#6823): a bounded, timer-gated backstop that finds
+  # open issues stuck in a terminal blocking state the normal loop cannot
+  # re-discover and re-injects each into reactive triage. Bounded per issue: after
+  # max_recovery_attempts it stops re-injecting and flags the issue as exhausted.
+  stuck_sweep:
+    enabled: true
+    interval_minutes: 15
+    max_recovery_attempts: 3
 
 goal_pilot:
   enabled: true

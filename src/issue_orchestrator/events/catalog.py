@@ -199,6 +199,9 @@ class EventName(str, Enum):
     # the propose/execute pair (mirrors GOAL_PILOT_ACTION_*).
     TRIAGE_ACTION_EXECUTED = "triage.action_executed"
     TRIAGE_DECISION_REJECTED = "triage.decision_rejected"
+    # Tech-lead attention sweep re-injected stuck issues / flagged exhausted
+    # ones (#6823); internal trace event only (not a public UI event).
+    TRIAGE_STUCK_SWEEP = "triage.stuck_sweep"
 
     # =========================================================================
     # Cleanup operations

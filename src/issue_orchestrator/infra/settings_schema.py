@@ -1228,6 +1228,60 @@ class ReviewSettings(BaseModel):
         },
     )
 
+    triage_stuck_sweep_enabled: bool = Field(
+        False,
+        title="Enable Tech-Lead Stuck Sweep",
+        description="Re-inject terminally-stuck issues into reactive triage (0 = disabled)",
+        json_schema_extra={
+            "doc_examples": ["true", "false"],
+            "doc_notes": (
+                "ADR-0031 (#6823): a bounded, timer-gated backstop that finds "
+                "open issues stuck in a terminal blocking state the normal loop "
+                "cannot re-discover and re-injects each into the reactive-triage "
+                "pipeline as a recovered failure. Requires a configured triage "
+                "agent and triage_review_on_failure. Off by default."
+            ),
+            "section": "Triage Review",
+            "config_attr": "triage.stuck_sweep.enabled",
+            "yaml_path": "triage.stuck_sweep.enabled",
+        },
+    )
+    triage_stuck_sweep_interval_minutes: int = Field(
+        15,
+        title="Stuck Sweep Interval (minutes)",
+        description="Scan for stuck issues every N minutes",
+        ge=0,
+        json_schema_extra={
+            "doc_examples": ["15", "30", "60"],
+            "doc_notes": (
+                "How often the tech-lead sweep scans open issues for terminal "
+                "stuck state. Only runs when the sweep is enabled; each scan is "
+                "a single bounded query."
+            ),
+            "section": "Triage Review",
+            "config_attr": "triage.stuck_sweep.interval_minutes",
+            "yaml_path": "triage.stuck_sweep.interval_minutes",
+        },
+    )
+    triage_stuck_sweep_max_recovery_attempts: int = Field(
+        3,
+        title="Stuck Sweep Max Recovery Attempts",
+        description="Re-inject a stuck issue at most this many times before escalating",
+        ge=1,
+        le=100,
+        json_schema_extra={
+            "doc_examples": ["1", "3", "5"],
+            "doc_notes": (
+                "After this many recovery attempts a stuck issue is no longer "
+                "re-injected (no infinite loop); it is surfaced as exhausted and "
+                "needs human attention. The counter is durable across restarts."
+            ),
+            "section": "Triage Review",
+            "config_attr": "triage.stuck_sweep.max_recovery_attempts",
+            "yaml_path": "triage.stuck_sweep.max_recovery_attempts",
+        },
+    )
+
     @field_validator(
         "triage_authority_post_comment",
         "triage_authority_create_issue",
@@ -1257,6 +1311,19 @@ class ReviewSettings(BaseModel):
                 f"{self.triage_health_review_interval_minutes} but no triage "
                 "agent is configured; set review.triage_review_agent, or use 0 "
                 "to disable the periodic health review."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _stuck_sweep_requires_triage_agent(self) -> "ReviewSettings":
+        # Cross-field invariant (#6823): the sweep re-injects stuck issues into
+        # the reactive-triage pipeline, so an enabled sweep with no triage agent
+        # is silently inert at runtime. Reject the pair so it fails loudly.
+        if self.triage_stuck_sweep_enabled and not self.triage_agent:
+            raise ValueError(
+                "triage.stuck_sweep.enabled is true but no triage agent is "
+                "configured; set review.triage_review_agent, or disable the "
+                "stuck sweep."
             )
         return self
 

@@ -52,6 +52,7 @@ from .health_review_trigger import (
     hydrate_last_health_review_at,
     recover_pending_triage_anchors,
 )
+from .stuck_sweep import hydrate_stuck_sweep_state
 from .action_applier import ActionApplier
 from .issue_fetch_resilience import IssueFetchResilience, TransientIssueFetchError
 from .queue_cache import QueueCache, QueueMutationStatus, record_issue_refreshes
@@ -826,6 +827,9 @@ class StartupManager:
         store = self._queue_cache_store
         # Reconcile health-review last-fired from anchor truth (#6763 finding 6).
         hydrate_last_health_review_at(self.config, state, store, self.repository_host)
+        # Restore the tech-lead stuck-sweep timer + durable recovery counters
+        # so a restart honors the interval and keeps each issue's budget (#6823).
+        hydrate_stuck_sweep_state(state, store)
         if store is None:
             # No persistent store configured — fall back to full scan. Guard the
             # fetch so a transient repository blip degrades-and-continues rather

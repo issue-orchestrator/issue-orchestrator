@@ -33,6 +33,7 @@ from .config_models import (
     SchedulingConfig,
     SessionInteractionsConfig,
     SqliteBackupConfig,
+    StuckSweepConfig,
     TimelineConfig,
     TriageAuthorityConfig,
     TriageConfig,
@@ -244,20 +245,16 @@ def parse_triage_config(data: dict) -> TriageConfig:
         explicit=ms_data.get("explicit"),
     )
 
-    health_review_data = data.get("health_review", {}) or {}
-    health_review = TriageHealthReviewConfig(
-        interval_minutes=int(health_review_data.get("interval_minutes", 0)),
-        storm_threshold=int(health_review_data.get("storm_threshold", 3)),
-        storm_window_minutes=int(health_review_data.get("storm_window_minutes", 5)),
-    )
-
     return TriageConfig(
         inherit_labels=list(inherit_labels),
         explicit_labels=list(explicit_labels),
         milestone_strategy=milestone_strategy,
         priority=data.get("priority"),
         authority=TriageAuthorityConfig.from_mapping(data.get("authority", {}) or {}),
-        health_review=health_review,
+        health_review=TriageHealthReviewConfig.from_mapping(
+            data.get("health_review", {}) or {}
+        ),
+        stuck_sweep=StuckSweepConfig.from_mapping(data.get("stuck_sweep", {}) or {}),
     )
 
 

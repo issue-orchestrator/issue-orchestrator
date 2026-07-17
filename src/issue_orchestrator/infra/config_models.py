@@ -354,6 +354,15 @@ class TriageHealthReviewConfig:
     storm_threshold: int = 3
     storm_window_minutes: int = 5
 
+    @classmethod
+    def from_mapping(cls, data: dict) -> "TriageHealthReviewConfig":
+        """Parse the ``triage.health_review`` YAML sub-dict."""
+        return cls(
+            interval_minutes=int(data.get("interval_minutes", 0)),
+            storm_threshold=int(data.get("storm_threshold", 3)),
+            storm_window_minutes=int(data.get("storm_window_minutes", 5)),
+        )
+
     def startup_errors(self) -> list[str]:
         """Startup configuration errors for the health-review block.
 
@@ -376,6 +385,49 @@ class TriageHealthReviewConfig:
             errors.append(
                 "triage.health_review.storm_window_minutes must be > 0, got "
                 f"{self.storm_window_minutes}"
+            )
+        return errors
+
+
+@dataclass
+class StuckSweepConfig:
+    """Tech-lead attention sweep trigger settings (ADR-0031, #6823).
+
+    A bounded, timer-gated backstop that re-injects open issues stuck in a
+    terminal blocking state (that the normal loop cannot re-discover) into the
+    reactive-triage pipeline. ``interval_minutes`` is the cadence;
+    ``max_recovery_attempts`` bounds re-injection per issue before the sweep
+    surfaces it as exhausted (needs human attention) instead of looping.
+    ``enabled`` is False (off) by default.
+    """
+
+    enabled: bool = False
+    interval_minutes: int = 15
+    max_recovery_attempts: int = 3
+
+    @classmethod
+    def from_mapping(cls, data: dict) -> "StuckSweepConfig":
+        """Parse the ``triage.stuck_sweep`` YAML sub-dict."""
+        return cls(
+            enabled=bool(data.get("enabled", False)),
+            interval_minutes=int(data.get("interval_minutes", 15)),
+            max_recovery_attempts=int(data.get("max_recovery_attempts", 3)),
+        )
+
+    def startup_errors(self) -> list[str]:
+        """Own-block invariants; the enabled-requires-triage-agent cross-field
+        check lives in the review validator (it reads other config sections)."""
+        errors: list[str] = []
+        if self.interval_minutes < 0:
+            errors.append(
+                "triage.stuck_sweep.interval_minutes must be >= 0, got "
+                f"{self.interval_minutes}"
+            )
+        if self.max_recovery_attempts < 1:
+            errors.append(
+                "triage.stuck_sweep.max_recovery_attempts must be >= 1 "
+                f"(bounds re-injection before escalation), got "
+                f"{self.max_recovery_attempts}"
             )
         return errors
 
@@ -408,6 +460,9 @@ class TriageConfig:
     # Periodic health-review trigger (ADR-0031 §4)
     health_review: TriageHealthReviewConfig = field(default_factory=TriageHealthReviewConfig)
 
+    # Tech-lead attention sweep for stuck issues (ADR-0031, #6823)
+    stuck_sweep: StuckSweepConfig = field(default_factory=StuckSweepConfig)
+
     def to_event_dict(self) -> dict:
         """Serialized ``triage`` section for config event payloads."""
         return {
@@ -423,6 +478,11 @@ class TriageConfig:
                 "interval_minutes": self.health_review.interval_minutes,
                 "storm_threshold": self.health_review.storm_threshold,
                 "storm_window_minutes": self.health_review.storm_window_minutes,
+            },
+            "stuck_sweep": {
+                "enabled": self.stuck_sweep.enabled,
+                "interval_minutes": self.stuck_sweep.interval_minutes,
+                "max_recovery_attempts": self.stuck_sweep.max_recovery_attempts,
             },
         }
 

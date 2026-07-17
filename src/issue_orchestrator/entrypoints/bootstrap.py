@@ -792,7 +792,9 @@ def build_orchestrator(
         reconcile=True,
     ) if github else None
 
-    triage = create_triage_composition(config, github, events)
+    triage = create_triage_composition(
+        config, github, events, queue_cache_store=queue_cache_store
+    )
     triage_authority = triage.authority
     triage_board_publisher = triage.board_publisher
     fact_gatherer = triage.fact_gatherer

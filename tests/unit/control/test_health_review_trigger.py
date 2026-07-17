@@ -96,6 +96,18 @@ class _FakeStore:
         self._stored_fingerprint = value
         self.saved_fingerprints.append(value)
 
+    def load_last_stuck_sweep_at(self) -> float:
+        return 0.0
+
+    def save_last_stuck_sweep_at(self, value: float) -> None:
+        pass
+
+    def load_recovery_attempts(self) -> dict[int, int]:
+        return {}
+
+    def save_recovery_attempts(self, value: dict[int, int]) -> None:
+        pass
+
 
 class _AnchorTracker:
     """RepositoryHost fake honoring GitHub's label AND-filter, state, and limit."""

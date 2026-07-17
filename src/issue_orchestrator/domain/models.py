@@ -1844,6 +1844,12 @@ class OrchestratorState:
     # orchestrator does not re-walk an unchanged board (ADR-0031 §4). "" means
     # never reviewed / a fresh cache — which makes the next due review fire.
     last_reviewed_board_fingerprint: str = ""
+    # Tech-lead attention sweep (#6823): epoch seconds of the last stuck-issue
+    # sweep (0 = never), and the durable per-issue recovery-attempt counter that
+    # bounds re-injection so an unrecoverable issue escalates instead of looping
+    # forever. Both are hydrated at startup from the queue-cache meta store.
+    last_stuck_sweep_at: float = 0.0
+    recovery_attempts: dict[int, int] = field(default_factory=dict)
     def retrospective_review_in_flight_issue_numbers(self) -> set[int]:
         """Issues already queued, discovered, or actively under retrospective review."""
 

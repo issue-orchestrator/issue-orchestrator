@@ -41,6 +41,7 @@ from .triage_reaction import storm_possible
 
 if TYPE_CHECKING:
     from ..ports.issue import Issue
+    from ..ports.queue_cache_store import QueueCacheStore
     from ..ports.triage_authority import TriageAuthorityStore
     from ..domain.models import (
         OrchestratorState,
@@ -85,6 +86,10 @@ class FactGatherer:
     # projection + refreshing the triage board file) and makes no decisions.
     # Optional so unrelated tests need not wire it.
     board_publisher: Optional["TriageBoardPublisher"] = None
+    # Durable store for the tech-lead stuck sweep's timer + recovery counters
+    # (#6823). Optional so unrelated tests need not wire it; without it the
+    # sweep still runs but its counters do not survive a restart.
+    queue_cache_store: Optional["QueueCacheStore"] = None
 
     def fetch_issues(
         self,
@@ -169,6 +174,15 @@ class FactGatherer:
         """
         from .planner_types import OrchestratorSnapshot
 
+        # Gather triage facts FIRST: gather_triage_facts runs the tech-lead
+        # stuck sweep (#6823), which injects recovered failures into
+        # state.discovered_failures. That mutation must land before this tick's
+        # discovered_failures is captured below, so the reaction model sees the
+        # recovered failures this tick (a next-tick capture would be dropped by
+        # the end-of-tick discovered-fact clear).
+        triage_facts = self.gather_triage_facts(state)
+        cleanup_facts = self.gather_cleanup_facts(state)
+
         return OrchestratorSnapshot(
             issues=tuple(issues),
             active_sessions=tuple(state.active_sessions),
@@ -200,8 +214,8 @@ class FactGatherer:
                 state.discovered_merge_queue_enqueues
             ),
             discovered_failures=tuple(state.discovered_failures),
-            triage_facts=self.gather_triage_facts(state),
-            cleanup_facts=self.gather_cleanup_facts(state),
+            triage_facts=triage_facts,
+            cleanup_facts=cleanup_facts,
             stale_in_progress_issues=tuple(stale_in_progress_issues or []),
             stale_claim_issues=tuple(stale_claim_issues or []),
             failed_this_cycle=frozenset(state.failed_this_cycle),
@@ -248,6 +262,14 @@ class FactGatherer:
         """
         from ..domain.models import TriageFacts
 
+        now_ts = time.time() if now is None else now
+        # Tech-lead attention sweep (#6823): an independent, timer-gated trigger
+        # that re-injects terminally-stuck issues into the reactive-triage
+        # pipeline. Runs regardless of the batch/health/storm arming below (it
+        # feeds discovered_failures, not TriageFacts). stuck_sweep_due is pure
+        # state/config math, so a disabled/not-due sweep makes ZERO GitHub calls.
+        self._run_stuck_sweep_if_due(state, now_ts)
+
         watch_label = self._get_triage_watch_label()
         batch_armed = bool(watch_label)
         triage_agent_configured = bool(self.config.triage_review_agent)
@@ -277,9 +299,7 @@ class FactGatherer:
         # The decision carries the board it was decided on, so anchor creation
         # can stamp that exact value instead of recomputing a board that has
         # moved on by then (#6793).
-        health_decision = health_review_decision(
-            self.config, state, time.time() if now is None else now
-        )
+        health_decision = health_review_decision(self.config, state, now_ts)
         due = health_decision.due
 
         existing_triage_issue: Optional[int] = None
@@ -338,6 +358,53 @@ class FactGatherer:
                 facts, last_health_review_at=state.last_health_review_at
             )
         return facts
+
+    def _run_stuck_sweep_if_due(
+        self, state: "OrchestratorState", now: float
+    ) -> None:
+        """Run the tech-lead stuck sweep and record what it recovered (#6823).
+
+        All policy lives in the ``stuck_sweep`` owner; this seam only arms it,
+        records the recovered failures through the state owner method, stamps
+        and persists the timer, and emits an observation event. No new control
+        vocabulary enters this module.
+        """
+        from .label_manager import LabelManager
+        from .stuck_sweep import (
+            persist_stuck_sweep_state,
+            run_stuck_sweep,
+            stuck_sweep_due,
+        )
+
+        if not stuck_sweep_due(self.config, state, now):
+            return
+        result = run_stuck_sweep(
+            self.config,
+            state,
+            self.repository_host,
+            LabelManager(self.config),
+            now,
+        )
+        for failure in result.recovered:
+            state.record_discovered_failure(failure)
+        state.last_stuck_sweep_at = now
+        persist_stuck_sweep_state(state, self.queue_cache_store)
+        self._emit_stuck_sweep(result)
+
+    def _emit_stuck_sweep(self, result: object) -> None:
+        """Fire-and-forget observation of a sweep that acted (#6823)."""
+        if self.events is None:
+            return
+        recovered = [failure.issue_number for failure in result.recovered]
+        exhausted = list(result.exhausted)
+        if not recovered and not exhausted:
+            return
+        self.events.publish(
+            make_trace_event(
+                EventName.TRIAGE_STUCK_SWEEP,
+                {"recovered": recovered, "exhausted": exhausted},
+            )
+        )
 
     def _get_triage_watch_label(self) -> str | None:
         """Get the label to watch for triage review (None = trigger disabled)."""

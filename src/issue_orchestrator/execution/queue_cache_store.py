@@ -163,6 +163,63 @@ class QueueCacheStore:
                 (value,),
             )
 
+    def load_last_stuck_sweep_at(self) -> float:
+        """Load the epoch timestamp of the last tech-lead stuck sweep (#6823).
+
+        Returns 0.0 when the sweep has never run. Stored in the same ``meta``
+        key/value table as the health-review marker; ``clear()`` wipes it (worst
+        case: one early sweep after a cache reset).
+        """
+        conn = self._get_connection()
+        row = conn.execute(
+            "SELECT value FROM meta WHERE key = 'last_stuck_sweep_at'"
+        ).fetchone()
+        if row is None:
+            return 0.0
+        return float(row["value"])
+
+    def save_last_stuck_sweep_at(self, value: float) -> None:
+        """Persist the last stuck-sweep timestamp so a restart honors the
+        configured interval instead of immediately re-sweeping (#6823)."""
+        with self._transaction() as tx:
+            tx.execute(
+                "INSERT INTO meta (key, value) VALUES ('last_stuck_sweep_at', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (repr(value),),
+            )
+
+    def load_recovery_attempts(self) -> dict[int, int]:
+        """Load the durable per-issue recovery-attempt counter (#6823).
+
+        Returns an empty mapping when none was ever recorded. Stored as a JSON
+        object in the ``meta`` table; JSON object keys are strings, so they are
+        converted back to ``int`` here (the counter is keyed by issue number).
+        """
+        conn = self._get_connection()
+        row = conn.execute(
+            "SELECT value FROM meta WHERE key = 'stuck_sweep_recovery_attempts'"
+        ).fetchone()
+        if row is None:
+            return {}
+        raw = json.loads(row["value"])
+        return {int(number): int(count) for number, count in raw.items()}
+
+    def save_recovery_attempts(self, value: dict[int, int]) -> None:
+        """Persist the recovery-attempt counter as a JSON object (#6823).
+
+        A restart re-hydrates this so an already-exhausted stuck issue is not
+        re-injected with a fresh (zeroed) budget. ``clear()`` wipes it with the
+        rest of the cache.
+        """
+        payload = json.dumps({str(number): count for number, count in value.items()})
+        with self._transaction() as tx:
+            tx.execute(
+                "INSERT INTO meta (key, value) VALUES "
+                "('stuck_sweep_recovery_attempts', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (payload,),
+            )
+
     def save_snapshot(
         self,
         issues: Sequence["Issue"],

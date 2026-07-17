@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from ..infra.config import Config
     from ..infra.orchestrator import Orchestrator
     from ..ports import EventSink, RepositoryHost
+    from ..ports.queue_cache_store import QueueCacheStore
     from ..ports.timeline_store import TimelineStore
     from ..ports.triage_authority import TriageAuthorityStore
 
@@ -97,8 +98,13 @@ def create_triage_fact_gatherer(
     events: "EventSink",
     authority: "TriageAuthorityStore",
     board_publisher: "TriageBoardPublisher | None",
+    queue_cache_store: "QueueCacheStore | None" = None,
 ) -> "FactGatherer | None":
-    """Wire the read-only triage ledgers and projections as one unit."""
+    """Wire the read-only triage ledgers and projections as one unit.
+
+    ``queue_cache_store`` backs the tech-lead stuck sweep's durable timer +
+    recovery counters (#6823); optional so the testing composition can omit it.
+    """
     if repository_host is None:
         return None
     from ..control.fact_gatherer import FactGatherer
@@ -109,6 +115,7 @@ def create_triage_fact_gatherer(
         events=events,
         triage_authority=authority,
         board_publisher=board_publisher,
+        queue_cache_store=queue_cache_store,
     )
 
 
@@ -117,6 +124,7 @@ def create_triage_composition(
     repository_host: "RepositoryHost | None",
     events: "EventSink",
     fact_gatherer: "FactGatherer | None" = None,
+    queue_cache_store: "QueueCacheStore | None" = None,
 ) -> TriageComposition:
     """Build the triage store and ensure both projections share one publisher."""
     authority = create_triage_authority_store(config)
@@ -127,7 +135,8 @@ def create_triage_composition(
     )
     if fact_gatherer is None:
         fact_gatherer = create_triage_fact_gatherer(
-            config, repository_host, events, authority, board_publisher
+            config, repository_host, events, authority, board_publisher,
+            queue_cache_store,
         )
     return TriageComposition(
         authority=authority,
