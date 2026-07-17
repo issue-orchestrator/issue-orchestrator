@@ -1,0 +1,15 @@
+# npm-check-updates config for the VS Code extension (read by the deps-batch
+# MAJOR=1 step: `cd packages/vscode && npx npm-check-updates -u`).
+#
+# @types/vscode is NOT a "stay on HEAD" dependency: it declares the VS Code API
+# surface tsc compiles against, and must equal the engines.vscode floor (the ESM
+# extension-host floor, currently 1.100) -- not the latest. Compiling against a
+# newer API surface than the oldest VS Code we support ships code that crashes at
+# runtime there. Enforced by
+# tests/unit/test_github_workflows.py::test_vscode_types_pinned_to_engines_floor.
+#
+# So reject it here (and Dependabot ignores it in .github/dependabot.yml). Raise
+# engines.vscode + @types/vscode + DEFAULT_VSCODE_VERSION together, deliberately,
+# only when you actually need a newer API.
+reject:
+  - "@types/vscode"
