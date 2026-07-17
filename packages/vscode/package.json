@@ -245,7 +245,7 @@
   "devDependencies": {
     "@vscode/test-electron": "^2.3.9",
     "@types/eventsource": "^3.0.0",
-    "@types/node": "^20.11.30",
+    "@types/node": "^26.1.1",
     "@types/vscode": "~1.100.0",
     "@types/mocha": "^10.0.6",
     "glob": "^10.3.12",
