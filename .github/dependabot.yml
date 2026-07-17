@@ -1,8 +1,29 @@
 version: 2
 
+# Grouping policy is keyed on CI coverage, not on semver. There is no
+# auto-merge: a human merges these PRs. See the dependency-upgrades skill for
+# which are safe to merge on a green check vs which need local verification.
+#
+# semver-major is upstream's statement about *their* API compatibility; it says
+# nothing about our exposure, which is governed by whether CI exercises the
+# dependency. uv and github-actions are covered by `validate-fast`. npm is not
+# (CI compiles the extension but `test-vscode` cannot run its harness on
+# Actions), so the npm bucket is verified via `make deps-batch` locally.
+#
+# Majors live in their own group per ecosystem purely for failure isolation:
+# a group is one PR, so folding majors into the minor/patch PR lets a single
+# bad major hold every safe update hostage.
+
 updates:
+  # /tools/semgrep is a separate uv project with its own lockfile. It was absent
+  # from this config, so Dependabot security updates for it arrived ungrouped,
+  # one PR per advisory. (/packages/agent_runner is deliberately omitted: it
+  # declares no runtime dependencies and is consumed via pythonpath, not
+  # installed, so there is nothing there to update.)
   - package-ecosystem: "uv"
-    directory: "/"
+    directories:
+      - "/"
+      - "/tools/semgrep"
     schedule:
       interval: "weekly"
       day: "monday"
@@ -17,6 +38,12 @@ updates:
         update-types:
           - "minor"
           - "patch"
+      python-major:
+        applies-to: "version-updates"
+        patterns:
+          - "*"
+        update-types:
+          - "major"
       python-security:
         applies-to: "security-updates"
         patterns:
@@ -38,6 +65,12 @@ updates:
         update-types:
           - "minor"
           - "patch"
+      github-actions-major:
+        applies-to: "version-updates"
+        patterns:
+          - "*"
+        update-types:
+          - "major"
       github-actions-security:
         applies-to: "security-updates"
         patterns:
@@ -59,6 +92,12 @@ updates:
         update-types:
           - "minor"
           - "patch"
+      vscode-npm-major:
+        applies-to: "version-updates"
+        patterns:
+          - "*"
+        update-types:
+          - "major"
       vscode-npm-security:
         applies-to: "security-updates"
         patterns:

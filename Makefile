@@ -1,4 +1,4 @@
-.PHONY: help venv venv-fast semgrep-venv worktree-setup install upgrade-deps release release-pr prepare-release preview-readme typecheck lint-arch lint-complexity quality-guardrails quality-guardrails-stale sync-deps test test-unit test-unit-cov test-unit-cov-html test-integration test-integration-core test-integration-core-local test-integration-core-live-codex test-integration-agent test-simulated test-simulated-core test-simulated-agent test-e2e test-e2e-heavy test-e2e-onboarding-live test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-real-gh-plus-e2e test-real-gh-plus-e2e-subprocess test-web test-web-headed playwright-install validate validate-raw validate-pr validate-pr-raw validate-quick validate-full verify-hooks-all _validate-impl _validate-static-impl _validate-core-tests-impl _validate-pr-impl _validate-agent-impl _validate-full-impl clean demo issues-validate issues-fix issues-fix-dry-run issues-create
+.PHONY: help venv venv-fast semgrep-venv worktree-setup install upgrade-deps deps-batch release release-pr prepare-release preview-readme typecheck lint-arch lint-complexity quality-guardrails quality-guardrails-stale sync-deps test test-unit test-unit-cov test-unit-cov-html test-integration test-integration-core test-integration-core-local test-integration-core-live-codex test-integration-agent test-simulated test-simulated-core test-simulated-agent test-e2e test-e2e-heavy test-e2e-onboarding-live test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-real-gh-plus-e2e test-real-gh-plus-e2e-subprocess test-web test-web-headed playwright-install validate validate-raw validate-pr validate-pr-raw validate-quick validate-full verify-hooks-all _validate-impl _validate-static-impl _validate-core-tests-impl _validate-pr-impl _validate-agent-impl _validate-full-impl clean demo issues-validate issues-fix issues-fix-dry-run issues-create
 
 # GNU make detection - required for parallel validation with grouped output
 # On macOS: brew install make (provides gmake)
@@ -15,6 +15,7 @@ help:
 	@echo "  worktree-setup      Full worktree setup: venv + vscode extensions + playwright"
 	@echo "  install             Install dev dependencies (assumes venv exists)"
 	@echo "  upgrade-deps        Update uv.lock after changing pyproject.toml"
+	@echo "  deps-batch          Batch-upgrade all manifests + verify locally (MAJOR=1 for npm majors)"
 	@echo "  release             Run full release flow (use VERSION=v1.0.0 ARGS=--dry-run)"
 	@echo "  release-pr          Create release metadata PR (use VERSION=v1.0.0)"
 	@echo "  prepare-release     Bump release files only (use VERSION=v1.0.0)"
@@ -203,6 +204,67 @@ endif
 	@touch .venv/.deps-synced
 	@echo ""
 	@echo "Done! Commit uv.lock with your changes."
+
+# Batched dependency upgrade across every manifest, verified locally.
+#
+# Why this exists: local `make validate` is a strict superset of CI. It runs
+# test-vscode (the real VS Code extension harness), which self-skips on GitHub
+# Actions, so packages/vscode has no CI coverage at all. This target is the only
+# place the npm bucket is actually exercised before it lands.
+#
+# Python majors arrive automatically -- pyproject pins with `>=`, so
+# `uv lock --upgrade` already crosses major boundaries. npm ranges are `^`, so
+# npm majors need MAJOR=1, which rewrites package.json ranges via
+# npm-check-updates.
+#
+# MAJOR=1 is not a rubber stamp: npm-check-updates targets absolute latest, which
+# can overshoot what Dependabot proposes (and can bump runtime deps Dependabot
+# left alone). Read the package.json diff before committing it, and keep
+# @types/vscode at or below the `engines.vscode` floor -- raising it above the
+# declared minimum lets the extension compile against APIs that are not present
+# in the oldest VS Code we claim to support.
+#
+# Usage: make deps-batch          - upgrade Python fully; npm within ^ ranges
+#        make deps-batch MAJOR=1  - also bump npm package.json ranges to latest
+deps-batch: ensure-uv
+	@# Validate MAJOR before ANY mutation. ifdef tests presence (so MAJOR=0 would
+	@# wrongly take the major branch); ifeq alone rejects bad values but only
+	@# after the lockfile upgrades below have already run. This guard is the very
+	@# first recipe line so a typo (MAJOR=yes) cannot alter a single lockfile.
+	@if [ -n "$(MAJOR)" ] && [ "$(MAJOR)" != "1" ]; then \
+		echo "deps-batch: MAJOR must be unset or 1, got '$(MAJOR)'." >&2; \
+		exit 2; \
+	fi
+	@echo "==> Upgrading Python dependencies (root)..."
+	$(UV) lock --upgrade
+	@echo "==> Upgrading Python dependencies (tools/semgrep)..."
+	cd tools/semgrep && $(UV) lock --upgrade
+ifeq ($(MAJOR),1)
+	@echo "==> Upgrading VS Code extension dependencies (including majors)..."
+	cd packages/vscode && npx --yes npm-check-updates -u && npm install
+else
+	@echo "==> Upgrading VS Code extension dependencies (within ranges)..."
+	cd packages/vscode && npm update
+endif
+	@echo "==> Syncing Python environment..."
+	$(UV) sync --frozen --all-extras
+	@$(GMAKE) --no-print-directory semgrep-venv
+	@touch .venv/.deps-synced
+	@echo ""
+	@echo "==> Verifying with the full required suite (agent lane + test-vscode)..."
+	@# validate-pr-raw, not validate: `validate` stops at _validate-impl and omits
+	@# _validate-agent-impl, so it would skip the live claude/codex lane -- exactly
+	@# the lane CI already cannot run. That lane is the whole reason this batch is
+	@# verified locally, so skipping it here would leave pexpect-class dependencies
+	@# (agent spawning) covered by nothing at all. -raw avoids seeding the
+	@# SHA-keyed pre-push cache from an uncommitted tree.
+	@$(GMAKE) --no-print-directory validate-pr-raw
+	@echo ""
+	@echo "==> Upgraded manifests:"
+	@git diff --stat -- uv.lock tools/semgrep/uv.lock packages/vscode/package.json packages/vscode/package-lock.json
+	@echo ""
+	@echo "Batch verified. Commit the manifests above; Dependabot closes its own"
+	@echo "PRs once the versions it proposed are on main."
 
 release:
 	@if [ -z "$(VERSION)" ]; then \

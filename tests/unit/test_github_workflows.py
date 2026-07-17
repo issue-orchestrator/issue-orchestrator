@@ -1,3 +1,5 @@
+import json
+import re
 from pathlib import Path
 
 import yaml
@@ -7,6 +9,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 MERGE_GROUP_AWARE_PATHS_FILTER = (
     "dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706"
 )
+VSCODE_PACKAGE_JSON = REPO_ROOT / "packages/vscode/package.json"
 
 
 def test_validate_workflow_runs_required_checks_for_merge_queue() -> None:
@@ -27,3 +30,80 @@ def test_validate_workflow_runs_required_checks_for_merge_queue() -> None:
             "github.event_name == 'merge_group' || "
             "needs.changes.outputs.python == 'true'"
         )
+
+
+def test_validate_vscode_is_merge_group_aware() -> None:
+    """validate-vscode must run in the merge queue and on node-path changes.
+
+    It gates on the `node` filter output (not `python`), so a merge-group run or
+    any packages/vscode change compiles the extension. Without the merge_group
+    arm, a required check could pass at PR time but never re-run against the
+    real merge result.
+    """
+    workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/validate.yml").read_text())
+    jobs = workflow["jobs"]
+
+    assert "node" in jobs["changes"]["outputs"]
+    assert jobs["validate-vscode"]["if"] == (
+        "github.event_name == 'merge_group' || "
+        "needs.changes.outputs.node == 'true'"
+    )
+
+
+VSCODE_RUNTEST_TS = REPO_ROOT / "packages/vscode/test/runTest.ts"
+
+
+def _major_minor(version: str) -> str:
+    return ".".join(version.split(".")[:2])
+
+
+def test_vscode_types_pinned_to_engines_floor() -> None:
+    """@types/vscode must not drift above the declared engines.vscode floor.
+
+    A caret range on @types/vscode lets the compile-time API surface advance past
+    the minimum VS Code the extension claims to support, so `tsc` would accept
+    APIs absent from the oldest supported client. Pin the types to the same major
+    the engines floor declares; bumping one requires deliberately bumping both.
+    """
+    pkg = json.loads(VSCODE_PACKAGE_JSON.read_text())
+    engines_floor = pkg["engines"]["vscode"].lstrip("^~")
+    types_range = pkg["devDependencies"]["@types/vscode"]
+
+    # Types must be pinned (~ or exact), not caret, and match the engines major.minor.
+    assert not types_range.startswith("^"), (
+        f"@types/vscode is caret-ranged ({types_range}); pin it to ~ the engines "
+        f"floor ({engines_floor}) so it cannot exceed the declared minimum API."
+    )
+    assert _major_minor(types_range.lstrip("~")) == _major_minor(engines_floor), (
+        f"@types/vscode ({types_range}) must match engines.vscode floor "
+        f"({engines_floor}); update both together when raising the floor."
+    )
+
+
+def test_vscode_test_runtime_pinned_to_engines_floor() -> None:
+    """The extension test harness must actually run at the declared floor.
+
+    Compile-time alignment is not enough: the extension is ESM, and the VS Code
+    extension host only supports ESM from 1.100, so a build below the true floor
+    fails to *load* (ERR_REQUIRE_ESM) even though it type-checks. Running the
+    harness at DEFAULT_VSCODE_VERSION == engines.vscode floor validates the
+    lower-bound contract; if the runtime pin drifted above the floor it would
+    stop exercising the minimum we advertise.
+    """
+    pkg = json.loads(VSCODE_PACKAGE_JSON.read_text())
+    engines_floor = pkg["engines"]["vscode"].lstrip("^~")
+
+    ts = VSCODE_RUNTEST_TS.read_text()
+    match = re.search(r'DEFAULT_VSCODE_VERSION\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"', ts)
+    assert match, "DEFAULT_VSCODE_VERSION not found in runTest.ts"
+    runtime_version = match.group(1)
+
+    # Exact, not major.minor: the runtime is a concrete pinned version, so it
+    # must equal the exact declared floor (1.100.0), not merely share its minor.
+    # A drift to 1.100.1 would stop exercising the exact release we advertise,
+    # where extension-host behavior can differ from the original floor build.
+    assert runtime_version == engines_floor, (
+        f"runTest.ts DEFAULT_VSCODE_VERSION ({runtime_version}) must EXACTLY equal "
+        f"the engines.vscode floor ({engines_floor}) so the harness validates the "
+        f"exact declared minimum. Raise both together."
+    )

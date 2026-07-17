@@ -3,6 +3,7 @@
 # ruff: noqa: F403,F405,SLF001
 
 from tests.unit import test_web as _support
+from tests.unit.route_helpers import iter_route_paths
 from tests.unit.test_web import *  # noqa: F403
 
 globals().update(
@@ -67,11 +68,7 @@ class TestTimelineActionWiring:
 
     def _collect_app_route_patterns(self) -> set[str]:
         """Extract all registered route patterns from the FastAPI app."""
-        patterns: set[str] = set()
-        for route in app.routes:
-            if hasattr(route, "path"):
-                patterns.add(route.path)
-        return patterns
+        return set(iter_route_paths(app))
 
     def test_all_emitted_action_types_are_registered(self, tmp_path: Path) -> None:
         """Every action type produced by _timeline_event_actions must be

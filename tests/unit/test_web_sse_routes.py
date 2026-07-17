@@ -3,6 +3,7 @@
 # ruff: noqa: F403,F405,SLF001
 
 from tests.unit import test_web as _support
+from tests.unit.route_helpers import iter_route_paths
 from tests.unit.test_web import *  # noqa: F403
 
 globals().update(
@@ -177,7 +178,7 @@ class TestSSEFunctionality:
         from issue_orchestrator.entrypoints.web import app
 
         # Check the endpoint is registered by looking at routes
-        routes = [route.path for route in app.routes]
+        routes = list(iter_route_paths(app))
         assert "/api/events" in routes
 
     @pytest.mark.asyncio

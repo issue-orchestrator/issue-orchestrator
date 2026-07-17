@@ -272,7 +272,7 @@ class AgentRunner(BaseAgentRunner):
             "/bin/bash",
             ["-c", shell_cmd],
             cwd=str(spec.working_dir),
-            env=env,  # type: ignore[arg-type]  # pexpect accepts dict[str, str]
+            env=env,
             logfile=log_writer,
             timeout=None,
             preexec_fn=_pty_preexec,
