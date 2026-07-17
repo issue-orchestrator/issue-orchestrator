@@ -4,13 +4,18 @@ import * as os from "os";
 import { fileURLToPath } from "url";
 import { runTests } from "@vscode/test-electron";
 
-// Pin the VS Code build under test. Left unset, @vscode/test-electron resolves
-// "stable", so every VS Code release invalidated the cache and forced a fresh
-// ~273MB download -- which then blew the default 15s idle timeout and failed
-// `make test-vscode` outright. Pinning keeps the harness reproducible and lets
-// the shared cache actually hit; bump deliberately. Must stay at or above the
-// `engines.vscode` floor in package.json.
-const DEFAULT_VSCODE_VERSION = "1.128.1";
+// Pin the VS Code build under test to the declared engines.vscode floor, so the
+// harness validates the lower-bound compatibility contract: this extension is
+// ESM ("type": "module"), and the VS Code extension host only supports ESM from
+// 1.100, so it cannot even load below that. Testing at the floor proves it
+// loads at the minimum we advertise -- testing only at a newer build would hide
+// a raised real floor. Keep this equal to engines.vscode in package.json
+// (enforced by test_vscode_types_pinned_to_engines_floor); raise both together.
+//
+// (Pinning also keeps the harness reproducible: left unset, @vscode/test-electron
+// resolves "stable" and every VS Code release forced a fresh ~273MB download
+// that blew the default 15s idle timeout.)
+const DEFAULT_VSCODE_VERSION = "1.100.0";
 
 // Generous idle timeout so a cold cache (CI, new machine, version bump) can
 // still complete the download rather than aborting mid-stream.

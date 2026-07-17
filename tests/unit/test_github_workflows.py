@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 
 import yaml
@@ -49,6 +50,13 @@ def test_validate_vscode_is_merge_group_aware() -> None:
     )
 
 
+VSCODE_RUNTEST_TS = REPO_ROOT / "packages/vscode/test/runTest.ts"
+
+
+def _major_minor(version: str) -> str:
+    return ".".join(version.split(".")[:2])
+
+
 def test_vscode_types_pinned_to_engines_floor() -> None:
     """@types/vscode must not drift above the declared engines.vscode floor.
 
@@ -66,10 +74,32 @@ def test_vscode_types_pinned_to_engines_floor() -> None:
         f"@types/vscode is caret-ranged ({types_range}); pin it to ~ the engines "
         f"floor ({engines_floor}) so it cannot exceed the declared minimum API."
     )
-    types_floor = types_range.lstrip("~")
-    engines_major_minor = ".".join(engines_floor.split(".")[:2])
-    types_major_minor = ".".join(types_floor.split(".")[:2])
-    assert types_major_minor == engines_major_minor, (
+    assert _major_minor(types_range.lstrip("~")) == _major_minor(engines_floor), (
         f"@types/vscode ({types_range}) must match engines.vscode floor "
         f"({engines_floor}); update both together when raising the floor."
+    )
+
+
+def test_vscode_test_runtime_pinned_to_engines_floor() -> None:
+    """The extension test harness must actually run at the declared floor.
+
+    Compile-time alignment is not enough: the extension is ESM, and the VS Code
+    extension host only supports ESM from 1.100, so a build below the true floor
+    fails to *load* (ERR_REQUIRE_ESM) even though it type-checks. Running the
+    harness at DEFAULT_VSCODE_VERSION == engines.vscode floor validates the
+    lower-bound contract; if the runtime pin drifted above the floor it would
+    stop exercising the minimum we advertise.
+    """
+    pkg = json.loads(VSCODE_PACKAGE_JSON.read_text())
+    engines_floor = pkg["engines"]["vscode"].lstrip("^~")
+
+    ts = VSCODE_RUNTEST_TS.read_text()
+    match = re.search(r'DEFAULT_VSCODE_VERSION\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"', ts)
+    assert match, "DEFAULT_VSCODE_VERSION not found in runTest.ts"
+    runtime_version = match.group(1)
+
+    assert _major_minor(runtime_version) == _major_minor(engines_floor), (
+        f"runTest.ts DEFAULT_VSCODE_VERSION ({runtime_version}) must equal the "
+        f"engines.vscode floor ({engines_floor}) so the harness validates the "
+        f"declared minimum. Raise both together."
     )

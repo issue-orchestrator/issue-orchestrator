@@ -32,8 +32,7 @@ The only question is **which PR the fix lands in**:
 
 If a fix genuinely cannot land this week, **skip that week's batch** — fix it,
 resume next week. Do not pin to buy time. You lose one week of the *batched*
-ecosystems; security and CI-covered updates keep flowing through auto-merge the
-whole time (see below).
+ecosystems; the individual Dependabot PRs stay open and are merged next cycle.
 
 ### The one real exception
 
@@ -93,9 +92,12 @@ covers the group.
 
 ### Verify locally with `make deps-batch` — for the rest
 
-Local `make deps-batch` runs `validate-pr-raw`, a strict superset of CI: it runs
-the VS Code harness and the live-agent lane, neither of which CI can. This is the
-only place npm and the agent-lane deps get real coverage.
+`make deps-batch` is a **human maintainer** task, run at a terminal — not an
+orchestrated coding-agent flow. It runs `validate-pr-raw`, a strict superset of
+CI: the VS Code harness and the live-agent lane, neither of which CI can. This is
+the only place npm and the agent-lane deps get real coverage.
+
+The upgrade + verify step is the same for anyone:
 
 ```bash
 git worktree add ../issue-orchestrator-wt-deps -b deps-YYYY-MM
@@ -103,12 +105,22 @@ cd ../issue-orchestrator-wt-deps && make worktree-setup
 
 make deps-batch           # Python (root + tools/semgrep) fully; npm within ^ ranges
 make deps-batch MAJOR=1   # also bump npm package.json ranges (see caution)
-
-# deps-batch runs the FULL required suite (validate-pr-raw): static + core tests
-# + live-web + the agent lane + test-vscode. Read the manifest diff it prints.
-git add -A && git commit --signoff && git push -u origin deps-YYYY-MM
-gh pr create
+# deps-batch runs the FULL required suite (validate-pr-raw). Read the diff it prints.
 ```
+
+**Publishing depends on who you are — this matters:**
+
+- **A human maintainer** commits and opens the PR directly:
+  ```bash
+  git add -A && git commit --signoff && git push -u origin deps-YYYY-MM && gh pr create
+  ```
+- **An orchestrated coding/rework agent** must NOT `git push` or `gh pr create` —
+  hooks block it, and it violates the completion boundary. The agent stages its
+  work and completes via the owner path, which validates the record and performs
+  the push/PR:
+  ```bash
+  coding-done completed --implementation "Batched dependency upgrade; deps-batch validate-pr-raw green" --problems "None"
+  ```
 
 You never close Dependabot PRs by hand — Dependabot closes its own once the
 versions it proposed land on main.

@@ -227,21 +227,24 @@ endif
 # Usage: make deps-batch          - upgrade Python fully; npm within ^ ranges
 #        make deps-batch MAJOR=1  - also bump npm package.json ranges to latest
 deps-batch: ensure-uv
+	@# Validate MAJOR before ANY mutation. ifdef tests presence (so MAJOR=0 would
+	@# wrongly take the major branch); ifeq alone rejects bad values but only
+	@# after the lockfile upgrades below have already run. This guard is the very
+	@# first recipe line so a typo (MAJOR=yes) cannot alter a single lockfile.
+	@if [ -n "$(MAJOR)" ] && [ "$(MAJOR)" != "1" ]; then \
+		echo "deps-batch: MAJOR must be unset or 1, got '$(MAJOR)'." >&2; \
+		exit 2; \
+	fi
 	@echo "==> Upgrading Python dependencies (root)..."
 	$(UV) lock --upgrade
 	@echo "==> Upgrading Python dependencies (tools/semgrep)..."
 	cd tools/semgrep && $(UV) lock --upgrade
-# ifeq on the exact value, not ifdef: ifdef tests presence, so `MAJOR=0` would
-# still take the major-rewrite branch. Require MAJOR=1 explicitly.
 ifeq ($(MAJOR),1)
 	@echo "==> Upgrading VS Code extension dependencies (including majors)..."
 	cd packages/vscode && npx --yes npm-check-updates -u && npm install
-else ifeq ($(MAJOR),)
+else
 	@echo "==> Upgrading VS Code extension dependencies (within ranges)..."
 	cd packages/vscode && npm update
-else
-	@echo "deps-batch: MAJOR must be unset or 1, got '$(MAJOR)'." >&2
-	@exit 2
 endif
 	@echo "==> Syncing Python environment..."
 	$(UV) sync --frozen --all-extras
