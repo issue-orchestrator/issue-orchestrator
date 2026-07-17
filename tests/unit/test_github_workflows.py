@@ -98,8 +98,12 @@ def test_vscode_test_runtime_pinned_to_engines_floor() -> None:
     assert match, "DEFAULT_VSCODE_VERSION not found in runTest.ts"
     runtime_version = match.group(1)
 
-    assert _major_minor(runtime_version) == _major_minor(engines_floor), (
-        f"runTest.ts DEFAULT_VSCODE_VERSION ({runtime_version}) must equal the "
-        f"engines.vscode floor ({engines_floor}) so the harness validates the "
-        f"declared minimum. Raise both together."
+    # Exact, not major.minor: the runtime is a concrete pinned version, so it
+    # must equal the exact declared floor (1.100.0), not merely share its minor.
+    # A drift to 1.100.1 would stop exercising the exact release we advertise,
+    # where extension-host behavior can differ from the original floor build.
+    assert runtime_version == engines_floor, (
+        f"runTest.ts DEFAULT_VSCODE_VERSION ({runtime_version}) must EXACTLY equal "
+        f"the engines.vscode floor ({engines_floor}) so the harness validates the "
+        f"exact declared minimum. Raise both together."
     )
