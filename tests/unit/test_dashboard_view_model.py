@@ -249,6 +249,15 @@ def test_running_timeline_snapshot_reads_each_issue_once_when_cards_repeat():
     timeline_reader.read.assert_called_once_with(409, limit=40)
 
 
+def test_normalize_status_reason_drops_none_and_blank_values():
+    # Production-parity regression: the dashboard normalizes a card's status
+    # reason before rendering. A missing reason (None) and a whitespace-only
+    # reason must both collapse to None so the card shows no reason text rather
+    # than an empty/blank string leaking into the UI contract.
+    assert _normalize_status_reason(None) is None
+    assert _normalize_status_reason("   ") is None
+
+
 def test_active_item_prefers_canonical_issue_title_over_rework_title():
     config = _make_config()
     agent_config = _make_agent_config()
