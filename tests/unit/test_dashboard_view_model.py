@@ -63,6 +63,15 @@ def _make_agent_config() -> AgentConfig:
     )
 
 
+def test_normalize_status_reason_drops_none_and_blank_values():
+    # Regression (M4-057): the dashboard status-normalization helper must treat a
+    # missing reason (None) and a whitespace-only reason ("   ") as "no reason",
+    # so a card never surfaces an empty or blank status detail. Both normalize to
+    # None — this is the production parity control-path the dashboard relies on.
+    assert _normalize_status_reason(None) is None
+    assert _normalize_status_reason("   ") is None
+
+
 def test_view_model_active_session_and_dashboard_data():
     config = _make_config()
     agent_config = _make_agent_config()
