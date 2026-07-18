@@ -146,7 +146,7 @@ triage:
   # scratch-reset owner (#6764/#6777) and graduated to execute; kill_hung_session
   # stays a gated proposal (execute is still a startup error until fully wired).
   authority:
-    reset_retry: execute
+    reset_retry: propose
   # Periodic "walk the board" health review — uses the single session slot when
   # due (deduped, skips at capacity).
   health_review:

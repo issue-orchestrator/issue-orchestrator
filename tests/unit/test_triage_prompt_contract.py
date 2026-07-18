@@ -102,7 +102,13 @@ def test_investigation_flavor_documents_focus_comment_rule(variant: str) -> None
     text = PROMPT_VARIANTS[variant]
     assert "focus_issue_number" in text
     marker = text.index('"flavor": "failure_investigation"')
-    bullet = text[marker : marker + 800]
+    # Scope to the failure-investigation flow (marker -> next level-2 heading)
+    # rather than a fixed char window: the flow legitimately grew when the
+    # tech-lead investigation rubric + evidence-map guidance were baked in, but
+    # the focus post_comment rule must still live somewhere in that flow.
+    rest = text[marker:]
+    next_section = re.search(r"\n## (?!#)", rest)
+    bullet = rest[: next_section.start()] if next_section else rest
     assert "post_comment" in bullet
     assert "target_number" in bullet
 

@@ -158,18 +158,64 @@ GitHub (comments, follow-up issues, escalations) goes into
 
 ## Failure Investigation Flow
 
-For `"flavor": "failure_investigation"` sessions only. Investigate the single
-issue named by `focus_issue_number`/`focus_reason` using local sources only:
-this worktree, orchestrator logs, session data under
-`.issue-orchestrator/sessions/`, and the board snapshot for context (what
-else was running, queued, or failing at the same time).
+For `"flavor": "failure_investigation"` sessions only. Diagnose the single issue
+named by `focus_issue_number`/`focus_reason` and decide what to do about it like
+a determined tech lead — from evidence, not from the label.
 
-- Your `triage-decision.json` MUST include at least one `post_comment`
-  action whose `target_number` is the `focus_issue_number` - that comment IS
-  your diagnosis channel; a decision without it is rejected and the session
-  is marked failed.
-- There is no PR manifest for this session: do NOT audit or label PRs and do
-  NOT follow any Batch Review Flow step.
+**Start with your evidence map** — it points you at everything you may read:
+
+```bash
+cat "$ISSUE_ORCHESTRATOR_RUN_DIR/triage-data/evidence-map.json"
+```
+
+It carries absolute paths to the focus issue's session run-dir(s), the
+orchestrator log, the `timeline.sqlite` event store, and a best-effort GitHub
+warm-cache (issue + PR state), plus a `guidance` note on verifying ground truth.
+You have READ access to everything it references — the run-dirs, the logs, the
+sqlite event store, and local `git` — so use it. (Writes still go only through
+your decision artifact; see the contract below.)
+
+**1. Establish ground truth (do not guess):**
+- Read the failed session's run-dir: `run-audit.json` (outcome, validation,
+  `processing_errors`), `validation-record.json` (`passed`?, `exit_code`),
+  `completion-record.json` (does it exist? outcome?), `analysis.json`. Mine the
+  orchestrator log / event timeline for the failure signature, and look for the
+  same signature across sessions — a recurring pattern, not just this incident.
+- **Key on `validation.passed`, NOT the `outcome` string.** `outcome` is
+  unreliable: a session can report `failed`/`timed_out` yet have completed and
+  passed validation (the work is done; the failure was downstream). Determine the
+  real state: did coding complete? did validation pass? *where* did it stall
+  (coding / review-exchange / publish)?
+- **Verify against ground truth** before acting: use the evidence map's `github`
+  warm-cache for issue/PR state, and local `git` — this repo is PUBLIC, so
+  `git fetch origin` then
+  `git merge-base --is-ancestor <sha> origin/<default_branch>` settles
+  merge-reachability. A `MERGED` PR whose commits are not on the default branch
+  is orphaned work, not "done"; internal/label state that disagrees with the real
+  repo is a ghost — the repo wins.
+
+**2. Decide proportionally (recognize → check → act):**
+- Search open issues for an existing tracker of the root cause; do NOT file a
+  duplicate. If it is genuinely untracked, a `create_issue` proposal is the right
+  output.
+- Match the remedy to the evidence — never a reflexive reset: recover/publish
+  already-completed+validated work; scoped rework when validation is red but the
+  feature is otherwise sound; reset only when the work is genuinely broken;
+  reconcile/close a ghost whose work already landed; escalate a recurring
+  signature to a human instead of looping. Prefer bumping the systemic fix over
+  hand-patching symptoms; do not act on stale state without verifying it.
+- `flag_pattern` a recurring failure so it accrues into the durable case-file
+  ledger. When the evidence needed to diagnose is missing or misleading, propose
+  the instrumentation (a log line / structured event) that would make the next
+  occurrence diagnosable.
+
+**Contract:**
+- Your `triage-decision.json` MUST include at least one `post_comment` action
+  whose `target_number` is the `focus_issue_number` - that comment IS your
+  diagnosis channel; a decision without it is rejected and the session is marked
+  failed.
+- There is no PR manifest for this session: do NOT audit or label PRs and do NOT
+  follow any Batch Review Flow step.
 - Write both required artifacts (below), then complete with `coding-done`.
 
 ## Health Review Flow
@@ -182,8 +228,27 @@ your assignment.
 cat "$ISSUE_ORCHESTRATOR_RUN_DIR/triage-data/board-snapshot.json"
 ```
 
+The snapshot is your primary input, but you are not limited to it: your
+`triage-data/evidence-map.json` points at the orchestrator log and the
+`timeline.sqlite` event store, and this repo is PUBLIC so local `git` is
+available. When the board looks off, dig into those raw sources to confirm.
+
 - Look for hung or aging sessions, queue pile-ups, repeated failures, and
   cross-job patterns; report findings through the decision artifact.
+- **Be suspicious — anomalies are first-class triggers.** A board that
+  contradicts itself (an item shown "awaiting merge" whose issue is closed or
+  whose PR already merged), an explicit `stale` marker, a column that only ever
+  grows, or a count that does not add up is a signal to investigate even when it
+  fits no cataloged failure type. Do not trust suspect board state at face
+  value: verify it against GitHub ground truth (issue state, PR merge status,
+  merge commit reachable on the default branch) before drawing a conclusion —
+  when the snapshot disagrees with GitHub, GitHub wins.
+- Then act proportionally: recognize the problem → search open issues for an
+  existing tracker of that *class* of anomaly (do not duplicate) → if untracked,
+  `create_issue`; if tracked, `post_comment`/`flag_pattern` with this fresh
+  evidence and let it bump priority. Prefer routing the systemic root cause over
+  hand-reconciling individual symptoms — closing N ghosts one by one does not
+  stop whatever is minting them.
 - Compare each area's distinct patterns and shipped fixes. When case files or
   fixed-then-recurred work cluster on one seam, propose the root-cause design
   review described below instead of another point patch. Cite the relevant

@@ -1864,6 +1864,22 @@
       "rule_id": "ruff_noqa_suppressions",
       "value": 1
     },
+    "ruff_noqa_suppressions:src/issue_orchestrator/control/triage_evidence.py:39d5c1d941ad": {
+      "detail": "line 281: # noqa: BLE001 - best-effort warm-cache, never fatal",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/control/triage_evidence.py:39d5c1d941ad",
+      "path": "src/issue_orchestrator/control/triage_evidence.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/control/triage_session_policy.py:8862c7ccdc5f": {
+      "detail": "line 347: # noqa: BLE001 - evidence map is best-effort, never fatal",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/control/triage_session_policy.py:8862c7ccdc5f",
+      "path": "src/issue_orchestrator/control/triage_session_policy.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
     "ruff_noqa_suppressions:src/issue_orchestrator/domain/logical_run_projection.py:fac5441686f1": {
       "detail": "line 85: # noqa: C901",
       "kind": "ruff_noqa_suppression",

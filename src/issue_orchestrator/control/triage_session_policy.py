@@ -34,6 +34,7 @@ from ..domain.triage_session import (
     TriageSessionFlavor,
 )
 from .completion_pr_collision import NoCommitsBetweenError
+from .triage_evidence import build_evidence_map, write_evidence_map
 from .triage_manifest_builder import TriageCandidatePolicy, TriageManifestBuilder
 
 if TYPE_CHECKING:
@@ -256,6 +257,15 @@ def prepare_triage_session_data(
         run_dir,
         board_snapshot,
     )
+    _stage_evidence_map(
+        config=config,
+        repository_host=repository_host,
+        ctx=ctx,
+        run_dir=run_dir,
+        flavor=flavor,
+        focus_issue_number=focus_issue,
+        board_snapshot=board_snapshot,
+    )
 
 
 def _write_board_snapshot(
@@ -275,3 +285,64 @@ def _write_board_snapshot(
     snapshot_path = run_dir / "triage-data" / BOARD_SNAPSHOT_FILENAME
     snapshot.write(snapshot_path)
     ctx.update_manifest({"board_snapshot": str(snapshot_path)})
+
+
+def _focus_failure_artifact_hints(
+    board_snapshot: BoardSnapshot, focus_issue_number: int
+) -> tuple[str, ...]:
+    """Artifact-hint paths on the focus issue's board failure, if present.
+
+    The board snapshot already carries recent failures with their on-disk
+    artifact hints; the focus issue's failure (when on the board) supplies the
+    run-dir locations the investigation should start from. Returns empty when
+    the focus issue is not among the recent failures — the sibling-worktree
+    glob in :func:`triage_evidence.build_evidence_map` still finds its run-dirs.
+    """
+    for failure in board_snapshot.recent_failures:
+        if failure.issue_number == focus_issue_number:
+            return tuple(failure.artifact_hints)
+    return ()
+
+
+def _stage_evidence_map(
+    *,
+    config: "Config",
+    repository_host: "RepositoryHost",
+    ctx: "WorktreeContext",
+    run_dir: Path,
+    flavor: TriageSessionFlavor,
+    focus_issue_number: int | None,
+    board_snapshot: BoardSnapshot,
+) -> None:
+    """Best-effort: stage the read-side evidence map for a triage session.
+
+    Unlike :func:`_write_board_snapshot` (fail-fast, because board-snapshot.json
+    is a REQUIRED agent input), the evidence map is an ENHANCEMENT — a
+    deliberate exception to the fail-fast house style. The whole build+write is
+    wrapped so ANY failure only logs a warning and continues: failing to stage
+    evidence must never fail the session launch. The manifest entry is recorded
+    only after a successful write, so it never points at a missing file.
+
+    Per flavor: BATCH_REVIEW gets no evidence map (it audits a PR batch, not
+    orchestrator-state facts); FAILURE_INVESTIGATION gets the full focus map
+    (run-dirs + GitHub warm-cache); HEALTH_REVIEW gets a locations-only map
+    (no focus issue, so no run-dirs and a null github block).
+    """
+    if flavor is TriageSessionFlavor.BATCH_REVIEW:
+        return
+    try:
+        artifact_hints = (
+            _focus_failure_artifact_hints(board_snapshot, focus_issue_number)
+            if focus_issue_number is not None
+            else ()
+        )
+        evidence = build_evidence_map(
+            config=config,
+            repository_host=repository_host,
+            focus_issue_number=focus_issue_number,
+            artifact_hints=artifact_hints,
+        )
+        path = write_evidence_map(run_dir, evidence)
+        ctx.update_manifest({"evidence_map": str(path)})
+    except Exception as exc:  # noqa: BLE001 - evidence map is best-effort, never fatal
+        logger.warning("[triage] Evidence map staging failed (non-fatal): %s", exc)
