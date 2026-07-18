@@ -1353,12 +1353,12 @@
       "value": 1910
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/session_launcher.py": {
-      "detail": "2237 lines exceeds budget 800",
+      "detail": "2243 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/control/session_launcher.py",
       "path": "src/issue_orchestrator/control/session_launcher.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 2237
+      "value": 2243
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/startup_manager.py": {
       "detail": "990 lines exceeds budget 800",

@@ -34,6 +34,11 @@ class WorktreeReuseOptions:
     allow_no_verify_dry_run_preflight: bool = True
     allow_remote_branch_delete: bool = True
     disable_reuse: bool = False
+    # When True, worktree reuse must NOT rebase or hard-reset the branch. Used
+    # for triage investigations, which read the subject's branch as evidence and
+    # must never mutate it — the reuse path leaves the branch exactly as-is
+    # instead of freshening it onto the base branch.
+    preserve_branch: bool = False
 
 
 class WorktreeManager(Protocol):

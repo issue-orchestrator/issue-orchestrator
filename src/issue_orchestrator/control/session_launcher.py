@@ -249,12 +249,14 @@ class SessionLauncher:
         *,
         allow_remote_branch_delete: bool = True,
         force_fresh: bool = False,
+        preserve_branch: bool = False,
     ) -> WorktreeReuseOptions:
         options = WorktreeReuseOptions(
             reuse_push_preflight=self.config.reuse_push_preflight,
             worktree_branch_on_recreate=self.config.worktree_branch_on_recreate,
             allow_no_verify_dry_run_preflight=self.config.allow_no_verify_dry_run_preflight,
             allow_remote_branch_delete=allow_remote_branch_delete,
+            preserve_branch=preserve_branch,
         )
         if force_fresh:
             options.disable_reuse = True
@@ -861,6 +863,8 @@ class SessionLauncher:
                 scratch_branch_name,
             )
         phase_name = "coding-1"  # Initial coding session is always attempt 1
+        # Triage investigations read the subject's branch as evidence — preserve
+        # it (never rebase/reset); gated to triage so coding is unaffected.
         ctx = WorktreeContext.create(
             worktree_manager=self._worktree_manager,
             config=self.config,
@@ -873,7 +877,10 @@ class SessionLauncher:
             branch_name=scratch_branch_name,
             enforce_hooks=self.config.enforce_hooks,
             pre_push_hook=self.config.pre_push_hook,
-            reuse_options=self._worktree_reuse_options(force_fresh=from_scratch_pending),
+            reuse_options=self._worktree_reuse_options(
+                force_fresh=from_scratch_pending,
+                preserve_branch=self._is_triage_session(issue.agent_type),
+            ),
             phase_name=phase_name,
             stack_base_branch=freshness.stack_base_branch,
         )

@@ -620,8 +620,15 @@ def _try_reuse_worktree(
     reuse_push_preflight: bool,
     allow_no_verify_dry_run_preflight: bool,
     base_branch: str | None,
+    preserve_branch: bool = False,
 ) -> _WorktreeReuseResult:
     """Try to reuse an existing worktree, validating and preparing it.
+
+    When ``preserve_branch`` is True the branch is left exactly as-is: the
+    rebase/hard-reset onto the base branch is skipped entirely. This is used
+    for triage investigations, which read the subject's branch as evidence and
+    must never mutate it (rebasing/resetting a stranded branch would discard
+    its unpushed work).
 
     Returns:
         _WorktreeReuseResult indicating success/failure with details.
@@ -639,8 +646,21 @@ def _try_reuse_worktree(
             recreated_reason=f"validation_failed: {validation.reason}",
         )
 
-    # Rebase onto latest base branch (critical for reruns with stale branches)
-    reset_info = _update_worktree_onto_main(worktree_path, repo_root, base_branch)
+    # Rebase onto latest base branch (critical for reruns with stale branches).
+    # A triage investigation reads the subject's branch as evidence, so it must
+    # never rebase or hard-reset it — skip the update and leave it intact.
+    if preserve_branch:
+        logger.info(
+            issue_log(
+                issue_number,
+                "[WORKTREE_PRESERVE] skipping rebase/reset for triage "
+                "investigation, branch %s left intact",
+            ),
+            branch_name,
+        )
+        reset_info = ResetInfo(success=True)
+    else:
+        reset_info = _update_worktree_onto_main(worktree_path, repo_root, base_branch)
 
     # Policy: sync remote refs to prevent stale-info push failures
     sync_result = policy.sync_remote_refs(worktree_path, branch_name)
@@ -1024,6 +1044,7 @@ def _try_reuse_by_branch(
         reuse_options.reuse_push_preflight,
         reuse_options.allow_no_verify_dry_run_preflight,
         base_branch,
+        preserve_branch=reuse_options.preserve_branch,
     )
 
     if not result.success:
@@ -1103,6 +1124,7 @@ def _try_reuse_by_path(
         reuse_options.reuse_push_preflight,
         reuse_options.allow_no_verify_dry_run_preflight,
         base_branch,
+        preserve_branch=reuse_options.preserve_branch,
     )
 
     if not result.success:

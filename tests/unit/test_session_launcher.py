@@ -776,6 +776,46 @@ class TestLaunchIssueSession:
         assert authority.anchor_issue_number == 125
         assert authority.manifest_pr_numbers == ()
 
+    def test_triage_launch_preserves_branch_but_coding_does_not(
+        self, session_launcher, mock_worktree_manager, sample_config, sample_issue, tmp_path
+    ):
+        """A triage launch reuses the subject worktree without mutating its
+        branch (preserve_branch=True), so a stranded branch's unpushed work is
+        read as evidence rather than rebased/reset away. A coding launch keeps
+        the default (preserve_branch=False)."""
+        prompt_path = tmp_path / "prompt.md"
+        sample_config.agents["agent:triage"] = AgentConfig(
+            prompt_path=prompt_path,
+            model="sonnet",
+            timeout_minutes=45,
+        )
+        sample_config.triage_review_agent = "agent:triage"
+
+        coding_result = session_launcher.launch_issue_session(
+            sample_issue, active_sessions=[]
+        )
+        assert coding_result.success is True
+
+        triage_issue = Issue(
+            number=5980,
+            title="Investigate stranded failure",
+            labels=["agent:triage"],
+            repo="test/repo",
+        )
+        triage_result = session_launcher.launch_issue_session(
+            triage_issue, active_sessions=[]
+        )
+        assert triage_result.success is True
+
+        coding_call = next(
+            c for c in mock_worktree_manager.create_calls if c["issue_number"] == 123
+        )
+        triage_call = next(
+            c for c in mock_worktree_manager.create_calls if c["issue_number"] == 5980
+        )
+        assert coding_call["reuse_options"].preserve_branch is False
+        assert triage_call["reuse_options"].preserve_branch is True
+
     def test_failed_triage_launch_discards_recorded_authority(
         self, launcher_bundle, sample_config, tmp_path
     ):

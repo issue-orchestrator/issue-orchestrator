@@ -71,22 +71,30 @@ def cmd_triage(args: argparse.Namespace) -> int:
         "[green]Dispatching the tech lead at:[/green] "
         + ", ".join(f"#{n}" for n in args.issues)
     )
-    results = run_targeted_investigations(
-        orchestrator,
-        args.issues,
-        now=time.monotonic,
-        sleep=time.sleep,
-        timeout_s=float(args.timeout),
-    )
+    try:
+        results = run_targeted_investigations(
+            orchestrator,
+            args.issues,
+            now=time.monotonic,
+            sleep=time.sleep,
+            timeout_s=float(args.timeout),
+        )
 
-    exit_code = 0
-    for result in results:
-        if result.completed:
-            mark = "[green]done[/green]"
-        elif result.launched:
-            mark = "[yellow]running/timeout[/yellow]"
-        else:
-            mark = "[red]not launched[/red]"
-            exit_code = 1
-        console.print(f"  #{result.issue_number}: {mark} — {result.detail}")
-    return exit_code
+        exit_code = 0
+        for result in results:
+            if result.completed:
+                mark = "[green]done[/green]"
+            elif result.launched:
+                mark = "[yellow]running/timeout[/yellow]"
+            else:
+                mark = "[red]not launched[/red]"
+                exit_code = 1
+            console.print(f"  #{result.issue_number}: {mark} — {result.detail}")
+        return exit_code
+    finally:
+        # ``build_orchestrator`` wires runtime owners and background job threads
+        # that the normal run loop tears down on shutdown. This command drives
+        # investigations directly and never enters that loop, so release those
+        # resources explicitly — otherwise the process lingers after printing
+        # results. ``close()`` is idempotent and safe on every exit path.
+        orchestrator.close()
