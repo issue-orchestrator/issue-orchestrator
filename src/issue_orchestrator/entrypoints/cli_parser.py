@@ -24,6 +24,7 @@ class CLICommandHandlers:
     output: CommandHandler
     pause: CommandHandler
     resume: CommandHandler
+    triage: CommandHandler
     refresh: CommandHandler
     restart: CommandHandler
     setup: CommandHandler
@@ -236,6 +237,29 @@ def _register_runtime_commands(subparsers, handlers: CLICommandHandlers) -> None
         help="Port of running orchestrator (default: 8080)",
     )
     resume_parser.set_defaults(func=handlers.resume)
+
+    triage_parser = subparsers.add_parser(
+        "triage",
+        help="Dispatch the triage tech lead at specific issue(s) on demand",
+    )
+    triage_parser.add_argument(
+        "issues",
+        nargs="+",
+        type=int,
+        help="Issue number(s) for the tech lead to investigate",
+    )
+    triage_parser.add_argument(
+        "--advise-only",
+        action="store_true",
+        help="Dial all triage authority to propose (nothing auto-executes)",
+    )
+    triage_parser.add_argument(
+        "--timeout",
+        type=float,
+        default=1800.0,
+        help="Per-issue seconds to wait for the investigation (default: 1800)",
+    )
+    triage_parser.set_defaults(func=handlers.triage)
 
     refresh_parser = subparsers.add_parser(
         "refresh", help="Request immediate refresh of issues from GitHub"
