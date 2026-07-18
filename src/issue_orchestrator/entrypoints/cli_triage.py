@@ -34,9 +34,20 @@ def cmd_triage(args: argparse.Namespace) -> int:
     from .bootstrap import build_orchestrator
     from ..control.triage_trigger import run_targeted_investigations
     from ..infra.config_models import TriageAuthorityConfig
+    from ..infra.logging_config import setup_logging
     from ..infra.repo_lock import is_locked, read_lock
 
     config = load_config(args)
+
+    # A one-shot triage run must log like the main loop does — otherwise its
+    # launch/worktree/apply decisions are invisible (cmd_start does this too).
+    log_file = setup_logging(
+        repo_root=config.repo_root,
+        level="INFO",
+        console_output=False,
+        log_retention_days=config.log_retention_days,
+    )
+    console.print(f"[dim]triage log → {log_file}[/dim]")
 
     if is_locked(config.repo_root):
         info = read_lock(config.repo_root)
