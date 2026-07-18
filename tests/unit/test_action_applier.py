@@ -2,7 +2,7 @@
 
 import logging
 import pytest
-from unittest.mock import MagicMock, Mock
+from unittest.mock import MagicMock, Mock, patch
 from pathlib import Path
 
 from issue_orchestrator.control.action_applier import ActionApplier
@@ -30,6 +30,9 @@ from issue_orchestrator.control.actions import (
     SupersedePullRequestAction,
     CloseIssueAction,
     SetIssueStateAction,
+)
+from issue_orchestrator.control.orchestrator_support import (
+    init_orchestrator_components,
 )
 from issue_orchestrator.control.session_history import SessionHistoryOwner
 from issue_orchestrator.control.session_manager import SessionType
@@ -2011,6 +2014,77 @@ class TestRecoverTerminalIssueAction:
             pr_url="https://github.com/test/repo/pull/318",
             status_reason="Recovered awaiting merge state on startup",
         )
+
+    @patch("issue_orchestrator.observation.observer.SessionObserver")
+    def test_init_wiring_owner_follows_session_history_replacement(
+        self,
+        _mock_observer,
+        mock_labels,
+        mock_sessions,
+        mock_events,
+        mock_repository_host,
+        real_label_manager,
+    ):
+        """#6692 composition-boundary regression.
+
+        The owner-level unit tests would stay green if the production wiring in
+        ``init_orchestrator_components`` were reverted to
+        ``SessionHistoryOwner(orch.state.session_history)`` (capturing the list
+        at startup). This drives the *real* wiring: it installs the owner on the
+        long-lived ``ActionApplier``, then a recovery/retry path replaces
+        ``state.session_history`` wholesale, and a terminal awaiting-merge action
+        applied through the applier must still terminalize the entry in the
+        replacement list. A captured-list owner would read the stale (empty)
+        initial list and no-op, leaving the entry stuck in Awaiting Merge.
+        """
+        reader = MagicMock()
+        reader.read_issue_labels.return_value = [
+            "pr-pending", "publish-failed", "agent:backend",
+        ]
+        applier = ActionApplier(
+            labels=mock_labels,
+            sessions=mock_sessions,
+            events=mock_events,
+            repository_host=mock_repository_host,
+            fresh_issue_reader=reader,
+            label_manager=real_label_manager,
+            label_store=None,
+            reconcile=False,
+        )
+
+        orch = MagicMock()
+        orch.deps.action_applier = applier
+        orch.deps.claim_gate = None
+        orch.state.active_sessions = []
+        # Owner is wired against the initial (empty) list at startup, exactly as
+        # production does before any recovery/retry replacement.
+        orch.state.session_history = []
+
+        init_orchestrator_components(orch)
+
+        # A recovery / publish-retry finalization path replaces the list
+        # wholesale with a new object carrying the reconcilable entry.
+        entry = self._awaiting_merge_entry(issue_number=228)
+        orch.state.session_history = [entry]
+
+        action = RecoverTerminalIssueAction(
+            issue_number=228,
+            pr_number=318,
+            pr_url="https://github.com/test/repo/pull/318",
+            status="merged",
+            source="pull_request",
+            status_reason="PR merged; awaiting merge reconciled",
+            issue_key="M1-228",
+            reason="awaiting-merge terminal: merged",
+        )
+
+        result = applier.apply(action)
+
+        assert result.success
+        # The entry in the REPLACEMENT list is terminalized, proving the wired
+        # owner resolves state.session_history at mutation time.
+        assert entry.status == "merged"
+        assert entry.status_reason == "PR merged; awaiting merge reconciled"
 
     def test_sheds_then_finalizes_history(
         self, mock_labels, mock_sessions, mock_events, mock_repository_host,
