@@ -49,6 +49,14 @@ def cmd_triage(args: argparse.Namespace) -> int:
     )
     console.print(f"[dim]triage log → {log_file}[/dim]")
 
+    # A one-shot triage run must NOT trigger the heavy background E2E suite. The
+    # long-lived cmd_start orchestrator schedules E2E on its own cadence, but a
+    # fresh per-invocation orchestrator re-fires the tick's E2E trigger every
+    # run — and the pytest worker (a full CPU core) then starves the very triage
+    # agent we launched (connection drops / stalls). E2E is not governed by the
+    # session concurrency budget, so it must be turned off here explicitly.
+    config.e2e.enabled = False
+
     if is_locked(config.repo_root):
         info = read_lock(config.repo_root)
         where = f" (pid={info.pid}, port={info.http_port})" if info else ""
