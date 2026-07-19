@@ -510,6 +510,13 @@ than guessing.
   untracked (no `tracking_issue`) or stale (tracked but long-unresolved),
   `create_issue`/`escalate_to_human`; and propose quarantine or un-quarantine
   as the evidence warrants.
+- **Critical user journeys.** Treat the e2e signals as user journeys, not just
+  tests: a chronically-failing or long-red journey test (an end-to-end path a
+  user depends on — issue→PR→merge, onboarding, the dashboard) means a critical
+  user journey is BROKEN, not merely flaky. Ask which user-facing capability
+  each protects and how long it has been down. And if a critical journey the
+  system depends on has NO test or signal covering it, that gap is itself a
+  finding: `create_issue` to instrument it rather than assume it works.
 - `post_comment`/`escalate_to_human` may only target THIS tracking issue;
   board-wide findings belong in `create_issue`/`flag_pattern` proposals.
 - Act-level proposals (`reset_retry`, `kill_hung_session`) may only target
