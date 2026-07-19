@@ -25,6 +25,7 @@ class CLICommandHandlers:
     pause: CommandHandler
     resume: CommandHandler
     triage: CommandHandler
+    health_review: CommandHandler
     refresh: CommandHandler
     restart: CommandHandler
     setup: CommandHandler
@@ -260,6 +261,23 @@ def _register_runtime_commands(subparsers, handlers: CLICommandHandlers) -> None
         help="Per-issue seconds to wait for the investigation (default: 1800)",
     )
     triage_parser.set_defaults(func=handlers.triage)
+
+    health_review_parser = subparsers.add_parser(
+        "health-review",
+        help="Run a whole-board triage health review on demand (walk the floor)",
+    )
+    health_review_parser.add_argument(
+        "--advise-only",
+        action="store_true",
+        help="Dial all triage authority to propose (nothing auto-executes)",
+    )
+    health_review_parser.add_argument(
+        "--timeout",
+        type=float,
+        default=1800.0,
+        help="Seconds to wait for the health review to complete (default: 1800)",
+    )
+    health_review_parser.set_defaults(func=handlers.health_review)
 
     refresh_parser = subparsers.add_parser(
         "refresh", help="Request immediate refresh of issues from GitHub"

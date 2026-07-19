@@ -42,7 +42,7 @@ import logging
 import time
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, Callable, Iterable, Optional, Sequence
+from typing import TYPE_CHECKING, Callable, Iterable, Optional, Protocol, Sequence
 
 from ..domain.triage_session import HEALTH_REVIEW_MARKER_LABEL, TriageSessionFlavor
 from .actions import CreateTriageIssueAction
@@ -64,8 +64,20 @@ if TYPE_CHECKING:
     from ..ports import Issue, RepositoryHost
     from ..ports.queue_cache_store import QueueCacheStore
     from ..ports.triage_authority import TriageAuthorityStore
+    from .actions import Action, ActionResult
     from .session_routing import TriageQueueOutcome
     from .workflows import TriageWorkflow
+
+
+class SupportsApplyAction(Protocol):
+    """The single-action apply seam the on-demand health trigger drives.
+
+    Named structurally so this control owner reuses the tick's real apply path
+    (the concrete ``ActionApplier``) without importing the infra facade, and a
+    test can supply a lightweight fake that returns a canned ``ActionResult``.
+    """
+
+    def apply(self, action: "Action") -> "ActionResult": ...
 
 logger = logging.getLogger(__name__)
 
@@ -369,19 +381,50 @@ def plan_health_review_issue_creation(
     ):
         logger.debug("Planner: health review due but gated (paused/at capacity)")
         return None
+    # Carry the board this fired on through to the post-creation stamp. Both
+    # triggers record it: a storm review walks the board too, so the periodic
+    # gate must count it as reviewed. Absent facts leave it "" — "never
+    # reviewed", which fails toward reviewing.
+    return build_health_review_anchor_action(
+        config,
+        fingerprint=(
+            facts.health_review_fingerprint if facts is not None else ""
+        ),
+        storm_problems=storm_problems,
+    )
+
+
+def build_health_review_anchor_action(
+    config: "Config",
+    *,
+    fingerprint: str,
+    storm_problems: Sequence["DiscoveredFailure"] = (),
+    reason: Optional[str] = None,
+) -> CreateTriageIssueAction:
+    """Shape the health-review anchor's create action (single shaping owner).
+
+    Every health-review anchor — periodic (:func:`plan_health_review_issue_creation`,
+    after its dedup/gate checks), problem-storm, and on-demand
+    (:func:`ensure_on_demand_health_review_anchor`) — is shaped here, so the
+    marker label (crash-safe variant truth), body, configured priority-title
+    prefix, and milestone intent are byte-for-byte identical across triggers.
+    The caller passes the ``fingerprint`` the review is walking so the
+    post-creation stamp records the right board; a caller with a distinct
+    trigger (the on-demand path) may override the human-readable ``reason``.
+    """
     labels = health_review_issue_labels(config)
     title = apply_triage_priority_prefix(config, HEALTH_REVIEW_ISSUE_TITLE)
     # Milestone travels as INTENT; the applier resolves an explicit name at
     # the create-issue execution boundary (#6769 finding 4). Health anchors
     # have no source PRs, so only the explicit strategy can apply.
     milestone = triage_issue_milestone_intent(config, ())
-    trigger_reason = (
+    trigger_reason = reason or (
         f"problem storm: {len(storm_problems)} issues inside settle window"
         if storm_problems
         else "health review interval elapsed"
     )
     logger.info(
-        "Planner: creating health-review anchor issue (labels=%s, reason=%s)",
+        "Creating health-review anchor issue (labels=%s, reason=%s)",
         labels,
         trigger_reason,
     )
@@ -400,13 +443,7 @@ def plan_health_review_issue_creation(
         # This owner decides the variant; the marker label in ``labels`` is the
         # crash-safe restatement of the same decision for recovery/intake.
         flavor=TriageSessionFlavor.HEALTH_REVIEW,
-        # Carry the board this fired on through to the post-creation stamp.
-        # Both triggers record it: a storm review walks the board too, so the
-        # periodic gate must count it as reviewed. Absent facts leave it "" —
-        # "never reviewed", which fails toward reviewing.
-        health_review_fingerprint=(
-            facts.health_review_fingerprint if facts is not None else ""
-        ),
+        health_review_fingerprint=fingerprint,
     )
 
 
@@ -549,6 +586,134 @@ def queue_recovered_triage_anchor(
         issue.title,
         issue.labels,
         storm_problems=cohort or (),
+    )
+
+
+def ensure_on_demand_health_review_anchor(
+    *,
+    state: "OrchestratorState",
+    config: "Config",
+    repository_host: "RepositoryHost",
+    action_applier: "SupportsApplyAction",
+    queue_cache_store: "Optional[QueueCacheStore]",
+    triage_authority: "Optional[TriageAuthorityStore]",
+    now: float,
+) -> "Optional[PendingTriageReview]":
+    """Discover-or-create the health-review anchor and queue it for launch NOW.
+
+    The on-demand counterpart to the periodic/planner path (ADR-0031 §4). It
+    forces a review regardless of the interval+fingerprint debounce:
+    :func:`health_review_decision` is still consulted, but only for the
+    FINGERPRINT it computes — its ``due`` verdict is deliberately ignored, since
+    an explicit operator request overrides the timer. Everything else is the
+    existing lifecycle, reused verbatim:
+
+    * an already-open anchor (:func:`discover_open_health_review_anchor`) is
+      requeued through :func:`queue_recovered_triage_anchor` — the SAME owner
+      startup recovery uses, so a storm anchor keeps its durable cohort;
+    * otherwise the anchor is shaped by the shared
+      :func:`build_health_review_anchor_action`, created through the same apply
+      path the tick uses, and routed through :func:`intake_created_triage_anchor`
+      (which queues it AND stamps ``last_health_review_at`` + the walked
+      fingerprint, so the very next timer tick will not double-fire).
+
+    Returns the queued HEALTH_REVIEW :class:`PendingTriageReview` for the driver
+    to launch, or ``None`` when no triage agent is configured (health review is
+    meaningless without one) or anchor creation failed.
+    """
+    if not config.triage_review_agent:
+        logger.warning(
+            "On-demand health review requested but no triage_review_agent is "
+            "configured; nothing to launch"
+        )
+        return None
+    existing = discover_open_health_review_anchor(repository_host, config)
+    if existing is not None:
+        issue = repository_host.get_issue(existing)
+        if issue is None:
+            logger.warning(
+                "Open health-review anchor #%d vanished before requeue", existing
+            )
+            return None
+        logger.info("Reusing open health-review anchor #%d on demand", existing)
+        queue_recovered_triage_anchor(state, issue, triage_authority)
+        anchor_number: Optional[int] = existing
+    else:
+        anchor_number = _create_on_demand_health_anchor(
+            state=state,
+            config=config,
+            action_applier=action_applier,
+            queue_cache_store=queue_cache_store,
+            triage_authority=triage_authority,
+            now=now,
+        )
+        if anchor_number is None:
+            return None
+    return _queued_health_review(state, anchor_number)
+
+
+def _create_on_demand_health_anchor(
+    *,
+    state: "OrchestratorState",
+    config: "Config",
+    action_applier: "SupportsApplyAction",
+    queue_cache_store: "Optional[QueueCacheStore]",
+    triage_authority: "Optional[TriageAuthorityStore]",
+    now: float,
+) -> Optional[int]:
+    """Shape + create + intake a fresh on-demand health-review anchor.
+
+    The fingerprint comes from :func:`health_review_decision` — the SAME
+    plumbing the timer path uses to record the board it walked — but its ``due``
+    verdict is ignored (the operator forced this run). An empty fingerprint (a
+    board with nothing reviewable) records as "never reviewed", which fails
+    toward re-reviewing on the next timer tick, never toward silent suppression.
+    Creation goes through the tick's real apply path and
+    :func:`intake_created_triage_anchor`, so the anchor is queued and the
+    fingerprint stamped exactly as a timer-created anchor would be.
+    """
+    fingerprint = health_review_decision(config, state, now).fingerprint
+    action = build_health_review_anchor_action(
+        config,
+        fingerprint=fingerprint,
+        reason="on-demand health review (operator-triggered)",
+    )
+    result = action_applier.apply(action)
+    if not result.success:
+        logger.error(
+            "On-demand health-review anchor creation failed: %s",
+            result.error or "unknown error",
+        )
+        return None
+    issue_number = result.details.get("issue_number")
+    if not isinstance(issue_number, int):
+        logger.error(
+            "On-demand health-review anchor creation returned no issue number"
+        )
+        return None
+    intake_created_triage_anchor(
+        action, issue_number, state, queue_cache_store, triage_authority
+    )
+    return issue_number
+
+
+def _queued_health_review(
+    state: "OrchestratorState", anchor_number: int
+) -> "Optional[PendingTriageReview]":
+    """The queued HEALTH_REVIEW pending item for the anchor, if present.
+
+    Both intake paths append a HEALTH_REVIEW ``PendingTriageReview`` to the
+    pending queue (or find it already there on a DUPLICATE), so the launch
+    driver reads the typed item back rather than reconstructing it.
+    """
+    return next(
+        (
+            item
+            for item in state.pending_triage_reviews
+            if item.issue_number == anchor_number
+            and item.flavor is TriageSessionFlavor.HEALTH_REVIEW
+        ),
+        None,
     )
 
 

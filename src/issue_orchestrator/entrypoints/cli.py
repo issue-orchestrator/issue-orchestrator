@@ -24,7 +24,7 @@ from .cli_support import (
     resolve_repo as _resolve_repo,
     run_test_setup as _run_test_setup,
 )
-from .cli_triage import cmd_triage
+from .cli_triage import cmd_health_review, cmd_triage
 from .cli_utility_commands import cmd_demo, cmd_doctor, cmd_trace
 
 console = Console()
@@ -927,6 +927,7 @@ def main() -> int:
             pause=cmd_pause,
             resume=cmd_resume,
             triage=cmd_triage,
+            health_review=cmd_health_review,
             refresh=cmd_refresh,
             restart=cmd_restart,
             setup=cmd_setup,

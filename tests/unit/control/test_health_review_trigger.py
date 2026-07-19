@@ -21,12 +21,13 @@ from types import SimpleNamespace
 import pytest
 
 from issue_orchestrator.adapters.github.errors import GitHubHttpError
-from issue_orchestrator.control.actions import CreateTriageIssueAction
+from issue_orchestrator.control.actions import ActionResult, CreateTriageIssueAction
 from issue_orchestrator.control.health_review_trigger import (
     HEALTH_REVIEW_ISSUE_TITLE,
     board_review_fingerprint,
     discover_open_health_review_anchor,
     discover_open_triage_anchor_issues,
+    ensure_on_demand_health_review_anchor,
     health_review_decision,
     health_review_due,
     hydrate_last_health_review_at,
@@ -46,7 +47,10 @@ from issue_orchestrator.domain.models import (
     TriageFacts,
 )
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
-from issue_orchestrator.domain.triage_session import HEALTH_REVIEW_MARKER_LABEL
+from issue_orchestrator.domain.triage_session import (
+    HEALTH_REVIEW_MARKER_LABEL,
+    TriageSessionFlavor,
+)
 from issue_orchestrator.infra.config import Config
 
 
@@ -644,3 +648,162 @@ class TestPlannerCarriesTheDecidedFingerprint:
         state.pending_triage_reviews.clear()  # review launched and completed
 
         assert health_review_due(config, state, now=T0 + 3600) is False
+
+
+class _HealthAnchorRepo:
+    """RepositoryHost fake: label AND-filtered list_issues plus get_issue."""
+
+    def __init__(self, issues=()) -> None:
+        self._issues = list(issues)
+        self.list_calls = 0
+
+    def list_issues(self, labels=None, state="open", limit=100, **kwargs):
+        self.list_calls += 1
+        wanted = {label.casefold() for label in (labels or [])}
+        return [
+            issue
+            for issue in self._issues
+            if (state == "all" or issue.state == state)
+            and wanted <= {label.casefold() for label in issue.labels}
+        ][:limit]
+
+    def get_issue(self, number):
+        return next((i for i in self._issues if i.number == number), None)
+
+
+class _FakeApplier:
+    """SupportsApplyAction fake: records applied actions, returns a canned result."""
+
+    def __init__(self, *, issue_number: int = 777, success: bool = True) -> None:
+        self._issue_number = issue_number
+        self._success = success
+        self.applied: list[CreateTriageIssueAction] = []
+
+    def apply(self, action):
+        self.applied.append(action)
+        if not self._success:
+            return ActionResult.fail(action, "creation exploded")
+        return ActionResult.ok(action, issue_number=self._issue_number)
+
+
+def _open_health_anchor(number: int, *, config: Config) -> Issue:
+    return Issue(
+        number=number,
+        title=HEALTH_REVIEW_ISSUE_TITLE,
+        labels=list(health_review_issue_labels(config)),
+        state="open",
+        created_at=_iso(1_000.0),
+    )
+
+
+class TestEnsureOnDemandHealthReviewAnchor:
+    """The on-demand trigger: force a review NOW, reusing the timer lifecycle."""
+
+    def test_creates_and_queues_even_when_interval_not_due(self) -> None:
+        """The whole point: an operator request bypasses the interval+fingerprint
+        debounce, yet the walked board fingerprint is still recorded so the next
+        timer tick will not double-fire."""
+        config = _config(interval_minutes=60)
+        state = _board(queue=[42])  # non-empty board => non-empty fingerprint
+        now = 5_000_000.0
+        state.last_health_review_at = now  # interval NOT elapsed => not due
+
+        # Precondition: the timer gate would decline this tick.
+        assert health_review_decision(config, state, now).due is False
+        expected_fp = board_review_fingerprint(state, now)
+        assert expected_fp  # non-empty, so we can assert it was recorded
+
+        repo = _HealthAnchorRepo([])  # no open anchor => create path
+        applier = _FakeApplier(issue_number=777)
+        store = _FakeStore()
+
+        result = ensure_on_demand_health_review_anchor(
+            state=state,
+            config=config,
+            repository_host=repo,
+            action_applier=applier,
+            queue_cache_store=store,
+            triage_authority=None,
+            now=now,
+        )
+
+        # An anchor was shaped + created through the real apply path...
+        assert len(applier.applied) == 1
+        action = applier.applied[0]
+        assert action.flavor is TriageSessionFlavor.HEALTH_REVIEW
+        assert HEALTH_REVIEW_MARKER_LABEL in action.labels
+        assert action.health_review_fingerprint == expected_fp
+        # ...queued as a HEALTH_REVIEW pending item, and returned for launch.
+        assert result is not None
+        assert result.issue_number == 777
+        assert result.flavor is TriageSessionFlavor.HEALTH_REVIEW
+        assert result in state.pending_triage_reviews
+        # ...and the walked fingerprint was stamped (memory + durable store).
+        assert state.last_reviewed_board_fingerprint == expected_fp
+        assert store.saved_fingerprints == [expected_fp]
+
+    def test_reuses_existing_open_anchor_without_creating(self) -> None:
+        config = _config(interval_minutes=60)
+        state = _board(queue=[42])
+        repo = _HealthAnchorRepo([_open_health_anchor(200, config=config)])
+        applier = _FakeApplier()
+
+        result = ensure_on_demand_health_review_anchor(
+            state=state,
+            config=config,
+            repository_host=repo,
+            action_applier=applier,
+            queue_cache_store=_FakeStore(),
+            triage_authority=None,
+            now=5_000_000.0,
+        )
+
+        assert applier.applied == []  # no new anchor created
+        assert result is not None
+        assert result.issue_number == 200
+        assert result.flavor is TriageSessionFlavor.HEALTH_REVIEW
+        assert result in state.pending_triage_reviews
+        # Recovery of an existing anchor does not stamp (creation time stands).
+        assert state.last_reviewed_board_fingerprint == ""
+
+    def test_no_triage_agent_returns_none_without_touching_github(self) -> None:
+        config = Config()
+        config.triage_review_agent = None
+        config.triage.health_review.interval_minutes = 60
+        repo = _HealthAnchorRepo([])
+        applier = _FakeApplier()
+
+        result = ensure_on_demand_health_review_anchor(
+            state=_board(queue=[42]),
+            config=config,
+            repository_host=repo,
+            action_applier=applier,
+            queue_cache_store=None,
+            triage_authority=None,
+            now=1.0,
+        )
+
+        assert result is None
+        assert repo.list_calls == 0  # guarded before any discovery scan
+        assert applier.applied == []
+
+    def test_apply_failure_returns_none_and_does_not_queue(self) -> None:
+        config = _config(interval_minutes=60)
+        state = _board(queue=[42])
+        repo = _HealthAnchorRepo([])
+        applier = _FakeApplier(success=False)
+
+        result = ensure_on_demand_health_review_anchor(
+            state=state,
+            config=config,
+            repository_host=repo,
+            action_applier=applier,
+            queue_cache_store=_FakeStore(),
+            triage_authority=None,
+            now=5_000_000.0,
+        )
+
+        assert result is None
+        assert len(applier.applied) == 1  # attempted
+        assert state.pending_triage_reviews == []
+        assert state.last_reviewed_board_fingerprint == ""

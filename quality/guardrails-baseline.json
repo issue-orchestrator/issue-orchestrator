@@ -1328,6 +1328,14 @@
       "rule_id": "oversized_control_hotspots",
       "value": 1506
     },
+    "oversized_control_hotspots:src/issue_orchestrator/control/health_review_trigger.py": {
+      "detail": "910 lines exceeds budget 800",
+      "kind": "file_line_budget",
+      "metric_id": "src/issue_orchestrator/control/health_review_trigger.py",
+      "path": "src/issue_orchestrator/control/health_review_trigger.py",
+      "rule_id": "oversized_control_hotspots",
+      "value": 910
+    },
     "oversized_control_hotspots:src/issue_orchestrator/control/orchestrator_support.py": {
       "detail": "1464 lines exceeds budget 800",
       "kind": "file_line_budget",

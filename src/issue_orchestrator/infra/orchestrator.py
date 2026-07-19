@@ -43,6 +43,9 @@ from ..control.session_completion import (
 )
 from ..control.session_launcher import SessionLauncher
 from ..control.board_snapshot_builder import StateBoardSnapshotProvider
+from ..control.health_review_trigger import (
+    ensure_on_demand_health_review_anchor as _ensure_on_demand_health_review_anchor,
+)
 from ..control.session_routing import (
     orchestrator_launch_review_session as _launch_review_session,
     orchestrator_launch_retrospective_review_session as _launch_retrospective_review_session,
@@ -1036,6 +1039,7 @@ class Orchestrator:
     def launch_review_session(self, review: PendingReview) -> Optional[Session]: return _launch_review_session(review, self.state, self._session_launcher, self.deps.session_restorer)
     def launch_retrospective_review_session(self, review: PendingRetrospectiveReview) -> Optional[Session]: return _launch_retrospective_review_session(review, self.state, self._session_launcher, self.deps.session_restorer)
     def launch_triage_session(self, triage: PendingTriageReview) -> Optional[Session]: return _launch_triage_session(triage, self.state, self.config, self._session_launcher, self.deps.session_restorer)
+    def ensure_health_review_anchor(self) -> Optional[PendingTriageReview]: return _ensure_on_demand_health_review_anchor(state=self.state, config=self.config, repository_host=self.deps.repository_host, action_applier=self.deps.action_applier, queue_cache_store=self.deps.queue_cache_store, triage_authority=self.deps.triage_authority, now=time.time())
     def process_deferred_cleanups(self) -> None: self.state.pending_cleanups = self._github_workflow.process_deferred_cleanups(self.state.pending_cleanups, self._cleanup_manager)
     def _recover_orphaned_cleanups(self) -> None: self._plan_applier.recover_orphaned_cleanups()
     def scan_needs_code_review_prs(self) -> None: self._github_workflow.scan_needs_code_review_prs(self.state)
