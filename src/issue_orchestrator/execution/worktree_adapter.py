@@ -32,6 +32,7 @@ class GitWorktreeManager:
         base_branch: str | None = None,
         seed_ref: str | None = None,
         reuse_options: WorktreeReuseOptions | None = None,
+        worktree_name: str | None = None,
     ) -> WorktreeInfo:
         """Create a new git worktree for an issue."""
         path, branch, reuse_status, reuse_reason, rebase_failed, uncommitted_discarded, commits_discarded = create_worktree(
@@ -45,6 +46,7 @@ class GitWorktreeManager:
             branch_name=branch_name,
             reuse_options=reuse_options,
             seed_ref=seed_ref,
+            worktree_name=worktree_name,
         )
         return WorktreeInfo(
             path=path,

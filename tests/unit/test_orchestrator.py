@@ -52,6 +52,7 @@ class MockWorktreeManager:
         base_branch: str | None = None,
         seed_ref: str | None = None,
         reuse_options: WorktreeReuseOptions | None = None,
+        worktree_name: str | None = None,
     ) -> WorktreeInfo:
         """Track create calls and return mock WorktreeInfo."""
         self.create_calls.append({
@@ -65,6 +66,7 @@ class MockWorktreeManager:
             "pre_push_hook": pre_push_hook,
             "branch_name": branch_name,
             "reuse_options": reuse_options,
+            "worktree_name": worktree_name,
         })
         return WorktreeInfo(path=self.worktree_path, branch_name=self.branch_name)
 
@@ -1006,6 +1008,32 @@ class TestHandleSessionCompletion:
         assert cleanup.issue_number == 1
         assert cleanup.terminal_id == session.terminal_id
         assert cleanup.reason == "completed"
+        # An ordinary coding session's worktree is not a scratch workspace.
+        assert cleanup.scratch_worktree is False
+
+    def test_handle_completion_marks_scratch_worktree_for_investigation(
+        self,
+        sample_config,
+        mock_worktree_manager,
+    ):
+        """A disposable triage-investigation scratch session records its
+        ImmediateCleanup as scratch (#6823), so the Planner force-removes the
+        throwaway worktree on completion regardless of the cleanup config."""
+        import dataclasses
+
+        issue = create_issue(1)
+        session = dataclasses.replace(
+            create_session(issue, worktree_path=mock_worktree_manager.worktree_path),
+            scratch_worktree=True,
+        )
+
+        orchestrator = create_test_orchestrator(sample_config, worktree_manager=mock_worktree_manager)
+        orchestrator.state.active_sessions.append(session)
+
+        orchestrator.handle_session_completion(session, SessionStatus.COMPLETED)
+
+        assert len(orchestrator.state.immediate_cleanups) == 1
+        assert orchestrator.state.immediate_cleanups[0].scratch_worktree is True
 
     def test_handle_completion_records_immediate_cleanup_for_blocked(
         self,

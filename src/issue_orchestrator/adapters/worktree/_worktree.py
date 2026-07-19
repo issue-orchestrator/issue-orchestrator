@@ -843,6 +843,7 @@ def _init_worktree_context(
     policy: WorktreePolicy | None,
     enforce_hooks: bool,
     pre_push_hook: Path | None,
+    worktree_name: str | None = None,
 ) -> _WorktreeCreateContext:
     """Initialize context for worktree creation."""
     if policy is None:
@@ -858,7 +859,10 @@ def _init_worktree_context(
     worktree_base = Path(worktree_base).resolve() if worktree_base else repo_root.parent
     worktree_base.mkdir(parents=True, exist_ok=True)
     branch_name = branch_name or generate_branch_name(issue_number, issue_title)
-    worktree_path = worktree_base / f"{repo_root.name}-{issue_number}"
+    # A run-scoped scratch worktree overrides the derived per-issue directory
+    # basename so a disposable investigation never collides with — or reuses —
+    # its subject's worktree.
+    worktree_path = worktree_base / (worktree_name or f"{repo_root.name}-{issue_number}")
     disable_reuse = (
         os.environ.get("ORCHESTRATOR_DISABLE_WORKTREE_REUSE") == "1"
         or reuse_options.disable_reuse
@@ -898,6 +902,7 @@ def create_worktree(
     branch_name: str | None = None,
     reuse_options: WorktreeReuseOptions | None = None,
     policy: WorktreePolicy | None = None,
+    worktree_name: str | None = None,
 ) -> tuple[Path, str, str, str | None, bool, int, int]:
     """
     Create a new git worktree for the given issue.
@@ -917,6 +922,8 @@ def create_worktree(
         branch_name: Specific branch to use (for checking out existing branches like PR reviews)
         reuse_options: Options controlling reuse behavior
         policy: Worktree setup policy (defaults to ValidateOrDeletePolicy)
+        worktree_name: Overrides the derived worktree directory basename
+            (default ``<repo>-<issue_number>``) for a run-scoped scratch worktree.
 
     Returns:
         Tuple of (worktree_path, branch_name, reuse_status, reuse_reason,
@@ -931,7 +938,7 @@ def create_worktree(
     try:
         ctx = _init_worktree_context(
             repo_root, issue_number, issue_title, worktree_base, base_branch, seed_ref, branch_name,
-            reuse_options, policy, enforce_hooks, pre_push_hook,
+            reuse_options, policy, enforce_hooks, pre_push_hook, worktree_name,
         )
 
         # Prune stale worktrees

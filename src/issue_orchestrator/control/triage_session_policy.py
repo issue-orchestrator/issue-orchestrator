@@ -19,6 +19,7 @@ session's name distinguishes them. This module is the single owner for:
 """
 
 import logging
+import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -43,7 +44,7 @@ if TYPE_CHECKING:
     from ..ports import ManifestDownloader, RepositoryHost
     from ..ports.issue import Issue
     from ..ports.triage_authority import TriageAuthorityStore
-    from .worktree_context import WorktreeContext
+    from .worktree_context import ScratchWorktreeIdentity, WorktreeContext
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +54,45 @@ def is_triage_session(
 ) -> bool:
     """True when ``agent_type`` is the configured triage review agent."""
     return bool(triage_review_agent and agent_type == triage_review_agent)
+
+
+def failure_investigation_scratch_identity(
+    config: "Config",
+    issue: "Issue",
+    triage_scope: "TriageLaunchScope | None",
+) -> "ScratchWorktreeIdentity | None":
+    """The disposable scratch worktree identity for a failure investigation (#6823).
+
+    A failure investigation launches as an ``issue-{focus}`` session under the
+    focus issue's number, so without this it would run in the focus issue's OWN
+    worktree on its branch — and the agent could commit into that branch,
+    mutating the very evidence it was sent to read (a live run showed a focus
+    branch advance by a junk agent commit). Gating on the producer-declared
+    ``triage_scope.flavor`` (the reliable signal owned here, ADR-0031) it instead
+    runs in a throwaway worktree on a fresh branch off the base branch, keyed to
+    this run rather than the focus issue: the focus worktree/branch stay pure
+    read-only evidence and an agent commit can only ever land on the disposable
+    branch. The name and branch carry a random token so investigations of the
+    same focus issue never collide, and the branch does NOT start with the focus
+    issue number so ``extract_issue_number_from_branch`` never mistakes it for the
+    focus branch.
+
+    Returns ``None`` for every other flavor (batch/health reviews run on their
+    own anchor worktrees) and for ordinary non-triage issues, leaving their
+    worktree derivation unchanged.
+    """
+    from .worktree_context import ScratchWorktreeIdentity
+
+    if (
+        triage_scope is None
+        or triage_scope.flavor is not TriageSessionFlavor.FAILURE_INVESTIGATION
+    ):
+        return None
+    token = uuid.uuid4().hex[:12]
+    return ScratchWorktreeIdentity(
+        worktree_name=f"{config.repo_root.name}-triage-{issue.number}-{token}",
+        branch_name=f"triage-investigation-{issue.number}-{token}",
+    )
 
 
 def shape_requested_actions_for_triage(

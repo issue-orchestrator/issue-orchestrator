@@ -1162,6 +1162,12 @@ class Session:
     lease_acquired_at: datetime | None = None  # When the claim was acquired
     lease_expires_at: datetime | None = None  # When the claim expires if not renewed
     last_claim_verified_at: datetime | None = None  # Last time we verified we're still the winner
+    # True for a triage failure investigation running in a disposable, run-scoped
+    # scratch worktree (#6823). The worktree is a throwaway that reads its focus
+    # issue as evidence, so completion must remove it regardless of the cleanup
+    # config (a "keep worktrees for inspection" preference is for PR-producing
+    # coding worktrees, not for scratch investigation workspaces).
+    scratch_worktree: bool = False
 
     def __post_init__(self) -> None:
         _require_session_run_assets(self.run_assets)
@@ -1577,6 +1583,11 @@ class ImmediateCleanup:
     terminal_id: str  # e.g., "issue-123", "review-456"
     worktree_path: str
     reason: str  # e.g., "completed", "timed_out"
+    # True when ``worktree_path`` is a disposable triage-investigation scratch
+    # worktree (#6823): the Planner forces its removal even when the cleanup
+    # config would otherwise keep worktrees, so scratch workspaces never
+    # accumulate.
+    scratch_worktree: bool = False
 
 
 @dataclass(frozen=True)

@@ -2870,6 +2870,45 @@ class TestPlanCleanups:
         assert cleanup_actions[0].close_tabs is False
         assert cleanup_actions[0].remove_worktrees is True
 
+    def test_scratch_worktree_cleanup_forces_removal_despite_config(self):
+        """A disposable triage-investigation scratch worktree is always removed
+        on completion, even when the cleanup config keeps worktrees (#6823), so
+        scratch workspaces never accumulate. A non-scratch cleanup still honors
+        the config."""
+        from issue_orchestrator.domain.models import CleanupFacts, ImmediateCleanup
+        from issue_orchestrator.control.actions import ActionType
+
+        config = make_config(triage_review_agent="agent:triage")
+        planner = Planner(config=config, scheduler=Scheduler(config))
+
+        cleanup_facts = CleanupFacts(
+            pending_cleanups=(),
+            reviewed_pr_numbers=frozenset(),
+            close_tabs=True,
+            remove_worktrees=False,  # Config: keep worktrees for inspection
+            immediate_cleanups=(
+                ImmediateCleanup(
+                    5980,
+                    "issue-5980",
+                    "/tmp/repo-triage-5980-abc",
+                    "completed",
+                    scratch_worktree=True,
+                ),
+                ImmediateCleanup(7, "issue-7", "/tmp/worktree-7", "completed"),
+            ),
+        )
+
+        plan = planner.plan(make_snapshot(cleanup_facts=cleanup_facts))
+
+        cleanup_actions = {
+            a.issue_number: a
+            for a in plan.actions
+            if a.action_type == ActionType.CLEANUP_SESSION
+        }
+        # Scratch worktree removed unconditionally; ordinary cleanup honors config.
+        assert cleanup_actions[5980].remove_worktrees is True
+        assert cleanup_actions[7].remove_worktrees is False
+
 
 # =============================================================================
 # BEHAVIOR-CENTRIC TESTS: Priority and Action Ordering

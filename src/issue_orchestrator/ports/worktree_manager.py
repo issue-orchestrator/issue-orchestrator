@@ -60,6 +60,7 @@ class WorktreeManager(Protocol):
         base_branch: str | None = None,
         seed_ref: str | None = None,
         reuse_options: WorktreeReuseOptions | None = None,
+        worktree_name: str | None = None,
     ) -> WorktreeInfo:
         """Create a new git worktree for an issue.
 
@@ -74,6 +75,12 @@ class WorktreeManager(Protocol):
             base_branch: Branch to use for new worktree bases (defaults to default branch)
             seed_ref: Optional local ref used to seed fresh worktrees
             reuse_options: Options controlling reuse behavior
+            worktree_name: Overrides the derived worktree directory basename
+                (default ``<repo>-<issue_number>``). Used for a run-scoped,
+                disposable scratch worktree that must NOT collide with — or
+                reuse — the issue's own worktree (a triage failure
+                investigation reads its subject's worktree as evidence and must
+                never mutate it).
 
         Returns:
             WorktreeInfo with path and branch name

@@ -55,7 +55,11 @@ from .worktree_context import WorktreeContext
 from .stack_base import StackBaseDecision
 from ..infra.validation_state import DEFAULT_RETRY_TEMPLATE
 from ..domain.triage_session import TriageLaunchScope
-from .triage_session_policy import is_triage_session, prepare_triage_session_data
+from .triage_session_policy import (
+    failure_investigation_scratch_identity,
+    is_triage_session,
+    prepare_triage_session_data,
+)
 from ..ports import (
     ManifestDownloader,
     EventSink,
@@ -717,6 +721,25 @@ class SessionLauncher:
         """Check if this agent type is the triage review agent."""
         return is_triage_session(self.config.triage_review_agent, agent_type)
 
+    def _remove_scratch_worktree_if_disposable(
+        self, issue_number: int, worktree_path: Path, is_scratch: bool
+    ) -> None:
+        """Best-effort removal of a disposable scratch investigation worktree.
+
+        A no-op unless ``is_scratch`` (so callers stay branch-free): used on the
+        pre-active launch-failure paths that keep an ordinary coding worktree for
+        reuse — a scratch worktree has no reuse path, so it must be removed
+        rather than leaked (#6823)."""
+        if not is_scratch:
+            return
+        try:
+            self._worktree_manager.remove(worktree_path)
+            logger.info(issue_log(issue_number, "Removed scratch investigation worktree: %s"), worktree_path)
+        except Exception as e:
+            logger.warning(
+                issue_log(issue_number, "Failed to remove scratch investigation worktree: %s"), e
+            )
+
     def _prepare_triage_session_data(
         self,
         issue: "IssueProtocol",
@@ -863,8 +886,16 @@ class SessionLauncher:
                 scratch_branch_name,
             )
         phase_name = "coding-1"  # Initial coding session is always attempt 1
-        # Triage investigations read the subject's branch as evidence — preserve
-        # it (never rebase/reset); gated to triage so coding is unaffected.
+        # A triage FAILURE INVESTIGATION reads its focus issue's worktree/branch
+        # as evidence and must never mutate them (#6823): it runs in a fresh,
+        # disposable scratch worktree on a throwaway branch off the base, keyed
+        # to this run — not the focus issue. Batch/health reviews keep the
+        # existing behaviour (their own anchor worktree, preserve_branch=True so
+        # a stranded branch's unpushed work is read rather than rebased away).
+        investigation_scratch = failure_investigation_scratch_identity(
+            self.config, issue, triage_scope
+        )
+        is_scratch_investigation = investigation_scratch is not None
         ctx = WorktreeContext.create(
             worktree_manager=self._worktree_manager,
             config=self.config,
@@ -878,11 +909,18 @@ class SessionLauncher:
             enforce_hooks=self.config.enforce_hooks,
             pre_push_hook=self.config.pre_push_hook,
             reuse_options=self._worktree_reuse_options(
-                force_fresh=from_scratch_pending,
-                preserve_branch=self._is_triage_session(issue.agent_type),
+                force_fresh=from_scratch_pending or is_scratch_investigation,
+                # The scratch investigation has no subject branch to preserve —
+                # it never reuses the focus worktree — so preserve_branch stays
+                # for batch/health triage that DOES reuse its anchor worktree.
+                preserve_branch=(
+                    self._is_triage_session(issue.agent_type)
+                    and not is_scratch_investigation
+                ),
             ),
             phase_name=phase_name,
             stack_base_branch=freshness.stack_base_branch,
+            scratch=investigation_scratch,
         )
 
         if ctx.error:
@@ -1128,6 +1166,13 @@ class SessionLauncher:
                         issue_key=issue.key.stable_id(),
                     ),
                 ], context="launch_session_creation_failed")
+                # A coding worktree is kept for reuse on retry, but a scratch
+                # investigation worktree is a throwaway with no reuse path — the
+                # session never became active, so remove it here to avoid leaking
+                # a scratch workspace (#6823).
+                self._remove_scratch_worktree_if_disposable(
+                    issue.number, worktree_path, is_scratch_investigation
+                )
                 self._release_claim_if_held(issue.number, claim)
                 return LaunchResult(None, False, "Failed to create terminal session")
             launch_reached_active = True  # terminal RUNNING = irreversible (#6769 r5)
@@ -1149,6 +1194,9 @@ class SessionLauncher:
                 lease_id=claim.lease_id,
                 lease_acquired_at=claim.lease_acquired_at,
                 lease_expires_at=claim.lease_expires_at,
+                # A scratch investigation worktree is disposable: completion must
+                # always remove it, regardless of the cleanup config (#6823).
+                scratch_worktree=is_scratch_investigation,
             )
 
             total_time = time.time() - launch_start

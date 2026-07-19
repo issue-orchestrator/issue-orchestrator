@@ -671,8 +671,9 @@ class TempWorktreeManager:
         base_branch: str | None = None,
         seed_ref: str | None = None,
         reuse_options=None,
+        worktree_name: str | None = None,
     ):
-        worktree = (worktree_base or self.base) / f"sim-wt-{issue_number}"
+        worktree = (worktree_base or self.base) / (worktree_name or f"sim-wt-{issue_number}")
         worktree.mkdir(parents=True, exist_ok=True)
         final_branch = branch_name or f"{issue_number}-sim"
         # Use a real git repo so branch/introspection commands work in scenarios.

@@ -445,6 +445,9 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
             terminal_id=session.terminal_id,
             worktree_path=str(session.worktree_path),
             reason=effective_status.value,
+            # A disposable triage-investigation scratch worktree is removed on
+            # completion regardless of the cleanup config (#6823).
+            scratch_worktree=session.scratch_worktree,
         ))
 
     if result.should_queue_review and result.pr_url and result.pr_number:

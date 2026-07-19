@@ -1002,7 +1002,9 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                 terminal_id=cleanup.terminal_id,
                 worktree_path=cleanup.worktree_path,
                 close_tabs=facts.close_tabs,
-                remove_worktrees=facts.remove_worktrees,
+                # A disposable triage-investigation scratch worktree is always
+                # removed, even when the config keeps worktrees (#6823).
+                remove_worktrees=facts.remove_worktrees or cleanup.scratch_worktree,
                 reason=f"session {cleanup.reason}",
             ))
             logger.info("Planner: immediate cleanup for issue #%d (%s)",
