@@ -218,6 +218,15 @@ def build_claude_sandbox_settings(scope: SandboxScope) -> dict[str, Any]:
         # start, and refuse the ``dangerouslyDisableSandbox`` escape hatch.
         "failIfUnavailable": True,
         "allowUnsandboxedCommands": False,
+        # Sandbox-weakening booleans, pinned false. ``--settings`` is a higher
+        # scope than user/project/local for scalar keys, so a merged ambient
+        # scope cannot re-enable these (only a managed policy could). This closes
+        # the boolean escapes that the launch guard (sandbox_preflight) would
+        # otherwise have to reject; the guard covers the array/hook escapes that
+        # ``--settings`` cannot lock.
+        "allowAppleEvents": False,
+        "enableWeakerNetworkIsolation": False,
+        "enableWeakerNestedSandbox": False,
         "filesystem": {
             # Reads are OPEN by default: deny the home dir and re-allow only the
             # read roots within it. This array MERGES across settings scopes, so

@@ -1,10 +1,9 @@
 """Unit tests for the fail-closed sandbox launch guard (ADR-0034).
 
-The ``--settings`` adapter can only lock the DENY floor; Claude merges array
-settings across scopes, so a merged ``permissions.allow`` of a native write tool
-or any ``sandbox.excludedCommands`` escapes the write/exec bound. These tests
-pin the guard's decision matrix, the scope reader, and the fail-closed provider
-launch path the reviewer asked for.
+Covers the COMPLETE widening model: native-write allows, filesystem.allowWrite,
+network.allowedDomains, excludedCommands, allowUnixSockets, and permission hooks;
+provenance (validate the effective managed set when locked, do not skip); and
+path-component confinement (sibling-prefix and wildcard-escape are rejected).
 """
 
 from __future__ import annotations
@@ -21,17 +20,20 @@ from issue_orchestrator.execution.agent_runner_providers.claude import (
 from issue_orchestrator.execution.agent_runner_providers.sandbox_preflight import (
     AmbientClaudeSettings,
     SandboxEnvironmentUnsafeError,
+    ScopedEntries,
     assert_claude_sandbox_environment_safe,
     evaluate_sandbox_environment,
     read_ambient_claude_settings,
 )
 
+_HOME = Path("/home/agent")
 
-def _scope(worktree: Path = Path("/wt/issue-42")) -> SandboxScope:
+
+def _scope(worktree: Path = Path("/wt/issue-9"), egress: str = "model-only") -> SandboxScope:
     return SandboxScope(
         read_roots=(worktree,),
         write_roots=(worktree,),
-        egress="model-only",
+        egress=egress,  # type: ignore[arg-type]
         deny_env=("GITHUB_TOKEN",),
         deny_read_files=("~/.ssh",),
     )
@@ -39,80 +41,182 @@ def _scope(worktree: Path = Path("/wt/issue-42")) -> SandboxScope:
 
 def _ambient(
     *,
-    allow: tuple[str, ...] = (),
-    excluded: tuple[str, ...] = (),
-    locked: bool = False,
+    allow_m: tuple[str, ...] = (),
+    allow_n: tuple[str, ...] = (),
+    write_m: tuple[str, ...] = (),
+    write_n: tuple[str, ...] = (),
+    dom_m: tuple[str, ...] = (),
+    dom_n: tuple[str, ...] = (),
+    excl_m: tuple[str, ...] = (),
+    excl_n: tuple[str, ...] = (),
+    sock_m: tuple[str, ...] = (),
+    sock_n: tuple[str, ...] = (),
+    hooks_m: tuple[str, ...] = (),
+    hooks_n: tuple[str, ...] = (),
+    perm_locked: bool = False,
+    dom_locked: bool = False,
 ) -> AmbientClaudeSettings:
     return AmbientClaudeSettings(
-        permission_allow=allow,
-        excluded_commands=excluded,
-        managed_permission_rules_locked=locked,
+        permission_allow=ScopedEntries(allow_m, allow_n),
+        filesystem_allow_write=ScopedEntries(write_m, write_n),
+        network_allowed_domains=ScopedEntries(dom_m, dom_n),
+        excluded_commands=ScopedEntries(excl_m, excl_n),
+        allow_unix_sockets=ScopedEntries(sock_m, sock_n),
+        permission_hooks=ScopedEntries(hooks_m, hooks_n),
+        managed_permission_rules_locked=perm_locked,
+        managed_domains_locked=dom_locked,
+    )
+
+
+def _eval(scope: SandboxScope, ambient: AmbientClaudeSettings) -> None:
+    evaluate_sandbox_environment(
+        scope, ambient, home=_HOME, project_dir=scope.write_roots[0]
     )
 
 
 # ---------------------------------------------------------------------------
-# evaluate_sandbox_environment — pure decision matrix
+# Clean + native-write allows (with fixed confinement)
 # ---------------------------------------------------------------------------
 
 
 def test_clean_environment_passes() -> None:
-    evaluate_sandbox_environment(_scope(), _ambient())
+    _eval(_scope(), _ambient())
 
 
 def test_narrow_bash_allow_is_not_an_escape() -> None:
-    # A specific sandboxed Bash allow does not defeat the OS filesystem bound.
-    evaluate_sandbox_environment(_scope(), _ambient(allow=("Bash(npm run test)",)))
+    _eval(_scope(), _ambient(allow_n=("Bash(npm run test)",)))
 
 
 @pytest.mark.parametrize("tool", ["Edit", "Write", "MultiEdit", "NotebookEdit"])
 def test_bare_native_write_allow_fails_closed(tool: str) -> None:
     with pytest.raises(SandboxEnvironmentUnsafeError, match="native writes"):
-        evaluate_sandbox_environment(_scope(), _ambient(allow=(tool,)))
+        _eval(_scope(), _ambient(allow_n=(tool,)))
+
+
+def test_write_allow_confined_to_write_root_passes() -> None:
+    _eval(_scope(), _ambient(allow_n=("Edit(//wt/issue-9/**)",)))
+
+
+def test_write_allow_sibling_prefix_fails_closed() -> None:
+    # /wt/issue-90 is a SIBLING of /wt/issue-9, not a descendant.
+    with pytest.raises(SandboxEnvironmentUnsafeError):
+        _eval(_scope(), _ambient(allow_n=("Edit(//wt/issue-90/**)",)))
+
+
+def test_write_allow_wildcard_escape_fails_closed() -> None:
+    # //wt/issue-9*/** is confined only by its non-glob parent /wt (outside root).
+    with pytest.raises(SandboxEnvironmentUnsafeError):
+        _eval(_scope(), _ambient(allow_n=("Edit(//wt/issue-9*/**)",)))
+
+
+# ---------------------------------------------------------------------------
+# filesystem.allowWrite  (P0: was not read at all)
+# ---------------------------------------------------------------------------
+
+
+def test_allow_write_outside_worktree_fails_closed() -> None:
+    with pytest.raises(SandboxEnvironmentUnsafeError, match="allowWrite"):
+        _eval(_scope(), _ambient(write_n=("/tmp/outside-worktree",)))
+
+
+def test_allow_write_home_relative_fails_closed() -> None:
+    with pytest.raises(SandboxEnvironmentUnsafeError, match="allowWrite"):
+        _eval(_scope(), _ambient(write_n=("~/.kube",)))
+
+
+def test_allow_write_project_relative_inside_worktree_passes() -> None:
+    _eval(_scope(), _ambient(write_n=("./build", "output")))
+
+
+def test_managed_allow_write_outside_still_fails_closed() -> None:
+    # allowWrite has no managed-only lock; a managed entry still widens.
+    with pytest.raises(SandboxEnvironmentUnsafeError, match="allowWrite"):
+        _eval(_scope(), _ambient(write_m=("/srv/data",)))
+
+
+# ---------------------------------------------------------------------------
+# network.allowedDomains  (P0: was not read at all)
+# ---------------------------------------------------------------------------
+
+
+def test_allowed_domains_widening_fails_closed() -> None:
+    with pytest.raises(SandboxEnvironmentUnsafeError, match="allowedDomains"):
+        _eval(_scope(egress="model-only"), _ambient(dom_n=("example.com",)))
+
+
+def test_model_api_domain_is_permitted_under_model_only() -> None:
+    _eval(_scope(egress="model-only"), _ambient(dom_n=("api.anthropic.com",)))
+
+
+def test_none_egress_permits_no_domain() -> None:
+    with pytest.raises(SandboxEnvironmentUnsafeError, match="allowedDomains"):
+        _eval(_scope(egress="none"), _ambient(dom_n=("api.anthropic.com",)))
+
+
+def test_model_web_egress_skips_domain_check() -> None:
+    _eval(_scope(egress="model+web"), _ambient(dom_n=("example.com", "evil.net")))
+
+
+def test_managed_domains_lock_ignores_nonmanaged_but_validates_managed() -> None:
+    # Locked -> non-managed domains ignored (pass) ...
+    _eval(_scope(), _ambient(dom_n=("example.com",), dom_locked=True))
+    # ... but a managed domain is the effective set and is still validated.
+    with pytest.raises(SandboxEnvironmentUnsafeError):
+        _eval(_scope(), _ambient(dom_m=("example.com",), dom_locked=True))
+
+
+# ---------------------------------------------------------------------------
+# excludedCommands / allowUnixSockets / hooks
+# ---------------------------------------------------------------------------
 
 
 def test_excluded_commands_fail_closed() -> None:
     with pytest.raises(SandboxEnvironmentUnsafeError, match="excludedCommands"):
-        evaluate_sandbox_environment(_scope(), _ambient(excluded=("curl",)))
+        _eval(_scope(), _ambient(excl_n=("curl",)))
 
 
-def test_managed_lock_neutralizes_ambient_allow() -> None:
-    # allowManagedPermissionRulesOnly makes Claude ignore ambient allow rules.
-    evaluate_sandbox_environment(_scope(), _ambient(allow=("Edit", "Write"), locked=True))
+def test_allow_unix_sockets_fail_closed() -> None:
+    with pytest.raises(SandboxEnvironmentUnsafeError, match="allowUnixSockets"):
+        _eval(_scope(), _ambient(sock_n=("/var/run/docker.sock",)))
 
 
-def test_managed_lock_does_not_excuse_excluded_commands() -> None:
-    # excludedCommands has no managed-only lock -> still prohibited.
-    with pytest.raises(SandboxEnvironmentUnsafeError, match="excludedCommands"):
-        evaluate_sandbox_environment(
-            _scope(), _ambient(excluded=("docker",), locked=True)
-        )
-
-
-def test_write_allow_confined_to_write_root_is_allowed() -> None:
-    # A native-write allow scoped to the session's write root is not an escape.
-    worktree = Path("/wt/issue-9")
-    entry = "Edit(//wt/issue-9/**)"  # // absolute specifier normalized to /wt/...
-    evaluate_sandbox_environment(_scope(worktree), _ambient(allow=(entry,)))
-
-
-def test_write_allow_to_other_path_fails_closed() -> None:
-    worktree = Path("/wt/issue-9")
-    with pytest.raises(SandboxEnvironmentUnsafeError):
-        evaluate_sandbox_environment(
-            _scope(worktree), _ambient(allow=("Edit(//etc/**)",))
-        )
-
-
-def test_error_carries_reasons() -> None:
-    with pytest.raises(SandboxEnvironmentUnsafeError) as excinfo:
-        evaluate_sandbox_environment(
-            _scope(), _ambient(allow=("Edit",), excluded=("curl",))
-        )
-    assert len(excinfo.value.reasons) == 2
+def test_permission_hooks_fail_closed() -> None:
+    with pytest.raises(SandboxEnvironmentUnsafeError, match="hook"):
+        _eval(_scope(), _ambient(hooks_n=("PreToolUse",)))
 
 
 # ---------------------------------------------------------------------------
-# read_ambient_claude_settings — scope merging (I/O)
+# Provenance (P0: validate the effective set, do not skip when locked)
+# ---------------------------------------------------------------------------
+
+
+def test_perm_lock_ignores_nonmanaged_allow() -> None:
+    # allowManagedPermissionRulesOnly makes Claude ignore non-managed allows.
+    _eval(_scope(), _ambient(allow_n=("Edit", "Write"), perm_locked=True))
+
+
+def test_perm_lock_still_validates_managed_allow() -> None:
+    # The reviewer's case: managed lock + managed Write is still a host grant.
+    with pytest.raises(SandboxEnvironmentUnsafeError, match="native writes"):
+        _eval(_scope(), _ambient(allow_m=("Write",), perm_locked=True))
+
+
+def test_unlocked_validates_the_union() -> None:
+    with pytest.raises(SandboxEnvironmentUnsafeError):
+        _eval(_scope(), _ambient(allow_n=("Write",), perm_locked=False))
+
+
+def test_error_carries_all_reasons() -> None:
+    with pytest.raises(SandboxEnvironmentUnsafeError) as excinfo:
+        _eval(
+            _scope(),
+            _ambient(allow_n=("Edit",), write_n=("/etc",), excl_n=("curl",)),
+        )
+    assert len(excinfo.value.reasons) == 3
+
+
+# ---------------------------------------------------------------------------
+# read_ambient_claude_settings — scope merging + provenance (I/O)
 # ---------------------------------------------------------------------------
 
 
@@ -121,29 +225,43 @@ def _write_settings(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
-def test_reader_unions_allow_across_user_and_project(tmp_path: Path) -> None:
-    home = tmp_path / "home"
+def test_reader_splits_managed_and_nonmanaged_provenance(tmp_path: Path) -> None:
+    managed = tmp_path / "managed.json"
+    _write_settings(managed, {"permissions": {"allow": ["Write"]}})
     project = tmp_path / "project"
-    _write_settings(home / ".claude" / "settings.json", {"permissions": {"allow": ["Read"]}})
     _write_settings(
         project / ".claude" / "settings.json", {"permissions": {"allow": ["Edit"]}}
     )
     ambient = read_ambient_claude_settings(
-        home=home, project_dir=project, managed_settings_paths=()
+        home=tmp_path / "home",
+        project_dir=project,
+        managed_settings_paths=(managed,),
     )
-    assert set(ambient.permission_allow) == {"Read", "Edit"}
+    assert ambient.permission_allow.managed == ("Write",)
+    assert ambient.permission_allow.nonmanaged == ("Edit",)
 
 
-def test_reader_picks_up_local_excluded_commands(tmp_path: Path) -> None:
+def test_reader_collects_all_widening_fields(tmp_path: Path) -> None:
     project = tmp_path / "project"
     _write_settings(
-        project / ".claude" / "settings.local.json",
-        {"sandbox": {"excludedCommands": ["docker *"]}},
+        project / ".claude" / "settings.json",
+        {
+            "sandbox": {
+                "filesystem": {"allowWrite": ["/tmp/x"]},
+                "network": {"allowedDomains": ["evil.com"], "allowUnixSockets": ["/s"]},
+                "excludedCommands": ["docker *"],
+            },
+            "hooks": {"PreToolUse": [{"matcher": "*"}]},
+        },
     )
     ambient = read_ambient_claude_settings(
-        home=tmp_path / "empty", project_dir=project, managed_settings_paths=()
+        home=tmp_path / "h", project_dir=project, managed_settings_paths=()
     )
-    assert ambient.excluded_commands == ("docker *",)
+    assert ambient.filesystem_allow_write.nonmanaged == ("/tmp/x",)
+    assert ambient.network_allowed_domains.nonmanaged == ("evil.com",)
+    assert ambient.allow_unix_sockets.nonmanaged == ("/s",)
+    assert ambient.excluded_commands.nonmanaged == ("docker *",)
+    assert ambient.permission_hooks.nonmanaged == ("PreToolUse",)
 
 
 def test_reader_honors_config_dir_override(tmp_path: Path) -> None:
@@ -155,26 +273,29 @@ def test_reader_honors_config_dir_override(tmp_path: Path) -> None:
         config_dir=str(config_dir),
         managed_settings_paths=(),
     )
-    assert ambient.permission_allow == ("Write",)
+    assert ambient.permission_allow.nonmanaged == ("Write",)
 
 
-def test_reader_reads_managed_lock_only_from_managed_scope(tmp_path: Path) -> None:
+def test_reader_reads_locks_only_from_managed_scope(tmp_path: Path) -> None:
     managed = tmp_path / "managed.json"
-    _write_settings(managed, {"allowManagedPermissionRulesOnly": True})
-    # A project file claiming the lock must NOT flip it (only managed scope can).
+    _write_settings(
+        managed,
+        {"allowManagedPermissionRulesOnly": True, "allowManagedDomainsOnly": True},
+    )
     project = tmp_path / "project"
     _write_settings(
         project / ".claude" / "settings.json",
-        {"allowManagedPermissionRulesOnly": True},
+        {"allowManagedPermissionRulesOnly": True},  # must NOT flip the lock
     )
-    from_managed = read_ambient_claude_settings(
+    with_managed = read_ambient_claude_settings(
         home=tmp_path / "h", project_dir=project, managed_settings_paths=(managed,)
     )
-    assert from_managed.managed_permission_rules_locked is True
-    without_managed = read_ambient_claude_settings(
+    assert with_managed.managed_permission_rules_locked is True
+    assert with_managed.managed_domains_locked is True
+    without = read_ambient_claude_settings(
         home=tmp_path / "h", project_dir=project, managed_settings_paths=()
     )
-    assert without_managed.managed_permission_rules_locked is False
+    assert without.managed_permission_rules_locked is False
 
 
 def test_reader_tolerates_missing_and_malformed_files(tmp_path: Path) -> None:
@@ -184,37 +305,33 @@ def test_reader_tolerates_missing_and_malformed_files(tmp_path: Path) -> None:
     ambient = read_ambient_claude_settings(
         home=tmp_path / "nope", project_dir=project, managed_settings_paths=()
     )
-    assert ambient == AmbientClaudeSettings((), (), False)
+    assert ambient.permission_allow.union() == ()
+    assert ambient.filesystem_allow_write.union() == ()
 
 
 # ---------------------------------------------------------------------------
-# assert_claude_sandbox_environment_safe + provider launch path (adversarial)
+# Provider launch path (adversarial, both new fields)
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"permissions": {"allow": ["Edit", "Write"]}, "sandbox": {"excludedCommands": ["curl"]}},
+        {"sandbox": {"filesystem": {"allowWrite": ["/tmp/outside-worktree"]}}},
+        {"sandbox": {"network": {"allowedDomains": ["example.com"]}}},
+    ],
+)
 def test_provider_launch_fails_closed_on_widening_project_settings(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, payload: dict
 ) -> None:
-    # The reviewer's adversarial case: a target-repo .claude/settings.json that
-    # grants Edit/Write and excludes a command. The opted-in launch must refuse.
     worktree = tmp_path / "worktree"
-    _write_settings(
-        worktree / ".claude" / "settings.json",
-        {
-            "permissions": {"allow": ["Edit", "Write"]},
-            "sandbox": {"excludedCommands": ["curl"]},
-        },
-    )
-    clean_home = tmp_path / "clean-home"
-    clean_home.mkdir()
-    monkeypatch.setenv("HOME", str(clean_home))
+    _write_settings(worktree / ".claude" / "settings.json", payload)
+    monkeypatch.setenv("HOME", str(tmp_path / "clean-home"))
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
-
-    scope = _scope(worktree)
     with pytest.raises(SandboxEnvironmentUnsafeError):
-        # Managed paths default to non-existent system files on the test host.
         ClaudeCodeProvider().build_command(
-            prompt="task", model="sonnet", sandbox_scope=scope
+            prompt="task", model="sonnet", sandbox_scope=_scope(worktree)
         )
 
 
@@ -223,11 +340,8 @@ def test_provider_launch_succeeds_on_clean_environment(
 ) -> None:
     worktree = tmp_path / "worktree"
     worktree.mkdir()
-    clean_home = tmp_path / "clean-home"
-    clean_home.mkdir()
-    monkeypatch.setenv("HOME", str(clean_home))
+    monkeypatch.setenv("HOME", str(tmp_path / "clean-home"))
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
-
     cmd = ClaudeCodeProvider().build_command(
         prompt="task", model="sonnet", sandbox_scope=_scope(worktree)
     )
@@ -239,7 +353,8 @@ def test_assert_helper_derives_project_dir_from_write_root(
 ) -> None:
     worktree = tmp_path / "worktree"
     _write_settings(
-        worktree / ".claude" / "settings.json", {"permissions": {"allow": ["Write"]}}
+        worktree / ".claude" / "settings.json",
+        {"sandbox": {"filesystem": {"allowWrite": ["/etc"]}}},
     )
     monkeypatch.setenv("HOME", str(tmp_path / "clean"))
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)

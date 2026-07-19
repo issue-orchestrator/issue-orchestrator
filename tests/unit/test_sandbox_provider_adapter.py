@@ -48,6 +48,15 @@ def test_claude_settings_enable_real_sandbox() -> None:
     assert sandbox["allowUnsandboxedCommands"] is False
 
 
+def test_claude_settings_pin_sandbox_weakener_booleans_false() -> None:
+    # --settings scalar precedence beats user/project, so a merged ambient scope
+    # cannot re-enable these; the launch guard need only cover array/hook escapes.
+    sandbox = build_claude_sandbox_settings(_scope())["sandbox"]
+    assert sandbox["allowAppleEvents"] is False
+    assert sandbox["enableWeakerNetworkIsolation"] is False
+    assert sandbox["enableWeakerNestedSandbox"] is False
+
+
 def test_claude_settings_bound_read_and_write_roots() -> None:
     settings = build_claude_sandbox_settings(_scope())
     fs = settings["sandbox"]["filesystem"]
