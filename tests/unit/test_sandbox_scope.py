@@ -9,6 +9,9 @@ import pytest
 from issue_orchestrator.domain.models import AgentConfig
 from issue_orchestrator.domain.sandbox_scope import (
     DEFAULT_SANDBOX_DENY_ENV,
+    DEFAULT_SANDBOX_DENY_READ_FILES,
+    REVIEW_EXCHANGE_CODER_TASK_KIND,
+    REVIEW_EXCHANGE_REVIEWER_TASK_KIND,
     SandboxScope,
     SandboxScopeContext,
     compute_session_scope,
@@ -40,6 +43,7 @@ def test_sandbox_scope_is_frozen_value_object() -> None:
         write_roots=(Path("/wt"),),
         egress="model-only",
         deny_env=("GITHUB_TOKEN",),
+        deny_read_files=("~/.ssh",),
     )
     with pytest.raises((AttributeError, TypeError)):
         scope.egress = "model+web"  # type: ignore[misc]
@@ -47,7 +51,13 @@ def test_sandbox_scope_is_frozen_value_object() -> None:
 
 def test_sandbox_scope_rejects_empty_read_roots() -> None:
     with pytest.raises(ValueError, match="read_roots must not be empty"):
-        SandboxScope(read_roots=(), write_roots=(), egress="none", deny_env=())
+        SandboxScope(
+            read_roots=(),
+            write_roots=(),
+            egress="none",
+            deny_env=(),
+            deny_read_files=(),
+        )
 
 
 def test_sandbox_scope_rejects_unknown_egress() -> None:
@@ -57,6 +67,7 @@ def test_sandbox_scope_rejects_unknown_egress() -> None:
             write_roots=(),
             egress="everything",  # type: ignore[arg-type]
             deny_env=(),
+            deny_read_files=(),
         )
 
 
@@ -79,6 +90,10 @@ def test_opted_in_coder_scope() -> None:
     assert scope.egress == "model-only"
     assert scope.deny_env == DEFAULT_SANDBOX_DENY_ENV
     assert "GITHUB_TOKEN" in scope.deny_env
+    # Fail-closed secret paths are populated from the domain denylist.
+    assert scope.deny_read_files == DEFAULT_SANDBOX_DENY_READ_FILES
+    assert "~/.ssh" in scope.deny_read_files
+    assert "~/.issue-orchestrator" in scope.deny_read_files
 
 
 def test_opted_in_rework_is_coder_scope() -> None:
@@ -109,6 +124,22 @@ def test_opted_in_triage_is_bounded_not_yolo() -> None:
     assert scope is not None
     assert scope.read_roots == (worktree,)
     assert scope.write_roots == (worktree,)
+
+
+@pytest.mark.parametrize(
+    "task_kind",
+    [REVIEW_EXCHANGE_CODER_TASK_KIND, REVIEW_EXCHANGE_REVIEWER_TASK_KIND],
+)
+def test_review_exchange_task_kinds_are_recognized_roles(task_kind: str) -> None:
+    # The persistent review-exchange launches with per-role task kinds; the
+    # policy must resolve them explicitly (a bounded worktree scope) rather than
+    # relying on the unknown-task CODER fail-safe.
+    worktree = Path("/wt/issue-13")
+    scope = compute_session_scope(_agent(sandbox=True), _ctx(task_kind, worktree))
+    assert scope is not None
+    assert scope.read_roots == (worktree,)
+    assert scope.write_roots == (worktree,)
+    assert scope.egress == "model-only"
 
 
 def test_unknown_task_kind_fails_safe_to_bounded_scope() -> None:

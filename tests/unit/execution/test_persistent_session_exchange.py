@@ -128,6 +128,65 @@ def _make_codex_agent(prompt_path: Path) -> AgentConfig:
     )
 
 
+@pytest.mark.parametrize("role", ["coder", "reviewer"])
+def test_derive_bootstrap_agent_preserves_sandbox_optin(role: str) -> None:
+    """Regression (ADR-0034): the exchange launch config must preserve ``sandbox``.
+
+    The prior field-by-field rebuild dropped the ``sandbox`` opt-in, so an
+    opted-in coder/reviewer launched UNSANDBOXED on the persistent-exchange
+    path. ``_derive_bootstrap_agent`` uses ``dataclasses.replace`` so every
+    policy-bearing field is preserved by construction.
+    """
+    base = AgentConfig(
+        prompt_path=Path(f".prompts/{role}.md"),
+        prompt_relative=f".prompts/{role}.md",
+        provider="claude-code",
+        model="opus",
+        provider_args={"permission_mode": "bypassPermissions"},
+        sandbox=True,
+        reviewer="agent:reviewer",
+        skip_review=True,
+        meta_agent="claude-code",
+    )
+
+    derived = pse._derive_bootstrap_agent(base, "BOOTSTRAP PROMPT")  # noqa: SLF001
+
+    # The opt-in and the rest of the policy-bearing fields survive.
+    assert derived.sandbox is True
+    assert derived.provider == "claude-code"
+    assert derived.model == "opus"
+    assert derived.provider_args == {"permission_mode": "bypassPermissions"}
+    assert derived.reviewer == "agent:reviewer"
+    assert derived.skip_review is True
+    assert derived.meta_agent == "claude-code"
+    # Only the two intended transforms differ from the base.
+    assert derived.initial_prompt == "BOOTSTRAP PROMPT"
+
+    # And the opt-in flows into the actual launch command's sandbox settings.
+    cmd = derived.get_command(
+        issue_number=13,
+        issue_title="t",
+        worktree=Path("/wt/issue-13"),
+        task_kind=f"review_exchange_{role}",
+    )
+    assert "--permission-mode dontAsk" in cmd
+    assert "bypassPermissions" not in cmd
+    assert "--settings" in cmd
+
+
+def test_derive_bootstrap_agent_resolves_ai_system_only_provider() -> None:
+    """An ``ai_system``-only stub resolves its launch provider (no custom command)."""
+    base = AgentConfig(
+        prompt_path=Path(".prompts/r.md"),
+        provider=None,
+        ai_system="codex",
+        sandbox=True,
+    )
+    derived = pse._derive_bootstrap_agent(base, "BOOT")  # noqa: SLF001
+    assert derived.provider == "codex"
+    assert derived.sandbox is True
+
+
 def _runtime_config(tmp_path: Path) -> RuntimeConfigReference:
     config_path = tmp_path / "issue-orchestrator.test.yaml"
     if not config_path.exists():

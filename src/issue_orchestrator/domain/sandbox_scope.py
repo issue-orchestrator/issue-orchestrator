@@ -33,6 +33,9 @@ if TYPE_CHECKING:
 
 __all__ = [
     "DEFAULT_SANDBOX_DENY_ENV",
+    "DEFAULT_SANDBOX_DENY_READ_FILES",
+    "REVIEW_EXCHANGE_CODER_TASK_KIND",
+    "REVIEW_EXCHANGE_REVIEWER_TASK_KIND",
     "SandboxEgress",
     "SandboxRole",
     "SandboxScope",
@@ -40,11 +43,17 @@ __all__ = [
     "compute_session_scope",
 ]
 
-# Egress posture for a sandboxed session:
-# - "none":       no network beyond the model API (fully offline otherwise)
-# - "model-only": the model API plus source-host reads (git fetch / PR reads),
-#                 nothing else — no web search, no ad-hoc HTTP
-# - "model+web":  model API plus unrestricted web (opt-in escape hatch)
+# Egress posture for a sandboxed session. This governs a sandboxed agent's
+# **Bash subprocess** network only — the claude-code sandbox isolates Bash
+# child processes, not the agent process itself, so the agent always reaches
+# the model API regardless of this setting.
+# - "none":       Bash subprocesses reach no network at all.
+# - "model-only": Bash subprocesses reach only the model API host — no source
+#                 host, no web. (git-over-https to the source host is therefore
+#                 blocked from Bash; the orchestrator, not the agent, performs
+#                 pushes/PR creation, and a linked worktree's shared ``.git`` is
+#                 reachable at the filesystem layer.)
+# - "model+web":  no Bash network restriction (opt-in escape hatch).
 SandboxEgress = Literal["none", "model-only", "model+web"]
 
 # Credentials scrubbed from a sandboxed agent's process environment. This
@@ -71,6 +80,48 @@ DEFAULT_SANDBOX_DENY_ENV: tuple[str, ...] = (
     "SSH_AUTH_SOCK",
 )
 
+# Home-relative secret locations whose *reads* must be denied inside the
+# sandbox. This is the fail-closed complement to :data:`DEFAULT_SANDBOX_DENY_ENV`
+# (which scrubs credential *env vars*): the claude-code sandbox leaves reads
+# open to the whole machine by default, so without an explicit deny a sandboxed
+# agent could still ``cat ~/.ssh/id_ed25519`` or the orchestrator's own
+# ``~/.issue-orchestrator/api-token``. The provider adapter translates these
+# into narrow, un-widenable credential-deny entries (see
+# ``execution.agent_runner_providers.sandbox.build_claude_sandbox_settings``).
+#
+# Paths are home-relative (``~/`` prefix) — a universal, provider-portable
+# convention. They cover the well-known fixed secret stores:
+#   - ``~/.ssh`` / ``~/.aws`` / ``~/.gnupg``     — key material
+#   - ``~/.config/gh``                            — GitHub CLI hosts.yml token
+#   - ``~/.issue-orchestrator`` /                 — this tool's Control API +
+#     ``~/.config/issue-orchestrator``              agent-callback tokens
+#   - ``~/.netrc`` / ``~/.npmrc`` / ``~/.pypirc`` — HTTP/registry credentials
+# The GitHub *App* private key path is operator-configured
+# (``github.app.private_key_path``) with no fixed default, so it is not a
+# static entry here; a home-based key is still covered by the adapter's
+# ``denyRead: ["~/"]`` boundary, and an absolute path outside home is a
+# documented limitation (see the adapter module docstring).
+DEFAULT_SANDBOX_DENY_READ_FILES: tuple[str, ...] = (
+    "~/.ssh",
+    "~/.aws",
+    "~/.gnupg",
+    "~/.config/gh",
+    "~/.issue-orchestrator",
+    "~/.config/issue-orchestrator",
+    "~/.netrc",
+    "~/.npmrc",
+    "~/.pypirc",
+)
+
+# Review-exchange launches use per-role task kinds (built as
+# ``review_exchange_{role}`` in ``execution.persistent_session_exchange`` and
+# matched in ``resources.get_completion_instructions``). They are not
+# :class:`TaskKind` enum values, but the sandbox role policy recognizes them so
+# an opted-in exchange agent resolves to its true role instead of silently
+# landing on the unknown-task CODER fail-safe below.
+REVIEW_EXCHANGE_CODER_TASK_KIND = "review_exchange_coder"
+REVIEW_EXCHANGE_REVIEWER_TASK_KIND = "review_exchange_reviewer"
+
 
 class SandboxRole(Enum):
     """The sandbox-relevant role a session plays.
@@ -94,19 +145,28 @@ class SandboxScope:
     given CLI enforces it.
 
     Attributes:
-        read_roots: Filesystem roots the agent may read. Non-empty.
-        write_roots: Filesystem roots the agent may write. Every write root is
-            expected to also be readable (a subset relationship the provider
-            adapter preserves).
+        read_roots: Filesystem roots to re-allow reads of. Non-empty. NOTE: the
+            claude-code sandbox leaves reads OPEN to the whole machine by
+            default; ``read_roots`` is not a read *boundary* on its own — the
+            provider adapter denies a wider region (the home dir) and re-allows
+            these roots within it, and layers a fail-closed credential deny on
+            top (see the adapter module docstring).
+        write_roots: Filesystem roots the agent may write. Writes are denied
+            outside the cwd by default; every write root is expected to also be
+            readable (a subset relationship the provider adapter preserves).
         egress: Network posture (see :data:`SandboxEgress`).
         deny_env: Environment variables that must be scrubbed from the
             sandboxed process (credentials).
+        deny_read_files: Home-relative secret paths (``~/`` prefix) whose reads
+            must be denied — the fail-closed secret layer (see
+            :data:`DEFAULT_SANDBOX_DENY_READ_FILES`).
     """
 
     read_roots: tuple[Path, ...]
     write_roots: tuple[Path, ...]
     egress: SandboxEgress
     deny_env: tuple[str, ...]
+    deny_read_files: tuple[str, ...]
 
     def __post_init__(self) -> None:
         if not self.read_roots:
@@ -130,9 +190,15 @@ class SandboxScopeContext:
     worktree: Path
 
 
-_CODER_TASK_KINDS = frozenset({TaskKind.CODE.value, TaskKind.REWORK.value})
+_CODER_TASK_KINDS = frozenset(
+    {TaskKind.CODE.value, TaskKind.REWORK.value, REVIEW_EXCHANGE_CODER_TASK_KIND}
+)
 _REVIEWER_TASK_KINDS = frozenset(
-    {TaskKind.REVIEW.value, TaskKind.RETROSPECTIVE_REVIEW.value}
+    {
+        TaskKind.REVIEW.value,
+        TaskKind.RETROSPECTIVE_REVIEW.value,
+        REVIEW_EXCHANGE_REVIEWER_TASK_KIND,
+    }
 )
 _TECH_LEAD_TASK_KINDS = frozenset({TaskKind.TRIAGE.value})
 
@@ -192,4 +258,5 @@ def compute_session_scope(
         write_roots=(worktree,),
         egress="model-only",
         deny_env=DEFAULT_SANDBOX_DENY_ENV,
+        deny_read_files=DEFAULT_SANDBOX_DENY_READ_FILES,
     )

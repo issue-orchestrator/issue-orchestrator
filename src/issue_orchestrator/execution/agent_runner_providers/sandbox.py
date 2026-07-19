@@ -12,11 +12,30 @@ existing ``--mcp-config '<json>'`` pattern the provider already uses) plus
 tools by default instead of ``bypassPermissions``. The **codex** translation is
 a documented follow-up (see :class:`CodexSandboxAdapter`).
 
-Settings schema verified against Claude Code docs (docs.claude.com — Sandbox
-settings / Permissions):
+FAIL-CLOSED filesystem model (verified against docs.claude.com — Sandbox):
+- **Reads are OPEN to the whole machine by default.** ``filesystem.allowRead``
+  does NOT bound reads; it only *re-allows* paths inside a ``denyRead`` region.
+  So we DENY the home directory (``denyRead: ["~/"]``) and re-allow only the
+  session's read roots within it. ``denyRead``/``allowRead`` arrays MERGE across
+  settings scopes, so this is defense-in-depth, not an un-widenable boundary.
+- **The fail-closed secret layer is ``credentials.files``.** ``deny`` entries
+  are narrow-only and merged — any scope can add one, no scope can remove one —
+  so a home-relative secret (``~/.ssh``, this tool's ``~/.issue-orchestrator``
+  api-token, ...) stays unreadable even if a later scope widens ``allowRead``.
+- **Writes are cwd-bounded by default;** ``allowWrite`` grants the worktree
+  write roots explicitly. We do not widen it.
+
+KNOWN LIMITATION: a GitHub *App* private key at an operator-configured absolute
+path *outside* home is covered by neither ``denyRead: ["~/"]`` nor the static
+``credentials.files`` list; a home-based key is covered by ``denyRead``. The
+static secret list lives in the domain (``DEFAULT_SANDBOX_DENY_READ_FILES``).
+
+Settings schema (docs.claude.com — Sandbox settings / Permissions):
 - ``sandbox.enabled`` / ``failIfUnavailable`` / ``allowUnsandboxedCommands``
-- ``sandbox.filesystem.allowRead[]`` / ``allowWrite[]``
-- ``sandbox.network.allowedDomains[]``
+- ``sandbox.filesystem.denyRead[]`` / ``allowRead[]`` / ``allowWrite[]``
+- ``sandbox.network.allowedDomains[]`` (omitted for ``model+web``; explicit
+  empty list for ``none`` to block Bash network entirely)
+- ``sandbox.credentials.files[]`` — objects ``{"path": ..., "mode": "deny"}``
 - ``sandbox.credentials.envVars[]`` — objects ``{"name": ..., "mode": "deny"}``
 - ``permissions.deny[]`` — ``ToolName(pattern)`` entries (e.g. ``Bash(curl *)``)
 """
@@ -29,7 +48,7 @@ from typing import Any, Protocol, runtime_checkable
 from issue_orchestrator.domain.sandbox_scope import SandboxEgress, SandboxScope
 
 __all__ = [
-    "MODEL_ONLY_ALLOWED_DOMAINS",
+    "MODEL_API_DOMAINS",
     "MODEL_ONLY_DENY_TOOLS",
     "ClaudeSandboxAdapter",
     "CodexSandboxAdapter",
@@ -38,21 +57,15 @@ __all__ = [
     "build_claude_sandbox_settings",
 ]
 
-# Domains a "model-only" agent may reach: the Anthropic model API plus the
-# source host (git fetch, PR/issue reads). Everything else is blocked at the OS
-# network layer. This is deliberately a small, named allowlist so the flip
-# slice can tune it in one place.
-MODEL_ONLY_ALLOWED_DOMAINS: tuple[str, ...] = (
-    "api.anthropic.com",
-    "github.com",
-    "api.github.com",
-    "codeload.github.com",
-    "objects.githubusercontent.com",
-)
-
-# Anthropic model API only — the floor every non-"model+web" posture keeps so
-# the agent can still reach the model it is driven by.
-_MODEL_API_DOMAINS: tuple[str, ...] = ("api.anthropic.com",)
+# The Anthropic model API host. This is the ONLY domain a restricted-egress
+# ("model-only") sandbox pre-allows for Bash subprocesses. A broad ``github.com``
+# entry is deliberately NOT allowed: the docs warn it is a data-exfiltration /
+# domain-fronting path, and in this architecture the orchestrator (not the
+# sandboxed agent) performs git pushes and PR creation, so the agent's Bash does
+# not need source-host egress. NOTE: the model API is reached by the *agent
+# process*, which is unsandboxed; listing it here only affects Bash subprocess
+# egress (harmless, and documents the "model" floor explicitly).
+MODEL_API_DOMAINS: tuple[str, ...] = ("api.anthropic.com",)
 
 # Tools/commands denied for restricted egress. Belt-and-suspenders alongside the
 # OS-level network allowlist: no web search, no ad-hoc HTTP fetchers. Entries
@@ -79,12 +92,20 @@ class ProviderSandboxAdapter(Protocol):
         ...
 
 
-def _allowed_domains_for_egress(egress: SandboxEgress) -> tuple[str, ...]:
+def _allowed_domains_for_egress(egress: SandboxEgress) -> tuple[str, ...] | None:
+    """Bash-subprocess network allowlist for an egress posture.
+
+    Returns ``None`` for ``model+web`` — the adapter OMITS the network key so the
+    sandbox adds no OS-level domain restriction. Otherwise returns an explicit
+    (possibly empty) tuple: ``model-only`` pre-allows just the model API host,
+    and ``none`` returns ``()`` so the adapter emits an EXPLICIT empty allowlist
+    (Bash reaches no network) rather than omitting the key.
+    """
     if egress == "model+web":
-        return ()  # empty → provider adapter omits the network allowlist
+        return None
     if egress == "model-only":
-        return MODEL_ONLY_ALLOWED_DOMAINS
-    return _MODEL_API_DOMAINS  # "none": model API only
+        return MODEL_API_DOMAINS
+    return ()  # "none": explicit empty allowlist — no Bash network at all
 
 
 def _deny_tools_for_egress(egress: SandboxEgress) -> tuple[str, ...]:
@@ -101,18 +122,30 @@ def build_claude_sandbox_settings(scope: SandboxScope) -> dict[str, Any]:
     """
     sandbox: dict[str, Any] = {
         "enabled": True,
+        # Hard-fail rather than silently run unsandboxed if the sandbox can't
+        # start, and refuse the ``dangerouslyDisableSandbox`` escape hatch.
         "failIfUnavailable": True,
         "allowUnsandboxedCommands": False,
         "filesystem": {
+            # Reads are OPEN by default: deny the home dir and re-allow only the
+            # read roots within it. This array MERGES across settings scopes, so
+            # it is defense-in-depth — the fail-closed secret layer is
+            # ``credentials.files`` below (deny is narrow-only, un-widenable).
+            "denyRead": ["~/"],
             "allowRead": [str(p) for p in scope.read_roots],
             "allowWrite": [str(p) for p in scope.write_roots],
         },
         "credentials": {
+            # Fail-closed secret protection: deny reads of known credential
+            # stores AND unset credential env vars for sandboxed commands.
+            "files": [
+                {"path": path, "mode": "deny"} for path in scope.deny_read_files
+            ],
             "envVars": [{"name": name, "mode": "deny"} for name in scope.deny_env],
         },
     }
     allowed_domains = _allowed_domains_for_egress(scope.egress)
-    if allowed_domains:
+    if allowed_domains is not None:
         sandbox["network"] = {"allowedDomains": list(allowed_domains)}
 
     settings: dict[str, Any] = {"sandbox": sandbox}

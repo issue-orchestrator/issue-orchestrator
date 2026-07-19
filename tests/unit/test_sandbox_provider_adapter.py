@@ -16,7 +16,7 @@ from issue_orchestrator.domain.sandbox_scope import SandboxScope
 from issue_orchestrator.execution.agent_runner_providers.claude import ClaudeCodeProvider
 from issue_orchestrator.execution.agent_runner_providers.codex import CodexProvider
 from issue_orchestrator.execution.agent_runner_providers.sandbox import (
-    MODEL_ONLY_ALLOWED_DOMAINS,
+    MODEL_API_DOMAINS,
     ClaudeSandboxAdapter,
     CodexSandboxAdapter,
     ProviderSandboxAdapter,
@@ -31,6 +31,7 @@ def _scope(egress: str = "model-only") -> SandboxScope:
         write_roots=(Path("/wt/issue-42"),),
         egress=egress,  # type: ignore[arg-type]
         deny_env=("GITHUB_TOKEN", "AWS_SECRET_ACCESS_KEY"),
+        deny_read_files=("~/.ssh", "~/.issue-orchestrator"),
     )
 
 
@@ -54,6 +55,20 @@ def test_claude_settings_bound_read_and_write_roots() -> None:
     assert fs["allowWrite"] == ["/wt/issue-42"]
 
 
+def test_claude_settings_deny_read_home_and_reallow_roots() -> None:
+    # Reads are OPEN by default; the boundary is denyRead ~/ + re-allow roots.
+    fs = build_claude_sandbox_settings(_scope())["sandbox"]["filesystem"]
+    assert fs["denyRead"] == ["~/"]
+    assert fs["allowRead"] == ["/wt/issue-42"]
+
+
+def test_claude_settings_fail_closed_deny_secret_files() -> None:
+    # The narrow, un-widenable credential deny is the fail-closed secret layer.
+    files = build_claude_sandbox_settings(_scope())["sandbox"]["credentials"]["files"]
+    assert {"path": "~/.ssh", "mode": "deny"} in files
+    assert {"path": "~/.issue-orchestrator", "mode": "deny"} in files
+
+
 def test_claude_settings_deny_credentials_as_objects() -> None:
     settings = build_claude_sandbox_settings(_scope())
     env_vars = settings["sandbox"]["credentials"]["envVars"]
@@ -61,9 +76,14 @@ def test_claude_settings_deny_credentials_as_objects() -> None:
     assert {"name": "AWS_SECRET_ACCESS_KEY", "mode": "deny"} in env_vars
 
 
-def test_model_only_egress_allows_model_and_github_domains() -> None:
-    settings = build_claude_sandbox_settings(_scope("model-only"))
-    assert settings["sandbox"]["network"]["allowedDomains"] == list(MODEL_ONLY_ALLOWED_DOMAINS)
+def test_model_only_egress_allows_only_model_api_not_github() -> None:
+    # A broad github wildcard is an exfil risk; model-only pre-allows only the
+    # model API host for Bash. (Bash reaching it is moot; it documents the floor.)
+    domains = build_claude_sandbox_settings(_scope("model-only"))["sandbox"]["network"][
+        "allowedDomains"
+    ]
+    assert domains == list(MODEL_API_DOMAINS)
+    assert not any("github" in d for d in domains)
 
 
 def test_model_only_egress_denies_web_search_and_curl() -> None:
@@ -80,9 +100,11 @@ def test_model_web_egress_has_no_network_or_tool_restriction() -> None:
     assert "permissions" not in settings
 
 
-def test_none_egress_allows_only_model_api() -> None:
+def test_none_egress_emits_explicit_empty_allowlist() -> None:
+    # "none" blocks Bash network entirely: the key is PRESENT with an empty
+    # list (an omitted key would instead add no restriction).
     settings = build_claude_sandbox_settings(_scope("none"))
-    assert settings["sandbox"]["network"]["allowedDomains"] == ["api.anthropic.com"]
+    assert settings["sandbox"]["network"]["allowedDomains"] == []
     assert "WebSearch" in settings["permissions"]["deny"]
 
 
