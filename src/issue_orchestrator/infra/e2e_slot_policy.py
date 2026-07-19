@@ -14,10 +14,10 @@ at top level (for ``maybe_trigger_e2e``) with no circular import.
 import logging
 import os
 import subprocess
-from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional
 
+from ..control.planner_types import E2ESlotSignals
 from .e2e_db import E2EDB
 
 if TYPE_CHECKING:
@@ -164,21 +164,6 @@ def is_e2e_due(
     if _check_e2e_interval_and_head(config, repo_root, orchestrator_id):
         return False
     return True
-
-
-@dataclass(frozen=True)
-class E2ESlotSignals:
-    """Observation of how a first-class E2E workload relates to worker slots.
-
-    ``occupies_slot`` — an E2E run is active right now, so it holds one worker
-    slot (the planner drops worker capacity by 1). ``due`` — the suite is due
-    and no run is active, so the planner reserves a slot for it. At most one is
-    ever True; both are False when ``e2e.occupies_session_slot`` is off, which
-    the reader factory guards so the default path does zero extra work.
-    """
-
-    occupies_slot: bool = False
-    due: bool = False
 
 
 def make_e2e_slot_reader(

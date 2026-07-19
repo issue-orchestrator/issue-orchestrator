@@ -53,7 +53,7 @@ if TYPE_CHECKING:
         StoredTriageOp,
         TriageCaseFileSummary,
     )
-    from ..infra.e2e_slot_policy import E2ESlotSignals
+    from .planner_types import E2ESlotSignals
     from .planner_types import OrchestratorSnapshot
     from .triage_board import TriageBoardPublisher
 

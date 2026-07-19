@@ -98,7 +98,7 @@ class TestFactGathererE2ESlotFacts:
     def test_running_signal_sets_occupies_slot(
         self, mock_config, mock_repository_host, sample_state, sample_issues
     ):
-        from issue_orchestrator.infra.e2e_slot_policy import E2ESlotSignals
+        from issue_orchestrator.control.planner_types import E2ESlotSignals
 
         mock_config.e2e.occupies_session_slot = True
         gatherer = FactGatherer(
@@ -115,7 +115,7 @@ class TestFactGathererE2ESlotFacts:
     def test_due_signal_sets_e2e_due(
         self, mock_config, mock_repository_host, sample_state, sample_issues
     ):
-        from issue_orchestrator.infra.e2e_slot_policy import E2ESlotSignals
+        from issue_orchestrator.control.planner_types import E2ESlotSignals
 
         mock_config.e2e.occupies_session_slot = True
         gatherer = FactGatherer(

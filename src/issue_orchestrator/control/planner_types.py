@@ -27,6 +27,27 @@ from ..domain.models import (
 from ..ports.issue import Issue
 from .actions import Action, ActionType
 
+
+@dataclass(frozen=True)
+class E2ESlotSignals:
+    """Observation of how a first-class E2E workload relates to worker slots.
+
+    ``occupies_slot`` — an E2E run is active right now, so it holds one worker
+    slot (the planner drops worker capacity by 1). ``due`` — the suite is due
+    and no run is active, so the planner reserves a slot for it. At most one is
+    ever True; both are False when ``e2e.occupies_session_slot`` is off, which
+    the reader factory guards so the default path does zero extra work.
+
+    Lives in the control layer (the planner consumes it as a fact); the infra
+    reader that PRODUCES it (``infra.e2e_slot_policy.make_e2e_slot_reader``)
+    imports it from here, so the control layer never reaches into subprocess/git
+    to learn E2E state.
+    """
+
+    occupies_slot: bool = False
+    due: bool = False
+
+
 if TYPE_CHECKING:
     from ..domain.models import OrchestratorState
 

@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-import subprocess
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Callable
@@ -227,8 +226,10 @@ def _session_commits_ahead(working_copy: "WorkingCopy", session: "Session") -> i
 
     ``COMMITS_AHEAD_UNKNOWN`` when the worktree is gone or the read raises: a
     real ``0`` (no commits yet — a hang signal when paired with a high idle)
-    must stay distinct from "could not read". Narrows to filesystem/subprocess/
-    git errors so an unexpected failure still surfaces via the builder backstop.
+    must stay distinct from "could not read". Narrows to filesystem/git errors
+    (git subprocess failures are wrapped by the working-copy port as
+    ``GitError``); any other unexpected failure still surfaces via the builder's
+    outer best-effort backstop.
     """
     from ..domain.board_snapshot import COMMITS_AHEAD_UNKNOWN
     from ..ports.git import GitError
@@ -238,7 +239,7 @@ def _session_commits_ahead(working_copy: "WorkingCopy", session: "Session") -> i
         if not worktree.exists():
             return COMMITS_AHEAD_UNKNOWN
         return len(working_copy.get_commits_ahead_of_main(worktree))
-    except (OSError, subprocess.SubprocessError, GitError):
+    except (OSError, GitError):
         return COMMITS_AHEAD_UNKNOWN
 
 
