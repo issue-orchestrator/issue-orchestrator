@@ -365,8 +365,11 @@ def _stage_evidence_map(
 
     Per flavor: BATCH_REVIEW gets no evidence map (it audits a PR batch, not
     orchestrator-state facts); FAILURE_INVESTIGATION gets the full focus map
-    (run-dirs + GitHub warm-cache); HEALTH_REVIEW gets a locations-only map
-    (no focus issue, so no run-dirs and a null github block).
+    (the god-view substrate + the focus issue's own run-dirs + a GitHub
+    warm-cache); HEALTH_REVIEW gets the full SYSTEM map — the same substrate
+    (all SQLite stores, roots) plus whole-system run-dirs enumerated across
+    every worktree, since it assesses the whole floor and has no single focus
+    (``build_evidence_map`` keys both off ``focus_issue_number`` being None).
     """
     if flavor is TriageSessionFlavor.BATCH_REVIEW:
         return

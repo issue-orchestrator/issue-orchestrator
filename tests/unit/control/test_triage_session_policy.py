@@ -313,9 +313,19 @@ class TestStageEvidenceMap:
         assert not (run_dir / "triage-data" / EVIDENCE_MAP_FILENAME).exists()
         assert "evidence_map" not in manifest
 
-    def test_health_review_is_locations_only(self, tmp_path: Path) -> None:
+    def test_health_review_stages_whole_system_map(self, tmp_path: Path) -> None:
+        # A health review has no focus, so it gets the full SYSTEM substrate:
+        # a null github block, but run-dirs enumerated across ALL worktrees.
         ctx, _manifest = self._ctx()
         run_dir = tmp_path / "run"
+        whole_system = (
+            tmp_path
+            / "repo-100"
+            / ".issue-orchestrator"
+            / "sessions"
+            / "20260101T000000__coding-1"
+        )
+        whole_system.mkdir(parents=True)
         _stage_evidence_map(
             config=self._config(tmp_path),
             repository_host=self._host(),
@@ -330,7 +340,8 @@ class TestStageEvidenceMap:
         )
         assert data["focus_issue_number"] is None
         assert data["github"] is None
-        assert data["run_dirs"] == []
+        # Whole-system run-dirs are enumerated across worktrees, not empty.
+        assert str(whole_system.resolve()) in data["run_dirs"]
 
     def test_github_read_failure_does_not_fail_launch(self, tmp_path: Path) -> None:
         # A GitHub/network error degrades the warm-cache to null; the evidence

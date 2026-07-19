@@ -1,22 +1,31 @@
 """Owner for the triage EVIDENCE MAP — a god-view location manifest + warm-cache.
 
-The FAILURE_INVESTIGATION triage agent (ADR-0031) receives only
-``board-snapshot.json`` today. That leaves it blind to the raw evidence a
-good failure investigation actually reasons from: the session run-dirs, the
-orchestrator log, the ``timeline.sqlite`` event store, and GitHub ground
-truth. This module builds and writes an ``evidence-map.json`` next to the
-board snapshot that POINTS the agent at those locations (read access it
-already has) plus a best-effort GitHub warm-cache. Writes stay unchanged —
-still gated / orchestrator-executed; this only stages read-side evidence.
+The triage tech lead (ADR-0031) receives ``board-snapshot.json`` today. That
+leaves it blind to the raw evidence a real investigation reasons from: the
+session run-dirs, the orchestrator log, the SQLite stores (timeline events, E2E
+outcomes, the triage case-file ledger, and anything added later), local ``git``
+in the main repo, and GitHub ground truth. This module builds and writes an
+``evidence-map.json`` next to the board snapshot.
+
+The lever is ACCESS, not prose: rather than enumerate today's known leaves, the
+map grants the SUBSTRATE — a small set of roots (the state dir, the orchestrator
+log, the main repo, the session-worktrees root, GitHub) plus a generic glob that
+DISCOVERS every ``*.sqlite`` / ``*.db`` store under the orchestrator data dir.
+Anything we instrument later shows up for free with zero re-plumbing, and when a
+signal the tech lead needs is not instrumented yet the correct behavior is for IT
+to file an issue to instrument it — not for us to pre-build sensors. Writes stay
+unchanged — still gated / orchestrator-executed; this only stages read-side
+evidence.
 
 Best-effort by design (a deliberate exception to the repo's fail-fast house
 style): unlike the board snapshot, the evidence map is an ENHANCEMENT, never a
 required input, so a failure to build or write it must NOT fail the session
-launch. The GitHub warm-cache is doubly best-effort — any port/network error
-yields a ``null`` ``github`` block rather than propagating — because the
-public repo lets the agent verify everything itself with local ``git`` when
-the cache is null or thin. The call-site wrapper
-(``triage_session_policy._stage_evidence_map``) owns the outer catch.
+launch. Filesystem discovery (globs, ``exists`` probes) tolerates ``OSError`` and
+degrades to a partial-but-valid map rather than raising; the GitHub warm-cache is
+doubly best-effort — any port/network error yields a ``null`` ``github`` block —
+because the public repo lets the agent verify everything itself with local
+``git``. The call-site wrapper (``triage_session_policy._stage_evidence_map``)
+owns the outer catch as a final backstop.
 """
 
 from __future__ import annotations
@@ -36,7 +45,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-EVIDENCE_MAP_SCHEMA_VERSION = 1
+EVIDENCE_MAP_SCHEMA_VERSION = 2
 
 # Canonical evidence-map filename inside a session's triage-data directory,
 # next to BOARD_SNAPSHOT_FILENAME (domain/board_snapshot.py).
@@ -48,6 +57,31 @@ EVIDENCE_MAP_FILENAME = "evidence-map.json"
 # execution-adapter import.
 _SESSIONS_SUBDIR = "sessions"
 
+# Glob patterns that DISCOVER SQLite stores by substrate, not by name. State
+# stores live directly under the state dir as ``*.sqlite``
+# (timeline/triage_authority/label_store/queue_cache/session_registry/… — see
+# infra/sqlite_registry.py); the E2E store is ``e2e.db`` one level up, directly
+# under the orchestrator data dir. Both suffixes are globbed in BOTH roots so
+# any future store in either place, under either suffix, is found for free.
+# Top-level (non-recursive) globs keep this bounded — they never descend into
+# per-session run-dirs or backup subdirs.
+_DB_SUFFIX_GLOBS = ("*.sqlite", "*.db")
+
+# Cheap by-filename hints layered on top of the generic description. The GLOB is
+# the source of truth — an unknown/future store still appears, just without a
+# hint — so this map only annotates the ones we happen to recognize by stem.
+_DB_DESCRIPTION_HINTS = {
+    "timeline": "event store (agent/session timeline events)",
+    "e2e": "E2E run + per-test outcomes and durations",
+    "triage_authority": "triage case-file / pattern / shipped-fix ledger",
+}
+
+# Upper bound on run-dirs listed in a whole-system health-review map. A
+# long-lived install with many worktrees × sessions could otherwise bloat the
+# map; when more exist the NEWEST are kept (run-dir names are timestamp-prefixed)
+# and the truncation is logged — never a silent cap.
+_MAX_RUN_DIRS = 200
+
 # Default branch the agent verifies merge-reachability against. GitHub repos
 # default to ``main``; a repo whose default differs sets it explicitly via
 # ``worktrees.base_branch_override`` (config.worktree_base_branch_override),
@@ -57,18 +91,53 @@ _SESSIONS_SUBDIR = "sessions"
 _DEFAULT_BRANCH_FALLBACK = "main"
 
 _GUIDANCE = (
-    "Read the run-dir artifacts (run-audit.json, validation-record.json, "
-    "completion-record.json, analysis.json). Key on validation.passed, not the "
-    "outcome string. This repo is PUBLIC: verify merge-reachability with local "
-    "git (e.g. `git -C <run_dir> fetch origin --quiet && git merge-base "
-    "--is-ancestor <merge_commit_oid> origin/<default_branch>`). timeline_sqlite "
-    "is a read-only SQLite event store you can query with sqlite3. In github.prs, "
+    "These are ROOTS, not a fixed inventory. You have READ access to EVERYTHING "
+    "under them, including artifacts created AFTER this map was written — "
+    "enumerate and explore them, don't stop at what is listed. List the state "
+    "dir to find every store; open any *.sqlite/*.db with sqlite3 "
+    "(timeline=events, e2e=run/test outcomes+durations, "
+    "triage_authority=case-file/pattern/shipped-fix ledger, plus any store added "
+    "later); walk the run-dirs; run git in the repo root (log, blame, merge-base, "
+    "conflict/rebase history). For a failure investigation: read the run-dir "
+    "artifacts (run-audit.json, validation-record.json, completion-record.json, "
+    "analysis.json) and key on validation.passed, NOT the outcome string. This "
+    "repo is PUBLIC: verify merge-reachability with local git (e.g. `git -C "
+    "<run_dir> fetch origin --quiet && git merge-base --is-ancestor "
+    "<merge_commit_oid> origin/<default_branch>`). In github.prs, "
     "branch_matches_focus=true is THIS issue's own implementation PR; "
     "branch_matches_focus=false only references the issue (e.g. a meta/rework PR) "
     "and is NOT its implementation - do not treat it as the issue's work. The "
     "github block is a best-effort warm-cache; when it is null or thin, gather "
-    "the rest yourself with git."
+    "the rest yourself with git. If a signal you need to judge system health is "
+    "not instrumented yet, that gap is itself a finding: file an issue to "
+    "instrument it (a can-wait item for the issue queue) rather than guessing."
 )
+
+
+@dataclass(frozen=True)
+class EvidenceLocation:
+    """One god-view root (or discovered store) the tech lead may read.
+
+    ``path`` is an absolute path string (or, for ``kind == "github"``, the repo
+    slug pointer). ``kind`` is one of ``"dir" | "sqlite" | "log" | "repo" |
+    "github"``. ``exists`` is a best-effort filesystem probe at build time (a
+    root can legitimately be absent on a fresh install) — always ``True`` for a
+    ``sqlite`` location because it was just discovered by glob, and for
+    ``github`` when a repo slug is configured.
+    """
+
+    path: str
+    kind: str
+    description: str
+    exists: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "path": self.path,
+            "kind": self.kind,
+            "description": self.description,
+            "exists": self.exists,
+        }
 
 
 @dataclass(frozen=True)
@@ -143,20 +212,24 @@ class GithubWarmCache:
 
 @dataclass(frozen=True)
 class EvidenceMap:
-    """A triage session's read-side evidence manifest (schema_version 1).
+    """A triage session's read-side evidence manifest (schema_version 2).
 
-    All on-disk locations are absolute path strings. ``github`` is ``None``
-    for a locations-only map (health review) or when the warm-cache read
-    failed; ``focus_issue_number`` is ``None`` and ``run_dirs`` empty when
-    there is no single focus issue.
+    ``locations`` is the god-view SUBSTRATE: the roots the tech lead may explore
+    (state dir, orchestrator log, main repo, session-worktrees root, GitHub) plus
+    every ``*.sqlite`` / ``*.db`` store DISCOVERED under the orchestrator data
+    dir — an open-ended grant, not an enumerated list, so future stores appear
+    for free. ``run_dirs`` is the distinct enumeration of per-session run
+    directories: the focus issue's own runs for a failure investigation, or
+    whole-system runs across every worktree for a health review (bounded by
+    :data:`_MAX_RUN_DIRS`). ``github`` is ``None`` for a health review or when
+    the warm-cache read failed; ``focus_issue_number`` is ``None`` when there is
+    no single focus issue.
     """
 
     focus_issue_number: int | None
     repo: str
     default_branch: str
-    state_dir: str
-    orchestrator_log: str
-    timeline_sqlite: str
+    locations: tuple[EvidenceLocation, ...]
     run_dirs: tuple[str, ...]
     github: GithubWarmCache | None
     schema_version: int = EVIDENCE_MAP_SCHEMA_VERSION
@@ -167,9 +240,7 @@ class EvidenceMap:
             "focus_issue_number": self.focus_issue_number,
             "repo": self.repo,
             "default_branch": self.default_branch,
-            "state_dir": self.state_dir,
-            "orchestrator_log": self.orchestrator_log,
-            "timeline_sqlite": self.timeline_sqlite,
+            "locations": [loc.to_dict() for loc in self.locations],
             "run_dirs": list(self.run_dirs),
             "github": self.github.to_dict() if self.github is not None else None,
             "guidance": _GUIDANCE,
@@ -186,17 +257,191 @@ def _resolve_default_branch(config: "Config") -> str:
     return _DEFAULT_BRANCH_FALLBACK
 
 
+def _worktrees_root(config: "Config") -> Path:
+    """The directory that holds the ``<repo>-<n>`` session worktrees.
+
+    Mirrors ``adapters.worktree._worktree``: ``worktree_base`` (config resolves
+    ``worktrees.base`` to an absolute path at load time) or, unset, the main
+    repo's parent, where the sibling worktrees live.
+    """
+    repo_root = Path(config.repo_root)
+    return Path(config.worktree_base) if config.worktree_base else repo_root.parent
+
+
 def _session_worktree(config: "Config", focus_issue_number: int) -> Path:
     """The orchestrator-managed session worktree, a sibling of the main repo.
 
-    Mirrors ``adapters.worktree._worktree`` layout:
-    ``<worktree_base>/<repo_root.name>-<issue_number>`` where ``worktree_base``
-    defaults to ``repo_root.parent`` (config resolves ``worktrees.base`` to an
-    absolute path at load time).
+    ``<worktree_base>/<repo_root.name>-<issue_number>``.
+    """
+    return _worktrees_root(config) / f"{Path(config.repo_root).name}-{focus_issue_number}"
+
+
+def _path_exists(path: Path) -> bool:
+    """Best-effort ``exists`` probe that never raises (OSError -> False)."""
+    try:
+        return path.exists()
+    except OSError:
+        return False
+
+
+def _sqlite_description(stem: str) -> str:
+    """Generic store description, annotated by a cheap by-stem hint when known."""
+    base = "read-only SQLite store; query with sqlite3"
+    hint = _DB_DESCRIPTION_HINTS.get(stem)
+    return f"{base} — {hint}" if hint else base
+
+
+def _discover_sqlite_locations(state_dir_path: Path) -> list[EvidenceLocation]:
+    """Discover every SQLite store as an :class:`EvidenceLocation` by glob.
+
+    Globs ``*.sqlite`` / ``*.db`` in the state dir AND the orchestrator data dir
+    (its parent, where ``e2e.db`` lives), so timeline + triage_authority + e2e +
+    any store added later are all found without an enumerated list. Best-effort:
+    a glob that raises ``OSError`` (unreadable dir) is skipped, not fatal.
+    """
+    data_root = state_dir_path.parent  # .issue-orchestrator/
+    discovered: dict[str, EvidenceLocation] = {}
+    for root in (state_dir_path, data_root):
+        for pattern in _DB_SUFFIX_GLOBS:
+            try:
+                matches = sorted(root.glob(pattern))
+            except OSError as exc:
+                logger.warning(
+                    "[triage] Evidence-map SQLite glob %s in %s failed: %s",
+                    pattern,
+                    root,
+                    exc,
+                )
+                continue
+            for db in matches:
+                if not db.is_file():
+                    continue
+                key = str(db.resolve())
+                if key in discovered:
+                    continue
+                discovered[key] = EvidenceLocation(
+                    path=key,
+                    kind="sqlite",
+                    description=_sqlite_description(db.stem),
+                    exists=True,
+                )
+    return [discovered[key] for key in sorted(discovered)]
+
+
+def _build_locations(config: "Config") -> tuple[EvidenceLocation, ...]:
+    """The god-view substrate: root pointers + every discovered SQLite store."""
+    state_dir_path = state_dir(config.repo_root)
+    log_path = get_repo_log_path(config.repo_root)
+    repo_root = Path(config.repo_root)
+    worktrees_root = _worktrees_root(config)
+    repo_slug = config.repo or ""
+    roots = [
+        EvidenceLocation(
+            path=str(state_dir_path),
+            kind="dir",
+            description=(
+                "orchestrator state dir — SQLite stores, logs, caches; list it "
+                "to discover every store, including ones added after this map"
+            ),
+            exists=_path_exists(state_dir_path),
+        ),
+        EvidenceLocation(
+            path=str(log_path),
+            kind="log",
+            description=(
+                "orchestrator log (rotated siblings in the same dir); grep for "
+                "issue/session failure signatures"
+            ),
+            exists=_path_exists(log_path),
+        ),
+        EvidenceLocation(
+            path=str(repo_root),
+            kind="repo",
+            description=(
+                "main repo working copy — run git here (log, blame, merge-base, "
+                "conflict/rebase history)"
+            ),
+            exists=_path_exists(repo_root),
+        ),
+        EvidenceLocation(
+            path=str(worktrees_root),
+            kind="dir",
+            description=(
+                "session-worktrees root — the <repo>-<n> agent worktrees and "
+                "their .issue-orchestrator/sessions run-dirs live under here"
+            ),
+            exists=_path_exists(worktrees_root),
+        ),
+        EvidenceLocation(
+            path=repo_slug or "(unknown)",
+            kind="github",
+            description=(
+                "GitHub ground truth (issues/PRs/CI); a warm-cache is in the "
+                "`github` block — confirm live state with local git"
+            ),
+            exists=bool(repo_slug),
+        ),
+    ]
+    return tuple(roots) + tuple(_discover_sqlite_locations(state_dir_path))
+
+
+def _session_run_dirs_under(worktree_root: Path) -> list[Path]:
+    """The ``*__*`` run-dirs under one worktree's sessions dir (empty if none)."""
+    sessions_dir = worktree_root / ".issue-orchestrator" / _SESSIONS_SUBDIR
+    if not sessions_dir.is_dir():
+        return []
+    return [entry for entry in sessions_dir.glob("*__*") if entry.is_dir()]
+
+
+def _collect_focus_run_dirs(
+    config: "Config",
+    focus_issue_number: int,
+    artifact_hints: Sequence[str],
+    found: set[str],
+) -> None:
+    """Focus-issue run-dirs: its sibling worktree's runs + artifact-hint parents."""
+    for entry in _session_run_dirs_under(_session_worktree(config, focus_issue_number)):
+        found.add(str(entry.resolve()))
+    for hint in artifact_hints:
+        if hint:
+            found.add(str(Path(hint).parent.resolve()))
+
+
+def _collect_whole_system_run_dirs(config: "Config", found: set[str]) -> None:
+    """Whole-system run-dirs (health review): every worktree's session runs.
+
+    Enumerates the main repo plus every ``<repo>-*`` sibling worktree under the
+    worktrees root, so a health review sees the whole floor rather than one
+    focus. Bounding to the newest happens in the shared finalizer.
     """
     repo_root = Path(config.repo_root)
-    worktree_base = Path(config.worktree_base) if config.worktree_base else repo_root.parent
-    return worktree_base / f"{repo_root.name}-{focus_issue_number}"
+    worktrees_root = _worktrees_root(config)
+    roots = {repo_root}
+    if worktrees_root.is_dir():
+        for entry in worktrees_root.glob(f"{repo_root.name}-*"):
+            if entry.is_dir():
+                roots.add(entry)
+    for root in roots:
+        for entry in _session_run_dirs_under(root):
+            found.add(str(entry.resolve()))
+
+
+def _bounded_run_dirs(found: set[str]) -> tuple[str, ...]:
+    """Sorted run-dirs, capped at :data:`_MAX_RUN_DIRS` keeping the newest.
+
+    Run-dir names are timestamp-prefixed, so newest == reverse lexical on the
+    basename. Truncation is logged (no silent cap); the result is re-sorted for
+    a stable, diff-friendly map.
+    """
+    if len(found) <= _MAX_RUN_DIRS:
+        return tuple(sorted(found))
+    newest = sorted(found, key=lambda p: Path(p).name, reverse=True)[:_MAX_RUN_DIRS]
+    logger.warning(
+        "[triage] Evidence-map run-dirs truncated to %d of %d (newest kept)",
+        _MAX_RUN_DIRS,
+        len(found),
+    )
+    return tuple(sorted(newest))
 
 
 def _resolve_run_dirs(
@@ -204,31 +449,25 @@ def _resolve_run_dirs(
     focus_issue_number: int | None,
     artifact_hints: Sequence[str],
 ) -> tuple[str, ...]:
-    """Absolute, de-duped, sorted run-dir paths for the focus issue.
+    """Absolute, de-duped, sorted, bounded run-dir paths for this triage session.
 
-    Two best-effort sources are merged: (1) a glob of the focus issue's
-    sibling session worktree for ``*__*`` run directories that exist, and
-    (2) the parent directories of any ``artifact_hints`` carried on the focus
-    failure (each hint is an absolute path to a file inside a run/log dir).
-    Returns an empty tuple when there is no focus issue or the worktree is gone.
+    Focus present (failure investigation): the focus issue's own runs plus any
+    ``artifact_hints`` parents. Focus absent (health review): whole-system runs
+    across every worktree. Best-effort: an ``OSError`` mid-discovery returns
+    whatever was collected so far rather than raising.
     """
     found: set[str] = set()
-    if focus_issue_number is not None:
-        sessions_dir = (
-            _session_worktree(config, focus_issue_number)
-            / ".issue-orchestrator"
-            / _SESSIONS_SUBDIR
+    try:
+        if focus_issue_number is not None:
+            _collect_focus_run_dirs(config, focus_issue_number, artifact_hints, found)
+        else:
+            _collect_whole_system_run_dirs(config, found)
+    except OSError as exc:
+        logger.warning(
+            "[triage] Evidence-map run-dir discovery failed (partial result): %s",
+            exc,
         )
-        if sessions_dir.is_dir():
-            for entry in sessions_dir.glob("*__*"):
-                if entry.is_dir():
-                    found.add(str(entry.resolve()))
-    for hint in artifact_hints:
-        if not hint:
-            continue
-        parent = Path(hint).parent
-        found.add(str(parent.resolve()))
-    return tuple(sorted(found))
+    return _bounded_run_dirs(found)
 
 
 def _normalize_state(state: str | None) -> str:
@@ -297,17 +536,16 @@ def build_evidence_map(
     """Build the evidence map for a triage session.
 
     ``focus_issue_number`` is the failure-investigation focus (``None`` for a
-    locations-only health-review map). Run-dirs and the GitHub warm-cache are
-    only resolved when a focus issue is present; with none, the map carries
-    just the orchestrator-state locations and a ``null`` ``github`` block.
+    health-review map). Every map carries the full god-view substrate
+    (``locations``); a focus adds its own run-dirs + a GitHub warm-cache, while
+    a health review enumerates whole-system run-dirs across every worktree and
+    leaves ``github`` ``None``.
     """
     return EvidenceMap(
         focus_issue_number=focus_issue_number,
         repo=config.repo or "",
         default_branch=_resolve_default_branch(config),
-        state_dir=str(state_dir(config.repo_root)),
-        orchestrator_log=str(get_repo_log_path(config.repo_root)),
-        timeline_sqlite=str(state_dir(config.repo_root) / "timeline.sqlite"),
+        locations=_build_locations(config),
         run_dirs=_resolve_run_dirs(config, focus_issue_number, artifact_hints),
         github=_build_github_warm_cache(repository_host, focus_issue_number),
     )
@@ -319,9 +557,10 @@ def write_evidence_map(run_dir: Path, evidence: EvidenceMap) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(evidence.to_dict(), indent=2), encoding="utf-8")
     logger.info(
-        "[triage] Evidence map written: %s (focus=%s, %d run-dir(s))",
+        "[triage] Evidence map written: %s (focus=%s, %d location(s), %d run-dir(s))",
         path,
         evidence.focus_issue_number,
+        len(evidence.locations),
         len(evidence.run_dirs),
     )
     return path

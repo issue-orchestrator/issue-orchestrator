@@ -168,12 +168,18 @@ a determined tech lead — from evidence, not from the label.
 cat "$ISSUE_ORCHESTRATOR_RUN_DIR/triage-data/evidence-map.json"
 ```
 
-It carries absolute paths to the focus issue's session run-dir(s), the
-orchestrator log, the `timeline.sqlite` event store, and a best-effort GitHub
+Its `locations` are ROOTS, not a fixed inventory: the state dir, the
+orchestrator log, the main repo (for `git`), the session-worktrees root, and
+every `*.sqlite`/`*.db` store discovered under them (timeline events, e2e
+outcomes, the triage case-file ledger, plus anything instrumented later). It
+also carries your focus issue's session `run_dirs` and a best-effort GitHub
 warm-cache (issue + PR state), plus a `guidance` note on verifying ground truth.
-You have READ access to everything it references — the run-dirs, the logs, the
-sqlite event store, and local `git` — so use it. (Writes still go only through
-your decision artifact; see the contract below.)
+You have READ access to EVERYTHING under those roots, including artifacts written
+after the map — enumerate and explore them (list the state dir, open any store
+with sqlite3, walk the run-dirs, run `git` in the repo root). If a signal you
+need is not instrumented yet, that gap is itself a finding: `create_issue` to
+instrument it rather than guessing. (Writes still go only through your decision
+artifact; see the contract below.)
 
 **1. Establish ground truth (do not guess):**
 - Read the failed session's run-dir: `run-audit.json` (outcome, validation,
@@ -229,9 +235,12 @@ cat "$ISSUE_ORCHESTRATOR_RUN_DIR/triage-data/board-snapshot.json"
 ```
 
 The snapshot is your primary input, but you are not limited to it: your
-`triage-data/evidence-map.json` points at the orchestrator log and the
-`timeline.sqlite` event store, and this repo is PUBLIC so local `git` is
-available. When the board looks off, dig into those raw sources to confirm.
+`triage-data/evidence-map.json` `locations` grant the whole system — the state
+dir and every `*.sqlite`/`*.db` store, the orchestrator log, the main repo (this
+repo is PUBLIC, so local `git` is available), and `run_dirs` enumerated across
+ALL worktrees, not a single focus. When the board looks off, dig into those raw
+sources to confirm; and if a health signal you need is not instrumented yet,
+`create_issue` to instrument it rather than guessing.
 
 - Look for hung or aging sessions, queue pile-ups, repeated failures, and
   cross-job patterns; report findings through the decision artifact.

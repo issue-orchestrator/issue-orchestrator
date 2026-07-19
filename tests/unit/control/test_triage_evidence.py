@@ -4,8 +4,6 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
-
 from issue_orchestrator.control.triage_evidence import (
     EVIDENCE_MAP_FILENAME,
     EVIDENCE_MAP_SCHEMA_VERSION,
@@ -13,6 +11,7 @@ from issue_orchestrator.control.triage_evidence import (
     write_evidence_map,
 )
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.infra.repo_identity import state_dir
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
 
 
@@ -39,6 +38,38 @@ def _make_sibling_run_dirs(tmp_path: Path, issue_number: int, names) -> list[Pat
         run_dir.mkdir()
         created.append(run_dir)
     return created
+
+
+def _make_worktree_run_dir(tmp_path: Path, worktree_name: str, run_name: str) -> Path:
+    """Create one run-dir under an arbitrary worktree's sessions dir."""
+    run_dir = (
+        tmp_path
+        / worktree_name
+        / ".issue-orchestrator"
+        / "sessions"
+        / run_name
+    )
+    run_dir.mkdir(parents=True)
+    return run_dir
+
+
+def _seed_sqlite_stores(config: Config) -> dict[str, Path]:
+    """Drop state-dir *.sqlite stores + the e2e.db one level up (as prod does)."""
+    state = state_dir(config.repo_root)
+    state.mkdir(parents=True, exist_ok=True)
+    created: dict[str, Path] = {}
+    for name in ("timeline.sqlite", "triage_authority.sqlite", "foo.sqlite"):
+        path = state / name
+        path.write_bytes(b"")
+        created[name] = path
+    e2e = config.repo_root / ".issue-orchestrator" / "e2e.db"
+    e2e.write_bytes(b"")
+    created["e2e.db"] = e2e
+    return created
+
+
+def _sqlite_by_path(evidence) -> dict[str, object]:
+    return {loc.path: loc for loc in evidence.locations if loc.kind == "sqlite"}
 
 
 class _FakeRepositoryHost:
@@ -94,14 +125,10 @@ class TestBuildEvidenceMapLocations:
             focus_issue_number=6335,
         )
 
-        assert evidence.schema_version == EVIDENCE_MAP_SCHEMA_VERSION
+        assert evidence.schema_version == EVIDENCE_MAP_SCHEMA_VERSION == 2
         assert evidence.focus_issue_number == 6335
         assert evidence.repo == "owner/name"
         assert evidence.default_branch == "main"
-        state_dir = config.repo_root / ".issue-orchestrator" / "state"
-        assert evidence.state_dir == str(state_dir)
-        assert evidence.orchestrator_log == str(state_dir / "logs" / "orchestrator.log")
-        assert evidence.timeline_sqlite == str(state_dir / "timeline.sqlite")
         assert evidence.run_dirs == tuple(
             sorted(str(d.resolve()) for d in run_dirs)
         )
@@ -157,6 +184,127 @@ class TestBuildEvidenceMapLocations:
         )
 
         assert evidence.run_dirs == ()
+
+
+class TestGodViewSubstrate:
+    """The open-ended location grant: roots + generic-glob store discovery."""
+
+    def test_substrate_root_locations_present(self, tmp_path: Path) -> None:
+        config = _config(tmp_path)
+
+        evidence = build_evidence_map(
+            config=config,
+            repository_host=_FakeRepositoryHost(),
+            focus_issue_number=None,
+        )
+
+        kinds = {loc.kind for loc in evidence.locations}
+        assert {"dir", "log", "repo", "github"} <= kinds
+        by_kind: dict[str, list] = {}
+        for loc in evidence.locations:
+            by_kind.setdefault(loc.kind, []).append(loc)
+
+        # The main repo root (for git) is a first-class location.
+        (repo_loc,) = by_kind["repo"]
+        assert repo_loc.path == str(config.repo_root)
+
+        # Both the state dir AND the session-worktrees root are dir locations.
+        dir_paths = {loc.path for loc in by_kind["dir"]}
+        assert str(state_dir(config.repo_root)) in dir_paths
+        assert str(config.worktree_base) in dir_paths
+
+        # The orchestrator log is a log location under the state dir.
+        (log_loc,) = by_kind["log"]
+        assert log_loc.path.endswith("orchestrator.log")
+
+        # GitHub is a root pointer alongside the warm-cache.
+        (gh_loc,) = by_kind["github"]
+        assert gh_loc.path == "owner/name"
+        assert gh_loc.exists is True
+
+    def test_glob_discovers_all_sqlite_including_future_and_e2e_db(
+        self, tmp_path: Path
+    ) -> None:
+        config = _config(tmp_path)
+        created = _seed_sqlite_stores(config)
+
+        evidence = build_evidence_map(
+            config=config,
+            repository_host=_FakeRepositoryHost(),
+            focus_issue_number=None,
+        )
+
+        by_path = _sqlite_by_path(evidence)
+        # Every seeded store is discovered — state-dir *.sqlite AND the e2e.db
+        # one level up under .issue-orchestrator/.
+        for path in created.values():
+            assert str(path.resolve()) in by_path
+
+        # A future/unknown store the code has never heard of still appears
+        # (the GLOB, not a hint table, is the source of truth).
+        foo = by_path[str(created["foo.sqlite"].resolve())]
+        assert foo.exists is True
+        assert foo.description.startswith("read-only SQLite store")
+
+        # Known stores carry a cheap by-stem hint on top of the generic text.
+        assert "event store" in by_path[str(created["timeline.sqlite"].resolve())].description
+        assert "case-file" in by_path[
+            str(created["triage_authority.sqlite"].resolve())
+        ].description
+        assert "outcomes" in by_path[str(created["e2e.db"].resolve())].description
+
+    def test_glob_failure_yields_valid_map_never_raises(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        # A read/glob failure must degrade to a partial-but-valid map, not raise.
+        config = _config(tmp_path)
+        _seed_sqlite_stores(config)
+
+        def _boom(self, pattern):
+            raise OSError("unreadable directory")
+
+        monkeypatch.setattr(Path, "glob", _boom)
+
+        evidence = build_evidence_map(
+            config=config,
+            repository_host=_FakeRepositoryHost(),
+            focus_issue_number=6335,
+        )
+
+        # Still schema-valid and serializable...
+        assert evidence.schema_version == 2
+        json.dumps(evidence.to_dict())
+        # ...root locations still resolved (they don't depend on glob)...
+        assert {"dir", "log", "repo", "github"} <= {
+            loc.kind for loc in evidence.locations
+        }
+        # ...glob-dependent discovery degraded to empty, not an exception.
+        assert not any(loc.kind == "sqlite" for loc in evidence.locations)
+        assert evidence.run_dirs == ()
+
+
+class TestWholeSystemRunDirs:
+    """Health review (no focus) enumerates run-dirs across the whole system."""
+
+    def test_health_review_enumerates_run_dirs_across_worktrees(
+        self, tmp_path: Path
+    ) -> None:
+        config = _config(tmp_path)
+        d1 = _make_worktree_run_dir(tmp_path, "repo-100", "20260101T000000__coding-1")
+        d2 = _make_worktree_run_dir(tmp_path, "repo-200", "20260102T000000__reviewer-1")
+        # The main repo's own sessions are part of the whole system too.
+        d3 = _make_worktree_run_dir(tmp_path, "repo", "20260103T000000__health-1")
+
+        evidence = build_evidence_map(
+            config=config,
+            repository_host=_FakeRepositoryHost(),
+            focus_issue_number=None,
+        )
+
+        for run_dir in (d1, d2, d3):
+            assert str(run_dir.resolve()) in evidence.run_dirs
+        # Sorted, no duplicates.
+        assert list(evidence.run_dirs) == sorted(set(evidence.run_dirs))
 
 
 class TestBuildEvidenceMapGithubWarmCache:
@@ -255,7 +403,7 @@ class TestBuildEvidenceMapGithubWarmCache:
         )
 
         assert evidence.github is None
-        assert evidence.run_dirs == ()
+        assert evidence.run_dirs == ()  # no sessions anywhere in this tmp system
         assert evidence.focus_issue_number is None
         # No focus issue => the port is never queried.
         assert host.issue_calls == []
@@ -265,6 +413,7 @@ class TestBuildEvidenceMapGithubWarmCache:
 class TestWriteEvidenceMap:
     def test_writes_json_matching_schema(self, tmp_path: Path) -> None:
         config = _config(tmp_path)
+        _seed_sqlite_stores(config)
         host = _FakeRepositoryHost(
             issue=SimpleNamespace(number=6335, state="open", labels=["blocked-failed"]),
             prs=[],
@@ -280,7 +429,7 @@ class TestWriteEvidenceMap:
         assert path == run_dir / "triage-data" / EVIDENCE_MAP_FILENAME
         assert path.exists()
         data = json.loads(path.read_text())
-        assert data["schema_version"] == 1
+        assert data["schema_version"] == 2
         assert data["focus_issue_number"] == 6335
         assert data["repo"] == "owner/name"
         assert data["default_branch"] == "main"
@@ -289,19 +438,29 @@ class TestWriteEvidenceMap:
             "focus_issue_number",
             "repo",
             "default_branch",
-            "state_dir",
-            "orchestrator_log",
-            "timeline_sqlite",
+            "locations",
             "run_dirs",
             "github",
             "guidance",
         }
+        # Each location serializes as a typed record.
+        for loc in data["locations"]:
+            assert set(loc.keys()) == {"path", "kind", "description", "exists"}
+            assert loc["kind"] in {"dir", "sqlite", "log", "repo", "github"}
+        kinds = {loc["kind"] for loc in data["locations"]}
+        assert {"dir", "log", "repo", "github", "sqlite"} <= kinds
         assert data["github"]["issue"]["state"] == "OPEN"
         assert data["github"]["prs"] == []
+        # Guidance keeps the PUBLIC-repo verification cue and the open-ended
+        # file-an-issue-to-instrument mandate.
         assert "PUBLIC" in data["guidance"]
+        assert "file an issue to instrument" in data["guidance"]
 
-    def test_locations_only_map_has_null_github(self, tmp_path: Path) -> None:
+    def test_health_review_map_has_null_github_and_whole_system_locations(
+        self, tmp_path: Path
+    ) -> None:
         config = _config(tmp_path)
+        _seed_sqlite_stores(config)
         evidence = build_evidence_map(
             config=config,
             repository_host=_FakeRepositoryHost(),
@@ -313,7 +472,7 @@ class TestWriteEvidenceMap:
         data = json.loads(write_evidence_map(run_dir, evidence).read_text())
 
         assert data["github"] is None
-        assert data["run_dirs"] == []
         assert data["focus_issue_number"] is None
-        # Locations are still present.
-        assert data["timeline_sqlite"].endswith("timeline.sqlite")
+        # Even with no focus, the god-view substrate (stores + roots) is present.
+        assert any(loc["kind"] == "sqlite" for loc in data["locations"])
+        assert any(loc["kind"] == "repo" for loc in data["locations"])
