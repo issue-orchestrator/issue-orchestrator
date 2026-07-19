@@ -11,9 +11,11 @@ per read).
 
 from __future__ import annotations
 
+import logging
+import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from ..infra.logging_config import get_repo_log_path, read_log_tail
 
@@ -21,12 +23,15 @@ if TYPE_CHECKING:
     from ..control.board_snapshot_builder import BoardSnapshotBuilder
     from ..control.fact_gatherer import FactGatherer
     from ..control.triage_board import TriageBoardPublisher
+    from ..domain.board_snapshot import BoardE2EHealth
     from ..infra.config import Config
     from ..infra.orchestrator import Orchestrator
     from ..ports import EventSink, RepositoryHost
     from ..ports.queue_cache_store import QueueCacheStore
     from ..ports.timeline_store import TimelineStore
     from ..ports.triage_authority import TriageAuthorityStore
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -161,5 +166,47 @@ def create_board_snapshot_builder(
         shipped_fix_reader=(
             board_publisher.shipped_fixes if board_publisher else lambda _limit: ()
         ),
+        e2e_health_reader=_make_e2e_health_reader(config),
         clock=datetime.now,
     )
+
+
+def _make_e2e_health_reader(
+    config: "Config",
+) -> Callable[[datetime], "BoardE2EHealth | None"]:
+    """Read-only e2e-health projection feed for the board snapshot (ADR-0031).
+
+    Reads the aggregate E2E-suite signal (cadence, red streak, chronic
+    failures, quarantine) from the repo's ``e2e.db`` over a strictly read-only
+    connection, plus the configured cadence/enabled flag and quarantine list.
+    Best-effort: a repo with no ``e2e.db`` (or an unreadable/table-less one)
+    yields ``None`` — a health review of a repo without E2E is fine.
+    """
+    from ..domain.board_snapshot import RECENT_E2E_RUN_WINDOW, BoardE2EHealth
+    from ..infra.e2e_health_reader import read_e2e_health_facts
+    from ..infra.e2e_quarantine import load_quarantine_list
+
+    def _read(now: datetime) -> "BoardE2EHealth | None":
+        db_path = config.repo_root / ".issue-orchestrator" / "e2e.db"
+        if not db_path.exists():
+            return None
+        try:
+            runs, chronic = read_e2e_health_facts(
+                db_path, recent_run_limit=RECENT_E2E_RUN_WINDOW
+            )
+            quarantine = load_quarantine_list(
+                config.repo_root / config.e2e.quarantine_file
+            )
+            return BoardE2EHealth.project(
+                now=now,
+                enabled=config.e2e.enabled,
+                expected_interval_minutes=config.e2e.auto_run_interval_minutes,
+                runs=runs,
+                chronic_failures=chronic,
+                quarantine_count=len(quarantine),
+            )
+        except (OSError, sqlite3.Error, ValueError) as exc:
+            logger.warning("[board] e2e health projection unavailable: %s", exc)
+            return None
+
+    return _read

@@ -15,6 +15,9 @@ from issue_orchestrator.domain.board_snapshot import (
     BoardAreaSignal,
     BoardBlockedIssue,
     BoardCaseFile,
+    BoardE2EChronicFailure,
+    BoardE2EHealth,
+    BoardE2ERun,
     BoardFailure,
     BoardQueueEntry,
     BoardSessionInfo,
@@ -99,6 +102,56 @@ def _sample_snapshot() -> BoardSnapshot:
             ),
         ],
         log_tail=["[PLAN] 2 action(s)", "[TICK] completed"],
+        e2e_health=BoardE2EHealth(
+            enabled=True,
+            expected_interval_minutes=240,
+            stale=True,
+            nonpassing_streak=3,
+            quarantine_count=2,
+            last_run=BoardE2ERun(
+                id=115,
+                status="warning",
+                started_at="2026-07-17T22:49:14+00:00",
+                age_minutes=1150,
+                duration_seconds=413.8,
+                failed_count=1,
+                passed_count=1,
+            ),
+            recent_runs=(
+                BoardE2ERun(
+                    id=115,
+                    status="warning",
+                    started_at="2026-07-17T22:49:14+00:00",
+                    age_minutes=1150,
+                    duration_seconds=413.8,
+                    failed_count=1,
+                    passed_count=1,
+                ),
+                BoardE2ERun(
+                    id=114,
+                    status="failed",
+                    started_at="2026-07-17T17:15:28+00:00",
+                    age_minutes=1484,
+                    duration_seconds=None,
+                    failed_count=1,
+                    passed_count=9,
+                ),
+            ),
+            chronic_failures=(
+                BoardE2EChronicFailure(
+                    nodeid="tests/e2e/test_x.py::test_chronic",
+                    fail_count=18,
+                    tracking_issue=6822,
+                    tracking_resolved=False,
+                ),
+                BoardE2EChronicFailure(
+                    nodeid="tests/e2e/test_y.py::test_untracked",
+                    fail_count=3,
+                    tracking_issue=None,
+                    tracking_resolved=False,
+                ),
+            ),
+        ),
     )
 
 
@@ -136,6 +189,32 @@ class TestBoardSnapshotRoundTrip:
         original.write(path)
         recovered = BoardSnapshot.read(path)
 
+        assert recovered == original
+
+    def test_e2e_health_round_trips(self) -> None:
+        """The E2E health block survives the JSON boundary with nested runs."""
+        recovered = BoardSnapshot.from_dict(_sample_snapshot().to_dict())
+
+        health = recovered.e2e_health
+        assert health is not None
+        assert (health.enabled, health.stale, health.nonpassing_streak) == (True, True, 3)
+        assert health.last_run is not None and health.last_run.id == 115
+        assert [run.id for run in health.recent_runs] == [115, 114]
+        assert health.recent_runs[1].duration_seconds is None  # None survives
+        assert health.chronic_failures[0].tracking_issue == 6822
+        assert health.chronic_failures[1].tracking_issue is None
+
+    def test_absent_e2e_health_round_trips_as_none(self) -> None:
+        """A snapshot with no E2E db serializes e2e_health as null and back."""
+        original = BoardSnapshot(
+            generated_at="2026-07-10T12:00:00+00:00",
+            orchestrator_paused=False,
+        )
+
+        assert original.to_dict()["e2e_health"] is None
+        recovered = BoardSnapshot.from_dict(original.to_dict())
+
+        assert recovered.e2e_health is None
         assert recovered == original
 
 

@@ -7,6 +7,7 @@ projection, the injected-clock age computation, the timeline issue
 selection, and the defensive bounds documented on the builder.
 """
 
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
@@ -19,6 +20,7 @@ from issue_orchestrator.control.board_snapshot_builder import (
     BoardSnapshotBuilder,
     StateBoardSnapshotProvider,
 )
+from issue_orchestrator.domain.board_snapshot import BoardE2EHealth
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.triage_session import (
     TriageCaseFileSummary,
@@ -87,12 +89,14 @@ def _make_builder(
     log_tail: FakeLogTail | None = None,
     case_files: tuple[TriageCaseFileSummary, ...] = (),
     shipped_fixes: tuple[TriageShippedFixSummary, ...] = (),
+    e2e_health_reader: Callable[[datetime], BoardE2EHealth | None] | None = None,
 ) -> BoardSnapshotBuilder:
     return BoardSnapshotBuilder(
         timeline_reader=timeline_reader or FakeTimelineReader(),
         log_tail_provider=log_tail or FakeLogTail([]),
         case_file_reader=lambda: case_files,
         shipped_fix_reader=lambda limit: shipped_fixes[:limit],
+        e2e_health_reader=e2e_health_reader or (lambda now: None),
         clock=lambda: FIXED_NOW,
     )
 
@@ -240,6 +244,7 @@ class TestPatternCaseFiles:
             log_tail_provider=FakeLogTail([]),
             case_file_reader=lambda: (),
             shipped_fix_reader=lambda _limit: fixes,
+            e2e_health_reader=lambda now: None,
             clock=lambda: FIXED_NOW,
         )
 
@@ -543,6 +548,57 @@ class TestLogTail:
         assert len(snapshot.log_tail) == 2
         assert snapshot.log_tail[0] == "y" * MAX_LINE_CHARS
         assert snapshot.log_tail[1] == "short"
+
+
+class TestE2EHealth:
+    """The e2e-health block is an ENHANCEMENT: carried when present, best-effort
+    when the reader fails — a failure must never break the snapshot."""
+
+    def _health(self) -> BoardE2EHealth:
+        return BoardE2EHealth(
+            enabled=True,
+            expected_interval_minutes=240,
+            stale=True,
+            nonpassing_streak=8,
+            quarantine_count=0,
+        )
+
+    def test_reader_result_is_carried_onto_the_snapshot(self) -> None:
+        health = self._health()
+
+        snapshot = _make_builder(e2e_health_reader=lambda now: health).build(
+            OrchestratorState()
+        )
+
+        assert snapshot.e2e_health is health
+
+    def test_reader_receives_the_builder_clock(self) -> None:
+        seen: list[datetime] = []
+
+        def reader(now: datetime) -> BoardE2EHealth | None:
+            seen.append(now)
+            return None
+
+        _make_builder(e2e_health_reader=reader).build(OrchestratorState())
+
+        assert seen == [FIXED_NOW]
+
+    def test_reader_returning_none_leaves_health_absent(self) -> None:
+        snapshot = _make_builder(e2e_health_reader=lambda now: None).build(
+            OrchestratorState()
+        )
+
+        assert snapshot.e2e_health is None
+
+    def test_raising_reader_never_breaks_the_snapshot(self) -> None:
+        def boom(now: datetime) -> BoardE2EHealth | None:
+            raise RuntimeError("db exploded unexpectedly")
+
+        snapshot = _make_builder(e2e_health_reader=boom).build(OrchestratorState())
+
+        assert snapshot.e2e_health is None
+        # The rest of the snapshot is intact.
+        assert snapshot.generated_at == FIXED_NOW.isoformat()
 
 
 class TestStateBoardSnapshotProvider:

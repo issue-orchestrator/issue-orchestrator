@@ -351,6 +351,52 @@ def test_board_snapshot_fields_document_the_cohort_surface(variant: str) -> None
     )
 
 
+@pytest.mark.parametrize("variant", sorted(PROMPT_VARIANTS))
+def test_board_snapshot_fields_document_e2e_health(variant: str) -> None:
+    """The snapshot field list must surface the aggregate E2E-health signal."""
+    assert "`e2e_health`" in PROMPT_VARIANTS[variant], (
+        f"{variant} does not document the e2e_health snapshot field"
+    )
+
+
+@pytest.mark.parametrize("variant", sorted(PROMPT_VARIANTS))
+def test_health_flow_teaches_e2e_suite_health_assessment(variant: str) -> None:
+    """The health review must assess E2E as a SYSTEM (ADR-0031).
+
+    E2E health is easy to neglect — it runs on a slow ungoverned cadence and
+    rots unwatched — so every variant's Health Review Flow must teach reading
+    `e2e_health` (cadence/streak/chronic) and routing an off-cadence or
+    chronically-red suite, and untracked/stale chronic failures, to findings.
+    """
+    section = _flow_section(PROMPT_VARIANTS[variant], "Health Review Flow")
+    for token in (
+        "e2e_health",
+        "nonpassing_streak",
+        "chronic_failures",
+        "tracking_issue",
+        "e2e suite health",
+        "easy to neglect",
+    ):
+        assert token in section, (
+            f"{variant} health flow does not teach the e2e-health token {token!r}"
+        )
+
+
+def test_prompt_e2e_health_rule_matches_the_snapshot_contract() -> None:
+    """The prompt names the REAL serialized field, not a drifted alias.
+
+    Pins ``e2e_health`` to the field ``BoardSnapshot.to_dict`` actually writes
+    so a rename cannot leave the prompt pointing at a field that never exists.
+    """
+    from issue_orchestrator.domain.board_snapshot import BoardSnapshot
+
+    snapshot = BoardSnapshot(
+        generated_at="2026-07-15T00:00:00",
+        orchestrator_paused=False,
+    )
+    assert "e2e_health" in snapshot.to_dict()
+
+
 def test_prompt_cohort_rule_matches_the_snapshot_contract() -> None:
     """The prompt names the REAL serialized field, not a drifted alias.
 

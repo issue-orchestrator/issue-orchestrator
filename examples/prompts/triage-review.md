@@ -52,7 +52,8 @@ blocked issues, `recent_failures` (context), `problem_cohort` (the issue
 numbers a health review owns act-level authority over, empty otherwise), open
 pattern case files, per-area distinct patterns plus shipped-fix counts, a
 restart-safe `recent_shipped_fixes` list with issue/PR/area evidence,
-per-issue timeline extracts, and an orchestrator log tail. Batch reviews: use it to
+per-issue timeline extracts, an orchestrator log tail, and `e2e_health`
+(aggregate E2E-suite cadence/streak/chronic-failure signal). Batch reviews: use it to
 spot cross-PR and systemic patterns worth `flag_pattern`/`create_issue` proposals. Failure
 investigations: start from your focus issue, then use the snapshot for board
 context (what else was running, queued, or failing at the same time). Health
@@ -166,6 +167,18 @@ cat "$ISSUE_ORCHESTRATOR_RUN_DIR/triage-data/board-snapshot.json"
   fixed-then-recurred work cluster on one seam, propose the root-cause design
   review described below instead of another point patch. Cite the relevant
   case-file issues and `recent_shipped_fixes` issue/PR entries as evidence.
+- **Assess E2E as a system, not a test list.** `e2e_health` (when present)
+  carries the suite's cadence and rot: `enabled`, `last_run`, `stale` and
+  `nonpassing_streak` (is it running on cadence and green?), `recent_runs`,
+  `chronic_failures` (recurring nodeids with their `tracking_issue` /
+  `tracking_resolved`), and `quarantine_count`. E2E is easy to neglect — it
+  runs on a slow ungoverned cadence and rots unwatched — so an off-cadence
+  (`stale`) suite or a chronically-red `nonpassing_streak` is a FINDING, not
+  noise. `create_issue` a systemic "e2e suite health" finding when the suite is
+  off-cadence or chronically red; for a `chronic_failures` entry that is
+  untracked (no `tracking_issue`) or stale (tracked but long-unresolved),
+  `create_issue`/`escalate_to_human`; and propose quarantine or un-quarantine
+  as the evidence warrants.
 - `post_comment`/`escalate_to_human` may only target THIS tracking issue;
   board-wide findings belong in `create_issue`/`flag_pattern` proposals.
 - Act-level proposals (`reset_retry`, `kill_hung_session`) may only target

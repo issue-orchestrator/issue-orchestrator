@@ -29,6 +29,7 @@ from ..domain.board_snapshot import (
     BoardAreaSignal,
     BoardBlockedIssue,
     BoardCaseFile,
+    BoardE2EHealth,
     BoardFailure,
     BoardQueueEntry,
     BoardSessionInfo,
@@ -68,6 +69,7 @@ class BoardSnapshotBuilder:
         log_tail_provider: Callable[[int], list[str]],
         case_file_reader: Callable[[], Sequence[TriageCaseFileSummary]],
         shipped_fix_reader: Callable[[int], Sequence[TriageShippedFixSummary]],
+        e2e_health_reader: Callable[[datetime], BoardE2EHealth | None],
         clock: Callable[[], datetime],
     ) -> None:
         """Create a builder over injected fact sources.
@@ -79,6 +81,11 @@ class BoardSnapshotBuilder:
             log_tail_provider: ``(n) -> last n orchestrator log lines``.
             case_file_reader: latest open case files from the anchor scan.
             shipped_fix_reader: ``(limit) -> recent durable merged-fix facts``.
+            e2e_health_reader: ``(now) -> aggregate E2E health | None``. Called
+                with the same clock the builder uses so ``age``/``stale`` are
+                deterministic. Best-effort: a reader that returns ``None`` or
+                raises yields ``None`` here — the E2E block is an ENHANCEMENT
+                (like the evidence map), never a required snapshot fact.
             clock: current-time source; injected so session ages are
                 deterministic under test.
         """
@@ -86,6 +93,7 @@ class BoardSnapshotBuilder:
         self._log_tail_provider = log_tail_provider
         self._case_file_reader = case_file_reader
         self._shipped_fix_reader = shipped_fix_reader
+        self._e2e_health_reader = e2e_health_reader
         self._clock = clock
 
     def build(
@@ -193,7 +201,22 @@ class BoardSnapshotBuilder:
                 line[:MAX_LINE_CHARS]
                 for line in list(self._log_tail_provider(log_tail_lines))[:log_tail_lines]
             ],
+            e2e_health=self._read_e2e_health(now),
         )
+
+    def _read_e2e_health(self, now: datetime) -> BoardE2EHealth | None:
+        """Best-effort aggregate E2E health; never breaks the snapshot.
+
+        Unlike the snapshot's required facts, ``e2e_health`` is an ENHANCEMENT
+        (like the evidence map): a reader that returns ``None`` or raises must
+        yield ``None`` here, never propagate. The reader itself narrows the
+        expected db errors; this is the final backstop for anything unexpected.
+        """
+        try:
+            return self._e2e_health_reader(now)
+        except Exception as exc:
+            logger.warning("[board] e2e health reader failed (non-fatal): %s", exc)
+            return None
 
     def _session_info(self, session: Session, now: datetime) -> BoardSessionInfo:
         """Project one active session onto the board.
