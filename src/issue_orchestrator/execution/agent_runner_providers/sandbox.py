@@ -37,16 +37,33 @@ layers so a secret is unreadable however the agent reaches for it:
   tool must be denied separately). This is the direct fix for a native ``Read``
   of ``~/.ssh`` / the api-token, and it holds in every permission mode.
 
-READ POSTURE (deliberate, and the honest contract): non-secret reads OUTSIDE the
-worktree remain possible. ``permissions.allow`` grants the native read tools
-broadly (the tech-lead's god-view is *wide reads*; a coder reads its worktree),
-and ``denyRead: ["~/"]`` only bounds *Bash* reads (defense-in-depth for the Bash
-layer; merged, so not un-widenable). This feature is therefore a **secrets-
-denied + writes-bounded + egress-bounded** sandbox, NOT a "reads confined to the
-worktree" jail — a literal native read-lockdown is not expressible via
-``--settings`` under unattended ``dontAsk`` and would blind the god-view. A hard,
-un-widenable native read boundary requires managed settings
-(``allowManagedReadPathsOnly`` + managed ``permissions.deny``); documented here.
+CONTRACT — what ``--settings`` GUARANTEES vs what needs the launch guard. Claude
+Code MERGES array-valued settings across scopes (docs.claude.com — Settings), and
+``--settings`` is only the *command-line* scope, so it can lock only DENY-based
+rules (deny always wins and merges narrow):
+- **Guaranteed (un-widenable) here:** the secret floor — ``credentials.files``
+  deny (Bash) + ``permissions.deny`` native-tool secret rules — and the sandbox
+  booleans (``enabled``/``failIfUnavailable``/``allowUnsandboxedCommands``, which
+  ``--settings`` wins for scalars over user/project).
+- **NOT guaranteed by ``--settings`` alone:** the write/exec/read *bounds*. A
+  merged ambient ``permissions.allow: ["Edit","Write"]`` grants host-wide native
+  writes (the OS sandbox binds Bash only), and ``sandbox.excludedCommands`` runs
+  a command unsandboxed. These arrays can only be locked by MANAGED settings
+  (``allowManagedPermissionRulesOnly`` — delivered out-of-band, not ``--settings``).
+
+So the write/exec bounds are an ENVIRONMENT property. The fail-closed deployment
+owner :mod:`.sandbox_preflight` enforces them at launch: an opted-in agent is
+refused (``SandboxEnvironmentUnsafeError``) unless the environment is provably
+locked (managed lockdown) or provably clean (no widening ``allow``/
+``excludedCommands``). This module stays the pure ``--settings`` translator.
+
+READ POSTURE (deliberate): non-secret reads OUTSIDE the worktree remain possible.
+``permissions.allow`` grants the native read tools broadly (the tech-lead's
+god-view is *wide reads*; a coder reads its worktree), and ``denyRead: ["~/"]``
+only bounds *Bash* reads (defense-in-depth; merged, so not un-widenable). This is
+NOT a "reads confined to the worktree" jail — a literal native read-lockdown is
+not expressible via ``--settings`` under unattended ``dontAsk`` and would blind
+the god-view; a hard read boundary requires managed ``allowManagedReadPathsOnly``.
 
 KNOWN LIMITATION: a GitHub *App* private key at an operator-configured absolute
 path *outside* home is covered only if it is listed in ``deny_read_files``; the

@@ -124,11 +124,19 @@ class ClaudeCodeProvider(CLIProvider):
     def apply_scope(self, scope: "SandboxScope") -> list[str]:
         """Translate a :class:`SandboxScope` into claude-code sandbox argv.
 
-        Delegates to the provider sandbox adapter (``--permission-mode dontAsk``
-        plus an inline ``--settings`` JSON describing the OS sandbox).
+        FAIL-CLOSED: first verify the ambient Claude Code settings cannot widen
+        the sandbox policy beyond its guaranteed deny floor (a merged
+        ``permissions.allow`` of a native write tool, or any
+        ``sandbox.excludedCommands``, escapes the write/exec bound our inline
+        ``--settings`` cannot lock). Raises
+        :class:`~.sandbox_preflight.SandboxEnvironmentUnsafeError` rather than
+        launch a sandboxed agent into a widenable environment. Then delegate to
+        the pure adapter (``--permission-mode dontAsk`` + inline ``--settings``).
         """
         from .sandbox import build_claude_sandbox_argv
+        from .sandbox_preflight import assert_claude_sandbox_environment_safe
 
+        assert_claude_sandbox_environment_safe(scope)
         return build_claude_sandbox_argv(scope)
 
     @classmethod
