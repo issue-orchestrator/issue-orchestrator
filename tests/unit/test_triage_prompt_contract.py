@@ -397,6 +397,72 @@ def test_prompt_e2e_health_rule_matches_the_snapshot_contract() -> None:
     assert "e2e_health" in snapshot.to_dict()
 
 
+@pytest.mark.parametrize("variant", sorted(PROMPT_VARIANTS))
+def test_board_snapshot_fields_document_hung_evidence(variant: str) -> None:
+    """The snapshot field list must surface the per-session hung-evidence."""
+    text = PROMPT_VARIANTS[variant]
+    for token in ("`idle_minutes`", "`commits_ahead`"):
+        assert token in text, (
+            f"{variant} does not document the {token} snapshot field"
+        )
+
+
+@pytest.mark.parametrize("variant", sorted(PROMPT_VARIANTS))
+def test_health_flow_teaches_evidence_based_hung_judgment(variant: str) -> None:
+    """The health review must judge HUNG from EVIDENCE, not age alone (#6823).
+
+    A session hung is judged from idle + no-progress evidence corroborated by
+    the run dir/recording, NOT a timer — "take a look, don't kill prematurely".
+    A long-running-but-working session (fresh output or landing commits) is not
+    hung. The GATED ``kill_hung_session`` follows only from that evidence.
+    """
+    section = _flow_section(PROMPT_VARIANTS[variant], "Health Review Flow")
+    for token in (
+        "idle_minutes",
+        "commits_ahead",
+        "age_minutes` alone",
+        "WORKING, not hung",
+        "kill_hung_session",
+        "prematurely",
+    ):
+        assert token in section, (
+            f"{variant} health flow does not teach the hung-evidence token {token!r}"
+        )
+
+
+def test_prompt_hung_evidence_rule_matches_the_snapshot_contract() -> None:
+    """The prompt names the REAL serialized session fields, not drifted aliases.
+
+    Pins ``idle_minutes``/``commits_ahead`` to what ``BoardSnapshot.to_dict``
+    writes per active session, so a rename cannot leave the rubric pointing at
+    evidence fields the board never carries.
+    """
+    from issue_orchestrator.domain.board_snapshot import (
+        BoardSessionInfo,
+        BoardSnapshot,
+    )
+
+    snapshot = BoardSnapshot(
+        generated_at="2026-07-15T00:00:00",
+        orchestrator_paused=False,
+        sessions=[
+            BoardSessionInfo(
+                issue_number=1,
+                issue_title="t",
+                agent_type="",
+                session_type="code",
+                status="running",
+                started_at="2026-07-15T00:00:00",
+                age_minutes=1,
+                terminal_id="issue-1",
+            )
+        ],
+    )
+    session = snapshot.to_dict()["sessions"][0]
+    assert "idle_minutes" in session
+    assert "commits_ahead" in session
+
+
 def test_prompt_cohort_rule_matches_the_snapshot_contract() -> None:
     """The prompt names the REAL serialized field, not a drifted alias.
 

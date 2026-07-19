@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import subprocess
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Callable
@@ -23,13 +24,15 @@ if TYPE_CHECKING:
     from ..control.board_snapshot_builder import BoardSnapshotBuilder
     from ..control.fact_gatherer import FactGatherer
     from ..control.triage_board import TriageBoardPublisher
-    from ..domain.board_snapshot import BoardE2EHealth
+    from ..domain.board_snapshot import BoardE2EHealth, SessionActivityFacts
+    from ..domain.models import Session
     from ..infra.config import Config
     from ..infra.orchestrator import Orchestrator
     from ..ports import EventSink, RepositoryHost
     from ..ports.queue_cache_store import QueueCacheStore
     from ..ports.timeline_store import TimelineStore
     from ..ports.triage_authority import TriageAuthorityStore
+    from ..ports.working_copy import WorkingCopy
 
 logger = logging.getLogger(__name__)
 
@@ -154,6 +157,7 @@ def create_board_snapshot_builder(
     config: "Config",
     timeline_store: "TimelineStore",
     board_publisher: "TriageBoardPublisher | None",
+    working_copy: "WorkingCopy",
 ) -> "BoardSnapshotBuilder":
     """ADR-0031 §3 board-snapshot fact sources over the owned timeline store."""
     from ..control.board_snapshot_builder import BoardSnapshotBuilder
@@ -167,8 +171,71 @@ def create_board_snapshot_builder(
             board_publisher.shipped_fixes if board_publisher else lambda _limit: ()
         ),
         e2e_health_reader=_make_e2e_health_reader(config),
+        session_activity_reader=_make_session_activity_reader(working_copy),
         clock=datetime.now,
     )
+
+
+def _make_session_activity_reader(
+    working_copy: "WorkingCopy",
+) -> "Callable[[Session], SessionActivityFacts | None]":
+    """Best-effort hung-EVIDENCE probe feed for each active session (ADR-0031).
+
+    Reads two cheap signals that tell a long-running-but-working session from a
+    genuinely hung one — NEVER age alone: the mtime of the session's terminal
+    recording (its agent output stream, a proxy for "last observable activity",
+    the same file the quiescence detector samples) and the commit count on its
+    branch ahead of base. Both are best-effort: a missing recording or an
+    unreadable/absent worktree degrades that field to its unknown sentinel; the
+    builder's backstop maps any unexpected error to ``None``. The health review
+    reads these to corroborate a hang before proposing the GATED
+    ``kill_hung_session`` (which never auto-executes).
+    """
+    from ..domain.board_snapshot import SessionActivityFacts
+
+    def _read(session: "Session") -> "SessionActivityFacts | None":
+        return SessionActivityFacts(
+            commits_ahead=_session_commits_ahead(working_copy, session),
+            last_activity_at=_recording_last_activity_iso(session),
+        )
+
+    return _read
+
+
+def _recording_last_activity_iso(session: "Session") -> str | None:
+    """Wall-clock ISO of the session recording's last write (mtime), else ``None``.
+
+    The agent's output stream writes the terminal recording, so its mtime is a
+    pragmatic "last observable activity" timestamp. ``None`` when the file is
+    missing or unreadable (``OSError``) — the builder maps that to an unknown
+    idle reading rather than a bogus "idle forever".
+    """
+    recording_path = session.run_assets.terminal_recording.path
+    try:
+        mtime = recording_path.stat().st_mtime
+    except OSError:
+        return None
+    return datetime.fromtimestamp(mtime).isoformat()
+
+
+def _session_commits_ahead(working_copy: "WorkingCopy", session: "Session") -> int:
+    """Commits on the session branch ahead of base, or the unknown sentinel.
+
+    ``COMMITS_AHEAD_UNKNOWN`` when the worktree is gone or the read raises: a
+    real ``0`` (no commits yet — a hang signal when paired with a high idle)
+    must stay distinct from "could not read". Narrows to filesystem/subprocess/
+    git errors so an unexpected failure still surfaces via the builder backstop.
+    """
+    from ..domain.board_snapshot import COMMITS_AHEAD_UNKNOWN
+    from ..ports.git import GitError
+
+    worktree = session.worktree_path
+    try:
+        if not worktree.exists():
+            return COMMITS_AHEAD_UNKNOWN
+        return len(working_copy.get_commits_ahead_of_main(worktree))
+    except (OSError, subprocess.SubprocessError, GitError):
+        return COMMITS_AHEAD_UNKNOWN
 
 
 def _make_e2e_health_reader(

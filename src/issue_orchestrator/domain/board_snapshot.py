@@ -28,7 +28,24 @@ from typing import Any, TypedDict
 
 logger = logging.getLogger(__name__)
 
-BOARD_SNAPSHOT_SCHEMA_VERSION = 4
+BOARD_SNAPSHOT_SCHEMA_VERSION = 5
+
+# --- Hung-session evidence projection ---------------------------------------
+# The health review must judge a session HUNG from EVIDENCE (idle with no
+# progress), NOT from age alone: a long-running session still emitting output
+# or landing commits is working, not hung. These two best-effort signals ride
+# on each active session so the review can tell the two apart before proposing
+# the GATED ``kill_hung_session`` (never an auto-execute).
+
+# Sentinel for an unknown idle reading (the terminal recording's mtime could
+# not be read, or the activity-probe returned nothing). Kept an int — the field
+# is a plain int — and read as "no evidence", never as "idle for -1 minutes".
+IDLE_MINUTES_UNKNOWN = -1
+
+# Sentinel for an unknown commits-ahead reading (the session worktree was gone
+# or the working copy could not be read). Distinct from a real ``0`` (a genuine
+# "no commits yet" — itself a hang signal when paired with a high idle).
+COMMITS_AHEAD_UNKNOWN = -1
 
 # --- E2E health projection tuning -------------------------------------------
 # The health review's board snapshot carries an AGGREGATE view of E2E suite
@@ -79,6 +96,9 @@ class BoardSessionInfoDict(TypedDict):
     started_at: str
     age_minutes: int
     terminal_id: str
+    idle_minutes: int
+    commits_ahead: int
+    last_activity_at: str | None
 
 
 class BoardQueueEntryDict(TypedDict):
@@ -197,6 +217,35 @@ class BoardSnapshotDict(TypedDict):
     e2e_health: BoardE2EHealthDict | None
 
 
+@dataclass(frozen=True)
+class SessionActivityFacts:
+    """Best-effort hung-EVIDENCE probe result for one active session.
+
+    A pure input to :meth:`BoardSessionInfo` projection, gathered by an injected
+    reader that reaches the filesystem/git (the builder itself does not). Two
+    cheap signals distinguish "long-running but working" from "genuinely hung",
+    NEVER age alone:
+
+    - ``last_activity_at``: ISO wall-clock of the session's last observable
+      activity — the mtime of its terminal recording, which the agent's output
+      stream writes. ``None`` when that mtime could not be read. The builder
+      projects this into ``idle_minutes`` against its injected clock (mirroring
+      how ``E2ERunHealthFact.started_at`` becomes ``age_minutes``), so a high
+      idle with no commit progress is a hang signal.
+    - ``commits_ahead``: commits on the session's branch ahead of base. A real
+      ``0`` after a long idle is strong hang evidence; recent commits mean it is
+      working. ``COMMITS_AHEAD_UNKNOWN`` (-1) when the working copy could not be
+      read (e.g. the worktree is gone).
+
+    A reader that can read neither signal may return ``None`` instead of this
+    envelope; the builder maps that to the unknown sentinels on every field. A
+    partial read fills the readable field and leaves the other at its sentinel.
+    """
+
+    commits_ahead: int
+    last_activity_at: str | None = None
+
+
 @dataclass
 class BoardSessionInfo:
     """An active agent session, as seen on the board.
@@ -205,6 +254,13 @@ class BoardSessionInfo:
     issue carries no agent label (a legitimate state, not an error).
     ``age_minutes`` is computed by the builder from an injected clock so
     snapshots are deterministic and testable.
+
+    ``idle_minutes``/``commits_ahead``/``last_activity_at`` are best-effort
+    hung-EVIDENCE fields (see :class:`SessionActivityFacts`): they let the
+    health review judge a session HUNG from evidence — idle with no progress —
+    rather than from age alone. Each degrades to its "unknown" sentinel
+    (``IDLE_MINUTES_UNKNOWN`` / ``COMMITS_AHEAD_UNKNOWN`` / ``None``) when the
+    probe could not read it; the snapshot never fails on a missing reading.
     """
 
     issue_number: int
@@ -215,6 +271,9 @@ class BoardSessionInfo:
     started_at: str  # ISO timestamp
     age_minutes: int
     terminal_id: str
+    idle_minutes: int = IDLE_MINUTES_UNKNOWN
+    commits_ahead: int = COMMITS_AHEAD_UNKNOWN
+    last_activity_at: str | None = None
 
 
 @dataclass
@@ -498,6 +557,25 @@ def _parse_iso_datetime(value: str) -> datetime | None:
         return None
 
 
+def project_idle_minutes(last_activity_at: str | None, now: datetime) -> int:
+    """Whole minutes since a session's last observable activity.
+
+    ``IDLE_MINUTES_UNKNOWN`` (-1) when the activity timestamp is absent (the
+    recording mtime could not be read) or unparseable. Mirrors ``age_minutes``:
+    both are minutes-since-a-timestamp against the builder's injected clock, so
+    the value is deterministic under test (never ``datetime.now()`` here). Uses
+    POSIX timestamps so a naive-local ``now`` and a naive-local recording mtime
+    resolve to the same absolute epoch; clamped at 0 (a future mtime from clock
+    skew reads as "just now", never negative).
+    """
+    if last_activity_at is None:
+        return IDLE_MINUTES_UNKNOWN
+    parsed = _parse_iso_datetime(last_activity_at)
+    if parsed is None:
+        return IDLE_MINUTES_UNKNOWN
+    return max(0, int((now.timestamp() - parsed.timestamp()) / 60))
+
+
 def _e2e_age_minutes(started_at: str, now: datetime) -> int:
     """Whole minutes since ``started_at``; ``-1`` when the timestamp is unparseable.
 
@@ -649,6 +727,9 @@ class BoardSnapshot:
                     "started_at": s.started_at,
                     "age_minutes": s.age_minutes,
                     "terminal_id": s.terminal_id,
+                    "idle_minutes": s.idle_minutes,
+                    "commits_ahead": s.commits_ahead,
+                    "last_activity_at": s.last_activity_at,
                 }
                 for s in self.sessions
             ],
@@ -751,6 +832,9 @@ class BoardSnapshot:
                     started_at=s["started_at"],
                     age_minutes=s["age_minutes"],
                     terminal_id=s["terminal_id"],
+                    idle_minutes=s["idle_minutes"],
+                    commits_ahead=s["commits_ahead"],
+                    last_activity_at=s["last_activity_at"],
                 )
                 for s in data["sessions"]
             ],

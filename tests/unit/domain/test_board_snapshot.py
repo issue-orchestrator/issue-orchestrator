@@ -41,6 +41,9 @@ def _sample_snapshot() -> BoardSnapshot:
                 started_at="2026-07-10T11:30:00+00:00",
                 age_minutes=30,
                 terminal_id="issue-101",
+                idle_minutes=22,
+                commits_ahead=0,
+                last_activity_at="2026-07-10T11:38:00+00:00",
             ),
         ],
         queues=[
@@ -181,6 +184,43 @@ class TestBoardSnapshotRoundTrip:
 
         assert recovered == original
         assert recovered.schema_version == BOARD_SNAPSHOT_SCHEMA_VERSION
+
+    def test_hung_evidence_fields_survive_the_round_trip(self) -> None:
+        """idle_minutes/commits_ahead/last_activity_at cross the JSON boundary."""
+        recovered = BoardSnapshot.from_dict(_sample_snapshot().to_dict())
+
+        session = recovered.sessions[0]
+        assert session.idle_minutes == 22
+        assert session.commits_ahead == 0  # a real 0, distinct from unknown
+        assert session.last_activity_at == "2026-07-10T11:38:00+00:00"
+
+    def test_session_hung_evidence_defaults_to_unknown_sentinels(self) -> None:
+        """A session built without evidence carries the unknown sentinels, and
+        those survive serialization (null activity round-trips as None)."""
+        info = BoardSessionInfo(
+            issue_number=1,
+            issue_title="t",
+            agent_type="",
+            session_type="code",
+            status="running",
+            started_at="2026-07-10T11:30:00+00:00",
+            age_minutes=1,
+            terminal_id="issue-1",
+        )
+        assert (info.idle_minutes, info.commits_ahead, info.last_activity_at) == (
+            -1,
+            -1,
+            None,
+        )
+        snapshot = BoardSnapshot(
+            generated_at="2026-07-10T12:00:00+00:00",
+            orchestrator_paused=False,
+            sessions=[info],
+        )
+
+        recovered = BoardSnapshot.from_dict(snapshot.to_dict())
+
+        assert recovered.sessions[0] == info
 
     def test_write_read_round_trip(self, tmp_path: Path) -> None:
         original = _sample_snapshot()

@@ -47,7 +47,8 @@ Every flavor also receives a snapshot of orchestrator state, taken at launch:
 cat "$ISSUE_ORCHESTRATOR_RUN_DIR/triage-data/board-snapshot.json"
 ```
 
-It contains active sessions (type/state/age), pending queues with reasons,
+It contains active sessions (type/state/age, plus `idle_minutes`/`commits_ahead`
+hung-evidence), pending queues with reasons,
 blocked issues, `recent_failures` (context), `problem_cohort` (the issue
 numbers a health review owns act-level authority over, empty otherwise), open
 pattern case files, per-area distinct patterns plus shipped-fix counts, a
@@ -163,6 +164,22 @@ cat "$ISSUE_ORCHESTRATOR_RUN_DIR/triage-data/board-snapshot.json"
 
 - Look for hung or aging sessions, queue pile-ups, repeated failures, and
   cross-job patterns; report findings through the decision artifact.
+- **Judge a session HUNG from EVIDENCE, not age.** Each active session carries
+  `age_minutes` (time since launch), `idle_minutes` (minutes since its last
+  observable output — the terminal recording's last write; `-1` = unknown), and
+  `commits_ahead` (commits landed on its branch; `-1` = unknown). Treat a
+  session as a hang candidate ONLY when it is BOTH idle for a long stretch (high
+  `idle_minutes`) AND making no progress (`commits_ahead` still 0 deep into the
+  run) — never on `age_minutes` alone. A long-running session with fresh output
+  (low `idle_minutes`) or commits still landing is WORKING, not hung. Take a
+  look before acting: corroborate against the session's `run_dir` and
+  `terminal-recording.jsonl` (your evidence-map `locations`) to confirm it is
+  genuinely stuck, not mid-build or mid-long-tool. Only then propose
+  `kill_hung_session`, and only for a session whose issue is in your
+  `problem_cohort` (act-level scope, below) — a GATED proposal reviewed as an
+  issue before anything is killed; it never auto-executes. Do NOT kill
+  prematurely; when unsure, `post_comment`/`escalate_to_human` and let a human
+  decide.
 - Compare each area's distinct patterns and shipped fixes. When case files or
   fixed-then-recurred work cluster on one seam, propose the root-cause design
   review described below instead of another point patch. Cite the relevant

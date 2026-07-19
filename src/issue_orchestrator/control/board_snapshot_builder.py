@@ -26,6 +26,7 @@ from collections.abc import Callable, Sequence
 from datetime import datetime
 
 from ..domain.board_snapshot import (
+    COMMITS_AHEAD_UNKNOWN,
     BoardAreaSignal,
     BoardBlockedIssue,
     BoardCaseFile,
@@ -36,6 +37,8 @@ from ..domain.board_snapshot import (
     BoardShippedFix,
     BoardSnapshot,
     BoardTimelineExtract,
+    SessionActivityFacts,
+    project_idle_minutes,
 )
 from ..domain.models import (
     DiscoveredFailure,
@@ -70,6 +73,7 @@ class BoardSnapshotBuilder:
         case_file_reader: Callable[[], Sequence[TriageCaseFileSummary]],
         shipped_fix_reader: Callable[[int], Sequence[TriageShippedFixSummary]],
         e2e_health_reader: Callable[[datetime], BoardE2EHealth | None],
+        session_activity_reader: Callable[[Session], SessionActivityFacts | None],
         clock: Callable[[], datetime],
     ) -> None:
         """Create a builder over injected fact sources.
@@ -86,6 +90,12 @@ class BoardSnapshotBuilder:
                 deterministic. Best-effort: a reader that returns ``None`` or
                 raises yields ``None`` here — the E2E block is an ENHANCEMENT
                 (like the evidence map), never a required snapshot fact.
+            session_activity_reader: ``(session) -> hung-evidence facts | None``.
+                Reaches the filesystem/git to read a session's last-activity
+                mtime + commits-ahead so the builder itself stays free of that
+                reach. Best-effort like ``e2e_health_reader``: a reader that
+                returns ``None`` or raises degrades the session's evidence
+                fields to their unknown sentinels — it never fails the snapshot.
             clock: current-time source; injected so session ages are
                 deterministic under test.
         """
@@ -94,6 +104,7 @@ class BoardSnapshotBuilder:
         self._case_file_reader = case_file_reader
         self._shipped_fix_reader = shipped_fix_reader
         self._e2e_health_reader = e2e_health_reader
+        self._session_activity_reader = session_activity_reader
         self._clock = clock
 
     def build(
@@ -225,8 +236,16 @@ class BoardSnapshotBuilder:
         via ``Session.runtime_minutes`` (which calls ``datetime.now``
         internally and is untestable deterministically). ``agent_type`` is ""
         when the issue carries no ``agent:*`` label - a legitimate state.
+
+        Hung-EVIDENCE fields ride alongside so the health review can judge a
+        session hung from evidence (idle with no progress), not age alone. The
+        activity probe reaches the filesystem/git; the builder keeps that reach
+        out of itself and projects ``idle_minutes`` against the same clock as
+        ``age_minutes``. A probe that fails degrades to the unknown sentinels.
         """
         age_minutes = int((now - session.started_at).total_seconds() / 60)
+        activity = self._read_session_activity(session)
+        last_activity_at = activity.last_activity_at if activity else None
         return BoardSessionInfo(
             issue_number=session.issue.number,
             issue_title=session.issue.title,
@@ -236,7 +255,27 @@ class BoardSnapshotBuilder:
             started_at=session.started_at.isoformat(),
             age_minutes=age_minutes,
             terminal_id=session.terminal_id,
+            idle_minutes=project_idle_minutes(last_activity_at, now),
+            commits_ahead=activity.commits_ahead if activity else COMMITS_AHEAD_UNKNOWN,
+            last_activity_at=last_activity_at,
         )
+
+    def _read_session_activity(self, session: Session) -> SessionActivityFacts | None:
+        """Best-effort hung-evidence probe; never breaks the snapshot.
+
+        Mirrors ``_read_e2e_health``: the reader itself narrows the expected
+        filesystem/git errors, and this is the final backstop for anything
+        unexpected. A failure yields ``None`` (all evidence fields fall to their
+        unknown sentinels), never a propagated exception — the evidence is an
+        ENHANCEMENT, not a required snapshot fact.
+        """
+        try:
+            return self._session_activity_reader(session)
+        except Exception as exc:
+            logger.warning(
+                "[board] session activity reader failed (non-fatal): %s", exc
+            )
+            return None
 
     def _queue_entries(self, state: OrchestratorState) -> list[BoardQueueEntry]:
         """Flatten the pending queues into board entries, in queue order.
