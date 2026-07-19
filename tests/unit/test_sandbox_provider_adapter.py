@@ -94,10 +94,17 @@ def test_model_only_egress_denies_web_search_and_curl() -> None:
     assert "Bash(curl *)" in deny
 
 
-def test_model_web_egress_has_no_network_or_tool_restriction() -> None:
+def test_model_web_egress_has_no_network_restriction_but_keeps_secret_denies() -> None:
+    # model+web drops the OS network allowlist and the WEB tool denies, but the
+    # permission block still carries the read allow-list and the native secret
+    # denies (secrets are fail-closed regardless of egress posture).
     settings = build_claude_sandbox_settings(_scope("model+web"))
     assert "network" not in settings["sandbox"]
-    assert "permissions" not in settings
+    permissions = settings["permissions"]
+    assert permissions["allow"] == ["Read", "Grep", "Glob"]
+    assert "Read(~/.ssh/**)" in permissions["deny"]
+    assert "WebSearch" not in permissions["deny"]
+    assert "WebFetch" not in permissions["deny"]
 
 
 def test_none_egress_emits_explicit_empty_allowlist() -> None:
@@ -106,6 +113,53 @@ def test_none_egress_emits_explicit_empty_allowlist() -> None:
     settings = build_claude_sandbox_settings(_scope("none"))
     assert settings["sandbox"]["network"]["allowedDomains"] == []
     assert "WebSearch" in settings["permissions"]["deny"]
+
+
+# ---------------------------------------------------------------------------
+# Native file-tool permission layer (the OS sandbox binds Bash only)
+# ---------------------------------------------------------------------------
+
+
+def test_native_read_tools_allowed_for_god_view() -> None:
+    # dontAsk runs only allow-listed tools; the native read tools must be
+    # allowed or a sandboxed agent could not read anything.
+    allow = build_claude_sandbox_settings(_scope())["permissions"]["allow"]
+    assert allow == ["Read", "Grep", "Glob"]
+
+
+def test_native_file_tools_deny_each_secret_path() -> None:
+    # The OS credentials.files deny does not touch the native Read/Edit/... tools,
+    # so every secret path is ALSO denied on the permission layer, per tool, for
+    # both the path and everything under it.
+    deny = build_claude_sandbox_settings(_scope())["permissions"]["deny"]
+    for path in ("~/.ssh", "~/.issue-orchestrator"):
+        for tool in ("Read", "Edit", "Write", "Grep", "Glob"):
+            assert f"{tool}({path})" in deny, f"missing {tool}({path})"
+            assert f"{tool}({path}/**)" in deny, f"missing {tool}({path}/**)"
+
+
+def test_native_deny_precedes_egress_deny() -> None:
+    # Deterministic ordering: native secret denies first, egress tool denies last.
+    deny = build_claude_sandbox_settings(_scope("model-only"))["permissions"]["deny"]
+    assert deny.index("Read(~/.ssh)") < deny.index("WebSearch")
+
+
+def test_absolute_secret_path_uses_double_slash_permission_spec() -> None:
+    # Read/Edit permission specifiers use // for absolute paths, which differs
+    # from the single-slash sandbox.filesystem convention. An operator/test path
+    # outside home must be doubled or it would read as project-relative.
+    scope = SandboxScope(
+        read_roots=(Path("/wt/x"),),
+        write_roots=(Path("/wt/x"),),
+        egress="model-only",
+        deny_env=(),
+        deny_read_files=("/var/folders/abc/planted-secret.txt",),
+    )
+    deny = build_claude_sandbox_settings(scope)["permissions"]["deny"]
+    assert "Read(//var/folders/abc/planted-secret.txt)" in deny
+    # The single-slash sandbox.filesystem credentials.files keeps the raw path.
+    files = build_claude_sandbox_settings(scope)["sandbox"]["credentials"]["files"]
+    assert {"path": "/var/folders/abc/planted-secret.txt", "mode": "deny"} in files
 
 
 # ---------------------------------------------------------------------------

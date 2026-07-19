@@ -157,9 +157,13 @@ class SandboxScope:
         egress: Network posture (see :data:`SandboxEgress`).
         deny_env: Environment variables that must be scrubbed from the
             sandboxed process (credentials).
-        deny_read_files: Home-relative secret paths (``~/`` prefix) whose reads
-            must be denied — the fail-closed secret layer (see
-            :data:`DEFAULT_SANDBOX_DENY_READ_FILES`).
+        deny_read_files: Secret paths (``~/`` home-relative, or absolute) whose
+            reads must be denied — the fail-closed secret layer (see
+            :data:`DEFAULT_SANDBOX_DENY_READ_FILES`). The provider adapter
+            enforces this list on BOTH tool boundaries: the OS sandbox
+            (``credentials.files``, for Bash) AND the permission layer
+            (``permissions.deny`` Read/Edit/Grep/Glob/Write, for the native file
+            tools the OS sandbox does not reach).
     """
 
     read_roots: tuple[Path, ...]
