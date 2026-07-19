@@ -17,6 +17,10 @@ test('collectFieldValue dispatches each supported kind to a typed value', () => 
     assert.equal(controls.collectFieldValue(stubControl('string', { value: 'hello' })), 'hello');
     assert.equal(controls.collectFieldValue(stubControl('optional_string', { value: '' })), null);
     assert.equal(controls.collectFieldValue(stubControl('optional_string', { value: 'x' })), 'x');
+    // optional_integer: empty means unset (null), otherwise a parsed integer.
+    assert.equal(controls.collectFieldValue(stubControl('optional_integer', { value: '' })), null);
+    assert.equal(controls.collectFieldValue(stubControl('optional_integer', { value: '2' })), 2);
+    assert.equal(controls.collectFieldValue(stubControl('optional_integer', { value: 'abc' })), null);
 });
 
 test('collectFieldValue throws on an unknown control kind (fail-fast)', () => {

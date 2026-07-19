@@ -28,6 +28,7 @@ from .settings_schema_support import (
     FORM_CONTROL_DICT_ENUM as FORM_CONTROL_DICT_ENUM,
     FORM_CONTROL_ENUM as FORM_CONTROL_ENUM,
     FORM_CONTROL_KINDS as FORM_CONTROL_KINDS,
+    FORM_CONTROL_OPTIONAL_INTEGER as FORM_CONTROL_OPTIONAL_INTEGER,
     SettingsSavePlan as SettingsSavePlan,
     UnsupportedSettingsFieldError as UnsupportedSettingsFieldError,
     classify_form_control as classify_form_control,
@@ -1279,6 +1280,32 @@ class ReviewSettings(BaseModel):
             "section": "Triage Review",
             "config_attr": "triage.stuck_sweep.max_recovery_attempts",
             "yaml_path": "triage.stuck_sweep.max_recovery_attempts",
+        },
+    )
+    triage_max_concurrent: Optional[int] = Field(
+        None,
+        title="Reserved Triage Concurrency",
+        description=(
+            "Reserved concurrency slots for triage sessions (empty = share the "
+            "worker budget)"
+        ),
+        ge=1,
+        le=20,
+        json_schema_extra={
+            "doc_examples": ["1", "2"],
+            "doc_notes": (
+                "Empty (the default) shares the worker budget "
+                "(execution.concurrency.max_concurrent_sessions): triage counts "
+                "against it and is planned from the shared capacity, exactly as "
+                "before. A positive value is a SEPARATE additive triage budget: "
+                "triage sessions run from their own slots and are NOT subtracted "
+                "from the worker budget, so the tech lead can run even when "
+                "workers are saturated. Total live agents are then bounded at "
+                "max_concurrent_sessions + triage.max_concurrent."
+            ),
+            "section": "Triage Review",
+            "config_attr": "triage.max_concurrent",
+            "yaml_path": "triage.max_concurrent",
         },
     )
 

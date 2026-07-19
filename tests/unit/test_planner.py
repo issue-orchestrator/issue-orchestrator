@@ -4315,6 +4315,143 @@ class TestMultiplePendingTypesInteraction:
         assert len(issue_launches) == 0
 
 
+class TestReservedTriageConcurrency:
+    """triage.max_concurrent: a reserved additive budget for the tech lead.
+
+    None (default) = triage shares the worker budget (unchanged). An int = a
+    separate additive budget so the tech lead runs even when workers saturate
+    ``max_concurrent_sessions``.
+    """
+
+    def _planner(self, config) -> Planner:
+        return Planner(
+            config=config,
+            scheduler=Scheduler(config),
+            triage_workflow=TriageWorkflow(config=config, events=InMemoryEventSink()),
+        )
+
+    def _pending_triage(self, number: int = 101) -> PendingTriageReview:
+        return PendingTriageReview(
+            issue_number=number,
+            title="Investigate",
+            flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+            failure=DiscoveredFailure(
+                issue_number=number, issue_title="Investigate", failure_reason="failed"
+            ),
+        )
+
+    def _triage_session(self, number: int, agent_label: str) -> Session:
+        """An active triage session is one whose agent_label is the triage agent."""
+        session = make_session(make_issue(number, labels=[agent_label]))
+        session.agent_label = agent_label
+        return session
+
+    def _triage_launches(self, plan) -> list:
+        return [
+            a
+            for a in plan.actions_of_type(ActionType.LAUNCH_SESSION)
+            if a.session_type == SessionType.TRIAGE
+        ]
+
+    def test_reserved_slot_launches_triage_at_worker_saturation(self):
+        """Worker budget full (shared capacity 0), triage still launches from
+        its own reserved slot."""
+        config = make_config(
+            triage_review_agent="agent:triage", max_concurrent_sessions=1
+        )
+        config.triage.max_concurrent = 1
+        planner = self._planner(config)
+
+        # One long coding session saturates the single worker slot.
+        worker = make_session(make_issue(1))
+        snapshot = make_snapshot(
+            issues=[make_issue(1)],
+            active_sessions=[worker],
+            pending_triage=[self._pending_triage(101)],
+        )
+
+        launches = self._triage_launches(planner.plan(snapshot))
+        assert [a.number for a in launches] == [101]
+
+    def test_shared_budget_none_skips_triage_at_saturation(self):
+        """None (default): triage shares the worker budget, so a full worker
+        budget means no triage launches - unchanged behavior."""
+        config = make_config(
+            triage_review_agent="agent:triage", max_concurrent_sessions=1
+        )
+        assert config.triage.max_concurrent is None
+        planner = self._planner(config)
+
+        worker = make_session(make_issue(1))
+        snapshot = make_snapshot(
+            issues=[make_issue(1)],
+            active_sessions=[worker],
+            pending_triage=[self._pending_triage(101)],
+        )
+
+        assert self._triage_launches(planner.plan(snapshot)) == []
+
+    def _issue_launches(self, plan) -> list:
+        return [
+            a
+            for a in plan.actions_of_type(ActionType.LAUNCH_SESSION)
+            if a.session_type == SessionType.ISSUE
+        ]
+
+    def test_active_triage_session_does_not_reduce_worker_capacity_when_reserved(self):
+        """Additive budget: a running triage session neither consumes worker
+        capacity nor counts against max_concurrent_sessions, so a worker still
+        launches into the free worker slot."""
+        config = make_config(
+            triage_review_agent="agent:triage", max_concurrent_sessions=1
+        )
+        config.triage.max_concurrent = 1
+        planner = self._planner(config)
+
+        # One active triage session; a fresh worker issue is pending.
+        snapshot = make_snapshot(
+            issues=[make_issue(2)],
+            active_sessions=[self._triage_session(50, "agent:triage")],
+        )
+
+        launches = self._issue_launches(planner.plan(snapshot))
+        assert [a.number for a in launches] == [2]
+
+    def test_active_triage_session_consumes_shared_budget_when_none(self):
+        """None (default): a triage session shares the worker budget, so it DOES
+        occupy the single worker slot and no worker launches - unchanged."""
+        config = make_config(
+            triage_review_agent="agent:triage", max_concurrent_sessions=1
+        )
+        planner = self._planner(config)
+
+        snapshot = make_snapshot(
+            issues=[make_issue(2)],
+            active_sessions=[self._triage_session(50, "agent:triage")],
+        )
+
+        assert self._issue_launches(planner.plan(snapshot)) == []
+
+    def test_reserved_budget_bounds_concurrent_triage_launches(self):
+        """A reserved budget of 1 launches at most one triage even with two
+        pending, and the second is skipped."""
+        config = make_config(
+            triage_review_agent="agent:triage", max_concurrent_sessions=1
+        )
+        config.triage.max_concurrent = 1
+        planner = self._planner(config)
+
+        worker = make_session(make_issue(1))
+        snapshot = make_snapshot(
+            issues=[make_issue(1)],
+            active_sessions=[worker],
+            pending_triage=[self._pending_triage(101), self._pending_triage(102)],
+        )
+
+        launches = self._triage_launches(planner.plan(snapshot))
+        assert len(launches) == 1
+
+
 class TestPlanStaleInProgressCleanup:
     """Tests for planner's stale in-progress label cleanup.
 

@@ -78,6 +78,7 @@ from .awaiting_merge_post_publish_policy import (
 from .reactive_triage_planning import plan_reactive_triage
 from .triage_proposals import plan_approved_triage_op_executions
 from .triage_reaction import TriageReactionPolicy
+from .triage_session_policy import is_triage_session
 from .reconciliation import build_expected_for_mutation
 from .planner_types import OrchestratorSnapshot, Plan, PlanContext, SkippedItem
 from .triage_issue_policy import (
@@ -309,6 +310,43 @@ class Planner:
 
         return Plan(actions=tuple(actions), skipped=tuple(skipped))
 
+    def _active_triage_count(self, snapshot: OrchestratorSnapshot) -> int:
+        """Number of currently-active triage (tech-lead) sessions.
+
+        Triage identity is the ADR-0031 owner rule: a session whose agent
+        label is the configured ``triage_review_agent`` (both triage variants
+        launch as ``issue-{N}`` sessions under that agent, so the agent label
+        is what distinguishes them). ``agent_label`` is set to the issue's
+        agent type at launch (see ``SessionLauncher``).
+        """
+        return sum(
+            1
+            for session in snapshot.active_sessions
+            if is_triage_session(self.config.triage_review_agent, session.agent_label)
+        )
+
+    def _launch_budgets(
+        self, snapshot: OrchestratorSnapshot
+    ) -> tuple[int, Optional[int]]:
+        """Compute ``(worker_capacity, reserved_triage_capacity)`` for this tick.
+
+        ``reserved_triage_capacity`` is ``None`` when ``triage.max_concurrent``
+        is unset: triage then SHARES the worker budget and worker capacity
+        counts every active session, exactly as before (byte-for-byte). When
+        set, active triage sessions are ADDITIVE — they neither consume worker
+        capacity nor count against ``max_concurrent_sessions`` — and triage
+        draws from its own ``max_concurrent - active_triage`` budget so the
+        tech lead can launch even at worker saturation.
+        """
+        reserved = self.config.triage.max_concurrent
+        if reserved is None:
+            return self.config.max_concurrent_sessions - snapshot.active_count, None
+        active_triage = self._active_triage_count(snapshot)
+        worker_capacity = self.config.max_concurrent_sessions - (
+            snapshot.active_count - active_triage
+        )
+        return worker_capacity, reserved - active_triage
+
     def _plan_session_launches(
         self,
         snapshot: OrchestratorSnapshot,
@@ -319,8 +357,19 @@ class Planner:
         """Plan capacity-consuming session launches in priority order."""
         actions: list[Action] = []
         skipped: list[SkippedItem] = []
-        capacity = self.config.max_concurrent_sessions - snapshot.active_count
-        if capacity <= 0:
+        capacity, reserved_triage_capacity = self._launch_budgets(snapshot)
+        # Worker-only active count for the issue scheduler's own slot gate.
+        # Derived from the (pre-decrement) worker capacity so it excludes active
+        # triage sessions exactly when they are additive; in the shared-budget
+        # default this equals snapshot.active_count (unchanged behavior).
+        worker_active_count = self.config.max_concurrent_sessions - capacity
+        # Short-circuit only when NEITHER budget can launch anything. When
+        # triage shares the worker budget (reserved_triage_capacity is None)
+        # this reduces to exactly the original ``capacity <= 0`` guard; a
+        # reserved triage budget lets the tech lead run past worker saturation.
+        if capacity <= 0 and (
+            reserved_triage_capacity is None or reserved_triage_capacity <= 0
+        ):
             logger.debug(
                 "Planner: no capacity available (active=%d, max=%d)",
                 snapshot.active_count,
@@ -378,17 +427,26 @@ class Planner:
             capacity -= len(validation_retry_actions)
             validation_retry_launch_count = len(validation_retry_actions)
 
-        # 5. Plan triage launches
-        if capacity > 0 and self.triage_workflow:
+        # 5. Plan triage launches. By default triage draws from the shared
+        # worker ``capacity`` (decremented above). When triage.max_concurrent
+        # is set, it draws from its own reserved additive budget instead, so
+        # the tech lead runs even when the worker budget is exhausted, and its
+        # launches do NOT decrement the shared worker capacity.
+        triage_capacity = (
+            capacity if reserved_triage_capacity is None else reserved_triage_capacity
+        )
+        if triage_capacity > 0 and self.triage_workflow:
             triage_actions, triage_skipped = self._plan_triage(
                 snapshot,
-                capacity,
+                triage_capacity,
                 plan_context,
+                reserved=reserved_triage_capacity is not None,
                 suppressed_issue_numbers=suppressed_triage_issue_numbers,
             )
             actions.extend(triage_actions)
             skipped.extend(triage_skipped)
-            capacity -= len(triage_actions)
+            if reserved_triage_capacity is None:
+                capacity -= len(triage_actions)
             triage_launch_count = len(triage_actions)
 
         # 6. Plan issue launches with remaining capacity.
@@ -414,7 +472,9 @@ class Planner:
                     rework_launch_count, validation_retry_launch_count,
                     triage_launch_count, capacity,
                 )
-            issue_actions, issue_skipped, _ = self._plan_issues(snapshot, capacity)
+            issue_actions, issue_skipped, _ = self._plan_issues(
+                snapshot, capacity, worker_active_count
+            )
             actions.extend(issue_actions)
             skipped.extend(issue_skipped)
 
@@ -1024,8 +1084,15 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
         self,
         snapshot: OrchestratorSnapshot,
         capacity: int,
+        worker_active_count: int,
     ) -> tuple[list[Action], list[SkippedItem], int]:
         """Plan which issues to launch.
+
+        ``worker_active_count`` is the active-session count charged against the
+        worker budget for the scheduler's own slot gate. It equals
+        ``snapshot.active_count`` in the shared-budget default; with a reserved
+        triage budget it excludes active triage sessions so they do not steal
+        worker issue slots (the additive-budget invariant).
 
         Returns:
             Tuple of (actions, skipped_items, capacity_used)
@@ -1156,7 +1223,7 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
         # Pick next batch based on priority
         to_launch = self.scheduler.pick_next_batch(
             available=not_active,
-            current_count=snapshot.active_count,
+            current_count=worker_active_count,
             priority_overrides=list(snapshot.priority_queue),
         )
 
@@ -1569,9 +1636,17 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
         capacity: int,
         plan_context: PlanContext,
         *,
+        reserved: bool = False,
         suppressed_issue_numbers: frozenset[int] = frozenset(),
     ) -> tuple[list[Action], list[SkippedItem]]:
-        """Plan which triage reviews to launch."""
+        """Plan which triage reviews to launch.
+
+        ``reserved`` selects the budget the launch gate uses: when False
+        (default) triage draws from the shared worker budget and the workflow
+        gates on ``max_concurrent_sessions`` exactly as before; when True
+        ``capacity`` is the reserved additive triage budget and the workflow
+        gates on it directly, so triage launches even at worker saturation.
+        """
         actions: list[Action] = []
         skipped: list[SkippedItem] = []
         if not self.triage_workflow or not self.triage_workflow.is_configured():
@@ -1589,6 +1664,7 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
             pending_triage=pending_triage,
             active_session_count=snapshot.active_count,
             paused=snapshot.paused,
+            reserved_capacity=capacity if reserved else None,
         )
 
         if decision.skip_reason:

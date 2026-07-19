@@ -245,11 +245,15 @@ def parse_triage_config(data: dict) -> TriageConfig:
         explicit=ms_data.get("explicit"),
     )
 
+    max_concurrent_raw = data.get("max_concurrent")
+    max_concurrent = int(max_concurrent_raw) if max_concurrent_raw is not None else None
+
     return TriageConfig(
         inherit_labels=list(inherit_labels),
         explicit_labels=list(explicit_labels),
         milestone_strategy=milestone_strategy,
         priority=data.get("priority"),
+        max_concurrent=max_concurrent,
         authority=TriageAuthorityConfig.from_mapping(data.get("authority", {}) or {}),
         health_review=TriageHealthReviewConfig.from_mapping(
             data.get("health_review", {}) or {}

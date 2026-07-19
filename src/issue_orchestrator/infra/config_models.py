@@ -454,6 +454,16 @@ class TriageConfig:
     # Optional explicit priority label
     priority: Optional[str] = None
 
+    # Reserved concurrency for triage sessions. None (the default) = triage
+    # shares the worker budget (``max_concurrent_sessions``): triage counts
+    # against it and is planned from the shared capacity, exactly as before.
+    # An int = a SEPARATE additive triage budget: triage sessions run from
+    # their own ``triage.max_concurrent`` slots and are NOT subtracted from
+    # the worker ``max_concurrent_sessions``, so the tech lead can run even
+    # when the worker budget is saturated. Total live agents are then bounded
+    # at ``max_concurrent_sessions + triage.max_concurrent``.
+    max_concurrent: Optional[int] = None
+
     # Per-action-type graduated authority for triage decision proposals
     authority: TriageAuthorityConfig = field(default_factory=TriageAuthorityConfig)
 
@@ -473,6 +483,7 @@ class TriageConfig:
                 "explicit": self.milestone_strategy.explicit,
             },
             "priority": self.priority,
+            "max_concurrent": self.max_concurrent,
             "authority": self.authority.to_event_dict(),
             "health_review": {
                 "interval_minutes": self.health_review.interval_minutes,

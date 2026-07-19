@@ -142,6 +142,12 @@ filtering:
 
 triage:
   inherit_labels: ["io-e2e-test-data", "test-data"]
+  # Reserved concurrency for the triage tech lead. With max_concurrent_sessions: 1,
+  # a single long coding session would otherwise starve triage entirely. A separate
+  # additive budget of 1 slot lets the tech lead (health reviews, failure
+  # investigations, batch reviews) run even when the worker budget is saturated;
+  # total live agents are then bounded at max_concurrent_sessions + 1.
+  max_concurrent: 1
   # Graduated act-level authority (ADR-0031). reset_retry is wired to the
   # scratch-reset owner (#6764/#6777) and graduated to execute; kill_hung_session
   # stays a gated proposal (execute is still a startup error until fully wired).

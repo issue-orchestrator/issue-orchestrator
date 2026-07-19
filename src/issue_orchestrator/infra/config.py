@@ -1365,6 +1365,12 @@ class Config:
 
         if self.triage.priority is not None and not re.fullmatch(r"P\d", self.triage.priority.strip()):
             errors.append("triage.priority must be a tier like 'P0'..'P9'")
+        if self.triage.max_concurrent is not None and self.triage.max_concurrent < 1:
+            errors.append(
+                "triage.max_concurrent must be >= 1 when set (a reserved triage "
+                "budget of at least one slot); omit it to share the worker "
+                f"budget, got {self.triage.max_concurrent}"
+            )
         if self.validation.publish.dirty_check not in {"tracked", "unstaged", "all", "off"}:
             errors.append(
                 "validation.publish.dirty_check must be one of: tracked, unstaged, all, off"

@@ -473,6 +473,7 @@ class TestSettingsEndpoints:
                 "number",
                 "string",
                 "optional_string",
+                "optional_integer",
                 "dict_enum",
             ):
                 assert f'data-type="{kind}"' in html, f"missing control kind {kind}"

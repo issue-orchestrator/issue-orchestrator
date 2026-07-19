@@ -63,6 +63,8 @@ class TriageWorkflow:
         pending_triage: Sequence[PendingTriageReview],
         active_session_count: int,
         paused: bool,
+        *,
+        reserved_capacity: int | None = None,
     ) -> TriageDecision:
         """Determine if and which triage reviews should be launched.
 
@@ -70,6 +72,13 @@ class TriageWorkflow:
             pending_triage: Queue of pending triage reviews
             active_session_count: Number of active sessions
             paused: Whether the orchestrator is paused
+            reserved_capacity: When None (default), triage shares the worker
+                budget and the gate/available slots derive from
+                ``max_concurrent_sessions - active_session_count``, exactly as
+                before. When set, triage has its own reserved additive budget
+                (``triage.max_concurrent - active_triage``): the gate and the
+                slot count use it directly, so triage may launch even when the
+                worker budget is saturated.
 
         Returns:
             TriageDecision describing what should happen
@@ -82,12 +91,18 @@ class TriageWorkflow:
         if not pending_triage:
             return TriageDecision.skip("No pending triage reviews")
 
-        gate_skip = self._gate_skip_reason(active_session_count, paused)
+        gate_skip = self._gate_skip_reason(
+            active_session_count, paused, reserved_capacity=reserved_capacity
+        )
         if gate_skip:
             return TriageDecision.skip(gate_skip)
 
         # Determine which triage reviews to launch
-        available = self.config.max_concurrent_sessions - active_session_count
+        available = (
+            reserved_capacity
+            if reserved_capacity is not None
+            else self.config.max_concurrent_sessions - active_session_count
+        )
         triage_to_launch = list(pending_triage)[:available]
 
         self.events.publish(
@@ -123,11 +138,16 @@ class TriageWorkflow:
         self,
         active_session_count: int,
         paused: bool,
+        *,
+        reserved_capacity: int | None = None,
     ) -> str | None:
         """Owned paused/capacity gate shared by launch and creation decisions.
 
         Emits TRIAGE_SKIPPED with the rejection reason; returns None when
-        triage work may proceed.
+        triage work may proceed. When ``reserved_capacity`` is set the gate
+        checks the reserved additive triage budget instead of the shared
+        worker budget, so a saturated worker budget no longer blocks the tech
+        lead; when None (default) the shared-budget behavior is unchanged.
         """
         if paused:
             self.events.publish(
@@ -137,6 +157,23 @@ class TriageWorkflow:
                 )
             )
             return "Orchestrator paused"
+
+        if reserved_capacity is not None:
+            if reserved_capacity <= 0:
+                self.events.publish(
+                    make_trace_event(
+                        EventName.TRIAGE_SKIPPED,
+                        {
+                            "reason": "no_reserved_capacity",
+                            "reserved_remaining": reserved_capacity,
+                        },
+                    )
+                )
+                return (
+                    "No reserved triage capacity "
+                    f"(remaining={reserved_capacity})"
+                )
+            return None
 
         max_sessions = self.config.max_concurrent_sessions
         if max_sessions - active_session_count <= 0:
