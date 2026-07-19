@@ -53,7 +53,7 @@ logger = logging.getLogger(__name__)
 # Valid per-agent config fields (worktree_base and repo_root removed - now top-level only)
 ALLOWED_AGENT_FIELDS = {
     'prompt', 'provider', 'model', 'timeout_minutes',
-    'permission_mode', 'skip_review', 'reviewer', 'command',
+    'permission_mode', 'skip_review', 'reviewer', 'command', 'sandbox',
     'meta_agent', 'initial_prompt', 'ai_system', 'provider_args', 'retry_prompt_template',
 }
 
@@ -879,6 +879,7 @@ def load_agents_section(
             "meta_agent": agent_data.get("meta_agent"),
             "ai_system": agent_data.get("ai_system"),
             "retry_prompt_template": agent_data.get("retry_prompt_template"),
+            "sandbox": agent_data.get("sandbox", False),  # ADR-0034 opt-in (per-agent)
         }
         if "command" in agent_data:
             agent_kwargs["command"] = agent_data["command"]

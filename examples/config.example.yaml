@@ -58,6 +58,11 @@ agents:
     #   permission_mode: "bypassPermissions"  # Claude Code
     # command: "claude --model {model} '{initial_prompt}'"
     # initial_prompt: "Work on issue #{issue_number}: {issue_title}"
+    # sandbox: false                  # Opt in (default OFF) to the
+    #   # orchestrator-computed OS sandbox (ADR-0034). When true, claude-code
+    #   # agents launch in a bounded sandbox (permission-mode dontAsk, read/write
+    #   # limited to the worktree, model-only egress, credentials denied) instead
+    #   # of bypassPermissions. Per-agent only; not inherited from default_agent.
     # skip_review: false
     # reviewer: "agent:reviewer"     # Override default reviewer
     # meta_agent: "agent:meta"       # Agent label used to supervise this agent

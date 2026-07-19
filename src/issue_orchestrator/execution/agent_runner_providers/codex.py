@@ -6,8 +6,12 @@ Previously in ``_vendor/agent_runner/providers/codex.py``.
 """
 
 from collections.abc import Mapping
+from typing import TYPE_CHECKING
 
 from .base import CLIProvider
+
+if TYPE_CHECKING:
+    from issue_orchestrator.domain.sandbox_scope import SandboxScope
 
 
 class CodexProvider(CLIProvider):
@@ -45,6 +49,8 @@ class CodexProvider(CLIProvider):
         self,
         prompt: str,
         model: str | None = None,
+        *,
+        sandbox_scope: "SandboxScope | None" = None,
         **kwargs: str,
     ) -> list[str]:
         """Build a Codex CLI command.
@@ -52,6 +58,9 @@ class CodexProvider(CLIProvider):
         Args:
             prompt: The task to perform
             model: Model name (e.g., gpt-5.3-codex). If None, uses Codex's default.
+            sandbox_scope: Codex sandbox-scope translation is an ADR-0034
+                follow-up. When set, this raises rather than silently launching
+                an unsandboxed codex agent.
             **kwargs: Additional options:
                 - execution_mode: "interactive" (default) or "exec"
                 - approval_mode: "full-auto" (default), "yolo", or "default"
@@ -76,6 +85,10 @@ class CodexProvider(CLIProvider):
                   opt in with ``execution_mode="exec"`` plus
                   ``json_output="true"``.
         """
+        if sandbox_scope is not None:
+            # Fail loud rather than launch an unsandboxed codex agent.
+            self.apply_scope(sandbox_scope)
+
         execution_mode = self._execution_mode(kwargs)
         json_output = self._truthy(kwargs.get("json_output", "false"))
         if execution_mode == "interactive" and json_output:
@@ -112,6 +125,17 @@ class CodexProvider(CLIProvider):
         cmd.append(prompt)
 
         return cmd
+
+    def apply_scope(self, scope: "SandboxScope") -> list[str]:
+        """Codex sandbox-scope translation is an ADR-0034 follow-up.
+
+        Raises rather than silently launching an unsandboxed codex agent. The
+        second slice replaces this with codex ``--sandbox`` / approval-policy
+        flags derived from *scope*.
+        """
+        from .sandbox import CodexSandboxAdapter
+
+        return CodexSandboxAdapter().apply_scope(scope)
 
     @staticmethod
     def _append_approval_flags(

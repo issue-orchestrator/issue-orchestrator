@@ -9,6 +9,10 @@ Previously in ``_vendor/agent_runner/providers/base.py``.
 import shutil
 import subprocess
 from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from issue_orchestrator.domain.sandbox_scope import SandboxScope
 
 
 class CLIProvider(ABC):
@@ -76,6 +80,8 @@ class CLIProvider(ABC):
         self,
         prompt: str,
         model: str | None = None,
+        *,
+        sandbox_scope: "SandboxScope | None" = None,
         **kwargs: str,
     ) -> list[str]:
         """Build the command-line invocation for this provider.
@@ -83,12 +89,26 @@ class CLIProvider(ABC):
         Args:
             prompt: The task/prompt to send to the agent
             model: Model identifier (provider-specific), None for default
+            sandbox_scope: When set, the bounded sandbox the orchestrator
+                computed for this session. ``None`` (the default) preserves the
+                provider's existing unsandboxed command exactly.
             **kwargs: Provider-specific options (provider_args from YAML)
 
         Returns:
             Command as argv list
         """
         ...
+
+    def apply_scope(self, scope: "SandboxScope") -> list[str]:
+        """Translate a :class:`SandboxScope` into this provider's CLI argv fragment.
+
+        Default: not supported. Providers that can enforce a sandbox override
+        this; a provider that cannot yet raises :class:`NotImplementedError`
+        rather than silently launching unsandboxed.
+        """
+        raise NotImplementedError(
+            f"{self.name} does not support sandbox-scope translation"
+        )
 
     def is_available(self) -> bool:
         """Check if the CLI executable is installed and in PATH."""

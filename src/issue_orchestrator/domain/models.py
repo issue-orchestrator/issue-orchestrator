@@ -13,6 +13,7 @@ from unittest.mock import Mock
 from .dependency_gates import DependencyGateSnapshot
 from .issue_key import IssueKey, GitHubIssueKey, parse_external_id
 from .session_key import SessionKey, TaskKind  # re-exported for callers
+from .sandbox_scope import SandboxScope, SandboxScopeContext, compute_session_scope
 from .session_run import SessionRunAssets
 from .triage_session import (
     ApprovedTriageOp,
@@ -834,6 +835,13 @@ class AgentConfig:
     # Provider-specific arguments (e.g., permission_mode for claude-code, approval_mode for codex)
     # Claude permission modes: default, acceptEdits, bypassPermissions, plan, dontAsk
     provider_args: dict[str, Any] = field(default_factory=dict)
+    # Opt-in (default OFF) to the orchestrator-computed OS sandbox scope
+    # (ADR-0034). When True, launches replace claude-code's yolo
+    # ``bypassPermissions`` with a bounded sandbox (``dontAsk`` + read/write
+    # roots + model-only egress + credential denial) computed per role.
+    # NOTE: distinct from codex's ``provider_args.sandbox`` (a codex CLI policy
+    # string) — this is the provider-agnostic, orchestrator-owned opt-in.
+    sandbox: bool = False
     # Skip code review for this agent (e.g., domain-expert agents that don't produce code)
     skip_review: bool = False
     # Per-agent reviewer override (uses review.default if not set)
@@ -1000,7 +1008,21 @@ class AgentConfig:
         )
         # If provider is set, use provider-based command building
         if self.provider:
-            return self._build_provider_command(rendered_prompt, prompt_for_command, task_kind, extra_provider_args)
+            # Compute the per-session sandbox scope (ADR-0034). Returns None
+            # unless this agent opted in, in which case the command is built
+            # exactly as before (bypassPermissions). The worktree anchors the
+            # sandbox's read/write roots; the task kind selects the role.
+            sandbox_scope = compute_session_scope(
+                self,
+                SandboxScopeContext(task_kind=task_kind, worktree=worktree),
+            )
+            return self._build_provider_command(
+                rendered_prompt,
+                prompt_for_command,
+                task_kind,
+                extra_provider_args,
+                sandbox_scope=sandbox_scope,
+            )
 
         # Legacy template-based command building
         from issue_orchestrator.resources import get_completion_instructions
@@ -1051,6 +1073,8 @@ class AgentConfig:
         prompt_file: str,
         task_kind: str,
         extra_provider_args: dict[str, Any] | None = None,
+        *,
+        sandbox_scope: SandboxScope | None = None,
     ) -> str:
         """Build command using the configured provider.
 
@@ -1060,6 +1084,9 @@ class AgentConfig:
             task_kind: The task kind value (e.g., "code", "rework", "review", "triage").
             extra_provider_args: Per-issue overrides (e.g., from labels) merged on top
                 of the agent's ``provider_args``.
+            sandbox_scope: The per-session sandbox scope (ADR-0034), or ``None``
+                when the agent has not opted in. ``None`` yields the exact
+                unsandboxed command as before.
 
         Returns:
             Shell-safe command string
@@ -1114,7 +1141,9 @@ class AgentConfig:
             # exchange smoke test. An untouched default is "no explicit
             # choice": let the provider use its own default model.
             model = None
-        cmd_list = provider.build_command(prompt=prompt, model=model, **kwargs)
+        cmd_list = provider.build_command(
+            prompt=prompt, model=model, sandbox_scope=sandbox_scope, **kwargs
+        )
 
         # Convert to shell-safe string
         return shlex.join(cmd_list)

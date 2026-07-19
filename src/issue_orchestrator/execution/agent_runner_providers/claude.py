@@ -5,7 +5,12 @@ Builds command-line invocations for Anthropic's Claude Code CLI.
 Previously in ``_vendor/agent_runner/providers/claude.py``.
 """
 
+from typing import TYPE_CHECKING
+
 from .base import CLIProvider
+
+if TYPE_CHECKING:
+    from issue_orchestrator.domain.sandbox_scope import SandboxScope
 
 
 class ClaudeCodeProvider(CLIProvider):
@@ -45,6 +50,8 @@ class ClaudeCodeProvider(CLIProvider):
         self,
         prompt: str,
         model: str | None = None,
+        *,
+        sandbox_scope: "SandboxScope | None" = None,
         **kwargs: str,
     ) -> list[str]:
         """Build a Claude Code CLI command for interactive mode.
@@ -55,8 +62,14 @@ class ClaudeCodeProvider(CLIProvider):
         Args:
             prompt: The task to perform (passed as positional arg)
             model: Model name (haiku, sonnet, opus, or full model ID). None for default.
+            sandbox_scope: When set, replaces the default ``bypassPermissions``
+                (yolo) launch with a bounded OS sandbox — ``--permission-mode
+                dontAsk`` plus inline ``--settings`` describing the read/write
+                roots, egress, and denied credentials. ``None`` (default) keeps
+                the existing command byte-for-byte.
             **kwargs: Additional options:
-                - permission_mode: Permission handling mode (default: bypassPermissions)
+                - permission_mode: Permission handling mode (default: bypassPermissions).
+                  Ignored when ``sandbox_scope`` is set (``dontAsk`` is forced).
                 - effort: Claude effort level (low, medium, high, xhigh, max)
                 - reasoning_effort: Alias for effort
                 - system_prompt: Additional system prompt text
@@ -73,9 +86,14 @@ class ClaudeCodeProvider(CLIProvider):
         if effort:
             cmd.extend(["--effort", effort])
 
-        # Permission mode (default to bypassPermissions for automation)
-        permission_mode = kwargs.get("permission_mode", "bypassPermissions")
-        cmd.extend(["--permission-mode", permission_mode])
+        if sandbox_scope is not None:
+            # Bounded OS sandbox: dontAsk + inline --settings. Replaces the
+            # default bypassPermissions (yolo) permission-mode flag.
+            cmd.extend(self.apply_scope(sandbox_scope))
+        else:
+            # Permission mode (default to bypassPermissions for automation)
+            permission_mode = kwargs.get("permission_mode", "bypassPermissions")
+            cmd.extend(["--permission-mode", permission_mode])
 
         # Optional system prompt
         system_prompt = kwargs.get("system_prompt")
@@ -102,6 +120,16 @@ class ClaudeCodeProvider(CLIProvider):
             cmd.append(prompt)
 
         return cmd
+
+    def apply_scope(self, scope: "SandboxScope") -> list[str]:
+        """Translate a :class:`SandboxScope` into claude-code sandbox argv.
+
+        Delegates to the provider sandbox adapter (``--permission-mode dontAsk``
+        plus an inline ``--settings`` JSON describing the OS sandbox).
+        """
+        from .sandbox import build_claude_sandbox_argv
+
+        return build_claude_sandbox_argv(scope)
 
     @classmethod
     def _resolve_effort(cls, kwargs: dict[str, str]) -> str | None:
