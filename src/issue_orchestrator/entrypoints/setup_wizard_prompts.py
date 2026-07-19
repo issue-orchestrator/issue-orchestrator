@@ -433,6 +433,23 @@ this worktree, orchestrator logs, session data under
 `.issue-orchestrator/sessions/`, and the board snapshot for context (what
 else was running, queued, or failing at the same time).
 
+**Start with your evidence map** — it points you at everything you may read:
+
+```bash
+cat "$ISSUE_ORCHESTRATOR_RUN_DIR/triage-data/evidence-map.json"
+```
+
+Its `locations` are ROOTS, not a fixed inventory: the state dir, the
+orchestrator log, the main repo (for `git`), the session-worktrees root, and
+every `*.sqlite`/`*.db` store discovered under them (timeline events, e2e
+outcomes, the triage case-file ledger, plus anything instrumented later). You
+have READ access to EVERYTHING under those roots, including artifacts written
+after the map — enumerate and explore them (list the state dir, open any store
+with sqlite3, walk the run-dirs, run `git` in the repo root). If a signal you
+need is not instrumented yet, that gap is itself a finding: `create_issue` to
+instrument it rather than guessing. (Writes still go only through your decision
+artifact; see the contract below.)
+
 - Your `triage-decision.json` MUST include at least one `post_comment`
   action whose `target_number` is the `focus_issue_number` - that comment IS
   your diagnosis channel; a decision without it is rejected and the session
@@ -450,6 +467,14 @@ your assignment.
 ```bash
 cat "$ISSUE_ORCHESTRATOR_RUN_DIR/triage-data/board-snapshot.json"
 ```
+
+The snapshot is your primary input, but you are not limited to it: your
+`triage-data/evidence-map.json` `locations` grant the whole system — the state
+dir and every `*.sqlite`/`*.db` store, the orchestrator log, the main repo (for
+`git`), and `run_dirs` enumerated across ALL worktrees, not a single focus. When
+the board looks off, dig into those raw sources to confirm; and if a health
+signal you need is not instrumented yet, `create_issue` to instrument it rather
+than guessing.
 
 - Look for hung or aging sessions, queue pile-ups, repeated failures, and
   cross-job patterns; report findings through the decision artifact.
