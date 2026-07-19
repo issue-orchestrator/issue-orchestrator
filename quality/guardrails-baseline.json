@@ -1528,14 +1528,6 @@
       "rule_id": "oversized_control_hotspots",
       "value": 1624
     },
-    "oversized_control_hotspots:src/issue_orchestrator/infra/e2e_runner.py": {
-      "detail": "859 lines exceeds budget 800",
-      "kind": "file_line_budget",
-      "metric_id": "src/issue_orchestrator/infra/e2e_runner.py",
-      "path": "src/issue_orchestrator/infra/e2e_runner.py",
-      "rule_id": "oversized_control_hotspots",
-      "value": 859
-    },
     "oversized_control_hotspots:src/issue_orchestrator/infra/hooks/hooks.py": {
       "detail": "1274 lines exceeds budget 800",
       "kind": "file_line_budget",

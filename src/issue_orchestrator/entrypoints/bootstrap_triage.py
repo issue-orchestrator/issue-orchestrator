@@ -116,7 +116,7 @@ def create_triage_fact_gatherer(
     if repository_host is None:
         return None
     from ..control.fact_gatherer import FactGatherer
-    from ..infra.e2e_runner import make_e2e_slot_reader
+    from ..infra.e2e_slot_policy import make_e2e_slot_reader
 
     return FactGatherer(
         config=config,

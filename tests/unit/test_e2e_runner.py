@@ -13,13 +13,14 @@ from issue_orchestrator.infra.config_models import E2EConfig
 from issue_orchestrator.infra.e2e_runner import (
     E2ERunnerManager,
     E2EAlreadyRunning,
-    E2ESlotSignals,
     _build_worker_env,
     _resolve_repo_python,
     get_e2e_runner_manager,
-    is_e2e_due,
-    make_e2e_slot_reader,
     maybe_trigger_e2e,
+)
+from issue_orchestrator.infra.e2e_slot_policy import (
+    E2ESlotSignals,
+    make_e2e_slot_reader,
 )
 from issue_orchestrator.infra.e2e_db import E2EDB, E2ERun
 
@@ -509,9 +510,9 @@ class TestMaybeTriggerE2E:
 
         assert result is False
 
-    @patch("issue_orchestrator.infra.e2e_runner._get_main_head")
+    @patch("issue_orchestrator.infra.e2e_slot_policy._get_main_head")
     @patch("issue_orchestrator.infra.e2e_runner.get_e2e_runner_manager")
-    @patch("issue_orchestrator.infra.e2e_runner.E2EDB")
+    @patch("issue_orchestrator.infra.e2e_slot_policy.E2EDB")
     def test_trigger_too_soon(self, mock_db_class, mock_get_manager, mock_get_head, mock_config, tmp_path: Path):
         """Test that trigger returns False when last run was too recent."""
         from datetime import datetime, timezone, timedelta
@@ -540,9 +541,9 @@ class TestMaybeTriggerE2E:
 
         assert result is False
 
-    @patch("issue_orchestrator.infra.e2e_runner._get_main_head")
+    @patch("issue_orchestrator.infra.e2e_slot_policy._get_main_head")
     @patch("issue_orchestrator.infra.e2e_runner.get_e2e_runner_manager")
-    @patch("issue_orchestrator.infra.e2e_runner.E2EDB")
+    @patch("issue_orchestrator.infra.e2e_slot_policy.E2EDB")
     def test_trigger_same_head_skips(self, mock_db_class, mock_get_manager, mock_get_head, mock_config, tmp_path: Path):
         """Test that trigger returns False when main HEAD unchanged."""
         from datetime import datetime, timezone, timedelta
@@ -704,7 +705,7 @@ class TestE2ESlotReader:
         assert signals.occupies_slot is True
         assert signals.due is False
 
-    @patch("issue_orchestrator.infra.e2e_runner.is_e2e_due")
+    @patch("issue_orchestrator.infra.e2e_slot_policy.is_e2e_due")
     @patch("issue_orchestrator.infra.e2e_runner.get_e2e_runner_manager")
     def test_due_when_not_running_and_due(self, mock_get_manager, mock_is_due, tmp_path):
         mock_manager = MagicMock()
@@ -718,7 +719,7 @@ class TestE2ESlotReader:
         assert signals.occupies_slot is False
         assert signals.due is True
 
-    @patch("issue_orchestrator.infra.e2e_runner.is_e2e_due")
+    @patch("issue_orchestrator.infra.e2e_slot_policy.is_e2e_due")
     @patch("issue_orchestrator.infra.e2e_runner.get_e2e_runner_manager")
     def test_not_running_not_due_is_empty(self, mock_get_manager, mock_is_due, tmp_path):
         mock_manager = MagicMock()
