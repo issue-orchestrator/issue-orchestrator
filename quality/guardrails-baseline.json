@@ -1345,12 +1345,12 @@
       "value": 1464
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/planner.py": {
-      "detail": "1750 lines exceeds budget 800",
+      "detail": "1781 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/control/planner.py",
       "path": "src/issue_orchestrator/control/planner.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 1750
+      "value": 1781
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/session_controller.py": {
       "detail": "1910 lines exceeds budget 800",
@@ -1505,20 +1505,20 @@
       "value": 1641
     },
     "oversized_control_hotspots:src/issue_orchestrator/infra/config.py": {
-      "detail": "1504 lines exceeds budget 800",
+      "detail": "1506 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/infra/config.py",
       "path": "src/issue_orchestrator/infra/config.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 1504
+      "value": 1506
     },
     "oversized_control_hotspots:src/issue_orchestrator/infra/config_sections.py": {
-      "detail": "900 lines exceeds budget 800",
+      "detail": "901 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/infra/config_sections.py",
       "path": "src/issue_orchestrator/infra/config_sections.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 900
+      "value": 901
     },
     "oversized_control_hotspots:src/issue_orchestrator/infra/e2e_db.py": {
       "detail": "1624 lines exceeds budget 800",
@@ -1527,6 +1527,14 @@
       "path": "src/issue_orchestrator/infra/e2e_db.py",
       "rule_id": "oversized_control_hotspots",
       "value": 1624
+    },
+    "oversized_control_hotspots:src/issue_orchestrator/infra/e2e_runner.py": {
+      "detail": "859 lines exceeds budget 800",
+      "kind": "file_line_budget",
+      "metric_id": "src/issue_orchestrator/infra/e2e_runner.py",
+      "path": "src/issue_orchestrator/infra/e2e_runner.py",
+      "rule_id": "oversized_control_hotspots",
+      "value": 859
     },
     "oversized_control_hotspots:src/issue_orchestrator/infra/hooks/hooks.py": {
       "detail": "1274 lines exceeds budget 800",
@@ -1537,12 +1545,12 @@
       "value": 1274
     },
     "oversized_control_hotspots:src/issue_orchestrator/infra/orchestrator.py": {
-      "detail": "1059 lines exceeds budget 800",
+      "detail": "1067 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/infra/orchestrator.py",
       "path": "src/issue_orchestrator/infra/orchestrator.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 1059
+      "value": 1067
     },
     "oversized_control_hotspots:src/issue_orchestrator/infra/supervisor.py": {
       "detail": "984 lines exceeds budget 800",

@@ -74,6 +74,76 @@ def fact_gatherer(mock_config, mock_repository_host):
     return FactGatherer(config=mock_config, repository_host=mock_repository_host)
 
 
+class TestFactGathererE2ESlotFacts:
+    """The E2E worker-slot facts are threaded from the injected reader into the
+    snapshot only when e2e.occupies_session_slot is on (observation boundary)."""
+
+    def test_flag_off_leaves_facts_false_without_calling_reader(
+        self, mock_config, mock_repository_host, sample_state, sample_issues
+    ):
+        assert mock_config.e2e.occupies_session_slot is False
+        reader = Mock()
+        gatherer = FactGatherer(
+            config=mock_config,
+            repository_host=mock_repository_host,
+            e2e_slot_reader=reader,
+        )
+
+        snapshot = gatherer.create_snapshot(sample_state, sample_issues)
+
+        assert snapshot.e2e_occupies_slot is False
+        assert snapshot.e2e_due is False
+        reader.assert_not_called()
+
+    def test_running_signal_sets_occupies_slot(
+        self, mock_config, mock_repository_host, sample_state, sample_issues
+    ):
+        from issue_orchestrator.infra.e2e_runner import E2ESlotSignals
+
+        mock_config.e2e.occupies_session_slot = True
+        gatherer = FactGatherer(
+            config=mock_config,
+            repository_host=mock_repository_host,
+            e2e_slot_reader=lambda: E2ESlotSignals(occupies_slot=True, due=False),
+        )
+
+        snapshot = gatherer.create_snapshot(sample_state, sample_issues)
+
+        assert snapshot.e2e_occupies_slot is True
+        assert snapshot.e2e_due is False
+
+    def test_due_signal_sets_e2e_due(
+        self, mock_config, mock_repository_host, sample_state, sample_issues
+    ):
+        from issue_orchestrator.infra.e2e_runner import E2ESlotSignals
+
+        mock_config.e2e.occupies_session_slot = True
+        gatherer = FactGatherer(
+            config=mock_config,
+            repository_host=mock_repository_host,
+            e2e_slot_reader=lambda: E2ESlotSignals(occupies_slot=False, due=True),
+        )
+
+        snapshot = gatherer.create_snapshot(sample_state, sample_issues)
+
+        assert snapshot.e2e_occupies_slot is False
+        assert snapshot.e2e_due is True
+
+    def test_unwired_reader_leaves_facts_false(
+        self, mock_config, mock_repository_host, sample_state, sample_issues
+    ):
+        """Flag on but no reader wired (unrelated test composition) stays safe."""
+        mock_config.e2e.occupies_session_slot = True
+        gatherer = FactGatherer(
+            config=mock_config, repository_host=mock_repository_host
+        )
+
+        snapshot = gatherer.create_snapshot(sample_state, sample_issues)
+
+        assert snapshot.e2e_occupies_slot is False
+        assert snapshot.e2e_due is False
+
+
 class TestFactGathererCreateSnapshot:
     """Tests for create_snapshot method."""
 

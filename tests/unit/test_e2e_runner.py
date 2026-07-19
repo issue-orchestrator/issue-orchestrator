@@ -13,9 +13,12 @@ from issue_orchestrator.infra.config_models import E2EConfig
 from issue_orchestrator.infra.e2e_runner import (
     E2ERunnerManager,
     E2EAlreadyRunning,
+    E2ESlotSignals,
     _build_worker_env,
     _resolve_repo_python,
     get_e2e_runner_manager,
+    is_e2e_due,
+    make_e2e_slot_reader,
     maybe_trigger_e2e,
 )
 from issue_orchestrator.infra.e2e_db import E2EDB, E2ERun
@@ -471,6 +474,10 @@ class TestMaybeTriggerE2E:
         config.e2e.allow_retry_once = True
         config.e2e.quarantine_file = "tests/e2e/quarantine.txt"
         config.e2e.role = "auto"  # Default role
+        # First-class worker workload OFF by default: these tests assert the
+        # unchanged trigger path (no worker-slot start-gate). A truthy MagicMock
+        # default would silently arm the gate, so pin it to the real default.
+        config.e2e.occupies_session_slot = False
         config.repo_root = tmp_path
         config.orchestrator_id = "test-orch"
         return config
@@ -593,6 +600,135 @@ class TestMaybeTriggerE2E:
         result = maybe_trigger_e2e(mock_config, tmp_path, "test-orch")
 
         assert result is False
+
+
+class TestE2EWorkerSlotStartGate:
+    """e2e.occupies_session_slot: the worker-slot start-gate on the trigger.
+
+    When the flag is on, a run only starts if the caller reports a free worker
+    slot. When off, ``worker_slot_free`` is ignored (byte-for-byte unchanged).
+    """
+
+    @pytest.fixture
+    def slot_config(self, tmp_path: Path):
+        config = MagicMock()
+        config.e2e.enabled = True
+        config.e2e.auto_run_interval_minutes = 30
+        config.e2e.pytest_args = ["tests/e2e", "-v"]
+        config.e2e.allow_retry_once = True
+        config.e2e.quarantine_file = "tests/e2e/quarantine.txt"
+        config.e2e.role = "auto"
+        config.e2e.occupies_session_slot = True
+        config.e2e.auto_quarantine = False
+        config.e2e.run_retention_count = 50
+        config.repo_root = tmp_path
+        config.orchestrator_id = "test-orch"
+        return config
+
+    @patch("issue_orchestrator.infra.e2e_runner._get_main_head")
+    @patch("issue_orchestrator.infra.e2e_runner.get_e2e_runner_manager")
+    def test_flag_on_no_free_slot_defers(self, mock_get_manager, mock_get_head, slot_config, tmp_path):
+        mock_manager = MagicMock()
+        mock_manager.status.return_value = {"running": False}
+        mock_get_manager.return_value = mock_manager
+        mock_get_head.return_value = "abc123"
+
+        result = maybe_trigger_e2e(
+            slot_config, tmp_path, "test-orch", worker_slot_free=False
+        )
+
+        assert result is False
+        mock_manager.start_or_resume.assert_not_called()
+
+    @patch("issue_orchestrator.infra.e2e_runner._get_main_head")
+    @patch("issue_orchestrator.infra.e2e_runner.get_e2e_runner_manager")
+    def test_flag_on_free_slot_starts(self, mock_get_manager, mock_get_head, slot_config, tmp_path):
+        mock_manager = MagicMock()
+        mock_manager.status.return_value = {"running": False}
+        mock_manager.start_or_resume.return_value = {"pid": 1, "log_path": "/tmp/l", "resumed": False}
+        mock_get_manager.return_value = mock_manager
+        mock_get_head.return_value = "abc123"
+
+        result = maybe_trigger_e2e(
+            slot_config, tmp_path, "test-orch", worker_slot_free=True
+        )
+
+        assert result is True
+        mock_manager.start_or_resume.assert_called_once()
+
+    @patch("issue_orchestrator.infra.e2e_runner._get_main_head")
+    @patch("issue_orchestrator.infra.e2e_runner.get_e2e_runner_manager")
+    def test_flag_off_ignores_worker_slot(self, mock_get_manager, mock_get_head, slot_config, tmp_path):
+        """Flag off: a saturated worker budget does NOT block the trigger."""
+        slot_config.e2e.occupies_session_slot = False
+        mock_manager = MagicMock()
+        mock_manager.status.return_value = {"running": False}
+        mock_manager.start_or_resume.return_value = {"pid": 1, "log_path": "/tmp/l", "resumed": False}
+        mock_get_manager.return_value = mock_manager
+        mock_get_head.return_value = "abc123"
+
+        result = maybe_trigger_e2e(
+            slot_config, tmp_path, "test-orch", worker_slot_free=False
+        )
+
+        assert result is True
+
+
+class TestE2ESlotReader:
+    """make_e2e_slot_reader: the observation feed the fact gatherer threads
+    into the snapshot so the planner learns E2E is running / due."""
+
+    def _config(self, tmp_path, *, occupies: bool):
+        config = MagicMock()
+        config.repo_root = tmp_path
+        config.orchestrator_id = "test-orch"
+        config.e2e.occupies_session_slot = occupies
+        return config
+
+    @patch("issue_orchestrator.infra.e2e_runner.get_e2e_runner_manager")
+    def test_flag_off_returns_empty_without_touching_runner(self, mock_get_manager, tmp_path):
+        reader = make_e2e_slot_reader(self._config(tmp_path, occupies=False))
+
+        assert reader() == E2ESlotSignals(occupies_slot=False, due=False)
+        mock_get_manager.assert_not_called()
+
+    @patch("issue_orchestrator.infra.e2e_runner.get_e2e_runner_manager")
+    def test_running_reports_occupies_slot(self, mock_get_manager, tmp_path):
+        mock_manager = MagicMock()
+        mock_manager.status.return_value = {"running": True, "pid": 7}
+        mock_get_manager.return_value = mock_manager
+
+        reader = make_e2e_slot_reader(self._config(tmp_path, occupies=True))
+        signals = reader()
+
+        assert signals.occupies_slot is True
+        assert signals.due is False
+
+    @patch("issue_orchestrator.infra.e2e_runner.is_e2e_due")
+    @patch("issue_orchestrator.infra.e2e_runner.get_e2e_runner_manager")
+    def test_due_when_not_running_and_due(self, mock_get_manager, mock_is_due, tmp_path):
+        mock_manager = MagicMock()
+        mock_manager.status.return_value = {"running": False}
+        mock_get_manager.return_value = mock_manager
+        mock_is_due.return_value = True
+
+        reader = make_e2e_slot_reader(self._config(tmp_path, occupies=True))
+        signals = reader()
+
+        assert signals.occupies_slot is False
+        assert signals.due is True
+
+    @patch("issue_orchestrator.infra.e2e_runner.is_e2e_due")
+    @patch("issue_orchestrator.infra.e2e_runner.get_e2e_runner_manager")
+    def test_not_running_not_due_is_empty(self, mock_get_manager, mock_is_due, tmp_path):
+        mock_manager = MagicMock()
+        mock_manager.status.return_value = {"running": False}
+        mock_get_manager.return_value = mock_manager
+        mock_is_due.return_value = False
+
+        reader = make_e2e_slot_reader(self._config(tmp_path, occupies=True))
+
+        assert reader() == E2ESlotSignals(occupies_slot=False, due=False)
 
 
 def test_command_runner_execution_spec_requires_command() -> None:

@@ -553,6 +553,17 @@ class E2EConfig:
     enabled: bool = False  # Whether E2E runner is active
     role: str = "auto"  # auto | executor | reader | disabled
     auto_run_interval_minutes: int = 30  # Min interval between auto runs (0 = disable auto)
+    # Make an E2E run a first-class workload in the concurrency budget. None of
+    # today's parallel behavior changes while this is False (the default): E2E
+    # triggers alongside agents. When True, an E2E run counts against the WORKER
+    # budget (``max_concurrent_sessions``) — NOT the reserved triage slot: it
+    # starts only when a worker slot is free, and while it runs it occupies one
+    # slot so the planner launches one fewer agent (they interleave over time).
+    # A due suite claims a slot AHEAD of new issues but BEHIND in-flight
+    # completion work (reviews/reworks/validation-retries/triage), which are
+    # never preempted. Leave off unless the machine is resource-constrained
+    # enough that a second full orchestrator workload starves live agents.
+    occupies_session_slot: bool = False
     runner_kind: str = "pytest"  # pytest | command
     pytest_args: list[str] = field(default_factory=lambda: ["tests/e2e", "-v"])
     command: list[str] = field(default_factory=list)  # Generic command when runner_kind=command

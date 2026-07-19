@@ -173,6 +173,12 @@ goal_pilot:
 e2e:
   enabled: true
   auto_run_interval_minutes: 240
+  # occupies_session_slot: true  # Make E2E a first-class worker workload: it
+  # counts against max_concurrent_sessions (not the reserved triage slot),
+  # starts only with a free worker slot, and occupies one while running so the
+  # planner launches one fewer agent. Left off (default) = today's parallel
+  # behavior. Turn on only if a second orchestrator-sized workload is starving
+  # live agents on this machine.
   runner_kind: pytest
   pytest_args:
     - tests/e2e

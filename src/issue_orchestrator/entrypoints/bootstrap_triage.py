@@ -116,6 +116,7 @@ def create_triage_fact_gatherer(
     if repository_host is None:
         return None
     from ..control.fact_gatherer import FactGatherer
+    from ..infra.e2e_runner import make_e2e_slot_reader
 
     return FactGatherer(
         config=config,
@@ -124,6 +125,9 @@ def create_triage_fact_gatherer(
         triage_authority=authority,
         board_publisher=board_publisher,
         queue_cache_store=queue_cache_store,
+        # First-class E2E workload observation feed (e2e.occupies_session_slot).
+        # Always wired; a no-op that touches nothing while the flag is off.
+        e2e_slot_reader=make_e2e_slot_reader(config),
     )
 
 

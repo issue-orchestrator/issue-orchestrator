@@ -1082,6 +1082,8 @@ class Config:
             e2e_dict["role"] = self.e2e.role
         if self.e2e.auto_run_interval_minutes != 30:
             e2e_dict["auto_run_interval_minutes"] = self.e2e.auto_run_interval_minutes
+        if self.e2e.occupies_session_slot:
+            e2e_dict["occupies_session_slot"] = True
         if self.e2e.runner_kind != "pytest":
             e2e_dict["runner_kind"] = self.e2e.runner_kind
         if self.e2e.pytest_args != ["tests/e2e", "-v"]:

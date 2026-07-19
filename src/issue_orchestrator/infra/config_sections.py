@@ -130,6 +130,7 @@ def parse_e2e_config(data: dict) -> E2EConfig:
         enabled=data.get("enabled", False),
         role=role,
         auto_run_interval_minutes=data.get("auto_run_interval_minutes", 30),
+        occupies_session_slot=data.get("occupies_session_slot", False),
         runner_kind=runner_kind,
         pytest_args=list(pytest_args),
         command=list(command),

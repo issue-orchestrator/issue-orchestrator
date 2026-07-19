@@ -78,7 +78,10 @@ from .awaiting_merge_post_publish_policy import (
 from .reactive_triage_planning import plan_reactive_triage
 from .triage_proposals import plan_approved_triage_op_executions
 from .triage_reaction import TriageReactionPolicy
-from .triage_session_policy import is_triage_session
+from .worker_budget import (
+    active_triage_session_count,
+    active_worker_session_count,
+)
 from .reconciliation import build_expected_for_mutation
 from .planner_types import OrchestratorSnapshot, Plan, PlanContext, SkippedItem
 from .triage_issue_policy import (
@@ -313,17 +316,11 @@ class Planner:
     def _active_triage_count(self, snapshot: OrchestratorSnapshot) -> int:
         """Number of currently-active triage (tech-lead) sessions.
 
-        Triage identity is the ADR-0031 owner rule: a session whose agent
-        label is the configured ``triage_review_agent`` (both triage variants
-        launch as ``issue-{N}`` sessions under that agent, so the agent label
-        is what distinguishes them). ``agent_label`` is set to the issue's
-        agent type at launch (see ``SessionLauncher``).
+        Delegates to the worker-budget owner so the "what is a triage session"
+        rule (ADR-0031: agent label == configured ``triage_review_agent``) has
+        a single definition shared with the E2E worker-slot gate.
         """
-        return sum(
-            1
-            for session in snapshot.active_sessions
-            if is_triage_session(self.config.triage_review_agent, session.agent_label)
-        )
+        return active_triage_session_count(self.config, snapshot.active_sessions)
 
     def _launch_budgets(
         self, snapshot: OrchestratorSnapshot
@@ -337,14 +334,23 @@ class Planner:
         capacity nor count against ``max_concurrent_sessions`` — and triage
         draws from its own ``max_concurrent - active_triage`` budget so the
         tech lead can launch even at worker saturation.
+
+        A running first-class E2E workload (``snapshot.e2e_occupies_slot``, only
+        ever set when ``e2e.occupies_session_slot`` is on) occupies one WORKER
+        slot for as long as it runs, so worker capacity drops by 1 — one fewer
+        agent launches. It is charged to the worker budget ONLY: the reserved
+        triage capacity is untouched, so the tech lead still runs in its own
+        slot while E2E holds a worker slot.
         """
         reserved = self.config.triage.max_concurrent
-        if reserved is None:
-            return self.config.max_concurrent_sessions - snapshot.active_count, None
-        active_triage = self._active_triage_count(snapshot)
         worker_capacity = self.config.max_concurrent_sessions - (
-            snapshot.active_count - active_triage
+            active_worker_session_count(self.config, snapshot.active_sessions)
         )
+        if snapshot.e2e_occupies_slot:
+            worker_capacity -= 1
+        if reserved is None:
+            return worker_capacity, None
+        active_triage = self._active_triage_count(snapshot)
         return worker_capacity, reserved - active_triage
 
     def _plan_session_launches(
@@ -449,6 +455,10 @@ class Planner:
                 capacity -= len(triage_actions)
             triage_launch_count = len(triage_actions)
 
+        # 5b. Reserve one worker slot for a due first-class E2E run — after all
+        # completion work above, before new issues below (see method docstring).
+        capacity = self._reserve_e2e_worker_slot(snapshot, capacity)
+
         # 6. Plan issue launches with remaining capacity.
         #
         # Reviews/reworks/triage get priority (they consumed capacity above),
@@ -479,6 +489,27 @@ class Planner:
             skipped.extend(issue_skipped)
 
         return actions, skipped
+
+    def _reserve_e2e_worker_slot(
+        self, snapshot: OrchestratorSnapshot, capacity: int
+    ) -> int:
+        """Hold back one worker slot for a due first-class E2E run.
+
+        ``snapshot.e2e_due`` is only ever set when ``e2e.occupies_session_slot``
+        is on (byte-for-byte off by default), and never at the same time as
+        ``e2e_occupies_slot`` (a run is not "due" while it is already active).
+        The caller invokes this AFTER all in-flight completion work (reviews/
+        retrospectives/reworks/validation-retries/triage) has consumed its
+        share, but BEFORE new issues — so a due suite claims a slot ahead of new
+        issues yet never preempts completion work: on a saturated board the
+        completion work simply leaves nothing to reserve and E2E waits. The
+        reservation only holds the slot back from new-issue launches; the run
+        itself starts post-tick in ``maybe_trigger_e2e``, gated on the freed
+        worker slot.
+        """
+        if snapshot.e2e_due and capacity > 0:
+            return capacity - 1
+        return capacity
 
     def _plan_discovered_reviews(self, snapshot: OrchestratorSnapshot) -> list[Action]:
         """Plan queue actions for discovered reviews from session completions.

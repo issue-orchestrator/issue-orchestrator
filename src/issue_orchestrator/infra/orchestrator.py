@@ -62,6 +62,7 @@ from ..control.session_routing import (
     get_session_machine as _sl_get_session_machine,
 )
 from ..control.cleanup_manager import CleanupManager
+from ..control.worker_budget import worker_slot_free
 from ..control.review_exchange_lifecycle import (
     IssueRuntimeTermination,
     ReviewExchangeCancellation,
@@ -438,6 +439,15 @@ class Orchestrator:
             orchestrator_id=self.config.orchestrator_id,
             instance_id=instance_id,
             orchestrator_instance_id=self.deps.services.instance_id,
+            # Worker-slot start-gate for a first-class E2E run: only when
+            # e2e.occupies_session_slot is on does this decide whether the run
+            # starts. Same worker-budget accounting the planner uses (triage's
+            # reserved slot excluded), so E2E competes for the WORKER budget,
+            # not the tech-lead's slot. Computed after the tick's launches, so
+            # it sees the slot the planner reserved for a due suite left free.
+            worker_slot_free=worker_slot_free(
+                self.config, self.state.active_sessions
+            ),
         )
         if triggered:
             self.deps.events.publish(TraceEvent(

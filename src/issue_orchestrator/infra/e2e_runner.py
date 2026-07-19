@@ -9,9 +9,10 @@ import os
 import signal
 import subprocess
 import sys
+from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Callable, Optional
 
 from .config_models import E2EExecutionSpec
 from .e2e_db import E2EDB
@@ -676,18 +677,98 @@ def _check_e2e_interval_and_head(config: "Config", repo_root: Path, orchestrator
     return False
 
 
+def is_e2e_due(
+    config: "Config",
+    repo_root: Path,
+    orchestrator_id: str,
+    instance_id: str | None = None,
+) -> bool:
+    """Whether the auto-trigger's due-conditions are ALL met (ignoring slots).
+
+    This is exactly the pair of guards ``maybe_trigger_e2e`` applies before it
+    starts a run — enabled + interval configured + executor role + not already
+    running + interval elapsed + main HEAD changed — factored out so the
+    observation layer can gather an ``e2e_due`` fact without duplicating (or
+    drifting from) the trigger's own precondition logic. It is deliberately
+    slot-agnostic: the worker-slot start-gate is applied only by the trigger.
+    """
+    if _should_skip_e2e_trigger(config, repo_root, orchestrator_id, instance_id):
+        return False
+    if _check_e2e_interval_and_head(config, repo_root, orchestrator_id):
+        return False
+    return True
+
+
+@dataclass(frozen=True)
+class E2ESlotSignals:
+    """Observation of how a first-class E2E workload relates to worker slots.
+
+    ``occupies_slot`` — an E2E run is active right now, so it holds one worker
+    slot (the planner drops worker capacity by 1). ``due`` — the suite is due
+    and no run is active, so the planner reserves a slot for it. At most one is
+    ever True; both are False when ``e2e.occupies_session_slot`` is off, which
+    the reader factory guards so the default path does zero extra work.
+    """
+
+    occupies_slot: bool = False
+    due: bool = False
+
+
+def make_e2e_slot_reader(
+    config: "Config",
+) -> Callable[[], E2ESlotSignals]:
+    """Build the observation reader the fact gatherer threads into the snapshot.
+
+    Returns a zero-arg callable so the planner learns "E2E is running / due"
+    through the snapshot fact, never by reaching into the runner. Off by
+    default: when ``e2e.occupies_session_slot`` is disabled the reader returns
+    empty signals WITHOUT touching the runner, DB, or git, keeping the default
+    scheduling path byte-for-byte unchanged.
+    """
+    repo_root = config.repo_root
+    orchestrator_id = config.orchestrator_id
+
+    def _read() -> E2ESlotSignals:
+        if not config.e2e.occupies_session_slot:
+            return E2ESlotSignals()
+        instance_id = os.environ.get("INSTANCE_ID")
+        running = get_e2e_runner_manager().status(orchestrator_id)["running"]
+        if running:
+            return E2ESlotSignals(occupies_slot=True, due=False)
+        due = is_e2e_due(config, repo_root, orchestrator_id, instance_id)
+        return E2ESlotSignals(occupies_slot=False, due=due)
+
+    return _read
+
+
 def maybe_trigger_e2e(
     config: "Config",
     repo_root: Path,
     orchestrator_id: str,
     instance_id: str | None = None,
     orchestrator_instance_id: str = "",
+    worker_slot_free: bool | None = None,
 ) -> bool:
-    """Check if E2E tests should be auto-triggered and start if appropriate."""
+    """Check if E2E tests should be auto-triggered and start if appropriate.
+
+    ``worker_slot_free`` is the WORKER-budget start-gate for the first-class
+    E2E workload (``e2e.occupies_session_slot``): when that flag is on, a run
+    starts only if the caller reports a free worker slot, so E2E never launches
+    a second orchestrator-sized workload onto a saturated worker budget. The
+    flag being off (default) ignores ``worker_slot_free`` entirely — the
+    trigger path is byte-for-byte unchanged.
+    """
     if _should_skip_e2e_trigger(config, repo_root, orchestrator_id, instance_id):
         return False
 
     if _check_e2e_interval_and_head(config, repo_root, orchestrator_id):
+        return False
+
+    if config.e2e.occupies_session_slot and not worker_slot_free:
+        logger.debug(
+            "E2E auto-trigger: deferring, no free worker slot "
+            "(occupies_session_slot on)"
+        )
         return False
 
     # All conditions met - trigger E2E (or resume interrupted)

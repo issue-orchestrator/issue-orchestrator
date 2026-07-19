@@ -78,6 +78,16 @@ class OrchestratorSnapshot:
     failed_this_cycle: frozenset[int] = field(default_factory=frozenset)
     # Issues that completed this session (have session_history entries)
     session_history_issue_numbers: frozenset[int] = field(default_factory=frozenset)
+    # E2E-as-first-class-workload facts (e2e.occupies_session_slot). Both are
+    # False in the default (flag off), so every capacity path is byte-for-byte
+    # unchanged. When the flag is on, EXACTLY one can be true on a given tick:
+    #   * e2e_occupies_slot: an E2E run is active RIGHT NOW, so it holds one
+    #     worker slot — ``_launch_budgets`` drops worker capacity by 1.
+    #   * e2e_due: the suite is due to run and no run is active, so the planner
+    #     reserves one worker slot AFTER completion work but BEFORE new issues,
+    #     letting a due suite beat new issues without preempting reviews/reworks.
+    e2e_occupies_slot: bool = False
+    e2e_due: bool = False
 
     @property
     def active_count(self) -> int:

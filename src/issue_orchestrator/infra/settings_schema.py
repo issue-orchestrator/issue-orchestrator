@@ -292,6 +292,27 @@ class E2ESettings(BaseModel):
             "yaml_path": "e2e.role",
         },
     )
+    occupies_session_slot: bool = Field(
+        False,
+        title="Count E2E against the session budget",
+        description="Treat an E2E run as a first-class worker workload",
+        json_schema_extra={
+            "doc_examples": ["true", "false"],
+            "doc_notes": (
+                "Off (default) keeps today's parallel behavior: E2E runs "
+                "alongside agents. On, an E2E run counts against "
+                "max_concurrent_sessions (not the reserved triage slot): it "
+                "starts only when a worker slot is free, occupies one slot "
+                "while running so the planner launches one fewer agent, and a "
+                "due suite claims a slot ahead of new issues but behind "
+                "in-flight reviews/reworks/validation-retries/triage. Enable on "
+                "resource-constrained machines where a second orchestrator "
+                "workload would starve live agents."
+            ),
+            "config_attr": "e2e.occupies_session_slot",
+            "yaml_path": "e2e.occupies_session_slot",
+        },
+    )
     runner_kind: Literal["pytest", "command"] = Field(
         "pytest",
         title="Runner Kind",

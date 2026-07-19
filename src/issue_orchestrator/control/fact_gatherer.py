@@ -25,7 +25,7 @@ import re
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Optional, TYPE_CHECKING
+from typing import Any, Callable, Optional, TYPE_CHECKING
 
 from ..infra.config import Config
 from ..events import EventName
@@ -53,6 +53,7 @@ if TYPE_CHECKING:
         StoredTriageOp,
         TriageCaseFileSummary,
     )
+    from ..infra.e2e_runner import E2ESlotSignals
     from .planner_types import OrchestratorSnapshot
     from .triage_board import TriageBoardPublisher
 
@@ -90,6 +91,12 @@ class FactGatherer:
     # (#6823). Optional so unrelated tests need not wire it; without it the
     # sweep still runs but its counters do not survive a restart.
     queue_cache_store: Optional["QueueCacheStore"] = None
+    # Observation feed for the first-class E2E workload
+    # (``e2e.occupies_session_slot``). Returns whether an E2E run occupies a
+    # worker slot right now, or is due to claim one. Optional so unrelated
+    # tests need not wire it; without it (or with the flag off) both snapshot
+    # facts stay False and the default scheduling path is unchanged.
+    e2e_slot_reader: Optional[Callable[[], "E2ESlotSignals"]] = None
 
     def fetch_issues(
         self,
@@ -182,6 +189,7 @@ class FactGatherer:
         # the end-of-tick discovered-fact clear).
         triage_facts = self.gather_triage_facts(state)
         cleanup_facts = self.gather_cleanup_facts(state)
+        e2e_occupies_slot, e2e_due = self._read_e2e_slot_facts()
 
         return OrchestratorSnapshot(
             issues=tuple(issues),
@@ -220,7 +228,22 @@ class FactGatherer:
             stale_claim_issues=tuple(stale_claim_issues or []),
             failed_this_cycle=frozenset(state.failed_this_cycle),
             session_history_issue_numbers=frozenset(e.issue_number for e in state.session_history),
+            e2e_occupies_slot=e2e_occupies_slot,
+            e2e_due=e2e_due,
         )
+
+    def _read_e2e_slot_facts(self) -> tuple[bool, bool]:
+        """Read the ``(e2e_occupies_slot, e2e_due)`` worker-slot facts.
+
+        Returns ``(False, False)`` without invoking the reader when the reader
+        is unwired OR ``e2e.occupies_session_slot`` is off — the reader itself
+        guards the flag, but short-circuiting here means the default path pays
+        no reader call at all. At most one of the two facts is ever True.
+        """
+        if self.e2e_slot_reader is None or not self.config.e2e.occupies_session_slot:
+            return False, False
+        signals = self.e2e_slot_reader()
+        return signals.occupies_slot, signals.due
 
     def gather_triage_facts(
         self,
