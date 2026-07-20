@@ -125,14 +125,34 @@ def test_opted_in_worktree_path_flows_into_settings() -> None:
     assert str(worktree) in settings["sandbox"]["filesystem"]["allowWrite"]
 
 
-def test_legacy_template_path_ignores_sandbox() -> None:
-    # An agent with no provider uses the legacy template; the provider-scoped
-    # sandbox does not apply there (documented limitation for this slice).
+def test_provider_less_sandbox_optin_fails_closed() -> None:
+    # sandbox: true on a provider-less / custom-command agent cannot be enforced,
+    # so the command seam must RAISE rather than silently render an unsandboxed
+    # command (the security opt-in must fail loud).
+    from issue_orchestrator.domain.sandbox_scope import SandboxUnsupportedError
+
     agent = AgentConfig(
         prompt_path=Path(".prompts/backend.md"),
         prompt_relative=".prompts/backend.md",
         provider=None,
         sandbox=True,
+    )
+    with pytest.raises(SandboxUnsupportedError):
+        agent.get_command_for_prompt(
+            "do the work",
+            worktree=Path("/wt/issue-1"),
+            task_kind="code",
+            prompt_file=".prompts/backend.md",
+        )
+
+
+def test_provider_less_without_sandbox_is_unchanged() -> None:
+    # The legacy-template path is byte-for-byte unchanged when not opted in.
+    agent = AgentConfig(
+        prompt_path=Path(".prompts/backend.md"),
+        prompt_relative=".prompts/backend.md",
+        provider=None,
+        sandbox=False,
     )
     cmd = agent.get_command_for_prompt(
         "do the work",

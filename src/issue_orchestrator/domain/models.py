@@ -13,7 +13,12 @@ from unittest.mock import Mock
 from .dependency_gates import DependencyGateSnapshot
 from .issue_key import IssueKey, GitHubIssueKey, parse_external_id
 from .session_key import SessionKey, TaskKind  # re-exported for callers
-from .sandbox_scope import SandboxScope, SandboxScopeContext, compute_session_scope
+from .sandbox_scope import (
+    SandboxScope,
+    SandboxScopeContext,
+    SandboxUnsupportedError,
+    compute_session_scope,
+)
 from .session_run import SessionRunAssets
 from .triage_session import (
     ApprovedTriageOp,
@@ -835,12 +840,17 @@ class AgentConfig:
     # Provider-specific arguments (e.g., permission_mode for claude-code, approval_mode for codex)
     # Claude permission modes: default, acceptEdits, bypassPermissions, plan, dontAsk
     provider_args: dict[str, Any] = field(default_factory=dict)
-    # Opt-in (default OFF) to the orchestrator-computed OS sandbox scope
-    # (ADR-0034). When True, launches replace claude-code's yolo
-    # ``bypassPermissions`` with a bounded sandbox (``dontAsk`` + read/write
-    # roots + model-only egress + credential denial) computed per role.
-    # NOTE: distinct from codex's ``provider_args.sandbox`` (a codex CLI policy
-    # string) — this is the provider-agnostic, orchestrator-owned opt-in.
+    # Opt-in (default OFF) to the orchestrator-computed OS sandbox (ADR-0034),
+    # under a TRUSTED-repository contract: the operator onboards the target repo,
+    # so its Claude config + the operator's user/managed settings are trusted, and
+    # the sandbox constrains the AGENT. When True, a claude-code launch replaces
+    # yolo ``bypassPermissions`` with ``dontAsk`` + a bounded ``--settings``:
+    # Bash and native file-tool WRITES are worktree-scoped, known secrets and
+    # restricted egress are denied, and the agent cannot modify its own policy
+    # files. Non-secret native READS outside the worktree remain possible by
+    # design (this is not a read jail). Supported only through a provider adapter:
+    # a provider-less/custom-command agent is rejected, and codex fails loud.
+    # Distinct from codex's ``provider_args.sandbox`` (a codex CLI policy string).
     sandbox: bool = False
     # Skip code review for this agent (e.g., domain-expert agents that don't produce code)
     skip_review: bool = False
@@ -1006,16 +1016,25 @@ class AgentConfig:
         prompt_for_command = prompt_file or (
             self.prompt_relative if self.prompt_relative else str(self.prompt_path)
         )
-        # If provider is set, use provider-based command building
-        if self.provider:
-            # Compute the per-session sandbox scope (ADR-0034). Returns None
-            # unless this agent opted in, in which case the command is built
-            # exactly as before (bypassPermissions). The worktree anchors the
-            # sandbox's read/write roots; the task kind selects the role.
-            sandbox_scope = compute_session_scope(
-                self,
-                SandboxScopeContext(task_kind=task_kind, worktree=worktree),
+        # Resolve the per-session sandbox scope (ADR-0034) BEFORE choosing the
+        # provider vs legacy-template path. Returns None unless this agent opted
+        # in. ``sandbox: true`` is a security opt-in, so if a scope is requested
+        # and there is no enforcing provider adapter (the provider-less/custom-
+        # ``command`` launch mode), FAIL LOUD rather than silently render an
+        # unsandboxed legacy-template command.
+        sandbox_scope = compute_session_scope(
+            self,
+            SandboxScopeContext(task_kind=task_kind, worktree=worktree),
+        )
+        if sandbox_scope is not None and not self.provider:
+            raise SandboxUnsupportedError(
+                "sandbox: true is not supported for a provider-less / custom-command "
+                "agent — the launcher cannot enforce the sandbox. Use a provider "
+                "adapter (provider: claude-code), or set sandbox: false."
             )
+        if self.provider:
+            # The worktree anchors the sandbox's read/write roots; the task kind
+            # selects the role. A codex opt-in fails loud in its adapter.
             return self._build_provider_command(
                 rendered_prompt,
                 prompt_for_command,
@@ -1024,7 +1043,7 @@ class AgentConfig:
                 sandbox_scope=sandbox_scope,
             )
 
-        # Legacy template-based command building
+        # Legacy template-based command building (never sandboxed — guarded above)
         from issue_orchestrator.resources import get_completion_instructions
 
         # Escape single quotes in the prompt for shell safety

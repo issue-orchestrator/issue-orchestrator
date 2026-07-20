@@ -40,8 +40,19 @@ __all__ = [
     "SandboxRole",
     "SandboxScope",
     "SandboxScopeContext",
+    "SandboxUnsupportedError",
     "compute_session_scope",
 ]
+
+
+class SandboxUnsupportedError(RuntimeError):
+    """Raised when an agent opts into the sandbox but its launcher cannot enforce it.
+
+    ``sandbox: true`` is a security opt-in, so it must FAIL LOUD rather than
+    silently launch unsandboxed. The provider-less/custom-``command`` launch mode
+    has no enforcing adapter, and the codex adapter is not implemented yet — both
+    raise this rather than render an unsandboxed command.
+    """
 
 # Egress posture for a sandboxed session. This governs a sandboxed agent's
 # **Bash subprocess** network only — the claude-code sandbox isolates Bash
