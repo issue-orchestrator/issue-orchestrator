@@ -5356,9 +5356,14 @@ class TestProcessActiveSessions:
             """Deterministic ``BackgroundJobRunner``: submitted work is stored and
             executes only when the test calls ``run_all`` — no threads, no waits.
 
-            ``is_running`` reports True from submit until the completed result is
-            drained, matching the dispatcher's guard that a decided-but-unapplied
-            session must not be re-dispatched.
+            ``is_running`` is True only while the job would be executing; it goes
+            False as soon as ``fn`` returns in ``run_all``, matching the production
+            ``ThreadBackgroundJobRunner``'s ``Thread.is_alive()`` semantics (and the
+            ``_RecordingRunner`` in ``test_publish_recovery.py``). The finished
+            result then waits in ``drain_completed``. Re-dispatch of a
+            decided-but-undrained session is prevented by ``process_active_sessions``
+            draining completed decisions *before* it dispatches — not by this fake
+            over-reporting the job as still running.
             """
 
             def __init__(self) -> None:
@@ -5383,14 +5388,15 @@ class TestProcessActiveSessions:
                         fn()
                     except BaseException as exc:  # noqa: BLE001 — mirror the thread runner
                         error = exc
-                    self._done.append(CompletedJob(job_id=job_id, error=error))
+                    # is_running() goes False the instant fn returns (or raises),
+                    # like Thread.is_alive(); the result waits in _done for drain.
+                    self._in_flight.discard(job_id)
                     self._pending.pop(job_id, None)
+                    self._done.append(CompletedJob(job_id=job_id, error=error))
 
             def drain_completed(self) -> list[CompletedJob]:
                 done = self._done
                 self._done = []
-                for job in done:
-                    self._in_flight.discard(job.job_id)
                 return done
 
         issue = Issue(number=392, title="Test", labels=["agent:web"])
@@ -5458,13 +5464,19 @@ class TestProcessActiveSessions:
         assert state.active_sessions == [session]
 
         # The offloaded decision runs (deterministically, on our command) exactly
-        # once; its result is not applied until a tick drains it.
+        # once. It is no longer "running" once it returns (matching the thread
+        # runner), yet its result is not applied until a tick drains it — the
+        # session stays active, and it is NOT re-dispatched because the next tick
+        # drains before it dispatches.
         runner.run_all()
         mock_controller.decide_outcome.assert_called_once()
+        assert dispatcher.in_flight("issue-392") is False  # finished; result awaits drain
         assert state.active_sessions == [session]
         mock_completion_handler.process_completion.assert_not_called()
 
-        # The next tick drains the finished decision and applies completion once.
+        # The next tick drains the finished decision and applies completion once
+        # (drain-before-dispatch: the session is removed before the dispatch loop,
+        # so the now-not-running job is never re-dispatched).
         run_tick()
         assert state.active_sessions == []
         mock_completion_handler.process_completion.assert_called_once()
