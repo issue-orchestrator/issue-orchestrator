@@ -95,8 +95,13 @@ The adapter therefore uses an invocation-scoped profile extending Codex's native
 ``:workspace`` profile instead of emitting the superficially similar but weaker
 ``-s workspace-write`` flag. Because a legacy ``sandbox_mode`` in any loaded
 Codex config layer disables profiles, the adapter checks the documented system,
-user, and project config files and fails loud with migration guidance when that
-incompatible key is present. The profile:
+user, and complete project-root-to-working-directory config chain and fails loud
+with migration guidance when that incompatible key is present. The provider
+emits neither a named ``--profile`` layer nor arbitrary CLI config overrides;
+``CODEX_HOME`` is the only documented environment variable that relocates a
+config layer. A custom ``project_root_markers`` value that omits ``.git`` fails
+loud because it could extend project config discovery outside the orchestrator
+worktree. The profile:
 
 - pins the worktree with ``-C`` and grants only explicitly scoped extra roots
   with repeated ``--add-dir``;
@@ -128,13 +133,17 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
-import tomllib
 from typing import Any, Protocol, runtime_checkable
 
 from issue_orchestrator.domain.sandbox_scope import (
     SandboxEgress,
     SandboxScope,
     SandboxUnsupportedError,
+)
+
+from .codex_config import (
+    resolve_codex_home,
+    validate_codex_permission_profile_compatibility,
 )
 
 __all__ = [
@@ -448,50 +457,12 @@ def _read_git_path_file(path: Path, *, label: str) -> str:
         ) from exc
 
 
-def _codex_loaded_config_files(worktree: Path) -> tuple[Path, ...]:
-    """Return documented Codex config layers that can disable profiles."""
-    candidates = (
-        Path("/etc/codex/config.toml"),
-        _codex_home() / "config.toml",
-        worktree / ".codex" / "config.toml",
-    )
-    return tuple(path for path in candidates if path.is_file())
-
-
-def _codex_home() -> Path:
-    raw = os.environ.get("CODEX_HOME")
-    return Path(raw).expanduser().resolve() if raw else Path.home() / ".codex"
-
-
 def _codex_credential_files() -> tuple[str, ...]:
     """Credential stores to deny, including an operator-set Codex home."""
     paths = list(_CODEX_CREDENTIAL_FILES)
     if os.environ.get("CODEX_HOME"):
-        paths.append(str(_codex_home()))
+        paths.append(str(resolve_codex_home()))
     return tuple(dict.fromkeys(paths))
-
-
-def validate_codex_permission_profile_compatibility(worktree: Path) -> None:
-    """Fail if a loaded legacy setting would silently disable the profile.
-
-    Codex documents that the presence of ``sandbox_mode`` in *any* loaded
-    config layer selects its legacy sandbox and disables permission profiles,
-    even when ``default_permissions`` is supplied at higher precedence. There
-    is no invocation-level unset. Detect the documented system, user, and
-    project layers before launch so ``sandbox: true`` cannot silently degrade.
-    """
-    for path in _codex_loaded_config_files(worktree):
-        try:
-            config = tomllib.loads(path.read_text(encoding="utf-8"))
-        except (OSError, tomllib.TOMLDecodeError) as exc:
-            raise SandboxUnsupportedError(
-                f"Codex sandbox could not validate config layer {path}: {exc}"
-            ) from exc
-        if "sandbox_mode" in config:
-            raise SandboxUnsupportedError(
-                "Codex sandbox permission profiles are disabled by legacy "
-                f"sandbox_mode in {path}; remove that key before using agent.sandbox"
-            )
 
 
 def _resolve_git_directory(worktree: Path) -> Path:

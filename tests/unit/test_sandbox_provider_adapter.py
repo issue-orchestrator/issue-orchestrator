@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 import subprocess
 import tomllib
 
@@ -284,6 +285,7 @@ def test_codex_argv_pins_cwd_approval_and_bounded_roots() -> None:
     ]
     assert "-s" not in argv
     assert "--sandbox" not in argv
+    assert "--profile" not in argv
 
 
 def test_codex_profile_denies_secrets_temp_writes_and_self_modification() -> None:
@@ -339,6 +341,36 @@ def test_codex_profile_supports_detached_reviewer_worktree() -> None:
     assert not any(path.startswith("/repo/.git/refs/heads/") for path in filesystem)
 
 
+def test_codex_profile_grants_only_specific_non_linked_git_writes() -> None:
+    common_dir = Path("/repo/.git")
+    access = CodexGitWorktreeAccess(
+        git_dir=common_dir,
+        common_dir=common_dir,
+        head_ref=common_dir / "refs" / "heads" / "main",
+    )
+
+    argv = build_codex_sandbox_argv(_scope(), git_access=access)
+    profile = _codex_config_overrides(argv)[f"permissions.{CODEX_PERMISSION_PROFILE}"]
+    filesystem = profile["filesystem"]
+
+    assert filesystem["/repo/.git"] == "read"
+    for path in (
+        "/repo/.git/index",
+        "/repo/.git/index.lock",
+        "/repo/.git/COMMIT_EDITMSG",
+        "/repo/.git/COMMIT_EDITMSG.lock",
+        "/repo/.git/logs/HEAD",
+        "/repo/.git/logs/HEAD.lock",
+        "/repo/.git/refs/heads/main",
+        "/repo/.git/refs/heads/main.lock",
+        "/repo/.git/logs/refs/heads/main",
+        "/repo/.git/logs/refs/heads/main.lock",
+    ):
+        assert filesystem[path] == "write"
+    assert filesystem.get("/repo/.git/config") != "write"
+    assert filesystem.get("/repo/.git/HEAD") != "write"
+
+
 def test_codex_resolves_linked_worktree_git_paths(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     worktree = tmp_path / "worktree"
@@ -381,6 +413,7 @@ def test_codex_fails_loud_when_working_directory_is_not_git() -> None:
 def test_codex_fails_loud_when_legacy_project_sandbox_disables_profile(
     tmp_path: Path,
 ) -> None:
+    (tmp_path / ".git").mkdir()
     config = tmp_path / ".codex" / "config.toml"
     config.parent.mkdir()
     config.write_text('sandbox_mode = "workspace-write"\n', encoding="utf-8")
@@ -390,6 +423,64 @@ def test_codex_fails_loud_when_legacy_project_sandbox_disables_profile(
         match=r"sandbox_mode.*remove that key",
     ):
         validate_codex_permission_profile_compatibility(tmp_path)
+
+
+def test_codex_fails_loud_for_legacy_sandbox_in_ancestor_project_layer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    repo = tmp_path / "repo"
+    nested = repo / "packages" / "worker"
+    (repo / ".git").mkdir(parents=True)
+    nested.mkdir(parents=True)
+    config = repo / ".codex" / "config.toml"
+    config.parent.mkdir()
+    config.write_text('sandbox_mode = "danger-full-access"\n', encoding="utf-8")
+
+    with pytest.raises(
+        SandboxUnsupportedError,
+        match=rf"sandbox_mode.*{re.escape(str(config))}",
+    ):
+        validate_codex_permission_profile_compatibility(nested)
+
+
+def test_codex_ignores_config_above_documented_project_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    outside_config = tmp_path / ".codex" / "config.toml"
+    outside_config.parent.mkdir()
+    outside_config.write_text('sandbox_mode = "danger-full-access"\n', encoding="utf-8")
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+
+    validate_codex_permission_profile_compatibility(repo)
+
+
+def test_codex_rejects_project_root_markers_that_can_escape_git_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    (codex_home / "config.toml").write_text(
+        'project_root_markers = [".hg"]\n', encoding="utf-8"
+    )
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+
+    with pytest.raises(
+        SandboxUnsupportedError,
+        match=r"project_root_markers.*omits '\.git'",
+    ):
+        validate_codex_permission_profile_compatibility(repo)
 
 
 @pytest.mark.parametrize(
