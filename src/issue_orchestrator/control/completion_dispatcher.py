@@ -100,8 +100,21 @@ class SynchronousCompletionDispatcher:
 class BackgroundCompletionDispatcher:
     """Run the decision on a :class:`BackgroundJobRunner`, keyed by terminal id.
 
-    The runner already rejects a duplicate ``job_id`` (returns ``False``), which
-    is our in-flight guard: while a session's decision runs, later ticks skip it.
+    The dispatcher OWNS the submitted-through-drained lifecycle: ``dispatch``
+    records the session under its terminal id and ``drain`` removes it only when
+    the finished decision is handed back to the tick thread. ``in_flight`` reads
+    that ownership, NOT the runner's execution status.
+
+    This matters because ``BackgroundJobRunner.is_running`` reflects only whether
+    the worker is *currently executing* (the thread adapter uses
+    ``Thread.is_alive()``). A worker can finish after a tick takes its drain
+    snapshot but before that same tick's ``in_flight`` check — at which point
+    ``is_running`` is already ``False`` while the completed decision is still
+    queued for the next drain. If ``in_flight`` followed ``is_running`` the tick
+    would re-dispatch the still-undrained session, running a **duplicate**
+    decision (a second publish gate + push + PR) alongside the pending result.
+    Anchoring ``in_flight`` to owned state through drain closes that window.
+
     The decision value is stashed by the worker before it returns, so it is
     always present by the time the runner reports the job complete in ``drain``.
     """
@@ -113,7 +126,11 @@ class BackgroundCompletionDispatcher:
         self._results: dict[str, SessionDecision] = {}
 
     def in_flight(self, terminal_id: str) -> bool:
-        return self._runner.is_running(terminal_id)
+        # Owned, not inferred: in flight from dispatch until drain removes it, so
+        # a worker finishing between a tick's drain snapshot and its in_flight
+        # check cannot be re-dispatched into a duplicate decision.
+        with self._lock:
+            return terminal_id in self._sessions
 
     def dispatch(self, session: "Session", decide: "Callable[[], SessionDecision]") -> None:
         terminal_id = session.terminal_id
