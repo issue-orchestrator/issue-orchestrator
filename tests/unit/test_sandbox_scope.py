@@ -39,6 +39,7 @@ def _ctx(task_kind: str = "code", worktree: Path = Path("/wt/issue-1")) -> Sandb
 
 def test_sandbox_scope_is_frozen_value_object() -> None:
     scope = SandboxScope(
+        working_directory=Path("/wt"),
         read_roots=(Path("/wt"),),
         write_roots=(Path("/wt"),),
         egress="model-only",
@@ -52,6 +53,7 @@ def test_sandbox_scope_is_frozen_value_object() -> None:
 def test_sandbox_scope_rejects_empty_read_roots() -> None:
     with pytest.raises(ValueError, match="read_roots must not be empty"):
         SandboxScope(
+            working_directory=Path("/wt"),
             read_roots=(),
             write_roots=(),
             egress="none",
@@ -63,9 +65,22 @@ def test_sandbox_scope_rejects_empty_read_roots() -> None:
 def test_sandbox_scope_rejects_unknown_egress() -> None:
     with pytest.raises(ValueError, match="egress must be one of"):
         SandboxScope(
+            working_directory=Path("/wt"),
             read_roots=(Path("/wt"),),
-            write_roots=(),
+            write_roots=(Path("/wt"),),
             egress="everything",  # type: ignore[arg-type]
+            deny_env=(),
+            deny_read_files=(),
+        )
+
+
+def test_sandbox_scope_requires_explicit_working_directory_in_both_roots() -> None:
+    with pytest.raises(ValueError, match="working_directory.*write_roots"):
+        SandboxScope(
+            working_directory=Path("/wt"),
+            read_roots=(Path("/wt"),),
+            write_roots=(Path("/scratch"),),
+            egress="model-only",
             deny_env=(),
             deny_read_files=(),
         )
@@ -85,6 +100,7 @@ def test_opted_in_coder_scope() -> None:
     scope = compute_session_scope(_agent(sandbox=True), _ctx("code", worktree))
 
     assert scope is not None
+    assert scope.working_directory == worktree
     assert scope.read_roots == (worktree,)
     assert scope.write_roots == (worktree,)
     assert scope.egress == "model-only"

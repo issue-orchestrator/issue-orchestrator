@@ -1,7 +1,6 @@
 """Unit tests for the provider sandbox adapters (ADR-0034).
 
-Covers the claude-code translation of a :class:`SandboxScope` into settings +
-CLI flags, the codex fail-loud stub, and the ``build_command`` integration
+Covers both provider translations and their ``build_command`` integration,
 including the byte-for-byte regression guard when no scope is supplied.
 """
 
@@ -9,24 +8,40 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import subprocess
+import tomllib
 
 import pytest
 
-from issue_orchestrator.domain.sandbox_scope import SandboxScope
-from issue_orchestrator.execution.agent_runner_providers.claude import ClaudeCodeProvider
+from issue_orchestrator.domain.sandbox_scope import (
+    SandboxScope,
+    SandboxUnsupportedError,
+)
+from issue_orchestrator.execution.agent_runner_providers.claude import (
+    ClaudeCodeProvider,
+)
 from issue_orchestrator.execution.agent_runner_providers.codex import CodexProvider
 from issue_orchestrator.execution.agent_runner_providers.sandbox import (
     MODEL_API_DOMAINS,
+    CODEX_PERMISSION_PROFILE,
+    CodexGitWorktreeAccess,
     ClaudeSandboxAdapter,
     CodexSandboxAdapter,
     ProviderSandboxAdapter,
     build_claude_sandbox_argv,
     build_claude_sandbox_settings,
+    build_codex_sandbox_argv,
+    resolve_codex_git_worktree_access,
+    validate_codex_permission_profile_compatibility,
+)
+from issue_orchestrator.execution.agent_runner_providers import (
+    sandbox as sandbox_module,
 )
 
 
 def _scope(egress: str = "model-only") -> SandboxScope:
     return SandboxScope(
+        working_directory=Path("/wt/issue-42"),
         read_roots=(Path("/wt/issue-42"),),
         write_roots=(Path("/wt/issue-42"),),
         egress=egress,  # type: ignore[arg-type]
@@ -171,6 +186,7 @@ def test_absolute_secret_path_uses_double_slash_permission_spec() -> None:
     # from the single-slash sandbox.filesystem convention. An operator/test path
     # outside home must be doubled or it would read as project-relative.
     scope = SandboxScope(
+        working_directory=Path("/wt/x"),
         read_roots=(Path("/wt/x"),),
         write_roots=(Path("/wt/x"),),
         egress="model-only",
@@ -210,20 +226,249 @@ def test_claude_adapter_implements_port() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Codex stub — fail loud
+# Codex permission-profile translation
 # ---------------------------------------------------------------------------
 
 
-def test_codex_adapter_is_a_stub() -> None:
+def _git_access() -> CodexGitWorktreeAccess:
+    common_dir = Path("/repo/.git")
+    return CodexGitWorktreeAccess(
+        git_dir=common_dir / "worktrees" / "issue-42",
+        common_dir=common_dir,
+        head_ref=common_dir / "refs" / "heads" / "42-fix",
+    )
+
+
+def _codex_argv(scope: SandboxScope | None = None) -> list[str]:
+    return build_codex_sandbox_argv(scope or _scope(), git_access=_git_access())
+
+
+def _codex_config_overrides(argv: list[str]) -> dict[str, object]:
+    overrides: dict[str, object] = {}
+    for idx, token in enumerate(argv):
+        if token != "-c":
+            continue
+        key, raw = argv[idx + 1].split("=", 1)
+        overrides[key] = tomllib.loads(f"value = {raw}")["value"]
+    return overrides
+
+
+def test_codex_adapter_implements_port(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        sandbox_module,
+        "resolve_codex_git_worktree_access",
+        lambda _worktree: _git_access(),
+    )
     adapter = CodexSandboxAdapter()
     assert isinstance(adapter, ProviderSandboxAdapter)
-    with pytest.raises(NotImplementedError, match="Codex sandbox-scope translation"):
-        adapter.apply_scope(_scope())
+    assert adapter.apply_scope(_scope()) == _codex_argv()
 
 
-def test_codex_build_command_fails_loud_when_scoped() -> None:
-    with pytest.raises(NotImplementedError, match="Codex sandbox-scope translation"):
-        CodexProvider().build_command(prompt="task", model=None, sandbox_scope=_scope())
+def test_codex_argv_pins_cwd_approval_and_bounded_roots() -> None:
+    scope = SandboxScope(
+        working_directory=Path("/wt/issue-42"),
+        read_roots=(Path("/wt/issue-42"), Path("/evidence/run-7")),
+        write_roots=(Path("/wt/issue-42"), Path("/scratch/issue-42")),
+        egress="model-only",
+        deny_env=("GITHUB_TOKEN",),
+        deny_read_files=("~/.ssh",),
+    )
+    argv = build_codex_sandbox_argv(scope, git_access=_git_access())
+
+    assert argv[argv.index("-a") + 1] == "never"
+    assert argv[argv.index("-C") + 1] == "/wt/issue-42"
+    assert "--strict-config" in argv
+    assert [argv[i + 1] for i, arg in enumerate(argv) if arg == "--add-dir"] == [
+        "/evidence/run-7",
+        "/scratch/issue-42",
+    ]
+    assert "-s" not in argv
+    assert "--sandbox" not in argv
+
+
+def test_codex_profile_denies_secrets_temp_writes_and_self_modification() -> None:
+    overrides = _codex_config_overrides(_codex_argv())
+    assert overrides["default_permissions"] == CODEX_PERMISSION_PROFILE
+    profile = overrides[f"permissions.{CODEX_PERMISSION_PROFILE}"]
+    assert isinstance(profile, dict)
+    assert profile["extends"] == ":workspace"
+    filesystem = profile["filesystem"]
+    assert filesystem[":tmpdir"] == "read"
+    assert filesystem[":slash_tmp"] == "read"
+    assert filesystem[":workspace_roots"] == {".": "write", ".codex": "read"}
+    assert filesystem["~/.ssh"] == "deny"
+    assert filesystem["~/.issue-orchestrator"] == "deny"
+    assert filesystem["~/.codex"] == "deny"
+
+
+def test_codex_profile_grants_only_current_linked_worktree_git_writes() -> None:
+    overrides = _codex_config_overrides(_codex_argv())
+    profile = overrides[f"permissions.{CODEX_PERMISSION_PROFILE}"]
+    filesystem = profile["filesystem"]
+
+    assert filesystem["/repo/.git"] == "read"
+    assert filesystem["/repo/.git/worktrees/issue-42"] == "write"
+    assert filesystem["/repo/.git/worktrees/issue-42/HEAD"] == "read"
+    assert filesystem["/repo/.git/worktrees/issue-42/commondir"] == "read"
+    assert filesystem["/repo/.git/worktrees/issue-42/gitdir"] == "read"
+    assert filesystem["/repo/.git/worktrees/issue-42/config.worktree"] == "read"
+    assert filesystem["/repo/.git/objects"] == "write"
+    assert filesystem["/repo/.git/objects/info"] == "read"
+    assert filesystem["/repo/.git/objects/pack"] == "read"
+    assert filesystem["/repo/.git/refs/heads/42-fix"] == "write"
+    assert filesystem["/repo/.git/refs/heads/42-fix.lock"] == "write"
+    assert filesystem["/repo/.git/logs/refs/heads/42-fix"] == "write"
+    assert "/repo/.git/refs/heads/main" not in filesystem
+    assert filesystem.get("/repo/.git/config") != "write"
+
+
+def test_codex_profile_supports_detached_reviewer_worktree() -> None:
+    linked = _git_access()
+    detached = CodexGitWorktreeAccess(
+        git_dir=linked.git_dir,
+        common_dir=linked.common_dir,
+        head_ref=None,
+    )
+
+    argv = build_codex_sandbox_argv(_scope(), git_access=detached)
+    profile = _codex_config_overrides(argv)[f"permissions.{CODEX_PERMISSION_PROFILE}"]
+    filesystem = profile["filesystem"]
+
+    assert filesystem["/repo/.git/worktrees/issue-42/HEAD"] == "write"
+    assert filesystem["/repo/.git/worktrees/issue-42/HEAD.lock"] == "write"
+    assert not any(path.startswith("/repo/.git/refs/heads/") for path in filesystem)
+
+
+def test_codex_resolves_linked_worktree_git_paths(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    worktree = tmp_path / "worktree"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Sandbox Test",
+            "-c",
+            "user.email=sandbox@example.invalid",
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "base",
+        ],
+        cwd=repo,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "worktree", "add", "-q", "-b", "issue-42", str(worktree)],
+        cwd=repo,
+        check=True,
+    )
+
+    access = resolve_codex_git_worktree_access(worktree)
+
+    assert access.common_dir == (repo / ".git").resolve()
+    assert access.git_dir.parent == (repo / ".git" / "worktrees").resolve()
+    assert access.head_ref == (repo / ".git" / "refs" / "heads" / "issue-42").resolve()
+
+
+def test_codex_fails_loud_when_working_directory_is_not_git() -> None:
+    with pytest.raises(SandboxUnsupportedError, match="not a Git worktree"):
+        build_codex_sandbox_argv(_scope())
+
+
+def test_codex_fails_loud_when_legacy_project_sandbox_disables_profile(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / ".codex" / "config.toml"
+    config.parent.mkdir()
+    config.write_text('sandbox_mode = "workspace-write"\n', encoding="utf-8")
+
+    with pytest.raises(
+        SandboxUnsupportedError,
+        match=r"sandbox_mode.*remove that key",
+    ):
+        validate_codex_permission_profile_compatibility(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("egress", "network_enabled", "web_search"),
+    [
+        ("none", False, "disabled"),
+        ("model-only", False, "disabled"),
+        ("model+web", True, "live"),
+    ],
+)
+def test_codex_profile_maps_egress(
+    egress: str, network_enabled: bool, web_search: str
+) -> None:
+    overrides = _codex_config_overrides(_codex_argv(_scope(egress)))
+    profile = overrides[f"permissions.{CODEX_PERMISSION_PROFILE}"]
+    assert profile["network"]["enabled"] is network_enabled
+    assert overrides["web_search"] == web_search
+
+
+def test_codex_profile_excludes_denied_environment_variables() -> None:
+    overrides = _codex_config_overrides(_codex_argv())
+    assert overrides["shell_environment_policy.exclude"] == [
+        "GITHUB_TOKEN",
+        "AWS_SECRET_ACCESS_KEY",
+        "OPENAI_API_KEY",
+        "CODEX_API_KEY",
+        "CODEX_HOME",
+    ]
+    assert overrides["shell_environment_policy.ignore_default_excludes"] is False
+
+
+def test_codex_profile_denies_custom_codex_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    custom_home = tmp_path / "codex-home"
+    custom_home.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(custom_home))
+
+    overrides = _codex_config_overrides(_codex_argv())
+    profile = overrides[f"permissions.{CODEX_PERMISSION_PROFILE}"]
+
+    assert profile["filesystem"][str(custom_home.resolve())] == "deny"
+
+
+def test_codex_rejects_relative_secret_deny_path() -> None:
+    scope = SandboxScope(
+        working_directory=Path("/wt/issue-42"),
+        read_roots=(Path("/wt/issue-42"),),
+        write_roots=(Path("/wt/issue-42"),),
+        egress="model-only",
+        deny_env=(),
+        deny_read_files=("relative-secret.txt",),
+    )
+    with pytest.raises(SandboxUnsupportedError, match="absolute or home-relative"):
+        build_codex_sandbox_argv(scope, git_access=_git_access())
+
+
+def test_codex_build_command_places_scope_before_exec_and_ignores_yolo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        sandbox_module,
+        "resolve_codex_git_worktree_access",
+        lambda _worktree: _git_access(),
+    )
+    cmd = CodexProvider().build_command(
+        prompt="task",
+        model=None,
+        execution_mode="exec",
+        approval_mode="yolo",
+        sandbox="danger-full-access",
+        sandbox_scope=_scope(),
+    )
+    exec_index = cmd.index("exec")
+    assert cmd.index("-a") < exec_index
+    assert cmd[cmd.index("-a") + 1] == "never"
+    assert "--dangerously-bypass-approvals-and-sandbox" not in cmd
+    assert "danger-full-access" not in cmd
+    assert cmd[-1] == "task"
 
 
 # ---------------------------------------------------------------------------
@@ -234,7 +479,10 @@ def test_codex_build_command_fails_loud_when_scoped() -> None:
 def test_build_command_none_scope_is_byte_for_byte_unchanged() -> None:
     provider = ClaudeCodeProvider()
     without_param = provider.build_command(
-        prompt="task", model="sonnet", permission_mode="bypassPermissions", system_prompt="SP"
+        prompt="task",
+        model="sonnet",
+        permission_mode="bypassPermissions",
+        system_prompt="SP",
     )
     with_none = provider.build_command(
         prompt="task",
