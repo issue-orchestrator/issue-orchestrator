@@ -51,11 +51,14 @@ rules (deny always wins and merges narrow):
   a command unsandboxed. These arrays can only be locked by MANAGED settings
   (``allowManagedPermissionRulesOnly`` — delivered out-of-band, not ``--settings``).
 
-So the write/exec bounds are an ENVIRONMENT property. The fail-closed deployment
-owner :mod:`.sandbox_preflight` enforces them at launch: an opted-in agent is
-refused (``SandboxEnvironmentUnsafeError``) unless the environment is provably
-locked (managed lockdown) or provably clean (no widening ``allow``/
-``excludedCommands``). This module stays the pure ``--settings`` translator.
+So the write/exec bounds are an ENVIRONMENT property that ``--settings`` cannot
+own (ambient sources merge from unreadable locations and hot-reload). The
+fail-closed deployment owner :mod:`.sandbox_preflight` therefore requires an
+installed **managed lockdown** — the authoritative, write-protected managed
+policy that sets ``allowManagedPermissionRulesOnly`` (Claude then ignores every
+non-managed allow rule) — and refuses to launch without it. This module stays
+the pure ``--settings`` translator carrying the un-widenable deny floor; the
+managed policy owns the effective permission bounds.
 
 READ POSTURE (deliberate): non-secret reads OUTSIDE the worktree remain possible.
 ``permissions.allow`` grants the native read tools broadly (the tech-lead's

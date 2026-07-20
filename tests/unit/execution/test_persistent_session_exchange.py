@@ -162,16 +162,22 @@ def test_derive_bootstrap_agent_preserves_sandbox_optin(role: str) -> None:
     # Only the two intended transforms differ from the base.
     assert derived.initial_prompt == "BOOTSTRAP PROMPT"
 
-    # And the opt-in flows into the actual launch command's sandbox settings.
-    cmd = derived.get_command(
-        issue_number=13,
-        issue_title="t",
-        worktree=Path("/wt/issue-13"),
-        task_kind=f"review_exchange_{role}",
+    # And the opt-in flows into a computed sandbox scope on the exchange path
+    # (the guarded launch itself requires a managed lockdown; that is exercised
+    # in test_sandbox_preflight, not here).
+    from issue_orchestrator.domain.sandbox_scope import (
+        SandboxScopeContext,
+        compute_session_scope,
     )
-    assert "--permission-mode dontAsk" in cmd
-    assert "bypassPermissions" not in cmd
-    assert "--settings" in cmd
+
+    scope = compute_session_scope(
+        derived,
+        SandboxScopeContext(
+            task_kind=f"review_exchange_{role}", worktree=Path("/wt/issue-13")
+        ),
+    )
+    assert scope is not None
+    assert scope.write_roots == (Path("/wt/issue-13"),)
 
 
 def test_derive_bootstrap_agent_resolves_ai_system_only_provider() -> None:

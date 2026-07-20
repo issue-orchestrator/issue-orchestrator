@@ -34,6 +34,30 @@ def _settings_from_command(command: str) -> dict:
     return json.loads(tokens[tokens.index("--settings") + 1])
 
 
+@pytest.fixture
+def managed_lockdown(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Install a compliant managed lockdown so the guarded launch path proceeds.
+
+    An opted-in launch is refused unless the write-protected managed policy
+    neutralizes ambient widening (ADR-0034); a clean, locked managed policy is
+    the precondition for the wiring below to reach the sandbox argv.
+    """
+    from issue_orchestrator.execution.agent_runner_providers import sandbox_preflight
+
+    managed = tmp_path / "managed-settings.json"
+    managed.write_text(
+        json.dumps(
+            {"allowManagedPermissionRulesOnly": True, "allowManagedDomainsOnly": True}
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        sandbox_preflight, "default_managed_settings_paths", lambda: (managed,)
+    )
+    monkeypatch.setattr(sandbox_preflight, "default_managed_settings_dirs", lambda: ())
+    return managed
+
+
 # ---------------------------------------------------------------------------
 # Opted-out: byte-for-byte unchanged
 # ---------------------------------------------------------------------------
@@ -79,7 +103,7 @@ def test_opted_out_get_command_review_path_unchanged() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_opted_in_coder_command_applies_sandbox() -> None:
+def test_opted_in_coder_command_applies_sandbox(managed_lockdown: Path) -> None:
     worktree = Path("/wt/issue-42")
     cmd = _agent(sandbox=True).get_command_for_prompt(
         "do the work",
@@ -97,7 +121,7 @@ def test_opted_in_coder_command_applies_sandbox() -> None:
     assert "WebSearch" in settings["permissions"]["deny"]
 
 
-def test_opted_in_reviewer_command_applies_sandbox() -> None:
+def test_opted_in_reviewer_command_applies_sandbox(managed_lockdown: Path) -> None:
     worktree = Path("/wt/issue-9")
     cmd = _agent(sandbox=True).get_command(
         issue_number=9,
@@ -111,7 +135,7 @@ def test_opted_in_reviewer_command_applies_sandbox() -> None:
     assert settings["sandbox"]["filesystem"]["allowRead"] == [str(worktree)]
 
 
-def test_opted_in_worktree_path_flows_into_settings() -> None:
+def test_opted_in_worktree_path_flows_into_settings(managed_lockdown: Path) -> None:
     worktree = Path("/tmp/wt/issue-777-abc")
     cmd = _agent(sandbox=True).get_command_for_prompt(
         "do the work",

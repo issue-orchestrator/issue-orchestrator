@@ -124,14 +124,16 @@ class ClaudeCodeProvider(CLIProvider):
     def apply_scope(self, scope: "SandboxScope") -> list[str]:
         """Translate a :class:`SandboxScope` into claude-code sandbox argv.
 
-        FAIL-CLOSED: first verify the ambient Claude Code settings cannot widen
-        the sandbox policy beyond its guaranteed deny floor (a merged
-        ``permissions.allow`` of a native write tool, or any
-        ``sandbox.excludedCommands``, escapes the write/exec bound our inline
-        ``--settings`` cannot lock). Raises
-        :class:`~.sandbox_preflight.SandboxEnvironmentUnsafeError` rather than
-        launch a sandboxed agent into a widenable environment. Then delegate to
-        the pure adapter (``--permission-mode dontAsk`` + inline ``--settings``).
+        FAIL-CLOSED: the write/egress bounds are only durable under an installed
+        **managed lockdown** (a build-time parser of ambient settings can be
+        neither authoritative — sources merge from plist/registry/server and a
+        worktree-local file resolving to the main checkout — nor durable, since
+        settings hot-reload). So verify the authoritative, write-protected
+        managed policy neutralizes ambient widening
+        (``allowManagedPermissionRulesOnly`` + the domain lock) and is itself
+        clean; raise :class:`~.sandbox_preflight.SandboxEnvironmentUnsafeError`
+        otherwise. Then delegate to the pure adapter (``--permission-mode
+        dontAsk`` + inline ``--settings`` carrying the un-widenable deny floor).
         """
         from .sandbox import build_claude_sandbox_argv
         from .sandbox_preflight import assert_claude_sandbox_environment_safe

@@ -235,19 +235,10 @@ def test_build_command_none_scope_is_byte_for_byte_unchanged() -> None:
     assert with_none[with_none.index("--permission-mode") + 1] == "bypassPermissions"
 
 
-def test_build_command_with_scope_replaces_bypass_with_dontask(
-    tmp_path: "Path", monkeypatch: "pytest.MonkeyPatch"
-) -> None:
-    # apply_scope runs the fail-closed launch guard, which reads ambient Claude
-    # settings; pin a clean HOME so the check is deterministic (no dev ~/.claude).
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
-    cmd = ClaudeCodeProvider().build_command(
-        prompt="task",
-        model="sonnet",
-        sandbox_scope=_scope(),
-        permission_mode="bypassPermissions",  # must be overridden by the scope
-    )
-    assert "bypassPermissions" not in cmd
-    assert cmd[cmd.index("--permission-mode") + 1] == "dontAsk"
-    assert "--settings" in cmd
+def test_scope_argv_replaces_bypass_with_dontask() -> None:
+    # The pure translation (the guarded provider path is covered in
+    # test_sandbox_preflight, which requires a managed lockdown to launch).
+    argv = build_claude_sandbox_argv(_scope())
+    assert "bypassPermissions" not in argv
+    assert argv[argv.index("--permission-mode") + 1] == "dontAsk"
+    assert "--settings" in argv
