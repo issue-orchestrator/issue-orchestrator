@@ -163,8 +163,8 @@ def test_derive_bootstrap_agent_preserves_sandbox_optin(role: str) -> None:
     assert derived.initial_prompt == "BOOTSTRAP PROMPT"
 
     # And the opt-in flows into a computed sandbox scope on the exchange path
-    # (the guarded launch itself requires a managed lockdown; that is exercised
-    # in test_sandbox_preflight, not here).
+    # (the argv/settings translation itself is exercised in the launch-wiring and
+    # adapter suites, not here).
     from issue_orchestrator.domain.sandbox_scope import (
         SandboxScopeContext,
         compute_session_scope,

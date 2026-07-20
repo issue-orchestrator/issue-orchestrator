@@ -37,36 +37,35 @@ layers so a secret is unreadable however the agent reaches for it:
   tool must be denied separately). This is the direct fix for a native ``Read``
   of ``~/.ssh`` / the api-token, and it holds in every permission mode.
 
-CONTRACT — what ``--settings`` GUARANTEES vs what needs the launch guard. Claude
-Code MERGES array-valued settings across scopes (docs.claude.com — Settings), and
-``--settings`` is only the *command-line* scope, so it can lock only DENY-based
-rules (deny always wins and merges narrow):
-- **Guaranteed (un-widenable) here:** the secret floor — ``credentials.files``
-  deny (Bash) + ``permissions.deny`` native-tool secret rules — and the sandbox
-  booleans (``enabled``/``failIfUnavailable``/``allowUnsandboxedCommands``, which
-  ``--settings`` wins for scalars over user/project).
-- **NOT guaranteed by ``--settings`` alone:** the write/exec/read *bounds*. A
-  merged ambient ``permissions.allow: ["Edit","Write"]`` grants host-wide native
-  writes (the OS sandbox binds Bash only), and ``sandbox.excludedCommands`` runs
-  a command unsandboxed. These arrays can only be locked by MANAGED settings
-  (``allowManagedPermissionRulesOnly`` — delivered out-of-band, not ``--settings``).
+TRUST BOUNDARY (ADR-0034 trusted-repository contract). The orchestrator's
+operator selects and onboards the target repository, so its checked-in Claude
+configuration (project/local ``.claude/settings.json``) plus the operator's own
+user/managed settings are TRUSTED inputs — accepting workspace trust is
+authorization to load them, exactly as Claude Code normally treats a trusted
+workspace. ``sandbox: true`` therefore provides a provider-native, per-session
+boundary *under that trusted configuration*; it is NOT an "open an arbitrary
+hostile repository safely" mode (that is the separate untrusted-repository track,
+optional hardening in #6861 via an external isolation substrate). This adapter
+does not try to out-parse Claude's settings model; it translates the scope into
+Claude's native sandbox and constrains the AGENT.
 
-So the write/exec bounds are an ENVIRONMENT property that ``--settings`` cannot
-own (ambient sources merge from unreadable locations and hot-reload). The
-fail-closed deployment owner :mod:`.sandbox_preflight` therefore requires an
-installed **managed lockdown** — the authoritative, write-protected managed
-policy that sets ``allowManagedPermissionRulesOnly`` (Claude then ignores every
-non-managed allow rule) — and refuses to launch without it. This module stays
-the pure ``--settings`` translator carrying the un-widenable deny floor; the
-managed policy owns the effective permission bounds.
+WHAT THE ADAPTER CONSTRAINS (against the agent, not the trusted repo):
+- **Writes** — Bash and native ``Edit`` (which governs Edit/Write/MultiEdit) are
+  allowed only within the worktree write roots; outside is denied.
+- **Secrets** — denied on both layers (``credentials.files`` for Bash,
+  ``permissions.deny`` for the native tools).
+- **Egress** — restricted per :data:`SandboxEgress` (Bash ``allowedDomains`` +
+  ``WebSearch``/``WebFetch``/``curl``/``wget`` denies).
+- **Self-modification** — the agent may not rewrite its own policy: the worktree
+  ``.claude/settings.json`` / ``settings.local.json`` are ``denyWrite`` (Bash) and
+  ``Edit``-denied (native). Deny beats the worktree allow, so a session cannot
+  hot-reload a wider policy after launch. This defends against the agent, which is
+  distinct from distrusting the repository's *initial* contents.
 
-READ POSTURE (deliberate): non-secret reads OUTSIDE the worktree remain possible.
-``permissions.allow`` grants the native read tools broadly (the tech-lead's
-god-view is *wide reads*; a coder reads its worktree), and ``denyRead: ["~/"]``
-only bounds *Bash* reads (defense-in-depth; merged, so not un-widenable). This is
-NOT a "reads confined to the worktree" jail — a literal native read-lockdown is
-not expressible via ``--settings`` under unattended ``dontAsk`` and would blind
-the god-view; a hard read boundary requires managed ``allowManagedReadPathsOnly``.
+READ POSTURE (deliberate): non-secret reads OUTSIDE the worktree remain possible
+(``Read``/``Grep``/``Glob`` allowed; ``denyRead: ["~/"]`` bounds *Bash* reads as
+defense-in-depth). This is not a read jail; a hard read boundary is the
+whole-process track (#6861).
 
 KNOWN LIMITATION: a GitHub *App* private key at an operator-configured absolute
 path *outside* home is covered only if it is listed in ``deny_read_files``; the
@@ -75,20 +74,24 @@ a home-based key is additionally covered by the Bash-layer ``denyRead: ["~/"]``.
 
 Settings schema (docs.claude.com — Sandbox settings / Permissions):
 - ``sandbox.enabled`` / ``failIfUnavailable`` / ``allowUnsandboxedCommands``
-- ``sandbox.filesystem.denyRead[]`` / ``allowRead[]`` / ``allowWrite[]``
+- ``sandbox.filesystem.denyRead[]`` / ``allowRead[]`` / ``allowWrite[]`` /
+  ``denyWrite[]`` (the policy files; ``denyWrite`` wins over ``allowWrite``)
 - ``sandbox.network.allowedDomains[]`` (omitted for ``model+web``; explicit
   empty list for ``none`` to block Bash network entirely)
 - ``sandbox.credentials.files[]`` — objects ``{"path": ..., "mode": "deny"}``
 - ``sandbox.credentials.envVars[]`` — objects ``{"name": ..., "mode": "deny"}``
-- ``permissions.allow[]`` — ``ToolName`` / ``ToolName(pattern)`` (broad reads)
-- ``permissions.deny[]`` — ``ToolName(pattern)`` (native secret denies + egress).
-  NOTE: Read/Edit permission specifiers use ``//abs`` / ``/rel`` / ``~/`` path
-  prefixes, which DIFFER from ``sandbox.filesystem`` paths (``/abs`` absolute).
+- ``permissions.allow[]`` — ``Read``/``Grep``/``Glob`` + worktree-scoped
+  ``Edit(//worktree/**)`` (Edit governs the file-editing tools; no ``Write`` rule)
+- ``permissions.deny[]`` — ``ToolName(pattern)`` (native secret denies + the
+  policy-file ``Edit`` denies + egress). NOTE: Read/Edit permission specifiers use
+  ``//abs`` / ``/rel`` / ``~/`` prefixes, which DIFFER from ``sandbox.filesystem``
+  paths (``/abs`` absolute).
 """
 
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 from issue_orchestrator.domain.sandbox_scope import SandboxEgress, SandboxScope
@@ -125,16 +128,29 @@ MODEL_ONLY_DENY_TOOLS: tuple[str, ...] = (
 
 # Native file tools governed by the PERMISSION layer, not the OS sandbox (which
 # binds only Bash). Each must be denied SEPARATELY for a secret path — denying
-# ``Read`` does not imply ``Edit``/``Grep``/``Glob``/``Write``. Read/Grep/Glob/
-# Edit are content or enumeration reads; ``Write`` is denied too so a secret dir
-# (``~/.ssh``) cannot be used for write-based persistence.
-NATIVE_FILE_TOOLS: tuple[str, ...] = ("Read", "Edit", "Write", "Grep", "Glob")
+# ``Read`` does not imply ``Edit``/``Grep``/``Glob``. NOTE: ``Edit(path)`` rules
+# govern ALL of Claude's file-editing tools (Edit/Write/MultiEdit); ``Write(path)``
+# permission rules are ineffective (confirmed by the live CLI warning), so we
+# never emit them.
+NATIVE_FILE_TOOLS: tuple[str, ...] = ("Read", "Edit", "Grep", "Glob")
 
-# The god-view read capability. ``dontAsk`` runs only allow-listed tools, so the
-# native read tools must be allowed explicitly or a sandboxed agent could not
-# read at all. Secret paths in :data:`NATIVE_FILE_TOOLS` denies still win because
-# deny beats allow in every permission mode.
+# Native read/enumeration capability allowed explicitly (``dontAsk`` runs only
+# allow-listed tools). A worktree-scoped ``Edit(...)`` allow is added per session
+# in :func:`build_claude_sandbox_settings` so the agent can edit its worktree;
+# secret and settings-file ``Edit`` denies still win (deny beats allow).
 NATIVE_READ_ALLOW_TOOLS: tuple[str, ...] = ("Read", "Grep", "Glob")
+
+# Config files an agent must not modify at session time — writing a wider policy
+# here would hot-reload and escalate. Relative to each write root.
+_SELF_CONFIG_FILES: tuple[str, ...] = (
+    ".claude/settings.json",
+    ".claude/settings.local.json",
+)
+
+
+def _self_config_paths(write_roots: tuple[Path, ...]) -> list[str]:
+    """Absolute paths of the policy files the agent may not modify."""
+    return [str(root / rel) for root in write_roots for rel in _SELF_CONFIG_FILES]
 
 
 def _permission_rule_path(path: str) -> str:
@@ -215,29 +231,30 @@ def build_claude_sandbox_settings(scope: SandboxScope) -> dict[str, Any]:
     Extracted as a pure function so the mapping is unit-testable without
     building a full command.
     """
+    self_config_paths = _self_config_paths(scope.write_roots)
     sandbox: dict[str, Any] = {
         "enabled": True,
         # Hard-fail rather than silently run unsandboxed if the sandbox can't
         # start, and refuse the ``dangerouslyDisableSandbox`` escape hatch.
         "failIfUnavailable": True,
         "allowUnsandboxedCommands": False,
-        # Sandbox-weakening booleans, pinned false. ``--settings`` is a higher
-        # scope than user/project/local for scalar keys, so a merged ambient
-        # scope cannot re-enable these (only a managed policy could). This closes
-        # the boolean escapes that the launch guard (sandbox_preflight) would
-        # otherwise have to reject; the guard covers the array/hook escapes that
-        # ``--settings`` cannot lock.
+        # Sandbox-weakening booleans, pinned false so the session cannot be
+        # softened out from under the boundary.
         "allowAppleEvents": False,
         "enableWeakerNetworkIsolation": False,
         "enableWeakerNestedSandbox": False,
         "filesystem": {
             # Reads are OPEN by default: deny the home dir and re-allow only the
-            # read roots within it. This array MERGES across settings scopes, so
-            # it is defense-in-depth — the fail-closed secret layer is
-            # ``credentials.files`` below (deny is narrow-only, un-widenable).
+            # read roots within it (defense-in-depth; the fail-closed secret layer
+            # is ``credentials.files`` below).
             "denyRead": ["~/"],
             "allowRead": [str(p) for p in scope.read_roots],
             "allowWrite": [str(p) for p in scope.write_roots],
+            # Anti-self-modification (Bash layer): the agent may write its worktree
+            # but NOT its own policy files. ``denyWrite`` wins over ``allowWrite``,
+            # so a sandboxed command cannot rewrite settings to hot-reload a wider
+            # policy after launch.
+            "denyWrite": self_config_paths,
         },
         "credentials": {
             # Fail-closed secret protection: deny reads of known credential
@@ -253,17 +270,24 @@ def build_claude_sandbox_settings(scope: SandboxScope) -> dict[str, Any]:
         sandbox["network"] = {"allowedDomains": list(allowed_domains)}
 
     # Permission layer — governs EVERY tool, incl. the native file tools the OS
-    # sandbox does not touch. Always present: the native-tool secret denies and
-    # the god-view read allow-list apply regardless of egress posture.
+    # sandbox does not touch.
+    #  - allow: native reads + a worktree-scoped Edit (governs Edit/Write/
+    #    MultiEdit) so the agent can edit its worktree, nothing broader.
+    #  - deny: secret files (native mirror of credentials.files), the agent's own
+    #    policy files (anti-self-modification), then egress tools. Deny beats allow,
+    #    so the worktree Edit allow cannot reach a secret or a settings file.
+    worktree_edit_allows = [
+        f"Edit({_permission_rule_path(str(root))}/**)" for root in scope.write_roots
+    ]
+    self_config_denies = [
+        f"Edit({_permission_rule_path(path)})" for path in self_config_paths
+    ]
     settings: dict[str, Any] = {
         "sandbox": sandbox,
         "permissions": {
-            # Broad reads so a sandboxed agent can actually read under dontAsk;
-            # secret denies below still win (deny beats allow in every mode).
-            "allow": list(NATIVE_READ_ALLOW_TOOLS),
-            # Native-tool secret denies (mirror of credentials.files) FIRST, then
-            # the egress tool denies (empty for model+web).
+            "allow": list(NATIVE_READ_ALLOW_TOOLS) + worktree_edit_allows,
             "deny": _native_secret_deny_rules(scope.deny_read_files)
+            + self_config_denies
             + list(_deny_tools_for_egress(scope.egress)),
         },
     }
@@ -274,9 +298,10 @@ def build_claude_sandbox_argv(scope: SandboxScope) -> list[str]:
     """Return the claude-code argv fragment that enforces *scope*.
 
     Emits ``--permission-mode dontAsk`` (non-yolo, unattended, deny-by-default)
-    and the sandbox settings as an inline ``--settings`` JSON string. The JSON is
-    serialized with sorted keys and compact separators for deterministic output
-    (so the command is stable and testable).
+    and the sandbox settings as an inline ``--settings`` JSON string, serialized
+    with sorted keys and compact separators for deterministic, testable output.
+    The trusted target-repo configuration is loaded normally (ADR-0034 trusted-
+    repository contract); the policy this adds constrains the agent, not the repo.
     """
     settings_json = json.dumps(
         build_claude_sandbox_settings(scope),

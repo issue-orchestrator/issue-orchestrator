@@ -49,8 +49,7 @@ def test_claude_settings_enable_real_sandbox() -> None:
 
 
 def test_claude_settings_pin_sandbox_weakener_booleans_false() -> None:
-    # --settings scalar precedence beats user/project, so a merged ambient scope
-    # cannot re-enable these; the launch guard need only cover array/hook escapes.
+    # Pinned false so the session cannot be softened out from under the boundary.
     sandbox = build_claude_sandbox_settings(_scope())["sandbox"]
     assert sandbox["allowAppleEvents"] is False
     assert sandbox["enableWeakerNetworkIsolation"] is False
@@ -105,12 +104,12 @@ def test_model_only_egress_denies_web_search_and_curl() -> None:
 
 def test_model_web_egress_has_no_network_restriction_but_keeps_secret_denies() -> None:
     # model+web drops the OS network allowlist and the WEB tool denies, but the
-    # permission block still carries the read allow-list and the native secret
+    # permission block still carries the read/edit allow-list and the native secret
     # denies (secrets are fail-closed regardless of egress posture).
     settings = build_claude_sandbox_settings(_scope("model+web"))
     assert "network" not in settings["sandbox"]
     permissions = settings["permissions"]
-    assert permissions["allow"] == ["Read", "Grep", "Glob"]
+    assert permissions["allow"] == ["Read", "Grep", "Glob", "Edit(//wt/issue-42/**)"]
     assert "Read(~/.ssh/**)" in permissions["deny"]
     assert "WebSearch" not in permissions["deny"]
     assert "WebFetch" not in permissions["deny"]
@@ -129,22 +128,36 @@ def test_none_egress_emits_explicit_empty_allowlist() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_native_read_tools_allowed_for_god_view() -> None:
-    # dontAsk runs only allow-listed tools; the native read tools must be
-    # allowed or a sandboxed agent could not read anything.
+def test_native_read_and_worktree_edit_allowed() -> None:
+    # dontAsk runs only allow-listed tools: native reads + a worktree-scoped Edit
+    # (which governs the file-editing tools). No broad native edit allow.
     allow = build_claude_sandbox_settings(_scope())["permissions"]["allow"]
-    assert allow == ["Read", "Grep", "Glob"]
+    assert allow == ["Read", "Grep", "Glob", "Edit(//wt/issue-42/**)"]
 
 
 def test_native_file_tools_deny_each_secret_path() -> None:
     # The OS credentials.files deny does not touch the native Read/Edit/... tools,
     # so every secret path is ALSO denied on the permission layer, per tool, for
-    # both the path and everything under it.
+    # both the path and everything under it. Write(path) rules are ineffective, so
+    # only Read/Edit/Grep/Glob are emitted (Edit governs the editing tools).
     deny = build_claude_sandbox_settings(_scope())["permissions"]["deny"]
+    assert not any(e.startswith("Write(") for e in deny)
     for path in ("~/.ssh", "~/.issue-orchestrator"):
-        for tool in ("Read", "Edit", "Write", "Grep", "Glob"):
+        for tool in ("Read", "Edit", "Grep", "Glob"):
             assert f"{tool}({path})" in deny, f"missing {tool}({path})"
             assert f"{tool}({path}/**)" in deny, f"missing {tool}({path}/**)"
+
+
+def test_anti_self_modification_denies_policy_files() -> None:
+    # The agent may write its worktree but not its own policy: denyWrite (Bash) +
+    # Edit deny (native) on the two settings files; deny wins over the worktree
+    # allow, so a session cannot hot-reload a wider policy after launch.
+    settings = build_claude_sandbox_settings(_scope())
+    deny_write = settings["sandbox"]["filesystem"]["denyWrite"]
+    deny = settings["permissions"]["deny"]
+    for rel in (".claude/settings.json", ".claude/settings.local.json"):
+        assert f"/wt/issue-42/{rel}" in deny_write
+        assert f"Edit(//wt/issue-42/{rel})" in deny
 
 
 def test_native_deny_precedes_egress_deny() -> None:
@@ -236,8 +249,8 @@ def test_build_command_none_scope_is_byte_for_byte_unchanged() -> None:
 
 
 def test_scope_argv_replaces_bypass_with_dontask() -> None:
-    # The pure translation (the guarded provider path is covered in
-    # test_sandbox_preflight, which requires a managed lockdown to launch).
+    # The pure translation (the provider launch path is covered in the
+    # launch-wiring suite).
     argv = build_claude_sandbox_argv(_scope())
     assert "bypassPermissions" not in argv
     assert argv[argv.index("--permission-mode") + 1] == "dontAsk"

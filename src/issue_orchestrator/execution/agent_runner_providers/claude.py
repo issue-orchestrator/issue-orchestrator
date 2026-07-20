@@ -124,21 +124,15 @@ class ClaudeCodeProvider(CLIProvider):
     def apply_scope(self, scope: "SandboxScope") -> list[str]:
         """Translate a :class:`SandboxScope` into claude-code sandbox argv.
 
-        FAIL-CLOSED: the write/egress bounds are only durable under an installed
-        **managed lockdown** (a build-time parser of ambient settings can be
-        neither authoritative — sources merge from plist/registry/server and a
-        worktree-local file resolving to the main checkout — nor durable, since
-        settings hot-reload). So verify the authoritative, write-protected
-        managed policy neutralizes ambient widening
-        (``allowManagedPermissionRulesOnly`` + the domain lock) and is itself
-        clean; raise :class:`~.sandbox_preflight.SandboxEnvironmentUnsafeError`
-        otherwise. Then delegate to the pure adapter (``--permission-mode
-        dontAsk`` + inline ``--settings`` carrying the un-widenable deny floor).
+        Under the trusted-repository contract (ADR-0034) the target repo's
+        configuration is trusted policy, so no settings-source guard is needed:
+        we translate the scope directly into Claude's native OS sandbox
+        (``--permission-mode dontAsk`` + inline ``--settings``). The boundary the
+        adapter still enforces is against the *agent* — worktree-scoped writes,
+        denied secrets/egress, and denied self-modification of the policy files.
         """
         from .sandbox import build_claude_sandbox_argv
-        from .sandbox_preflight import assert_claude_sandbox_environment_safe
 
-        assert_claude_sandbox_environment_safe(scope)
         return build_claude_sandbox_argv(scope)
 
     @classmethod
