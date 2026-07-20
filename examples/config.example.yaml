@@ -58,6 +58,19 @@ agents:
     #   permission_mode: "bypassPermissions"  # Claude Code
     # command: "claude --model {model} '{initial_prompt}'"
     # initial_prompt: "Work on issue #{issue_number}: {issue_title}"
+    # sandbox: false                  # Opt in (default OFF) to the
+    #   # orchestrator-computed OS sandbox (ADR-0034), under a TRUSTED-repository
+    #   # contract: you onboard the target repo, so its Claude config + your
+    #   # user/managed settings are trusted and the sandbox constrains the AGENT.
+    #   # When true, a claude-code agent launches with permission-mode dontAsk and:
+    #   #   - Bash + native file-tool WRITES limited to the worktree;
+    #   #   - known secrets and restricted egress denied;
+    #   #   - the agent cannot modify its own .claude/settings.json (no self-widen);
+    #   #   - non-secret native READS outside the worktree remain possible (not a
+    #   #     read jail).
+    #   # Supported only via a provider adapter: a provider-less/custom-`command`
+    #   # agent with sandbox: true is rejected, and codex currently fails loud.
+    #   # Per-agent only; not inherited from default_agent.
     # skip_review: false
     # reviewer: "agent:reviewer"     # Override default reviewer
     # meta_agent: "agent:meta"       # Agent label used to supervise this agent

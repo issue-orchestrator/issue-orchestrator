@@ -792,6 +792,8 @@ class Config:
                 agent_dict["provider_args"] = dict(agent.provider_args)
             if agent.skip_review:
                 agent_dict["skip_review"] = agent.skip_review
+            if agent.sandbox:
+                agent_dict["sandbox"] = agent.sandbox
             if agent.reviewer:
                 agent_dict["reviewer"] = agent.reviewer
             if agent.meta_agent:

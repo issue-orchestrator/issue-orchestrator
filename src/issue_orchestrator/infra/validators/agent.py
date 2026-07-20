@@ -78,6 +78,17 @@ class AgentValidator(ConfigValidator):
                 f"Available: {list_providers()}"
             )
 
+        # sandbox: true is a security opt-in enforceable only through a provider
+        # adapter. A provider-less / custom-`command` agent launches an arbitrary
+        # command the orchestrator cannot sandbox, so reject the opt-in rather than
+        # let it silently launch unsandboxed (ADR-0034).
+        if getattr(agent, "sandbox", False) and agent.provider is None:
+            errors.append(
+                f"Agent '{label}': sandbox: true is not supported for a "
+                f"provider-less / custom-command agent (the launcher cannot enforce "
+                f"the sandbox). Set 'provider: claude-code', or set sandbox: false."
+            )
+
         # Model validation for claude-code provider
         if agent.provider in (None, "claude-code") and agent.model not in self.KNOWN_CLAUDE_MODELS:
             errors.append(

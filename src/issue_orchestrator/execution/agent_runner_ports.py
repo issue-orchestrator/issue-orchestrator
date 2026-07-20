@@ -7,7 +7,10 @@ respective AI agents.
 Previously in ``_vendor/agent_runner/ports.py``.
 """
 
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
+
+if TYPE_CHECKING:
+    from issue_orchestrator.domain.sandbox_scope import SandboxScope
 
 
 class AIProvider(Protocol):
@@ -26,6 +29,8 @@ class AIProvider(Protocol):
         self,
         prompt: str,
         model: str,
+        *,
+        sandbox_scope: "SandboxScope | None" = None,
         **kwargs: str,
     ) -> list[str]:
         """Build the command-line invocation for this provider."""

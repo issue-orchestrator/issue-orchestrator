@@ -69,6 +69,50 @@ class TestConfig:
         assert config.to_event_dict()["merge_queue"]["failure_action"] == "needs_human"
         assert config.to_dict()["merge_queue"]["enabled"] is True
 
+    def test_agent_sandbox_optin_round_trips_and_is_not_inherited(self, tmp_path):
+        """Per-agent ``sandbox`` (ADR-0034) parses, serializes, and is NOT inherited.
+
+        Unlike ``provider``/``model``/``provider_args`` (which DO inherit from
+        ``default_agent``), the ``sandbox`` security opt-in is strictly
+        per-agent: an agent that omits it stays ``False`` even when
+        ``default_agent`` (wrongly) sets ``sandbox: true``.
+        """
+        path = tmp_path / ".issue-orchestrator" / "config" / "default.yaml"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "repo:\n  name: owner/repo\n"
+            "default_agent:\n"
+            "  provider: claude-code\n"
+            "  sandbox: true\n"  # must NOT leak into agents that don't opt in
+            "agents:\n"
+            '  "agent:sandboxed":\n'
+            "    prompt: .prompts/a.md\n"
+            "    sandbox: true\n"
+            '  "agent:plain":\n'
+            "    prompt: .prompts/b.md\n",
+            encoding="utf-8",
+        )
+        config = Config.load(path)
+
+        # Opt-in parses; the other agent stays False despite default_agent.
+        assert config.agents["agent:sandboxed"].sandbox is True
+        assert config.agents["agent:plain"].sandbox is False
+        # provider DID inherit — proving default_agent inheritance is live and
+        # that sandbox is deliberately excluded from it.
+        assert config.agents["agent:plain"].provider == "claude-code"
+
+        # Serialize: only the opted-in agent carries the flag (default off is
+        # omitted), and re-parsing preserves both sides.
+        serialized = config.to_dict()
+        assert serialized["agents"]["agent:sandboxed"]["sandbox"] is True
+        assert "sandbox" not in serialized["agents"]["agent:plain"]
+
+        reparsed_path = tmp_path / "reparsed.yaml"
+        reparsed_path.write_text(yaml.safe_dump(serialized), encoding="utf-8")
+        reparsed = Config.load(reparsed_path)
+        assert reparsed.agents["agent:sandboxed"].sandbox is True
+        assert reparsed.agents["agent:plain"].sandbox is False
+
     def test_merge_queue_rejects_unknown_failure_action(self, tmp_path):
         """A typo in an enum field fails loud at load time."""
         path = tmp_path / ".issue-orchestrator" / "config" / "default.yaml"
