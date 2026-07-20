@@ -5337,17 +5337,61 @@ class TestProcessActiveSessions:
         tick thread: the dispatch tick returns immediately with the session
         still active and no completion applied; a later tick (after the decision
         finishes) drains it and applies handle_session_completion exactly once.
-        Regression for the 153.9s synchronous-publish freeze."""
-        import threading
+        Regression for the 153.9s synchronous-publish freeze.
+
+        Uses a deterministic in-process runner (no threads, no waits): the test
+        drives when the offloaded decision runs via ``run_all``, so the off-tick
+        behavior is fully reproducible rather than depending on thread scheduling.
+        """
+        from collections.abc import Callable
 
         from issue_orchestrator.control.completion_dispatcher import (
             BackgroundCompletionDispatcher,
         )
         from issue_orchestrator.control.session_controller import SessionDecision
-        from issue_orchestrator.execution.thread_background_job_runner import (
-            ThreadBackgroundJobRunner,
-        )
         from issue_orchestrator.observation.observation import SessionObservationResult
+        from issue_orchestrator.ports.background_job import CompletedJob
+
+        class ManualJobRunner:
+            """Deterministic ``BackgroundJobRunner``: submitted work is stored and
+            executes only when the test calls ``run_all`` — no threads, no waits.
+
+            ``is_running`` reports True from submit until the completed result is
+            drained, matching the dispatcher's guard that a decided-but-unapplied
+            session must not be re-dispatched.
+            """
+
+            def __init__(self) -> None:
+                self._pending: dict[str, Callable[[], None]] = {}
+                self._in_flight: set[str] = set()
+                self._done: list[CompletedJob] = []
+
+            def submit(self, job_id: str, fn: Callable[[], None]) -> bool:
+                if job_id in self._in_flight:
+                    return False
+                self._in_flight.add(job_id)
+                self._pending[job_id] = fn
+                return True
+
+            def is_running(self, job_id: str) -> bool:
+                return job_id in self._in_flight
+
+            def run_all(self) -> None:
+                for job_id, fn in list(self._pending.items()):
+                    error: BaseException | None = None
+                    try:
+                        fn()
+                    except BaseException as exc:  # noqa: BLE001 — mirror the thread runner
+                        error = exc
+                    self._done.append(CompletedJob(job_id=job_id, error=error))
+                    self._pending.pop(job_id, None)
+
+            def drain_completed(self) -> list[CompletedJob]:
+                done = self._done
+                self._done = []
+                for job in done:
+                    self._in_flight.discard(job.job_id)
+                return done
 
         issue = Issue(number=392, title="Test", labels=["agent:web"])
         session = Session(
@@ -5364,16 +5408,12 @@ class TestProcessActiveSessions:
         mock_observer = MagicMock()
         mock_observer.observe_session.return_value = SessionObservationResult.timed_out()
 
-        gate = threading.Event()
-
-        def slow_decide(*args, **kwargs):
-            gate.wait(5)  # stand in for the ~100s publish gate + push + PR
-            return SessionDecision(status=SessionStatus.TIMED_OUT, reason="done")
-
         session_output = MagicMock(spec=SessionOutput)
         session_output.find_run_dir.return_value = None
         mock_controller = MagicMock()
-        mock_controller.decide_outcome.side_effect = slow_decide
+        mock_controller.decide_outcome.return_value = SessionDecision(
+            status=SessionStatus.TIMED_OUT, reason="done"
+        )
         mock_controller.session_output = session_output
 
         mock_completion_handler = MagicMock()
@@ -5387,7 +5427,7 @@ class TestProcessActiveSessions:
             should_queue_review=False, pr_url=None, pr_number=None,
         )
         kill_session_fn = MagicMock()
-        runner = ThreadBackgroundJobRunner()
+        runner = ManualJobRunner()
         dispatcher = BackgroundCompletionDispatcher(runner)
 
         def run_tick():
@@ -5403,20 +5443,28 @@ class TestProcessActiveSessions:
                 completion_dispatcher=dispatcher,
             )
 
-        # Tick 1: dispatch only — decision runs in the background, tick returns.
+        # Tick 1: the decision is offloaded to the runner, NOT run inline — the
+        # tick returns with the session still active and nothing applied.
         run_tick()
         assert session in state.active_sessions  # not yet completed
         mock_completion_handler.process_completion.assert_not_called()
         assert dispatcher.in_flight("issue-392") is True
+        mock_controller.decide_outcome.assert_not_called()  # dispatched, not run on the tick
 
-        # Tick 2 (decision still running): in-flight, so no re-dispatch, no apply.
+        # Tick 2 (decision still in flight, not yet run): no re-dispatch, no apply.
         run_tick()
-        mock_controller.decide_outcome.assert_called_once()
+        assert dispatcher.in_flight("issue-392") is True
+        mock_controller.decide_outcome.assert_not_called()
         assert state.active_sessions == [session]
 
-        # Decision finishes; the next tick drains and applies completion once.
-        gate.set()
-        assert runner.wait_until_idle(5) is True
+        # The offloaded decision runs (deterministically, on our command) exactly
+        # once; its result is not applied until a tick drains it.
+        runner.run_all()
+        mock_controller.decide_outcome.assert_called_once()
+        assert state.active_sessions == [session]
+        mock_completion_handler.process_completion.assert_not_called()
+
+        # The next tick drains the finished decision and applies completion once.
         run_tick()
         assert state.active_sessions == []
         mock_completion_handler.process_completion.assert_called_once()
