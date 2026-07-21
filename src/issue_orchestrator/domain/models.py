@@ -1914,11 +1914,16 @@ class OrchestratorState:
     # forever. Both are hydrated at startup from the queue-cache meta store.
     last_stuck_sweep_at: float = 0.0
     recovery_attempts: dict[int, int] = field(default_factory=dict)
-    # Tech-lead stuck sweep escalations (#6824 F1): issue numbers that exhausted
-    # their recovery budget this tick and must be escalated to needs-human through
-    # the Planner/Applier (an authoritative label write, not a direct GitHub call
-    # from the observation seam). A tick-scoped buffer cleared after planning.
+    # DURABLE set of issues whose recovery budget is exhausted and whose
+    # needs-human escalation has NOT yet been acknowledged (the label observed
+    # present) — persisted like ``recovery_attempts`` so an escalation survives a
+    # crash or an apply failure and is retried until it lands (#6824 R1).
+    pending_stuck_sweep_escalations: set[int] = field(default_factory=set)
+    # Tick-scoped buffers seeded from the durable set each sweep: every unacked
+    # escalation gets an idempotent needs-human label (retry-safe), and a NEWLY
+    # exhausted issue additionally gets the one explaining comment.
     stuck_sweep_escalations: list[int] = field(default_factory=list)
+    stuck_sweep_new_escalations: list[int] = field(default_factory=list)
     def retrospective_review_in_flight_issue_numbers(self) -> set[int]:
         """Issues already queued, discovered, or actively under retrospective review."""
 

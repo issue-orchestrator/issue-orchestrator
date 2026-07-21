@@ -220,6 +220,32 @@ class QueueCacheStore:
                 (payload,),
             )
 
+    def load_pending_escalations(self) -> set[int]:
+        """Load the durable set of unacknowledged stuck-sweep escalations (#6824 R1).
+
+        Empty when none recorded. Stored as a JSON array of issue numbers so an
+        exhausted issue's needs-human escalation survives a crash / apply failure
+        and is retried until the label is observed present.
+        """
+        conn = self._get_connection()
+        row = conn.execute(
+            "SELECT value FROM meta WHERE key = 'stuck_sweep_pending_escalations'"
+        ).fetchone()
+        if row is None:
+            return set()
+        return {int(number) for number in json.loads(row["value"])}
+
+    def save_pending_escalations(self, value: set[int]) -> None:
+        """Persist the pending-escalation set as a JSON array (#6824 R1)."""
+        payload = json.dumps(sorted(int(number) for number in value))
+        with self._transaction() as tx:
+            tx.execute(
+                "INSERT INTO meta (key, value) VALUES "
+                "('stuck_sweep_pending_escalations', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (payload,),
+            )
+
     def save_snapshot(
         self,
         issues: Sequence["Issue"],

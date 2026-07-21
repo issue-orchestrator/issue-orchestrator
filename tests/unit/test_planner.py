@@ -4507,12 +4507,14 @@ class TestStuckSweepEscalation:
     the Planner/Applier — an authoritative label write + one explaining comment,
     not a direct GitHub call from the observation seam."""
 
-    def test_exhausted_issue_gets_needs_human_label_and_comment(self):
+    def test_newly_exhausted_gets_needs_human_label_and_comment(self):
         config = make_config()
         planner = Planner(config=config, scheduler=Scheduler(config))
         needs_human = planner._lm.needs_human  # noqa: SLF001
 
-        plan = planner.plan(make_snapshot(stuck_sweep_escalations=(777,)))
+        plan = planner.plan(make_snapshot(
+            stuck_sweep_escalations=(777,), stuck_sweep_new_escalations=(777,),
+        ))
 
         labels = [
             a for a in plan.actions
@@ -4527,7 +4529,21 @@ class TestStuckSweepEscalation:
         assert comments[0].is_pr is False
         assert needs_human in comments[0].comment
 
-    def test_no_escalations_when_buffer_empty(self):
+    def test_pending_retry_relabels_without_reposting_comment(self):
+        # R1 (#6824): an unacknowledged (retried) escalation re-emits the
+        # idempotent label but NOT the comment (only the newly exhausted comment).
+        config = make_config()
+        planner = Planner(config=config, scheduler=Scheduler(config))
+
+        plan = planner.plan(make_snapshot(
+            stuck_sweep_escalations=(777,), stuck_sweep_new_escalations=(),
+        ))
+
+        assert [a.issue_number for a in plan.actions
+                if isinstance(a, AddLabelAction) and a.issue_number == 777] == [777]
+        assert not [a for a in plan.actions if isinstance(a, AddCommentAction)]
+
+    def test_no_escalations_when_buffers_empty(self):
         config = make_config()
         planner = Planner(config=config, scheduler=Scheduler(config))
         plan = planner.plan(make_snapshot(stuck_sweep_escalations=()))

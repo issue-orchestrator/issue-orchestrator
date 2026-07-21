@@ -109,6 +109,9 @@ class _StuckScan:
     # Issues currently OWNED by a dedicated reconciler / open proposal / active
     # work — skipped this sweep, and never treated as "recovered" by the clear.
     owned_numbers: frozenset[int]
+    # Open issues that now carry the needs-human label — a landed escalation
+    # (the acknowledgement that drops it from the durable pending set, #6824 R1).
+    needs_human_numbers: frozenset[int]
 
 
 def stuck_sweep_due(config: "Config", state: "OrchestratorState", now: float) -> bool:
@@ -167,6 +170,7 @@ def run_stuck_sweep(
         provider_circuit_open=provider_circuit_open,
     )
     _clear_recovered_counters(state, scan)
+    _ack_landed_escalations(state, scan)
     recovered: list[DiscoveredFailure] = []
     exhausted: list[int] = []
     for issue, blocking_label in scan.candidates:
@@ -193,7 +197,26 @@ def run_stuck_sweep(
             state.recovery_attempts[issue.number] = attempts + 1
             recovered.append(_recovered_failure(issue, blocking_label, now))
             _log_reinject(issue, attempts + 1, max_attempts, blocking_label)
+    # Newly exhausted issues join the durable pending-escalation set; they stay
+    # there (re-labelled every sweep) until the needs-human label is observed
+    # present, so a crash or apply failure never loses the escalation (#6824 R1).
+    state.pending_stuck_sweep_escalations.update(exhausted)
     return StuckSweepResult(recovered=tuple(recovered), exhausted=tuple(exhausted))
+
+
+def _ack_landed_escalations(state: "OrchestratorState", scan: "_StuckScan") -> None:
+    """Drop escalations that LANDED (needs-human present) or whose issue RECOVERED.
+
+    The durable pending set is the escalation retry queue (#6824 R1): an entry
+    survives until its needs-human label is observed on the issue (the
+    acknowledged outcome) — through any intervening crash or apply failure — or
+    until the issue is no longer blocked (recovered), which supersedes it.
+    """
+    state.pending_stuck_sweep_escalations = {
+        number
+        for number in state.pending_stuck_sweep_escalations
+        if number in scan.blocked_numbers and number not in scan.needs_human_numbers
+    }
 
 
 def _clear_recovered_counters(state: "OrchestratorState", scan: "_StuckScan") -> None:
@@ -225,6 +248,9 @@ def hydrate_stuck_sweep_state(
         return
     state.last_stuck_sweep_at = store.load_last_stuck_sweep_at()
     state.recovery_attempts = store.load_recovery_attempts()
+    # Unacknowledged escalations survive a restart so an exhausted issue is
+    # re-escalated until its needs-human label lands (#6824 R1).
+    state.pending_stuck_sweep_escalations = store.load_pending_escalations()
 
 
 def persist_stuck_sweep_state(
@@ -243,6 +269,7 @@ def persist_stuck_sweep_state(
     try:
         store.save_last_stuck_sweep_at(state.last_stuck_sweep_at)
         store.save_recovery_attempts(state.recovery_attempts)
+        store.save_pending_escalations(state.pending_stuck_sweep_escalations)
     except Exception:
         logger.warning(
             "[STUCK_SWEEP] failed to persist recovery counters; a restart "
@@ -282,14 +309,19 @@ def _scan_stuck_issues(
     scoped = _scope_filtered(issues, config.filtering.label)
     machinery = _machinery_blocking_folded()
     preferred = label_manager.blocked_failed.casefold()
+    needs_human = label_manager.needs_human.casefold()
     candidates: list[tuple["Issue", str]] = []
     blocked: set[int] = set()
     owned: set[int] = set(base_owned)
+    needs_human_numbers: set[int] = set()
     for issue in scoped:
         if issue.state != "open":
             continue
+        folded = {name.casefold() for name in issue.labels}
         if label_manager.get_blocking(issue.labels):
             blocked.add(issue.number)
+        if needs_human in folded:
+            needs_human_numbers.add(issue.number)
         if issue.number in base_owned:
             continue
         if _reconciler_owns(issue, label_manager, provider_circuit_open):
@@ -303,6 +335,7 @@ def _scan_stuck_issues(
         candidates=tuple(candidates),
         blocked_numbers=frozenset(blocked),
         owned_numbers=frozenset(owned),
+        needs_human_numbers=frozenset(needs_human_numbers),
     )
 
 
@@ -467,27 +500,35 @@ _ESCALATION_COMMENT = (
 
 
 def build_stuck_sweep_escalation_actions(
-    issue_numbers: "tuple[int, ...]", needs_human_label: str
+    label_issue_numbers: "tuple[int, ...]",
+    comment_issue_numbers: "tuple[int, ...]",
+    needs_human_label: str,
 ) -> "list[Action]":
-    """Authoritative needs-human escalation for exhausted issues (#6824 F1).
+    """Authoritative needs-human escalation for exhausted issues (#6824 F1/R1).
 
-    The stuck-sweep owner defines the escalation (an idempotent label + one
-    explaining comment); the Planner routes it through the Applier so the GitHub
-    write stays orchestrator-authoritative rather than a direct call from the
-    observation seam. The sweep emits each issue once (on the exhaustion
-    transition), so the comment is not re-posted on later sweeps.
+    The stuck-sweep owner defines the escalation; the Planner routes it through
+    the Applier so the GitHub write stays orchestrator-authoritative rather than
+    a direct call from the observation seam.
+
+    ``label_issue_numbers`` is the FULL durable pending set — every unacknowledged
+    escalation is re-labelled each sweep, an idempotent no-op once present, so a
+    crash or an apply failure never loses it (it retries until the label lands and
+    is then acknowledged). ``comment_issue_numbers`` is only the NEWLY exhausted
+    subset, so the one explaining comment is posted once and not re-posted on
+    retries.
     """
     from .actions import AddCommentAction, AddLabelAction
     from .reconciliation import build_expected_for_mutation
 
     actions: list["Action"] = []
-    for issue_number in issue_numbers:
+    for issue_number in label_issue_numbers:
         actions.append(AddLabelAction(
             issue_number=issue_number,
             label=needs_human_label,
             reason="stuck-sweep recovery budget exhausted (#6824)",
             expected=build_expected_for_mutation(),
         ))
+    for issue_number in comment_issue_numbers:
         actions.append(AddCommentAction(
             number=issue_number,
             is_pr=False,

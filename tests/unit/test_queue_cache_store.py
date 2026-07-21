@@ -207,6 +207,25 @@ class TestStuckSweepState:
         store.save_recovery_attempts({1: 2, 2: 1})
         assert store.load_recovery_attempts() == {1: 2, 2: 1}
 
+    def test_pending_escalations_round_trip(self, store: QueueCacheStore) -> None:
+        # R1 (#6824): unacknowledged escalations survive a restart.
+        store.save_pending_escalations({7, 42})
+        loaded = store.load_pending_escalations()
+        assert loaded == {7, 42}
+        assert all(isinstance(n, int) for n in loaded)
+
+    def test_pending_escalations_defaults_to_empty(
+        self, store: QueueCacheStore
+    ) -> None:
+        assert store.load_pending_escalations() == set()
+
+    def test_pending_escalations_second_save_overwrites(
+        self, store: QueueCacheStore
+    ) -> None:
+        store.save_pending_escalations({1, 2})
+        store.save_pending_escalations({3})
+        assert store.load_pending_escalations() == {3}
+
     def test_stuck_sweep_state_independent_of_health_review(
         self, store: QueueCacheStore
     ) -> None:

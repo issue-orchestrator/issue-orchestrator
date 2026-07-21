@@ -456,6 +456,104 @@ def test_exhausted_issue_flows_to_snapshot_for_planner_escalation():
     assert 50 not in {f.issue_number for f in snapshot.discovered_failures}
 
 
+class _InMemoryQueueCache:
+    """Minimal QueueCacheStore for the durable stuck-sweep meta (#6824 R1)."""
+
+    def __init__(self) -> None:
+        self._at = 0.0
+        self._attempts: dict[int, int] = {}
+        self._pending: set[int] = set()
+
+    def load_last_stuck_sweep_at(self) -> float:
+        return self._at
+
+    def save_last_stuck_sweep_at(self, value: float) -> None:
+        self._at = value
+
+    def load_recovery_attempts(self) -> dict[int, int]:
+        return dict(self._attempts)
+
+    def save_recovery_attempts(self, value: dict[int, int]) -> None:
+        self._attempts = dict(value)
+
+    def load_pending_escalations(self) -> set[int]:
+        return set(self._pending)
+
+    def save_pending_escalations(self, value: set[int]) -> None:
+        self._pending = set(value)
+
+
+def test_escalation_persists_until_needs_human_observed():
+    # R1 (#6824): an exhausted issue's escalation stays in the durable pending set
+    # until its needs-human label is observed — surviving apply failures / crashes
+    # in between (no repeat comment, just an idempotent label retry).
+    config = _config(max_recovery_attempts=3)
+    labels = LabelManager(config)
+    state = OrchestratorState()
+    state.recovery_attempts = {50: 2}
+    host = _RecordingHost([_issue(50, labels=["blocked-failed"])])
+
+    r1 = run_stuck_sweep(config, state, host, labels, now=1.0)
+    assert r1.exhausted == (50,)
+    assert state.pending_stuck_sweep_escalations == {50}
+
+    # Next sweep: the label never landed (apply failed) — still blocked, no
+    # needs-human. The escalation is RETAINED for retry, and NOT re-counted as
+    # newly exhausted (so the comment is not re-posted).
+    r2 = run_stuck_sweep(config, state, host, labels, now=2.0)
+    assert r2.exhausted == ()
+    assert state.pending_stuck_sweep_escalations == {50}
+
+
+def test_escalation_acknowledged_when_needs_human_present():
+    # R1 (#6824): once needs-human is observed on the issue, the escalation is
+    # acknowledged and drops out of the durable pending set (stops retrying).
+    config = _config(max_recovery_attempts=3)
+    labels = LabelManager(config)
+    state = OrchestratorState()
+    state.recovery_attempts = {50: 3}
+    state.pending_stuck_sweep_escalations = {50}
+    host = _RecordingHost(
+        [_issue(50, labels=["blocked-failed", labels.needs_human])]
+    )
+
+    run_stuck_sweep(config, state, host, labels, now=1.0)
+
+    assert state.pending_stuck_sweep_escalations == set()
+
+
+def test_pending_escalation_dropped_when_issue_recovers():
+    # R1 (#6824): a recovered issue (no longer blocked) supersedes its pending
+    # escalation — the durable set does not accumulate resolved issues.
+    config = _config(max_recovery_attempts=3)
+    labels = LabelManager(config)
+    state = OrchestratorState()
+    state.pending_stuck_sweep_escalations = {50}
+    host = _RecordingHost([_issue(50, labels=["agent:web"])])  # no blocking label
+
+    run_stuck_sweep(config, state, host, labels, now=1.0)
+
+    assert state.pending_stuck_sweep_escalations == set()
+
+
+def test_pending_escalations_persist_and_rehydrate_across_restart():
+    # R1 (#6824): the pending-escalation set survives a restart via the store, so
+    # an unacknowledged escalation is re-planned after a crash.
+    from issue_orchestrator.control.stuck_sweep import (
+        hydrate_stuck_sweep_state,
+        persist_stuck_sweep_state,
+    )
+
+    store = _InMemoryQueueCache()
+    state = OrchestratorState()
+    state.pending_stuck_sweep_escalations = {50, 51}
+    persist_stuck_sweep_state(state, store)
+
+    restarted = OrchestratorState()
+    hydrate_stuck_sweep_state(restarted, store)
+    assert restarted.pending_stuck_sweep_escalations == {50, 51}
+
+
 def test_disabled_sweep_injects_nothing_via_fact_gatherer():
     config = _config(enabled=False)
     state = OrchestratorState()
