@@ -424,7 +424,36 @@ class TestSandboxReadRoots:
 
 
 class TestManagedWorktreeSelection:
-    """R4 (#6824): registered-worktree provenance + numeric-suffix cap."""
+    """R4 (#6824): registered-worktree provenance (uncapped) vs bounded mtime cap."""
+
+    def test_focus_authorization_is_decoupled_from_the_cap(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        # R4 (#6824): a focused investigation must keep its OWN registered run
+        # history even when the whole-system enumeration cap is full of newer,
+        # unrelated registered worktrees. Authorization != capped selection.
+        import os
+
+        import issue_orchestrator.control.triage_evidence as te
+
+        monkeypatch.setattr(te, "_MAX_WORKTREE_ROOTS", 1)
+        config = _config(tmp_path)
+        # A newer unrelated registered worktree fills the cap-of-1...
+        _register_worktree(config.repo_root, tmp_path / "repo-99")
+        os.utime(tmp_path / "repo-99", (9000, 9000))
+        # ...while the OLDER focus worktree (repo-42) is also registered.
+        _register_worktree(config.repo_root, tmp_path / "repo-42")
+        os.utime(tmp_path / "repo-42", (1000, 1000))
+        focus_run = _make_worktree_run_dir(tmp_path, "repo-42", "20260101T000000__c")
+
+        evidence = build_evidence_map(
+            config=config,
+            repository_host=_FakeRepositoryHost(),
+            focus_issue_number=42,
+        )
+
+        # The focus run-dir is included despite the cap being filled by repo-99.
+        assert str(focus_run.resolve()) in evidence.run_dirs
 
     def test_cap_keeps_most_recently_modified(
         self, tmp_path: Path, monkeypatch

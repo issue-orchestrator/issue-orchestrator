@@ -83,7 +83,47 @@ class TriageDispatchHost(Protocol):
 
     def tick(self) -> bool: ...
 
-    def terminate_triage_session(self, session: "Session") -> None: ...
+    def terminate_triage_session(
+        self, session: "Session"
+    ) -> "TriageTerminationOutcome": ...
+
+
+@dataclass(frozen=True)
+class TriageTerminationOutcome:
+    """Per-effect result of terminating a triage session (#6824 R7).
+
+    Each field is True when its effect SUCCEEDED or was not needed, and False
+    when it was attempted and FAILED. ``clean`` is False when any effect failed —
+    so a caller never reports a leak-free termination after, say, the disposable
+    scratch worktree failed to remove (the intent is retained for a retry, but
+    this run did not succeed).
+    """
+
+    terminal_stopped: bool = True
+    machine_removed: bool = True
+    claim_released: bool = True
+    worktree_removed: bool = True
+
+    @property
+    def clean(self) -> bool:
+        return (
+            self.terminal_stopped
+            and self.machine_removed
+            and self.claim_released
+            and self.worktree_removed
+        )
+
+    def failures(self) -> tuple[str, ...]:
+        """Human-readable names of the effects that failed (for the result detail)."""
+        names = {
+            "terminal_stopped": "terminal stop",
+            "machine_removed": "state-machine removal",
+            "claim_released": "claim release",
+            "worktree_removed": "scratch-worktree removal",
+        }
+        return tuple(
+            label for attr, label in names.items() if not getattr(self, attr)
+        )
 
 
 @dataclass(frozen=True)
@@ -207,7 +247,7 @@ def run_health_review(
         triage.issue_number,
         identity,
     )
-    completed = _drive_session_to_completion(
+    termination = _drive_session_to_completion(
         orchestrator,
         identity,
         now=now,
@@ -215,13 +255,10 @@ def run_health_review(
         poll_interval=poll_interval,
         timeout_s=timeout_s,
     )
-    if not completed:
+    if termination is not None:
         return HealthReviewResult(
             triage.issue_number, launched=True, completed=False,
-            detail=(
-                f"health review timed out after {timeout_s:.0f}s"
-                " (session terminated)"
-            ),
+            detail=_timeout_detail("health review", timeout_s, termination),
         )
     logger.info(
         "[TRIAGE_TRIGGER] on-demand health review completed (anchor #%d)",
@@ -298,7 +335,7 @@ def _drive_to_completion(
     timeout_s: float,
 ) -> InvestigationResult:
     """Drive a launched failure investigation to completion and label the result."""
-    completed = _drive_session_to_completion(
+    termination = _drive_session_to_completion(
         orchestrator,
         identity,
         now=now,
@@ -306,13 +343,10 @@ def _drive_to_completion(
         poll_interval=poll_interval,
         timeout_s=timeout_s,
     )
-    if not completed:
+    if termination is not None:
         return InvestigationResult(
             issue_number, launched=True, completed=False,
-            detail=(
-                f"investigation timed out after {timeout_s:.0f}s"
-                " (session terminated)"
-            ),
+            detail=_timeout_detail("investigation", timeout_s, termination),
         )
     logger.info(
         "[TRIAGE_TRIGGER] issue #%d investigation completed", issue_number
@@ -323,6 +357,21 @@ def _drive_to_completion(
     )
 
 
+def _timeout_detail(
+    what: str, timeout_s: float, termination: "TriageTerminationOutcome"
+) -> str:
+    """Timeout result detail that is HONEST about a failed cleanup (#6824 R7).
+
+    A clean termination reports "session terminated"; if any effect failed the
+    detail says so, so a caller never reports a leak-free outcome after, e.g.,
+    the disposable scratch worktree failed to remove.
+    """
+    detail = f"{what} timed out after {timeout_s:.0f}s (session terminated"
+    if not termination.clean:
+        detail += f"; cleanup INCOMPLETE — {', '.join(termination.failures())} failed"
+    return detail + ")"
+
+
 def _drive_session_to_completion(
     orchestrator: TriageDispatchHost,
     identity: str,
@@ -331,7 +380,7 @@ def _drive_session_to_completion(
     sleep: Callable[[float], None],
     poll_interval: float,
     timeout_s: float,
-) -> bool:
+) -> "TriageTerminationOutcome | None":
     """Tick until the launched session leaves ``active_sessions`` or times out.
 
     Shared drive loop for every on-demand triage flavor (targeted failure
@@ -340,7 +389,8 @@ def _drive_session_to_completion(
     and drains background completion jobs. The session is matched by its stable
     :class:`SessionKey` identity (``triage:N``) rather than by raw issue number,
     so a restored session with the same slot still counts as the one we
-    launched. Returns True when the session drained, False on timeout.
+    launched. Returns None when the session drained (completed); on timeout it
+    terminates the session and returns the :class:`TriageTerminationOutcome`.
     """
     deadline = now() + timeout_s
     while _session_active(orchestrator, identity):
@@ -351,27 +401,28 @@ def _drive_session_to_completion(
                 identity,
                 timeout_s,
             )
-            _terminate_session(orchestrator, identity)
-            return False
+            return _terminate_session(orchestrator, identity)
         orchestrator.tick()
         sleep(poll_interval)
-    return True
+    return None
 
 
-def _terminate_session(orchestrator: TriageDispatchHost, identity: str) -> None:
+def _terminate_session(
+    orchestrator: TriageDispatchHost, identity: str
+) -> "TriageTerminationOutcome":
     """Terminate the timed-out session so ownership of the timeout is EXPLICIT.
 
     Routes through the reconciling ``terminate_triage_session`` owner (#6824
-    F7/R7): it stops the terminal AND drops the session from ``active_sessions``
-    and releases its claim — so the drive loop's ``_session_active`` check is
-    immediately false and a multi-issue batch does not co-drive a dead session.
-    Without this, the command reported "still active" and then ``close()`` killed
-    the session implicitly after the caller already returned. Iterates a COPY
-    because the reconciling terminate mutates ``active_sessions``.
+    F7/R7), which returns a typed outcome — so the drive loop's
+    ``_session_active`` check is immediately false, a multi-issue batch does not
+    co-drive a dead session, and the caller learns whether cleanup was clean.
+    Iterates a COPY because the reconciling terminate mutates ``active_sessions``.
     """
+    outcome: "TriageTerminationOutcome | None" = None
     for session in list(orchestrator.state.active_sessions):
         if _session_identity(session) == identity:
-            orchestrator.terminate_triage_session(session)
+            outcome = orchestrator.terminate_triage_session(session)
+    return outcome if outcome is not None else TriageTerminationOutcome()
 
 
 def _session_active(orchestrator: TriageDispatchHost, identity: str) -> bool:

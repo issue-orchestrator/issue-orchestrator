@@ -81,14 +81,16 @@ class _FakeHost:
             self.state.active_sessions.remove(self._session)
         return True
 
-    def terminate_triage_session(self, session) -> None:
+    def terminate_triage_session(self, session):
         # Faithful to the real facade (#6824 R7): terminate AND reconcile the
-        # session out of active_sessions (the production terminate_triage_session
-        # now does the same, so this double no longer overstates behavior).
+        # session out of active_sessions, returning a (clean) typed outcome.
+        from issue_orchestrator.control.triage_trigger import TriageTerminationOutcome
+
         self.killed.append(session.terminal_id)
         self.state.active_sessions = [
             s for s in self.state.active_sessions if s.terminal_id != session.terminal_id
         ]
+        return TriageTerminationOutcome()
 
 
 def _noop_sleep(_seconds: float) -> None:
@@ -231,12 +233,15 @@ class _FakeHealthHost:
             self.state.active_sessions.remove(self._session)
         return True
 
-    def terminate_triage_session(self, session) -> None:
+    def terminate_triage_session(self, session):
         # Faithful to the real facade (#6824 R7): terminate AND reconcile.
+        from issue_orchestrator.control.triage_trigger import TriageTerminationOutcome
+
         self.killed.append(session.terminal_id)
         self.state.active_sessions = [
             s for s in self.state.active_sessions if s.terminal_id != session.terminal_id
         ]
+        return TriageTerminationOutcome()
 
 
 def test_health_review_launches_and_drives_to_completion() -> None:

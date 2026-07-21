@@ -4503,9 +4503,9 @@ class TestReservedTriageConcurrency:
 
 
 class TestStuckSweepEscalation:
-    """F1 (#6824): stuck-sweep-exhausted issues escalate to needs-human through
-    the Planner/Applier — an authoritative label write + one explaining comment,
-    not a direct GitHub call from the observation seam."""
+    """R1 (#6824): stuck-sweep-exhausted issues escalate to needs-human through
+    the Planner/Applier — an authoritative, LABEL-ONLY write (no comment, which
+    could not be made crash-safe), not a direct GitHub call from observation."""
 
     def test_escalation_is_label_only(self):
         # R1 (#6824): the authoritative escalation is the idempotent needs-human

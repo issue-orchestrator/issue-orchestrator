@@ -227,18 +227,18 @@ def acquire_lock(
 
     # Gate(s) held. Compatibility guard (#6824 R2): a live process may have
     # recorded metadata under the PRE-flock implementation (which held no gate),
-    # so winning the gate does NOT prove that process is gone. If the recorded
-    # pid is a DIFFERENT live process, refuse rather than overwrite its lock
-    # during an upgrade. A dead recorded pid is a genuine stale takeover.
-    existing = _read_lock(lock_path)
-    if (
-        existing is not None
-        and existing.pid != os.getpid()
-        and _is_process_alive(existing.pid)
-    ):
+    # so winning the gate does NOT prove that process is gone. Check EVERY
+    # conflicting legacy advertisement across modes, not just this mode's file.
+    legacy = _conflicting_legacy_holder(repo_root, lock_path, instance_id)
+    if legacy is not None:
         _release_fds(held)
-        raise _already_running(repo_root, lock_path, instance_id)
-    recovered = existing is not None
+        raise AlreadyRunning(
+            pid=legacy.pid,
+            repo_root=repo_root,
+            port=legacy.http_port,
+            instance_id=legacy.instance_id,
+        )
+    recovered = _read_lock(lock_path) is not None
     info = LockInfo(
         repo_root=str(repo_root),
         pid=os.getpid(),
@@ -265,6 +265,39 @@ def _already_running(
         port=existing.http_port if existing else None,
         instance_id=instance_id,
     )
+
+
+def _live_holder(lock_path: Path) -> LockInfo | None:
+    """A LIVE, different-pid holder advertised at ``lock_path`` (else None)."""
+    info = _read_lock(lock_path)
+    if info is not None and info.pid != os.getpid() and _is_process_alive(info.pid):
+        return info
+    return None
+
+
+def _conflicting_legacy_holder(
+    repo_root: Path, lock_path: Path, instance_id: str | None
+) -> LockInfo | None:
+    """A live pre-flock holder (metadata, no gate) that conflicts with this acquire.
+
+    Cross-mode matrix (#6824 R2): winning the flock gate cannot exclude a legacy
+    process that holds no gate, so EVERY conflicting advertisement is checked —
+    not just this mode's own file. An EXCLUSIVE acquire (single-instance /
+    one-shot) conflicts with a live ``lock.json`` AND every live ``locks/*.json``;
+    a NAMED acquire conflicts with its own same-id ``locks/{id}.json`` AND a live
+    ``lock.json`` (a single-instance engine excludes all names).
+    """
+    own = _live_holder(lock_path)
+    if own is not None:
+        return own
+    single = _live_holder(lock_file(repo_root, None))
+    if single is not None:
+        return single
+    if instance_id is None:
+        for info in list_instance_locks(repo_root):
+            if info.pid != os.getpid():
+                return info
+    return None
 
 
 def _release_fds(fds: list[int]) -> None:

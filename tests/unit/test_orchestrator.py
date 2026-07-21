@@ -227,8 +227,9 @@ def test_terminate_triage_session_is_behavior_complete(sample_config, tmp_path):
     )
     orchestrator.state.active_sessions = [triage, other]
 
-    orchestrator.terminate_triage_session(triage)
+    outcome = orchestrator.terminate_triage_session(triage)
 
+    assert outcome.clean is True  # every effect succeeded
     # State machine terminalized (removed)...
     smm.remove_session_machine.assert_called_once_with("triage-77")
     # ...terminal stopped through the real session-routing boundary...
@@ -240,6 +241,66 @@ def test_terminate_triage_session_is_behavior_complete(sample_config, tmp_path):
     claim_manager.release_claim.assert_called_once_with(77, "lease-1")
     # ...and the disposable scratch worktree force-removed (no leak).
     worktree_manager.remove.assert_called_once_with(scratch, force=True)
+
+
+def _terminate_fixture(sample_config, tmp_path):
+    orchestrator = create_test_orchestrator(sample_config)
+    session_manager = MagicMock()
+    claim_manager = MagicMock()
+    smm = MagicMock()
+    worktree_manager = MagicMock()
+    object.__setattr__(orchestrator.deps, "session_manager", session_manager)
+    object.__setattr__(orchestrator.deps, "claim_manager", claim_manager)
+    object.__setattr__(orchestrator.deps, "state_machine_manager", smm)
+    object.__setattr__(orchestrator.deps, "worktree_manager", worktree_manager)
+    scratch = tmp_path / "repo-triage-77-abc"
+    triage = SimpleNamespace(
+        terminal_id="triage-77", issue=SimpleNamespace(number=77), lease_id="lease-1",
+        scratch_worktree=True, worktree_path=scratch,
+    )
+    orchestrator.state.active_sessions = [triage]
+    return orchestrator, triage, session_manager, claim_manager, worktree_manager, scratch
+
+
+def test_terminate_triage_worktree_failure_reports_unclean_and_retains_cleanup(
+    sample_config, tmp_path
+):
+    # R7 (#6824): if scratch-worktree removal FAILS, the outcome is NOT clean and
+    # an ImmediateCleanup is retained (so a future tick retries) — never a silent
+    # leak reported as success.
+    orchestrator, triage, sm, cm, wtm, scratch = _terminate_fixture(sample_config, tmp_path)
+    wtm.remove.side_effect = RuntimeError("git worktree remove failed")
+
+    outcome = orchestrator.terminate_triage_session(triage)
+
+    assert outcome.worktree_removed is False and outcome.clean is False
+    # Other effects still ran independently.
+    sm.stop.assert_called_once()
+    cm.release_claim.assert_called_once_with(77, "lease-1")
+    assert orchestrator.state.active_sessions == []
+    # Cleanup intent retained for retry.
+    retained = [
+        c for c in orchestrator.state.immediate_cleanups
+        if c.issue_number == 77 and c.scratch_worktree
+    ]
+    assert len(retained) == 1 and retained[0].worktree_path == str(scratch)
+
+
+def test_terminate_triage_terminal_failure_does_not_abort_other_effects(
+    sample_config, tmp_path
+):
+    # R7 (#6824): a terminal-stop failure must not abort claim release or worktree
+    # removal — every effect is attempted independently.
+    orchestrator, triage, sm, cm, wtm, scratch = _terminate_fixture(sample_config, tmp_path)
+    sm.stop.side_effect = RuntimeError("terminal already gone")
+
+    outcome = orchestrator.terminate_triage_session(triage)
+
+    assert outcome.terminal_stopped is False
+    # ...yet claim + worktree still handled, and the session reconciled.
+    cm.release_claim.assert_called_once_with(77, "lease-1")
+    wtm.remove.assert_called_once_with(scratch, force=True)
+    assert orchestrator.state.active_sessions == []
 
 
 def test_composed_one_shot_timeout_terminates_via_real_driver_and_facade(

@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, ClassVar, Optional, cast
 if TYPE_CHECKING:
     from ..control.planner_types import OrchestratorSnapshot, Plan
     from ..control.session_manager import SessionRef, SessionType
+    from ..control.triage_trigger import TriageTerminationOutcome
     from ..domain.triage_session import TriageLaunchScope
     from ..ports.session_runner import DiscoveredSession
     from .e2e_db import E2ERun
@@ -170,49 +171,77 @@ class Orchestrator:
         """Kill a session by terminal ID (public wrapper)."""
         self._kill_session(name)
 
-    def terminate_triage_session(self, session: "Session") -> None:
+    def terminate_triage_session(
+        self, session: "Session"
+    ) -> "TriageTerminationOutcome":
         """Behavior-complete termination of a triage session on timeout (#6824 R7).
 
         ``kill_session`` only stops the terminal, and a one-shot command runs NO
         further tick after this — so a recorded cleanup fact would never be
-        applied. The termination must therefore be self-contained, mirroring the
-        outcomes normal completion produces: (1) remove the session state machine
-        (terminalize its lifecycle); (2) stop the terminal; (3) reconcile the
-        session out of ``active_sessions`` (via the state owner, never a direct
-        rebind); (4) release its claim; and (5) FORCE-remove the disposable
-        scratch worktree, so a timed-out failure investigation leaks neither a
-        machine, a claim, an active-session record, nor its scratch checkout.
+        applied. The termination is therefore self-contained, mirroring the
+        outcomes normal completion produces: remove the session state machine,
+        stop the terminal, reconcile the session out of ``active_sessions`` (via
+        the state owner), release its claim, and FORCE-remove the disposable
+        scratch worktree.
+
+        EVERY effect is attempted independently — a failure of one (e.g. the
+        terminal stop) never aborts the others — and the result is a typed
+        :class:`TriageTerminationOutcome` so a caller never reports a leak-free
+        termination after an effect failed. If worktree removal fails, an
+        ``ImmediateCleanup`` fact is RETAINED so a future tick can retry it,
+        rather than silently leaking the scratch checkout.
         """
-        smm = getattr(self.deps, "state_machine_manager", None)
-        if smm is not None:
-            smm.remove_session_machine(session.terminal_id)
-        self._kill_session(session.terminal_id)
-        self.state.drop_active_session(session.terminal_id)
-        claim_manager = getattr(self.deps, "claim_manager", None)
-        lease_id = getattr(session, "lease_id", None)
-        if claim_manager is not None and lease_id:
+        from ..control.triage_trigger import TriageTerminationOutcome
+        from ..domain.models import ImmediateCleanup
+
+        n = session.issue.number
+
+        def _effect(fn, what: str) -> bool:  # attempt one effect independently
             try:
-                claim_manager.release_claim(session.issue.number, lease_id)
+                fn()
+                return True
             except Exception:
                 logger.warning(
-                    "[TRIAGE] Failed to release claim for issue #%d on timeout terminate",
-                    session.issue.number,
-                    exc_info=True,
+                    "[TRIAGE] Failed to %s for issue #%d on timeout terminate",
+                    what, n, exc_info=True,
                 )
-        # The disposable scratch worktree must be removed HERE (a one-shot never
-        # ticks to plan the cleanup fact); forced, since it holds only throwaway
-        # agent artifacts. Best-effort — never raises out of termination.
-        if getattr(session, "scratch_worktree", False) and session.worktree_path:
-            worktree_manager = getattr(self.deps, "worktree_manager", None)
-            if worktree_manager is not None:
-                try:
-                    worktree_manager.remove(session.worktree_path, force=True)
-                except Exception:
-                    logger.warning(
-                        "[TRIAGE] Failed to remove scratch worktree for issue #%d on timeout terminate",
-                        session.issue.number,
-                        exc_info=True,
-                    )
+                return False
+
+        smm = getattr(self.deps, "state_machine_manager", None)
+        machine_removed = _effect(
+            lambda: smm.remove_session_machine(session.terminal_id) if smm else None,
+            "remove state machine",
+        )
+        terminal_stopped = _effect(
+            lambda: self._kill_session(session.terminal_id), "stop terminal"
+        )
+        self.state.drop_active_session(session.terminal_id)  # pure in-memory owner op
+        cm = getattr(self.deps, "claim_manager", None)
+        lease_id = getattr(session, "lease_id", None)
+        claim_released = _effect(
+            lambda: cm.release_claim(n, lease_id) if (cm and lease_id) else None,
+            "release claim",
+        )
+        wtm = getattr(self.deps, "worktree_manager", None)
+        disposable = getattr(session, "scratch_worktree", False) and session.worktree_path
+        worktree_removed = _effect(
+            lambda: wtm.remove(session.worktree_path, force=True)
+            if (disposable and wtm) else None,
+            "remove scratch worktree",
+        )
+        if disposable and not worktree_removed:
+            # Retain cleanup intent so a future tick retries rather than leaking.
+            self.state.record_immediate_cleanup(ImmediateCleanup(
+                issue_number=n, terminal_id=session.terminal_id,
+                worktree_path=str(session.worktree_path),
+                reason="triage-timeout", scratch_worktree=True,
+            ))
+        return TriageTerminationOutcome(
+            terminal_stopped=terminal_stopped,
+            machine_removed=machine_removed,
+            claim_released=claim_released,
+            worktree_removed=worktree_removed,
+        )
 
     def cancel_review_exchange_for_issue(
         self,

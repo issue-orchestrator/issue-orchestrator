@@ -1980,6 +1980,15 @@ class OrchestratorState:
 
         self.discovered_failures.extend([failure])
 
+    def record_immediate_cleanup(self, cleanup: "ImmediateCleanup") -> None:
+        """Record an immediate-cleanup fact through the state owner (#6824 R7).
+
+        Producers record via this owner method rather than mutating the
+        collection directly (e.g. a timeout terminate retaining disposable
+        cleanup intent when a synchronous removal failed).
+        """
+        self.immediate_cleanups.extend([cleanup])
+
     def drop_active_session(self, terminal_id: str) -> bool:
         """Reconcile a terminated session out of ``active_sessions`` (owner method).
 

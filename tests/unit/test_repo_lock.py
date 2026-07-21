@@ -232,6 +232,52 @@ class TestLockAtomicity:
         info = read_lock(tmp_path)
         assert info is not None and info.pid == 424242
 
+    def _write_legacy_metadata(
+        self, path: Path, pid: int, instance_id: str | None = None
+    ) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "repo_root": str(path.parent.parent),
+            "pid": pid,
+            "started_at": "2024-01-01T00:00:00Z",
+            "http_port": 8080,
+            "state_dir": str(path.parent / "state"),
+            "recovered": False,
+        }
+        if instance_id is not None:
+            payload["instance_id"] = instance_id
+        path.write_text(json.dumps(payload))
+
+    def test_named_acquire_refuses_live_legacy_single_instance(
+        self, tmp_path: Path
+    ) -> None:
+        # R2 (#6824): a NAMED acquire must conflict with a live legacy single-
+        # instance engine (lock.json), which holds no gate.
+        io = tmp_path / ".issue-orchestrator"
+        self._write_legacy_metadata(io / "lock.json", pid=424242)
+        with patch(
+            "issue_orchestrator.infra.repo_lock._is_process_alive", return_value=True
+        ):
+            with pytest.raises(AlreadyRunning) as exc:
+                acquire_lock(tmp_path, instance_id="named-1")
+        assert exc.value.pid == 424242
+
+    def test_exclusive_acquire_refuses_live_legacy_named_instance(
+        self, tmp_path: Path
+    ) -> None:
+        # R2 (#6824): an EXCLUSIVE (single-instance/one-shot) acquire must conflict
+        # with any live legacy named engine (locks/*.json), which holds no gate.
+        io = tmp_path / ".issue-orchestrator"
+        self._write_legacy_metadata(
+            io / "locks" / "old-named.json", pid=424242, instance_id="old-named"
+        )
+        with patch(
+            "issue_orchestrator.infra.repo_lock._is_process_alive", return_value=True
+        ):
+            with pytest.raises(AlreadyRunning) as exc:
+                acquire_lock(tmp_path)  # exclusive (instance_id=None)
+        assert exc.value.pid == 424242
+
     def test_stale_metadata_without_flock_is_taken_over(self, tmp_path: Path) -> None:
         """A crashed holder's flock is auto-released; its stale metadata is a
         takeover, marked recovered=True (not a false AlreadyRunning)."""

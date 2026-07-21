@@ -400,20 +400,34 @@ def _same_git_repo(a: Path | None, b: Path | None) -> bool:
         return False
 
 
-def _registered_managed_worktrees(config: "Config") -> list[Path]:
-    """This repo's REGISTERED managed worktrees under the worktrees root.
+def _is_registered_worktree(config: "Config", worktree: Path) -> bool:
+    """AUTHORIZATION predicate: is ``worktree`` an actual git worktree of THIS
+    repo? (#6824 R4).
 
-    A candidate ``<worktrees_root>/<repo>-*`` directory is granted only when it
-    is an actual git worktree of THIS repository — verified by its shared git
-    common dir matching the repo's (#6824 R4). A same-prefixed but UNRELATED
-    sibling repo (e.g. ``<repo>-private``) has a different common dir and is
-    excluded; a name-prefix glob alone would disclose it. Provenance is checked
-    with pure file reads (no subprocess). Ordered newest-first by numeric suffix
-    and bounded to :data:`_MAX_WORKTREE_ROOTS` (truncation logged).
+    Exact-path provenance by shared git common dir (pure file reads, no
+    subprocess), DECOUPLED from any enumeration cap — a same-prefixed but
+    unrelated sibling repo is rejected, and a genuinely registered worktree is
+    accepted regardless of how many other worktrees exist. This is distinct from
+    :func:`_registered_managed_worktrees`, which is bounded SELECTION for the
+    whole-system inventory; authorization must never depend on the cap.
+    """
+    return _same_git_repo(
+        resolve_git_common_dir(worktree), resolve_git_common_dir(Path(config.repo_root))
+    )
+
+
+def _registered_managed_worktrees(config: "Config") -> list[Path]:
+    """This repo's registered managed worktrees — bounded whole-system SELECTION.
+
+    A candidate ``<worktrees_root>/<repo>-*`` directory is included only when
+    :func:`_is_registered_worktree` authorizes it (an actual worktree of this
+    repo, never a same-prefixed unrelated sibling). Ordered newest-first by
+    MTIME and bounded to :data:`_MAX_WORKTREE_ROOTS` (truncation logged). Callers
+    that need per-path AUTHORIZATION (e.g. the focused-issue path) must use the
+    uncapped predicate directly, not membership in this capped list.
     """
     worktrees_root = _worktrees_root(config)
     repo_root = Path(config.repo_root)
-    repo_common = resolve_git_common_dir(repo_root)
     try:
         candidates = [p for p in worktrees_root.glob(f"{repo_root.name}-*") if p.is_dir()]
     except OSError as exc:
@@ -421,9 +435,7 @@ def _registered_managed_worktrees(config: "Config") -> list[Path]:
             "[triage] Evidence-map worktree glob in %s failed: %s", worktrees_root, exc
         )
         return []
-    registered = [
-        p for p in candidates if _same_git_repo(resolve_git_common_dir(p), repo_common)
-    ]
+    registered = [p for p in candidates if _is_registered_worktree(config, p)]
     registered.sort(key=_worktree_recency_key, reverse=True)
     if len(registered) > _MAX_WORKTREE_ROOTS:
         logger.warning(
@@ -525,13 +537,13 @@ def _collect_focus_run_dirs(
 ) -> None:
     """Focus-issue run-dirs: its REGISTERED sibling worktree's runs + hint parents.
 
-    The focus worktree is scanned only when it is in the SAME provenance-checked
-    registered-worktree inventory the whole-system path uses (#6824 R4) — never a
-    same-named but unrelated sibling repo (e.g. an unrelated ``repo-42``).
+    The focus worktree is scanned only when the uncapped AUTHORIZATION predicate
+    accepts it (#6824 R4) — never a same-named but unrelated sibling repo, and
+    never lost merely because unrelated registered worktrees filled the
+    whole-system enumeration cap (authorization is decoupled from that cap).
     """
     focus_worktree = _session_worktree(config, focus_issue_number)
-    registered_names = {w.name for w in _registered_managed_worktrees(config)}
-    if focus_worktree.name in registered_names:
+    if _is_registered_worktree(config, focus_worktree):
         for entry in _session_run_dirs_under(focus_worktree):
             found.add(str(entry.resolve()))
     for hint in artifact_hints:
