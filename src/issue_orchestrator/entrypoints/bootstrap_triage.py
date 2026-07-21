@@ -22,6 +22,8 @@ from ..infra.logging_config import get_repo_log_path, read_log_tail
 if TYPE_CHECKING:
     from ..control.board_snapshot_builder import BoardSnapshotBuilder
     from ..control.fact_gatherer import FactGatherer
+    from ..control.provider_resilience import ProviderResilienceManager
+    from ..ports import Issue
     from ..control.triage_board import TriageBoardPublisher
     from ..domain.board_snapshot import BoardE2EHealth, SessionActivityFacts
     from ..domain.models import Session
@@ -99,6 +101,26 @@ def create_triage_board_publisher(
     )
 
 
+def _make_provider_circuit_reader(
+    config: "Config", provider_resilience: "ProviderResilienceManager"
+) -> "Callable[[Issue], bool]":
+    """Predicate: is this issue's provider circuit still open? (#6824 F2).
+
+    The stuck sweep treats a ``provider-unavailable`` issue as owned by the
+    resilience manager while its circuit is open (it will resume it), and only
+    re-examines it once the circuit has closed and the issue was orphaned.
+    """
+    from ..control.label_manager import LabelManager
+    from ..control.provider_availability import ProviderAvailabilityPolicy
+
+    policy = ProviderAvailabilityPolicy(config, provider_resilience, LabelManager(config))
+
+    def is_open(issue: "Issue") -> bool:
+        return policy.is_open(policy.provider_for_issue(issue))
+
+    return is_open
+
+
 def create_triage_fact_gatherer(
     config: "Config",
     repository_host: "RepositoryHost | None",
@@ -106,11 +128,14 @@ def create_triage_fact_gatherer(
     authority: "TriageAuthorityStore",
     board_publisher: "TriageBoardPublisher | None",
     queue_cache_store: "QueueCacheStore | None" = None,
+    provider_resilience: "ProviderResilienceManager | None" = None,
 ) -> "FactGatherer | None":
     """Wire the read-only triage ledgers and projections as one unit.
 
     ``queue_cache_store`` backs the tech-lead stuck sweep's durable timer +
     recovery counters (#6823); optional so the testing composition can omit it.
+    ``provider_resilience`` backs the sweep's provider-circuit ownership check
+    (#6824 F2); optional (unwired => provider-unavailable issues stay skipped).
     """
     if repository_host is None:
         return None
@@ -127,6 +152,11 @@ def create_triage_fact_gatherer(
         # First-class E2E workload observation feed (e2e.occupies_session_slot).
         # Always wired; a no-op that touches nothing while the flag is off.
         e2e_slot_reader=make_e2e_slot_reader(config),
+        provider_circuit_open=(
+            _make_provider_circuit_reader(config, provider_resilience)
+            if provider_resilience is not None
+            else None
+        ),
     )
 
 
@@ -136,6 +166,7 @@ def create_triage_composition(
     events: "EventSink",
     fact_gatherer: "FactGatherer | None" = None,
     queue_cache_store: "QueueCacheStore | None" = None,
+    provider_resilience: "ProviderResilienceManager | None" = None,
 ) -> TriageComposition:
     """Build the triage store and ensure both projections share one publisher."""
     authority = create_triage_authority_store(config)
@@ -147,7 +178,7 @@ def create_triage_composition(
     if fact_gatherer is None:
         fact_gatherer = create_triage_fact_gatherer(
             config, repository_host, events, authority, board_publisher,
-            queue_cache_store,
+            queue_cache_store, provider_resilience,
         )
     return TriageComposition(
         authority=authority,

@@ -23,6 +23,8 @@ from issue_orchestrator.control.dependency_evaluator import DependencyEvaluator
 from issue_orchestrator.ports.repository_host import DependencyIssueSnapshot
 from issue_orchestrator.control.actions import (
     ActionType,
+    AddCommentAction,
+    AddLabelAction,
     LaunchSessionAction,
     RecoverTerminalIssueAction,
     SessionType,
@@ -4498,6 +4500,38 @@ class TestReservedTriageConcurrency:
 
         launches = self._triage_launches(planner.plan(snapshot))
         assert len(launches) == 1
+
+
+class TestStuckSweepEscalation:
+    """F1 (#6824): stuck-sweep-exhausted issues escalate to needs-human through
+    the Planner/Applier — an authoritative label write + one explaining comment,
+    not a direct GitHub call from the observation seam."""
+
+    def test_exhausted_issue_gets_needs_human_label_and_comment(self):
+        config = make_config()
+        planner = Planner(config=config, scheduler=Scheduler(config))
+        needs_human = planner._lm.needs_human  # noqa: SLF001
+
+        plan = planner.plan(make_snapshot(stuck_sweep_escalations=(777,)))
+
+        labels = [
+            a for a in plan.actions
+            if isinstance(a, AddLabelAction) and a.issue_number == 777
+        ]
+        assert [a.label for a in labels] == [needs_human]
+        comments = [
+            a for a in plan.actions
+            if isinstance(a, AddCommentAction) and a.number == 777
+        ]
+        assert len(comments) == 1
+        assert comments[0].is_pr is False
+        assert needs_human in comments[0].comment
+
+    def test_no_escalations_when_buffer_empty(self):
+        config = make_config()
+        planner = Planner(config=config, scheduler=Scheduler(config))
+        plan = planner.plan(make_snapshot(stuck_sweep_escalations=()))
+        assert not [a for a in plan.actions if isinstance(a, AddCommentAction)]
 
 
 class TestReservedTriageDoesNotStealWorkerReviewCapacity:

@@ -1914,6 +1914,11 @@ class OrchestratorState:
     # forever. Both are hydrated at startup from the queue-cache meta store.
     last_stuck_sweep_at: float = 0.0
     recovery_attempts: dict[int, int] = field(default_factory=dict)
+    # Tech-lead stuck sweep escalations (#6824 F1): issue numbers that exhausted
+    # their recovery budget this tick and must be escalated to needs-human through
+    # the Planner/Applier (an authoritative label write, not a direct GitHub call
+    # from the observation seam). A tick-scoped buffer cleared after planning.
+    stuck_sweep_escalations: list[int] = field(default_factory=list)
     def retrospective_review_in_flight_issue_numbers(self) -> set[int]:
         """Issues already queued, discovered, or actively under retrospective review."""
 

@@ -155,8 +155,9 @@ def test_scan_injects_recovered_failure_as_timed_out():
     assert failure.blocking_label == "blocked-failed"
     assert failure.issue_number == 7
     assert failure.observed_at == 50_000.0
-    # Recovery counter incremented and no exhaustion.
-    assert state.recovery_attempts == {7: 1}
+    # F1 (#6824): first detection records an OUTSTANDING recovery (0 failed
+    # cycles yet) — injection alone never spends the budget.
+    assert state.recovery_attempts == {7: 0}
     assert result.exhausted == ()
 
 
@@ -218,20 +219,77 @@ def test_done_guard_skips_issue_without_blocking_label():
     assert result.recovered == ()
 
 
-def test_excludes_human_and_machinery_labels():
+def test_excludes_machinery_and_reconciler_owned_labels():
+    # F2 (#6824): only proposed-triage/triage-observation are BLANKET machinery
+    # exclusions. provider-unavailable is owned while its circuit is open (the
+    # default None predicate treats it as owned), and the triage-needs-human
+    # MARKER is reconciler-owned — both skipped, but not permanently blind.
     config = _config()
     state = OrchestratorState()
     labels = LabelManager(config)
     host = _RecordingHost(
         [
-            _issue(1, labels=[labels.needs_human]),
-            _issue(2, labels=[labels.triage_needs_human]),
-            _issue(3, labels=[labels.provider_unavailable]),
-            _issue(4, labels=["proposed-triage"]),
-            _issue(5, labels=["triage-observation"]),
+            _issue(2, labels=[labels.triage_needs_human]),   # marker: reconciler owns
+            _issue(3, labels=[labels.provider_unavailable]),  # circuit owns (default)
+            _issue(4, labels=["proposed-triage"]),            # machinery
+            _issue(5, labels=["triage-observation"]),         # machinery
         ]
     )
     result = run_stuck_sweep(config, state, host, labels, now=1.0)
+    assert result.recovered == ()
+    assert state.recovery_attempts == {}
+
+
+def test_bare_needs_human_is_eligible_for_reexamination():
+    # F2 (#6824): a BARE needs-human (operator escalation, no triage marker) is
+    # eligible — re-injecting it is how a superseding investigation is created.
+    config = _config()
+    state = OrchestratorState()
+    labels = LabelManager(config)
+    host = _RecordingHost([_issue(1, labels=[labels.needs_human])])
+    result = run_stuck_sweep(config, state, host, labels, now=1.0)
+    assert {f.issue_number for f in result.recovered} == {1}
+
+
+def test_provider_unavailable_eligible_when_circuit_closed():
+    # F2 (#6824): once the provider circuit CLOSES, an orphaned provider-unavailable
+    # issue (label never cleared because it fell out of active work) is re-examined.
+    config = _config()
+    state = OrchestratorState()
+    labels = LabelManager(config)
+    host = _RecordingHost([_issue(3, labels=[labels.provider_unavailable])])
+    result = run_stuck_sweep(
+        config, state, host, labels, now=1.0,
+        provider_circuit_open=lambda _issue: False,  # circuit closed -> orphaned
+    )
+    assert {f.issue_number for f in result.recovered} == {3}
+
+
+def test_provider_unavailable_skipped_while_circuit_open():
+    # F2 (#6824): while the circuit is OPEN the resilience manager owns the issue.
+    config = _config()
+    state = OrchestratorState()
+    labels = LabelManager(config)
+    host = _RecordingHost([_issue(3, labels=[labels.provider_unavailable])])
+    result = run_stuck_sweep(
+        config, state, host, labels, now=1.0,
+        provider_circuit_open=lambda _issue: True,  # circuit open -> reconciler owns
+    )
+    assert result.recovered == ()
+    assert state.recovery_attempts == {}
+
+
+def test_open_proposal_target_is_not_reinjected_or_charged():
+    # F1 (#6824): an issue with an OPEN gated proposal (propose mode) is owned by
+    # the human who must delabel it — the sweep must not re-investigate it or
+    # spend its budget (the propose-mode budget-burn the review flagged).
+    config = _config()
+    state = OrchestratorState()
+    host = _RecordingHost([_issue(42, labels=["blocked-failed"])])
+    result = run_stuck_sweep(
+        config, state, host, LabelManager(config), now=1.0,
+        open_proposal_targets=frozenset({42}),
+    )
     assert result.recovered == ()
     assert state.recovery_attempts == {}
 
@@ -274,26 +332,69 @@ def test_dedup_skips_active_pending_cohort_and_discovered():
 # ---------------------------------------------------------------------------
 
 
-def test_over_limit_issue_not_injected_and_reported_exhausted():
+def test_final_failed_cycle_escalates_once_then_skips_at_ceiling():
+    # F1 (#6824): escalation fires ONCE, on the failing cycle that reaches the
+    # ceiling; a subsequent sweep leaves the already-escalated issue for the
+    # human (no re-inject, no re-escalate — the comment is never re-posted).
     config = _config(max_recovery_attempts=3)
+    labels = LabelManager(config)
+
+    # Transition: 2 prior failures + this one == max -> escalate once.
     state = OrchestratorState()
-    state.recovery_attempts = {5: 3}  # already at the limit
+    state.recovery_attempts = {5: 2}
     host = _RecordingHost([_issue(5, labels=["blocked-failed"])])
-    result = run_stuck_sweep(config, state, host, LabelManager(config), now=1.0)
+    result = run_stuck_sweep(config, state, host, labels, now=1.0)
     assert result.recovered == ()
     assert result.exhausted == (5,)
-    # Counter is NOT incremented past the limit (no unbounded growth).
     assert state.recovery_attempts == {5: 3}
 
+    # Ceiling: already escalated -> skipped entirely on the next sweep.
+    result2 = run_stuck_sweep(config, state, host, labels, now=2.0)
+    assert result2.recovered == ()
+    assert result2.exhausted == ()
+    assert state.recovery_attempts == {5: 3}  # capped, no unbounded growth
 
-def test_attempt_counter_increments_across_recoveries():
+
+def test_failed_cycle_spends_one_unit_and_reinjects():
     config = _config(max_recovery_attempts=3)
     state = OrchestratorState()
-    state.recovery_attempts = {6: 1}
+    state.recovery_attempts = {6: 1}  # 1 prior failed cycle
     host = _RecordingHost([_issue(6, labels=["blocked-failed"])])
     result = run_stuck_sweep(config, state, host, LabelManager(config), now=1.0)
     assert result.recovered[0].issue_number == 6
-    assert state.recovery_attempts == {6: 2}
+    assert state.recovery_attempts == {6: 2}  # a second failed cycle
+
+
+def test_recovered_issue_clears_its_budget():
+    # F1 (#6824): an issue that RECOVERED (no longer carries any blocking label,
+    # or was closed) has its lifetime budget cleared so a later unrelated
+    # incident on the same number starts fresh instead of inheriting a stale
+    # (possibly already-exhausted) count.
+    config = _config(max_recovery_attempts=3)
+    state = OrchestratorState()
+    state.recovery_attempts = {8: 2, 9: 3}
+    host = _RecordingHost(
+        [
+            _issue(8, labels=["agent:web"]),           # recovered: no blocking label
+            # 9 is absent from the scan entirely (closed) -> also cleared.
+        ]
+    )
+    run_stuck_sweep(config, state, host, LabelManager(config), now=1.0)
+    assert state.recovery_attempts == {}
+
+
+def test_owned_stuck_issue_keeps_its_budget():
+    # The clear must NOT drop an issue that is still blocked but OWNED mid-recovery
+    # (an open proposal): it has not recovered, so its budget is preserved.
+    config = _config(max_recovery_attempts=3)
+    state = OrchestratorState()
+    state.recovery_attempts = {42: 1}
+    host = _RecordingHost([_issue(42, labels=["blocked-failed"])])
+    run_stuck_sweep(
+        config, state, host, LabelManager(config), now=1.0,
+        open_proposal_targets=frozenset({42}),
+    )
+    assert state.recovery_attempts == {42: 1}
 
 
 def test_empty_scan_returns_empty_result():
@@ -336,6 +437,23 @@ def test_due_sweep_populates_snapshot_and_reaction_investigates():
     # An observation event was emitted for the sweep.
     names = {event.name for event in events.events}
     assert "triage.stuck_sweep" in names
+
+
+def test_exhausted_issue_flows_to_snapshot_for_planner_escalation():
+    # F1 (#6824): an exhausted issue is routed to the planner for an authoritative
+    # needs-human escalation via state.stuck_sweep_escalations -> the snapshot.
+    config = _config(max_recovery_attempts=3)
+    state = OrchestratorState()  # due (last_stuck_sweep_at == 0.0)
+    state.recovery_attempts = {50: 2}  # one failed cycle short of the ceiling
+    host = _RecordingHost([_issue(50, labels=["agent:web", "blocked-failed"])])
+    gatherer = FactGatherer(config=config, repository_host=host)
+
+    snapshot = gatherer.create_snapshot(state, issues=[])
+
+    assert 50 in state.stuck_sweep_escalations
+    assert 50 in snapshot.stuck_sweep_escalations
+    # Not re-injected for investigation once exhausted.
+    assert 50 not in {f.issue_number for f in snapshot.discovered_failures}
 
 
 def test_disabled_sweep_injects_nothing_via_fact_gatherer():

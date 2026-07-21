@@ -16,28 +16,36 @@ Design boundaries (kept deliberately narrow, ADR-0031):
   ``triage_reaction`` gain no new branchy control vocabulary — the fact
   gatherer only arms this owner and records what it returns.
 * **Observation, not mutation.** :func:`run_stuck_sweep` reads GitHub and
-  mutates only orchestrator STATE (the durable per-issue recovery counter and
-  the injected discovered failures). It never writes a GitHub label directly —
-  the recovered failure rides the Observer -> Planner -> Applier chain like any
-  other discovered problem.
+  mutates only orchestrator STATE (the durable per-issue recovery counter, the
+  injected discovered failures, and the escalation buffer). It never writes a
+  GitHub label directly — recovered failures ride the Observer -> Planner ->
+  Applier chain, and exhausted issues are escalated to needs-human through the
+  Planner/Applier too (#6824 F1), so every GitHub write stays orchestrator-
+  authoritative.
+* **Budget spent on OUTCOMES, not injections (#6824 F1).** The durable per-issue
+  counter (:attr:`OrchestratorState.recovery_attempts`) counts *failed recovery
+  cycles*, not re-injections. First detection injects and records ``0`` (an
+  outstanding recovery, no failure yet); a LATER sweep that re-discovers the
+  same issue still stuck and NOT owned means the prior cycle's remedy did not
+  stick — that is the failure that spends one unit of budget. Once the budget is
+  exhausted the issue is escalated to needs-human ONCE and never re-injected; a
+  genuine recovery (the blocking label cleared) clears the counter so a later
+  unrelated incident starts fresh.
 * **``failure_reason`` is always ``timed_out``.** The reaction model's
   ``_disposition`` only applies the "no downstream dependents -> IGNORE" gate
   when ``failure_reason == "blocked"``; ``timed_out`` always yields
   INVESTIGATE. The recovered failure preserves the issue's REAL terminal label
   in ``blocking_label`` for context, but reports ``timed_out`` so a leaf stuck
   issue is still investigated rather than silently dropped.
-* **Bounded / escalating.** Each recovery increments a durable per-issue
-  counter (:attr:`OrchestratorState.recovery_attempts`). Once an issue has been
-  recovered ``max_recovery_attempts`` times it is NOT re-injected again (no
-  infinite loop); it is surfaced as exhausted for the caller to escalate. v1
-  logs/emits the exhaustion rather than writing the needs-human label directly
-  — wiring a planner escalation action is a follow-up (see :class:`StuckSweepResult`).
-* **Dedup / cooldown.** Issues owned by an active session, a pending triage
-  review, a pending storm cohort, or this tick's discovered failures are
-  skipped — the tech lead is the backstop, never a competitor. The
-  pending-triage dedup is also the cooldown for v1: once an issue is recovered
-  it becomes a pending failure investigation and is skipped on every subsequent
-  sweep until that investigation completes.
+* **Ownership vs eligibility (#6824 F2).** An issue is ELIGIBLE when it carries a
+  recoverable stuck label — including ``blocked:provider-unavailable`` and the
+  needs-human labels, which #6823 wants re-examined, not permanently ignored. It
+  is SKIPPED this sweep only while a dedicated owner is actively handling it: an
+  active session / pending triage work, an open gated proposal (the ledger), a
+  provider whose circuit is still open (the resilience manager will resume it),
+  or a ``triage-needs-human`` marker (the escalation reconciler owns it). Only
+  ``proposed-triage`` / ``triage-observation`` are true machinery labels never
+  treated as work items.
 """
 
 from __future__ import annotations
@@ -50,10 +58,13 @@ from ..domain.models import DiscoveredFailure, SessionStatus
 from ..domain.triage_session import PROPOSED_TRIAGE_LABEL, TRIAGE_OBSERVATION_LABEL
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from ..infra.config import Config
     from ..domain.models import OrchestratorState
     from ..ports import Issue, RepositoryHost
     from ..ports.queue_cache_store import QueueCacheStore
+    from .actions import Action
     from .label_manager import LabelManager
 
 logger = logging.getLogger(__name__)
@@ -76,16 +87,28 @@ class StuckSweepResult:
     """The sweep's outcome for the fact gatherer to consume.
 
     ``recovered`` are the failures to inject into ``discovered_failures`` (each
-    already counted against its durable recovery budget). ``exhausted`` are the
-    issue numbers that hit ``max_recovery_attempts`` and were deliberately NOT
-    re-injected — the escalation intent. v1 logs/emits them; a follow-up wires a
-    planner action that applies the needs-human label through the Applier so the
-    escalation is orchestrator-authoritative rather than a direct GitHub write
-    from this observation seam.
+    an outstanding recovery whose budget has NOT yet been spent). ``exhausted``
+    are the issue numbers that spent their recovery budget on failed cycles and
+    must be escalated to needs-human through the Planner/Applier — emitted ONCE,
+    on the transition to the ceiling, so the escalation comment is not re-posted
+    every sweep (the durable counter keeps the issue skipped thereafter).
     """
 
     recovered: tuple[DiscoveredFailure, ...] = ()
     exhausted: tuple[int, ...] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True)
+class _StuckScan:
+    """One scan's eligibility split (computed once, no extra GitHub reads)."""
+
+    # (issue, stuck_label) for issues eligible AND not currently owned.
+    candidates: tuple[tuple["Issue", str], ...]
+    # Open issues still carrying ANY blocking label (recovered => absent here).
+    blocked_numbers: frozenset[int]
+    # Issues currently OWNED by a dedicated reconciler / open proposal / active
+    # work — skipped this sweep, and never treated as "recovered" by the clear.
+    owned_numbers: frozenset[int]
 
 
 def stuck_sweep_due(config: "Config", state: "OrchestratorState", now: float) -> bool:
@@ -117,46 +140,74 @@ def run_stuck_sweep(
     repository_host: "RepositoryHost",
     label_manager: "LabelManager",
     now: float,
+    *,
+    open_proposal_targets: frozenset[int] = frozenset(),
+    provider_circuit_open: "Callable[[Issue], bool] | None" = None,
 ) -> StuckSweepResult:
     """Find stuck issues and return recovered failures + exhausted numbers.
 
-    Mutates ``state.recovery_attempts`` (increments per recovered issue) but
-    performs no GitHub writes. The caller records the returned ``recovered``
-    failures via ``state.record_discovered_failure`` so the tech-lead reaction
-    model investigates each with no new planner code.
+    Mutates ``state.recovery_attempts`` but performs no GitHub writes. The caller
+    injects ``recovered`` via ``state.record_discovered_failure`` and routes
+    ``exhausted`` through the Planner's needs-human escalation.
+
+    ``open_proposal_targets`` are issues with an OPEN gated proposal (the ledger)
+    — owned by the human who must delabel the proposal, so the sweep must not
+    re-investigate them or spend their budget (this is what stops ``reset_retry:
+    propose`` from exhausting an issue that never had a remedy applied, #6824 F1).
+    ``provider_circuit_open(issue)`` reports whether the issue's provider circuit
+    is still open (the resilience manager owns it); ``None`` conservatively treats
+    every ``provider-unavailable`` issue as owned (the pre-#6824 behaviour).
     """
-    candidates = _scan_stuck_issues(config, repository_host, label_manager)
-    owned = _owned_issue_numbers(state)
     max_attempts = config.triage.stuck_sweep.max_recovery_attempts
+    scan = _scan_stuck_issues(
+        config,
+        repository_host,
+        label_manager,
+        base_owned=_owned_issue_numbers(state) | open_proposal_targets,
+        provider_circuit_open=provider_circuit_open,
+    )
+    _clear_recovered_counters(state, scan)
     recovered: list[DiscoveredFailure] = []
     exhausted: list[int] = []
-    for issue, blocking_label in candidates:
-        if issue.number in owned:
+    for issue, blocking_label in scan.candidates:
+        attempts = state.recovery_attempts.get(issue.number)
+        if attempts is None:
+            # First detection: an OUTSTANDING recovery, no failed cycle yet.
+            # Injection alone never spends the budget (#6824 F1).
+            state.recovery_attempts[issue.number] = 0
+            recovered.append(_recovered_failure(issue, blocking_label, now))
+            _log_reinject(issue, 0, max_attempts, blocking_label)
+        elif attempts >= max_attempts:
+            # Budget already spent + escalated: leave it for the human. Do NOT
+            # re-inject or re-escalate; the counter clears when it recovers.
             continue
-        attempts = state.recovery_attempts.get(issue.number, 0)
-        if attempts >= max_attempts:
+        elif attempts + 1 >= max_attempts:
+            # This re-detection is the failing cycle that exhausts the budget:
+            # escalate to needs-human exactly ONCE.
+            state.recovery_attempts[issue.number] = max_attempts
             exhausted.append(issue.number)
-            logger.warning(
-                "[STUCK_SWEEP] issue #%d exhausted recovery budget "
-                "(%d/%d attempts, label=%s); not re-injecting — needs human "
-                "attention (#6823)",
-                issue.number,
-                attempts,
-                max_attempts,
-                blocking_label,
-            )
-            continue
-        state.recovery_attempts[issue.number] = attempts + 1
-        recovered.append(_recovered_failure(issue, blocking_label, now))
-        logger.info(
-            "[STUCK_SWEEP] re-injecting stuck issue #%d as a recovered failure "
-            "(attempt %d/%d, label=%s) (#6823)",
-            issue.number,
-            attempts + 1,
-            max_attempts,
-            blocking_label,
-        )
+            _log_exhausted(issue, max_attempts, blocking_label)
+        else:
+            # A prior recovery cycle failed (still stuck, not owned): spend one
+            # unit of budget and re-inject.
+            state.recovery_attempts[issue.number] = attempts + 1
+            recovered.append(_recovered_failure(issue, blocking_label, now))
+            _log_reinject(issue, attempts + 1, max_attempts, blocking_label)
     return StuckSweepResult(recovered=tuple(recovered), exhausted=tuple(exhausted))
+
+
+def _clear_recovered_counters(state: "OrchestratorState", scan: "_StuckScan") -> None:
+    """Drop the recovery budget for issues that genuinely RECOVERED (#6824 F1).
+
+    An issue no longer carrying ANY blocking label (its ``blocked-failed`` was
+    cleared by a successful reset, or it was closed) and not currently owned
+    mid-recovery has recovered; its lifetime budget must reset so a later
+    unrelated incident on the same number starts fresh instead of inheriting a
+    stale (possibly already-exhausted) count.
+    """
+    for number in list(state.recovery_attempts):
+        if number not in scan.blocked_numbers and number not in scan.owned_numbers:
+            del state.recovery_attempts[number]
 
 
 def hydrate_stuck_sweep_state(
@@ -204,16 +255,20 @@ def _scan_stuck_issues(
     config: "Config",
     repository_host: "RepositoryHost",
     label_manager: "LabelManager",
-) -> list[tuple["Issue", str]]:
-    """Scan open issues and return ``(issue, stuck_label)`` for stuck work.
+    *,
+    base_owned: set[int],
+    provider_circuit_open: "Callable[[Issue], bool] | None",
+) -> "_StuckScan":
+    """Scan open issues and split them into eligible candidates vs owned.
 
     ONE bounded scoped query (server-side ``filtering.label`` when configured;
     GitHub label filtering is AND-semantics so blocking labels — an OR set —
-    are filtered client-side). Only issues STILL carrying a RECOVERABLE stuck
-    label survive: triage machinery (proposed-triage gates, observation case
-    files), already-human-owned issues (needs-human), and transient provider
-    outages are excluded so the sweep never re-triages a gated proposal, a case
-    file, a human escalation, or a circuit-broken issue.
+    are filtered client-side). An issue is a candidate only when it STILL carries
+    a recoverable stuck label AND is not currently owned by a dedicated
+    reconciler (an active session / open proposal / open provider circuit /
+    needs-human marker). Provider-unavailable and needs-human are recoverable
+    labels (#6824 F2), not blanket exclusions; only triage machinery
+    (proposed-triage / observation case files) is never a work item.
     """
     scope = [value for value in (config.filtering.label,) if value] or None
     issues = repository_host.list_issues(
@@ -225,17 +280,30 @@ def _scan_stuck_issues(
         exhaustive=True,
     )
     scoped = _scope_filtered(issues, config.filtering.label)
-    skip_folded = _non_recoverable_blocking_folded(label_manager)
+    machinery = _machinery_blocking_folded()
     preferred = label_manager.blocked_failed.casefold()
     candidates: list[tuple["Issue", str]] = []
+    blocked: set[int] = set()
+    owned: set[int] = set(base_owned)
     for issue in scoped:
         if issue.state != "open":
             continue
-        blocker = _stuck_blocking_label(issue, label_manager, skip_folded, preferred)
+        if label_manager.get_blocking(issue.labels):
+            blocked.add(issue.number)
+        if issue.number in base_owned:
+            continue
+        if _reconciler_owns(issue, label_manager, provider_circuit_open):
+            owned.add(issue.number)
+            continue
+        blocker = _stuck_blocking_label(issue, label_manager, machinery, preferred)
         if blocker is None:
             continue
         candidates.append((issue, blocker))
-    return candidates
+    return _StuckScan(
+        candidates=tuple(candidates),
+        blocked_numbers=frozenset(blocked),
+        owned_numbers=frozenset(owned),
+    )
 
 
 def _scope_filtered(
@@ -257,20 +325,22 @@ def _scope_filtered(
 def _stuck_blocking_label(
     issue: "Issue",
     label_manager: "LabelManager",
-    skip_folded: frozenset[str],
+    machinery_folded: frozenset[str],
     preferred_folded: str,
 ) -> str | None:
     """The issue's recoverable stuck label, or None when not stuck.
 
     Prefers the ``blocked-failed`` label (the canonical failed-session signal)
     when present, else the first remaining recoverable blocking label. Returns
-    None when the issue carries no blocking label, or only non-recoverable ones
-    (machinery / human / transient) — the done guard.
+    None when the issue carries no blocking label, or only machinery labels
+    (proposed-triage / observation) — the done guard. Ownership (provider
+    circuit / needs-human marker / open proposal) is decided BEFORE this by the
+    scan; here every non-machinery blocking label is eligible (#6824 F2).
     """
     blockers = [
         name
         for name in label_manager.get_blocking(issue.labels)
-        if name.casefold() not in skip_folded
+        if name.casefold() not in machinery_folded
     ]
     if not blockers:
         return None
@@ -280,27 +350,48 @@ def _stuck_blocking_label(
     return blockers[0]
 
 
-def _non_recoverable_blocking_folded(
-    label_manager: "LabelManager",
-) -> frozenset[str]:
-    """Casefolded blocking labels the sweep must NOT act on.
+def _machinery_blocking_folded() -> frozenset[str]:
+    """Casefolded blocking labels that are triage MACHINERY, never work items.
 
-    Human escalations own their issue already (and are the sweep's OWN
-    escalation sink); provider-unavailable is a transient circuit-broken state
-    the resilience manager resumes on its own; proposed-triage / observation
-    are triage machinery (gated proposals, evidence case files), never stuck
-    work items — re-injecting one would launch a triage session on triage's own
-    bookkeeping.
+    ``proposed-triage`` gates an awaiting-approval proposal issue and
+    ``triage-observation`` marks an evidence case file — re-injecting either
+    would launch a triage session on triage's own bookkeeping. Unlike
+    provider-unavailable and needs-human (which are recoverable stuck states
+    gated by ownership, #6824 F2), these are ALWAYS excluded.
     """
     return frozenset(
         {
-            label_manager.needs_human.casefold(),
-            label_manager.triage_needs_human.casefold(),
-            label_manager.provider_unavailable.casefold(),
             PROPOSED_TRIAGE_LABEL.casefold(),
             TRIAGE_OBSERVATION_LABEL.casefold(),
         }
     )
+
+
+def _reconciler_owns(
+    issue: "Issue",
+    label_manager: "LabelManager",
+    provider_circuit_open: "Callable[[Issue], bool] | None",
+) -> bool:
+    """True while a dedicated reconciler is actively handling this issue (#6824 F2).
+
+    * ``provider-unavailable``: owned WHILE its provider circuit is open — the
+      resilience manager will resume it when the circuit closes. ``None`` (no
+      circuit reader wired) conservatively treats it as owned, preserving the
+      pre-#6824 skip. When the circuit is CLOSED the issue is orphaned (the
+      planner only clears the label for issues still in active work) and the
+      sweep re-examines it.
+    * ``triage-needs-human`` marker: the escalation reconciler owns a stranded
+      needs-human issue (it re-asserts the block on restart). A BARE needs-human
+      (operator escalation, no marker) is left ELIGIBLE for re-examination —
+      re-injecting it is exactly how a superseding investigation is created.
+    """
+    folded = {name.casefold() for name in issue.labels}
+    if label_manager.provider_unavailable.casefold() in folded:
+        if provider_circuit_open is None or provider_circuit_open(issue):
+            return True
+    if label_manager.triage_needs_human.casefold() in folded:
+        return True
+    return False
 
 
 def _owned_issue_numbers(state: "OrchestratorState") -> set[int]:
@@ -309,9 +400,9 @@ def _owned_issue_numbers(state: "OrchestratorState") -> set[int]:
     An issue already worked or queued — an active session, a pending triage
     review, a pending storm cohort member, or discovered this very tick — is
     covered by the normal loop; re-injecting it would double-queue. The
-    pending-triage membership is also the v1 cooldown: a recovered issue stays
-    a pending failure investigation until it completes, so it is skipped on
-    every intervening sweep.
+    pending-triage membership is also the cooldown: a recovered issue stays a
+    pending failure investigation until it completes, so it is skipped on every
+    intervening sweep.
     """
     owned = {session.issue.number for session in state.active_sessions}
     owned.update(item.issue_number for item in state.pending_triage_reviews)
@@ -341,3 +432,66 @@ def _recovered_failure(
         observed_at=now,
         artifact_hints=(),
     )
+
+
+def _log_reinject(
+    issue: "Issue", attempts: int, max_attempts: int, blocking_label: str
+) -> None:
+    logger.info(
+        "[STUCK_SWEEP] re-injecting stuck issue #%d as a recovered failure "
+        "(failed cycles %d/%d, label=%s) (#6823)",
+        issue.number,
+        attempts,
+        max_attempts,
+        blocking_label,
+    )
+
+
+def _log_exhausted(issue: "Issue", max_attempts: int, blocking_label: str) -> None:
+    logger.warning(
+        "[STUCK_SWEEP] issue #%d exhausted recovery budget (%d failed cycles, "
+        "label=%s); escalating to needs-human via the planner (#6824 F1)",
+        issue.number,
+        max_attempts,
+        blocking_label,
+    )
+
+
+_ESCALATION_COMMENT = (
+    "## ⚠️ Tech-lead stuck sweep: recovery budget exhausted\n\n"
+    "This issue stayed terminally blocked across repeated automated recovery "
+    "attempts, so the orchestrator is escalating it for human attention "
+    "(labelled `{label}`). Please review the blocking state and clear it — or "
+    "close the issue — once it is resolved."
+)
+
+
+def build_stuck_sweep_escalation_actions(
+    issue_numbers: "tuple[int, ...]", needs_human_label: str
+) -> "list[Action]":
+    """Authoritative needs-human escalation for exhausted issues (#6824 F1).
+
+    The stuck-sweep owner defines the escalation (an idempotent label + one
+    explaining comment); the Planner routes it through the Applier so the GitHub
+    write stays orchestrator-authoritative rather than a direct call from the
+    observation seam. The sweep emits each issue once (on the exhaustion
+    transition), so the comment is not re-posted on later sweeps.
+    """
+    from .actions import AddCommentAction, AddLabelAction
+    from .reconciliation import build_expected_for_mutation
+
+    actions: list["Action"] = []
+    for issue_number in issue_numbers:
+        actions.append(AddLabelAction(
+            issue_number=issue_number,
+            label=needs_human_label,
+            reason="stuck-sweep recovery budget exhausted (#6824)",
+            expected=build_expected_for_mutation(),
+        ))
+        actions.append(AddCommentAction(
+            number=issue_number,
+            is_pr=False,
+            comment=_ESCALATION_COMMENT.format(label=needs_human_label),
+            reason="stuck-sweep recovery budget exhausted (#6824)",
+        ))
+    return actions

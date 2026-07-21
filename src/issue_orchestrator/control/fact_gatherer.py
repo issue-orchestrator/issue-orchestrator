@@ -97,6 +97,12 @@ class FactGatherer:
     # tests need not wire it; without it (or with the flag off) both snapshot
     # facts stay False and the default scheduling path is unchanged.
     e2e_slot_reader: Optional[Callable[[], "E2ESlotSignals"]] = None
+    # Predicate answering "is this issue's provider circuit still open?" for the
+    # stuck sweep's ownership check (#6824 F2): a provider-unavailable issue is
+    # owned by the resilience manager WHILE its circuit is open. Optional so
+    # unrelated tests need not wire it; without it every provider-unavailable
+    # issue is conservatively treated as owned (the pre-#6824 skip).
+    provider_circuit_open: Optional[Callable[["Issue"], bool]] = None
 
     def fetch_issues(
         self,
@@ -222,6 +228,7 @@ class FactGatherer:
                 state.discovered_merge_queue_enqueues
             ),
             discovered_failures=tuple(state.discovered_failures),
+            stuck_sweep_escalations=tuple(state.stuck_sweep_escalations),
             triage_facts=triage_facts,
             cleanup_facts=cleanup_facts,
             stale_in_progress_issues=tuple(stale_in_progress_issues or []),
@@ -407,12 +414,29 @@ class FactGatherer:
             self.repository_host,
             LabelManager(self.config),
             now,
+            # Issues with an OPEN gated proposal are owned by the human who must
+            # delabel it — the sweep must not re-investigate them or spend their
+            # budget (stops propose-mode from exhausting a never-remedied issue,
+            # #6824 F1). The ledger rows ARE the open-proposal set.
+            open_proposal_targets=self._open_proposal_targets(),
+            provider_circuit_open=self.provider_circuit_open,
         )
         for failure in result.recovered:
             state.record_discovered_failure(failure)
+        # Exhausted issues are escalated to needs-human through the Planner/Applier
+        # (an authoritative label write, not a direct GitHub call here) (#6824 F1).
+        state.stuck_sweep_escalations.extend(result.exhausted)
         state.last_stuck_sweep_at = now
         persist_stuck_sweep_state(state, self.queue_cache_store)
         self._emit_stuck_sweep(result)
+
+    def _open_proposal_targets(self) -> frozenset[int]:
+        """Target issue numbers with an OPEN gated proposal in the ledger (#6824)."""
+        if self.triage_authority is None:
+            return frozenset()
+        return frozenset(
+            op.target_issue_number for _, op in self.triage_authority.list_ops()
+        )
 
     def _emit_stuck_sweep(self, result: object) -> None:
         """Fire-and-forget observation of a sweep that acted (#6823)."""
@@ -687,6 +711,7 @@ _DISCOVERED_FACT_ATTRS: tuple[str, ...] = (
     "discovered_reworks",
     "discovered_escalations",
     "discovered_failures",
+    "stuck_sweep_escalations",
     "immediate_cleanups",
 )
 

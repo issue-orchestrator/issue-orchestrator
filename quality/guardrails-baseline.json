@@ -368,6 +368,14 @@
       "rule_id": "control_policy_branch_sites",
       "value": 14
     },
+    "control_policy_branch_sites:src/issue_orchestrator/control/stuck_sweep.py": {
+      "detail": "4 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/stuck_sweep.py",
+      "path": "src/issue_orchestrator/control/stuck_sweep.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 4
+    },
     "control_policy_branch_sites:src/issue_orchestrator/control/triage_issue_policy.py": {
       "detail": "5 branch site(s) mention lifecycle/control terms",
       "kind": "control_policy_branch_sites",
@@ -1361,12 +1369,12 @@
       "value": 1471
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/planner.py": {
-      "detail": "1795 lines exceeds budget 800",
+      "detail": "1802 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/control/planner.py",
       "path": "src/issue_orchestrator/control/planner.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 1795
+      "value": 1802
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/session_controller.py": {
       "detail": "1910 lines exceeds budget 800",

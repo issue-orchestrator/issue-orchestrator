@@ -83,6 +83,7 @@ from .worker_budget import (
     active_worker_session_count,
 )
 from .reconciliation import build_expected_for_mutation
+from .stuck_sweep import build_stuck_sweep_escalation_actions
 from .planner_types import OrchestratorSnapshot, Plan, PlanContext, SkippedItem
 from .triage_issue_policy import (
     apply_triage_priority_prefix,
@@ -238,6 +239,12 @@ class Planner:
         # 1d. Handle escalations (PRs exceeding max rework cycles)
         escalation_actions = self._plan_discovered_escalations(snapshot)
         actions.extend(escalation_actions)
+
+        # 1d1. Escalate stuck-sweep-exhausted issues to needs-human (#6824 F1):
+        # the stuck-sweep owner defines the authoritative label+comment; applied
+        # here through the Applier, not a direct GitHub call from observation.
+        actions.extend(build_stuck_sweep_escalation_actions(
+            snapshot.stuck_sweep_escalations, self._lm.needs_human))
 
         # 1d2. Handle post-publish escalations (CI checks stuck > timeout,
         # or branch protection blocking merge despite checks passing).

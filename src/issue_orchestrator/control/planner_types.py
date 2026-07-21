@@ -89,6 +89,9 @@ class OrchestratorSnapshot:
         DiscoveredMergeQueueEnqueue, ...
     ] = field(default_factory=tuple)
     discovered_failures: tuple[DiscoveredFailure, ...] = field(default_factory=tuple)
+    # Issue numbers the tech-lead stuck sweep exhausted this tick; the planner
+    # escalates each to needs-human via the Applier (#6824 F1).
+    stuck_sweep_escalations: tuple[int, ...] = field(default_factory=tuple)
     triage_facts: Optional[TriageFacts] = None
     cleanup_facts: Optional[CleanupFacts] = None
     # Issues with stale in-progress labels (label present but no active session)
