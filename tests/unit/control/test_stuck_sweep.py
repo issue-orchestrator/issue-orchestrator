@@ -55,7 +55,12 @@ class _RecordingHost:
 
     def list_issues(self, labels=None, state="open", limit=100, **kwargs):
         self.calls.append(
-            {"labels": list(labels or []), "state": state, "limit": limit}
+            {
+                "labels": list(labels or []),
+                "state": state,
+                "limit": limit,
+                "exhaustive": kwargs.get("exhaustive", False),
+            }
         )
         wanted = {name.casefold() for name in (labels or [])}
         matched = [
@@ -153,6 +158,18 @@ def test_scan_injects_recovered_failure_as_timed_out():
     # Recovery counter incremented and no exhaustion.
     assert state.recovery_attempts == {7: 1}
     assert result.exhausted == ()
+
+
+def test_scan_requests_exhaustive_to_avoid_starvation():
+    # F3 (#6823): the recovery scan must be exhaustive. A fixed non-exhaustive page
+    # returns the same newest N every cadence, so any eligible issue beyond page N
+    # is starved forever. Exhaustive fails loud on truncation (#6779 R17) instead
+    # of silently dropping older stuck issues.
+    config = _config()
+    state = OrchestratorState()
+    host = _RecordingHost([_issue(7, labels=["agent:web", "blocked-failed"])])
+    run_stuck_sweep(config, state, host, LabelManager(config), now=50_000.0)
+    assert host.calls and host.calls[0]["exhaustive"] is True
 
 
 def test_scan_prefers_blocked_failed_label_when_multiple():
@@ -341,6 +358,33 @@ def test_stuck_sweep_config_defaults():
     assert triage.stuck_sweep.enabled is False
     assert triage.stuck_sweep.interval_minutes == 15
     assert triage.stuck_sweep.max_recovery_attempts == 3
+
+
+def test_config_rejects_zero_interval_minutes():
+    # F4 (#6823): interval_minutes: 0 makes stuck_sweep_due true EVERY tick — an
+    # unthrottled GitHub scan on every loop. A zero cadence is meaningless; reject
+    # it at config validation (disable via enabled: false instead).
+    for enabled in (True, False):
+        cfg = parse_triage_config(
+            {"stuck_sweep": {"enabled": enabled, "interval_minutes": 0}}
+        ).stuck_sweep
+        assert any("interval_minutes" in e for e in cfg.startup_errors()), (
+            f"interval 0 must be rejected (enabled={enabled})"
+        )
+    # A positive interval validates.
+    ok = parse_triage_config(
+        {"stuck_sweep": {"enabled": True, "interval_minutes": 1}}
+    ).stuck_sweep
+    assert ok.startup_errors() == []
+
+
+def test_due_false_for_zero_interval_even_if_elapsed():
+    # Defense-in-depth for F4: a 0-interval config that bypassed validation must
+    # NOT be treated as always-due (which would every-tick scan).
+    config = _config(enabled=True, interval_minutes=0)
+    state = OrchestratorState()
+    state.last_stuck_sweep_at = 0.0
+    assert stuck_sweep_due(config, state, now=1_000_000.0) is False
 
 
 def test_stuck_sweep_config_parsed_from_yaml_dict():

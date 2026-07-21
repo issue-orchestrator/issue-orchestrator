@@ -58,13 +58,16 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# One bounded, timer-gated scan of open blocking-labeled issues. Not
-# ``exhaustive``: a partial page just defers a straggler to the next cadence
-# (unlike the health-review anchor scan, a missed issue here is re-swept in
-# ``interval_minutes``, never a duplicate/lost-anchor correctness bug), and
-# failing the whole tick loud on a large open backlog is worse than recovering
-# a subset now. Gated by ``stuck_sweep_due`` so a disabled/not-due sweep makes
-# ZERO GitHub calls.
+# One timer-gated, EXHAUSTIVE scan of open blocking-labeled issues. The scan is
+# ``exhaustive`` (like the health-review anchor scan, #6779 R17): the multi-page
+# walk fails loud rather than returning a silently partial set. This is the
+# authoritative recovery backstop, so a truncated read is NOT "defer the
+# straggler to the next cadence" — a non-exhaustive fixed page returns the SAME
+# newest N every cadence, so any eligible issue beyond page N is starved forever
+# (never re-swept). Failing loud on a backlog larger than the (generous) cap is
+# the correct signal: 1000+ terminally-stuck issues is itself an anomaly worth
+# blocking the tick over, not silently under-recovering. Gated by
+# ``stuck_sweep_due`` so a disabled/not-due sweep makes ZERO GitHub calls.
 STUCK_SWEEP_SCAN_LIMIT = 1000
 
 
@@ -100,6 +103,11 @@ def stuck_sweep_due(config: "Config", state: "OrchestratorState", now: float) ->
     if not (config.triage_review_agent and config.triage_review_on_failure):
         return False
     interval_seconds = sweep.interval_minutes * 60
+    if interval_seconds <= 0:
+        # Defense-in-depth against the every-tick-scan trap: config validation
+        # already rejects interval_minutes < 1 when enabled (#6823), but a
+        # 0/negative interval reaching here must NOT be treated as "always due".
+        return False
     return now - state.last_stuck_sweep_at >= interval_seconds
 
 
@@ -212,6 +220,9 @@ def _scan_stuck_issues(
         labels=scope,
         state="open",
         limit=STUCK_SWEEP_SCAN_LIMIT,
+        # Authoritative recovery scan: a truncated read must fail loud (#6779 R17),
+        # never silently drop older stuck issues (which a fixed page would starve).
+        exhaustive=True,
     )
     scoped = _scope_filtered(issues, config.filtering.label)
     skip_folded = _non_recoverable_blocking_folded(label_manager)

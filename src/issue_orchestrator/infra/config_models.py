@@ -418,10 +418,13 @@ class StuckSweepConfig:
         """Own-block invariants; the enabled-requires-triage-agent cross-field
         check lives in the review validator (it reads other config sections)."""
         errors: list[str] = []
-        if self.interval_minutes < 0:
+        if self.interval_minutes < 1:
             errors.append(
-                "triage.stuck_sweep.interval_minutes must be >= 0, got "
-                f"{self.interval_minutes}"
+                "triage.stuck_sweep.interval_minutes must be >= 1 — a zero (or "
+                "negative) interval makes stuck_sweep_due true every tick, i.e. an "
+                "unthrottled GitHub scan on every loop, which #6823 forbids; a "
+                "cadence of 0 is meaningless, so set enabled: false to turn the "
+                f"sweep off instead. Got {self.interval_minutes}"
             )
         if self.max_recovery_attempts < 1:
             errors.append(

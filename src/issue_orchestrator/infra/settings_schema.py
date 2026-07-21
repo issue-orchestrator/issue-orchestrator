@@ -1271,8 +1271,8 @@ class ReviewSettings(BaseModel):
     triage_stuck_sweep_interval_minutes: int = Field(
         15,
         title="Stuck Sweep Interval (minutes)",
-        description="Scan for stuck issues every N minutes",
-        ge=0,
+        description="Scan for stuck issues every N minutes (>= 1; disable via 'enabled')",
+        ge=1,
         json_schema_extra={
             "doc_examples": ["15", "30", "60"],
             "doc_notes": (

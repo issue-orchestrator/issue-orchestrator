@@ -11,31 +11,44 @@ existing ``--mcp-config '<json>'`` pattern the provider already uses) plus
 ``--permission-mode dontAsk`` — a non-yolo, still-unattended mode that runs only
 allow-listed tools and auto-denies the rest, instead of ``bypassPermissions``.
 
-TWO ENFORCEMENT LAYERS (verified against docs.claude.com — Sandbox / Permission
-modes). These are complementary and BOTH are required, because the OS sandbox
-governs a different set of tools than the permission layer:
+ENFORCEMENT LAYERS (verified against docs.claude.com — Sandbox / Permission
+modes, and confirmed against the live CLI). Two mechanisms exist, but for
+secrets they OVERLAP, so we deliberately use only ONE:
 
 1. **OS sandbox — Bash and its child processes only.** ``sandbox.filesystem`` /
    ``credentials`` / ``network`` are enforced by the operating system (Seatbelt
    / bubblewrap) on sandboxed Bash subprocesses. They do NOT constrain Claude's
-   built-in Read/Edit/Grep/Glob/Write tools ("Built-in file tools ... use the
+   built-in Read/Edit/Grep/Glob tools ("Built-in file tools ... use the
    permission system directly rather than running through the sandbox").
 2. **Permission rules — every tool, incl. the native file tools.**
    ``permissions.allow`` / ``permissions.deny`` are evaluated before any tool
-   runs. Crucially, **deny rules apply in every permission mode** (even
-   ``bypassPermissions``), so a ``permissions.deny`` entry is un-bypassable.
+   runs. Deny rules apply in every permission mode (even ``bypassPermissions``),
+   so a ``permissions.deny`` entry is un-bypassable. Crucially, Claude ALSO
+   **merges permission rules into the OS sandbox profile** (docs: "Paths from
+   both sandbox.filesystem settings and permission rules are merged"), so a
+   ``permissions.deny Read(path)`` denies the path to the native Read tool AND to
+   a sandboxed ``cat``.
 
-FAIL-CLOSED secret model — the same ``deny_read_files`` list is enforced on BOTH
-layers so a secret is unreadable however the agent reaches for it:
-- **Bash / OS layer: ``credentials.files`` deny.** ``deny`` entries are
-  narrow-only and merged — any scope can add one, no scope can remove one — so a
-  secret (``~/.ssh``, this tool's ``~/.issue-orchestrator`` api-token, ...) stays
-  unreadable by a sandboxed ``cat`` even if a later scope widens ``allowRead``.
-- **Native-tool layer: ``permissions.deny`` Read/Edit/Grep/Glob/Write.** The OS
-  ``credentials.files`` deny does not touch the native ``Read`` tool, so we ALSO
-  emit a permission deny for each secret path and each native file tool (each
-  tool must be denied separately). This is the direct fix for a native ``Read``
-  of ``~/.ssh`` / the api-token, and it holds in every permission mode.
+FAIL-CLOSED secret model — exactly ONE rule per secret, ``permissions.deny
+Read(path)`` (single-mechanism by design; see #6867 for why enumerating more
+rules is harmful):
+- ``Read(path)`` covers ALL of Claude's file-READING tools (Read/Grep/Glob); the
+  live CLI warns per-tool ``Grep``/``Glob``/``Write`` rules are no-ops ("not
+  matched by file permission checks — only Read(path) rules are"). Because
+  permission denies merge into the OS profile (layer 2 above), this ONE rule
+  blocks the secret for the native Read tool AND for Bash. We therefore do NOT
+  emit a ``sandbox.credentials.files`` deny for secrets — it applies the SAME
+  restriction and would DUPLICATE every secret path in the profile.
+- No ``Edit(secret)`` rule: writes are already confined to the worktree by
+  ``allowWrite`` + the worktree-scoped ``Edit`` allow, so a secret outside the
+  worktree is unwritable regardless.
+- No ``path/**`` glob: a bare ``Read(<dir>)`` already denies the whole subtree,
+  whereas a ``/**`` deny makes Claude glob-expand it against the real filesystem
+  into one rule per file. Claude bakes the whole profile into a single
+  ``sandbox-exec -p`` argument, and its own default deny list is already large,
+  so extra/expanded rules can overflow the OS arg limit (``E2BIG``) and break ALL
+  sandboxed Bash. ``sandbox.credentials.envVars`` (secret env-var unset) IS still
+  emitted — that has no filesystem-path equivalent to duplicate.
 
 TRUST BOUNDARY (ADR-0034 trusted-repository contract). The orchestrator's
 operator selects and onboards the target repository, so its checked-in Claude
@@ -52,8 +65,9 @@ Claude's native sandbox and constrains the AGENT.
 WHAT THE ADAPTER CONSTRAINS (against the agent, not the trusted repo):
 - **Writes** — Bash and native ``Edit`` (which governs Edit/Write/MultiEdit) are
   allowed only within the worktree write roots; outside is denied.
-- **Secrets** — denied on both layers (``credentials.files`` for Bash,
-  ``permissions.deny`` for the native tools).
+- **Secrets** — one ``permissions.deny Read(path)`` per secret, which (because
+  permission rules merge into the OS sandbox profile) covers BOTH the native Read
+  tool and Bash; plus ``credentials.envVars`` for secret env vars.
 - **Egress** — restricted per :data:`SandboxEgress` (Bash ``allowedDomains`` +
   ``WebSearch``/``WebFetch``/``curl``/``wget`` denies).
 - **Self-modification** — the agent may not rewrite its own policy: the worktree
@@ -78,14 +92,16 @@ Settings schema (docs.claude.com — Sandbox settings / Permissions):
   ``denyWrite[]`` (the policy files; ``denyWrite`` wins over ``allowWrite``)
 - ``sandbox.network.allowedDomains[]`` (omitted for ``model+web``; explicit
   empty list for ``none`` to block Bash network entirely)
-- ``sandbox.credentials.files[]`` — objects ``{"path": ..., "mode": "deny"}``
 - ``sandbox.credentials.envVars[]`` — objects ``{"name": ..., "mode": "deny"}``
+  (secret env vars only; ``credentials.files`` is intentionally NOT emitted —
+  secret file reads are covered by ``permissions.deny Read(...)`` above)
 - ``permissions.allow[]`` — ``Read``/``Grep``/``Glob`` + worktree-scoped
   ``Edit(//worktree/**)`` (Edit governs the file-editing tools; no ``Write`` rule)
-- ``permissions.deny[]`` — ``ToolName(pattern)`` (native secret denies + the
-  policy-file ``Edit`` denies + egress). NOTE: Read/Edit permission specifiers use
-  ``//abs`` / ``/rel`` / ``~/`` prefixes, which DIFFER from ``sandbox.filesystem``
-  paths (``/abs`` absolute).
+- ``permissions.deny[]`` — ``ToolName(pattern)``: one ``Read(secret)`` per secret
+  (covers native + Bash via the permission→sandbox merge) + the policy-file
+  ``Edit`` denies + egress. NOTE: Read/Edit permission specifiers use ``//abs`` /
+  ``/rel`` / ``~/`` prefixes, which DIFFER from ``sandbox.filesystem`` paths
+  (``/abs`` absolute).
 
 CODEX TRANSLATION (Codex 0.138+ permission profiles): ``--sandbox
 workspace-write`` cannot represent :attr:`SandboxScope.deny_read_files` and,
@@ -242,12 +258,12 @@ def _permission_rule_path(path: str) -> str:
 
 
 def _native_secret_deny_rules(deny_read_files: tuple[str, ...]) -> list[str]:
-    """Permission-layer denies mirroring the OS credential denies onto native tools.
+    """The single fail-closed secret-deny layer: one ``Read(path)`` per secret.
 
-    The OS sandbox (``credentials.files`` / ``denyRead``) binds only Bash and its
-    children; the built-in file tools are governed by permission rules. Deny rules
-    hold in every permission mode, so these are the un-bypassable native-tool
-    secret layer. One rule per (tool, path) suffices:
+    Permission deny rules hold in every permission mode (un-bypassable) AND Claude
+    merges them into the OS sandbox profile, so ``Read(secret)`` blocks the secret
+    for both the native Read tool and a sandboxed ``cat`` — there is no separate
+    ``credentials.files`` layer to keep in sync. One rule per (tool, path) suffices:
 
     - ``Read(path)`` covers every reading tool (Read/Grep/Glob) and ``Edit(path)``
       every editing tool (Edit/Write/MultiEdit) — see :data:`NATIVE_FILE_TOOLS`.
@@ -323,9 +339,10 @@ def build_claude_sandbox_settings(scope: SandboxScope) -> dict[str, Any]:
         "enableWeakerNetworkIsolation": False,
         "enableWeakerNestedSandbox": False,
         "filesystem": {
-            # Reads are OPEN by default: deny the home dir and re-allow only the
-            # read roots within it (defense-in-depth; the fail-closed secret layer
-            # is ``credentials.files`` below).
+            # Reads are OPEN by default: deny the home dir (Bash defense-in-depth)
+            # and re-allow only the read roots within it. The fail-closed secret
+            # layer is the ``permissions.deny Read(...)`` rules below, which merge
+            # into this OS profile and also cover Bash.
             "denyRead": ["~/"],
             "allowRead": [str(p) for p in scope.read_roots],
             "allowWrite": [str(p) for p in scope.write_roots],
@@ -357,9 +374,10 @@ def build_claude_sandbox_settings(scope: SandboxScope) -> dict[str, Any]:
     # sandbox does not touch.
     #  - allow: native reads + a worktree-scoped Edit (governs Edit/Write/
     #    MultiEdit) so the agent can edit its worktree, nothing broader.
-    #  - deny: secret files (native mirror of credentials.files), the agent's own
-    #    policy files (anti-self-modification), then egress tools. Deny beats allow,
-    #    so the worktree Edit allow cannot reach a secret or a settings file.
+    #  - deny: one Read(secret) per secret (the single secret-deny layer; merges
+    #    into the OS profile so it also covers Bash), the agent's own policy files
+    #    (anti-self-modification), then egress tools. Deny beats allow, so the
+    #    worktree Edit allow cannot reach a secret or a settings file.
     worktree_edit_allows = [
         f"Edit({_permission_rule_path(str(root))}/**)" for root in scope.write_roots
     ]
