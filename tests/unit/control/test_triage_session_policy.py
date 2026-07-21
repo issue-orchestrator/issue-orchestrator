@@ -254,8 +254,20 @@ class TestStageEvidenceMap:
         return SimpleNamespace(update_manifest=manifest.update), manifest
 
     @staticmethod
+    def _register_worktree(repo_root: Path, worktree: Path) -> None:
+        """Make ``worktree`` a real linked git worktree of ``repo_root`` (#6824 R4)."""
+        git_common = repo_root / ".git"
+        git_common.mkdir(parents=True, exist_ok=True)
+        wt_gitdir = git_common / "worktrees" / worktree.name
+        wt_gitdir.mkdir(parents=True, exist_ok=True)
+        (wt_gitdir / "commondir").write_text("../..\n")
+        worktree.mkdir(parents=True, exist_ok=True)
+        (worktree / ".git").write_text(f"gitdir: {wt_gitdir}\n")
+
+    @staticmethod
     def _host() -> SimpleNamespace:
         return SimpleNamespace(
+            get_default_branch=lambda: "main",
             get_issue=lambda n: SimpleNamespace(
                 number=n, state="open", labels=["blocked-failed"]
             ),
@@ -317,7 +329,10 @@ class TestStageEvidenceMap:
         # A health review has no focus, so it gets the full SYSTEM substrate:
         # a null github block, but run-dirs enumerated across ALL worktrees.
         ctx, _manifest = self._ctx()
+        config = self._config(tmp_path)
         run_dir = tmp_path / "run"
+        # R4 (#6824): only REGISTERED worktrees of this repo are swept.
+        self._register_worktree(config.repo_root, tmp_path / "repo-100")
         whole_system = (
             tmp_path
             / "repo-100"
@@ -327,7 +342,7 @@ class TestStageEvidenceMap:
         )
         whole_system.mkdir(parents=True)
         _stage_evidence_map(
-            config=self._config(tmp_path),
+            config=config,
             repository_host=self._host(),
             ctx=ctx,
             run_dir=run_dir,
