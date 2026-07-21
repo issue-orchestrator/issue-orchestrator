@@ -189,13 +189,20 @@ MODEL_ONLY_DENY_TOOLS: tuple[str, ...] = (
     "Bash(wget *)",
 )
 
-# Native file tools governed by the PERMISSION layer, not the OS sandbox (which
-# binds only Bash). Each must be denied SEPARATELY for a secret path — denying
-# ``Read`` does not imply ``Edit``/``Grep``/``Glob``. NOTE: ``Edit(path)`` rules
-# govern ALL of Claude's file-editing tools (Edit/Write/MultiEdit); ``Write(path)``
-# permission rules are ineffective (confirmed by the live CLI warning), so we
-# never emit them.
-NATIVE_FILE_TOOLS: tuple[str, ...] = ("Read", "Edit", "Grep", "Glob")
+# A single ``Read(path)`` permission-deny fully protects a secret path:
+#   - It governs ALL of Claude's file-READING tools (Read/Grep/Glob). The live CLI
+#     warns that per-tool ``Grep``/``Glob``/``Write`` rules are "not matched by file
+#     permission checks — only Read(path) rules are", so those are no-ops.
+#   - Claude merges permission rules into the OS Seatbelt profile (verified live),
+#     so ``Read(secret)`` also denies the secret to Bash — no separate
+#     ``credentials.files`` / ``denyRead`` entry is needed (that would double-count).
+#   - No ``Edit(secret)`` rule is needed: writes are already confined to the worktree
+#     by ``allowWrite`` + the worktree-scoped ``Edit`` allow, so a secret OUTSIDE the
+#     worktree is unwritable regardless.
+# Emitting exactly one rule per secret keeps the ``sandbox-exec -p`` profile small;
+# every redundant rule enlarges the single argument Claude passes and risks
+# overflowing the OS arg limit (``E2BIG``), which breaks ALL sandboxed Bash.
+NATIVE_FILE_TOOLS: tuple[str, ...] = ("Read",)
 
 # Native read/enumeration capability allowed explicitly (``dontAsk`` runs only
 # allow-listed tools). A worktree-scoped ``Edit(...)`` allow is added per session
@@ -238,17 +245,26 @@ def _native_secret_deny_rules(deny_read_files: tuple[str, ...]) -> list[str]:
     """Permission-layer denies mirroring the OS credential denies onto native tools.
 
     The OS sandbox (``credentials.files`` / ``denyRead``) binds only Bash and its
-    children; the built-in Read/Edit/Grep/Glob/Write tools are governed by
-    permission rules and must each be denied separately. Deny rules hold in every
-    permission mode, so these are the un-bypassable native-tool secret layer. For
-    each path we deny both the path itself and everything beneath it (``/**``).
+    children; the built-in file tools are governed by permission rules. Deny rules
+    hold in every permission mode, so these are the un-bypassable native-tool
+    secret layer. One rule per (tool, path) suffices:
+
+    - ``Read(path)`` covers every reading tool (Read/Grep/Glob) and ``Edit(path)``
+      every editing tool (Edit/Write/MultiEdit) — see :data:`NATIVE_FILE_TOOLS`.
+    - A single ``Read(<dir>)`` already denies everything beneath the directory, so
+      NO ``/**`` variant is emitted. This is not just economy: Claude expands a
+      ``path/**`` deny by globbing it against the *real* filesystem into one
+      concrete rule per file, so a handful of populated secret dirs balloon into
+      hundreds of paths and overflow the sandboxed-Bash seatbelt argument limit
+      (``E2BIG``), which breaks ALL sandboxed Bash. A bare directory rule is a
+      single subtree match with no enumeration. (Both facts verified against the
+      live CLI.)
     """
     rules: list[str] = []
     for path in deny_read_files:
         spec = _permission_rule_path(path)
         for tool in NATIVE_FILE_TOOLS:
             rules.append(f"{tool}({spec})")
-            rules.append(f"{tool}({spec}/**)")
     return rules
 
 
@@ -320,11 +336,16 @@ def build_claude_sandbox_settings(scope: SandboxScope) -> dict[str, Any]:
             "denyWrite": self_config_paths,
         },
         "credentials": {
-            # Fail-closed secret protection: deny reads of known credential
-            # stores AND unset credential env vars for sandboxed commands.
-            "files": [
-                {"path": path, "mode": "deny"} for path in scope.deny_read_files
-            ],
+            # Unset credential env vars for sandboxed commands. Secret FILE reads
+            # are NOT listed here: a ``credentials.files`` deny applies the same OS
+            # restriction as ``filesystem.denyRead`` (per the Claude Code docs), so
+            # it would DUPLICATE the ``permissions.deny`` ``Read(...)`` rules — which
+            # already block the secret for BOTH the native Read tool AND Bash, since
+            # Claude merges permission rules into the Seatbelt profile (verified
+            # live). Every duplicate path enlarges the profile Claude passes to
+            # ``sandbox-exec -p`` as a single argument; a long-enough profile
+            # overflows the OS arg limit (E2BIG) and breaks ALL sandboxed Bash. One
+            # mechanism (``permissions.deny Read``), not two, keeps the profile small.
             "envVars": [{"name": name, "mode": "deny"} for name in scope.deny_env],
         },
     }

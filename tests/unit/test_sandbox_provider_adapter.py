@@ -87,10 +87,19 @@ def test_claude_settings_deny_read_home_and_reallow_roots() -> None:
 
 
 def test_claude_settings_fail_closed_deny_secret_files() -> None:
-    # The narrow, un-widenable credential deny is the fail-closed secret layer.
-    files = build_claude_sandbox_settings(_scope())["sandbox"]["credentials"]["files"]
-    assert {"path": "~/.ssh", "mode": "deny"} in files
-    assert {"path": "~/.issue-orchestrator", "mode": "deny"} in files
+    # Secret FILES are fail-closed via ONE mechanism: a ``permissions.deny``
+    # ``Read(path)`` rule, which blocks the native Read tool AND (because Claude
+    # merges permission rules into the OS sandbox profile) Bash. A separate
+    # ``credentials.files`` deny would apply the same restriction and double-count
+    # the path in the Seatbelt profile (E2BIG risk), so it is NOT emitted.
+    settings = build_claude_sandbox_settings(_scope())
+    deny = settings["permissions"]["deny"]
+    assert "Read(~/.ssh)" in deny
+    assert "Read(~/.issue-orchestrator)" in deny
+    assert "files" not in settings["sandbox"]["credentials"], (
+        "credential FILE reads are covered by permissions.deny Read; a "
+        "credentials.files entry would duplicate the path in the sandbox profile"
+    )
 
 
 def test_claude_settings_deny_credentials_as_objects() -> None:
@@ -126,7 +135,7 @@ def test_model_web_egress_has_no_network_restriction_but_keeps_secret_denies() -
     assert "network" not in settings["sandbox"]
     permissions = settings["permissions"]
     assert permissions["allow"] == ["Read", "Grep", "Glob", "Edit(//wt/issue-42/**)"]
-    assert "Read(~/.ssh/**)" in permissions["deny"]
+    assert "Read(~/.ssh)" in permissions["deny"]
     assert "WebSearch" not in permissions["deny"]
     assert "WebFetch" not in permissions["deny"]
 
@@ -152,16 +161,21 @@ def test_native_read_and_worktree_edit_allowed() -> None:
 
 
 def test_native_file_tools_deny_each_secret_path() -> None:
-    # The OS credentials.files deny does not touch the native Read/Edit/... tools,
-    # so every secret path is ALSO denied on the permission layer, per tool, for
-    # both the path and everything under it. Write(path) rules are ineffective, so
-    # only Read/Edit/Grep/Glob are emitted (Edit governs the editing tools).
+    # Exactly ONE rule per secret path: ``Read(path)``. It covers all reading tools
+    # (Read/Grep/Glob) AND — via the permission->sandbox merge — Bash; per-tool
+    # Grep/Glob/Write rules are ineffective per the live CLI. NO ``Edit(secret)``
+    # rule: writes are already worktree-confined, so a secret outside the worktree
+    # is unwritable regardless. NO ``/**`` variant: a bare Read(<dir>) already
+    # denies everything beneath it. Each redundant rule enlarges the single
+    # ``sandbox-exec -p`` argument and risks E2BIG, which breaks all sandboxed Bash.
     deny = build_claude_sandbox_settings(_scope())["permissions"]["deny"]
-    assert not any(e.startswith("Write(") for e in deny)
+    assert not any(e.startswith(("Write(", "Grep(", "Glob(", "Edit(~")) for e in deny)
+    assert not any(e.endswith("/**)") and not e.startswith("Edit(//wt/") for e in deny), (
+        f"no secret deny should carry a /** glob variant: {deny}"
+    )
     for path in ("~/.ssh", "~/.issue-orchestrator"):
-        for tool in ("Read", "Edit", "Grep", "Glob"):
-            assert f"{tool}({path})" in deny, f"missing {tool}({path})"
-            assert f"{tool}({path}/**)" in deny, f"missing {tool}({path}/**)"
+        assert f"Read({path})" in deny, f"missing Read({path})"
+        assert f"Edit({path})" not in deny, f"redundant Edit({path}) (writes are worktree-confined)"
 
 
 def test_anti_self_modification_denies_policy_files() -> None:
@@ -196,9 +210,35 @@ def test_absolute_secret_path_uses_double_slash_permission_spec() -> None:
     )
     deny = build_claude_sandbox_settings(scope)["permissions"]["deny"]
     assert "Read(//var/folders/abc/planted-secret.txt)" in deny
-    # The single-slash sandbox.filesystem credentials.files keeps the raw path.
-    files = build_claude_sandbox_settings(scope)["sandbox"]["credentials"]["files"]
-    assert {"path": "/var/folders/abc/planted-secret.txt", "mode": "deny"} in files
+
+
+def test_generated_deny_rule_count_is_bounded() -> None:
+    # E2BIG guard: Claude passes the whole sandbox profile as a single
+    # ``sandbox-exec -p`` argument, and its OWN built-in default deny list already
+    # sits near the OS arg limit. OUR contribution must stay tiny and, crucially,
+    # BOUNDED — O(number of secret roots), never O(files) — so a large scope (e.g.
+    # the tech-lead's evidence map) can't balloon the profile. Assert the total
+    # emitted deny/allow rule count is small and does not scale with glob expansion.
+    #
+    # A big deny_read_files list of DIRECTORIES must still yield one rule each (no
+    # per-file, no ``/**`` fan-out).
+    big = SandboxScope(
+        working_directory=Path("/wt/x"),
+        read_roots=(Path("/wt/x"),),
+        write_roots=(Path("/wt/x"),),
+        egress="model-only",
+        deny_env=(),
+        deny_read_files=tuple(f"~/.secret{i}" for i in range(50)),
+    )
+    settings = build_claude_sandbox_settings(big)
+    deny = settings["permissions"]["deny"]
+    # One Read() per secret + a couple of self-config Edit denies + egress denies.
+    assert len(deny) <= len(big.deny_read_files) + 8, f"deny rule count unbounded: {len(deny)}"
+    # No rule may fan out into globbed subpaths (what triggers Claude's filesystem
+    # expansion and the E2BIG blowup).
+    assert not any(r.endswith("/**)") and not r.startswith("Edit(//wt/") for r in deny)
+    # No duplicate secret coverage in the OS sandbox: credentials.files is absent.
+    assert "files" not in settings["sandbox"]["credentials"]
 
 
 # ---------------------------------------------------------------------------
