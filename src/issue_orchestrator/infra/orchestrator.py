@@ -186,13 +186,14 @@ class Orchestrator:
 
         EVERY effect is attempted independently — a failure of one (e.g. the
         terminal stop) never aborts the others — and the result is a typed
-        :class:`TriageTerminationOutcome` so a caller never reports a leak-free
-        termination after an effect failed. If worktree removal fails, an
-        ``ImmediateCleanup`` fact is RETAINED so a future tick can retry it,
-        rather than silently leaking the scratch checkout.
+        :class:`TriageTerminationOutcome`, the SOLE owner of a failed one-shot
+        cleanup: on a scratch-worktree removal failure the outcome carries the
+        exact ``leaked_worktree`` path so the command can require explicit
+        operator removal. (No engine tick ever runs after this — the only caller
+        is the on-demand driver, which pauses and ``close()``s — so there is no
+        second, tick-based retry mechanism; #6824 R7.)
         """
         from ..control.triage_trigger import TriageTerminationOutcome
-        from ..domain.models import ImmediateCleanup
 
         n = session.issue.number
 
@@ -229,17 +230,12 @@ class Orchestrator:
             if (disposable and wtm) else None,
             "remove scratch worktree",
         )
-        leaked_worktree: str | None = None
-        if disposable and not worktree_removed:
-            # Retain cleanup intent for an engine's future tick; but a one-shot
-            # runs no further tick, so ALSO surface the exact leaked path in the
-            # outcome for explicit operator action before exit (#6824 R7).
-            leaked_worktree = str(session.worktree_path)
-            self.state.record_immediate_cleanup(ImmediateCleanup(
-                issue_number=n, terminal_id=session.terminal_id,
-                worktree_path=leaked_worktree,
-                reason="triage-timeout", scratch_worktree=True,
-            ))
+        # A failed removal surfaces the EXACT leaked path in the outcome for
+        # explicit operator action before exit — the single cleanup-failure owner
+        # (no dead engine-tick retry, #6824 R7).
+        leaked_worktree = (
+            str(session.worktree_path) if (disposable and not worktree_removed) else None
+        )
         return TriageTerminationOutcome(
             terminal_stopped=terminal_stopped,
             machine_removed=machine_removed,

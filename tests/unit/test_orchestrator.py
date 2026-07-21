@@ -262,28 +262,25 @@ def _terminate_fixture(sample_config, tmp_path):
     return orchestrator, triage, session_manager, claim_manager, worktree_manager, scratch
 
 
-def test_terminate_triage_worktree_failure_reports_unclean_and_retains_cleanup(
+def test_terminate_triage_worktree_failure_reports_unclean_with_leaked_path(
     sample_config, tmp_path
 ):
     # R7 (#6824): if scratch-worktree removal FAILS, the outcome is NOT clean and
-    # an ImmediateCleanup is retained (so a future tick retries) — never a silent
-    # leak reported as success.
+    # names the EXACT leaked path (the sole cleanup-failure owner — no dead
+    # engine-tick ImmediateCleanup retry). Never a silent leak reported as success.
     orchestrator, triage, sm, cm, wtm, scratch = _terminate_fixture(sample_config, tmp_path)
     wtm.remove.side_effect = RuntimeError("git worktree remove failed")
 
     outcome = orchestrator.terminate_triage_session(triage)
 
     assert outcome.worktree_removed is False and outcome.clean is False
+    assert outcome.leaked_worktree == str(scratch)
     # Other effects still ran independently.
     sm.stop.assert_called_once()
     cm.release_claim.assert_called_once_with(77, "lease-1")
     assert orchestrator.state.active_sessions == []
-    # Cleanup intent retained for retry.
-    retained = [
-        c for c in orchestrator.state.immediate_cleanups
-        if c.issue_number == 77 and c.scratch_worktree
-    ]
-    assert len(retained) == 1 and retained[0].worktree_path == str(scratch)
+    # The dead engine-tick retry is gone — no ImmediateCleanup is recorded.
+    assert orchestrator.state.immediate_cleanups == []
 
 
 def test_terminate_triage_terminal_failure_does_not_abort_other_effects(

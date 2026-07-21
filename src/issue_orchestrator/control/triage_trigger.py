@@ -36,6 +36,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from enum import Enum
 from typing import TYPE_CHECKING, Protocol
 
 from ..domain.models import DiscoveredFailure, PendingTriageReview, SessionStatus
@@ -95,8 +96,10 @@ class TriageTerminationOutcome:
     Each field is True when its effect SUCCEEDED or was not needed, and False
     when it was attempted and FAILED. ``clean`` is False when any effect failed —
     so a caller never reports a leak-free termination after, say, the disposable
-    scratch worktree failed to remove (the intent is retained for a retry, but
-    this run did not succeed).
+    scratch worktree failed to remove. This outcome is the SOLE owner of a failed
+    one-shot cleanup: the on-demand driver runs no further engine tick, so a
+    failed removal is surfaced HERE (via ``leaked_worktree``) for explicit
+    operator action, not deferred to a tick-based retry that would never run.
     """
 
     terminal_stopped: bool = True
@@ -130,25 +133,89 @@ class TriageTerminationOutcome:
         )
 
 
+class TriageOutcomeStatus(Enum):
+    """The discriminated lifecycle of one on-demand triage dispatch (#6824 R7).
+
+    A dispatch is in exactly ONE of these states, which makes the previously
+    representable — and lying — ``launched-but-not-completed with no
+    termination`` combination impossible to construct:
+
+    * ``NOT_LAUNCHED`` — the session never started (issue not found, no anchor,
+      or the launch path declined). No ``termination``.
+    * ``COMPLETED`` — the launched session drained before the timeout. No
+      ``termination``.
+    * ``TIMED_OUT`` — the launched session hit ``timeout_s`` still running and
+      was terminated; ``termination`` is REQUIRED and records whether that
+      cleanup was clean.
+    """
+
+    NOT_LAUNCHED = "not_launched"
+    COMPLETED = "completed"
+    TIMED_OUT = "timed_out"
+
+
+class _DispatchOutcome:
+    """Shared derived view + invariant for the two on-demand dispatch results.
+
+    Both :class:`InvestigationResult` and :class:`HealthReviewResult` carry the
+    same ``status``/``termination`` lifecycle; this mixin owns the single source
+    of truth for the derived ``launched``/``completed`` booleans (so every
+    existing consumer keeps working) and the ``termination``-presence invariant,
+    rather than duplicating either across the two dataclasses.
+    """
+
+    status: "TriageOutcomeStatus"
+    termination: "TriageTerminationOutcome | None"
+
+    @property
+    def launched(self) -> bool:
+        """True once a session actually started (COMPLETED or TIMED_OUT)."""
+        return self.status is not TriageOutcomeStatus.NOT_LAUNCHED
+
+    @property
+    def completed(self) -> bool:
+        """True only when the launched session drained before the timeout."""
+        return self.status is TriageOutcomeStatus.COMPLETED
+
+    def _validate_status(self) -> None:
+        """Enforce the single invariant: ``termination`` present IFF TIMED_OUT.
+
+        Fail fast (fail-fast design) so a producer can neither build a timeout
+        result without its cleanup outcome nor attach a stray termination to a
+        completed / not-launched result. One invariant, one check — the two
+        failure directions are the same XOR violation, distinguished at runtime
+        by the state named in the message.
+        """
+        has_termination = self.termination is not None
+        expects_termination = self.status is TriageOutcomeStatus.TIMED_OUT
+        if has_termination != expects_termination:
+            raise ValueError(
+                "TriageTerminationOutcome must be attached iff status is TIMED_OUT"
+                f" (status={self.status.name},"
+                f" termination={'present' if has_termination else 'None'})"
+            )
+
+
 @dataclass(frozen=True)
-class InvestigationResult:
+class InvestigationResult(_DispatchOutcome):
     """The outcome of one on-demand tech-lead dispatch.
 
-    ``launched`` is whether a triage session actually started (False when the
-    issue was not found or the launch path declined). ``completed`` is whether
-    the launched session left ``active_sessions`` before the timeout — a
-    ``launched`` but not ``completed`` result means the drive loop hit
-    ``timeout_s`` with the session still running.
+    ``status`` is the discriminated lifecycle (:class:`TriageOutcomeStatus`);
+    the ``launched``/``completed`` booleans consumers read are DERIVED from it
+    (see :class:`_DispatchOutcome`), so an invalid launched-but-incomplete state
+    with no termination cannot be constructed.
     """
 
     issue_number: int
-    launched: bool
-    completed: bool
+    status: TriageOutcomeStatus
     detail: str
-    # The structured termination outcome when a launched session TIMED OUT (None
-    # when it completed or never launched); the command surfaces its cleanliness
-    # rather than always printing "session terminated" (#6824 R7).
+    # The structured termination outcome, REQUIRED iff ``status`` is TIMED_OUT
+    # (None when it completed or never launched); the command surfaces its
+    # cleanliness rather than always printing "session terminated" (#6824 R7).
     termination: "TriageTerminationOutcome | None" = None
+
+    def __post_init__(self) -> None:
+        self._validate_status()
 
 
 def run_targeted_investigations(
@@ -189,22 +256,23 @@ def run_targeted_investigations(
 
 
 @dataclass(frozen=True)
-class HealthReviewResult:
+class HealthReviewResult(_DispatchOutcome):
     """The outcome of an on-demand whole-board health review.
 
     ``anchor_issue_number`` is the health-review anchor that was launched, or
     ``None`` when none could be prepared (e.g. no triage agent configured, or
-    anchor creation failed). ``launched``/``completed`` mirror
-    :class:`InvestigationResult`: ``launched`` but not ``completed`` means the
-    drive loop hit ``timeout_s`` with the session still running.
+    anchor creation failed). ``status`` is the same discriminated lifecycle as
+    :class:`InvestigationResult`, with ``launched``/``completed`` derived from it.
     """
 
     anchor_issue_number: int | None
-    launched: bool
-    completed: bool
+    status: TriageOutcomeStatus
     detail: str
-    # Structured termination outcome on a launched-but-timed-out review (#6824 R7).
+    # Structured termination outcome, REQUIRED iff ``status`` is TIMED_OUT (#6824 R7).
     termination: "TriageTerminationOutcome | None" = None
+
+    def __post_init__(self) -> None:
+        self._validate_status()
 
 
 def run_health_review(
@@ -235,7 +303,7 @@ def run_health_review(
     triage = orchestrator.ensure_health_review_anchor()
     if triage is None:
         return HealthReviewResult(
-            None, launched=False, completed=False,
+            None, status=TriageOutcomeStatus.NOT_LAUNCHED,
             detail=(
                 "no health-review anchor could be prepared (no triage agent"
                 " configured, or anchor creation failed)"
@@ -248,7 +316,7 @@ def run_health_review(
             triage.issue_number,
         )
         return HealthReviewResult(
-            triage.issue_number, launched=False, completed=False,
+            triage.issue_number, status=TriageOutcomeStatus.NOT_LAUNCHED,
             detail=f"health-review launch failed for anchor #{triage.issue_number}",
         )
     identity = _session_identity(session)
@@ -267,7 +335,7 @@ def run_health_review(
     )
     if termination is not None:
         return HealthReviewResult(
-            triage.issue_number, launched=True, completed=False,
+            triage.issue_number, status=TriageOutcomeStatus.TIMED_OUT,
             detail=_timeout_detail("health review", timeout_s, termination),
             termination=termination,
         )
@@ -276,7 +344,7 @@ def run_health_review(
         triage.issue_number,
     )
     return HealthReviewResult(
-        triage.issue_number, launched=True, completed=True,
+        triage.issue_number, status=TriageOutcomeStatus.COMPLETED,
         detail=f"health review completed for anchor #{triage.issue_number}",
     )
 
@@ -298,7 +366,7 @@ def _investigate_one(
             issue_number,
         )
         return InvestigationResult(
-            issue_number, launched=False, completed=False,
+            issue_number, status=TriageOutcomeStatus.NOT_LAUNCHED,
             detail=f"issue #{issue_number} not found",
         )
 
@@ -314,7 +382,7 @@ def _investigate_one(
             "[TRIAGE_TRIGGER] triage launch declined for issue #%d", issue_number
         )
         return InvestigationResult(
-            issue_number, launched=False, completed=False,
+            issue_number, status=TriageOutcomeStatus.NOT_LAUNCHED,
             detail=f"triage launch failed for issue #{issue_number}",
         )
 
@@ -356,7 +424,7 @@ def _drive_to_completion(
     )
     if termination is not None:
         return InvestigationResult(
-            issue_number, launched=True, completed=False,
+            issue_number, status=TriageOutcomeStatus.TIMED_OUT,
             detail=_timeout_detail("investigation", timeout_s, termination),
             termination=termination,
         )
@@ -364,7 +432,7 @@ def _drive_to_completion(
         "[TRIAGE_TRIGGER] issue #%d investigation completed", issue_number
     )
     return InvestigationResult(
-        issue_number, launched=True, completed=True,
+        issue_number, status=TriageOutcomeStatus.COMPLETED,
         detail=f"investigation completed for issue #{issue_number}",
     )
 

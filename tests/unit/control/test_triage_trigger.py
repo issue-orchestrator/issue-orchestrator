@@ -2,9 +2,13 @@
 
 from types import SimpleNamespace
 
+import pytest
+
 from issue_orchestrator.control.triage_trigger import (
     HealthReviewResult,
     InvestigationResult,
+    TriageOutcomeStatus,
+    TriageTerminationOutcome,
     run_health_review,
     run_targeted_investigations,
 )
@@ -49,11 +53,16 @@ class _State:
 class _FakeHost:
     """Minimal TriageDispatchHost fake: launch adds a session, tick drains it."""
 
-    def __init__(self, *, issue, launch=True, ticks_to_complete=2) -> None:
+    def __init__(
+        self, *, issue, launch=True, ticks_to_complete=2, termination=None
+    ) -> None:
         self.repository_host = SimpleNamespace(get_issue=lambda n: issue)
         self.state = _State()
         self._launch = launch
         self._ticks_to_complete = ticks_to_complete
+        # The typed outcome the facade returns on terminate — defaults to clean,
+        # overridden by tests that inject a failed/leaked cleanup.
+        self._termination = termination or TriageTerminationOutcome()
         self.pause_calls = 0
         self.tick_count = 0
         self.launched: list = []
@@ -83,14 +92,12 @@ class _FakeHost:
 
     def terminate_triage_session(self, session):
         # Faithful to the real facade (#6824 R7): terminate AND reconcile the
-        # session out of active_sessions, returning a (clean) typed outcome.
-        from issue_orchestrator.control.triage_trigger import TriageTerminationOutcome
-
+        # session out of active_sessions, returning the injected typed outcome.
         self.killed.append(session.terminal_id)
         self.state.active_sessions = [
             s for s in self.state.active_sessions if s.terminal_id != session.terminal_id
         ]
-        return TriageTerminationOutcome()
+        return self._termination
 
 
 def _noop_sleep(_seconds: float) -> None:
@@ -112,7 +119,7 @@ def test_happy_path_launches_and_drives_to_completion() -> None:
     assert host.tick_count >= 2  # ticked until the session drained
     assert results == [
         InvestigationResult(
-            5980, launched=True, completed=True,
+            5980, status=TriageOutcomeStatus.COMPLETED,
             detail="investigation completed for issue #5980",
         )
     ]
@@ -195,12 +202,13 @@ class _FakeHealthHost:
     """
 
     def __init__(
-        self, *, anchor=None, launch=True, ticks_to_complete=2
+        self, *, anchor=None, launch=True, ticks_to_complete=2, termination=None
     ) -> None:
         self.state = _State()
         self._anchor = anchor
         self._launch = launch
         self._ticks_to_complete = ticks_to_complete
+        self._termination = termination or TriageTerminationOutcome()
         self.pause_calls = 0
         self.ensure_calls = 0
         self.launched: list = []
@@ -235,13 +243,11 @@ class _FakeHealthHost:
 
     def terminate_triage_session(self, session):
         # Faithful to the real facade (#6824 R7): terminate AND reconcile.
-        from issue_orchestrator.control.triage_trigger import TriageTerminationOutcome
-
         self.killed.append(session.terminal_id)
         self.state.active_sessions = [
             s for s in self.state.active_sessions if s.terminal_id != session.terminal_id
         ]
-        return TriageTerminationOutcome()
+        return self._termination
 
 
 def test_health_review_launches_and_drives_to_completion() -> None:
@@ -257,7 +263,7 @@ def test_health_review_launches_and_drives_to_completion() -> None:
     assert launched.issue_number == 200
     assert host.tick_count >= 2  # ticked until the session drained
     assert result == HealthReviewResult(
-        200, launched=True, completed=True,
+        200, status=TriageOutcomeStatus.COMPLETED,
         detail="health review completed for anchor #200",
     )
 
@@ -300,3 +306,89 @@ def test_health_review_times_out_when_session_never_completes() -> None:
     assert "terminated" in result.detail
     assert host.killed == ["triage-200"]
     assert host.state.active_sessions == []
+
+
+# --- Discriminated status invariant (#6824 R7) -----------------------------
+
+
+def test_status_derives_launched_and_completed_booleans() -> None:
+    # The booleans consumers read are DERIVED from the single status field, so
+    # the two can never disagree.
+    not_launched = InvestigationResult(
+        1, status=TriageOutcomeStatus.NOT_LAUNCHED, detail="x"
+    )
+    assert (not_launched.launched, not_launched.completed) == (False, False)
+
+    completed = InvestigationResult(1, status=TriageOutcomeStatus.COMPLETED, detail="x")
+    assert completed.launched is True and completed.completed is True
+
+    timed_out = HealthReviewResult(
+        1, status=TriageOutcomeStatus.TIMED_OUT, detail="x",
+        termination=TriageTerminationOutcome(),
+    )
+    assert timed_out.launched is True and timed_out.completed is False
+
+
+def test_timed_out_without_termination_is_unrepresentable() -> None:
+    # The lying "launched-but-incomplete with no termination" state cannot be
+    # constructed — __post_init__ fails fast, and the message names the state.
+    with pytest.raises(ValueError, match="iff status is TIMED_OUT.*termination=None"):
+        InvestigationResult(1, status=TriageOutcomeStatus.TIMED_OUT, detail="x")
+    with pytest.raises(ValueError, match="iff status is TIMED_OUT.*termination=None"):
+        HealthReviewResult(1, status=TriageOutcomeStatus.TIMED_OUT, detail="x")
+
+
+def test_non_timeout_with_stray_termination_is_rejected() -> None:
+    # A completed / not-launched outcome must not carry a termination.
+    with pytest.raises(ValueError, match="iff status is TIMED_OUT.*termination=present"):
+        InvestigationResult(
+            1, status=TriageOutcomeStatus.COMPLETED, detail="x",
+            termination=TriageTerminationOutcome(),
+        )
+    with pytest.raises(ValueError, match="iff status is TIMED_OUT.*termination=present"):
+        HealthReviewResult(
+            1, status=TriageOutcomeStatus.NOT_LAUNCHED, detail="x",
+            termination=TriageTerminationOutcome(),
+        )
+
+
+def test_unclean_facade_termination_survives_into_investigation_result() -> None:
+    # Producer-side: when the facade's terminate reports an INCOMPLETE cleanup
+    # (leaked scratch worktree), that unclean outcome must survive the drive loop
+    # into the command's InvestigationResult — not be flattened to a clean status.
+    leaked = TriageTerminationOutcome(
+        worktree_removed=False, leaked_worktree="/wt/repo-triage-5980-abc"
+    )
+    host = _FakeHost(
+        issue=_issue(5980), ticks_to_complete=10_000, termination=leaked
+    )
+    results = run_targeted_investigations(
+        host, [5980], now=_clock([0, 0, 0, 9_999]), sleep=_noop_sleep, timeout_s=100
+    )
+    result = results[0]
+    assert result.status is TriageOutcomeStatus.TIMED_OUT
+    assert result.launched is True and result.completed is False
+    assert result.termination is leaked  # the exact facade outcome, untouched
+    assert result.termination.clean is False
+    assert result.termination.leaked_worktree == "/wt/repo-triage-5980-abc"
+    assert "cleanup INCOMPLETE" in result.detail
+
+
+def test_unclean_facade_termination_survives_into_health_review_result() -> None:
+    # Producer-side, health-review counterpart.
+    leaked = TriageTerminationOutcome(
+        terminal_stopped=False, worktree_removed=False,
+        leaked_worktree="/wt/repo-triage-200-xyz",
+    )
+    host = _FakeHealthHost(
+        anchor=_health_anchor(200), ticks_to_complete=10_000, termination=leaked
+    )
+    result = run_health_review(
+        host, now=_clock([0, 0, 0, 9_999]), sleep=_noop_sleep, timeout_s=100
+    )
+    assert result.status is TriageOutcomeStatus.TIMED_OUT
+    assert result.launched is True and result.completed is False
+    assert result.termination is leaked
+    assert result.termination.clean is False
+    assert result.termination.leaked_worktree == "/wt/repo-triage-200-xyz"
+    assert "cleanup INCOMPLETE" in result.detail

@@ -13,7 +13,10 @@ import contextlib
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from issue_orchestrator.control.triage_trigger import HealthReviewResult
+from issue_orchestrator.control.triage_trigger import (
+    HealthReviewResult,
+    TriageOutcomeStatus,
+)
 from issue_orchestrator.entrypoints import cli_triage
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.infra.repo_lock import AlreadyRunning
@@ -74,7 +77,7 @@ class TestCmdHealthReview:
         ), patch(
             "issue_orchestrator.control.triage_trigger.run_health_review",
             return_value=HealthReviewResult(
-                200, launched=True, completed=True, detail="done"
+                200, status=TriageOutcomeStatus.COMPLETED, detail="done"
             ),
         ) as run:
             rc = cli_triage.cmd_health_review(_args(advise_only=True, timeout=42.0))
@@ -96,6 +99,8 @@ class TestCmdHealthReview:
         orchestrator.close.assert_called_once()
 
     def test_timeout_returns_nonzero_and_still_disables_e2e(self) -> None:
+        from issue_orchestrator.control.triage_trigger import TriageTerminationOutcome
+
         config = Config()
         config.e2e.enabled = True
         default_authority = config.triage.authority
@@ -105,8 +110,12 @@ class TestCmdHealthReview:
             cli_triage, "_build_orchestrator", return_value=orchestrator
         ), patch(
             "issue_orchestrator.control.triage_trigger.run_health_review",
+            # A TIMED_OUT outcome now REQUIRES its termination (the invalid
+            # launched-but-incomplete-with-no-termination state is gone) — a
+            # clean one here, so the command reports a plain terminated timeout.
             return_value=HealthReviewResult(
-                200, launched=True, completed=False, detail="timed out"
+                200, status=TriageOutcomeStatus.TIMED_OUT, detail="timed out",
+                termination=TriageTerminationOutcome(),
             ),
         ):
             rc = cli_triage.cmd_health_review(_args(advise_only=False))
@@ -132,7 +141,7 @@ class TestCmdHealthReview:
         ), patch(
             "issue_orchestrator.control.triage_trigger.run_health_review",
             return_value=HealthReviewResult(
-                200, launched=True, completed=False, detail="timed out",
+                200, status=TriageOutcomeStatus.TIMED_OUT, detail="timed out",
                 termination=TriageTerminationOutcome(
                     terminal_stopped=False, worktree_removed=False,
                     leaked_worktree="/wt/repo-triage-200-abc",
