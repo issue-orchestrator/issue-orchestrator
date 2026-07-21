@@ -889,12 +889,12 @@
       "value": 7
     },
     "control_policy_branch_sites:src/issue_orchestrator/infra/config.py": {
-      "detail": "46 branch site(s) mention lifecycle/control terms",
+      "detail": "43 branch site(s) mention lifecycle/control terms",
       "kind": "control_policy_branch_sites",
       "metric_id": "src/issue_orchestrator/infra/config.py",
       "path": "src/issue_orchestrator/infra/config.py",
       "rule_id": "control_policy_branch_sites",
-      "value": 46
+      "value": 43
     },
     "control_policy_branch_sites:src/issue_orchestrator/infra/config_sections.py": {
       "detail": "4 branch site(s) mention lifecycle/control terms",
@@ -903,6 +903,14 @@
       "path": "src/issue_orchestrator/infra/config_sections.py",
       "rule_id": "control_policy_branch_sites",
       "value": 4
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/infra/config_serialization.py": {
+      "detail": "3 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/infra/config_serialization.py",
+      "path": "src/issue_orchestrator/infra/config_serialization.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 3
     },
     "control_policy_branch_sites:src/issue_orchestrator/infra/doctor/checks/config.py": {
       "detail": "3 branch site(s) mention lifecycle/control terms",
@@ -1505,12 +1513,12 @@
       "value": 1641
     },
     "oversized_control_hotspots:src/issue_orchestrator/infra/config.py": {
-      "detail": "1508 lines exceeds budget 800",
+      "detail": "1459 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/infra/config.py",
       "path": "src/issue_orchestrator/infra/config.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 1508
+      "value": 1459
     },
     "oversized_control_hotspots:src/issue_orchestrator/infra/config_sections.py": {
       "detail": "901 lines exceeds budget 800",

@@ -776,6 +776,14 @@ class Config:
         Returns a dict that can be saved back to a YAML config file.
         This preserves the original YAML structure as closely as possible.
         """
+        from .config_serialization import (
+            filtering_section,
+            goal_pilot_section,
+            merge_queue_section,
+            observability_section,
+            worktrees_section,
+        )
+
         # Build agents section
         agents_dict = {}
         for label, agent in self.agents.items():
@@ -939,37 +947,11 @@ class Config:
             result["ui"] = ui_dict
 
         # Observability section
-        observability_dict: dict = {}
-        if self.session_no_output_seconds != 120:
-            observability_dict["session_no_output_seconds"] = self.session_no_output_seconds
-        if self.stale_escalation_ticks != 0:
-            observability_dict["stale_escalation_ticks"] = self.stale_escalation_ticks
-        if self.session_output_retention_runs != 7:
-            observability_dict["session_output_retention_runs"] = self.session_output_retention_runs
-        if self.session_output_retention_days != 7:
-            observability_dict["session_output_retention_days"] = self.session_output_retention_days
-        if self.session_output_retention_tier != "hot":
-            observability_dict["session_output_retention_tier"] = self.session_output_retention_tier
-        if observability_dict:
+        if observability_dict := observability_section(self):
             result["observability"] = observability_dict
 
         # Filtering section
-        filtering_dict: dict = {}
-        if self.filtering.label:
-            filtering_dict["label"] = self.filtering.label
-        if self.filtering.milestones:
-            filtering_dict["milestones"] = list(self.filtering.milestones)
-        elif self.filtering.milestone:
-            filtering_dict["milestone"] = self.filtering.milestone
-        if self.filtering.exclude_labels:
-            filtering_dict["exclude_labels"] = list(self.filtering.exclude_labels)
-        if self.filtering.exclude_label_prefixes:
-            filtering_dict["exclude_label_prefixes"] = list(self.filtering.exclude_label_prefixes)
-        if self.filtering.fetch_limit != 100:
-            filtering_dict["fetch_limit"] = self.filtering.fetch_limit
-        if self.filtering.max_to_start != 0:
-            filtering_dict["max_to_start"] = self.filtering.max_to_start
-        if filtering_dict:
+        if filtering_dict := filtering_section(self):
             result["filtering"] = filtering_dict
 
         # Scheduling section
@@ -1034,46 +1016,15 @@ class Config:
             result["review"] = review_dict
 
         # Goal Pilot section
-        goal_pilot_dict: dict = {}
-        if self.goal_pilot.enabled:
-            goal_pilot_dict["enabled"] = True
-        if self.goal_pilot.agent:
-            goal_pilot_dict["agent"] = self.goal_pilot.agent
-        if self.goal_pilot.approval_policy != "journeys_only":
-            goal_pilot_dict["approval_policy"] = self.goal_pilot.approval_policy
-        if self.goal_pilot.approval_batch_size != 10:
-            goal_pilot_dict["approval_batch_size"] = self.goal_pilot.approval_batch_size
-        if self.goal_pilot.approval_batch_window_minutes != 60:
-            goal_pilot_dict["approval_batch_window_minutes"] = self.goal_pilot.approval_batch_window_minutes
-        if goal_pilot_dict:
+        if goal_pilot_dict := goal_pilot_section(self):
             result["goal_pilot"] = goal_pilot_dict
 
-        merge_queue_dict: dict = {}
-        if self.merge_queue.enabled:
-            merge_queue_dict["enabled"] = True
-        if self.merge_queue.provider != "github":
-            merge_queue_dict["provider"] = self.merge_queue.provider
-        if self.merge_queue.enqueue_after != "code-reviewed":
-            merge_queue_dict["enqueue_after"] = self.merge_queue.enqueue_after
-        if self.merge_queue.failure_action != "rework":
-            merge_queue_dict["failure_action"] = self.merge_queue.failure_action
-        if merge_queue_dict:
+        # Merge queue section
+        if merge_queue_dict := merge_queue_section(self):
             result["merge_queue"] = merge_queue_dict
 
         # Worktrees section
-        worktrees_dict: dict = {}
-        # Only include worktree_base if it was explicitly set (not the default)
-        if self.worktree_base != self.repo_root.parent:
-            worktrees_dict["base"] = str(self.worktree_base)
-        if self.worktree_base_branch_override:
-            worktrees_dict["base_branch_override"] = self.worktree_base_branch_override
-        if self.worktree_seed_ref:
-            worktrees_dict["seed_ref"] = self.worktree_seed_ref
-        if self.setup_worktree:
-            worktrees_dict["setup"] = list(self.setup_worktree)
-        if self.worktree_branch_on_recreate != "delete":
-            worktrees_dict["worktree_branch_on_recreate"] = self.worktree_branch_on_recreate
-        if worktrees_dict:
+        if worktrees_dict := worktrees_section(self):
             result["worktrees"] = worktrees_dict
 
         # E2E section

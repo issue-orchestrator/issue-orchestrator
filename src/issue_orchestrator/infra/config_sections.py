@@ -246,8 +246,7 @@ def parse_triage_config(data: dict) -> TriageConfig:
         explicit=ms_data.get("explicit"),
     )
 
-    max_concurrent_raw = data.get("max_concurrent")
-    max_concurrent = int(max_concurrent_raw) if max_concurrent_raw is not None else None
+    max_concurrent = int(mc) if (mc := data.get("max_concurrent")) is not None else None
 
     return TriageConfig(
         inherit_labels=list(inherit_labels),
