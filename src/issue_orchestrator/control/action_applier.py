@@ -1587,12 +1587,22 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
                 Path(action.worktree_path), force=action.disposable_worktree
             )
             logger.info(issue_log(action.issue_number, "Removed worktree: %s"), action.worktree_path)
-            # Notify async completion processing that worktree is gone
-            if self.on_worktree_removed:
-                self.on_worktree_removed(action.worktree_path)
         except Exception as e:
             errors.append(f"remove worktree: {e}")
             logger.warning(issue_log(action.issue_number, "Failed to remove worktree: %s"), e)
+            return
+        # Removal SUCCEEDED (or the path was already gone). The "worktree is gone"
+        # notification is a distinct concern: a callback failure must NOT re-fail
+        # an already-completed removal, or the disposable cleanup would be retained
+        # and retried forever against a now-absent path (#6824 R3).
+        if self.on_worktree_removed:
+            try:
+                self.on_worktree_removed(action.worktree_path)
+            except Exception as e:
+                logger.warning(
+                    issue_log(action.issue_number, "worktree-removed callback failed (worktree already gone): %s"),
+                    e,
+                )
 
     def _apply_remove_worktree(self, action: Action) -> ActionResult:
         """Remove a git worktree."""

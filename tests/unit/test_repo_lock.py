@@ -125,32 +125,105 @@ class TestHeldRepoLock:
         assert (tmp_path / ".issue-orchestrator" / "lock.json").exists()
 
     def test_refuses_when_multi_instance_engine_is_live(self, tmp_path: Path) -> None:
-        """A one-shot command must account for ALL conflicting instance locks,
-        not just the single lock.json (#6824 F6) — and release its own lock when
-        it backs out."""
-        locks_dir = tmp_path / ".issue-orchestrator" / "locks"
-        locks_dir.mkdir(parents=True)
-        (locks_dir / "inst-a.json").write_text(
+        """A one-shot (LOCK_EX) is refused while ANY multi-instance engine holds
+        the SHARED repo gate — atomically, with no TOCTOU scan (#6824 R2/F6)."""
+        import fcntl
+
+        gate = tmp_path / ".issue-orchestrator" / "repo.lock"
+        gate.parent.mkdir(parents=True)
+        other = os.open(gate, os.O_RDWR | os.O_CREAT)
+        # Simulate a live named multi-instance engine holding the shared gate.
+        fcntl.flock(other, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        try:
+            with pytest.raises(AlreadyRunning):
+                with held_repo_lock(tmp_path):
+                    pass
+        finally:
+            os.close(other)
+        # Never acquired -> no metadata leaked.
+        assert not (tmp_path / ".issue-orchestrator" / "lock.json").exists()
+
+
+class TestLockAtomicity:
+    """R2 (#6824): one atomic flock owner governs every startup mode.
+
+    The exclusion is a real held flock, not a read-check-rename — so these
+    tests assert exactly-one-winner under genuine contention, not pid fakery.
+    """
+
+    def test_concurrent_acquire_has_exactly_one_winner(self, tmp_path: Path) -> None:
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+
+        workers = 16
+        ready = threading.Barrier(workers)
+
+        def attempt(_n: int) -> bool:
+            ready.wait(timeout=5)
+            try:
+                acquire_lock(tmp_path)
+                return True
+            except AlreadyRunning:
+                return False
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            results = list(pool.map(attempt, range(workers)))
+
+        assert sum(results) == 1  # exactly one winner, no double-acquire
+
+    def test_second_single_instance_acquire_refused(self, tmp_path: Path) -> None:
+        acquire_lock(tmp_path)
+        with pytest.raises(AlreadyRunning):
+            acquire_lock(tmp_path)
+        release_lock(tmp_path)
+        # After release the gate is free again.
+        acquire_lock(tmp_path)
+        release_lock(tmp_path)
+
+    def test_named_multi_instances_coexist_but_exclude_exclusive(
+        self, tmp_path: Path
+    ) -> None:
+        acquire_lock(tmp_path, instance_id="a")
+        acquire_lock(tmp_path, instance_id="b")  # different id -> both hold LOCK_SH
+        try:
+            # A single-instance engine / one-shot (LOCK_EX) is excluded by the
+            # shared holders — the cross-mode guarantee the old scan raced on.
+            with pytest.raises(AlreadyRunning):
+                acquire_lock(tmp_path)
+        finally:
+            release_lock(tmp_path, instance_id="a")
+            release_lock(tmp_path, instance_id="b")
+        # Once both shared holders release, the exclusive lock is available.
+        acquire_lock(tmp_path)
+        release_lock(tmp_path)
+
+    def test_same_instance_id_rejected(self, tmp_path: Path) -> None:
+        acquire_lock(tmp_path, instance_id="a")
+        with pytest.raises(AlreadyRunning):
+            acquire_lock(tmp_path, instance_id="a")
+        release_lock(tmp_path, instance_id="a")
+
+    def test_stale_metadata_without_flock_is_taken_over(self, tmp_path: Path) -> None:
+        """A crashed holder's flock is auto-released; its stale metadata is a
+        takeover, marked recovered=True (not a false AlreadyRunning)."""
+        lock_dir = tmp_path / ".issue-orchestrator"
+        lock_dir.mkdir(parents=True)
+        (lock_dir / "lock.json").write_text(
             json.dumps(
                 {
                     "repo_root": str(tmp_path),
-                    "pid": 424242,  # a DIFFERENT (live, mocked) process
+                    "pid": 999999999,
                     "started_at": "2024-01-01T00:00:00Z",
-                    "http_port": 9000,
-                    "state_dir": str(tmp_path / ".issue-orchestrator" / "state"),
-                    "instance_id": "inst-a",
+                    "http_port": 9999,
+                    "state_dir": str(lock_dir / "state"),
+                    "recovered": False,
                 }
             )
         )
-        with patch(
-            "issue_orchestrator.infra.repo_lock._is_process_alive", return_value=True
-        ):
-            with pytest.raises(AlreadyRunning) as exc:
-                with held_repo_lock(tmp_path):
-                    pass
-        assert exc.value.pid == 424242
-        # Our just-taken single lock was released, not leaked.
-        assert not (tmp_path / ".issue-orchestrator" / "lock.json").exists()
+        info = acquire_lock(tmp_path, port=8080)
+        assert info.pid == os.getpid()
+        assert info.recovered is True
+        release_lock(tmp_path)
 
 
 class TestReleaseLock:

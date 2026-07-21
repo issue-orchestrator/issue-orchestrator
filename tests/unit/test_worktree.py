@@ -950,7 +950,7 @@ class TestRemoveWorktree:
 
     @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_remove_worktree_not_exists(self, mock_run, tmp_path):
-        """Test error when worktree doesn't exist."""
+        """Test error when worktree doesn't exist (non-forced)."""
         # Setup
         worktree_path = tmp_path / "nonexistent"
 
@@ -959,6 +959,16 @@ class TestRemoveWorktree:
             remove_worktree(worktree_path)
 
         # Git should not have been called
+        mock_run.assert_not_called()
+
+    @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
+    def test_remove_worktree_forced_is_idempotent_when_absent(self, mock_run, tmp_path):
+        """R3 (#6824): a FORCED removal of an already-absent path is a no-op, not
+        an error — so a partial-success cleanup retry cannot loop forever."""
+        worktree_path = tmp_path / "already-gone"
+
+        # No exception, and git is not invoked (nothing to remove).
+        remove_worktree(worktree_path, force=True)
         mock_run.assert_not_called()
 
     @patch("issue_orchestrator.adapters.worktree._worktree.get_worktree_branch")

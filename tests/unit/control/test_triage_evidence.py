@@ -26,6 +26,25 @@ def _config(tmp_path: Path) -> Config:
     return config
 
 
+def _register_worktree(repo_root: Path, worktree: Path) -> Path:
+    """Make ``worktree`` a REAL linked git worktree of ``repo_root``.
+
+    Provenance is by shared git common dir (#6824 R4): the main repo gets a
+    ``.git`` dir; the linked worktree gets a ``.git`` file pointing at
+    ``<repo>/.git/worktrees/<name>`` whose ``commondir`` resolves back to the
+    repo's ``.git``. A same-prefixed but UNRELATED sibling repo has its own
+    ``.git`` and a different common dir, so it is excluded.
+    """
+    git_common = repo_root / ".git"
+    git_common.mkdir(parents=True, exist_ok=True)
+    wt_gitdir = git_common / "worktrees" / worktree.name
+    wt_gitdir.mkdir(parents=True, exist_ok=True)
+    (wt_gitdir / "commondir").write_text("../..\n")
+    worktree.mkdir(parents=True, exist_ok=True)
+    (worktree / ".git").write_text(f"gitdir: {wt_gitdir}\n")
+    return worktree
+
+
 def _make_sibling_run_dirs(tmp_path: Path, issue_number: int, names) -> list[Path]:
     """Create the sibling session worktree's run-dirs and return their paths."""
     sessions_dir = (
@@ -86,6 +105,8 @@ class _FakeRepositoryHost:
         self.pr_calls: list[tuple[int, str]] = []
 
     def get_default_branch(self) -> str:
+        if self._raises:
+            raise RuntimeError("github down")
         return self._default_branch
 
     def get_issue(self, issue_number: int):
@@ -151,6 +172,28 @@ class TestBuildEvidenceMapLocations:
 
         assert evidence.default_branch == "develop"
 
+    def test_default_branch_reads_real_non_main_default(self, tmp_path: Path) -> None:
+        # R6 (#6824): a repo whose real default is NOT main resolves correctly —
+        # the map must not fabricate main.
+        config = _config(tmp_path)
+        evidence = build_evidence_map(
+            config=config,
+            repository_host=_FakeRepositoryHost(default_branch="trunk"),
+            focus_issue_number=None,
+        )
+        assert evidence.default_branch == "trunk"
+
+    def test_default_branch_unknown_on_lookup_failure(self, tmp_path: Path) -> None:
+        # R6 (#6824): when the GitHub lookup FAILS, the branch is unknown (None),
+        # NOT a fabricated main — the agent resolves it from local git instead.
+        config = _config(tmp_path)
+        evidence = build_evidence_map(
+            config=config,
+            repository_host=_FakeRepositoryHost(raises=True),
+            focus_issue_number=None,
+        )
+        assert evidence.default_branch is None
+
     def test_run_dirs_merge_artifact_hint_parents(self, tmp_path: Path) -> None:
         config = _config(tmp_path)
         _make_sibling_run_dirs(tmp_path, 6335, ["20260101T000000__coding-1"])
@@ -197,12 +240,15 @@ class TestGodViewSubstrate:
 
     def test_substrate_root_locations_present(self, tmp_path: Path) -> None:
         config = _config(tmp_path)
-        # A managed worktree for THIS repo (repo_root.name == "repo") and an
-        # unrelated sibling repo under the shared worktrees.base parent.
-        managed = tmp_path / "repo-42"
-        managed.mkdir()
+        # A REGISTERED managed worktree for THIS repo (repo_root.name == "repo");
+        # an unrelated dir; and a same-PREFIXED but unrelated sibling repo.
+        managed = _register_worktree(config.repo_root, tmp_path / "repo-42")
         unrelated = tmp_path / "tixmeup"
         unrelated.mkdir()
+        # R4: `repo-private` matches the `repo-*` glob but is a SEPARATE repo
+        # (its own .git dir) — provenance must exclude it.
+        prefix_collision = tmp_path / "repo-private"
+        (prefix_collision / ".git").mkdir(parents=True)
 
         evidence = build_evidence_map(
             config=config,
@@ -222,12 +268,14 @@ class TestGodViewSubstrate:
 
         dir_paths = {loc.path for loc in by_kind["dir"]}
         assert str(state_dir(config.repo_root)) in dir_paths
-        # F9: the repo-specific managed worktree IS a root...
+        # F9: the repo-specific REGISTERED managed worktree IS a root...
         assert str(managed) in dir_paths
         # ...but the shared worktrees.base PARENT is NOT (it holds sibling repos)...
         assert str(config.worktree_base) not in dir_paths
-        # ...and an unrelated sibling repo is never granted.
+        # ...an unrelated dir is never granted...
         assert str(unrelated) not in dir_paths
+        # ...and a same-prefixed UNRELATED sibling repo is excluded by provenance.
+        assert str(prefix_collision) not in dir_paths
 
         # The orchestrator log is a log location under the state dir.
         (log_loc,) = by_kind["log"]
@@ -306,6 +354,8 @@ class TestWholeSystemRunDirs:
         self, tmp_path: Path
     ) -> None:
         config = _config(tmp_path)
+        _register_worktree(config.repo_root, tmp_path / "repo-100")
+        _register_worktree(config.repo_root, tmp_path / "repo-200")
         d1 = _make_worktree_run_dir(tmp_path, "repo-100", "20260101T000000__coding-1")
         d2 = _make_worktree_run_dir(tmp_path, "repo-200", "20260102T000000__reviewer-1")
         # The main repo's own sessions are part of the whole system too.
@@ -321,6 +371,42 @@ class TestWholeSystemRunDirs:
             assert str(run_dir.resolve()) in evidence.run_dirs
         # Sorted, no duplicates.
         assert list(evidence.run_dirs) == sorted(set(evidence.run_dirs))
+
+    def test_whole_system_excludes_unregistered_prefix_sibling(
+        self, tmp_path: Path
+    ) -> None:
+        # R4 (#6824): a same-prefixed but UNRELATED sibling repo's run-dirs are
+        # NOT swept into the whole-system health review.
+        config = _config(tmp_path)
+        sibling = tmp_path / "repo-private"
+        (sibling / ".git").mkdir(parents=True)
+        leaked = _make_worktree_run_dir(tmp_path, "repo-private", "20260101T000000__x")
+
+        evidence = build_evidence_map(
+            config=config,
+            repository_host=_FakeRepositoryHost(),
+            focus_issue_number=None,
+        )
+
+        assert str(leaked.resolve()) not in evidence.run_dirs
+
+
+class TestManagedWorktreeSelection:
+    """R4 (#6824): registered-worktree provenance + numeric-suffix cap."""
+
+    def test_cap_keeps_highest_issue_numbers_not_lexical(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        import issue_orchestrator.control.triage_evidence as te
+
+        monkeypatch.setattr(te, "_MAX_WORKTREE_ROOTS", 2)
+        config = _config(tmp_path)
+        for n in (9, 10, 100):
+            _register_worktree(config.repo_root, tmp_path / f"repo-{n}")
+
+        kept = {p.name for p in te._registered_managed_worktrees(config)}
+        # Numeric: 100 and 10 kept over 9 (a lexical sort would keep 9 over 10/100).
+        assert kept == {"repo-100", "repo-10"}
 
 
 class TestBuildEvidenceMapGithubWarmCache:

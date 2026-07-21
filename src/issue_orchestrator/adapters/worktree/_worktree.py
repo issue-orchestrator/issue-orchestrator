@@ -1312,6 +1312,15 @@ def remove_worktree(worktree_path: Path, *, force: bool = False) -> None:
     logger.info("Removing worktree: path=%s", worktree_path)
 
     if not worktree_path.exists():
+        if force:
+            # Idempotent for disposable/forced removal (#6824 R3): ``force`` means
+            # "discard this local worktree", and an already-absent path already
+            # satisfies that. Raising here would make a partial-success retry
+            # (removal succeeded, a later step failed → cleanup re-planned) loop
+            # forever on the now-missing path. The non-forced coding-worktree path
+            # keeps raising so an unexpected disappearance is still surfaced.
+            logger.info("Worktree already absent; forced removal is a no-op: path=%s", worktree_path)
+            return
         raise WorktreeError(f"Worktree does not exist at {worktree_path}")
 
     try:

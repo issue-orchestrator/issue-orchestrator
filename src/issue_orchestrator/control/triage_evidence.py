@@ -32,12 +32,14 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Sequence
 
 from ..infra.logging_config import get_repo_log_path
 from ..infra.repo_identity import state_dir
+from ..infra.validation_timings import resolve_git_common_dir
 
 if TYPE_CHECKING:
     from ..infra.config import Config
@@ -86,14 +88,6 @@ _MAX_RUN_DIRS = 200
 # could accumulate many); the NEWEST (highest issue-number suffix) are kept.
 _MAX_WORKTREE_ROOTS = 100
 
-# LAST-RESORT default branch, used only if both the config override and the
-# repository abstraction fail to yield one. The real default is resolved in
-# ``_resolve_default_branch`` from ``worktrees.base_branch_override`` first, then
-# ``RepositoryHost.get_default_branch()`` (which may be master/trunk/…) — this
-# constant is never the primary answer, so a repo that does not default to
-# ``main`` is not silently mis-verified.
-_DEFAULT_BRANCH_FALLBACK = "main"
-
 _GUIDANCE = (
     "These are ROOTS, not a fixed inventory. You have READ access to EVERYTHING "
     "under them, including artifacts created AFTER this map was written — "
@@ -105,9 +99,12 @@ _GUIDANCE = (
     "conflict/rebase history). For a failure investigation: read the run-dir "
     "artifacts (run-audit.json, validation-record.json, completion-record.json, "
     "analysis.json) and key on validation.passed, NOT the outcome string. This "
-    "repo is PUBLIC: verify merge-reachability with local git (e.g. `git -C "
-    "<run_dir> fetch origin --quiet && git merge-base --is-ancestor "
-    "<merge_commit_oid> origin/<default_branch>`). In github.prs, "
+    "repo is PUBLIC: verify merge-reachability with local git. RESOLVE the "
+    "default branch from local git — `git -C <run_dir> symbolic-ref --short "
+    "refs/remotes/origin/HEAD | sed 's@^origin/@@'` — the map's default_branch is "
+    "only a hint and may be null; do NOT assume `main`. Then `git -C <run_dir> "
+    "fetch origin --quiet && git merge-base --is-ancestor <merge_commit_oid> "
+    "origin/<default_branch>`. In github.prs, "
     "branch_matches_focus=true is THIS issue's own implementation PR; "
     "branch_matches_focus=false only references the issue (e.g. a meta/rework PR) "
     "and is NOT its implementation - do not treat it as the issue's work. The "
@@ -232,7 +229,9 @@ class EvidenceMap:
 
     focus_issue_number: int | None
     repo: str
-    default_branch: str
+    # None when the default branch could not be resolved from GitHub — the agent
+    # resolves it from local git rather than trusting a fabricated value (#6824 R6).
+    default_branch: str | None
     locations: tuple[EvidenceLocation, ...]
     run_dirs: tuple[str, ...]
     github: GithubWarmCache | None
@@ -253,16 +252,17 @@ class EvidenceMap:
 
 def _resolve_default_branch(
     config: "Config", repository_host: "RepositoryHost"
-) -> str:
-    """The branch the agent checks merge-reachability against.
+) -> str | None:
+    """The repo's default branch for merge-reachability, or None when unknown.
 
     ``worktrees.base_branch_override`` (if set) is authoritative — the same
     override the worktree base-branch resolver keys on. Otherwise resolve the
-    repository's REAL default branch (which may be ``master``/``trunk``/…, not
-    ``main``) from the repository abstraction; that read is cached and
-    best-effort, so any failure degrades to the ``main`` last resort (with the
-    guidance telling the agent to confirm locally) rather than silently
-    fabricating a wrong default.
+    repository's REAL default branch (which may be ``master``/``trunk``/…) from
+    the repository abstraction. If that read FAILS or is empty we return None —
+    the agent then resolves the default branch from LOCAL git (authoritative for
+    a public repo) rather than the map fabricating ``main`` as if it were fact,
+    which would produce wrong merge-reachability conclusions exactly when GitHub
+    is unavailable (#6824 R6).
     """
     override = config.worktree_base_branch_override
     if override:
@@ -275,12 +275,11 @@ def _resolve_default_branch(
             return resolved
     except Exception:
         logger.warning(
-            "[triage] Evidence-map default-branch resolution failed; falling back "
-            "to %r (the agent confirms the real default locally)",
-            _DEFAULT_BRANCH_FALLBACK,
+            "[triage] Evidence-map default-branch resolution failed; leaving it "
+            "unknown for the agent to resolve from local git",
             exc_info=True,
         )
-    return _DEFAULT_BRANCH_FALLBACK
+    return None
 
 
 def _worktrees_root(config: "Config") -> Path:
@@ -354,30 +353,69 @@ def _discover_sqlite_locations(state_dir_path: Path) -> list[EvidenceLocation]:
     return [discovered[key] for key in sorted(discovered)]
 
 
-def _managed_worktree_locations(config: "Config") -> list[EvidenceLocation]:
-    """This repo's ``<repo>-<n>`` managed worktrees as roots (NOT their parent).
+def _worktree_recency_key(path: Path) -> int:
+    """Newest-first ordering key: the highest integer embedded in the name.
 
-    Globs only ``<worktrees_root>/<repo_root.name>-*`` directories — the same
-    repo-scoped pattern the run-dir collector uses — so a shared ``worktrees.base``
-    parent (e.g. ``../``) does NOT pull sibling UNRELATED repositories into the
-    agent's read scope (#6823 F9). Best-effort: an ``OSError`` yields an empty
-    list; bounded to the newest :data:`_MAX_WORKTREE_ROOTS` (truncation logged).
+    Worktree names carry an issue number (``<repo>-<n>`` or
+    ``<repo>-triage-<issue>-<token>``); the max integer is that number. NUMERIC,
+    not lexical, so ``repo-100`` sorts above ``repo-9`` for the cap (#6824 R4).
+    """
+    numbers = [int(m) for m in re.findall(r"\d+", path.name)]
+    return max(numbers) if numbers else 0
+
+
+def _same_git_repo(a: Path | None, b: Path | None) -> bool:
+    """True when two resolved git common dirs identify the SAME repository."""
+    if a is None or b is None:
+        return False
+    try:
+        return a.resolve() == b.resolve()
+    except OSError:
+        return False
+
+
+def _registered_managed_worktrees(config: "Config") -> list[Path]:
+    """This repo's REGISTERED managed worktrees under the worktrees root.
+
+    A candidate ``<worktrees_root>/<repo>-*`` directory is granted only when it
+    is an actual git worktree of THIS repository — verified by its shared git
+    common dir matching the repo's (#6824 R4). A same-prefixed but UNRELATED
+    sibling repo (e.g. ``<repo>-private``) has a different common dir and is
+    excluded; a name-prefix glob alone would disclose it. Provenance is checked
+    with pure file reads (no subprocess). Ordered newest-first by numeric suffix
+    and bounded to :data:`_MAX_WORKTREE_ROOTS` (truncation logged).
     """
     worktrees_root = _worktrees_root(config)
-    repo_name = Path(config.repo_root).name
+    repo_root = Path(config.repo_root)
+    repo_common = resolve_git_common_dir(repo_root)
     try:
-        matches = [p for p in worktrees_root.glob(f"{repo_name}-*") if p.is_dir()]
+        candidates = [p for p in worktrees_root.glob(f"{repo_root.name}-*") if p.is_dir()]
     except OSError as exc:
         logger.warning(
             "[triage] Evidence-map worktree glob in %s failed: %s", worktrees_root, exc
         )
         return []
-    if len(matches) > _MAX_WORKTREE_ROOTS:
-        matches = sorted(matches, key=lambda p: p.name, reverse=True)[:_MAX_WORKTREE_ROOTS]
+    registered = [
+        p for p in candidates if _same_git_repo(resolve_git_common_dir(p), repo_common)
+    ]
+    registered.sort(key=_worktree_recency_key, reverse=True)
+    if len(registered) > _MAX_WORKTREE_ROOTS:
         logger.warning(
             "[triage] Evidence-map managed worktrees truncated to %d (newest kept)",
             _MAX_WORKTREE_ROOTS,
         )
+        registered = registered[:_MAX_WORKTREE_ROOTS]
+    return registered
+
+
+def _managed_worktree_locations(config: "Config") -> list[EvidenceLocation]:
+    """This repo's REGISTERED managed worktrees as roots (NOT their parent).
+
+    Only actual git worktrees of THIS repo are granted (provenance-checked in
+    :func:`_registered_managed_worktrees`, #6824 R4), so a shared
+    ``worktrees.base`` parent (e.g. ``../``) never pulls sibling UNRELATED
+    repositories into the agent's read scope (#6823 F9).
+    """
     return [
         EvidenceLocation(
             path=str(entry),
@@ -388,7 +426,7 @@ def _managed_worktree_locations(config: "Config") -> list[EvidenceLocation]:
             ),
             exists=True,
         )
-        for entry in sorted(matches, key=lambda p: p.name)
+        for entry in sorted(_registered_managed_worktrees(config), key=lambda p: p.name)
     ]
 
 
@@ -475,12 +513,9 @@ def _collect_whole_system_run_dirs(config: "Config", found: set[str]) -> None:
     focus. Bounding to the newest happens in the shared finalizer.
     """
     repo_root = Path(config.repo_root)
-    worktrees_root = _worktrees_root(config)
-    roots = {repo_root}
-    if worktrees_root.is_dir():
-        for entry in worktrees_root.glob(f"{repo_root.name}-*"):
-            if entry.is_dir():
-                roots.add(entry)
+    # Only REGISTERED worktrees of this repo (provenance-checked), never a
+    # same-prefixed unrelated sibling repo (#6824 R4).
+    roots = {repo_root, *_registered_managed_worktrees(config)}
     for root in roots:
         for entry in _session_run_dirs_under(root):
             found.add(str(entry.resolve()))

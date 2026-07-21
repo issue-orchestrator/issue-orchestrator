@@ -8,6 +8,7 @@ Single-instance mode: .issue-orchestrator/lock.json
 Multi-instance mode:  .issue-orchestrator/locks/{instance_id}.json
 """
 
+import fcntl
 import json
 import os
 from collections.abc import Iterator
@@ -18,6 +19,12 @@ from pathlib import Path
 from typing import Any
 
 from .repo_identity import lock_file, locks_dir, normalize_repo_root, state_dir
+
+# Process-local registry of held gate file descriptors, keyed by the metadata
+# lock path. ``flock`` is bound to the open file DESCRIPTION (the fd), so the
+# descriptor MUST stay open for the whole lock lifetime — closing it releases
+# the flock. release_lock (and the held_repo_lock finally) close them here.
+_HELD_GATE_FDS: dict[str, list[int]] = {}
 
 
 class AlreadyRunning(Exception):
@@ -136,12 +143,54 @@ def _write_lock(lock_path: Path, info: LockInfo) -> None:
     tmp_path.rename(lock_path)
 
 
+def _repo_gate_path(repo_root: Path) -> Path:
+    """The ONE repo-wide flock gate that serializes every startup mode.
+
+    Single-instance and one-shot commands take it ``LOCK_EX`` (excluding
+    everything); a named multi-instance engine takes it ``LOCK_SH`` (so N named
+    instances coexist, yet a one-shot's ``LOCK_EX`` still excludes them all).
+    This is the single atomic owner the review's A1 requires — it replaces the
+    old read-check-rename race AND the TOCTOU ``list_instance_locks`` scan.
+    """
+    return repo_root / ".issue-orchestrator" / "repo.lock"
+
+
+def _instance_gate_path(repo_root: Path, instance_id: str) -> Path:
+    """Per-instance-id flock gate: rejects a duplicate SAME instance_id."""
+    return locks_dir(repo_root) / f"{instance_id}.lock"
+
+
+def _acquire_gate(path: Path, *, exclusive: bool) -> int:
+    """Open ``path`` and take a non-blocking flock; raise BlockingIOError on conflict.
+
+    Returns the held fd (caller keeps it open for the lock lifetime). ``flock`` is
+    bound to the open file description, so a second ``os.open`` of the same file —
+    even in the same process — conflicts, which is exactly the mutual exclusion
+    the old code lacked.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+    flag = (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH) | fcntl.LOCK_NB
+    try:
+        fcntl.flock(fd, flag)
+    except OSError:
+        os.close(fd)
+        raise
+    return fd
+
+
 def acquire_lock(
     repo_root: Path | str,
     port: int | None = None,
     instance_id: str | None = None,
 ) -> LockInfo:
-    """Acquire the repository lock (or instance-specific lock).
+    """Acquire the repository lock atomically (or instance-specific lock).
+
+    Exclusion is a repo-wide ``flock`` gate (see :func:`_repo_gate_path`), NOT the
+    old read-check-then-write on the metadata file — two callers can no longer
+    both "win". The metadata ``lock.json`` / ``locks/{id}.json`` remains the
+    on-disk advertisement (pid/port/heartbeat) that the supervisor and status
+    endpoints read; it is no longer the exclusion primitive.
 
     Args:
         repo_root: Repository root path
@@ -156,22 +205,29 @@ def acquire_lock(
     """
     repo_root = normalize_repo_root(repo_root)
     lock_path = lock_file(repo_root, instance_id)
+    exclusive = instance_id is None
 
-    # Check existing lock
-    existing = _read_lock(lock_path)
-    if existing is not None:
-        if _is_process_alive(existing.pid):
-            # Another orchestrator is running
-            raise AlreadyRunning(
-                pid=existing.pid,
-                repo_root=repo_root,
-                port=existing.http_port,
-                instance_id=instance_id,
+    # 1. Repo-wide gate — the cross-mode atomic owner.
+    try:
+        gate_fd = _acquire_gate(_repo_gate_path(repo_root), exclusive=exclusive)
+    except OSError as exc:
+        raise _already_running(repo_root, lock_path, instance_id) from exc
+    held = [gate_fd]
+
+    # 2. Per-instance gate — reject a duplicate SAME instance_id (multi only;
+    #    single-instance/one-shot are already fully excluded by the LOCK_EX gate).
+    if instance_id is not None:
+        try:
+            held.append(
+                _acquire_gate(_instance_gate_path(repo_root, instance_id), exclusive=True)
             )
-        # Stale lock - process is dead, we can take over
+        except OSError as exc:
+            _release_fds(held)
+            raise _already_running(repo_root, lock_path, instance_id) from exc
 
-    # Create new lock
-    recovered = existing is not None  # True if we're recovering from stale lock
+    # Gate(s) held: we are the sole owner. A pre-existing metadata file means we
+    # took over after a crash (its holder's flock was auto-released on death).
+    recovered = _read_lock(lock_path) is not None
     info = LockInfo(
         repo_root=str(repo_root),
         pid=os.getpid(),
@@ -182,9 +238,32 @@ def acquire_lock(
         instance_id=instance_id,
         last_heartbeat_at=datetime.now(timezone.utc).isoformat(),
     )
-
     _write_lock(lock_path, info)
+    _HELD_GATE_FDS.setdefault(str(lock_path), []).extend(held)
     return info
+
+
+def _already_running(
+    repo_root: Path, lock_path: Path, instance_id: str | None
+) -> AlreadyRunning:
+    """Build AlreadyRunning from the metadata advertisement (best-effort)."""
+    existing = _read_lock(lock_path)
+    return AlreadyRunning(
+        pid=existing.pid if existing else -1,
+        repo_root=repo_root,
+        port=existing.http_port if existing else None,
+        instance_id=instance_id,
+    )
+
+
+def _release_fds(fds: list[int]) -> None:
+    """Release + close held gate fds (releasing their flocks)."""
+    for fd in fds:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+        except OSError:
+            pass
 
 
 def release_lock(
@@ -208,12 +287,17 @@ def release_lock(
     lock_path = lock_file(repo_root, instance_id)
     pid = pid or os.getpid()
 
+    # Release our held gate fds first (this releases the flocks). Do this even
+    # if the metadata was already removed so we never leak the exclusion.
+    held = _HELD_GATE_FDS.pop(str(lock_path), [])
+    _release_fds(held)
+
     existing = _read_lock(lock_path)
     if existing is None:
-        return False
+        return bool(held)
 
     if existing.pid != pid:
-        # Lock belongs to another process
+        # Metadata belongs to another process — never unlink another's advert.
         return False
 
     try:
@@ -235,32 +319,17 @@ def held_repo_lock(
     acquires + releases the lock around its run; a one-shot in-process command
     must do the SAME rather than a read-only :func:`is_locked` peek. A peek is
     check-then-act: two one-shots (or a one-shot and the engine) can both pass
-    the check and then run concurrently against one repo. Acquiring closes that
-    race — :func:`acquire_lock` raises :class:`AlreadyRunning` when a live
-    process already holds the target lock file, and this context manager
-    releases on every exit path.
+    the check and then run concurrently against one repo.
 
-    ``acquire_lock`` only inspects the single ``lock.json`` (or this
-    ``instance_id``'s file), so it would miss a multi-instance engine holding a
-    ``locks/{id}.json``. We therefore also scan :func:`list_instance_locks` and
-    refuse (releasing our just-taken lock) if ANY other live instance is
-    present — the same "account for all conflicting instance locks" rule the
-    supervisor's stop/status paths use.
+    :func:`acquire_lock` now takes the repo-wide ``LOCK_EX`` gate (a one-shot
+    passes ``instance_id=None``), which atomically excludes the single-instance
+    engine, every multi-instance engine (they hold ``LOCK_SH`` on the same
+    gate), and any other one-shot — so no post-acquire ``list_instance_locks``
+    scan is needed (that scan was itself a TOCTOU). Releases on every exit path.
     """
     repo_root = normalize_repo_root(repo_root)
     info = acquire_lock(repo_root, port, instance_id)
     try:
-        conflicts = [
-            other for other in list_instance_locks(repo_root) if other.pid != info.pid
-        ]
-        if conflicts:
-            first = conflicts[0]
-            raise AlreadyRunning(
-                pid=first.pid,
-                repo_root=repo_root,
-                port=first.http_port,
-                instance_id=first.instance_id,
-            )
         yield info
     finally:
         release_lock(repo_root, pid=info.pid, instance_id=instance_id)

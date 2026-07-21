@@ -1729,6 +1729,35 @@ class TestCleanupSessionAction:
         assert result.success
         mock_worktree_manager.remove.assert_called_once_with(Path(str(tmp_path)), force=True)
 
+    def test_disposable_cleanup_succeeds_when_removed_callback_fails(
+        self, mock_labels, mock_sessions, mock_events, mock_repository_host,
+        mock_worktree_manager, mock_fresh_issue_reader, tmp_path
+    ):
+        """R3 (#6824): the worktree was removed but the 'worktree gone' callback
+        raised — the action still SUCCEEDS so the disposable cleanup is not
+        retained and retried forever against an already-removed worktree."""
+        mock_sessions.exists.return_value = True
+
+        def _boom(_path):
+            raise RuntimeError("async notify failed")
+
+        applier = ActionApplier(
+            labels=mock_labels, sessions=mock_sessions, events=mock_events,
+            repository_host=mock_repository_host, worktree_manager=mock_worktree_manager,
+            fresh_issue_reader=mock_fresh_issue_reader, reconcile=False,
+            on_worktree_removed=_boom,
+        )
+        action = CleanupSessionAction(
+            issue_number=123, pr_number=0, terminal_id="issue-123",
+            worktree_path=str(tmp_path), close_tabs=True, remove_worktrees=True,
+            disposable_worktree=True,
+        )
+
+        result = applier.apply(action)
+
+        assert result.success  # removal completed; callback failure doesn't re-fail it
+        mock_worktree_manager.remove.assert_called_once_with(Path(str(tmp_path)), force=True)
+
     def test_non_disposable_worktree_cleanup_is_not_forced(
         self, applier, mock_sessions, mock_worktree_manager, tmp_path
     ):
