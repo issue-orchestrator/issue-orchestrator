@@ -506,6 +506,7 @@ class TestAgentValidator:
         reviewer=None,
         prompt_exists=True,
         ai_system: str | None = "claude-code",
+        sandbox: bool = False,
     ):
         """Create a mock agent config."""
         agent = MagicMock()
@@ -521,6 +522,8 @@ class TestAgentValidator:
         agent.model = model
         agent.reviewer = reviewer
         agent.ai_system = ai_system
+        # Explicit so a MagicMock default doesn't read as a truthy opt-in.
+        agent.sandbox = sandbox
         return agent
 
     def test_no_agents_error(self):
@@ -539,6 +542,31 @@ class TestAgentValidator:
         agent = self._make_agent(prompt_path=prompt_file, provider="claude-code")
         config = self._make_config(agents={"agent:dev": agent})
 
+        with patch("issue_orchestrator.agent_runner.is_valid_provider", return_value=True), \
+             patch("issue_orchestrator.agent_runner.list_providers", return_value=["claude-code"]):
+            errors = AgentValidator().validate(config)
+        assert errors == []
+
+    def test_custom_command_sandbox_optin_rejected(self, tmp_path):
+        """sandbox: true on a provider-less custom-command agent must be rejected."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.touch()
+        agent = self._make_agent(prompt_path=prompt_file, provider=None, sandbox=True)
+        config = self._make_config(
+            agents={"agent:custom": agent},
+            raw_agents={"agent:custom": {"command": "claude --permission-mode bypassPermissions"}},
+        )
+        with patch("issue_orchestrator.agent_runner.is_valid_provider", return_value=True), \
+             patch("issue_orchestrator.agent_runner.list_providers", return_value=["claude-code"]):
+            errors = AgentValidator().validate(config)
+        assert any("sandbox: true is not supported" in e for e in errors), errors
+
+    def test_provider_agent_sandbox_optin_allowed(self, tmp_path):
+        """sandbox: true is fine with a provider adapter (claude-code)."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.touch()
+        agent = self._make_agent(prompt_path=prompt_file, provider="claude-code", sandbox=True)
+        config = self._make_config(agents={"agent:dev": agent})
         with patch("issue_orchestrator.agent_runner.is_valid_provider", return_value=True), \
              patch("issue_orchestrator.agent_runner.list_providers", return_value=["claude-code"]):
             errors = AgentValidator().validate(config)

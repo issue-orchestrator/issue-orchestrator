@@ -83,11 +83,47 @@ ISSUE_CLOSED_RECONCILABLE_HISTORY_STATUSES: frozenset[SessionHistoryStatus] = (
 )
 
 
-@dataclass
 class SessionHistoryOwner:
-    """Owns controlled mutations of session history entries."""
+    """Owns controlled mutations of session history entries.
 
-    session_history: MutableSequence[SessionHistoryEntry]
+    The owner resolves the session-history sequence *at mutation time* rather
+    than capturing a list reference at construction. Recovery, publish-retry
+    finalization, and reset paths replace ``state.session_history`` with a
+    brand-new list object (see ``retry_history_state`` and
+    ``publish_retry_finalize``). An owner that captured the original list would
+    then mutate an orphaned collection while awaiting-merge discovery and the
+    dashboard projection read the replacement list -- the split brain that left
+    closed/merged PR-backed entries stuck in the Awaiting Merge lane (#6692).
+
+    Construct with either:
+
+    - a concrete ``MutableSequence`` -- backward compatible; correct for
+      short-lived owners built per operation immediately before use, and for
+      tests; or
+    - a zero-argument provider returning the current sequence -- for long-lived
+      owners bound to mutable orchestrator state, e.g.
+      ``SessionHistoryOwner(lambda: state.session_history)``.
+    """
+
+    _history_provider: Callable[[], MutableSequence[SessionHistoryEntry]]
+
+    def __init__(
+        self,
+        session_history: (
+            MutableSequence[SessionHistoryEntry]
+            | Callable[[], MutableSequence[SessionHistoryEntry]]
+        ),
+    ) -> None:
+        if callable(session_history):
+            self._history_provider = session_history
+        else:
+            captured = session_history
+            self._history_provider = lambda: captured
+
+    @property
+    def session_history(self) -> MutableSequence[SessionHistoryEntry]:
+        """Resolve the current session-history sequence at access time."""
+        return self._history_provider()
 
     def reconcile_awaiting_merge(
         self,

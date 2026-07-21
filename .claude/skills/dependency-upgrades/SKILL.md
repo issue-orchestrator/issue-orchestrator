@@ -97,6 +97,16 @@ orchestrated coding-agent flow. It runs `validate-pr-raw`, a strict superset of
 CI: the VS Code harness and the live-agent lane, neither of which CI can. This is
 the only place npm and the agent-lane deps get real coverage.
 
+**Driving it end-to-end.** Two entry points wrap the steps below:
+- `/deps-batch` (`.claude/commands/deps-batch.md`) — interactive Claude runs the
+  whole cycle: worktree → `deps-batch` → **fix-forward any breaks** → open a
+  ready-to-merge PR (never merges) → flag direct-merge-safe Dependabot PRs
+  (e.g. github-actions). Use this when a major might break and needs adapting.
+- `scripts/deps-batch-drive.sh` — the deterministic spine with no agent. Default
+  upgrades + verifies then stops for you to review the diff; `--pr` also opens
+  the PR. On a break it stops with the worktree intact so you (or `/deps-batch`)
+  fix forward. This is the clean-week, no-token path.
+
 The upgrade + verify step is the same for anyone:
 
 ```bash

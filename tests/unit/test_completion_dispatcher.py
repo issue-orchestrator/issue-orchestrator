@@ -5,11 +5,14 @@ from types import SimpleNamespace
 
 import pytest
 
+from collections.abc import Callable
+
 from issue_orchestrator.control.completion_dispatcher import (
     BackgroundCompletionDispatcher,
     SynchronousCompletionDispatcher,
 )
 from issue_orchestrator.execution.thread_background_job_runner import ThreadBackgroundJobRunner
+from issue_orchestrator.ports.background_job import CompletedJob
 
 
 def _session(terminal_id: str) -> SimpleNamespace:
@@ -105,3 +108,63 @@ class TestBackgroundCompletionDispatcher:
         assert len(out) == 1
         assert out[0].decision is None
         assert out[0].error is boom
+
+    def test_in_flight_tracks_ownership_not_execution_status(self):
+        """Regression: ``in_flight`` must stay True from dispatch until drain,
+        even after the worker stops executing.
+
+        A worker can finish after a tick takes its drain snapshot but before that
+        tick's ``in_flight`` check. If ``in_flight`` followed the runner's
+        ``is_running`` (``Thread.is_alive()``) it would report False in that
+        window while the completed decision is still queued for the next drain,
+        and the tick would re-dispatch the session into a duplicate decision.
+        """
+
+        class _FinishableRunner:
+            """Runs a job on ``finish`` and stops reporting it running, WITHOUT
+            draining — models a worker completing after a drain snapshot."""
+
+            def __init__(self) -> None:
+                self._pending: dict[str, Callable[[], None]] = {}
+                self._alive: set[str] = set()
+                self._done: list[CompletedJob] = []
+                self.submit_count = 0
+
+            def submit(self, job_id: str, fn: Callable[[], None]) -> bool:
+                if job_id in self._alive:
+                    return False
+                self.submit_count += 1
+                self._alive.add(job_id)
+                self._pending[job_id] = fn
+                return True
+
+            def is_running(self, job_id: str) -> bool:
+                return job_id in self._alive
+
+            def finish(self, job_id: str) -> None:
+                self._pending.pop(job_id)()
+                self._alive.discard(job_id)
+                self._done.append(CompletedJob(job_id=job_id, error=None))
+
+            def drain_completed(self) -> list[CompletedJob]:
+                done = self._done
+                self._done = []
+                return done
+
+        runner = _FinishableRunner()
+        d = BackgroundCompletionDispatcher(runner)
+        session = _session("issue-1")
+
+        d.dispatch(session, lambda: "DECISION")
+        assert d.in_flight("issue-1") is True
+
+        runner.finish("issue-1")  # worker done, result queued but NOT drained
+        assert runner.is_running("issue-1") is False  # execution status: stopped
+        assert d.in_flight("issue-1") is True  # owner: still in flight until drained
+
+        out = d.drain()
+        assert len(out) == 1
+        assert out[0].session is session
+        assert out[0].decision == "DECISION"
+        assert d.in_flight("issue-1") is False  # drained -> ownership released
+        assert runner.submit_count == 1  # never re-submitted

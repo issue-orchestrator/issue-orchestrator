@@ -1073,6 +1073,27 @@ class _RoleSessionOwner:
 # ---------------------------------------------------------------------------
 
 
+def _derive_bootstrap_agent(agent: AgentConfig, bootstrap_prompt: str) -> AgentConfig:
+    """Derive the launch config for one exchange role from the configured agent.
+
+    Uses :func:`dataclasses.replace` so EVERY policy-bearing field — notably the
+    ADR-0034 ``sandbox`` opt-in — is preserved by construction. The prior
+    field-by-field rebuild silently dropped any field it forgot to copy, which
+    is how an opted-in agent launched UNSANDBOXED on the exchange path.
+
+    Only two fields are transformed: ``provider`` resolves through
+    ``resolve_launch_provider`` (so an ``ai_system``-only stub launches
+    correctly), and ``initial_prompt`` becomes the role bootstrap. Sharing the
+    ``provider_args`` reference is safe — the command builder copies it before
+    mutating (``AgentConfig._build_provider_command``).
+    """
+    return replace(
+        agent,
+        provider=agent.resolve_launch_provider(),
+        initial_prompt=bootstrap_prompt,
+    )
+
+
 def _open_role_session_from_spec(spec: _RoleSessionSpec) -> PersistentSession:
     return _open_role_session(spec)
 
@@ -1106,21 +1127,7 @@ def _open_role_session(spec: _RoleSessionSpec) -> PersistentSession:
         response_channel=spec.response_channel,
         response_file=response_file,
     )
-    bootstrap_agent = AgentConfig(
-        prompt_path=agent.prompt_path,
-        prompt_relative=agent.prompt_relative,
-        provider=agent.resolve_launch_provider(),
-        model=agent.model,
-        timeout_minutes=agent.timeout_minutes,
-        provider_args=dict(agent.provider_args),
-        skip_review=agent.skip_review,
-        reviewer=agent.reviewer,
-        command=agent.command,
-        meta_agent=agent.meta_agent,
-        initial_prompt=bootstrap,
-        ai_system=agent.ai_system,
-        retry_prompt_template=agent.retry_prompt_template,
-    )
+    bootstrap_agent = _derive_bootstrap_agent(agent, bootstrap)
     command_str = bootstrap_agent.get_command(
         issue_number=issue_number,
         issue_title=issue_title,

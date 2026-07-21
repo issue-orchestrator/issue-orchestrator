@@ -102,3 +102,14 @@ updates:
         applies-to: "security-updates"
         patterns:
           - "*"
+    # @types/vscode is NOT a "stay on HEAD" dependency: it declares the VS Code
+    # API surface we compile against, and must equal the engines.vscode floor
+    # (the ESM extension-host floor, currently 1.100) -- not the latest. Using an
+    # API newer than the floor compiles clean but crashes on the oldest VS Code
+    # we support. Enforced by
+    # tests/unit/test_github_workflows.py::test_vscode_types_pinned_to_engines_floor.
+    # Raise engines.vscode + @types/vscode + DEFAULT_VSCODE_VERSION together,
+    # deliberately, only when you need a newer API. (Same reason the deps-batch
+    # npm-check-updates step rejects it via packages/vscode/.ncurc.json.)
+    ignore:
+      - dependency-name: "@types/vscode"

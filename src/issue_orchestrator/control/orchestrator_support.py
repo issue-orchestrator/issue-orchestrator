@@ -87,7 +87,12 @@ def init_orchestrator_components(orch: "Orchestrator") -> None:
             None,
         )
     )
-    orch.deps.action_applier.history_owner = SessionHistoryOwner(orch.state.session_history)
+    # Bind to live state (not the current list object): recovery/retry paths
+    # replace ``state.session_history`` wholesale, and a captured list would go
+    # stale, stranding awaiting-merge reconciliation (#6692).
+    orch.deps.action_applier.history_owner = SessionHistoryOwner(
+        lambda: orch.state.session_history
+    )
 
     # Create observer (still created here as it depends on runtime orchestrator state)
     orch.observer = SessionObserver(

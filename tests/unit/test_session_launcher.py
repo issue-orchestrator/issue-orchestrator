@@ -5540,17 +5540,67 @@ class TestProcessActiveSessions:
         tick thread: the dispatch tick returns immediately with the session
         still active and no completion applied; a later tick (after the decision
         finishes) drains it and applies handle_session_completion exactly once.
-        Regression for the 153.9s synchronous-publish freeze."""
-        import threading
+        Regression for the 153.9s synchronous-publish freeze.
+
+        Uses a deterministic in-process runner (no threads, no waits): the test
+        drives when the offloaded decision runs via ``run_all``, so the off-tick
+        behavior is fully reproducible rather than depending on thread scheduling.
+        """
+        from collections.abc import Callable
 
         from issue_orchestrator.control.completion_dispatcher import (
             BackgroundCompletionDispatcher,
         )
         from issue_orchestrator.control.session_controller import SessionDecision
-        from issue_orchestrator.execution.thread_background_job_runner import (
-            ThreadBackgroundJobRunner,
-        )
         from issue_orchestrator.observation.observation import SessionObservationResult
+        from issue_orchestrator.ports.background_job import CompletedJob
+
+        class ManualJobRunner:
+            """Deterministic ``BackgroundJobRunner``: submitted work is stored and
+            executes only when the test calls ``run_all`` — no threads, no waits.
+
+            ``is_running`` is True only while the job would be executing; it goes
+            False as soon as ``fn`` returns in ``run_all``, matching the production
+            ``ThreadBackgroundJobRunner``'s ``Thread.is_alive()`` semantics (and the
+            ``_RecordingRunner`` in ``test_publish_recovery.py``). The finished
+            result then waits in ``drain_completed``. Re-dispatch of a
+            decided-but-undrained session is prevented by ``process_active_sessions``
+            draining completed decisions *before* it dispatches — not by this fake
+            over-reporting the job as still running.
+            """
+
+            def __init__(self) -> None:
+                self._pending: dict[str, Callable[[], None]] = {}
+                self._in_flight: set[str] = set()
+                self._done: list[CompletedJob] = []
+
+            def submit(self, job_id: str, fn: Callable[[], None]) -> bool:
+                if job_id in self._in_flight:
+                    return False
+                self._in_flight.add(job_id)
+                self._pending[job_id] = fn
+                return True
+
+            def is_running(self, job_id: str) -> bool:
+                return job_id in self._in_flight
+
+            def run_all(self) -> None:
+                for job_id, fn in list(self._pending.items()):
+                    error: BaseException | None = None
+                    try:
+                        fn()
+                    except BaseException as exc:  # noqa: BLE001 — mirror the thread runner
+                        error = exc
+                    # is_running() goes False the instant fn returns (or raises),
+                    # like Thread.is_alive(); the result waits in _done for drain.
+                    self._in_flight.discard(job_id)
+                    self._pending.pop(job_id, None)
+                    self._done.append(CompletedJob(job_id=job_id, error=error))
+
+            def drain_completed(self) -> list[CompletedJob]:
+                done = self._done
+                self._done = []
+                return done
 
         issue = Issue(number=392, title="Test", labels=["agent:web"])
         session = Session(
@@ -5567,16 +5617,12 @@ class TestProcessActiveSessions:
         mock_observer = MagicMock()
         mock_observer.observe_session.return_value = SessionObservationResult.timed_out()
 
-        gate = threading.Event()
-
-        def slow_decide(*args, **kwargs):
-            gate.wait(5)  # stand in for the ~100s publish gate + push + PR
-            return SessionDecision(status=SessionStatus.TIMED_OUT, reason="done")
-
         session_output = MagicMock(spec=SessionOutput)
         session_output.find_run_dir.return_value = None
         mock_controller = MagicMock()
-        mock_controller.decide_outcome.side_effect = slow_decide
+        mock_controller.decide_outcome.return_value = SessionDecision(
+            status=SessionStatus.TIMED_OUT, reason="done"
+        )
         mock_controller.session_output = session_output
 
         mock_completion_handler = MagicMock()
@@ -5590,7 +5636,7 @@ class TestProcessActiveSessions:
             should_queue_review=False, pr_url=None, pr_number=None,
         )
         kill_session_fn = MagicMock()
-        runner = ThreadBackgroundJobRunner()
+        runner = ManualJobRunner()
         dispatcher = BackgroundCompletionDispatcher(runner)
 
         def run_tick():
@@ -5606,21 +5652,167 @@ class TestProcessActiveSessions:
                 completion_dispatcher=dispatcher,
             )
 
-        # Tick 1: dispatch only — decision runs in the background, tick returns.
+        # Tick 1: the decision is offloaded to the runner, NOT run inline — the
+        # tick returns with the session still active and nothing applied.
         run_tick()
         assert session in state.active_sessions  # not yet completed
         mock_completion_handler.process_completion.assert_not_called()
         assert dispatcher.in_flight("issue-392") is True
+        mock_controller.decide_outcome.assert_not_called()  # dispatched, not run on the tick
 
-        # Tick 2 (decision still running): in-flight, so no re-dispatch, no apply.
+        # Tick 2 (decision still in flight, not yet run): no re-dispatch, no apply.
         run_tick()
-        mock_controller.decide_outcome.assert_called_once()
+        assert dispatcher.in_flight("issue-392") is True
+        mock_controller.decide_outcome.assert_not_called()
         assert state.active_sessions == [session]
 
-        # Decision finishes; the next tick drains and applies completion once.
-        gate.set()
-        assert runner.wait_until_idle(5) is True
+        # The offloaded decision runs (deterministically, on our command) exactly
+        # once. The runner reports it as no longer executing the instant it
+        # returns (like the thread runner's Thread.is_alive()), but the DISPATCHER
+        # keeps it in-flight until the result is drained — so the session stays
+        # active and is not re-dispatched into a duplicate decision.
+        runner.run_all()
+        mock_controller.decide_outcome.assert_called_once()
+        assert runner.is_running("issue-392") is False      # execution finished
+        assert dispatcher.in_flight("issue-392") is True     # owner: in-flight until drained
+        assert state.active_sessions == [session]
+        mock_completion_handler.process_completion.assert_not_called()
+
+        # The next tick drains the finished decision and applies completion once.
         run_tick()
+        assert state.active_sessions == []
+        mock_completion_handler.process_completion.assert_called_once()
+        kill_session_fn.assert_called_once_with("issue-392")
+
+    def test_completion_finishing_after_drain_snapshot_is_not_re_dispatched(
+        self, sample_agent_config, tmp_path
+    ):
+        """Regression: a worker that finishes AFTER a tick's drain snapshot but
+        before that tick's in_flight() check must not be re-dispatched.
+
+        With in_flight tied to the runner's execution status, that window let the
+        tick re-dispatch the still-undrained session (submit_count == 2), running
+        a duplicate decision (a second publish + push + PR) while the first result
+        waited for the next drain. The dispatcher now owns the
+        submitted-through-drained lifecycle, so the session stays in-flight until
+        drain and is dispatched exactly once.
+        """
+        from collections.abc import Callable
+
+        from issue_orchestrator.control.completion_dispatcher import (
+            BackgroundCompletionDispatcher,
+        )
+        from issue_orchestrator.control.session_controller import SessionDecision
+        from issue_orchestrator.observation.observation import SessionObservationResult
+        from issue_orchestrator.ports.background_job import CompletedJob
+
+        class FinishOnDrainRunner:
+            """Models the race window. A job finishes only after it has survived a
+            prior tick's drain, and it finishes as a side effect of the *next*
+            drain-snapshot call: that drain returns the pre-finish snapshot, then
+            the worker completes — so later in the SAME tick (at the dispatch
+            loop's in_flight/is_running check) execution has stopped while the
+            result is still queued for the following drain. submit_count exposes
+            any re-dispatch through that window."""
+
+            def __init__(self) -> None:
+                self._pending: dict[str, Callable[[], None]] = {}
+                self._alive: set[str] = set()
+                self._done: list[CompletedJob] = []
+                self._drains_survived: dict[str, int] = {}
+                self.submit_count = 0
+
+            def submit(self, job_id: str, fn: Callable[[], None]) -> bool:
+                if job_id in self._alive:
+                    return False
+                self.submit_count += 1
+                self._alive.add(job_id)
+                self._pending[job_id] = fn
+                return True
+
+            def is_running(self, job_id: str) -> bool:
+                return job_id in self._alive
+
+            def drain_completed(self) -> list[CompletedJob]:
+                snapshot = self._done
+                self._done = []
+                for job_id in list(self._pending):
+                    self._drains_survived[job_id] = self._drains_survived.get(job_id, 0) + 1
+                    # Finish only once the job has already survived a prior drain,
+                    # so this fires on tick 2's first drain (not tick 1's), after
+                    # its snapshot — leaving is_running() False at the dispatch
+                    # loop while the result waits for the next drain.
+                    if self._drains_survived[job_id] >= 2:
+                        self._pending.pop(job_id)()
+                        self._alive.discard(job_id)
+                        self._done.append(CompletedJob(job_id=job_id, error=None))
+                return snapshot
+
+        issue = Issue(number=392, title="Test", labels=["agent:web"])
+        session = Session(
+            key=SessionKey(issue=FakeIssueKey("392"), task=TaskKind.CODE),
+            issue=issue,
+            agent_config=sample_agent_config,
+            terminal_id="issue-392",
+            worktree_path=tmp_path / "worktree",
+            branch_name="392-feature",
+            run_assets=make_session_run_assets(tmp_path / "worktree", session_name="issue-392"),
+        )
+        state = OrchestratorState(active_sessions=[session])
+
+        mock_observer = MagicMock()
+        mock_observer.observe_session.return_value = SessionObservationResult.timed_out()
+
+        session_output = MagicMock(spec=SessionOutput)
+        session_output.find_run_dir.return_value = None
+        mock_controller = MagicMock()
+        mock_controller.decide_outcome.return_value = SessionDecision(
+            status=SessionStatus.TIMED_OUT, reason="done"
+        )
+        mock_controller.session_output = session_output
+
+        mock_completion_handler = MagicMock()
+        mock_completion_handler.process_completion.return_value = MagicMock(
+            actions=[],
+            history_entry=SessionHistoryEntry(
+                issue_number=392, title="Test", agent_type="agent:web",
+                status="timed_out", runtime_minutes=90,
+            ),
+            should_defer_cleanup=False, pending_cleanup=None,
+            should_queue_review=False, pr_url=None, pr_number=None,
+        )
+        kill_session_fn = MagicMock()
+        runner = FinishOnDrainRunner()
+        dispatcher = BackgroundCompletionDispatcher(runner)
+
+        def run_tick():
+            process_active_sessions(
+                state=state,
+                observer=mock_observer,
+                session_controller=mock_controller,
+                completion_handler=mock_completion_handler,
+                action_applier=MagicMock(),
+                worktree_manager=None,
+                kill_session_fn=kill_session_fn,
+                config=MagicMock(),
+                completion_dispatcher=dispatcher,
+            )
+
+        # Tick 1: dispatch the decision (submit #1); nothing is decided yet.
+        run_tick()
+        assert runner.submit_count == 1
+        assert state.active_sessions == [session]
+        mock_controller.decide_outcome.assert_not_called()
+
+        # Tick 2: the worker finishes right after this tick's first drain snapshot,
+        # so is_running() is now False. With in_flight tied to execution status the
+        # dispatch loop would re-dispatch here (submit #2 — a duplicate decision)
+        # before the post-dispatch drain applies the first result. The owner keeps
+        # the session in-flight until drained, so it is dispatched exactly once and
+        # the finished decision is applied by this tick's second drain.
+        run_tick()
+        assert runner.submit_count == 1  # would be 2 under the is_running() bug
+        mock_controller.decide_outcome.assert_called_once()  # decided exactly once
         assert state.active_sessions == []
         mock_completion_handler.process_completion.assert_called_once()
         kill_session_fn.assert_called_once_with("issue-392")

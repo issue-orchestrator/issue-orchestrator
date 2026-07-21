@@ -1505,12 +1505,12 @@
       "value": 1641
     },
     "oversized_control_hotspots:src/issue_orchestrator/infra/config.py": {
-      "detail": "1506 lines exceeds budget 800",
+      "detail": "1508 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/infra/config.py",
       "path": "src/issue_orchestrator/infra/config.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 1506
+      "value": 1508
     },
     "oversized_control_hotspots:src/issue_orchestrator/infra/config_sections.py": {
       "detail": "901 lines exceeds budget 800",
