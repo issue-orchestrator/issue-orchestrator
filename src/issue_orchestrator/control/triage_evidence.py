@@ -249,6 +249,31 @@ class EvidenceMap:
             "guidance": _GUIDANCE,
         }
 
+    def sandbox_read_roots(self) -> tuple[Path, ...]:
+        """The typed read-only god-view roots to grant a sandboxed tech lead.
+
+        Projects THIS map's own directory/repo location paths plus run-dir paths
+        into a de-duplicated read-root set (#6824 R5) — the SAME roots the
+        guidance advertises, so evidence discovery and sandbox authorization can
+        never disagree. Only existing directories are granted; the ``log`` file
+        (covered by its state-dir root) and the ``github`` slug pointer (not a
+        filesystem path) are skipped. The tech-lead sandbox reads these while
+        writes stay confined to the scratch worktree.
+        """
+        roots: list[Path] = [
+            Path(loc.path)
+            for loc in self.locations
+            if loc.kind in ("dir", "repo") and loc.exists
+        ]
+        roots.extend(Path(run_dir) for run_dir in self.run_dirs)
+        seen: set[Path] = set()
+        ordered: list[Path] = []
+        for root in roots:
+            if root not in seen:
+                seen.add(root)
+                ordered.append(root)
+        return tuple(ordered)
+
 
 def _resolve_default_branch(
     config: "Config", repository_host: "RepositoryHost"

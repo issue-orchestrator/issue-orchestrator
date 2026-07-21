@@ -79,6 +79,30 @@ def test_claude_settings_bound_read_and_write_roots() -> None:
     assert fs["allowWrite"] == ["/wt/issue-42"]
 
 
+def test_claude_tech_lead_reads_god_view_but_writes_only_worktree() -> None:
+    # R5 (#6824): a tech-lead read-broad/write-narrow scope maps directly to
+    # Claude allowRead (worktree + god-view) vs allowWrite (worktree only).
+    scope = SandboxScope(
+        working_directory=Path("/wt/repo-triage-42-abc"),
+        read_roots=(
+            Path("/wt/repo-triage-42-abc"),
+            Path("/repo"),
+            Path("/repo/.issue-orchestrator/state"),
+        ),
+        write_roots=(Path("/wt/repo-triage-42-abc"),),
+        egress="model-only",
+        deny_env=("GITHUB_TOKEN",),
+        deny_read_files=("~/.ssh",),
+    )
+    fs = build_claude_sandbox_settings(scope)["sandbox"]["filesystem"]
+    assert fs["allowRead"] == [
+        "/wt/repo-triage-42-abc",
+        "/repo",
+        "/repo/.issue-orchestrator/state",
+    ]
+    assert fs["allowWrite"] == ["/wt/repo-triage-42-abc"]  # writes never widen
+
+
 def test_claude_settings_deny_read_home_and_reallow_roots() -> None:
     # Reads are OPEN by default; the boundary is denyRead ~/ + re-allow roots.
     fs = build_claude_sandbox_settings(_scope())["sandbox"]["filesystem"]
@@ -319,10 +343,15 @@ def test_codex_argv_pins_cwd_approval_and_bounded_roots() -> None:
     assert argv[argv.index("-a") + 1] == "never"
     assert argv[argv.index("-C") + 1] == "/wt/issue-42"
     assert "--strict-config" in argv
+    # R5 (#6824): --add-dir grants WRITE, so only write roots appear here. The
+    # read-only god-view root (/evidence/run-7) is NOT writable...
     assert [argv[i + 1] for i, arg in enumerate(argv) if arg == "--add-dir"] == [
-        "/evidence/run-7",
         "/scratch/issue-42",
     ]
+    # ...it is emitted as an explicit read-only filesystem entry in the profile.
+    profile = argv[argv.index("-c") + 1 :]
+    profile_text = " ".join(profile)
+    assert '"/evidence/run-7" = "read"' in profile_text
     assert "-s" not in argv
     assert "--sandbox" not in argv
     assert "--profile" not in argv

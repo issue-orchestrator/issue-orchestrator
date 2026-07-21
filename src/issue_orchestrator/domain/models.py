@@ -1015,9 +1015,15 @@ class AgentConfig:
         pr_number: Optional[int] = None,
         prompt_file: str | None = None,
         task_kind: str = "code",
+        evidence_read_roots: tuple[Path, ...] = (),
         extra_provider_args: Optional[dict[str, Any]] = None,
     ) -> str:
-        """Build an agent command for an already-rendered prompt."""
+        """Build an agent command for an already-rendered prompt.
+
+        ``evidence_read_roots`` is the read-only god-view grant for a tech-lead
+        failure investigation (empty otherwise): the sandbox reads those roots
+        while writes stay confined to ``worktree`` (#6824 R5).
+        """
         prompt_for_command = prompt_file or (
             self.prompt_relative if self.prompt_relative else str(self.prompt_path)
         )
@@ -1029,7 +1035,11 @@ class AgentConfig:
         # unsandboxed legacy-template command.
         sandbox_scope = compute_session_scope(
             self,
-            SandboxScopeContext(task_kind=task_kind, worktree=worktree),
+            SandboxScopeContext(
+                task_kind=task_kind,
+                worktree=worktree,
+                evidence_read_roots=evidence_read_roots,
+            ),
         )
         if sandbox_scope is not None and not self.provider:
             raise SandboxUnsupportedError(

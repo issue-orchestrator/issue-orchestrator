@@ -215,7 +215,7 @@ def prepare_triage_session_data(
     issue: "Issue",
     ctx: "WorktreeContext",
     triage_scope: "TriageLaunchScope | None",
-) -> None:
+) -> tuple[Path, ...]:
     """Prepare per-flavor triage session inputs (ADR-0031).
 
     BATCH_REVIEW keeps the existing PR-manifest prep; FAILURE_INVESTIGATION
@@ -237,7 +237,7 @@ def prepare_triage_session_data(
     BATCH_REVIEW.
     """
     if not is_triage_session(config.triage_review_agent, issue.agent_type):
-        return
+        return ()
     flavor = (triage_scope.flavor if triage_scope is not None else None) or (
         TriageSessionFlavor.HEALTH_REVIEW
         if HEALTH_REVIEW_MARKER_LABEL in issue.labels
@@ -297,7 +297,7 @@ def prepare_triage_session_data(
         run_dir,
         board_snapshot,
     )
-    _stage_evidence_map(
+    return _stage_evidence_map(
         config=config,
         repository_host=repository_host,
         ctx=ctx,
@@ -353,8 +353,13 @@ def _stage_evidence_map(
     flavor: TriageSessionFlavor,
     focus_issue_number: int | None,
     board_snapshot: BoardSnapshot,
-) -> None:
+) -> tuple[Path, ...]:
     """Best-effort: stage the read-side evidence map for a triage session.
+
+    Returns the map's typed sandbox read-roots (empty on the BATCH_REVIEW no-map
+    path or on a best-effort staging failure) so the launcher can grant a
+    sandboxed tech lead read access to exactly the god-view it advertises, while
+    writes stay confined to the scratch worktree (#6824 R5).
 
     Unlike :func:`_write_board_snapshot` (fail-fast, because board-snapshot.json
     is a REQUIRED agent input), the evidence map is an ENHANCEMENT — a
@@ -372,7 +377,7 @@ def _stage_evidence_map(
     (``build_evidence_map`` keys both off ``focus_issue_number`` being None).
     """
     if flavor is TriageSessionFlavor.BATCH_REVIEW:
-        return
+        return ()
     try:
         artifact_hints = (
             _focus_failure_artifact_hints(board_snapshot, focus_issue_number)
@@ -387,5 +392,7 @@ def _stage_evidence_map(
         )
         path = write_evidence_map(run_dir, evidence)
         ctx.update_manifest({"evidence_map": str(path)})
+        return evidence.sandbox_read_roots()
     except Exception as exc:  # noqa: BLE001 - evidence map is best-effort, never fatal
         logger.warning("[triage] Evidence map staging failed (non-fatal): %s", exc)
+        return ()

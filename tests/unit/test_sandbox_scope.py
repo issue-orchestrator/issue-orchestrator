@@ -28,8 +28,14 @@ def _agent(*, sandbox: bool, provider: str | None = "claude-code") -> AgentConfi
     )
 
 
-def _ctx(task_kind: str = "code", worktree: Path = Path("/wt/issue-1")) -> SandboxScopeContext:
-    return SandboxScopeContext(task_kind=task_kind, worktree=worktree)
+def _ctx(
+    task_kind: str = "code",
+    worktree: Path = Path("/wt/issue-1"),
+    evidence_read_roots: tuple[Path, ...] = (),
+) -> SandboxScopeContext:
+    return SandboxScopeContext(
+        task_kind=task_kind, worktree=worktree, evidence_read_roots=evidence_read_roots
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -132,14 +138,29 @@ def test_opted_in_reviewer_scope(task_kind: str) -> None:
     assert scope.egress == "model-only"
 
 
-def test_opted_in_triage_is_bounded_not_yolo() -> None:
-    # Tech-lead evidence-map read scope is a follow-up; until then triage is
-    # still bounded to its own worktree (never left unsandboxed).
+def test_opted_in_triage_without_evidence_stays_worktree_bounded() -> None:
+    # No evidence roots (e.g. a health review with none staged): still bounded to
+    # the worktree, never left unsandboxed.
     worktree = Path("/wt/issue-3")
     scope = compute_session_scope(_agent(sandbox=True), _ctx("triage", worktree))
     assert scope is not None
     assert scope.read_roots == (worktree,)
     assert scope.write_roots == (worktree,)
+
+
+def test_opted_in_triage_reads_evidence_god_view_but_writes_only_worktree() -> None:
+    # R5 (#6824): a tech-lead failure investigation READS the evidence-map god-view
+    # roots (main repo, registered worktrees, state dbs, run-dirs) while WRITES
+    # stay confined to the scratch worktree.
+    worktree = Path("/wt/repo-triage-42-abc")
+    god_view = (Path("/repo"), Path("/repo/.issue-orchestrator/state"), Path("/wt/repo-7"))
+    scope = compute_session_scope(
+        _agent(sandbox=True), _ctx("triage", worktree, evidence_read_roots=god_view)
+    )
+    assert scope is not None
+    assert scope.read_roots == (worktree, *god_view)  # worktree first, then god-view
+    assert scope.write_roots == (worktree,)  # writes never widen
+    assert scope.egress == "model-only"
 
 
 @pytest.mark.parametrize(

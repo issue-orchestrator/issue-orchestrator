@@ -674,6 +674,13 @@ def _codex_permission_profile(
         (":workspace_roots", workspace_rules),
     ]
     filesystem_entries.extend(_codex_git_filesystem_entries(git_access))
+    # Read-only god-view roots (read_roots that are NOT write roots): a tech-lead
+    # failure investigation READS these but must not WRITE them. Codex's
+    # --add-dir workspace roots are writable, so these are emitted as explicit
+    # read-only filesystem entries instead, keeping writes confined to the
+    # scratch worktree (#6824 R5). Denies below still override any read.
+    for root in _codex_read_only_roots(scope):
+        filesystem_entries.append((str(root), _toml_string("read")))
     seen_denies: set[str] = set()
     for raw in (*scope.deny_read_files, *_codex_credential_files()):
         if not _is_absolute_or_home_path(raw):
@@ -697,12 +704,26 @@ def _codex_permission_profile(
 
 
 def _codex_workspace_roots(scope: SandboxScope) -> list[Path]:
-    """Return unique additional roots, preserving orchestrator policy order."""
+    """Additional WRITABLE roots (Codex ``--add-dir`` grants write).
+
+    Only ``write_roots`` — a read-only god-view root must NOT become writable
+    here; those are emitted as read-only filesystem entries instead (#6824 R5).
+    """
     additional: list[Path] = []
-    for root in (*scope.read_roots, *scope.write_roots):
+    for root in scope.write_roots:
         if root != scope.working_directory and root not in additional:
             additional.append(root)
     return additional
+
+
+def _codex_read_only_roots(scope: SandboxScope) -> list[Path]:
+    """Read roots that are NOT writable (the god-view grant), emitted read-only."""
+    writable = set(scope.write_roots) | {scope.working_directory}
+    read_only: list[Path] = []
+    for root in scope.read_roots:
+        if root not in writable and root not in read_only:
+            read_only.append(root)
+    return read_only
 
 
 def build_codex_sandbox_argv(

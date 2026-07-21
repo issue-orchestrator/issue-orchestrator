@@ -747,9 +747,13 @@ class SessionLauncher:
         issue: "IssueProtocol",
         ctx: WorktreeContext,
         triage_scope: "TriageLaunchScope | None",
-    ) -> None:
-        """Delegate per-flavor triage launch preparation to the ADR-0031 owner."""
-        prepare_triage_session_data(
+    ) -> tuple[Path, ...]:
+        """Delegate per-flavor triage launch preparation to the ADR-0031 owner.
+
+        Returns the evidence map's sandbox read-roots (empty for non-focus
+        flavors / non-triage / staging failure) for the tech-lead read grant.
+        """
+        return prepare_triage_session_data(
             config=self.config,
             repository_host=self.repository_host,
             manifest_downloader=self._manifest_downloader,
@@ -973,9 +977,13 @@ class SessionLauncher:
 
         # Triage inputs (manifest/assignment/board snapshot) are REQUIRED —
         # the prompt calls board-snapshot.json authoritative — so prep
-        # failure fails the launch loudly (setup-command seam).
+        # failure fails the launch loudly (setup-command seam). The returned
+        # evidence read-roots grant a sandboxed tech lead its god-view (#6824 R5).
+        evidence_read_roots: tuple[Path, ...] = ()
         try:
-            self._prepare_triage_session_data(issue, ctx, triage_scope)
+            evidence_read_roots = self._prepare_triage_session_data(
+                issue, ctx, triage_scope
+            )
         except Exception as e:
             return self._fail_launch_for_triage_prep(
                 issue, ctx, session_name, worktree_path, claim, e
@@ -1114,6 +1122,7 @@ class SessionLauncher:
                 issue_title=issue.title,
                 worktree=worktree_path,
                 task_kind=TaskKind.CODE.value,
+                evidence_read_roots=evidence_read_roots,
                 extra_provider_args=extra_args,
             )
             base_command = self._wrap_provider_command(base_command, agent_config, run.run_dir, extra_provider_args=extra_args)

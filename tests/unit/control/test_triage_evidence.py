@@ -391,6 +391,33 @@ class TestWholeSystemRunDirs:
         assert str(leaked.resolve()) not in evidence.run_dirs
 
 
+class TestSandboxReadRoots:
+    """R5 (#6824): the evidence map's typed read-root projection for the sandbox."""
+
+    def test_projects_dir_repo_and_run_dir_roots_only(self, tmp_path: Path) -> None:
+        config = _config(tmp_path)
+        _register_worktree(config.repo_root, tmp_path / "repo-6335")
+        _make_sibling_run_dirs(tmp_path, 6335, ["20260101T000000__coding-1"])
+
+        evidence = build_evidence_map(
+            config=config,
+            repository_host=_FakeRepositoryHost(),
+            focus_issue_number=6335,
+        )
+
+        roots = evidence.sandbox_read_roots()
+        # The main repo (kind=repo) and state dir (kind=dir) are read roots...
+        assert config.repo_root in roots
+        assert state_dir(config.repo_root) in roots
+        # ...run-dirs are granted...
+        assert any("20260101T000000__coding-1" in str(r) for r in roots)
+        # ...the github slug pointer and the log FILE are NOT filesystem roots.
+        assert all(r != Path("owner/name") for r in roots)
+        assert all(not str(r).endswith("orchestrator.log") for r in roots)
+        # De-duplicated.
+        assert len(roots) == len(set(roots))
+
+
 class TestManagedWorktreeSelection:
     """R4 (#6824): registered-worktree provenance + numeric-suffix cap."""
 
