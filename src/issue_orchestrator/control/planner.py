@@ -392,9 +392,14 @@ class Planner:
         validation_retry_launch_count = 0
         triage_launch_count = 0
 
-        # 2. Plan review launches (highest priority)
+        # 2. Plan review launches (highest priority). The worker workflows gate
+        # on the WORKER-only count (``worker_active_count``, owner: worker_budget),
+        # NOT raw ``snapshot.active_count`` — else a reserved-triage session steals
+        # worker review/rework capacity (#6824 F5).
         if capacity > 0 and self.review_workflow:
-            review_actions, review_skipped = self._plan_reviews(snapshot, capacity, plan_context)
+            review_actions, review_skipped = self._plan_reviews(
+                snapshot, capacity, worker_active_count, plan_context
+            )
             actions.extend(review_actions)
             skipped.extend(review_skipped)
             capacity -= len(review_actions)
@@ -405,6 +410,7 @@ class Planner:
             retrospective_actions, retrospective_skipped = self._plan_retrospective_reviews(
                 snapshot,
                 capacity,
+                worker_active_count,
                 plan_context,
             )
             actions.extend(retrospective_actions)
@@ -414,7 +420,9 @@ class Planner:
 
         # 3. Plan rework launches
         if capacity > 0 and self.rework_workflow:
-            rework_actions, rework_skipped = self._plan_reworks(snapshot, capacity, plan_context)
+            rework_actions, rework_skipped = self._plan_reworks(
+                snapshot, capacity, worker_active_count, plan_context
+            )
             actions.extend(rework_actions)
             skipped.extend(rework_skipped)
             capacity -= len(rework_actions)
@@ -1036,6 +1044,9 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                 # A disposable triage-investigation scratch worktree is always
                 # removed, even when the config keeps worktrees (#6823).
                 remove_worktrees=facts.remove_worktrees or cleanup.scratch_worktree,
+                # Carry disposable identity so the applier force-removes ONLY the
+                # scratch worktree (leftover artifacts must not leak it) (#6824 F8).
+                disposable_worktree=cleanup.scratch_worktree,
                 reason=f"session {cleanup.reason}",
             ))
             logger.info("Planner: immediate cleanup for issue #%d (%s)",
@@ -1394,6 +1405,7 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
         self,
         snapshot: OrchestratorSnapshot,
         capacity: int,
+        worker_active_count: int,
         plan_context: PlanContext,
     ) -> tuple[list[Action], list[SkippedItem]]:
         """Plan which reviews to launch."""
@@ -1404,7 +1416,7 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
 
         decision: ReviewDecision = self.review_workflow.should_launch_reviews(
             pending_reviews=list(snapshot.pending_reviews),
-            active_session_count=snapshot.active_count,
+            active_session_count=worker_active_count,  # worker-only, not raw (#6824 F5)
             paused=snapshot.paused,
         )
 
@@ -1454,6 +1466,7 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
         self,
         snapshot: OrchestratorSnapshot,
         capacity: int,
+        worker_active_count: int,
         plan_context: PlanContext,
     ) -> tuple[list[Action], list[SkippedItem]]:
         """Plan which retrospective reviews to launch."""
@@ -1465,7 +1478,7 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
 
         decision: RetrospectiveReviewDecision = workflow.should_launch_reviews(
             pending_reviews=list(snapshot.pending_retrospective_reviews),
-            active_session_count=snapshot.active_count,
+            active_session_count=worker_active_count,  # worker-only, not raw (#6824 F5)
             paused=snapshot.paused,
         )
         if decision.skip_reason:
@@ -1517,6 +1530,7 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
         self,
         snapshot: OrchestratorSnapshot,
         capacity: int,
+        worker_active_count: int,
         plan_context: PlanContext,
     ) -> tuple[list[Action], list[SkippedItem]]:
         """Plan which reworks to launch."""
@@ -1527,7 +1541,7 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
 
         decision: ReworkDecision = self.rework_workflow.should_launch_reworks(
             pending_reworks=list(snapshot.pending_reworks),
-            active_session_count=snapshot.active_count,
+            active_session_count=worker_active_count,  # worker-only, not raw (#6824 F5)
             paused=snapshot.paused,
         )
 

@@ -50,7 +50,12 @@ from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.domain.triage_session import TriageSessionFlavor
 from issue_orchestrator.control.provider_resilience import ProviderResilienceManager
-from issue_orchestrator.control.workflows import TriageWorkflow
+from issue_orchestrator.control.workflows import (
+    RetrospectiveReviewWorkflow,
+    ReviewWorkflow,
+    ReworkWorkflow,
+    TriageWorkflow,
+)
 from issue_orchestrator.ports import InMemoryProviderCircuitStore
 from issue_orchestrator.ports.event_sink import InMemoryEventSink
 from tests.unit.session_run_helpers import make_session_run_assets
@@ -2908,6 +2913,10 @@ class TestPlanCleanups:
         # Scratch worktree removed unconditionally; ordinary cleanup honors config.
         assert cleanup_actions[5980].remove_worktrees is True
         assert cleanup_actions[7].remove_worktrees is False
+        # F8: the disposable identity survives to the action so the applier can
+        # FORCE removal only for the scratch worktree, never for the coding one.
+        assert cleanup_actions[5980].disposable_worktree is True
+        assert cleanup_actions[7].disposable_worktree is False
 
 
 # =============================================================================
@@ -4489,6 +4498,144 @@ class TestReservedTriageConcurrency:
 
         launches = self._triage_launches(planner.plan(snapshot))
         assert len(launches) == 1
+
+
+class TestReservedTriageDoesNotStealWorkerReviewCapacity:
+    """F5: reserved triage concurrency must not steal worker review/rework/
+    retrospective capacity. The worker workflows gate on the owner-computed
+    WORKER-only active count, not raw ``snapshot.active_count`` — so an active
+    reserved-triage session leaves the worker slot free. Real workflows are
+    wired so the internal capacity gate actually runs.
+    """
+
+    def _triage_session(self, number: int, agent_label: str) -> Session:
+        session = make_session(make_issue(number, labels=[agent_label]))
+        session.agent_label = agent_label
+        return session
+
+    def _config(self, *, reserved: bool):
+        config = make_config(
+            triage_review_agent="agent:triage",
+            code_review_agent="agent:reviewer",
+            max_concurrent_sessions=1,
+            retrospective_review_enabled=True,
+        )
+        config.retrospective_review_trigger_label = "lack-of-review-redo"
+        if reserved:
+            config.triage.max_concurrent = 1
+        return config
+
+    def _pending_review(self) -> PendingReview:
+        return PendingReview(
+            issue_key=FakeIssueKey(name="1"), pr_number=100, pr_url="url",
+            branch_name="branch", _issue_number=1,
+        )
+
+    def _pending_rework(self) -> PendingRework:
+        return PendingRework(
+            issue_key=FakeIssueKey(name="2"), agent_type="agent:fixer",
+            rework_cycle=1, issue_number=2,
+        )
+
+    def _pending_retrospective(self) -> PendingRetrospectiveReview:
+        return PendingRetrospectiveReview(
+            issue_key=FakeIssueKey(name="3"), issue_number=3,
+            issue_title="Review existing work", agent_label="agent:web",
+            trigger_label="lack-of-review-redo",
+        )
+
+    def _launches_of(self, plan, session_type):
+        return [
+            a
+            for a in plan.actions_of_type(ActionType.LAUNCH_SESSION)
+            if a.session_type == session_type
+        ]
+
+    def test_review_launches_despite_active_reserved_triage(self):
+        config = self._config(reserved=True)
+        planner = Planner(
+            config=config, scheduler=Scheduler(config),
+            review_workflow=ReviewWorkflow(config, InMemoryEventSink()),
+        )
+        snapshot = make_snapshot(
+            pending_reviews=[self._pending_review()],
+            active_sessions=[self._triage_session(50, "agent:triage")],
+        )
+        launches = self._launches_of(planner.plan(snapshot), SessionType.REVIEW)
+        assert [a.number for a in launches] == [100]
+
+    def test_review_shares_budget_and_skips_when_not_reserved(self):
+        config = self._config(reserved=False)
+        assert config.triage.max_concurrent is None
+        planner = Planner(
+            config=config, scheduler=Scheduler(config),
+            review_workflow=ReviewWorkflow(config, InMemoryEventSink()),
+        )
+        snapshot = make_snapshot(
+            pending_reviews=[self._pending_review()],
+            active_sessions=[self._triage_session(50, "agent:triage")],
+        )
+        # Shared budget: the triage session occupies the one worker slot — no
+        # review launches (unchanged behavior).
+        assert self._launches_of(planner.plan(snapshot), SessionType.REVIEW) == []
+
+    def test_rework_launches_despite_active_reserved_triage(self):
+        config = self._config(reserved=True)
+        planner = Planner(
+            config=config, scheduler=Scheduler(config),
+            rework_workflow=ReworkWorkflow(config, InMemoryEventSink()),
+        )
+        snapshot = make_snapshot(
+            pending_reworks=[self._pending_rework()],
+            active_sessions=[self._triage_session(50, "agent:triage")],
+        )
+        launches = self._launches_of(planner.plan(snapshot), SessionType.REWORK)
+        assert [a.number for a in launches] == [2]
+
+    def test_rework_shares_budget_and_skips_when_not_reserved(self):
+        config = self._config(reserved=False)
+        planner = Planner(
+            config=config, scheduler=Scheduler(config),
+            rework_workflow=ReworkWorkflow(config, InMemoryEventSink()),
+        )
+        snapshot = make_snapshot(
+            pending_reworks=[self._pending_rework()],
+            active_sessions=[self._triage_session(50, "agent:triage")],
+        )
+        assert self._launches_of(planner.plan(snapshot), SessionType.REWORK) == []
+
+    def test_retrospective_launches_despite_active_reserved_triage(self):
+        config = self._config(reserved=True)
+        planner = Planner(
+            config=config, scheduler=Scheduler(config),
+            retrospective_review_workflow=RetrospectiveReviewWorkflow(
+                config, InMemoryEventSink()
+            ),
+        )
+        snapshot = make_snapshot(
+            pending_retrospective_reviews=[self._pending_retrospective()],
+            active_sessions=[self._triage_session(50, "agent:triage")],
+        )
+        launches = self._launches_of(
+            planner.plan(snapshot), SessionType.RETROSPECTIVE_REVIEW
+        )
+        assert [a.number for a in launches] == [3]
+
+    def test_retrospective_shares_budget_and_skips_when_not_reserved(self):
+        config = self._config(reserved=False)
+        planner = Planner(
+            config=config, scheduler=Scheduler(config),
+            retrospective_review_workflow=RetrospectiveReviewWorkflow(
+                config, InMemoryEventSink()
+            ),
+        )
+        snapshot = make_snapshot(
+            pending_retrospective_reviews=[self._pending_retrospective()],
+            active_sessions=[self._triage_session(50, "agent:triage")],
+        )
+        assert self._launches_of(
+            planner.plan(snapshot), SessionType.RETROSPECTIVE_REVIEW
+        ) == []
 
 
 class TestE2EFirstClassWorkload:

@@ -1,19 +1,22 @@
 """Unit tests for the on-demand triage CLIs (entrypoints/cli_triage.py).
 
-These pin the command wiring — lock check, main-loop logging, background-E2E
-kill switch, and the ``--advise-only`` authority dial — without standing up a
-real in-process orchestrator (the driver logic is covered in
-``tests/unit/control/test_triage_trigger.py``).
+These pin the command wiring — repo-lock hold, main-loop logging, background-E2E
+kill switch, the ``--advise-only`` authority dial, and the truthful timeout exit
+code — without standing up a real in-process orchestrator (the driver logic is
+covered in ``tests/unit/control/test_triage_trigger.py``).
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 from issue_orchestrator.control.triage_trigger import HealthReviewResult
 from issue_orchestrator.entrypoints import cli_triage
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.infra.repo_lock import AlreadyRunning
 
 
 def _args(**overrides) -> argparse.Namespace:
@@ -33,14 +36,23 @@ def _patches(config: Config):
     )
 
 
+def _lock_held_ok():
+    """Patch the repo-lock owner to a no-op held lock (context manager)."""
+    return patch(
+        "issue_orchestrator.infra.repo_lock.held_repo_lock",
+        return_value=contextlib.nullcontext(),
+    )
+
+
 class TestCmdHealthReview:
     def test_lock_conflict_returns_1_without_building_orchestrator(self) -> None:
         config = Config()
         load_p, log_p = _patches(config)
+        # F6: the command now ACQUIRES + HOLDS the lock; a live holder makes
+        # held_repo_lock raise AlreadyRunning before anything is built.
         with load_p, log_p, patch(
-            "issue_orchestrator.infra.repo_lock.is_locked", return_value=True
-        ), patch(
-            "issue_orchestrator.infra.repo_lock.read_lock", return_value=None
+            "issue_orchestrator.infra.repo_lock.held_repo_lock",
+            side_effect=AlreadyRunning(pid=4321, repo_root=Path("/repo"), port=8080),
         ), patch.object(
             cli_triage, "_build_orchestrator"
         ) as build, patch(
@@ -57,9 +69,7 @@ class TestCmdHealthReview:
         config.e2e.enabled = True  # prove the command turns it off
         orchestrator = Mock()
         load_p, log_p = _patches(config)
-        with load_p, log_p, patch(
-            "issue_orchestrator.infra.repo_lock.is_locked", return_value=False
-        ), patch.object(
+        with load_p, log_p, _lock_held_ok(), patch.object(
             cli_triage, "_build_orchestrator", return_value=orchestrator
         ), patch(
             "issue_orchestrator.control.triage_trigger.run_health_review",
@@ -85,26 +95,24 @@ class TestCmdHealthReview:
         # ...and the one-shot orchestrator was torn down.
         orchestrator.close.assert_called_once()
 
-    def test_default_run_leaves_authority_untouched_but_disables_e2e(self) -> None:
+    def test_timeout_returns_nonzero_and_still_disables_e2e(self) -> None:
         config = Config()
         config.e2e.enabled = True
         default_authority = config.triage.authority
         orchestrator = Mock()
         load_p, log_p = _patches(config)
-        with load_p, log_p, patch(
-            "issue_orchestrator.infra.repo_lock.is_locked", return_value=False
-        ), patch.object(
+        with load_p, log_p, _lock_held_ok(), patch.object(
             cli_triage, "_build_orchestrator", return_value=orchestrator
         ), patch(
             "issue_orchestrator.control.triage_trigger.run_health_review",
             return_value=HealthReviewResult(
-                200, launched=True, completed=False, detail="running"
+                200, launched=True, completed=False, detail="timed out"
             ),
         ):
             rc = cli_triage.cmd_health_review(_args(advise_only=False))
 
-        # launched-but-not-completed is still exit 0 (only "not launched" fails).
-        assert rc == 0
+        # F7: launched-but-not-completed is a TIMEOUT, not success — exit nonzero.
+        assert rc == 1
         assert config.e2e.enabled is False
         assert config.triage.authority is default_authority  # not replaced
         orchestrator.close.assert_called_once()

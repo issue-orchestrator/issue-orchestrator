@@ -733,7 +733,9 @@ class SessionLauncher:
         if not is_scratch:
             return
         try:
-            self._worktree_manager.remove(worktree_path)
+            # Scratch-only by construction (guarded above): force removal so a
+            # leftover untracked artifact can't fail it and leak it (#6824 F8).
+            self._worktree_manager.remove(worktree_path, force=True)
             logger.info(issue_log(issue_number, "Removed scratch investigation worktree: %s"), worktree_path)
         except Exception as e:
             logger.warning(

@@ -1707,6 +1707,50 @@ class TestCleanupSessionAction:
         mock_sessions.stop.assert_called_once()
         mock_worktree_manager.remove.assert_not_called()
 
+    def test_disposable_worktree_cleanup_forces_removal(
+        self, applier, mock_sessions, mock_worktree_manager, tmp_path
+    ):
+        """F8: a disposable scratch worktree is FORCE-removed (untracked agent
+        artifacts must not fail its cleanup and leak it)."""
+        mock_sessions.exists.return_value = True
+
+        action = CleanupSessionAction(
+            issue_number=123,
+            pr_number=0,
+            terminal_id="issue-123",
+            worktree_path=str(tmp_path),
+            close_tabs=True,
+            remove_worktrees=True,
+            disposable_worktree=True,
+        )
+
+        result = applier.apply(action)
+
+        assert result.success
+        mock_worktree_manager.remove.assert_called_once_with(Path(str(tmp_path)), force=True)
+
+    def test_non_disposable_worktree_cleanup_is_not_forced(
+        self, applier, mock_sessions, mock_worktree_manager, tmp_path
+    ):
+        """F8: a normal coding worktree stays non-forced so user work is never
+        discarded by a forced removal."""
+        mock_sessions.exists.return_value = True
+
+        action = CleanupSessionAction(
+            issue_number=123,
+            pr_number=456,
+            terminal_id="issue-123",
+            worktree_path=str(tmp_path),
+            close_tabs=True,
+            remove_worktrees=True,
+            disposable_worktree=False,
+        )
+
+        result = applier.apply(action)
+
+        assert result.success
+        mock_worktree_manager.remove.assert_called_once_with(Path(str(tmp_path)), force=False)
+
     def test_cleanup_issue_session_releases_review_exchange_lifecycle(
         self, applier, mock_sessions, mock_worktree_manager, tmp_path
     ):

@@ -38,6 +38,7 @@ def _issue(number=5980, *, labels=("blocked-failed",)):
 class _Session:
     def __init__(self, stable_id: str) -> None:
         self.key = SimpleNamespace(stable_id=lambda: stable_id)
+        self.terminal_id = stable_id.replace(":", "-")
 
 
 class _State:
@@ -56,6 +57,7 @@ class _FakeHost:
         self.pause_calls = 0
         self.tick_count = 0
         self.launched: list = []
+        self.killed: list[str] = []
         self._session: _Session | None = None
 
     def pause(self) -> None:
@@ -78,6 +80,13 @@ class _FakeHost:
         ):
             self.state.active_sessions.remove(self._session)
         return True
+
+    def kill_session(self, name: str) -> None:
+        self.killed.append(name)
+        # Mimic the facade: a killed session is torn down (leaves active_sessions).
+        self.state.active_sessions = [
+            s for s in self.state.active_sessions if s.terminal_id != name
+        ]
 
 
 def _noop_sleep(_seconds: float) -> None:
@@ -140,6 +149,11 @@ def test_timeout_when_session_never_completes() -> None:
     assert results[0].launched is True
     assert results[0].completed is False
     assert "timed out" in results[0].detail
+    # F7: the timed-out session is EXPLICITLY terminated (not left dangling for
+    # close() to kill), and the result says so.
+    assert "terminated" in results[0].detail
+    assert host.killed == ["triage-5980"]
+    assert host.state.active_sessions == []
 
 
 def test_blocking_label_falls_back_to_manual_when_no_blocked_label() -> None:
@@ -186,6 +200,7 @@ class _FakeHealthHost:
         self.pause_calls = 0
         self.ensure_calls = 0
         self.launched: list = []
+        self.killed: list[str] = []
         self.tick_count = 0
         self._session: _Session | None = None
 
@@ -213,6 +228,12 @@ class _FakeHealthHost:
         ):
             self.state.active_sessions.remove(self._session)
         return True
+
+    def kill_session(self, name: str) -> None:
+        self.killed.append(name)
+        self.state.active_sessions = [
+            s for s in self.state.active_sessions if s.terminal_id != name
+        ]
 
 
 def test_health_review_launches_and_drives_to_completion() -> None:
@@ -267,3 +288,7 @@ def test_health_review_times_out_when_session_never_completes() -> None:
     assert result.launched is True
     assert result.completed is False
     assert "timed out" in result.detail
+    # F7: the timed-out session is explicitly terminated.
+    assert "terminated" in result.detail
+    assert host.killed == ["triage-200"]
+    assert host.state.active_sessions == []

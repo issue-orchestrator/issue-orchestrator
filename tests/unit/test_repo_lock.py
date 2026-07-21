@@ -11,6 +11,7 @@ from issue_orchestrator.infra.repo_lock import (
     AlreadyRunning,
     LockInfo,
     acquire_lock,
+    held_repo_lock,
     is_locked,
     read_lock,
     release_lock,
@@ -90,6 +91,66 @@ class TestAcquireLock:
         lock_path = repo_root / ".issue-orchestrator" / "lock.json"
         assert lock_path.exists()
         assert info.repo_root == str(repo_root)
+
+
+class TestHeldRepoLock:
+    """F6: the one-shot commands HOLD the lock across their whole lifecycle."""
+
+    def test_holds_lock_in_body_then_releases_on_exit(self, tmp_path: Path) -> None:
+        lock_path = tmp_path / ".issue-orchestrator" / "lock.json"
+        with held_repo_lock(tmp_path, port=8080) as info:
+            assert info.pid == os.getpid()
+            assert lock_path.exists()  # held for the whole body
+        assert not lock_path.exists()  # released on exit
+
+    def test_releases_lock_even_when_body_raises(self, tmp_path: Path) -> None:
+        lock_path = tmp_path / ".issue-orchestrator" / "lock.json"
+        with pytest.raises(RuntimeError):
+            with held_repo_lock(tmp_path):
+                assert lock_path.exists()
+                raise RuntimeError("boom")
+        assert not lock_path.exists()
+
+    def test_refuses_when_single_instance_lock_is_live(self, tmp_path: Path) -> None:
+        """A live single-instance holder makes held_repo_lock refuse — and it
+        must NOT clobber that other process's lock."""
+        acquire_lock(tmp_path, port=8080)  # a live holder (our pid)
+        with patch(
+            "issue_orchestrator.infra.repo_lock._is_process_alive", return_value=True
+        ):
+            with pytest.raises(AlreadyRunning):
+                with held_repo_lock(tmp_path):
+                    pass
+        # The pre-existing lock is untouched (never acquired, never released).
+        assert (tmp_path / ".issue-orchestrator" / "lock.json").exists()
+
+    def test_refuses_when_multi_instance_engine_is_live(self, tmp_path: Path) -> None:
+        """A one-shot command must account for ALL conflicting instance locks,
+        not just the single lock.json (#6824 F6) — and release its own lock when
+        it backs out."""
+        locks_dir = tmp_path / ".issue-orchestrator" / "locks"
+        locks_dir.mkdir(parents=True)
+        (locks_dir / "inst-a.json").write_text(
+            json.dumps(
+                {
+                    "repo_root": str(tmp_path),
+                    "pid": 424242,  # a DIFFERENT (live, mocked) process
+                    "started_at": "2024-01-01T00:00:00Z",
+                    "http_port": 9000,
+                    "state_dir": str(tmp_path / ".issue-orchestrator" / "state"),
+                    "instance_id": "inst-a",
+                }
+            )
+        )
+        with patch(
+            "issue_orchestrator.infra.repo_lock._is_process_alive", return_value=True
+        ):
+            with pytest.raises(AlreadyRunning) as exc:
+                with held_repo_lock(tmp_path):
+                    pass
+        assert exc.value.pid == 424242
+        # Our just-taken single lock was released, not leaked.
+        assert not (tmp_path / ".issue-orchestrator" / "lock.json").exists()
 
 
 class TestReleaseLock:

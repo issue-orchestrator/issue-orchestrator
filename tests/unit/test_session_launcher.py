@@ -260,6 +260,7 @@ class MockWorktreeManager:
         self.tmp_path = tmp_path
         self.create_calls: list[dict] = []
         self.remove_calls: list[Path] = []
+        self.remove_force_calls: list[tuple[Path, bool]] = []
 
     def create(
         self,
@@ -296,8 +297,8 @@ class MockWorktreeManager:
         )
 
     def remove(self, worktree_path: Path, *, force: bool = False) -> None:
-        del force
         self.remove_calls.append(worktree_path)
+        self.remove_force_calls.append((worktree_path, force))
 
     def can_remove_without_user_changes(self, worktree_path: Path) -> bool:
         del worktree_path
@@ -914,6 +915,9 @@ class TestLaunchIssueSession:
         )
         scratch_path = tmp_path / create_call["worktree_name"]
         assert scratch_path in mock_worktree_manager.remove_calls
+        # F8: a disposable scratch worktree is FORCE-removed — a partial launch
+        # can leave an untracked artifact that a non-forced remove would fail on.
+        assert (scratch_path, True) in mock_worktree_manager.remove_force_calls
 
     def test_coding_launch_uses_focus_worktree_not_scratch(
         self, session_launcher, mock_worktree_manager, sample_issue

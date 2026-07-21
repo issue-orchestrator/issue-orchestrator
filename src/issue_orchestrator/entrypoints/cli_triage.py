@@ -30,6 +30,7 @@ from .cli_support import load_config
 if TYPE_CHECKING:
     from ..infra.config import Config
     from ..infra.orchestrator import Orchestrator
+    from ..infra.repo_lock import AlreadyRunning
 
 console = Console()
 
@@ -45,40 +46,50 @@ def cmd_triage(args: argparse.Namespace) -> int:
     non-configurable escalate floor can).
     """
     from ..control.triage_trigger import run_targeted_investigations
+    from ..infra.repo_lock import AlreadyRunning, held_repo_lock
 
     config = load_config(args)
-    _configure_one_shot_triage_run(config, label="triage")
-    if _repo_lock_conflict(config, command="triage"):
-        return 1
-    _apply_advise_only_authority(args, config)
-
-    orchestrator = _build_orchestrator(config)
-    console.print(
-        "[green]Dispatching the tech lead at:[/green] "
-        + ", ".join(f"#{n}" for n in args.issues)
-    )
+    # Hold the repo lock for the ENTIRE build/run/close lifecycle — not a
+    # read-only pre-check — so no other command or the engine can start against
+    # this repo mid-run (#6824 F6).
     try:
-        results = run_targeted_investigations(
-            orchestrator,
-            args.issues,
-            now=time.monotonic,
-            sleep=time.sleep,
-            timeout_s=float(args.timeout),
-        )
+        with held_repo_lock(config.repo_root):
+            _configure_one_shot_triage_run(config, label="triage")
+            _apply_advise_only_authority(args, config)
+            orchestrator = _build_orchestrator(config)
+            console.print(
+                "[green]Dispatching the tech lead at:[/green] "
+                + ", ".join(f"#{n}" for n in args.issues)
+            )
+            try:
+                results = run_targeted_investigations(
+                    orchestrator,
+                    args.issues,
+                    now=time.monotonic,
+                    sleep=time.sleep,
+                    timeout_s=float(args.timeout),
+                )
 
-        exit_code = 0
-        for result in results:
-            if result.completed:
-                mark = "[green]done[/green]"
-            elif result.launched:
-                mark = "[yellow]running/timeout[/yellow]"
-            else:
-                mark = "[red]not launched[/red]"
-                exit_code = 1
-            console.print(f"  #{result.issue_number}: {mark} — {result.detail}")
-        return exit_code
-    finally:
-        _release(orchestrator)
+                exit_code = 0
+                for result in results:
+                    if result.completed:
+                        mark = "[green]done[/green]"
+                    elif result.launched:
+                        # Timed out: the session was terminated (not left
+                        # dangling) and the command exits nonzero — a timeout is
+                        # not success (#6824 F7).
+                        mark = "[yellow]timed out — session terminated[/yellow]"
+                        exit_code = 1
+                    else:
+                        mark = "[red]not launched[/red]"
+                        exit_code = 1
+                    console.print(f"  #{result.issue_number}: {mark} — {result.detail}")
+                return exit_code
+            finally:
+                _release(orchestrator)
+    except AlreadyRunning as exc:
+        _report_lock_conflict(exc, command="triage")
+        return 1
 
 
 def cmd_health_review(args: argparse.Namespace) -> int:
@@ -93,43 +104,48 @@ def cmd_health_review(args: argparse.Namespace) -> int:
     every triage authority to ``propose`` so nothing auto-executes.
     """
     from ..control.triage_trigger import run_health_review
+    from ..infra.repo_lock import AlreadyRunning, held_repo_lock
 
     config = load_config(args)
-    _configure_one_shot_triage_run(config, label="health-review")
-    if _repo_lock_conflict(config, command="health-review"):
-        return 1
-    _apply_advise_only_authority(args, config)
-
-    orchestrator = _build_orchestrator(config)
-    console.print(
-        "[green]Running an on-demand whole-board health review"
-        " (walk the floor)...[/green]"
-    )
+    # Hold the repo lock for the whole lifecycle (#6824 F6).
     try:
-        result = run_health_review(
-            orchestrator,
-            now=time.monotonic,
-            sleep=time.sleep,
-            timeout_s=float(args.timeout),
-        )
-        if result.completed:
-            mark = "[green]done[/green]"
-            exit_code = 0
-        elif result.launched:
-            mark = "[yellow]running/timeout[/yellow]"
-            exit_code = 0
-        else:
-            mark = "[red]not launched[/red]"
-            exit_code = 1
-        anchor = (
-            f"#{result.anchor_issue_number}"
-            if result.anchor_issue_number is not None
-            else "(none)"
-        )
-        console.print(f"  health review {anchor}: {mark} — {result.detail}")
-        return exit_code
-    finally:
-        _release(orchestrator)
+        with held_repo_lock(config.repo_root):
+            _configure_one_shot_triage_run(config, label="health-review")
+            _apply_advise_only_authority(args, config)
+            orchestrator = _build_orchestrator(config)
+            console.print(
+                "[green]Running an on-demand whole-board health review"
+                " (walk the floor)...[/green]"
+            )
+            try:
+                result = run_health_review(
+                    orchestrator,
+                    now=time.monotonic,
+                    sleep=time.sleep,
+                    timeout_s=float(args.timeout),
+                )
+                if result.completed:
+                    mark = "[green]done[/green]"
+                    exit_code = 0
+                elif result.launched:
+                    # Timed out: session terminated, command exits nonzero (F7).
+                    mark = "[yellow]timed out — session terminated[/yellow]"
+                    exit_code = 1
+                else:
+                    mark = "[red]not launched[/red]"
+                    exit_code = 1
+                anchor = (
+                    f"#{result.anchor_issue_number}"
+                    if result.anchor_issue_number is not None
+                    else "(none)"
+                )
+                console.print(f"  health review {anchor}: {mark} — {result.detail}")
+                return exit_code
+            finally:
+                _release(orchestrator)
+    except AlreadyRunning as exc:
+        _report_lock_conflict(exc, command="health-review")
+        return 1
 
 
 def _configure_one_shot_triage_run(config: "Config", *, label: str) -> None:
@@ -156,24 +172,19 @@ def _configure_one_shot_triage_run(config: "Config", *, label: str) -> None:
     config.e2e.enabled = False
 
 
-def _repo_lock_conflict(config: "Config", *, command: str) -> bool:
-    """True (after printing) when another orchestrator already holds the lock.
+def _report_lock_conflict(exc: "AlreadyRunning", *, command: str) -> None:
+    """Print why an on-demand command refused to run (the lock is held).
 
-    Each on-demand command runs its own in-process orchestrator and cannot share
-    the repo lock with a running one.
+    Raised by :func:`held_repo_lock` when another orchestrator (single- or
+    multi-instance) is live. Each on-demand command runs its own in-process
+    orchestrator and cannot share the repo lock with a running one.
     """
-    from ..infra.repo_lock import is_locked, read_lock
-
-    if not is_locked(config.repo_root):
-        return False
-    info = read_lock(config.repo_root)
-    where = f" (pid={info.pid}, port={info.http_port})" if info else ""
+    where = f" (pid={exc.pid}, port={exc.port})"
     console.print(
         f"[red]An orchestrator is already running{where}.[/red] Stop it"
         f" first — `{command}` runs its own in-process orchestrator and cannot"
         " share the repo lock."
     )
-    return True
 
 
 def _apply_advise_only_authority(args: argparse.Namespace, config: "Config") -> None:

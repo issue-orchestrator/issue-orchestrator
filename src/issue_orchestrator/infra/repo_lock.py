@@ -10,6 +10,8 @@ Multi-instance mode:  .issue-orchestrator/locks/{instance_id}.json
 
 import json
 import os
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -219,6 +221,49 @@ def release_lock(
         return True
     except OSError:
         return False
+
+
+@contextmanager
+def held_repo_lock(
+    repo_root: Path | str,
+    port: int | None = None,
+    instance_id: str | None = None,
+) -> Iterator[LockInfo]:
+    """Acquire and hold the repo lock across a whole in-process lifecycle.
+
+    The supervised engine (:mod:`..entrypoints.run_orchestrator`) already
+    acquires + releases the lock around its run; a one-shot in-process command
+    must do the SAME rather than a read-only :func:`is_locked` peek. A peek is
+    check-then-act: two one-shots (or a one-shot and the engine) can both pass
+    the check and then run concurrently against one repo. Acquiring closes that
+    race — :func:`acquire_lock` raises :class:`AlreadyRunning` when a live
+    process already holds the target lock file, and this context manager
+    releases on every exit path.
+
+    ``acquire_lock`` only inspects the single ``lock.json`` (or this
+    ``instance_id``'s file), so it would miss a multi-instance engine holding a
+    ``locks/{id}.json``. We therefore also scan :func:`list_instance_locks` and
+    refuse (releasing our just-taken lock) if ANY other live instance is
+    present — the same "account for all conflicting instance locks" rule the
+    supervisor's stop/status paths use.
+    """
+    repo_root = normalize_repo_root(repo_root)
+    info = acquire_lock(repo_root, port, instance_id)
+    try:
+        conflicts = [
+            other for other in list_instance_locks(repo_root) if other.pid != info.pid
+        ]
+        if conflicts:
+            first = conflicts[0]
+            raise AlreadyRunning(
+                pid=first.pid,
+                repo_root=repo_root,
+                port=first.http_port,
+                instance_id=first.instance_id,
+            )
+        yield info
+    finally:
+        release_lock(repo_root, pid=info.pid, instance_id=instance_id)
 
 
 def read_lock(repo_root: Path | str, instance_id: str | None = None) -> LockInfo | None:

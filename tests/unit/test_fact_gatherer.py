@@ -1670,3 +1670,25 @@ class TestClearDiscoveredFacts:
         paused_mid_apply.paused = True
         clear_discovered_facts(paused_mid_apply, self._config(), tick_paused=False)
         assert paused_mid_apply.discovered_failures == []
+
+    def test_running_tick_retains_disposable_cleanup_but_drops_normal(self):
+        """F8 second guard: a disposable scratch-worktree cleanup survives the
+        clear (it is pruned on SUCCESS by ``_handle_cleanup_session``, so any
+        that reaches here had its removal FAIL and must be re-planned), while a
+        normal cleanup is consumed once and dropped."""
+        from issue_orchestrator.control.fact_gatherer import clear_discovered_facts
+        from issue_orchestrator.domain.models import ImmediateCleanup
+
+        state = OrchestratorState()
+        state.immediate_cleanups.append(
+            ImmediateCleanup(5980, "issue-5980", "/tmp/repo-triage-5980", "completed",
+                             scratch_worktree=True)
+        )
+        state.immediate_cleanups.append(
+            ImmediateCleanup(7, "issue-7", "/tmp/worktree-7", "completed")
+        )
+
+        clear_discovered_facts(state, self._config(), tick_paused=False)
+
+        remaining = {c.issue_number for c in state.immediate_cleanups}
+        assert remaining == {5980}  # disposable retained, normal dropped

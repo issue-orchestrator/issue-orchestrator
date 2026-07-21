@@ -729,7 +729,16 @@ def clear_discovered_facts(
     if tick_paused:
         return
     held = triage_problem_artifact_hold_issue_numbers(state, config, triage_authority)
-    retained = [c for c in state.immediate_cleanups if c.issue_number in held]
+    # Retain (a) cleanups still referenced by triage work — the Planner skipped
+    # them this tick — and (b) DISPOSABLE scratch-worktree cleanups (#6824 F8):
+    # a disposable cleanup is pruned on SUCCESS by ``_handle_cleanup_session``,
+    # so any that survive to here had their removal FAIL and must be re-planned
+    # next tick rather than dropped (which would leak the scratch worktree).
+    retained = [
+        c
+        for c in state.immediate_cleanups
+        if c.issue_number in held or c.scratch_worktree
+    ]
     for attr in _DISCOVERED_FACT_ATTRS:
         getattr(state, attr).clear()
     state.immediate_cleanups.extend(retained)

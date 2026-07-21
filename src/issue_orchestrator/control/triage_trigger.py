@@ -83,6 +83,8 @@ class TriageDispatchHost(Protocol):
 
     def tick(self) -> bool: ...
 
+    def kill_session(self, name: str) -> None: ...
+
 
 @dataclass(frozen=True)
 class InvestigationResult:
@@ -218,7 +220,7 @@ def run_health_review(
             triage.issue_number, launched=True, completed=False,
             detail=(
                 f"health review timed out after {timeout_s:.0f}s"
-                " (session still active)"
+                " (session terminated)"
             ),
         )
     logger.info(
@@ -309,7 +311,7 @@ def _drive_to_completion(
             issue_number, launched=True, completed=False,
             detail=(
                 f"investigation timed out after {timeout_s:.0f}s"
-                " (session still active)"
+                " (session terminated)"
             ),
         )
     logger.info(
@@ -345,14 +347,31 @@ def _drive_session_to_completion(
         if now() >= deadline:
             logger.warning(
                 "[TRIAGE_TRIGGER] session %s still active after %.0fs;"
-                " giving up the drive",
+                " terminating it and giving up the drive",
                 identity,
                 timeout_s,
             )
+            _terminate_session(orchestrator, identity)
             return False
         orchestrator.tick()
         sleep(poll_interval)
     return True
+
+
+def _terminate_session(orchestrator: TriageDispatchHost, identity: str) -> None:
+    """Kill the timed-out session so ownership of the timeout is EXPLICIT (#6824 F7).
+
+    Without this, the one-shot command reports "session still active" and then
+    its ``finally: orchestrator.close()`` kills the session implicitly — so the
+    session is neither running nor successful once the command exits, and a
+    multi-issue batch would keep co-driving a session already declared timed
+    out. Terminating it here (by its current ``terminal_id``, matched via the
+    restore-stable slot identity) makes the timeout truthful and stops the batch
+    from adopting a half-dead session.
+    """
+    for session in orchestrator.state.active_sessions:
+        if _session_identity(session) == identity:
+            orchestrator.kill_session(session.terminal_id)
 
 
 def _session_active(orchestrator: TriageDispatchHost, identity: str) -> bool:
