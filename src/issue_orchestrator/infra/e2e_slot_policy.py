@@ -13,12 +13,12 @@ at top level (for ``maybe_trigger_e2e``) with no circular import.
 
 import logging
 import os
-import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional
 
 from ..control.planner_types import E2ESlotSignals
 from .e2e_db import E2EDB
+from .validation_timings import read_head_sha
 
 if TYPE_CHECKING:
     from .config import Config, E2EConfig
@@ -62,24 +62,12 @@ def _get_main_head(repo_root: Path) -> Optional[str]:
     """Get the current HEAD commit SHA of the orchestrator's repo.
 
     Uses HEAD (not origin/main) so that e2e auto-trigger detects changes
-    when the orchestrator runs from a worktree or feature branch.
-
-    Returns:
-        Commit SHA string, or None if unable to determine.
+    when the orchestrator runs from a worktree or feature branch. Resolved via
+    the ``validation_timings`` file-read reader — NO ``subprocess`` — so this
+    infra module honours the ``infra/AGENTS.md`` git-subprocess restriction
+    (#6824 R9). Returns None when it cannot be determined.
     """
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=repo_root,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if result.returncode == 0:
-            return result.stdout.strip()
-    except Exception as e:
-        logger.warning("Failed to get HEAD: %s", e)
-    return None
+    return read_head_sha(repo_root)
 
 
 def _should_skip_e2e_trigger(

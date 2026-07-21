@@ -131,10 +131,13 @@ worktree. The profile:
 - excludes ``deny_env`` names from spawned-command environments; and
 - uses ``-a never`` so a denied operation fails instead of prompting to escape.
 
-Codex has no read-only form of ``--add-dir``. An additional ``read_root`` is
-therefore also writable for Codex. This is the documented bounded-writable
-residual from ADR-0034: the adapter widens only the exact orchestrator-computed
-root, never ``$HOME`` or an unrelated repository implicitly.
+Codex ``--add-dir`` grants WRITE, so it carries only ``write_roots`` — a
+read-only ``read_root`` (the tech-lead evidence god-view, #6824 R5) is NOT
+added there. Those read-only roots are emitted as explicit ``read`` entries in
+the permission profile's ``filesystem`` table (see ``_codex_read_only_roots`` /
+``_codex_permission_profile``), so a tech lead READS them while WRITES stay
+confined to the scratch worktree. The adapter widens only the exact
+orchestrator-computed roots, never ``$HOME`` or an unrelated repository.
 
 Git commits have one further linked-worktree residual: they must create loose
 objects in the base repository's shared object store. That object subtree is

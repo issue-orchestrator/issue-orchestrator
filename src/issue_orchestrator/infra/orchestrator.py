@@ -171,16 +171,21 @@ class Orchestrator:
         self._kill_session(name)
 
     def terminate_triage_session(self, session: "Session") -> None:
-        """Terminate a triage session AND reconcile its runtime state (#6824 R7).
+        """Behavior-complete termination of a triage session on timeout (#6824 R7).
 
-        ``kill_session`` only stops the terminal. On a one-shot timeout the
-        session must ALSO leave ``active_sessions`` and release its claim —
-        exactly what completion processing does — or the drive loop keeps
-        reporting it active, a multi-issue batch co-drives a dead session, and
-        its claim/slot leaks after the command exits. This is the behavior-level
-        owner that performs that reconciliation, so callers never mutate shared
-        session state directly.
+        ``kill_session`` only stops the terminal, and a one-shot command runs NO
+        further tick after this — so a recorded cleanup fact would never be
+        applied. The termination must therefore be self-contained, mirroring the
+        outcomes normal completion produces: (1) remove the session state machine
+        (terminalize its lifecycle); (2) stop the terminal; (3) reconcile the
+        session out of ``active_sessions`` (via the state owner, never a direct
+        rebind); (4) release its claim; and (5) FORCE-remove the disposable
+        scratch worktree, so a timed-out failure investigation leaks neither a
+        machine, a claim, an active-session record, nor its scratch checkout.
         """
+        smm = getattr(self.deps, "state_machine_manager", None)
+        if smm is not None:
+            smm.remove_session_machine(session.terminal_id)
         self._kill_session(session.terminal_id)
         self.state.drop_active_session(session.terminal_id)
         claim_manager = getattr(self.deps, "claim_manager", None)
@@ -194,6 +199,20 @@ class Orchestrator:
                     session.issue.number,
                     exc_info=True,
                 )
+        # The disposable scratch worktree must be removed HERE (a one-shot never
+        # ticks to plan the cleanup fact); forced, since it holds only throwaway
+        # agent artifacts. Best-effort — never raises out of termination.
+        if getattr(session, "scratch_worktree", False) and session.worktree_path:
+            worktree_manager = getattr(self.deps, "worktree_manager", None)
+            if worktree_manager is not None:
+                try:
+                    worktree_manager.remove(session.worktree_path, force=True)
+                except Exception:
+                    logger.warning(
+                        "[TRIAGE] Failed to remove scratch worktree for issue #%d on timeout terminate",
+                        session.issue.number,
+                        exc_info=True,
+                    )
 
     def cancel_review_exchange_for_issue(
         self,

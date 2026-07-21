@@ -225,9 +225,20 @@ def acquire_lock(
             _release_fds(held)
             raise _already_running(repo_root, lock_path, instance_id) from exc
 
-    # Gate(s) held: we are the sole owner. A pre-existing metadata file means we
-    # took over after a crash (its holder's flock was auto-released on death).
-    recovered = _read_lock(lock_path) is not None
+    # Gate(s) held. Compatibility guard (#6824 R2): a live process may have
+    # recorded metadata under the PRE-flock implementation (which held no gate),
+    # so winning the gate does NOT prove that process is gone. If the recorded
+    # pid is a DIFFERENT live process, refuse rather than overwrite its lock
+    # during an upgrade. A dead recorded pid is a genuine stale takeover.
+    existing = _read_lock(lock_path)
+    if (
+        existing is not None
+        and existing.pid != os.getpid()
+        and _is_process_alive(existing.pid)
+    ):
+        _release_fds(held)
+        raise _already_running(repo_root, lock_path, instance_id)
+    recovered = existing is not None
     info = LockInfo(
         repo_root=str(repo_root),
         pid=os.getpid(),
@@ -287,18 +298,19 @@ def release_lock(
     lock_path = lock_file(repo_root, instance_id)
     pid = pid or os.getpid()
 
-    # Release our held gate fds first (this releases the flocks). Do this even
-    # if the metadata was already removed so we never leak the exclusion.
+    existing = _read_lock(lock_path)
+    # Validate ownership BEFORE releasing anything (#6824 R2): a wrong-pid
+    # release must NOT silently drop the flock (leaving a split-brain where
+    # another process can acquire while the metadata still names this one). Only
+    # the true owner releases its gate fds and unlinks its metadata.
+    if existing is not None and existing.pid != pid:
+        return False
+
     held = _HELD_GATE_FDS.pop(str(lock_path), [])
     _release_fds(held)
 
-    existing = _read_lock(lock_path)
     if existing is None:
         return bool(held)
-
-    if existing.pid != pid:
-        # Metadata belongs to another process — never unlink another's advert.
-        return False
 
     try:
         lock_path.unlink()

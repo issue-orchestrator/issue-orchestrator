@@ -240,14 +240,12 @@ class Planner:
         escalation_actions = self._plan_discovered_escalations(snapshot)
         actions.extend(escalation_actions)
 
-        # 1d1. Escalate stuck-sweep-exhausted issues to needs-human (#6824 F1/R1):
-        # the stuck-sweep owner defines the authoritative label (re-emitted until
-        # acknowledged) + one comment; applied here through the Applier, not a
-        # direct GitHub call from observation.
+        # 1d1. Escalate stuck-sweep-exhausted issues to needs-human (#6824 R1):
+        # the stuck-sweep owner defines the authoritative label-only escalation
+        # (re-emitted, idempotent, until acknowledged); applied here through the
+        # Applier, not a direct GitHub call from observation.
         actions.extend(build_stuck_sweep_escalation_actions(
-            snapshot.stuck_sweep_escalations,
-            snapshot.stuck_sweep_new_escalations,
-            self._lm.needs_human))
+            snapshot.stuck_sweep_escalations, self._lm.needs_human))
 
         # 1d2. Handle post-publish escalations (CI checks stuck > timeout,
         # or branch protection blocking merge despite checks passing).

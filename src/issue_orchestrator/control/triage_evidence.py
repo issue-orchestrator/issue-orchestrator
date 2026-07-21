@@ -32,7 +32,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Sequence
@@ -378,15 +377,17 @@ def _discover_sqlite_locations(state_dir_path: Path) -> list[EvidenceLocation]:
     return [discovered[key] for key in sorted(discovered)]
 
 
-def _worktree_recency_key(path: Path) -> int:
-    """Newest-first ordering key: the highest integer embedded in the name.
+def _worktree_recency_key(path: Path) -> float:
+    """ACTUAL recency for the cap: the worktree's mtime (newest kept), #6824 R4.
 
-    Worktree names carry an issue number (``<repo>-<n>`` or
-    ``<repo>-triage-<issue>-<token>``); the max integer is that number. NUMERIC,
-    not lexical, so ``repo-100`` sorts above ``repo-9`` for the cap (#6824 R4).
+    A numeric issue suffix is NOT recency — a freshly recreated low-number
+    worktree would lose to an old high-number one. mtime reflects real activity.
+    Best-effort: an unstat-able path sorts oldest (``0.0``).
     """
-    numbers = [int(m) for m in re.findall(r"\d+", path.name)]
-    return max(numbers) if numbers else 0
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
 
 
 def _same_git_repo(a: Path | None, b: Path | None) -> bool:
@@ -522,9 +523,17 @@ def _collect_focus_run_dirs(
     artifact_hints: Sequence[str],
     found: set[str],
 ) -> None:
-    """Focus-issue run-dirs: its sibling worktree's runs + artifact-hint parents."""
-    for entry in _session_run_dirs_under(_session_worktree(config, focus_issue_number)):
-        found.add(str(entry.resolve()))
+    """Focus-issue run-dirs: its REGISTERED sibling worktree's runs + hint parents.
+
+    The focus worktree is scanned only when it is in the SAME provenance-checked
+    registered-worktree inventory the whole-system path uses (#6824 R4) — never a
+    same-named but unrelated sibling repo (e.g. an unrelated ``repo-42``).
+    """
+    focus_worktree = _session_worktree(config, focus_issue_number)
+    registered_names = {w.name for w in _registered_managed_worktrees(config)}
+    if focus_worktree.name in registered_names:
+        for entry in _session_run_dirs_under(focus_worktree):
+            found.add(str(entry.resolve()))
     for hint in artifact_hints:
         if hint:
             found.add(str(Path(hint).parent.resolve()))

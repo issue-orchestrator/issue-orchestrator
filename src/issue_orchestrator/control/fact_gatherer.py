@@ -229,7 +229,6 @@ class FactGatherer:
             ),
             discovered_failures=tuple(state.discovered_failures),
             stuck_sweep_escalations=tuple(state.stuck_sweep_escalations),
-            stuck_sweep_new_escalations=tuple(state.stuck_sweep_new_escalations),
             triage_facts=triage_facts,
             cleanup_facts=cleanup_facts,
             stale_in_progress_issues=tuple(stale_in_progress_issues or []),
@@ -424,13 +423,11 @@ class FactGatherer:
         )
         for failure in result.recovered:
             state.record_discovered_failure(failure)
-        # Escalate to needs-human through the Planner/Applier (authoritative label
-        # write, not a direct GitHub call here). Re-emit the label for EVERY
-        # unacknowledged escalation (the durable pending set) so a crash/apply
-        # failure retries until it lands; post the comment ONLY for the newly
-        # exhausted (#6824 R1). The durable set itself is persisted below.
+        # Escalate to needs-human through the Planner/Applier (authoritative,
+        # label-only). Re-emit the idempotent label for EVERY unacknowledged
+        # escalation (the durable pending set) so a crash/apply failure retries
+        # until it lands (#6824 R1). The durable set itself is persisted below.
         state.stuck_sweep_escalations = list(state.pending_stuck_sweep_escalations)
-        state.stuck_sweep_new_escalations = list(result.exhausted)
         state.last_stuck_sweep_at = now
         persist_stuck_sweep_state(state, self.queue_cache_store)
         self._emit_stuck_sweep(result)
@@ -717,7 +714,6 @@ _DISCOVERED_FACT_ATTRS: tuple[str, ...] = (
     "discovered_escalations",
     "discovered_failures",
     "stuck_sweep_escalations",
-    "stuck_sweep_new_escalations",
     "immediate_cleanups",
 )
 

@@ -203,6 +203,35 @@ class TestLockAtomicity:
             acquire_lock(tmp_path, instance_id="a")
         release_lock(tmp_path, instance_id="a")
 
+    def test_live_pre_flock_metadata_is_not_overwritten(self, tmp_path: Path) -> None:
+        """R2 (#6824): a LIVE process that recorded metadata under the pre-flock
+        implementation (holds no gate) must not be clobbered during an upgrade —
+        winning the gate does not prove it is gone, so a live recorded pid refuses."""
+        lock_dir = tmp_path / ".issue-orchestrator"
+        lock_dir.mkdir(parents=True)
+        # A different, live (mocked) pid recorded metadata but holds no flock.
+        (lock_dir / "lock.json").write_text(
+            json.dumps(
+                {
+                    "repo_root": str(tmp_path),
+                    "pid": 424242,
+                    "started_at": "2024-01-01T00:00:00Z",
+                    "http_port": 8080,
+                    "state_dir": str(lock_dir / "state"),
+                    "recovered": False,
+                }
+            )
+        )
+        with patch(
+            "issue_orchestrator.infra.repo_lock._is_process_alive", return_value=True
+        ):
+            with pytest.raises(AlreadyRunning) as exc:
+                acquire_lock(tmp_path, port=9090)
+        assert exc.value.pid == 424242
+        # The live holder's metadata is untouched (not overwritten).
+        info = read_lock(tmp_path)
+        assert info is not None and info.pid == 424242
+
     def test_stale_metadata_without_flock_is_taken_over(self, tmp_path: Path) -> None:
         """A crashed holder's flock is auto-released; its stale metadata is a
         takeover, marked recovered=True (not a false AlreadyRunning)."""
@@ -255,6 +284,17 @@ class TestReleaseLock:
         # Lock should still exist
         lock_path = tmp_path / ".issue-orchestrator" / "lock.json"
         assert lock_path.exists()
+
+    def test_wrong_pid_release_does_not_drop_the_flock(self, tmp_path: Path) -> None:
+        """R2 (#6824): a wrong-pid release must NOT silently release the flock —
+        prove exclusion still holds by attempting a SECOND acquire (must refuse),
+        not merely that the metadata file survives (which masked split-brain)."""
+        acquire_lock(tmp_path, port=8080)
+
+        assert release_lock(tmp_path, pid=999999999) is False
+        # The gate is still held: a second acquire is excluded.
+        with pytest.raises(AlreadyRunning):
+            acquire_lock(tmp_path, port=9090)
 
 
 class TestReadLock:

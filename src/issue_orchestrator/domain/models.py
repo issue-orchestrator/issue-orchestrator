@@ -1929,11 +1929,10 @@ class OrchestratorState:
     # present) — persisted like ``recovery_attempts`` so an escalation survives a
     # crash or an apply failure and is retried until it lands (#6824 R1).
     pending_stuck_sweep_escalations: set[int] = field(default_factory=set)
-    # Tick-scoped buffers seeded from the durable set each sweep: every unacked
-    # escalation gets an idempotent needs-human label (retry-safe), and a NEWLY
-    # exhausted issue additionally gets the one explaining comment.
+    # Tick-scoped buffer seeded from the durable set each sweep: every unacked
+    # escalation gets an idempotent, retry-safe needs-human label (the
+    # authoritative, label-only escalation, #6824 R1).
     stuck_sweep_escalations: list[int] = field(default_factory=list)
-    stuck_sweep_new_escalations: list[int] = field(default_factory=list)
     def retrospective_review_in_flight_issue_numbers(self) -> set[int]:
         """Issues already queued, discovered, or actively under retrospective review."""
 

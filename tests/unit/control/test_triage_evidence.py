@@ -46,7 +46,12 @@ def _register_worktree(repo_root: Path, worktree: Path) -> Path:
 
 
 def _make_sibling_run_dirs(tmp_path: Path, issue_number: int, names) -> list[Path]:
-    """Create the sibling session worktree's run-dirs and return their paths."""
+    """Create the sibling session worktree's run-dirs and return their paths.
+
+    The sibling is registered as a real worktree (#6824 R4 provenance) so the
+    focus-run-dir collector accepts it.
+    """
+    _register_worktree(tmp_path / "repo", tmp_path / f"repo-{issue_number}")
     sessions_dir = (
         tmp_path / f"repo-{issue_number}" / ".issue-orchestrator" / "sessions"
     )
@@ -421,19 +426,45 @@ class TestSandboxReadRoots:
 class TestManagedWorktreeSelection:
     """R4 (#6824): registered-worktree provenance + numeric-suffix cap."""
 
-    def test_cap_keeps_highest_issue_numbers_not_lexical(
+    def test_cap_keeps_most_recently_modified(
         self, tmp_path: Path, monkeypatch
     ) -> None:
+        # R4 (#6824): the cap keeps the actually-newest by MTIME, not the highest
+        # issue number — a freshly recreated low-number worktree must not lose to
+        # an old high-number one.
+        import os
+
         import issue_orchestrator.control.triage_evidence as te
 
         monkeypatch.setattr(te, "_MAX_WORKTREE_ROOTS", 2)
         config = _config(tmp_path)
         for n in (9, 10, 100):
             _register_worktree(config.repo_root, tmp_path / f"repo-{n}")
+        # Make the LOW-number worktree the most recent, the high one the oldest.
+        os.utime(tmp_path / "repo-100", (1000, 1000))
+        os.utime(tmp_path / "repo-10", (2000, 2000))
+        os.utime(tmp_path / "repo-9", (3000, 3000))
 
         kept = {p.name for p in te._registered_managed_worktrees(config)}
-        # Numeric: 100 and 10 kept over 9 (a lexical sort would keep 9 over 10/100).
-        assert kept == {"repo-100", "repo-10"}
+        assert kept == {"repo-9", "repo-10"}  # newest by mtime, not numeric
+
+    def test_focus_run_dirs_exclude_unrelated_prefix_sibling(
+        self, tmp_path: Path
+    ) -> None:
+        # R4 (#6824): the FOCUSED-issue path must not disclose a same-named but
+        # unrelated sibling repo's run-dirs.
+        config = _config(tmp_path)
+        sibling = tmp_path / "repo-42"
+        (sibling / ".git").mkdir(parents=True)  # its OWN repo, not registered
+        leaked = _make_worktree_run_dir(tmp_path, "repo-42", "20260101T000000__x")
+
+        evidence = build_evidence_map(
+            config=config,
+            repository_host=_FakeRepositoryHost(),
+            focus_issue_number=42,
+        )
+
+        assert str(leaked.resolve()) not in evidence.run_dirs
 
 
 class TestBuildEvidenceMapGithubWarmCache:

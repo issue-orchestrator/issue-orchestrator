@@ -490,49 +490,31 @@ def _log_exhausted(issue: "Issue", max_attempts: int, blocking_label: str) -> No
     )
 
 
-_ESCALATION_COMMENT = (
-    "## ⚠️ Tech-lead stuck sweep: recovery budget exhausted\n\n"
-    "This issue stayed terminally blocked across repeated automated recovery "
-    "attempts, so the orchestrator is escalating it for human attention "
-    "(labelled `{label}`). Please review the blocking state and clear it — or "
-    "close the issue — once it is resolved."
-)
-
-
 def build_stuck_sweep_escalation_actions(
     label_issue_numbers: "tuple[int, ...]",
-    comment_issue_numbers: "tuple[int, ...]",
     needs_human_label: str,
 ) -> "list[Action]":
-    """Authoritative needs-human escalation for exhausted issues (#6824 F1/R1).
+    """The authoritative needs-human escalation for exhausted issues (#6824 R1).
 
-    The stuck-sweep owner defines the escalation; the Planner routes it through
-    the Applier so the GitHub write stays orchestrator-authoritative rather than
-    a direct call from the observation seam.
-
-    ``label_issue_numbers`` is the FULL durable pending set — every unacknowledged
-    escalation is re-labelled each sweep, an idempotent no-op once present, so a
-    crash or an apply failure never loses it (it retries until the label lands and
-    is then acknowledged). ``comment_issue_numbers`` is only the NEWLY exhausted
-    subset, so the one explaining comment is posted once and not re-posted on
-    retries.
+    The escalation is deliberately **label-only**: the ``needs-human`` label IS
+    the authoritative, durable escalation. It is re-emitted each sweep for the
+    FULL durable pending set — an idempotent no-op once present — so a crash or
+    an apply failure never loses it; it retries until the label lands and is then
+    acknowledged (the label observed on the issue). An explaining comment was
+    dropped because it could NOT be made retry-safe/deduplicated without a
+    per-effect durable outbox, so promising a required comment would reintroduce
+    the very lost-on-crash gap R1 flagged. The Planner routes this through the
+    Applier so the GitHub write stays orchestrator-authoritative.
     """
-    from .actions import AddCommentAction, AddLabelAction
+    from .actions import AddLabelAction
     from .reconciliation import build_expected_for_mutation
 
-    actions: list["Action"] = []
-    for issue_number in label_issue_numbers:
-        actions.append(AddLabelAction(
+    return [
+        AddLabelAction(
             issue_number=issue_number,
             label=needs_human_label,
             reason="stuck-sweep recovery budget exhausted (#6824)",
             expected=build_expected_for_mutation(),
-        ))
-    for issue_number in comment_issue_numbers:
-        actions.append(AddCommentAction(
-            number=issue_number,
-            is_pr=False,
-            comment=_ESCALATION_COMMENT.format(label=needs_human_label),
-            reason="stuck-sweep recovery budget exhausted (#6824)",
-        ))
-    return actions
+        )
+        for issue_number in label_issue_numbers
+    ]
