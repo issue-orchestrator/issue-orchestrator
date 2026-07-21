@@ -82,12 +82,16 @@ _DB_DESCRIPTION_HINTS = {
 # and the truncation is logged — never a silent cap.
 _MAX_RUN_DIRS = 200
 
-# Default branch the agent verifies merge-reachability against. GitHub repos
-# default to ``main``; a repo whose default differs sets it explicitly via
-# ``worktrees.base_branch_override`` (config.worktree_base_branch_override),
-# which is the same override the worktree base-branch resolver keys on. Reading
-# the true default over git would need a git port this launch-prep path does
-# not carry — the guidance text tells the agent to confirm with local git.
+# Cap on enumerated managed worktrees in the evidence map (a long-lived install
+# could accumulate many); the NEWEST (highest issue-number suffix) are kept.
+_MAX_WORKTREE_ROOTS = 100
+
+# LAST-RESORT default branch, used only if both the config override and the
+# repository abstraction fail to yield one. The real default is resolved in
+# ``_resolve_default_branch`` from ``worktrees.base_branch_override`` first, then
+# ``RepositoryHost.get_default_branch()`` (which may be master/trunk/…) — this
+# constant is never the primary answer, so a repo that does not default to
+# ``main`` is not silently mis-verified.
 _DEFAULT_BRANCH_FALLBACK = "main"
 
 _GUIDANCE = (
@@ -247,13 +251,35 @@ class EvidenceMap:
         }
 
 
-def _resolve_default_branch(config: "Config") -> str:
-    """The branch the agent checks merge-reachability against."""
+def _resolve_default_branch(
+    config: "Config", repository_host: "RepositoryHost"
+) -> str:
+    """The branch the agent checks merge-reachability against.
+
+    ``worktrees.base_branch_override`` (if set) is authoritative — the same
+    override the worktree base-branch resolver keys on. Otherwise resolve the
+    repository's REAL default branch (which may be ``master``/``trunk``/…, not
+    ``main``) from the repository abstraction; that read is cached and
+    best-effort, so any failure degrades to the ``main`` last resort (with the
+    guidance telling the agent to confirm locally) rather than silently
+    fabricating a wrong default.
+    """
     override = config.worktree_base_branch_override
     if override:
         override = override.strip()
         if override:
             return override
+    try:
+        resolved = (repository_host.get_default_branch() or "").strip()
+        if resolved:
+            return resolved
+    except Exception:
+        logger.warning(
+            "[triage] Evidence-map default-branch resolution failed; falling back "
+            "to %r (the agent confirms the real default locally)",
+            _DEFAULT_BRANCH_FALLBACK,
+            exc_info=True,
+        )
     return _DEFAULT_BRANCH_FALLBACK
 
 
@@ -328,12 +354,49 @@ def _discover_sqlite_locations(state_dir_path: Path) -> list[EvidenceLocation]:
     return [discovered[key] for key in sorted(discovered)]
 
 
+def _managed_worktree_locations(config: "Config") -> list[EvidenceLocation]:
+    """This repo's ``<repo>-<n>`` managed worktrees as roots (NOT their parent).
+
+    Globs only ``<worktrees_root>/<repo_root.name>-*`` directories — the same
+    repo-scoped pattern the run-dir collector uses — so a shared ``worktrees.base``
+    parent (e.g. ``../``) does NOT pull sibling UNRELATED repositories into the
+    agent's read scope (#6823 F9). Best-effort: an ``OSError`` yields an empty
+    list; bounded to the newest :data:`_MAX_WORKTREE_ROOTS` (truncation logged).
+    """
+    worktrees_root = _worktrees_root(config)
+    repo_name = Path(config.repo_root).name
+    try:
+        matches = [p for p in worktrees_root.glob(f"{repo_name}-*") if p.is_dir()]
+    except OSError as exc:
+        logger.warning(
+            "[triage] Evidence-map worktree glob in %s failed: %s", worktrees_root, exc
+        )
+        return []
+    if len(matches) > _MAX_WORKTREE_ROOTS:
+        matches = sorted(matches, key=lambda p: p.name, reverse=True)[:_MAX_WORKTREE_ROOTS]
+        logger.warning(
+            "[triage] Evidence-map managed worktrees truncated to %d (newest kept)",
+            _MAX_WORKTREE_ROOTS,
+        )
+    return [
+        EvidenceLocation(
+            path=str(entry),
+            kind="dir",
+            description=(
+                "managed session worktree (<repo>-<n>) — its checkout plus its "
+                ".issue-orchestrator/sessions run-dirs; run git here"
+            ),
+            exists=True,
+        )
+        for entry in sorted(matches, key=lambda p: p.name)
+    ]
+
+
 def _build_locations(config: "Config") -> tuple[EvidenceLocation, ...]:
     """The god-view substrate: root pointers + every discovered SQLite store."""
     state_dir_path = state_dir(config.repo_root)
     log_path = get_repo_log_path(config.repo_root)
     repo_root = Path(config.repo_root)
-    worktrees_root = _worktrees_root(config)
     repo_slug = config.repo or ""
     roots = [
         EvidenceLocation(
@@ -363,15 +426,12 @@ def _build_locations(config: "Config") -> tuple[EvidenceLocation, ...]:
             ),
             exists=_path_exists(repo_root),
         ),
-        EvidenceLocation(
-            path=str(worktrees_root),
-            kind="dir",
-            description=(
-                "session-worktrees root — the <repo>-<n> agent worktrees and "
-                "their .issue-orchestrator/sessions run-dirs live under here"
-            ),
-            exists=_path_exists(worktrees_root),
-        ),
+        # Repo-specific managed worktrees, NOT the shared ``worktrees.base`` parent:
+        # when the base is a common dev dir (e.g. ``../``), the parent holds sibling
+        # UNRELATED repos, and the guidance grants read of everything beneath a root.
+        # Enumerate only THIS repo's ``<repo>-<n>`` worktrees so siblings stay out
+        # of scope (#6823 F9).
+        *_managed_worktree_locations(config),
         EvidenceLocation(
             path=repo_slug or "(unknown)",
             kind="github",
@@ -544,7 +604,7 @@ def build_evidence_map(
     return EvidenceMap(
         focus_issue_number=focus_issue_number,
         repo=config.repo or "",
-        default_branch=_resolve_default_branch(config),
+        default_branch=_resolve_default_branch(config, repository_host),
         locations=_build_locations(config),
         run_dirs=_resolve_run_dirs(config, focus_issue_number, artifact_hints),
         github=_build_github_warm_cache(repository_host, focus_issue_number),

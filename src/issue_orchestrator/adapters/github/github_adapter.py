@@ -204,6 +204,7 @@ class GitHubAdapter:
             )
         self._verify_writes = verify_writes
         self._verify_timeout_seconds = config.gh_write_verify_timeout_seconds if config else 20
+        self._default_branch_cache: str | None = None
         self._verify_initial_delay_ms = config.gh_write_verify_initial_delay_ms if config else 250
         self._verify_max_delay_ms = config.gh_write_verify_max_delay_ms if config else 2000
         self._verify_backoff = config.gh_write_verify_backoff if config else 1.5
@@ -493,6 +494,12 @@ class GitHubAdapter:
         """
         raw = self._client.search_issues_by_title(query_terms, limit=limit)
         return self._raw_issues_to_issues(raw)
+
+    def get_default_branch(self) -> str:
+        """The repository's real default branch (cached; GitHub is authoritative)."""
+        if self._default_branch_cache is None:
+            self._default_branch_cache = self._client.get_default_branch()
+        return self._default_branch_cache
 
     def get_issue(self, issue_number: int) -> "Issue | None":
         """Get a specific issue by number.

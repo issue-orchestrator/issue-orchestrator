@@ -149,6 +149,15 @@ class RepositoryHost(IssueTracker, LabelSet, PullRequestTracker, Protocol):
         """
         ...
 
+    def get_default_branch(self) -> str:
+        """The repository's real default branch name (e.g. 'main', 'master', 'trunk').
+
+        Authoritative source for the branch an agent should verify merge-
+        reachability against (``origin/<default_branch>``). Implementations should
+        cache it — the default branch is effectively constant for a session.
+        """
+        ...
+
     def get_issue_milestone(self, issue_number: int, repo: str | None = None) -> str | None:
         """Get the milestone name of an issue (or None if no milestone).
 

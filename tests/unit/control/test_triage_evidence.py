@@ -75,12 +75,18 @@ def _sqlite_by_path(evidence) -> dict[str, object]:
 class _FakeRepositoryHost:
     """Minimal RepositoryHost stub exposing only the warm-cache reads."""
 
-    def __init__(self, *, issue=None, prs=(), raises: bool = False) -> None:
+    def __init__(
+        self, *, issue=None, prs=(), raises: bool = False, default_branch: str = "main"
+    ) -> None:
         self._issue = issue
         self._prs = list(prs)
         self._raises = raises
+        self._default_branch = default_branch
         self.issue_calls: list[int] = []
         self.pr_calls: list[tuple[int, str]] = []
+
+    def get_default_branch(self) -> str:
+        return self._default_branch
 
     def get_issue(self, issue_number: int):
         self.issue_calls.append(issue_number)
@@ -191,6 +197,12 @@ class TestGodViewSubstrate:
 
     def test_substrate_root_locations_present(self, tmp_path: Path) -> None:
         config = _config(tmp_path)
+        # A managed worktree for THIS repo (repo_root.name == "repo") and an
+        # unrelated sibling repo under the shared worktrees.base parent.
+        managed = tmp_path / "repo-42"
+        managed.mkdir()
+        unrelated = tmp_path / "tixmeup"
+        unrelated.mkdir()
 
         evidence = build_evidence_map(
             config=config,
@@ -208,10 +220,14 @@ class TestGodViewSubstrate:
         (repo_loc,) = by_kind["repo"]
         assert repo_loc.path == str(config.repo_root)
 
-        # Both the state dir AND the session-worktrees root are dir locations.
         dir_paths = {loc.path for loc in by_kind["dir"]}
         assert str(state_dir(config.repo_root)) in dir_paths
-        assert str(config.worktree_base) in dir_paths
+        # F9: the repo-specific managed worktree IS a root...
+        assert str(managed) in dir_paths
+        # ...but the shared worktrees.base PARENT is NOT (it holds sibling repos)...
+        assert str(config.worktree_base) not in dir_paths
+        # ...and an unrelated sibling repo is never granted.
+        assert str(unrelated) not in dir_paths
 
         # The orchestrator log is a log location under the state dir.
         (log_loc,) = by_kind["log"]
