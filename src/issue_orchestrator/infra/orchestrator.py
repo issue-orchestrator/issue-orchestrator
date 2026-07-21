@@ -229,11 +229,15 @@ class Orchestrator:
             if (disposable and wtm) else None,
             "remove scratch worktree",
         )
+        leaked_worktree: str | None = None
         if disposable and not worktree_removed:
-            # Retain cleanup intent so a future tick retries rather than leaking.
+            # Retain cleanup intent for an engine's future tick; but a one-shot
+            # runs no further tick, so ALSO surface the exact leaked path in the
+            # outcome for explicit operator action before exit (#6824 R7).
+            leaked_worktree = str(session.worktree_path)
             self.state.record_immediate_cleanup(ImmediateCleanup(
                 issue_number=n, terminal_id=session.terminal_id,
-                worktree_path=str(session.worktree_path),
+                worktree_path=leaked_worktree,
                 reason="triage-timeout", scratch_worktree=True,
             ))
         return TriageTerminationOutcome(
@@ -241,6 +245,7 @@ class Orchestrator:
             machine_removed=machine_removed,
             claim_released=claim_released,
             worktree_removed=worktree_removed,
+            leaked_worktree=leaked_worktree,
         )
 
     def cancel_review_exchange_for_issue(

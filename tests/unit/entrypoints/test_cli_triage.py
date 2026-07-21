@@ -116,3 +116,36 @@ class TestCmdHealthReview:
         assert config.e2e.enabled is False
         assert config.triage.authority is default_authority  # not replaced
         orchestrator.close.assert_called_once()
+
+    def test_incomplete_termination_is_surfaced_at_the_command_surface(self) -> None:
+        # R7 (#6824): when the timeout termination could NOT clean up (e.g. the
+        # scratch worktree leaked), the COMMAND must say so prominently and name
+        # the leaked path for operator action — not print "session terminated".
+        from issue_orchestrator.control.triage_trigger import TriageTerminationOutcome
+
+        config = Config()
+        orchestrator = Mock()
+        load_p, log_p = _patches(config)
+        printed: list[str] = []
+        with load_p, log_p, _lock_held_ok(), patch.object(
+            cli_triage, "_build_orchestrator", return_value=orchestrator
+        ), patch(
+            "issue_orchestrator.control.triage_trigger.run_health_review",
+            return_value=HealthReviewResult(
+                200, launched=True, completed=False, detail="timed out",
+                termination=TriageTerminationOutcome(
+                    terminal_stopped=False, worktree_removed=False,
+                    leaked_worktree="/wt/repo-triage-200-abc",
+                ),
+            ),
+        ), patch.object(
+            cli_triage.console, "print",
+            side_effect=lambda *a, **k: printed.append(" ".join(str(x) for x in a)),
+        ):
+            rc = cli_triage.cmd_health_review(_args())
+
+        assert rc == 1
+        out = "\n".join(printed)
+        assert "TERMINATION INCOMPLETE" in out  # not a bare "session terminated"
+        assert "/wt/repo-triage-200-abc" in out  # the exact leaked path
+        assert "remove it manually" in out

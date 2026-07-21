@@ -301,6 +301,30 @@ class TestLockAtomicity:
         release_lock(tmp_path)
 
 
+class TestIsProcessAlive:
+    """R2 (#6824): liveness must distinguish errno, not collapse every error to dead."""
+
+    def test_esrch_is_dead(self) -> None:
+        from issue_orchestrator.infra.repo_lock import _is_process_alive
+
+        with patch("issue_orchestrator.infra.repo_lock.os.kill", side_effect=ProcessLookupError()):
+            assert _is_process_alive(999_999_999) is False
+
+    def test_eperm_is_alive(self) -> None:
+        # A process owned by ANOTHER user (e.g. a service-owned legacy engine)
+        # EXISTS — mapping EPERM to dead would permit split-brain.
+        from issue_orchestrator.infra.repo_lock import _is_process_alive
+
+        with patch("issue_orchestrator.infra.repo_lock.os.kill", side_effect=PermissionError()):
+            assert _is_process_alive(1) is True
+
+    def test_unknown_oserror_fails_safe_as_alive(self) -> None:
+        from issue_orchestrator.infra.repo_lock import _is_process_alive
+
+        with patch("issue_orchestrator.infra.repo_lock.os.kill", side_effect=OSError()):
+            assert _is_process_alive(12_345) is True
+
+
 class TestReleaseLock:
     """Tests for release_lock function."""
 

@@ -93,18 +93,22 @@ class LockInfo:
 def _is_process_alive(pid: int) -> bool:
     """Check if a process with the given PID is alive.
 
-    Args:
-        pid: Process ID to check
-
-    Returns:
-        True if process exists and is running
+    ``kill(pid, 0)`` sends no signal; the errno distinguishes the cases and they
+    must NOT be collapsed to "dead" (#6824 R2): ``ESRCH`` (ProcessLookupError)
+    means the process is absent, but ``EPERM`` (PermissionError) means it EXISTS
+    and is owned by ANOTHER user — treating that as dead would let a user-owned
+    invocation overwrite a live service-owned legacy engine (split-brain). Any
+    other error fails conservatively as alive rather than risk a double-run.
     """
     try:
-        # Signal 0 doesn't kill, just checks if process exists
         os.kill(pid, 0)
         return True
+    except ProcessLookupError:
+        return False  # ESRCH: no such process
+    except PermissionError:
+        return True  # EPERM: process exists, owned by another user
     except OSError:
-        return False
+        return True  # unknown error: assume alive (fail-safe, never double-run)
 
 
 def _read_lock(lock_path: Path) -> LockInfo | None:

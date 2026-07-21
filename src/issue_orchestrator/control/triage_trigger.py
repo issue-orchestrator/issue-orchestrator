@@ -103,6 +103,10 @@ class TriageTerminationOutcome:
     machine_removed: bool = True
     claim_released: bool = True
     worktree_removed: bool = True
+    # Path of the disposable scratch worktree that could NOT be removed (a leak
+    # requiring explicit operator action); None when there was nothing to remove
+    # or removal succeeded.
+    leaked_worktree: str | None = None
 
     @property
     def clean(self) -> bool:
@@ -141,6 +145,10 @@ class InvestigationResult:
     launched: bool
     completed: bool
     detail: str
+    # The structured termination outcome when a launched session TIMED OUT (None
+    # when it completed or never launched); the command surfaces its cleanliness
+    # rather than always printing "session terminated" (#6824 R7).
+    termination: "TriageTerminationOutcome | None" = None
 
 
 def run_targeted_investigations(
@@ -195,6 +203,8 @@ class HealthReviewResult:
     launched: bool
     completed: bool
     detail: str
+    # Structured termination outcome on a launched-but-timed-out review (#6824 R7).
+    termination: "TriageTerminationOutcome | None" = None
 
 
 def run_health_review(
@@ -259,6 +269,7 @@ def run_health_review(
         return HealthReviewResult(
             triage.issue_number, launched=True, completed=False,
             detail=_timeout_detail("health review", timeout_s, termination),
+            termination=termination,
         )
     logger.info(
         "[TRIAGE_TRIGGER] on-demand health review completed (anchor #%d)",
@@ -347,6 +358,7 @@ def _drive_to_completion(
         return InvestigationResult(
             issue_number, launched=True, completed=False,
             detail=_timeout_detail("investigation", timeout_s, termination),
+            termination=termination,
         )
     logger.info(
         "[TRIAGE_TRIGGER] issue #%d investigation completed", issue_number

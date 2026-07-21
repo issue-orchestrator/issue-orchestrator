@@ -28,6 +28,7 @@ from rich.console import Console
 from .cli_support import load_config
 
 if TYPE_CHECKING:
+    from ..control.triage_trigger import TriageTerminationOutcome
     from ..infra.config import Config
     from ..infra.orchestrator import Orchestrator
     from ..infra.repo_lock import AlreadyRunning
@@ -75,15 +76,17 @@ def cmd_triage(args: argparse.Namespace) -> int:
                     if result.completed:
                         mark = "[green]done[/green]"
                     elif result.launched:
-                        # Timed out: the session was terminated (not left
-                        # dangling) and the command exits nonzero — a timeout is
-                        # not success (#6824 F7).
-                        mark = "[yellow]timed out — session terminated[/yellow]"
+                        # Timed out: the session was terminated and the command
+                        # exits nonzero — a timeout is not success (#6824 F7). The
+                        # mark distinguishes a clean termination from an INCOMPLETE
+                        # one that leaked cleanup (#6824 R7).
+                        mark = _timeout_mark(result.termination)
                         exit_code = 1
                     else:
                         mark = "[red]not launched[/red]"
                         exit_code = 1
                     console.print(f"  #{result.issue_number}: {mark} — {result.detail}")
+                    _report_incomplete_termination(result.termination)
                 return exit_code
             finally:
                 _release(orchestrator)
@@ -128,8 +131,9 @@ def cmd_health_review(args: argparse.Namespace) -> int:
                     mark = "[green]done[/green]"
                     exit_code = 0
                 elif result.launched:
-                    # Timed out: session terminated, command exits nonzero (F7).
-                    mark = "[yellow]timed out — session terminated[/yellow]"
+                    # Timed out: session terminated, command exits nonzero (F7);
+                    # mark INCOMPLETE if cleanup leaked (#6824 R7).
+                    mark = _timeout_mark(result.termination)
                     exit_code = 1
                 else:
                     mark = "[red]not launched[/red]"
@@ -140,6 +144,7 @@ def cmd_health_review(args: argparse.Namespace) -> int:
                     else "(none)"
                 )
                 console.print(f"  health review {anchor}: {mark} — {result.detail}")
+                _report_incomplete_termination(result.termination)
                 return exit_code
             finally:
                 _release(orchestrator)
@@ -170,6 +175,39 @@ def _configure_one_shot_triage_run(config: "Config", *, label: str) -> None:
     )
     console.print(f"[dim]{label} log → {log_file}[/dim]")
     config.e2e.enabled = False
+
+
+def _timeout_mark(termination: "TriageTerminationOutcome | None") -> str:
+    """The status mark for a launched-but-timed-out session (#6824 R7).
+
+    Distinguishes a clean termination from one whose cleanup was INCOMPLETE
+    (e.g. the scratch worktree could not be removed) so the prominent marker is
+    truthful rather than always claiming "session terminated".
+    """
+    if termination is not None and not termination.clean:
+        return "[red]timed out — TERMINATION INCOMPLETE[/red]"
+    return "[yellow]timed out — session terminated[/yellow]"
+
+
+def _report_incomplete_termination(
+    termination: "TriageTerminationOutcome | None",
+) -> None:
+    """Surface a failed/leaked termination for explicit operator action (#6824 R7).
+
+    A one-shot runs no further tick, so a retained cleanup fact cannot execute —
+    the operator must act. Name the failed effects, and the exact leaked scratch
+    worktree path to remove manually, as persistent error output.
+    """
+    if termination is None or termination.clean:
+        return
+    console.print(
+        f"    [red]⚠ termination incomplete — {', '.join(termination.failures())} failed[/red]"
+    )
+    if termination.leaked_worktree:
+        console.print(
+            "    [red]⚠ scratch worktree LEAKED — remove it manually:"
+            f" {termination.leaked_worktree}[/red]"
+        )
 
 
 def _report_lock_conflict(exc: "AlreadyRunning", *, command: str) -> None:
