@@ -81,11 +81,13 @@ class _FakeHost:
             self.state.active_sessions.remove(self._session)
         return True
 
-    def kill_session(self, name: str) -> None:
-        self.killed.append(name)
-        # Mimic the facade: a killed session is torn down (leaves active_sessions).
+    def terminate_triage_session(self, session) -> None:
+        # Faithful to the real facade (#6824 R7): terminate AND reconcile the
+        # session out of active_sessions (the production terminate_triage_session
+        # now does the same, so this double no longer overstates behavior).
+        self.killed.append(session.terminal_id)
         self.state.active_sessions = [
-            s for s in self.state.active_sessions if s.terminal_id != name
+            s for s in self.state.active_sessions if s.terminal_id != session.terminal_id
         ]
 
 
@@ -229,10 +231,11 @@ class _FakeHealthHost:
             self.state.active_sessions.remove(self._session)
         return True
 
-    def kill_session(self, name: str) -> None:
-        self.killed.append(name)
+    def terminate_triage_session(self, session) -> None:
+        # Faithful to the real facade (#6824 R7): terminate AND reconcile.
+        self.killed.append(session.terminal_id)
         self.state.active_sessions = [
-            s for s in self.state.active_sessions if s.terminal_id != name
+            s for s in self.state.active_sessions if s.terminal_id != session.terminal_id
         ]
 
 

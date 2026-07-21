@@ -170,6 +170,31 @@ class Orchestrator:
         """Kill a session by terminal ID (public wrapper)."""
         self._kill_session(name)
 
+    def terminate_triage_session(self, session: "Session") -> None:
+        """Terminate a triage session AND reconcile its runtime state (#6824 R7).
+
+        ``kill_session`` only stops the terminal. On a one-shot timeout the
+        session must ALSO leave ``active_sessions`` and release its claim —
+        exactly what completion processing does — or the drive loop keeps
+        reporting it active, a multi-issue batch co-drives a dead session, and
+        its claim/slot leaks after the command exits. This is the behavior-level
+        owner that performs that reconciliation, so callers never mutate shared
+        session state directly.
+        """
+        self._kill_session(session.terminal_id)
+        self.state.drop_active_session(session.terminal_id)
+        claim_manager = getattr(self.deps, "claim_manager", None)
+        lease_id = getattr(session, "lease_id", None)
+        if claim_manager is not None and lease_id:
+            try:
+                claim_manager.release_claim(session.issue.number, lease_id)
+            except Exception:
+                logger.warning(
+                    "[TRIAGE] Failed to release claim for issue #%d on timeout terminate",
+                    session.issue.number,
+                    exc_info=True,
+                )
+
     def cancel_review_exchange_for_issue(
         self,
         issue_number: int,

@@ -83,7 +83,7 @@ class TriageDispatchHost(Protocol):
 
     def tick(self) -> bool: ...
 
-    def kill_session(self, name: str) -> None: ...
+    def terminate_triage_session(self, session: "Session") -> None: ...
 
 
 @dataclass(frozen=True)
@@ -359,19 +359,19 @@ def _drive_session_to_completion(
 
 
 def _terminate_session(orchestrator: TriageDispatchHost, identity: str) -> None:
-    """Kill the timed-out session so ownership of the timeout is EXPLICIT (#6824 F7).
+    """Terminate the timed-out session so ownership of the timeout is EXPLICIT.
 
-    Without this, the one-shot command reports "session still active" and then
-    its ``finally: orchestrator.close()`` kills the session implicitly — so the
-    session is neither running nor successful once the command exits, and a
-    multi-issue batch would keep co-driving a session already declared timed
-    out. Terminating it here (by its current ``terminal_id``, matched via the
-    restore-stable slot identity) makes the timeout truthful and stops the batch
-    from adopting a half-dead session.
+    Routes through the reconciling ``terminate_triage_session`` owner (#6824
+    F7/R7): it stops the terminal AND drops the session from ``active_sessions``
+    and releases its claim — so the drive loop's ``_session_active`` check is
+    immediately false and a multi-issue batch does not co-drive a dead session.
+    Without this, the command reported "still active" and then ``close()`` killed
+    the session implicitly after the caller already returned. Iterates a COPY
+    because the reconciling terminate mutates ``active_sessions``.
     """
-    for session in orchestrator.state.active_sessions:
+    for session in list(orchestrator.state.active_sessions):
         if _session_identity(session) == identity:
-            orchestrator.kill_session(session.terminal_id)
+            orchestrator.terminate_triage_session(session)
 
 
 def _session_active(orchestrator: TriageDispatchHost, identity: str) -> bool:

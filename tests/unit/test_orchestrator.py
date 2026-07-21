@@ -202,6 +202,34 @@ def test_terminate_issue_runtime_for_issue_delegates_to_canonical_services(sampl
     ]
 
 
+def test_terminate_triage_session_reconciles_state_and_claim(sample_config):
+    # R7 (#6824): the REAL facade terminate reconciles — unlike bare kill_session
+    # (which only stops the terminal), it drops the session from active_sessions
+    # and releases its claim, so a timed-out triage session doesn't linger.
+    orchestrator = create_test_orchestrator(sample_config)
+    session_manager = MagicMock()
+    claim_manager = MagicMock()
+    object.__setattr__(orchestrator.deps, "session_manager", session_manager)
+    object.__setattr__(orchestrator.deps, "claim_manager", claim_manager)
+    triage = SimpleNamespace(
+        terminal_id="triage-77", issue=SimpleNamespace(number=77), lease_id="lease-1"
+    )
+    other = SimpleNamespace(
+        terminal_id="issue-88", issue=SimpleNamespace(number=88), lease_id=None
+    )
+    orchestrator.state.active_sessions = [triage, other]
+
+    orchestrator.terminate_triage_session(triage)
+
+    # Terminal stopped (through the real session-routing boundary)...
+    assert session_manager.stop.call_count == 1
+    assert session_manager.stop.call_args.args[0].name == "triage-77"
+    # ...session reconciled out of active_sessions...
+    assert [s.terminal_id for s in orchestrator.state.active_sessions] == ["issue-88"]
+    # ...and its claim released.
+    claim_manager.release_claim.assert_called_once_with(77, "lease-1")
+
+
 def create_test_orchestrator(
     config,
     repository_host=None,

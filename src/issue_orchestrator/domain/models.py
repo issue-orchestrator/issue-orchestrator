@@ -1971,6 +1971,23 @@ class OrchestratorState:
 
         self.discovered_failures.extend([failure])
 
+    def drop_active_session(self, terminal_id: str) -> bool:
+        """Reconcile a terminated session out of ``active_sessions`` (owner method).
+
+        Returns True when a record was dropped. Centralizes the collection
+        mutation here in the state owner so callers (e.g. a timeout terminate)
+        never reassign the shared ``active_sessions`` list directly (#6824 R7).
+        """
+        before = len(self.active_sessions)
+        # In-place reconcile (mirrors the review-exchange lifecycle owner) so the
+        # shared list object is never rebound out from under other holders.
+        self.active_sessions[:] = [
+            session
+            for session in self.active_sessions
+            if session.terminal_id != terminal_id
+        ]
+        return len(self.active_sessions) != before
+
 
 @dataclass
 class CommentHeadings:
