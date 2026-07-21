@@ -48,6 +48,27 @@ def _escape_claude_project_path(path: Path) -> str:
     return "-" + cleaned.replace("/", "-")
 
 
+@dataclass(frozen=True)
+class ScratchWorktreeIdentity:
+    """Disposable, run-scoped worktree identity for an investigation session.
+
+    A triage failure investigation READS its focus issue's branch history and
+    run-dirs as evidence and must never mutate them (#6823). It therefore runs
+    in a throwaway worktree — a unique directory basename plus a fresh branch
+    off the base branch, keyed to this run rather than the focus issue — so the
+    focus worktree/branch stay pure read-only evidence and even an agent commit
+    can only ever land on the disposable scratch branch.
+
+    Its presence fully determines the worktree directory basename and branch,
+    and implies a clean checkout off the base branch: reuse of any existing
+    worktree and the configured worktree ``seed_ref`` are both suppressed (the
+    caller disables reuse; :meth:`WorktreeContext.create` suppresses the seed).
+    """
+
+    worktree_name: str
+    branch_name: str
+
+
 @dataclass
 class WorktreeContext:
     """Encapsulates worktree state and operations for a session.
@@ -92,6 +113,7 @@ class WorktreeContext:
         reuse_options: Optional[WorktreeReuseOptions] = None,
         phase_name: Optional[str] = None,
         stack_base_branch: Optional[str] = None,
+        scratch: Optional[ScratchWorktreeIdentity] = None,
     ) -> "WorktreeContext":
         """Create and prepare a worktree context for a session.
 
@@ -115,6 +137,13 @@ class WorktreeContext:
                 the predecessor head (and the publish ancestry gate is satisfied
                 without manual rebasing). ``None`` for a non-stack issue, which
                 keeps the configured/auto-detected default base.
+            scratch: When set, run this session in a disposable, run-scoped
+                scratch worktree (its ``worktree_name``/``branch_name``) that is
+                NOT the issue's own worktree — a fresh branch off the base
+                branch, with the configured worktree ``seed_ref`` suppressed so
+                the checkout is clean off the base. Used by a triage failure
+                investigation so it can never mutate the subject it reads
+                (#6823). Takes precedence over ``branch_name``/``stack_base_branch``.
 
         Returns:
             WorktreeContext with worktree ready for use, or with error set
@@ -141,8 +170,19 @@ class WorktreeContext:
         # seed ref would otherwise take precedence over the base branch when a
         # fresh successor branch is created, so it is suppressed for a stack
         # successor — the predecessor branch must be the seed.
-        base_branch = stack_base_branch or config.worktree_base_branch_override
-        seed_ref = None if stack_base_branch else config.worktree_seed_ref
+        #
+        # A scratch investigation OWNS its worktree name and branch, and must be
+        # a clean checkout off the base branch (never the subject's branch), so
+        # it overrides branch/name and suppresses both the stack base and the
+        # configured seed ref (#6823).
+        worktree_name = scratch.worktree_name if scratch else None
+        if scratch is not None:
+            branch_name = scratch.branch_name
+            base_branch = config.worktree_base_branch_override
+            seed_ref = None
+        else:
+            base_branch = stack_base_branch or config.worktree_base_branch_override
+            seed_ref = None if stack_base_branch else config.worktree_seed_ref
 
         # Create worktree
         try:
@@ -157,10 +197,11 @@ class WorktreeContext:
                 reuse_options=reuse_options or WorktreeReuseOptions(),
                 branch_name=branch_name,
                 pre_push_hook=pre_push_hook,
+                worktree_name=worktree_name,
             )
         except Exception as e:
             resolved_base = Path(worktree_base).resolve() if worktree_base else repo_root.parent
-            worktree_path = resolved_base / f"{repo_root.name}-{issue_number}"
+            worktree_path = resolved_base / (worktree_name or f"{repo_root.name}-{issue_number}")
             preparation_error = WorktreePreparationError(
                 path=worktree_path,
                 issue_number=issue_number,

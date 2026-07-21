@@ -40,6 +40,7 @@ FORM_CONTROL_INTEGER = "integer"
 FORM_CONTROL_NUMBER = "number"
 FORM_CONTROL_STRING = "string"
 FORM_CONTROL_OPTIONAL_STRING = "optional_string"
+FORM_CONTROL_OPTIONAL_INTEGER = "optional_integer"
 FORM_CONTROL_DICT_ENUM = "dict_enum"
 
 FORM_CONTROL_KINDS = frozenset(
@@ -50,6 +51,7 @@ FORM_CONTROL_KINDS = frozenset(
         FORM_CONTROL_NUMBER,
         FORM_CONTROL_STRING,
         FORM_CONTROL_OPTIONAL_STRING,
+        FORM_CONTROL_OPTIONAL_INTEGER,
         FORM_CONTROL_DICT_ENUM,
     }
 )
@@ -145,6 +147,8 @@ def _classify_optional_control(
     types = sorted(entry.get("type", "") for entry in entries)
     if types == ["null", "string"]:
         return {"kind": FORM_CONTROL_OPTIONAL_STRING}
+    if types == ["integer", "null"]:
+        return {"kind": FORM_CONTROL_OPTIONAL_INTEGER}
     raise UnsupportedSettingsFieldError(
         f"Settings field '{field_name}' has no form-control projection for "
         f"JSON schema {prop!r}. Extend classify_form_control() and the form "

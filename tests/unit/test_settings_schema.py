@@ -37,7 +37,10 @@ from issue_orchestrator.infra.settings_schema import (
     get_setup_fields,
     get_summary_fields,
 )
-from issue_orchestrator.infra.settings_schema_support import FORM_CONTROL_INTEGER
+from issue_orchestrator.infra.settings_schema_support import (
+    FORM_CONTROL_INTEGER,
+    FORM_CONTROL_OPTIONAL_INTEGER,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +96,23 @@ class TestModelDefaults:
         assert m.enabled is False
         assert m.default_reviewer is None
         assert m.max_rework_cycles == 5
+        # Reserved triage concurrency defaults to unset (share worker budget).
+        assert m.triage_max_concurrent is None
+
+    def test_triage_max_concurrent_accepts_none_and_positive_int(self):
+        assert ReviewSettings(triage_max_concurrent=None).triage_max_concurrent is None
+        assert ReviewSettings(triage_max_concurrent=1).triage_max_concurrent == 1
+        assert ReviewSettings(triage_max_concurrent=3).triage_max_concurrent == 3
+
+    def test_triage_max_concurrent_rejects_zero_and_negative(self):
+        with pytest.raises(ValidationError):
+            ReviewSettings(triage_max_concurrent=0)
+        with pytest.raises(ValidationError):
+            ReviewSettings(triage_max_concurrent=-1)
+
+    def test_triage_max_concurrent_classifies_to_optional_integer(self):
+        prop = get_settings_json_schema()["review"]["properties"]["triage_max_concurrent"]
+        assert prop["x_control"]["kind"] == FORM_CONTROL_OPTIONAL_INTEGER
 
     def test_goal_pilot_defaults(self):
         m = GoalPilotSettings()
@@ -304,6 +324,7 @@ class TestFromConfig:
         cfg.max_rework_cycles = 3
         cfg.triage_review_agent = "agent:triage"
         cfg.triage_review_threshold = 5
+        cfg.triage.max_concurrent = 2
         cfg.validation.quick.cmd = "make validate-quick"
         cfg.validation.quick.timeout_seconds = 90
         cfg.validation.publish.cmd = "make validate-pr"
@@ -389,6 +410,26 @@ class TestFromConfig:
         assert rev.max_rework_cycles == 3
         assert rev.triage_agent == "agent:triage"
         assert rev.triage_threshold == 5
+        assert rev.triage_max_concurrent == 2
+
+    def test_triage_max_concurrent_round_trips_through_apply(self):
+        # None (share worker budget) and a reserved int must both survive the
+        # from_config -> apply_to round-trip against the live Config attribute.
+        cfg = Config()
+        assert cfg.triage.max_concurrent is None
+        cfg.triage.max_concurrent = 2
+        tabs = from_config(cfg)
+        assert tabs["review"].triage_max_concurrent == 2
+
+        back = Config()
+        apply_to(tabs, back)
+        assert back.triage.max_concurrent == 2
+
+        # Unset round-trips back to None (not 0), preserving the shared-budget
+        # semantics the planner keys off (``is None``).
+        tabs["review"].triage_max_concurrent = None
+        apply_to(tabs, back)
+        assert back.triage.max_concurrent is None
 
     def test_advanced_tab(self):
         tabs = from_config(self._make_config())
@@ -468,12 +509,22 @@ class TestFormControlClassification:
         with pytest.raises(UnsupportedSettingsFieldError, match="review.items"):
             classify_form_control("review.items", {"type": "array"})
 
-    def test_optional_int_raises(self):
-        # Optional[int] is not in the closed set yet; growing the registry
-        # this way must fail loudly until the projection supports it.
+    def test_optional_int_classifies_to_optional_integer(self):
+        # Optional[int] (triage.max_concurrent) projects to a nullable integer
+        # input: empty means unset (None), a value is a bounded integer. The
+        # registry grew this projection deliberately - the old fail-loud guard
+        # for [integer, null] is now a supported control.
         prop = {"anyOf": [{"type": "integer"}, {"type": "null"}]}
+        control = classify_form_control("review.maybe_count", prop)
+        assert control == {"kind": FORM_CONTROL_OPTIONAL_INTEGER}
+
+    def test_optional_number_raises(self):
+        # Optional[float] is still outside the closed set; a new optional
+        # scalar shape must fail loudly until its projection is added, so it
+        # never silently degrades to a text input.
+        prop = {"anyOf": [{"type": "number"}, {"type": "null"}]}
         with pytest.raises(UnsupportedSettingsFieldError):
-            classify_form_control("review.maybe_count", prop)
+            classify_form_control("review.maybe_ratio", prop)
 
     def test_optional_enum_raises(self):
         # Optional[Literal[...]] emits anyOf with an enum entry; classifying

@@ -34,6 +34,11 @@ class WorktreeReuseOptions:
     allow_no_verify_dry_run_preflight: bool = True
     allow_remote_branch_delete: bool = True
     disable_reuse: bool = False
+    # When True, worktree reuse must NOT rebase or hard-reset the branch. Used
+    # for triage investigations, which read the subject's branch as evidence and
+    # must never mutate it — the reuse path leaves the branch exactly as-is
+    # instead of freshening it onto the base branch.
+    preserve_branch: bool = False
 
 
 class WorktreeManager(Protocol):
@@ -55,6 +60,7 @@ class WorktreeManager(Protocol):
         base_branch: str | None = None,
         seed_ref: str | None = None,
         reuse_options: WorktreeReuseOptions | None = None,
+        worktree_name: str | None = None,
     ) -> WorktreeInfo:
         """Create a new git worktree for an issue.
 
@@ -69,6 +75,12 @@ class WorktreeManager(Protocol):
             base_branch: Branch to use for new worktree bases (defaults to default branch)
             seed_ref: Optional local ref used to seed fresh worktrees
             reuse_options: Options controlling reuse behavior
+            worktree_name: Overrides the derived worktree directory basename
+                (default ``<repo>-<issue_number>``). Used for a run-scoped,
+                disposable scratch worktree that must NOT collide with — or
+                reuse — the issue's own worktree (a triage failure
+                investigation reads its subject's worktree as evidence and must
+                never mutate it).
 
         Returns:
             WorktreeInfo with path and branch name

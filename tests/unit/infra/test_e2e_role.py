@@ -3,7 +3,7 @@
 import pytest
 
 from issue_orchestrator.infra.config import E2EConfig
-from issue_orchestrator.infra.e2e_runner import get_e2e_role
+from issue_orchestrator.infra.e2e_slot_policy import get_e2e_role
 
 
 class TestGetE2ERole:

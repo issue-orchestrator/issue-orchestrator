@@ -366,3 +366,45 @@ class TestValidateRunner:
         sample = resource_records[0]
         assert sample["worktree"] == str(fake_git_repo)
         assert "recorded_at" in sample
+
+
+class TestReadHeadSha:
+    """R9 (#6824): the E2E head reader resolves HEAD via file reads, no subprocess."""
+
+    def test_reads_sha_from_loose_ref(self, tmp_path: Path) -> None:
+        from issue_orchestrator.infra.validation_timings import read_head_sha
+
+        git = tmp_path / ".git"
+        (git / "refs" / "heads").mkdir(parents=True)
+        (git / "HEAD").write_text("ref: refs/heads/main\n")
+        (git / "refs" / "heads" / "main").write_text("a" * 40 + "\n")
+
+        assert read_head_sha(tmp_path) == "a" * 40
+
+    def test_reads_detached_head_sha_directly(self, tmp_path: Path) -> None:
+        from issue_orchestrator.infra.validation_timings import read_head_sha
+
+        git = tmp_path / ".git"
+        git.mkdir()
+        (git / "HEAD").write_text("b" * 40 + "\n")
+
+        assert read_head_sha(tmp_path) == "b" * 40
+
+    def test_reads_sha_from_packed_refs(self, tmp_path: Path) -> None:
+        from issue_orchestrator.infra.validation_timings import read_head_sha
+
+        git = tmp_path / ".git"
+        git.mkdir()
+        (git / "HEAD").write_text("ref: refs/heads/main\n")
+        (git / "packed-refs").write_text(
+            "# pack-refs with: peeled fully-peeled sorted\n"
+            + "c" * 40 + " refs/heads/main\n"
+        )
+
+        assert read_head_sha(tmp_path) == "c" * 40
+
+    def test_no_subprocess_import_in_e2e_slot_policy(self) -> None:
+        # The infra boundary: e2e_slot_policy must not shell out (infra/AGENTS.md).
+        import issue_orchestrator.infra.e2e_slot_policy as mod
+
+        assert not hasattr(mod, "subprocess")

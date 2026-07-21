@@ -174,6 +174,87 @@ class TestLastReviewedBoardFingerprint:
         assert store.load_last_reviewed_board_fingerprint() == ""
 
 
+class TestStuckSweepState:
+    """Durable tech-lead stuck-sweep timer + recovery counters (#6823)."""
+
+    def test_last_stuck_sweep_at_round_trip(self, store: QueueCacheStore) -> None:
+        store.save_last_stuck_sweep_at(1750000000.5)
+        assert store.load_last_stuck_sweep_at() == 1750000000.5
+
+    def test_last_stuck_sweep_at_defaults_to_zero(
+        self, store: QueueCacheStore
+    ) -> None:
+        assert store.load_last_stuck_sweep_at() == 0.0
+
+    def test_recovery_attempts_round_trip_with_int_keys(
+        self, store: QueueCacheStore
+    ) -> None:
+        store.save_recovery_attempts({7: 1, 42: 3})
+        loaded = store.load_recovery_attempts()
+        assert loaded == {7: 1, 42: 3}
+        # JSON keys serialize as strings; they must round-trip back to ints.
+        assert all(isinstance(key, int) for key in loaded)
+
+    def test_recovery_attempts_defaults_to_empty(
+        self, store: QueueCacheStore
+    ) -> None:
+        assert store.load_recovery_attempts() == {}
+
+    def test_recovery_attempts_second_save_overwrites(
+        self, store: QueueCacheStore
+    ) -> None:
+        store.save_recovery_attempts({1: 1})
+        store.save_recovery_attempts({1: 2, 2: 1})
+        assert store.load_recovery_attempts() == {1: 2, 2: 1}
+
+    def test_pending_escalations_round_trip(self, store: QueueCacheStore) -> None:
+        # R1 (#6824): unacknowledged escalations survive a restart.
+        store.save_pending_escalations({7, 42})
+        loaded = store.load_pending_escalations()
+        assert loaded == {7, 42}
+        assert all(isinstance(n, int) for n in loaded)
+
+    def test_pending_escalations_defaults_to_empty(
+        self, store: QueueCacheStore
+    ) -> None:
+        assert store.load_pending_escalations() == set()
+
+    def test_pending_escalations_second_save_overwrites(
+        self, store: QueueCacheStore
+    ) -> None:
+        store.save_pending_escalations({1, 2})
+        store.save_pending_escalations({3})
+        assert store.load_pending_escalations() == {3}
+
+    def test_stuck_sweep_state_independent_of_health_review(
+        self, store: QueueCacheStore
+    ) -> None:
+        store.save_last_stuck_sweep_at(500.0)
+        store.save_recovery_attempts({9: 2})
+        store.save_last_health_review_at(100.0)
+        assert store.load_last_stuck_sweep_at() == 500.0
+        assert store.load_recovery_attempts() == {9: 2}
+        assert store.load_last_health_review_at() == 100.0
+
+    def test_stuck_sweep_state_survives_snapshot_save(
+        self, store: QueueCacheStore
+    ) -> None:
+        store.save_last_stuck_sweep_at(500.0)
+        store.save_recovery_attempts({9: 2})
+        store.save_snapshot([_issue(1)], "2025-06-01T00:00:00Z", repo="owner/repo")
+        assert store.load_last_stuck_sweep_at() == 500.0
+        assert store.load_recovery_attempts() == {9: 2}
+
+    def test_stuck_sweep_state_cleared_with_store(
+        self, store: QueueCacheStore
+    ) -> None:
+        store.save_last_stuck_sweep_at(500.0)
+        store.save_recovery_attempts({9: 2})
+        store.clear()
+        assert store.load_last_stuck_sweep_at() == 0.0
+        assert store.load_recovery_attempts() == {}
+
+
 class TestReplaceSemantics:
     """save_snapshot replaces all issues."""
 

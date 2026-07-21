@@ -620,8 +620,15 @@ def _try_reuse_worktree(
     reuse_push_preflight: bool,
     allow_no_verify_dry_run_preflight: bool,
     base_branch: str | None,
+    preserve_branch: bool = False,
 ) -> _WorktreeReuseResult:
     """Try to reuse an existing worktree, validating and preparing it.
+
+    When ``preserve_branch`` is True the branch is left exactly as-is: the
+    rebase/hard-reset onto the base branch is skipped entirely. This is used
+    for triage investigations, which read the subject's branch as evidence and
+    must never mutate it (rebasing/resetting a stranded branch would discard
+    its unpushed work).
 
     Returns:
         _WorktreeReuseResult indicating success/failure with details.
@@ -639,8 +646,21 @@ def _try_reuse_worktree(
             recreated_reason=f"validation_failed: {validation.reason}",
         )
 
-    # Rebase onto latest base branch (critical for reruns with stale branches)
-    reset_info = _update_worktree_onto_main(worktree_path, repo_root, base_branch)
+    # Rebase onto latest base branch (critical for reruns with stale branches).
+    # A triage investigation reads the subject's branch as evidence, so it must
+    # never rebase or hard-reset it — skip the update and leave it intact.
+    if preserve_branch:
+        logger.info(
+            issue_log(
+                issue_number,
+                "[WORKTREE_PRESERVE] skipping rebase/reset for triage "
+                "investigation, branch %s left intact",
+            ),
+            branch_name,
+        )
+        reset_info = ResetInfo(success=True)
+    else:
+        reset_info = _update_worktree_onto_main(worktree_path, repo_root, base_branch)
 
     # Policy: sync remote refs to prevent stale-info push failures
     sync_result = policy.sync_remote_refs(worktree_path, branch_name)
@@ -823,6 +843,7 @@ def _init_worktree_context(
     policy: WorktreePolicy | None,
     enforce_hooks: bool,
     pre_push_hook: Path | None,
+    worktree_name: str | None = None,
 ) -> _WorktreeCreateContext:
     """Initialize context for worktree creation."""
     if policy is None:
@@ -838,7 +859,10 @@ def _init_worktree_context(
     worktree_base = Path(worktree_base).resolve() if worktree_base else repo_root.parent
     worktree_base.mkdir(parents=True, exist_ok=True)
     branch_name = branch_name or generate_branch_name(issue_number, issue_title)
-    worktree_path = worktree_base / f"{repo_root.name}-{issue_number}"
+    # A run-scoped scratch worktree overrides the derived per-issue directory
+    # basename so a disposable investigation never collides with — or reuses —
+    # its subject's worktree.
+    worktree_path = worktree_base / (worktree_name or f"{repo_root.name}-{issue_number}")
     disable_reuse = (
         os.environ.get("ORCHESTRATOR_DISABLE_WORKTREE_REUSE") == "1"
         or reuse_options.disable_reuse
@@ -878,6 +902,7 @@ def create_worktree(
     branch_name: str | None = None,
     reuse_options: WorktreeReuseOptions | None = None,
     policy: WorktreePolicy | None = None,
+    worktree_name: str | None = None,
 ) -> tuple[Path, str, str, str | None, bool, int, int]:
     """
     Create a new git worktree for the given issue.
@@ -897,6 +922,8 @@ def create_worktree(
         branch_name: Specific branch to use (for checking out existing branches like PR reviews)
         reuse_options: Options controlling reuse behavior
         policy: Worktree setup policy (defaults to ValidateOrDeletePolicy)
+        worktree_name: Overrides the derived worktree directory basename
+            (default ``<repo>-<issue_number>``) for a run-scoped scratch worktree.
 
     Returns:
         Tuple of (worktree_path, branch_name, reuse_status, reuse_reason,
@@ -911,7 +938,7 @@ def create_worktree(
     try:
         ctx = _init_worktree_context(
             repo_root, issue_number, issue_title, worktree_base, base_branch, seed_ref, branch_name,
-            reuse_options, policy, enforce_hooks, pre_push_hook,
+            reuse_options, policy, enforce_hooks, pre_push_hook, worktree_name,
         )
 
         # Prune stale worktrees
@@ -1024,6 +1051,7 @@ def _try_reuse_by_branch(
         reuse_options.reuse_push_preflight,
         reuse_options.allow_no_verify_dry_run_preflight,
         base_branch,
+        preserve_branch=reuse_options.preserve_branch,
     )
 
     if not result.success:
@@ -1103,6 +1131,7 @@ def _try_reuse_by_path(
         reuse_options.reuse_push_preflight,
         reuse_options.allow_no_verify_dry_run_preflight,
         base_branch,
+        preserve_branch=reuse_options.preserve_branch,
     )
 
     if not result.success:
@@ -1283,6 +1312,15 @@ def remove_worktree(worktree_path: Path, *, force: bool = False) -> None:
     logger.info("Removing worktree: path=%s", worktree_path)
 
     if not worktree_path.exists():
+        if force:
+            # Idempotent for disposable/forced removal (#6824 R3): ``force`` means
+            # "discard this local worktree", and an already-absent path already
+            # satisfies that. Raising here would make a partial-success retry
+            # (removal succeeded, a later step failed → cleanup re-planned) loop
+            # forever on the now-missing path. The non-forced coding-worktree path
+            # keeps raising so an unexpected disappearance is still surfaced.
+            logger.info("Worktree already absent; forced removal is a no-op: path=%s", worktree_path)
+            return
         raise WorktreeError(f"Worktree does not exist at {worktree_path}")
 
     try:

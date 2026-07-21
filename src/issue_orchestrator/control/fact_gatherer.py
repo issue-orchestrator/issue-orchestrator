@@ -25,7 +25,7 @@ import re
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Optional, TYPE_CHECKING
+from typing import Any, Callable, Optional, TYPE_CHECKING
 
 from ..infra.config import Config
 from ..events import EventName
@@ -41,6 +41,7 @@ from .triage_reaction import storm_possible
 
 if TYPE_CHECKING:
     from ..ports.issue import Issue
+    from ..ports.queue_cache_store import QueueCacheStore
     from ..ports.triage_authority import TriageAuthorityStore
     from ..domain.models import (
         OrchestratorState,
@@ -52,6 +53,7 @@ if TYPE_CHECKING:
         StoredTriageOp,
         TriageCaseFileSummary,
     )
+    from .planner_types import E2ESlotSignals
     from .planner_types import OrchestratorSnapshot
     from .triage_board import TriageBoardPublisher
 
@@ -85,6 +87,22 @@ class FactGatherer:
     # projection + refreshing the triage board file) and makes no decisions.
     # Optional so unrelated tests need not wire it.
     board_publisher: Optional["TriageBoardPublisher"] = None
+    # Durable store for the tech-lead stuck sweep's timer + recovery counters
+    # (#6823). Optional so unrelated tests need not wire it; without it the
+    # sweep still runs but its counters do not survive a restart.
+    queue_cache_store: Optional["QueueCacheStore"] = None
+    # Observation feed for the first-class E2E workload
+    # (``e2e.occupies_session_slot``). Returns whether an E2E run occupies a
+    # worker slot right now, or is due to claim one. Optional so unrelated
+    # tests need not wire it; without it (or with the flag off) both snapshot
+    # facts stay False and the default scheduling path is unchanged.
+    e2e_slot_reader: Optional[Callable[[], "E2ESlotSignals"]] = None
+    # Predicate answering "is this issue's provider circuit still open?" for the
+    # stuck sweep's ownership check (#6824 F2): a provider-unavailable issue is
+    # owned by the resilience manager WHILE its circuit is open. Optional so
+    # unrelated tests need not wire it; without it every provider-unavailable
+    # issue is conservatively treated as owned (the pre-#6824 skip).
+    provider_circuit_open: Optional[Callable[["Issue"], bool]] = None
 
     def fetch_issues(
         self,
@@ -169,6 +187,16 @@ class FactGatherer:
         """
         from .planner_types import OrchestratorSnapshot
 
+        # Gather triage facts FIRST: gather_triage_facts runs the tech-lead
+        # stuck sweep (#6823), which injects recovered failures into
+        # state.discovered_failures. That mutation must land before this tick's
+        # discovered_failures is captured below, so the reaction model sees the
+        # recovered failures this tick (a next-tick capture would be dropped by
+        # the end-of-tick discovered-fact clear).
+        triage_facts = self.gather_triage_facts(state)
+        cleanup_facts = self.gather_cleanup_facts(state)
+        e2e_occupies_slot, e2e_due = self._read_e2e_slot_facts()
+
         return OrchestratorSnapshot(
             issues=tuple(issues),
             active_sessions=tuple(state.active_sessions),
@@ -200,13 +228,29 @@ class FactGatherer:
                 state.discovered_merge_queue_enqueues
             ),
             discovered_failures=tuple(state.discovered_failures),
-            triage_facts=self.gather_triage_facts(state),
-            cleanup_facts=self.gather_cleanup_facts(state),
+            stuck_sweep_escalations=tuple(state.stuck_sweep_escalations),
+            triage_facts=triage_facts,
+            cleanup_facts=cleanup_facts,
             stale_in_progress_issues=tuple(stale_in_progress_issues or []),
             stale_claim_issues=tuple(stale_claim_issues or []),
             failed_this_cycle=frozenset(state.failed_this_cycle),
             session_history_issue_numbers=frozenset(e.issue_number for e in state.session_history),
+            e2e_occupies_slot=e2e_occupies_slot,
+            e2e_due=e2e_due,
         )
+
+    def _read_e2e_slot_facts(self) -> tuple[bool, bool]:
+        """Read the ``(e2e_occupies_slot, e2e_due)`` worker-slot facts.
+
+        Returns ``(False, False)`` without invoking the reader when the reader
+        is unwired OR ``e2e.occupies_session_slot`` is off — the reader itself
+        guards the flag, but short-circuiting here means the default path pays
+        no reader call at all. At most one of the two facts is ever True.
+        """
+        if self.e2e_slot_reader is None or not self.config.e2e.occupies_session_slot:
+            return False, False
+        signals = self.e2e_slot_reader()
+        return signals.occupies_slot, signals.due
 
     def gather_triage_facts(
         self,
@@ -248,6 +292,14 @@ class FactGatherer:
         """
         from ..domain.models import TriageFacts
 
+        now_ts = time.time() if now is None else now
+        # Tech-lead attention sweep (#6823): an independent, timer-gated trigger
+        # that re-injects terminally-stuck issues into the reactive-triage
+        # pipeline. Runs regardless of the batch/health/storm arming below (it
+        # feeds discovered_failures, not TriageFacts). stuck_sweep_due is pure
+        # state/config math, so a disabled/not-due sweep makes ZERO GitHub calls.
+        self._run_stuck_sweep_if_due(state, now_ts)
+
         watch_label = self._get_triage_watch_label()
         batch_armed = bool(watch_label)
         triage_agent_configured = bool(self.config.triage_review_agent)
@@ -277,9 +329,7 @@ class FactGatherer:
         # The decision carries the board it was decided on, so anchor creation
         # can stamp that exact value instead of recomputing a board that has
         # moved on by then (#6793).
-        health_decision = health_review_decision(
-            self.config, state, time.time() if now is None else now
-        )
+        health_decision = health_review_decision(self.config, state, now_ts)
         due = health_decision.due
 
         existing_triage_issue: Optional[int] = None
@@ -338,6 +388,72 @@ class FactGatherer:
                 facts, last_health_review_at=state.last_health_review_at
             )
         return facts
+
+    def _run_stuck_sweep_if_due(
+        self, state: "OrchestratorState", now: float
+    ) -> None:
+        """Run the tech-lead stuck sweep and record what it recovered (#6823).
+
+        All policy lives in the ``stuck_sweep`` owner; this seam only arms it,
+        records the recovered failures through the state owner method, stamps
+        and persists the timer, and emits an observation event. No new control
+        vocabulary enters this module.
+        """
+        from .label_manager import LabelManager
+        from .stuck_sweep import (
+            persist_stuck_sweep_state,
+            run_stuck_sweep,
+            stuck_sweep_due,
+        )
+
+        if not stuck_sweep_due(self.config, state, now):
+            return
+        result = run_stuck_sweep(
+            self.config,
+            state,
+            self.repository_host,
+            LabelManager(self.config),
+            now,
+            # Issues with an OPEN gated proposal are owned by the human who must
+            # delabel it — the sweep must not re-investigate them or spend their
+            # budget (stops propose-mode from exhausting a never-remedied issue,
+            # #6824 F1). The ledger rows ARE the open-proposal set.
+            open_proposal_targets=self._open_proposal_targets(),
+            provider_circuit_open=self.provider_circuit_open,
+        )
+        for failure in result.recovered:
+            state.record_discovered_failure(failure)
+        # Escalate to needs-human through the Planner/Applier (authoritative,
+        # label-only). Re-emit the idempotent label for EVERY unacknowledged
+        # escalation (the durable pending set) so a crash/apply failure retries
+        # until it lands (#6824 R1). The durable set itself is persisted below.
+        state.stuck_sweep_escalations = list(state.pending_stuck_sweep_escalations)
+        state.last_stuck_sweep_at = now
+        persist_stuck_sweep_state(state, self.queue_cache_store)
+        self._emit_stuck_sweep(result)
+
+    def _open_proposal_targets(self) -> frozenset[int]:
+        """Target issue numbers with an OPEN gated proposal in the ledger (#6824)."""
+        if self.triage_authority is None:
+            return frozenset()
+        return frozenset(
+            op.target_issue_number for _, op in self.triage_authority.list_ops()
+        )
+
+    def _emit_stuck_sweep(self, result: object) -> None:
+        """Fire-and-forget observation of a sweep that acted (#6823)."""
+        if self.events is None:
+            return
+        recovered = [failure.issue_number for failure in result.recovered]
+        exhausted = list(result.exhausted)
+        if not recovered and not exhausted:
+            return
+        self.events.publish(
+            make_trace_event(
+                EventName.TRIAGE_STUCK_SWEEP,
+                {"recovered": recovered, "exhausted": exhausted},
+            )
+        )
 
     def _get_triage_watch_label(self) -> str | None:
         """Get the label to watch for triage review (None = trigger disabled)."""
@@ -597,6 +713,7 @@ _DISCOVERED_FACT_ATTRS: tuple[str, ...] = (
     "discovered_reworks",
     "discovered_escalations",
     "discovered_failures",
+    "stuck_sweep_escalations",
     "immediate_cleanups",
 )
 
@@ -639,7 +756,16 @@ def clear_discovered_facts(
     if tick_paused:
         return
     held = triage_problem_artifact_hold_issue_numbers(state, config, triage_authority)
-    retained = [c for c in state.immediate_cleanups if c.issue_number in held]
+    # Retain (a) cleanups still referenced by triage work — the Planner skipped
+    # them this tick — and (b) DISPOSABLE scratch-worktree cleanups (#6824 F8):
+    # a disposable cleanup is pruned on SUCCESS by ``_handle_cleanup_session``,
+    # so any that survive to here had their removal FAIL and must be re-planned
+    # next tick rather than dropped (which would leak the scratch worktree).
+    retained = [
+        c
+        for c in state.immediate_cleanups
+        if c.issue_number in held or c.scratch_worktree
+    ]
     for attr in _DISCOVERED_FACT_ATTRS:
         getattr(state, attr).clear()
     state.immediate_cleanups.extend(retained)

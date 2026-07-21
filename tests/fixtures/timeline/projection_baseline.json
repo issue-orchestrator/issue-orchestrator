@@ -959,6 +959,12 @@
     "status": "completed",
     "step": "triage.skipped"
   },
+  "triage.stuck_sweep": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "triage.stuck_sweep"
+  },
   "validation.completed": {
     "level": "detail",
     "phase": "orchestrator",

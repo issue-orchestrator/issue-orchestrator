@@ -399,6 +399,14 @@ class OrchestratorSupport:
         from .actions import CleanupSessionAction
         a = cast(CleanupSessionAction, action)
         self.state.pending_cleanups = [c for c in self.state.pending_cleanups if c.pr_number != a.pr_number]
+        # F8 second guard: a disposable cleanup fact is RETAINED across the clear,
+        # so drop it here only on SUCCESS — a failed removal is re-planned next tick.
+        if a.disposable_worktree and result.success:
+            self.state.immediate_cleanups = [
+                c
+                for c in self.state.immediate_cleanups
+                if not (c.issue_number == a.issue_number and c.scratch_worktree)
+            ]
 
     def _handle_queue_review(self, action: "Action", result: "ActionResult") -> None:
         from .actions import QueueReviewAction

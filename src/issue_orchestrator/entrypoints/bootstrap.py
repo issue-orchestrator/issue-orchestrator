@@ -792,7 +792,10 @@ def build_orchestrator(
         reconcile=True,
     ) if github else None
 
-    triage = create_triage_composition(config, github, events)
+    triage = create_triage_composition(
+        config, github, events, queue_cache_store=queue_cache_store,
+        provider_resilience=provider_resilience,
+    )
     triage_authority = triage.authority
     triage_board_publisher = triage.board_publisher
     fact_gatherer = triage.fact_gatherer
@@ -956,7 +959,7 @@ def build_orchestrator(
         completion_dispatcher=BackgroundCompletionDispatcher(ThreadBackgroundJobRunner()),
         health_gate=health_gate,
         board_snapshot_builder=create_board_snapshot_builder(
-            config, timeline_store, triage_board_publisher
+            config, timeline_store, triage_board_publisher, working_copy
         ),
         claim_manager=claim_manager,
         claim_gate=claim_gate,
@@ -1298,7 +1301,7 @@ def build_orchestrator_for_testing(
         completion_dispatcher=SynchronousCompletionDispatcher(),
         health_gate=health_gate,
         board_snapshot_builder=create_board_snapshot_builder(
-            config, timeline_store, triage_board_publisher_for_testing
+            config, timeline_store, triage_board_publisher_for_testing, working_copy
         ),
         claim_manager=claim_manager,
         claim_gate=claim_gate,

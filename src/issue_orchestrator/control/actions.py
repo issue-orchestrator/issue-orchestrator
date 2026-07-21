@@ -666,6 +666,9 @@ class CleanupSessionAction(Action):
     worktree_path: str = ""
     close_tabs: bool = True
     remove_worktrees: bool = True
+    # A run-scoped triage scratch worktree is DISPOSABLE (throwaway artifacts): the
+    # applier force-removes ONLY this identity, never a reusable coding worktree (#6824 F8).
+    disposable_worktree: bool = False
     action_type: ActionType = field(default=ActionType.CLEANUP_SESSION, init=False)
 
 

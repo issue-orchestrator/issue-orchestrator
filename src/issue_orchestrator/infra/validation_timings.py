@@ -87,6 +87,43 @@ def current_branch_name(worktree: Path) -> str | None:
     return read_branch_name(worktree)
 
 
+def read_head_sha(worktree: Path) -> str | None:
+    """The worktree's HEAD commit SHA via file reads — NO subprocess (#6824 R9).
+
+    Reads ``.git/HEAD``; a detached HEAD holds the SHA directly, otherwise the
+    named ref is resolved from the loose ref file or ``packed-refs`` in the
+    shared git dir. Best-effort: None when it cannot be determined.
+    """
+    git_dir = resolve_git_dir(worktree)
+    if git_dir is None:
+        return None
+    try:
+        head = (git_dir / "HEAD").read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not head.startswith("ref:"):
+        return head or None
+    ref = head[len("ref:") :].strip()
+    common = resolve_git_common_dir(worktree) or git_dir
+    try:
+        sha = (common / ref).read_text(encoding="utf-8").strip()
+        if sha:
+            return sha
+    except OSError:
+        pass
+    try:
+        for line in (common / "packed-refs").read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith(("#", "^")):
+                continue
+            sha, _, name = stripped.partition(" ")
+            if name == ref:
+                return sha
+    except OSError:
+        pass
+    return None
+
+
 def get_shared_timings_file(worktree: Path) -> Path | None:
     """Return the shared JSONL timing file path for this repository."""
     common_dir = resolve_git_common_dir(worktree)

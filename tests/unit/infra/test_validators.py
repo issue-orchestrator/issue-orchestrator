@@ -131,6 +131,9 @@ class TestReviewWorkflowValidator:
         # Concrete int so the cross-field health-review invariant (#6776) is
         # exercised deterministically (a bare MagicMock compares > 0 truthy).
         config.triage.health_review.interval_minutes = health_review_interval_minutes
+        # Concrete False so the stuck-sweep cross-field invariant (#6823) is off
+        # by default here (a bare MagicMock attribute is truthy).
+        config.triage.stuck_sweep.enabled = False
         config.review_exchange_mode = review_exchange_mode
         config.review_exchange_probe_schedule = review_exchange_probe_schedule
         config.review_exchange_probe_interval_days = review_exchange_probe_interval_days

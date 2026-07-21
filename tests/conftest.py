@@ -1044,6 +1044,8 @@ def build_test_orchestrator_deps(
             log_tail_provider=lambda lines: [],
             case_file_reader=lambda: (),
             shipped_fix_reader=lambda limit: (),
+            e2e_health_reader=lambda now: None,
+            session_activity_reader=lambda session: None,
             clock=datetime.now,
         ),
         session_output=session_output,

@@ -1,11 +1,16 @@
 """Tests for the ADR-0031 triage session policy owner."""
 
+import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from issue_orchestrator.control import triage_session_policy
 from issue_orchestrator.control.completion_pr_collision import NoCommitsBetweenError
+from issue_orchestrator.control.triage_evidence import EVIDENCE_MAP_FILENAME
 from issue_orchestrator.control.triage_session_policy import (
+    _stage_evidence_map,
     is_benign_triage_no_commits,
     is_triage_session,
     read_triage_assignment,
@@ -227,3 +232,171 @@ class TestDiscardTriageAuthorityAfterCompletion:
 
         assert store.load(run_id="r1", session_name="issue-999") is not None
         assert store.load_storm_cohort(anchor_issue_number=999) is not None
+
+
+class TestStageEvidenceMap:
+    """The evidence-map wiring: flavor gating, best-effort, manifest recording."""
+
+    @staticmethod
+    def _config(tmp_path: Path) -> SimpleNamespace:
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir(exist_ok=True)
+        return SimpleNamespace(
+            repo_root=repo_root,
+            repo="owner/repo",
+            worktree_base=tmp_path,
+            worktree_base_branch_override=None,
+        )
+
+    @staticmethod
+    def _ctx() -> tuple[SimpleNamespace, dict]:
+        manifest: dict = {}
+        return SimpleNamespace(update_manifest=manifest.update), manifest
+
+    @staticmethod
+    def _register_worktree(repo_root: Path, worktree: Path) -> None:
+        """Make ``worktree`` a real linked git worktree of ``repo_root`` (#6824 R4)."""
+        git_common = repo_root / ".git"
+        git_common.mkdir(parents=True, exist_ok=True)
+        wt_gitdir = git_common / "worktrees" / worktree.name
+        wt_gitdir.mkdir(parents=True, exist_ok=True)
+        (wt_gitdir / "commondir").write_text("../..\n")
+        worktree.mkdir(parents=True, exist_ok=True)
+        (worktree / ".git").write_text(f"gitdir: {wt_gitdir}\n")
+
+    @staticmethod
+    def _host() -> SimpleNamespace:
+        return SimpleNamespace(
+            get_default_branch=lambda: "main",
+            get_issue=lambda n: SimpleNamespace(
+                number=n, state="open", labels=["blocked-failed"]
+            ),
+            get_prs_for_issue=lambda n, state="open": [
+                SimpleNamespace(
+                    number=6770,
+                    state="merged",
+                    base_branch="6593-predecessor",
+                    branch="6335-work",
+                    url="https://example/pr/6770",
+                )
+            ],
+        )
+
+    @staticmethod
+    def _board(recent_failures: tuple = ()) -> SimpleNamespace:
+        return SimpleNamespace(recent_failures=list(recent_failures))
+
+    def test_failure_investigation_writes_map_and_records_manifest(
+        self, tmp_path: Path
+    ) -> None:
+        ctx, manifest = self._ctx()
+        run_dir = tmp_path / "run"
+        _stage_evidence_map(
+            config=self._config(tmp_path),
+            repository_host=self._host(),
+            ctx=ctx,
+            run_dir=run_dir,
+            flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+            focus_issue_number=6335,
+            board_snapshot=self._board(),
+        )
+        path = run_dir / "triage-data" / EVIDENCE_MAP_FILENAME
+        assert path.is_file()
+        assert manifest["evidence_map"] == str(path)
+        data = json.loads(path.read_text())
+        assert data["focus_issue_number"] == 6335
+        assert data["github"]["issue"]["state"] == "OPEN"
+        pr = data["github"]["prs"][0]
+        assert pr["merged"] is True
+        assert pr["base_ref"] == "6593-predecessor"
+
+    def test_batch_review_stages_nothing(self, tmp_path: Path) -> None:
+        ctx, manifest = self._ctx()
+        run_dir = tmp_path / "run"
+        _stage_evidence_map(
+            config=self._config(tmp_path),
+            repository_host=self._host(),
+            ctx=ctx,
+            run_dir=run_dir,
+            flavor=TriageSessionFlavor.BATCH_REVIEW,
+            focus_issue_number=None,
+            board_snapshot=self._board(),
+        )
+        assert not (run_dir / "triage-data" / EVIDENCE_MAP_FILENAME).exists()
+        assert "evidence_map" not in manifest
+
+    def test_health_review_stages_whole_system_map(self, tmp_path: Path) -> None:
+        # A health review has no focus, so it gets the full SYSTEM substrate:
+        # a null github block, but run-dirs enumerated across ALL worktrees.
+        ctx, _manifest = self._ctx()
+        config = self._config(tmp_path)
+        run_dir = tmp_path / "run"
+        # R4 (#6824): only REGISTERED worktrees of this repo are swept.
+        self._register_worktree(config.repo_root, tmp_path / "repo-100")
+        whole_system = (
+            tmp_path
+            / "repo-100"
+            / ".issue-orchestrator"
+            / "sessions"
+            / "20260101T000000__coding-1"
+        )
+        whole_system.mkdir(parents=True)
+        _stage_evidence_map(
+            config=config,
+            repository_host=self._host(),
+            ctx=ctx,
+            run_dir=run_dir,
+            flavor=TriageSessionFlavor.HEALTH_REVIEW,
+            focus_issue_number=None,
+            board_snapshot=self._board(),
+        )
+        data = json.loads(
+            (run_dir / "triage-data" / EVIDENCE_MAP_FILENAME).read_text()
+        )
+        assert data["focus_issue_number"] is None
+        assert data["github"] is None
+        # Whole-system run-dirs are enumerated across worktrees, not empty.
+        assert str(whole_system.resolve()) in data["run_dirs"]
+
+    def test_github_read_failure_does_not_fail_launch(self, tmp_path: Path) -> None:
+        # A GitHub/network error degrades the warm-cache to null; the evidence
+        # map is still written and the launch proceeds.
+        def _boom(*_a, **_k):
+            raise RuntimeError("github down")
+
+        ctx, manifest = self._ctx()
+        run_dir = tmp_path / "run"
+        _stage_evidence_map(
+            config=self._config(tmp_path),
+            repository_host=SimpleNamespace(get_issue=_boom, get_prs_for_issue=_boom),
+            ctx=ctx,
+            run_dir=run_dir,
+            flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+            focus_issue_number=6335,
+            board_snapshot=self._board(),
+        )
+        path = run_dir / "triage-data" / EVIDENCE_MAP_FILENAME
+        assert path.is_file()
+        assert json.loads(path.read_text())["github"] is None
+        assert manifest["evidence_map"] == str(path)
+
+    def test_write_failure_is_swallowed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The outer best-effort catch: a write failure must neither raise nor
+        # record a manifest entry pointing at a file that was not written.
+        def _boom(*_a, **_k):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(triage_session_policy, "write_evidence_map", _boom)
+        ctx, manifest = self._ctx()
+        _stage_evidence_map(
+            config=self._config(tmp_path),
+            repository_host=self._host(),
+            ctx=ctx,
+            run_dir=tmp_path / "run",
+            flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+            focus_issue_number=6335,
+            board_snapshot=self._board(),
+        )
+        assert "evidence_map" not in manifest

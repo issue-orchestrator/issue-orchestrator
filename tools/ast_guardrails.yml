@@ -68,6 +68,7 @@ allow_prefixes:
   - src/issue_orchestrator/control/scheduler.py
   - src/issue_orchestrator/entrypoints/e2e_worker.py  # E2E worker subprocess
   - src/issue_orchestrator/infra/e2e_runner.py  # E2E runner spawns workers
+  - src/issue_orchestrator/infra/e2e_slot_policy.py  # E2E due-check reads main HEAD (extracted from e2e_runner)
   - src/issue_orchestrator/infra/e2e_worktree.py  # E2E worktree management (git + uv)
 
 deny_attr_calls:
@@ -117,6 +118,7 @@ allow_git_subprocess_prefixes:
   - src/issue_orchestrator/entrypoints/cli_tools/coding_done.py  # CLI tool checks git status in agent worktree
   - src/issue_orchestrator/entrypoints/e2e_worker.py  # E2E worker gets git info
   - src/issue_orchestrator/infra/e2e_runner.py  # E2E runner checks main HEAD
+  - src/issue_orchestrator/infra/e2e_slot_policy.py  # E2E due-check reads main HEAD (extracted from e2e_runner)
   - src/issue_orchestrator/infra/e2e_worktree.py  # E2E worktree management (git + uv)
 
 deny_imports:

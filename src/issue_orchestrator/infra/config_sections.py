@@ -33,6 +33,7 @@ from .config_models import (
     SchedulingConfig,
     SessionInteractionsConfig,
     SqliteBackupConfig,
+    StuckSweepConfig,
     TimelineConfig,
     TriageAuthorityConfig,
     TriageConfig,
@@ -129,6 +130,7 @@ def parse_e2e_config(data: dict) -> E2EConfig:
         enabled=data.get("enabled", False),
         role=role,
         auto_run_interval_minutes=data.get("auto_run_interval_minutes", 30),
+        occupies_session_slot=data.get("occupies_session_slot", False),
         runner_kind=runner_kind,
         pytest_args=list(pytest_args),
         command=list(command),
@@ -244,20 +246,19 @@ def parse_triage_config(data: dict) -> TriageConfig:
         explicit=ms_data.get("explicit"),
     )
 
-    health_review_data = data.get("health_review", {}) or {}
-    health_review = TriageHealthReviewConfig(
-        interval_minutes=int(health_review_data.get("interval_minutes", 0)),
-        storm_threshold=int(health_review_data.get("storm_threshold", 3)),
-        storm_window_minutes=int(health_review_data.get("storm_window_minutes", 5)),
-    )
+    max_concurrent = int(mc) if (mc := data.get("max_concurrent")) is not None else None
 
     return TriageConfig(
         inherit_labels=list(inherit_labels),
         explicit_labels=list(explicit_labels),
         milestone_strategy=milestone_strategy,
         priority=data.get("priority"),
+        max_concurrent=max_concurrent,
         authority=TriageAuthorityConfig.from_mapping(data.get("authority", {}) or {}),
-        health_review=health_review,
+        health_review=TriageHealthReviewConfig.from_mapping(
+            data.get("health_review", {}) or {}
+        ),
+        stuck_sweep=StuckSweepConfig.from_mapping(data.get("stuck_sweep", {}) or {}),
     )
 
 

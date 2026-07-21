@@ -8,7 +8,7 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
 from ..infra.audit import SkipReason, audit_queue
-from ..infra.e2e_runner import get_e2e_role
+from ..infra.e2e_slot_policy import get_e2e_role
 from ..view_models.dashboard import blocked_summary, flow_steps_for, issue_url_for
 from .web_session_context import WebOrchestratorDependency
 

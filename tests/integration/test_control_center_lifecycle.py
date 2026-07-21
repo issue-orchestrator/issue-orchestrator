@@ -359,6 +359,7 @@ class TestControlCenterLifecycle:
         # 5. Verify orchestrator API responds
         orch_resp = httpx.get(
             f"http://127.0.0.1:{orchestrator_port}/api/status",
+            headers={"Authorization": f"Bearer {_INTEGRATION_ADMIN_TOKEN}"},
             timeout=xdist_timeout(5.0),
         )
         assert orch_resp.status_code == 200, "Orchestrator API should respond"
@@ -556,6 +557,7 @@ class TestControlCenterLifecycle:
                     "reason": "integration test self-shutdown",
                     "actor": "test-control-center-lifecycle",
                 },
+                headers={"Authorization": f"Bearer {_INTEGRATION_ADMIN_TOKEN}"},
                 timeout=xdist_timeout(5.0),
             )
             assert orch_resp.status_code == 200
@@ -647,6 +649,7 @@ class TestControlCenterStatusConsistency:
 
         orch_status = httpx.get(
             f"http://127.0.0.1:{orchestrator_port}/api/status",
+            headers={"Authorization": f"Bearer {_INTEGRATION_ADMIN_TOKEN}"},
             timeout=xdist_timeout(5.0),
         ).json()
 
@@ -664,6 +667,7 @@ class TestControlCenterStatusConsistency:
                     "reason": "integration test status consistency check",
                     "actor": "test-control-center-lifecycle",
                 },
+                headers={"Authorization": f"Bearer {_INTEGRATION_ADMIN_TOKEN}"},
                 timeout=xdist_timeout(5.0),
             )
         except httpx.RemoteProtocolError:

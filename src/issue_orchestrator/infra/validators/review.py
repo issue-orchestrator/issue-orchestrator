@@ -35,6 +35,10 @@ class ReviewWorkflowValidator(ConfigValidator):
         # startup configuration error, never silently treated as disabled.
         errors.extend(config.triage.health_review.startup_errors())
         self._validate_health_review_requires_agent(config, errors)
+        # Tech-lead attention sweep (ADR-0031, #6823): own-block invariants plus
+        # the cross-field "enabled requires a triage agent" check.
+        errors.extend(config.triage.stuck_sweep.startup_errors())
+        self._validate_stuck_sweep_requires_agent(config, errors)
 
         exchange_mode = config.review_exchange_mode
         self._validate_exchange_mode(exchange_mode, config, errors)
@@ -111,6 +115,29 @@ class ReviewWorkflowValidator(ConfigValidator):
                 f"triage.health_review.interval_minutes is {interval} but no "
                 "triage agent is configured. Set review.triage_review_agent, or "
                 "use 0 to disable the periodic health review."
+            )
+
+    def _validate_stuck_sweep_requires_agent(
+        self, config: "Config", errors: list[str]
+    ) -> None:
+        # Cross-field invariant (#6823): the sweep re-injects stuck issues into
+        # the reactive-triage pipeline, so an enabled sweep with no triage agent
+        # (or triage-on-failure off) is silently inert at runtime. Reject the
+        # pair so the misconfiguration fails loudly instead of degrading.
+        if not config.triage.stuck_sweep.enabled:
+            return
+        if not config.triage_review_agent:
+            errors.append(
+                "triage.stuck_sweep.enabled is true but no triage agent is "
+                "configured. Set review.triage_review_agent, or disable the "
+                "stuck sweep."
+            )
+        if not config.triage_review_on_failure:
+            errors.append(
+                "triage.stuck_sweep.enabled is true but "
+                "review.triage_review_on_failure is false; the sweep feeds the "
+                "reactive triage-on-failure pipeline and would be inert. Enable "
+                "triage_review_on_failure, or disable the stuck sweep."
             )
 
     def _validate_exchange_mode(

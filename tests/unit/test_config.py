@@ -3093,6 +3093,35 @@ triage:
         assert config.triage.authority.flag_pattern == "execute"
         assert config.triage.authority.reset_retry == "propose"
 
+    def test_triage_max_concurrent_defaults_to_none(self):
+        """Unset triage.max_concurrent shares the worker budget (None)."""
+        assert Config().triage.max_concurrent is None
+
+    def test_triage_max_concurrent_from_yaml(self, tmp_path):
+        """triage.max_concurrent parses into a reserved additive budget."""
+        config_content = """
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+
+triage:
+  max_concurrent: 2
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        assert config.triage.max_concurrent == 2
+        assert config.triage.to_event_dict()["max_concurrent"] == 2
+
+    def test_triage_max_concurrent_rejects_below_one(self):
+        """A reserved budget < 1 is a misconfiguration; fail startup loudly."""
+        config = Config()
+        config.triage.max_concurrent = 0
+        errors = config.validate()
+        assert any("triage.max_concurrent" in e for e in errors), errors
+
     def test_triage_authority_bad_value_rejected_at_load(self, tmp_path):
         """A mode outside execute|propose fails config parsing loudly."""
         config_content = """

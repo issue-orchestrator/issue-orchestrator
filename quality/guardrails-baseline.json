@@ -368,6 +368,14 @@
       "rule_id": "control_policy_branch_sites",
       "value": 14
     },
+    "control_policy_branch_sites:src/issue_orchestrator/control/stuck_sweep.py": {
+      "detail": "4 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/stuck_sweep.py",
+      "path": "src/issue_orchestrator/control/stuck_sweep.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 4
+    },
     "control_policy_branch_sites:src/issue_orchestrator/control/triage_issue_policy.py": {
       "detail": "5 branch site(s) mention lifecycle/control terms",
       "kind": "control_policy_branch_sites",
@@ -889,12 +897,12 @@
       "value": 7
     },
     "control_policy_branch_sites:src/issue_orchestrator/infra/config.py": {
-      "detail": "46 branch site(s) mention lifecycle/control terms",
+      "detail": "43 branch site(s) mention lifecycle/control terms",
       "kind": "control_policy_branch_sites",
       "metric_id": "src/issue_orchestrator/infra/config.py",
       "path": "src/issue_orchestrator/infra/config.py",
       "rule_id": "control_policy_branch_sites",
-      "value": 46
+      "value": 43
     },
     "control_policy_branch_sites:src/issue_orchestrator/infra/config_sections.py": {
       "detail": "4 branch site(s) mention lifecycle/control terms",
@@ -903,6 +911,14 @@
       "path": "src/issue_orchestrator/infra/config_sections.py",
       "rule_id": "control_policy_branch_sites",
       "value": 4
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/infra/config_serialization.py": {
+      "detail": "3 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/infra/config_serialization.py",
+      "path": "src/issue_orchestrator/infra/config_serialization.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 3
     },
     "control_policy_branch_sites:src/issue_orchestrator/infra/doctor/checks/config.py": {
       "detail": "3 branch site(s) mention lifecycle/control terms",
@@ -1296,6 +1312,14 @@
       "rule_id": "oversized_control_hotspots",
       "value": 1802
     },
+    "oversized_control_hotspots:src/issue_orchestrator/control/actions.py": {
+      "detail": "803 lines exceeds budget 800",
+      "kind": "file_line_budget",
+      "metric_id": "src/issue_orchestrator/control/actions.py",
+      "path": "src/issue_orchestrator/control/actions.py",
+      "rule_id": "oversized_control_hotspots",
+      "value": 803
+    },
     "oversized_control_hotspots:src/issue_orchestrator/control/awaiting_merge_reconciler.py": {
       "detail": "963 lines exceeds budget 800",
       "kind": "file_line_budget",
@@ -1328,21 +1352,29 @@
       "rule_id": "oversized_control_hotspots",
       "value": 1506
     },
+    "oversized_control_hotspots:src/issue_orchestrator/control/health_review_trigger.py": {
+      "detail": "910 lines exceeds budget 800",
+      "kind": "file_line_budget",
+      "metric_id": "src/issue_orchestrator/control/health_review_trigger.py",
+      "path": "src/issue_orchestrator/control/health_review_trigger.py",
+      "rule_id": "oversized_control_hotspots",
+      "value": 910
+    },
     "oversized_control_hotspots:src/issue_orchestrator/control/orchestrator_support.py": {
-      "detail": "1464 lines exceeds budget 800",
+      "detail": "1471 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/control/orchestrator_support.py",
       "path": "src/issue_orchestrator/control/orchestrator_support.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 1464
+      "value": 1471
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/planner.py": {
-      "detail": "1732 lines exceeds budget 800",
+      "detail": "1805 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/control/planner.py",
       "path": "src/issue_orchestrator/control/planner.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 1732
+      "value": 1805
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/session_controller.py": {
       "detail": "1910 lines exceeds budget 800",
@@ -1353,12 +1385,12 @@
       "value": 1910
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/session_launcher.py": {
-      "detail": "2237 lines exceeds budget 800",
+      "detail": "2302 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/control/session_launcher.py",
       "path": "src/issue_orchestrator/control/session_launcher.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 2237
+      "value": 2302
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/startup_manager.py": {
       "detail": "990 lines exceeds budget 800",
@@ -1497,20 +1529,20 @@
       "value": 1641
     },
     "oversized_control_hotspots:src/issue_orchestrator/infra/config.py": {
-      "detail": "1500 lines exceeds budget 800",
+      "detail": "1459 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/infra/config.py",
       "path": "src/issue_orchestrator/infra/config.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 1500
+      "value": 1459
     },
     "oversized_control_hotspots:src/issue_orchestrator/infra/config_sections.py": {
-      "detail": "900 lines exceeds budget 800",
+      "detail": "901 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/infra/config_sections.py",
       "path": "src/issue_orchestrator/infra/config_sections.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 900
+      "value": 901
     },
     "oversized_control_hotspots:src/issue_orchestrator/infra/e2e_db.py": {
       "detail": "1624 lines exceeds budget 800",
@@ -1529,12 +1561,12 @@
       "value": 1274
     },
     "oversized_control_hotspots:src/issue_orchestrator/infra/orchestrator.py": {
-      "detail": "1059 lines exceeds budget 800",
+      "detail": "1145 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/infra/orchestrator.py",
       "path": "src/issue_orchestrator/infra/orchestrator.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 1059
+      "value": 1145
     },
     "oversized_control_hotspots:src/issue_orchestrator/infra/supervisor.py": {
       "detail": "984 lines exceeds budget 800",
@@ -1861,6 +1893,22 @@
       "kind": "ruff_noqa_suppression",
       "metric_id": "src/issue_orchestrator/control/session_launcher.py:76e7b3f07c8a",
       "path": "src/issue_orchestrator/control/session_launcher.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/control/triage_evidence.py:39d5c1d941ad": {
+      "detail": "line 281: # noqa: BLE001 - best-effort warm-cache, never fatal",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/control/triage_evidence.py:39d5c1d941ad",
+      "path": "src/issue_orchestrator/control/triage_evidence.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/control/triage_session_policy.py:8862c7ccdc5f": {
+      "detail": "line 347: # noqa: BLE001 - evidence map is best-effort, never fatal",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/control/triage_session_policy.py:8862c7ccdc5f",
+      "path": "src/issue_orchestrator/control/triage_session_policy.py",
       "rule_id": "ruff_noqa_suppressions",
       "value": 1
     },

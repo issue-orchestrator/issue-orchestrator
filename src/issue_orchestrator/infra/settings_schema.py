@@ -28,6 +28,7 @@ from .settings_schema_support import (
     FORM_CONTROL_DICT_ENUM as FORM_CONTROL_DICT_ENUM,
     FORM_CONTROL_ENUM as FORM_CONTROL_ENUM,
     FORM_CONTROL_KINDS as FORM_CONTROL_KINDS,
+    FORM_CONTROL_OPTIONAL_INTEGER as FORM_CONTROL_OPTIONAL_INTEGER,
     SettingsSavePlan as SettingsSavePlan,
     UnsupportedSettingsFieldError as UnsupportedSettingsFieldError,
     classify_form_control as classify_form_control,
@@ -289,6 +290,27 @@ class E2ESettings(BaseModel):
             "doc_notes": "Use executor on the single machine that should run tests.",
             "config_attr": "e2e.role",
             "yaml_path": "e2e.role",
+        },
+    )
+    occupies_session_slot: bool = Field(
+        False,
+        title="Count E2E against the session budget",
+        description="Treat an E2E run as a first-class worker workload",
+        json_schema_extra={
+            "doc_examples": ["true", "false"],
+            "doc_notes": (
+                "Off (default) keeps today's parallel behavior: E2E runs "
+                "alongside agents. On, an E2E run counts against "
+                "max_concurrent_sessions (not the reserved triage slot): it "
+                "starts only when a worker slot is free, occupies one slot "
+                "while running so the planner launches one fewer agent, and a "
+                "due suite claims a slot ahead of new issues but behind "
+                "in-flight reviews/reworks/validation-retries/triage. Enable on "
+                "resource-constrained machines where a second orchestrator "
+                "workload would starve live agents."
+            ),
+            "config_attr": "e2e.occupies_session_slot",
+            "yaml_path": "e2e.occupies_session_slot",
         },
     )
     runner_kind: Literal["pytest", "command"] = Field(
@@ -1228,6 +1250,86 @@ class ReviewSettings(BaseModel):
         },
     )
 
+    triage_stuck_sweep_enabled: bool = Field(
+        False,
+        title="Enable Tech-Lead Stuck Sweep",
+        description="Re-inject terminally-stuck issues into reactive triage (0 = disabled)",
+        json_schema_extra={
+            "doc_examples": ["true", "false"],
+            "doc_notes": (
+                "ADR-0031 (#6823): a bounded, timer-gated backstop that finds "
+                "open issues stuck in a terminal blocking state the normal loop "
+                "cannot re-discover and re-injects each into the reactive-triage "
+                "pipeline as a recovered failure. Requires a configured triage "
+                "agent and triage_review_on_failure. Off by default."
+            ),
+            "section": "Triage Review",
+            "config_attr": "triage.stuck_sweep.enabled",
+            "yaml_path": "triage.stuck_sweep.enabled",
+        },
+    )
+    triage_stuck_sweep_interval_minutes: int = Field(
+        15,
+        title="Stuck Sweep Interval (minutes)",
+        description="Scan for stuck issues every N minutes (>= 1; disable via 'enabled')",
+        ge=1,
+        json_schema_extra={
+            "doc_examples": ["15", "30", "60"],
+            "doc_notes": (
+                "How often the tech-lead sweep scans open issues for terminal "
+                "stuck state. Only runs when the sweep is enabled; each scan is "
+                "a single bounded query."
+            ),
+            "section": "Triage Review",
+            "config_attr": "triage.stuck_sweep.interval_minutes",
+            "yaml_path": "triage.stuck_sweep.interval_minutes",
+        },
+    )
+    triage_stuck_sweep_max_recovery_attempts: int = Field(
+        3,
+        title="Stuck Sweep Max Recovery Attempts",
+        description="Re-inject a stuck issue at most this many times before escalating",
+        ge=1,
+        le=100,
+        json_schema_extra={
+            "doc_examples": ["1", "3", "5"],
+            "doc_notes": (
+                "After this many recovery attempts a stuck issue is no longer "
+                "re-injected (no infinite loop); it is surfaced as exhausted and "
+                "needs human attention. The counter is durable across restarts."
+            ),
+            "section": "Triage Review",
+            "config_attr": "triage.stuck_sweep.max_recovery_attempts",
+            "yaml_path": "triage.stuck_sweep.max_recovery_attempts",
+        },
+    )
+    triage_max_concurrent: Optional[int] = Field(
+        None,
+        title="Reserved Triage Concurrency",
+        description=(
+            "Reserved concurrency slots for triage sessions (empty = share the "
+            "worker budget)"
+        ),
+        ge=1,
+        le=20,
+        json_schema_extra={
+            "doc_examples": ["1", "2"],
+            "doc_notes": (
+                "Empty (the default) shares the worker budget "
+                "(execution.concurrency.max_concurrent_sessions): triage counts "
+                "against it and is planned from the shared capacity, exactly as "
+                "before. A positive value is a SEPARATE additive triage budget: "
+                "triage sessions run from their own slots and are NOT subtracted "
+                "from the worker budget, so the tech lead can run even when "
+                "workers are saturated. Total live agents are then bounded at "
+                "max_concurrent_sessions + triage.max_concurrent."
+            ),
+            "section": "Triage Review",
+            "config_attr": "triage.max_concurrent",
+            "yaml_path": "triage.max_concurrent",
+        },
+    )
+
     @field_validator(
         "triage_authority_post_comment",
         "triage_authority_create_issue",
@@ -1257,6 +1359,19 @@ class ReviewSettings(BaseModel):
                 f"{self.triage_health_review_interval_minutes} but no triage "
                 "agent is configured; set review.triage_review_agent, or use 0 "
                 "to disable the periodic health review."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _stuck_sweep_requires_triage_agent(self) -> "ReviewSettings":
+        # Cross-field invariant (#6823): the sweep re-injects stuck issues into
+        # the reactive-triage pipeline, so an enabled sweep with no triage agent
+        # is silently inert at runtime. Reject the pair so it fails loudly.
+        if self.triage_stuck_sweep_enabled and not self.triage_agent:
+            raise ValueError(
+                "triage.stuck_sweep.enabled is true but no triage agent is "
+                "configured; set review.triage_review_agent, or disable the "
+                "stuck sweep."
             )
         return self
 

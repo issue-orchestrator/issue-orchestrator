@@ -950,7 +950,7 @@ class TestRemoveWorktree:
 
     @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_remove_worktree_not_exists(self, mock_run, tmp_path):
-        """Test error when worktree doesn't exist."""
+        """Test error when worktree doesn't exist (non-forced)."""
         # Setup
         worktree_path = tmp_path / "nonexistent"
 
@@ -959,6 +959,16 @@ class TestRemoveWorktree:
             remove_worktree(worktree_path)
 
         # Git should not have been called
+        mock_run.assert_not_called()
+
+    @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
+    def test_remove_worktree_forced_is_idempotent_when_absent(self, mock_run, tmp_path):
+        """R3 (#6824): a FORCED removal of an already-absent path is a no-op, not
+        an error — so a partial-success cleanup retry cannot loop forever."""
+        worktree_path = tmp_path / "already-gone"
+
+        # No exception, and git is not invoked (nothing to remove).
+        remove_worktree(worktree_path, force=True)
         mock_run.assert_not_called()
 
     @patch("issue_orchestrator.adapters.worktree._worktree.get_worktree_branch")
@@ -2152,6 +2162,159 @@ class TestCreateWorktreeReuse:
 
             assert uncommitted == 2
             assert commits == 0
+
+    def test_reuse_preserve_branch_skips_rebase_and_reset(self, tmp_path):
+        """preserve_branch=True must NOT rebase or hard-reset a diverged branch.
+
+        Models a triage investigation reusing a stranded worktree whose branch
+        is ahead of origin/main: the branch (and its unpushed commits) must
+        survive untouched — no ``rebase`` and no ``reset --hard origin/main``.
+        """
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        (repo_root / ".git").mkdir()
+        worktree_path = tmp_path / "worktree"
+        worktree_path.mkdir()
+
+        worktree_list_output = (
+            f"worktree {worktree_path}\n"
+            "HEAD abc123\n"
+            "branch refs/heads/123-test\n\n"
+        )
+
+        with (
+            patch("issue_orchestrator.adapters.git.git_cli.subprocess.run") as mock_run,
+            patch("issue_orchestrator.adapters.worktree._worktree.install_hooks"),
+            patch("issue_orchestrator.adapters.worktree._worktree.install_claude_settings"),
+            patch("issue_orchestrator.adapters.worktree._worktree.sync_cli_tools"),
+        ):
+            def run_side_effect(cmd, *args, **kwargs):
+                argv = cmd[3:]
+                if argv[:2] == ["worktree", "prune"]:
+                    return MagicMock(returncode=0, stderr="")
+                if argv[:2] == ["worktree", "list"]:
+                    return MagicMock(returncode=0, stdout=worktree_list_output, stderr="")
+                if argv[:3] == ["rev-parse", "--abbrev-ref", "HEAD"]:
+                    return MagicMock(returncode=0, stdout="123-test\n", stderr="")
+                # If the reset path ran, rebase would fail here and force a hard
+                # reset that discards the stranded commits. It must never run.
+                if argv[:2] == ["rebase", "origin/main"]:
+                    return MagicMock(returncode=1, stdout="", stderr="CONFLICT")
+                return MagicMock(returncode=0, stdout="", stderr="")
+
+            mock_run.side_effect = run_side_effect
+
+            (
+                worktree_path_out,
+                branch_name,
+                reuse_status,
+                _,
+                rebase_failed,
+                uncommitted,
+                commits,
+            ) = create_worktree(
+                repo_root,
+                123,
+                "Test",
+                worktree_base=tmp_path,
+                branch_name="123-test",
+                base_branch="main",
+                reuse_options=WorktreeReuseOptions(
+                    reuse_push_preflight=False, preserve_branch=True
+                ),
+                policy=self._policy(),
+            )
+
+            assert reuse_status == "reused"
+            assert worktree_path_out == worktree_path
+            assert branch_name == "123-test"
+            assert rebase_failed is False
+            assert uncommitted == 0
+            assert commits == 0
+            issued = [call_args[0][0][3:] for call_args in mock_run.call_args_list]
+            assert not any(a[:1] == ["rebase"] for a in issued), issued
+            assert not any(
+                a[:3] == ["reset", "--hard", "origin/main"] for a in issued
+            ), issued
+            # The rebase/reset prep fetches origin/main; skipping it means no
+            # such fetch is issued during reuse.
+            assert not any(
+                a[:3] == ["fetch", "origin", "main"] for a in issued
+            ), issued
+
+    def test_reuse_without_preserve_branch_still_resets(self, tmp_path):
+        """Default (preserve_branch=False) still rebases and discards on conflict.
+
+        Regression guard: the preserve-branch skip must be strictly opt-in — the
+        ordinary reuse path keeps freshening the branch onto the base branch.
+        """
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        (repo_root / ".git").mkdir()
+        worktree_path = tmp_path / "worktree"
+        worktree_path.mkdir()
+
+        worktree_list_output = (
+            f"worktree {worktree_path}\n"
+            "HEAD abc123\n"
+            "branch refs/heads/123-test\n\n"
+        )
+
+        with (
+            patch("issue_orchestrator.adapters.git.git_cli.subprocess.run") as mock_run,
+            patch("issue_orchestrator.adapters.worktree._worktree.install_hooks"),
+            patch("issue_orchestrator.adapters.worktree._worktree.install_claude_settings"),
+            patch("issue_orchestrator.adapters.worktree._worktree.sync_cli_tools"),
+        ):
+            def run_side_effect(cmd, *args, **kwargs):
+                argv = cmd[3:]
+                if argv[:2] == ["worktree", "prune"]:
+                    return MagicMock(returncode=0, stderr="")
+                if argv[:2] == ["worktree", "list"]:
+                    return MagicMock(returncode=0, stdout=worktree_list_output, stderr="")
+                if argv[:3] == ["fetch", "origin", "main"]:
+                    return MagicMock(returncode=0, stdout="", stderr="")
+                if argv[:3] == ["rev-parse", "--verify", "origin/main"]:
+                    return MagicMock(returncode=0, stdout="abc123\n", stderr="")
+                if argv[:3] == ["rev-parse", "--abbrev-ref", "HEAD"]:
+                    return MagicMock(returncode=0, stdout="123-test\n", stderr="")
+                if argv[:2] == ["status", "--porcelain"]:
+                    return MagicMock(returncode=0, stdout="", stderr="")
+                if argv[:2] == ["reset", "--hard"] and len(argv) == 3 and argv[2] == "HEAD":
+                    return MagicMock(returncode=0, stdout="", stderr="")
+                if argv[:2] == ["clean", "-fd"]:
+                    return MagicMock(returncode=0, stdout="", stderr="")
+                if argv[:2] == ["rebase", "origin/main"]:
+                    return MagicMock(returncode=1, stdout="", stderr="CONFLICT")
+                if argv[:2] == ["rebase", "--abort"]:
+                    return MagicMock(returncode=0, stdout="", stderr="")
+                if argv[:3] == ["rev-list", "--count", "origin/main..HEAD"]:
+                    return MagicMock(returncode=0, stdout="2\n", stderr="")
+                if argv[:2] == ["reset", "--hard"] and len(argv) == 3 and argv[2] == "origin/main":
+                    return MagicMock(returncode=0, stdout="", stderr="")
+                return MagicMock(returncode=0, stdout="", stderr="")
+
+            mock_run.side_effect = run_side_effect
+
+            _, _, _, _, _, uncommitted, commits = create_worktree(
+                repo_root,
+                123,
+                "Test",
+                worktree_base=tmp_path,
+                branch_name="123-test",
+                base_branch="main",
+                reuse_options=WorktreeReuseOptions(
+                    reuse_push_preflight=False, preserve_branch=False
+                ),
+                policy=self._policy(),
+            )
+
+            assert commits == 2
+            issued = [call_args[0][0][3:] for call_args in mock_run.call_args_list]
+            assert any(a[:2] == ["rebase", "origin/main"] for a in issued), issued
+            assert any(
+                a[:3] == ["reset", "--hard", "origin/main"] for a in issued
+            ), issued
 
 
 # =============================================================================

@@ -424,3 +424,49 @@ class TestTriageWorkflow:
 
         assert decision.should_launch
         assert len(decision.triage_to_launch) == 2
+
+    def test_shared_budget_skips_when_worker_budget_full(self, workflow):
+        """None (default): a full worker budget skips triage - unchanged."""
+        decision = workflow.should_launch_triage(
+            pending_triage=[make_pending_triage(100)],
+            active_session_count=3,  # == max_concurrent_sessions
+            paused=False,
+        )
+        assert not decision.should_launch
+        assert "No capacity" in decision.skip_reason
+
+    def test_reserved_capacity_launches_despite_full_worker_budget(self, workflow):
+        """reserved_capacity gates on the reserved additive budget, so a full
+        worker budget no longer blocks the tech lead."""
+        pending = [make_pending_triage(100), make_pending_triage(101)]
+        decision = workflow.should_launch_triage(
+            pending_triage=pending,
+            active_session_count=3,  # worker budget full
+            paused=False,
+            reserved_capacity=1,
+        )
+        assert decision.should_launch
+        # Bounded by the reserved budget, not by max_concurrent_sessions.
+        assert len(decision.triage_to_launch) == 1
+
+    def test_reserved_capacity_zero_skips(self, workflow):
+        """A reserved budget already fully in use skips with a reserved reason."""
+        decision = workflow.should_launch_triage(
+            pending_triage=[make_pending_triage(100)],
+            active_session_count=0,
+            paused=False,
+            reserved_capacity=0,
+        )
+        assert not decision.should_launch
+        assert "reserved triage capacity" in decision.skip_reason
+
+    def test_reserved_capacity_still_honors_paused(self, workflow):
+        """Paused is the floor: a reserved budget does not override it."""
+        decision = workflow.should_launch_triage(
+            pending_triage=[make_pending_triage(100)],
+            active_session_count=0,
+            paused=True,
+            reserved_capacity=1,
+        )
+        assert not decision.should_launch
+        assert "paused" in decision.skip_reason.lower()

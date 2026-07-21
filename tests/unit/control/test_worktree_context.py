@@ -294,6 +294,45 @@ class TestWorktreeContextCreate:
             assert call_kwargs["base_branch"] == "20-base"
             assert call_kwargs["seed_ref"] is None
 
+    def test_scratch_identity_overrides_name_branch_and_suppresses_seed(
+        self, mock_worktree_manager, mock_config, mock_events, mock_session_output
+    ):
+        """A scratch investigation OWNS its worktree name/branch and is a clean
+        checkout off the base branch (#6823): the configured seed ref and any
+        stack base are suppressed so it never seeds from the subject's branch."""
+        from issue_orchestrator.control.worktree_context import (
+            ScratchWorktreeIdentity,
+        )
+
+        mock_config.worktree_base_branch_override = "main"
+        mock_config.worktree_seed_ref = "seed-abc"
+        with patch(
+            "issue_orchestrator.control.worktree_context.Worktree"
+        ) as mock_worktree_cls:
+            mock_worktree_cls.return_value = MagicMock()
+
+            WorktreeContext.create(
+                worktree_manager=mock_worktree_manager,
+                config=mock_config,
+                events=mock_events,
+                session_output=mock_session_output,
+                issue_number=5980,
+                issue_title="Investigate failure",
+                session_name="issue-5980",
+                agent_label="agent:triage",
+                stack_base_branch="20-base",  # ignored for a scratch investigation
+                scratch=ScratchWorktreeIdentity(
+                    worktree_name="repo-triage-5980-tok",
+                    branch_name="triage-investigation-5980-tok",
+                ),
+            )
+
+            call_kwargs = mock_worktree_manager.create.call_args.kwargs
+            assert call_kwargs["worktree_name"] == "repo-triage-5980-tok"
+            assert call_kwargs["branch_name"] == "triage-investigation-5980-tok"
+            assert call_kwargs["base_branch"] == "main"
+            assert call_kwargs["seed_ref"] is None
+
     def test_no_stack_base_uses_configured_default(
         self, mock_worktree_manager, mock_config, mock_events, mock_session_output
     ):

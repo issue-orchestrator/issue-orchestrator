@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, ClassVar, Optional, cast
 if TYPE_CHECKING:
     from ..control.planner_types import OrchestratorSnapshot, Plan
     from ..control.session_manager import SessionRef, SessionType
+    from ..control.triage_trigger import TriageTerminationOutcome
     from ..domain.triage_session import TriageLaunchScope
     from ..ports.session_runner import DiscoveredSession
     from .e2e_db import E2ERun
@@ -43,6 +44,9 @@ from ..control.session_completion import (
 )
 from ..control.session_launcher import SessionLauncher
 from ..control.board_snapshot_builder import StateBoardSnapshotProvider
+from ..control.health_review_trigger import (
+    ensure_on_demand_health_review_anchor as _ensure_on_demand_health_review_anchor,
+)
 from ..control.session_routing import (
     orchestrator_launch_review_session as _launch_review_session,
     orchestrator_launch_retrospective_review_session as _launch_retrospective_review_session,
@@ -59,6 +63,7 @@ from ..control.session_routing import (
     get_session_machine as _sl_get_session_machine,
 )
 from ..control.cleanup_manager import CleanupManager
+from ..control.worker_budget import worker_slot_free
 from ..control.review_exchange_lifecycle import (
     IssueRuntimeTermination,
     ReviewExchangeCancellation,
@@ -166,6 +171,79 @@ class Orchestrator:
         """Kill a session by terminal ID (public wrapper)."""
         self._kill_session(name)
 
+    def terminate_triage_session(
+        self, session: "Session"
+    ) -> "TriageTerminationOutcome":
+        """Behavior-complete termination of a triage session on timeout (#6824 R7).
+
+        ``kill_session`` only stops the terminal, and a one-shot command runs NO
+        further tick after this — so a recorded cleanup fact would never be
+        applied. The termination is therefore self-contained, mirroring the
+        outcomes normal completion produces: remove the session state machine,
+        stop the terminal, reconcile the session out of ``active_sessions`` (via
+        the state owner), release its claim, and FORCE-remove the disposable
+        scratch worktree.
+
+        EVERY effect is attempted independently — a failure of one (e.g. the
+        terminal stop) never aborts the others — and the result is a typed
+        :class:`TriageTerminationOutcome`, the SOLE owner of a failed one-shot
+        cleanup: on a scratch-worktree removal failure the outcome carries the
+        exact ``leaked_worktree`` path so the command can require explicit
+        operator removal. (No engine tick ever runs after this — the only caller
+        is the on-demand driver, which pauses and ``close()``s — so there is no
+        second, tick-based retry mechanism; #6824 R7.)
+        """
+        from ..control.triage_trigger import TriageTerminationOutcome
+
+        n = session.issue.number
+
+        def _effect(fn, what: str) -> bool:  # attempt one effect independently
+            try:
+                fn()
+                return True
+            except Exception:
+                logger.warning(
+                    "[TRIAGE] Failed to %s for issue #%d on timeout terminate",
+                    what, n, exc_info=True,
+                )
+                return False
+
+        smm = getattr(self.deps, "state_machine_manager", None)
+        machine_removed = _effect(
+            lambda: smm.remove_session_machine(session.terminal_id) if smm else None,
+            "remove state machine",
+        )
+        terminal_stopped = _effect(
+            lambda: self._kill_session(session.terminal_id), "stop terminal"
+        )
+        self.state.drop_active_session(session.terminal_id)  # pure in-memory owner op
+        cm = getattr(self.deps, "claim_manager", None)
+        lease_id = getattr(session, "lease_id", None)
+        claim_released = _effect(
+            lambda: cm.release_claim(n, lease_id) if (cm and lease_id) else None,
+            "release claim",
+        )
+        wtm = getattr(self.deps, "worktree_manager", None)
+        disposable = getattr(session, "scratch_worktree", False) and session.worktree_path
+        worktree_removed = _effect(
+            lambda: wtm.remove(session.worktree_path, force=True)
+            if (disposable and wtm) else None,
+            "remove scratch worktree",
+        )
+        # A failed removal surfaces the EXACT leaked path in the outcome for
+        # explicit operator action before exit — the single cleanup-failure owner
+        # (no dead engine-tick retry, #6824 R7).
+        leaked_worktree = (
+            str(session.worktree_path) if (disposable and not worktree_removed) else None
+        )
+        return TriageTerminationOutcome(
+            terminal_stopped=terminal_stopped,
+            machine_removed=machine_removed,
+            claim_released=claim_released,
+            worktree_removed=worktree_removed,
+            leaked_worktree=leaked_worktree,
+        )
+
     def cancel_review_exchange_for_issue(
         self,
         issue_number: int,
@@ -267,7 +345,7 @@ class Orchestrator:
         if retry is None:
             return None
         return _launch_validation_retry_session(retry, self.state, self._session_launcher, self.deps.session_restorer)
-    def _launch_triage_by_number(self, n: int) -> Optional[Session]: return _ch_launch_triage_by_number(n, self.state.pending_triage_reviews, self._launch_triage_session)
+    def _launch_triage_by_number(self, n: int) -> Optional[Session]: return _ch_launch_triage_by_number(n, self.state.pending_triage_reviews, self.launch_triage_session)
 
     def _get_issue_machine(self, issue: Issue) -> Optional[IssueStateMachine]: return _gw_get_issue_machine(issue, self.deps.state_machine_manager)
     def _get_session_machine(self, name: str, n: int, timeout: int) -> Optional[SessionStateMachine]: return _sl_get_session_machine(name, n, timeout, self.deps.state_machine_manager)
@@ -435,6 +513,15 @@ class Orchestrator:
             orchestrator_id=self.config.orchestrator_id,
             instance_id=instance_id,
             orchestrator_instance_id=self.deps.services.instance_id,
+            # Worker-slot start-gate for a first-class E2E run: only when
+            # e2e.occupies_session_slot is on does this decide whether the run
+            # starts. Same worker-budget accounting the planner uses (triage's
+            # reserved slot excluded), so E2E competes for the WORKER budget,
+            # not the tech-lead's slot. Computed after the tick's launches, so
+            # it sees the slot the planner reserved for a due suite left free.
+            worker_slot_free=worker_slot_free(
+                self.config, self.state.active_sessions
+            ),
         )
         if triggered:
             self.deps.events.publish(TraceEvent(
@@ -1035,7 +1122,8 @@ class Orchestrator:
     def _github_workflow(self) -> GitHubWorkflow: return GitHubWorkflow(self.config, self.deps.events, self.deps.repository_host, self.deps.fact_gatherer, self.deps.pr_scanner, self.deps.label_sync, self._event_context, self.deps.label_manager, self.scheduler.dependency_evaluator)
     def launch_review_session(self, review: PendingReview) -> Optional[Session]: return _launch_review_session(review, self.state, self._session_launcher, self.deps.session_restorer)
     def launch_retrospective_review_session(self, review: PendingRetrospectiveReview) -> Optional[Session]: return _launch_retrospective_review_session(review, self.state, self._session_launcher, self.deps.session_restorer)
-    def _launch_triage_session(self, triage: PendingTriageReview) -> Optional[Session]: return _launch_triage_session(triage, self.state, self.config, self._session_launcher, self.deps.session_restorer)
+    def launch_triage_session(self, triage: PendingTriageReview) -> Optional[Session]: return _launch_triage_session(triage, self.state, self.config, self._session_launcher, self.deps.session_restorer)
+    def ensure_health_review_anchor(self) -> Optional[PendingTriageReview]: return _ensure_on_demand_health_review_anchor(state=self.state, config=self.config, repository_host=self.deps.repository_host, action_applier=self.deps.action_applier, queue_cache_store=self.deps.queue_cache_store, triage_authority=self.deps.triage_authority, now=time.time())
     def process_deferred_cleanups(self) -> None: self.state.pending_cleanups = self._github_workflow.process_deferred_cleanups(self.state.pending_cleanups, self._cleanup_manager)
     def _recover_orphaned_cleanups(self) -> None: self._plan_applier.recover_orphaned_cleanups()
     def scan_needs_code_review_prs(self) -> None: self._github_workflow.scan_needs_code_review_prs(self.state)

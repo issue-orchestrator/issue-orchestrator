@@ -8,14 +8,23 @@ Single-instance mode: .issue-orchestrator/lock.json
 Multi-instance mode:  .issue-orchestrator/locks/{instance_id}.json
 """
 
+import fcntl
 import json
 import os
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from .repo_identity import lock_file, locks_dir, normalize_repo_root, state_dir
+
+# Process-local registry of held gate file descriptors, keyed by the metadata
+# lock path. ``flock`` is bound to the open file DESCRIPTION (the fd), so the
+# descriptor MUST stay open for the whole lock lifetime — closing it releases
+# the flock. release_lock (and the held_repo_lock finally) close them here.
+_HELD_GATE_FDS: dict[str, list[int]] = {}
 
 
 class AlreadyRunning(Exception):
@@ -84,18 +93,22 @@ class LockInfo:
 def _is_process_alive(pid: int) -> bool:
     """Check if a process with the given PID is alive.
 
-    Args:
-        pid: Process ID to check
-
-    Returns:
-        True if process exists and is running
+    ``kill(pid, 0)`` sends no signal; the errno distinguishes the cases and they
+    must NOT be collapsed to "dead" (#6824 R2): ``ESRCH`` (ProcessLookupError)
+    means the process is absent, but ``EPERM`` (PermissionError) means it EXISTS
+    and is owned by ANOTHER user — treating that as dead would let a user-owned
+    invocation overwrite a live service-owned legacy engine (split-brain). Any
+    other error fails conservatively as alive rather than risk a double-run.
     """
     try:
-        # Signal 0 doesn't kill, just checks if process exists
         os.kill(pid, 0)
         return True
+    except ProcessLookupError:
+        return False  # ESRCH: no such process
+    except PermissionError:
+        return True  # EPERM: process exists, owned by another user
     except OSError:
-        return False
+        return True  # unknown error: assume alive (fail-safe, never double-run)
 
 
 def _read_lock(lock_path: Path) -> LockInfo | None:
@@ -134,12 +147,54 @@ def _write_lock(lock_path: Path, info: LockInfo) -> None:
     tmp_path.rename(lock_path)
 
 
+def _repo_gate_path(repo_root: Path) -> Path:
+    """The ONE repo-wide flock gate that serializes every startup mode.
+
+    Single-instance and one-shot commands take it ``LOCK_EX`` (excluding
+    everything); a named multi-instance engine takes it ``LOCK_SH`` (so N named
+    instances coexist, yet a one-shot's ``LOCK_EX`` still excludes them all).
+    This is the single atomic owner the review's A1 requires — it replaces the
+    old read-check-rename race AND the TOCTOU ``list_instance_locks`` scan.
+    """
+    return repo_root / ".issue-orchestrator" / "repo.lock"
+
+
+def _instance_gate_path(repo_root: Path, instance_id: str) -> Path:
+    """Per-instance-id flock gate: rejects a duplicate SAME instance_id."""
+    return locks_dir(repo_root) / f"{instance_id}.lock"
+
+
+def _acquire_gate(path: Path, *, exclusive: bool) -> int:
+    """Open ``path`` and take a non-blocking flock; raise BlockingIOError on conflict.
+
+    Returns the held fd (caller keeps it open for the lock lifetime). ``flock`` is
+    bound to the open file description, so a second ``os.open`` of the same file —
+    even in the same process — conflicts, which is exactly the mutual exclusion
+    the old code lacked.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+    flag = (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH) | fcntl.LOCK_NB
+    try:
+        fcntl.flock(fd, flag)
+    except OSError:
+        os.close(fd)
+        raise
+    return fd
+
+
 def acquire_lock(
     repo_root: Path | str,
     port: int | None = None,
     instance_id: str | None = None,
 ) -> LockInfo:
-    """Acquire the repository lock (or instance-specific lock).
+    """Acquire the repository lock atomically (or instance-specific lock).
+
+    Exclusion is a repo-wide ``flock`` gate (see :func:`_repo_gate_path`), NOT the
+    old read-check-then-write on the metadata file — two callers can no longer
+    both "win". The metadata ``lock.json`` / ``locks/{id}.json`` remains the
+    on-disk advertisement (pid/port/heartbeat) that the supervisor and status
+    endpoints read; it is no longer the exclusion primitive.
 
     Args:
         repo_root: Repository root path
@@ -154,22 +209,40 @@ def acquire_lock(
     """
     repo_root = normalize_repo_root(repo_root)
     lock_path = lock_file(repo_root, instance_id)
+    exclusive = instance_id is None
 
-    # Check existing lock
-    existing = _read_lock(lock_path)
-    if existing is not None:
-        if _is_process_alive(existing.pid):
-            # Another orchestrator is running
-            raise AlreadyRunning(
-                pid=existing.pid,
-                repo_root=repo_root,
-                port=existing.http_port,
-                instance_id=instance_id,
+    # 1. Repo-wide gate — the cross-mode atomic owner.
+    try:
+        gate_fd = _acquire_gate(_repo_gate_path(repo_root), exclusive=exclusive)
+    except OSError as exc:
+        raise _already_running(repo_root, lock_path, instance_id) from exc
+    held = [gate_fd]
+
+    # 2. Per-instance gate — reject a duplicate SAME instance_id (multi only;
+    #    single-instance/one-shot are already fully excluded by the LOCK_EX gate).
+    if instance_id is not None:
+        try:
+            held.append(
+                _acquire_gate(_instance_gate_path(repo_root, instance_id), exclusive=True)
             )
-        # Stale lock - process is dead, we can take over
+        except OSError as exc:
+            _release_fds(held)
+            raise _already_running(repo_root, lock_path, instance_id) from exc
 
-    # Create new lock
-    recovered = existing is not None  # True if we're recovering from stale lock
+    # Gate(s) held. Compatibility guard (#6824 R2): a live process may have
+    # recorded metadata under the PRE-flock implementation (which held no gate),
+    # so winning the gate does NOT prove that process is gone. Check EVERY
+    # conflicting legacy advertisement across modes, not just this mode's file.
+    legacy = _conflicting_legacy_holder(repo_root, lock_path, instance_id)
+    if legacy is not None:
+        _release_fds(held)
+        raise AlreadyRunning(
+            pid=legacy.pid,
+            repo_root=repo_root,
+            port=legacy.http_port,
+            instance_id=legacy.instance_id,
+        )
+    recovered = _read_lock(lock_path) is not None
     info = LockInfo(
         repo_root=str(repo_root),
         pid=os.getpid(),
@@ -180,9 +253,65 @@ def acquire_lock(
         instance_id=instance_id,
         last_heartbeat_at=datetime.now(timezone.utc).isoformat(),
     )
-
     _write_lock(lock_path, info)
+    _HELD_GATE_FDS.setdefault(str(lock_path), []).extend(held)
     return info
+
+
+def _already_running(
+    repo_root: Path, lock_path: Path, instance_id: str | None
+) -> AlreadyRunning:
+    """Build AlreadyRunning from the metadata advertisement (best-effort)."""
+    existing = _read_lock(lock_path)
+    return AlreadyRunning(
+        pid=existing.pid if existing else -1,
+        repo_root=repo_root,
+        port=existing.http_port if existing else None,
+        instance_id=instance_id,
+    )
+
+
+def _live_holder(lock_path: Path) -> LockInfo | None:
+    """A LIVE, different-pid holder advertised at ``lock_path`` (else None)."""
+    info = _read_lock(lock_path)
+    if info is not None and info.pid != os.getpid() and _is_process_alive(info.pid):
+        return info
+    return None
+
+
+def _conflicting_legacy_holder(
+    repo_root: Path, lock_path: Path, instance_id: str | None
+) -> LockInfo | None:
+    """A live pre-flock holder (metadata, no gate) that conflicts with this acquire.
+
+    Cross-mode matrix (#6824 R2): winning the flock gate cannot exclude a legacy
+    process that holds no gate, so EVERY conflicting advertisement is checked —
+    not just this mode's own file. An EXCLUSIVE acquire (single-instance /
+    one-shot) conflicts with a live ``lock.json`` AND every live ``locks/*.json``;
+    a NAMED acquire conflicts with its own same-id ``locks/{id}.json`` AND a live
+    ``lock.json`` (a single-instance engine excludes all names).
+    """
+    own = _live_holder(lock_path)
+    if own is not None:
+        return own
+    single = _live_holder(lock_file(repo_root, None))
+    if single is not None:
+        return single
+    if instance_id is None:
+        for info in list_instance_locks(repo_root):
+            if info.pid != os.getpid():
+                return info
+    return None
+
+
+def _release_fds(fds: list[int]) -> None:
+    """Release + close held gate fds (releasing their flocks)."""
+    for fd in fds:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+        except OSError:
+            pass
 
 
 def release_lock(
@@ -207,18 +336,52 @@ def release_lock(
     pid = pid or os.getpid()
 
     existing = _read_lock(lock_path)
-    if existing is None:
+    # Validate ownership BEFORE releasing anything (#6824 R2): a wrong-pid
+    # release must NOT silently drop the flock (leaving a split-brain where
+    # another process can acquire while the metadata still names this one). Only
+    # the true owner releases its gate fds and unlinks its metadata.
+    if existing is not None and existing.pid != pid:
         return False
 
-    if existing.pid != pid:
-        # Lock belongs to another process
-        return False
+    held = _HELD_GATE_FDS.pop(str(lock_path), [])
+    _release_fds(held)
+
+    if existing is None:
+        return bool(held)
 
     try:
         lock_path.unlink()
         return True
     except OSError:
         return False
+
+
+@contextmanager
+def held_repo_lock(
+    repo_root: Path | str,
+    port: int | None = None,
+    instance_id: str | None = None,
+) -> Iterator[LockInfo]:
+    """Acquire and hold the repo lock across a whole in-process lifecycle.
+
+    The supervised engine (:mod:`..entrypoints.run_orchestrator`) already
+    acquires + releases the lock around its run; a one-shot in-process command
+    must do the SAME rather than a read-only :func:`is_locked` peek. A peek is
+    check-then-act: two one-shots (or a one-shot and the engine) can both pass
+    the check and then run concurrently against one repo.
+
+    :func:`acquire_lock` now takes the repo-wide ``LOCK_EX`` gate (a one-shot
+    passes ``instance_id=None``), which atomically excludes the single-instance
+    engine, every multi-instance engine (they hold ``LOCK_SH`` on the same
+    gate), and any other one-shot — so no post-acquire ``list_instance_locks``
+    scan is needed (that scan was itself a TOCTOU). Releases on every exit path.
+    """
+    repo_root = normalize_repo_root(repo_root)
+    info = acquire_lock(repo_root, port, instance_id)
+    try:
+        yield info
+    finally:
+        release_lock(repo_root, pid=info.pid, instance_id=instance_id)
 
 
 def read_lock(repo_root: Path | str, instance_id: str | None = None) -> LockInfo | None:

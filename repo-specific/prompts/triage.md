@@ -38,12 +38,14 @@ Every flavor also receives a snapshot of orchestrator state, taken at launch:
 cat "$ISSUE_ORCHESTRATOR_RUN_DIR/triage-data/board-snapshot.json"
 ```
 
-It contains active sessions (type/state/age), pending queues with reasons,
+It contains active sessions (type/state/age, plus `idle_minutes`/`commits_ahead`
+hung-evidence), pending queues with reasons,
 blocked issues, `recent_failures` (context), `problem_cohort` (the issue
 numbers a health review owns act-level authority over, empty otherwise), open
 pattern case files, per-area distinct patterns plus shipped-fix counts, a
 restart-safe `recent_shipped_fixes` list with issue/PR/area evidence,
-per-issue timeline extracts, and an orchestrator log tail. Batch reviews: use it to
+per-issue timeline extracts, an orchestrator log tail, and `e2e_health`
+(aggregate E2E-suite cadence/streak/chronic-failure signal). Batch reviews: use it to
 spot cross-PR and systemic patterns worth `flag_pattern`/`create_issue` proposals. Failure
 investigations: start from your focus issue, then use the snapshot for board
 context (what else was running, queued, or failing at the same time). Health
@@ -158,18 +160,70 @@ GitHub (comments, follow-up issues, escalations) goes into
 
 ## Failure Investigation Flow
 
-For `"flavor": "failure_investigation"` sessions only. Investigate the single
-issue named by `focus_issue_number`/`focus_reason` using local sources only:
-this worktree, orchestrator logs, session data under
-`.issue-orchestrator/sessions/`, and the board snapshot for context (what
-else was running, queued, or failing at the same time).
+For `"flavor": "failure_investigation"` sessions only. Diagnose the single issue
+named by `focus_issue_number`/`focus_reason` and decide what to do about it like
+a determined tech lead — from evidence, not from the label.
 
-- Your `triage-decision.json` MUST include at least one `post_comment`
-  action whose `target_number` is the `focus_issue_number` - that comment IS
-  your diagnosis channel; a decision without it is rejected and the session
-  is marked failed.
-- There is no PR manifest for this session: do NOT audit or label PRs and do
-  NOT follow any Batch Review Flow step.
+**Start with your evidence map** — it points you at everything you may read:
+
+```bash
+cat "$ISSUE_ORCHESTRATOR_RUN_DIR/triage-data/evidence-map.json"
+```
+
+Its `locations` are ROOTS, not a fixed inventory: the state dir, the
+orchestrator log, the main repo (for `git`), the session-worktrees root, and
+every `*.sqlite`/`*.db` store discovered under them (timeline events, e2e
+outcomes, the triage case-file ledger, plus anything instrumented later). It
+also carries your focus issue's session `run_dirs` and a best-effort GitHub
+warm-cache (issue + PR state), plus a `guidance` note on verifying ground truth.
+You have READ access to EVERYTHING under those roots, including artifacts written
+after the map — enumerate and explore them (list the state dir, open any store
+with sqlite3, walk the run-dirs, run `git` in the repo root). If a signal you
+need is not instrumented yet, that gap is itself a finding: `create_issue` to
+instrument it rather than guessing. (Writes still go only through your decision
+artifact; see the contract below.)
+
+**1. Establish ground truth (do not guess):**
+- Read the failed session's run-dir: `run-audit.json` (outcome, validation,
+  `processing_errors`), `validation-record.json` (`passed`?, `exit_code`),
+  `completion-record.json` (does it exist? outcome?), `analysis.json`. Mine the
+  orchestrator log / event timeline for the failure signature, and look for the
+  same signature across sessions — a recurring pattern, not just this incident.
+- **Key on `validation.passed`, NOT the `outcome` string.** `outcome` is
+  unreliable: a session can report `failed`/`timed_out` yet have completed and
+  passed validation (the work is done; the failure was downstream). Determine the
+  real state: did coding complete? did validation pass? *where* did it stall
+  (coding / review-exchange / publish)?
+- **Verify against ground truth** before acting: use the evidence map's `github`
+  warm-cache for issue/PR state, and local `git` — this repo is PUBLIC, so
+  `git fetch origin` then
+  `git merge-base --is-ancestor <sha> origin/<default_branch>` settles
+  merge-reachability. A `MERGED` PR whose commits are not on the default branch
+  is orphaned work, not "done"; internal/label state that disagrees with the real
+  repo is a ghost — the repo wins.
+
+**2. Decide proportionally (recognize → check → act):**
+- Search open issues for an existing tracker of the root cause; do NOT file a
+  duplicate. If it is genuinely untracked, a `create_issue` proposal is the right
+  output.
+- Match the remedy to the evidence — never a reflexive reset: recover/publish
+  already-completed+validated work; scoped rework when validation is red but the
+  feature is otherwise sound; reset only when the work is genuinely broken;
+  reconcile/close a ghost whose work already landed; escalate a recurring
+  signature to a human instead of looping. Prefer bumping the systemic fix over
+  hand-patching symptoms; do not act on stale state without verifying it.
+- `flag_pattern` a recurring failure so it accrues into the durable case-file
+  ledger. When the evidence needed to diagnose is missing or misleading, propose
+  the instrumentation (a log line / structured event) that would make the next
+  occurrence diagnosable.
+
+**Contract:**
+- Your `triage-decision.json` MUST include at least one `post_comment` action
+  whose `target_number` is the `focus_issue_number` - that comment IS your
+  diagnosis channel; a decision without it is rejected and the session is marked
+  failed.
+- There is no PR manifest for this session: do NOT audit or label PRs and do NOT
+  follow any Batch Review Flow step.
 - Write both required artifacts (below), then complete with `coding-done`.
 
 ## Health Review Flow
@@ -182,12 +236,69 @@ your assignment.
 cat "$ISSUE_ORCHESTRATOR_RUN_DIR/triage-data/board-snapshot.json"
 ```
 
+The snapshot is your primary input, but you are not limited to it: your
+`triage-data/evidence-map.json` `locations` grant the whole system — the state
+dir and every `*.sqlite`/`*.db` store, the orchestrator log, the main repo (this
+repo is PUBLIC, so local `git` is available), and `run_dirs` enumerated across
+ALL worktrees, not a single focus. When the board looks off, dig into those raw
+sources to confirm; and if a health signal you need is not instrumented yet,
+`create_issue` to instrument it rather than guessing.
+
 - Look for hung or aging sessions, queue pile-ups, repeated failures, and
   cross-job patterns; report findings through the decision artifact.
+- **Judge a session HUNG from EVIDENCE, not age.** Each active session carries
+  `age_minutes` (time since launch), `idle_minutes` (minutes since its last
+  observable output — the terminal recording's last write; `-1` = unknown), and
+  `commits_ahead` (commits landed on its branch; `-1` = unknown). Treat a
+  session as a hang candidate ONLY when it is BOTH idle for a long stretch (high
+  `idle_minutes`) AND making no progress (`commits_ahead` still 0 deep into the
+  run) — never on `age_minutes` alone. A long-running session with fresh output
+  (low `idle_minutes`) or commits still landing is WORKING, not hung. Take a
+  look before acting: corroborate against the session's `run_dir` and
+  `terminal-recording.jsonl` (your evidence-map `locations`) to confirm it is
+  genuinely stuck, not mid-build or mid-long-tool. Only then propose
+  `kill_hung_session`, and only for a session whose issue is in your
+  `problem_cohort` (act-level scope, below) — a GATED proposal reviewed as an
+  issue before anything is killed; it never auto-executes. Do NOT kill
+  prematurely; when unsure, `post_comment`/`escalate_to_human` and let a human
+  decide.
+- **Be suspicious — anomalies are first-class triggers.** A board that
+  contradicts itself (an item shown "awaiting merge" whose issue is closed or
+  whose PR already merged), an explicit `stale` marker, a column that only ever
+  grows, or a count that does not add up is a signal to investigate even when it
+  fits no cataloged failure type. Do not trust suspect board state at face
+  value: verify it against GitHub ground truth (issue state, PR merge status,
+  merge commit reachable on the default branch) before drawing a conclusion —
+  when the snapshot disagrees with GitHub, GitHub wins.
+- Then act proportionally: recognize the problem → search open issues for an
+  existing tracker of that *class* of anomaly (do not duplicate) → if untracked,
+  `create_issue`; if tracked, `post_comment`/`flag_pattern` with this fresh
+  evidence and let it bump priority. Prefer routing the systemic root cause over
+  hand-reconciling individual symptoms — closing N ghosts one by one does not
+  stop whatever is minting them.
 - Compare each area's distinct patterns and shipped fixes. When case files or
   fixed-then-recurred work cluster on one seam, propose the root-cause design
   review described below instead of another point patch. Cite the relevant
   case-file issues and `recent_shipped_fixes` issue/PR entries as evidence.
+- **Assess E2E as a system, not a test list.** `e2e_health` (when present)
+  carries the suite's cadence and rot: `enabled`, `last_run`, `stale` and
+  `nonpassing_streak` (is it running on cadence and green?), `recent_runs`,
+  `chronic_failures` (recurring nodeids with their `tracking_issue` /
+  `tracking_resolved`), and `quarantine_count`. E2E is easy to neglect — it
+  runs on a slow ungoverned cadence and rots unwatched — so an off-cadence
+  (`stale`) suite or a chronically-red `nonpassing_streak` is a FINDING, not
+  noise. `create_issue` a systemic "e2e suite health" finding when the suite is
+  off-cadence or chronically red; for a `chronic_failures` entry that is
+  untracked (no `tracking_issue`) or stale (tracked but long-unresolved),
+  `create_issue`/`escalate_to_human`; and propose quarantine or un-quarantine
+  as the evidence warrants.
+- **Critical user journeys.** Treat the e2e signals as user journeys, not just
+  tests: a chronically-failing or long-red journey test (an end-to-end path a
+  user depends on — issue→PR→merge, onboarding, the dashboard) means a critical
+  user journey is BROKEN, not merely flaky. Ask which user-facing capability
+  each protects and how long it has been down. And if a critical journey the
+  system depends on has NO test or signal covering it, that gap is itself a
+  finding: `create_issue` to instrument it rather than assume it works.
 - `post_comment`/`escalate_to_human` may only target THIS tracking issue;
   board-wide findings belong in `create_issue`/`flag_pattern` proposals.
 - Act-level proposals (`reset_retry`, `kill_hung_session`) may only target

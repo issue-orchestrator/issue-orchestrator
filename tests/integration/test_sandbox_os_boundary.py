@@ -106,12 +106,24 @@ pytestmark = [
 
 # Substrings in claude's output that mean the sandbox could not initialize on
 # this host (as opposed to a genuine boundary failure) — used to skip, not fail.
+#
+# ``E2BIG`` belongs here: Claude passes the whole Seatbelt/bubblewrap profile as a
+# single ``sandbox-exec -p`` argument, and Claude's OWN built-in default deny list
+# (~180-200 paths on 2.1.216) already sits near the OS ``exec`` argument limit. On
+# a machine with extra environment (e.g. under xdist parallel), that baseline tips
+# over ``E2BIG`` and NO sandboxed Bash can run — a Claude-side limitation, not a
+# hole in our policy. OUR contribution is minimal and separately bounded by
+# ``tests/unit/test_sandbox_provider_adapter.py::test_generated_deny_rule_count_is_bounded``,
+# so skipping here cannot mask a regression we introduced. See #6860 follow-up /
+# the upstream report.
 _SANDBOX_UNAVAILABLE_SIGNS = (
     "bubblewrap",
     "sandbox is unavailable",
     "sandbox unavailable",
     "failed to start sandbox",
     "could not start sandbox",
+    "e2big",
+    "argument list too long",
 )
 
 

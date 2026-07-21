@@ -1015,9 +1015,15 @@ class AgentConfig:
         pr_number: Optional[int] = None,
         prompt_file: str | None = None,
         task_kind: str = "code",
+        evidence_read_roots: tuple[Path, ...] = (),
         extra_provider_args: Optional[dict[str, Any]] = None,
     ) -> str:
-        """Build an agent command for an already-rendered prompt."""
+        """Build an agent command for an already-rendered prompt.
+
+        ``evidence_read_roots`` is the read-only god-view grant for a tech-lead
+        failure investigation (empty otherwise): the sandbox reads those roots
+        while writes stay confined to ``worktree`` (#6824 R5).
+        """
         prompt_for_command = prompt_file or (
             self.prompt_relative if self.prompt_relative else str(self.prompt_path)
         )
@@ -1029,7 +1035,11 @@ class AgentConfig:
         # unsandboxed legacy-template command.
         sandbox_scope = compute_session_scope(
             self,
-            SandboxScopeContext(task_kind=task_kind, worktree=worktree),
+            SandboxScopeContext(
+                task_kind=task_kind,
+                worktree=worktree,
+                evidence_read_roots=evidence_read_roots,
+            ),
         )
         if sandbox_scope is not None and not self.provider:
             raise SandboxUnsupportedError(
@@ -1215,6 +1225,12 @@ class Session:
     lease_acquired_at: datetime | None = None  # When the claim was acquired
     lease_expires_at: datetime | None = None  # When the claim expires if not renewed
     last_claim_verified_at: datetime | None = None  # Last time we verified we're still the winner
+    # True for a triage failure investigation running in a disposable, run-scoped
+    # scratch worktree (#6823). The worktree is a throwaway that reads its focus
+    # issue as evidence, so completion must remove it regardless of the cleanup
+    # config (a "keep worktrees for inspection" preference is for PR-producing
+    # coding worktrees, not for scratch investigation workspaces).
+    scratch_worktree: bool = False
 
     def __post_init__(self) -> None:
         _require_session_run_assets(self.run_assets)
@@ -1630,6 +1646,11 @@ class ImmediateCleanup:
     terminal_id: str  # e.g., "issue-123", "review-456"
     worktree_path: str
     reason: str  # e.g., "completed", "timed_out"
+    # True when ``worktree_path`` is a disposable triage-investigation scratch
+    # worktree (#6823): the Planner forces its removal even when the cleanup
+    # config would otherwise keep worktrees, so scratch workspaces never
+    # accumulate.
+    scratch_worktree: bool = False
 
 
 @dataclass(frozen=True)
@@ -1897,6 +1918,21 @@ class OrchestratorState:
     # orchestrator does not re-walk an unchanged board (ADR-0031 §4). "" means
     # never reviewed / a fresh cache — which makes the next due review fire.
     last_reviewed_board_fingerprint: str = ""
+    # Tech-lead attention sweep (#6823): epoch seconds of the last stuck-issue
+    # sweep (0 = never), and the durable per-issue recovery-attempt counter that
+    # bounds re-injection so an unrecoverable issue escalates instead of looping
+    # forever. Both are hydrated at startup from the queue-cache meta store.
+    last_stuck_sweep_at: float = 0.0
+    recovery_attempts: dict[int, int] = field(default_factory=dict)
+    # DURABLE set of issues whose recovery budget is exhausted and whose
+    # needs-human escalation has NOT yet been acknowledged (the label observed
+    # present) — persisted like ``recovery_attempts`` so an escalation survives a
+    # crash or an apply failure and is retried until it lands (#6824 R1).
+    pending_stuck_sweep_escalations: set[int] = field(default_factory=set)
+    # Tick-scoped buffer seeded from the durable set each sweep: every unacked
+    # escalation gets an idempotent, retry-safe needs-human label (the
+    # authoritative, label-only escalation, #6824 R1).
+    stuck_sweep_escalations: list[int] = field(default_factory=list)
     def retrospective_review_in_flight_issue_numbers(self) -> set[int]:
         """Issues already queued, discovered, or actively under retrospective review."""
 
@@ -1943,6 +1979,23 @@ class OrchestratorState:
         """
 
         self.discovered_failures.extend([failure])
+
+    def drop_active_session(self, terminal_id: str) -> bool:
+        """Reconcile a terminated session out of ``active_sessions`` (owner method).
+
+        Returns True when a record was dropped. Centralizes the collection
+        mutation here in the state owner so callers (e.g. a timeout terminate)
+        never reassign the shared ``active_sessions`` list directly (#6824 R7).
+        """
+        before = len(self.active_sessions)
+        # In-place reconcile (mirrors the review-exchange lifecycle owner) so the
+        # shared list object is never rebound out from under other holders.
+        self.active_sessions[:] = [
+            session
+            for session in self.active_sessions
+            if session.terminal_id != terminal_id
+        ]
+        return len(self.active_sessions) != before
 
 
 @dataclass

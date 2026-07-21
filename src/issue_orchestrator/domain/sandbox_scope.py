@@ -213,10 +213,17 @@ class SandboxScopeContext:
 
     Kept minimal and provider-agnostic: the role is derived from ``task_kind``
     and the bounds are anchored on the session's ``worktree``.
+
+    ``evidence_read_roots`` is the typed read-only god-view grant a tech-lead
+    failure investigation receives — the roots the evidence map itself derived
+    (the main repo, this repo's registered worktrees, state DBs, logs). It is
+    empty for coder/reviewer launches, so their scope is unchanged. Reads widen
+    to these roots; WRITES stay confined to the scratch worktree (#6824 R5).
     """
 
     task_kind: str
     worktree: Path
+    evidence_read_roots: tuple[Path, ...] = ()
 
 
 _CODER_TASK_KINDS = frozenset(
@@ -260,33 +267,42 @@ def compute_session_scope(
     is left byte-for-byte unchanged. When opted in, the scope is derived from
     the session's role:
 
-    - **coder / reviewer** (this slice): read + write the session's own
-      worktree, ``model-only`` egress, credentials denied.
-    - **tech-lead**: bounded to the worktree for now — the evidence-map-driven
-      read scope is a documented follow-up (the evidence map is not yet on this
-      branch). A tech-lead is therefore never left on yolo; it just does not yet
-      receive the *wider* read set it will eventually need.
-
-    TODO(ADR-0034 follow-up): once the triage evidence map lands, give
-    :attr:`SandboxRole.TECH_LEAD` a read scope spanning the worktrees named by
-    the evidence map (read-only), keeping write bounded to its own worktree.
+    - **coder / reviewer**: read + write the session's own worktree,
+      ``model-only`` egress, credentials denied.
+    - **tech-lead** (failure investigation): READ the scratch worktree PLUS the
+      evidence-map's god-view roots (``context.evidence_read_roots``), while
+      WRITE stays confined to the scratch worktree — the read-broad/write-narrow
+      grant the evidence map advertises (#6824 R5). Coder/reviewer launches carry
+      no evidence roots, so their scope is byte-for-byte unchanged.
     """
     if not getattr(agent_config, "sandbox", False):
         return None
 
     role = _role_for_task_kind(context.task_kind)
     worktree = context.worktree
+    _ = role  # role is uniform here; the read widening is driven by the grant.
 
-    # This slice: coder, reviewer, and (provisionally) tech-lead all get a
-    # worktree-bounded read+write scope with model-only egress and credentials
-    # denied. The role is threaded so a later slice can widen TECH_LEAD's read
-    # roots without touching the coder/reviewer policy.
-    _ = role  # role currently uniform; retained as the extension seam.
+    # Read widens to the evidence god-view roots (empty for coder/reviewer);
+    # write stays confined to the worktree. SandboxScope permits read_roots to be
+    # a strict superset of write_roots, so this is a valid read-broad/write-narrow
+    # scope with no invariant change.
+    read_roots = _dedup_paths((worktree, *context.evidence_read_roots))
     return SandboxScope(
         working_directory=worktree,
-        read_roots=(worktree,),
+        read_roots=read_roots,
         write_roots=(worktree,),
         egress="model-only",
         deny_env=DEFAULT_SANDBOX_DENY_ENV,
         deny_read_files=DEFAULT_SANDBOX_DENY_READ_FILES,
     )
+
+
+def _dedup_paths(paths: tuple[Path, ...]) -> tuple[Path, ...]:
+    """De-duplicate paths preserving first-seen order (cwd stays first)."""
+    seen: set[Path] = set()
+    ordered: list[Path] = []
+    for path in paths:
+        if path not in seen:
+            seen.add(path)
+            ordered.append(path)
+    return tuple(ordered)

@@ -23,6 +23,8 @@ from issue_orchestrator.control.dependency_evaluator import DependencyEvaluator
 from issue_orchestrator.ports.repository_host import DependencyIssueSnapshot
 from issue_orchestrator.control.actions import (
     ActionType,
+    AddCommentAction,
+    AddLabelAction,
     LaunchSessionAction,
     RecoverTerminalIssueAction,
     SessionType,
@@ -50,7 +52,12 @@ from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.domain.triage_session import TriageSessionFlavor
 from issue_orchestrator.control.provider_resilience import ProviderResilienceManager
-from issue_orchestrator.control.workflows import TriageWorkflow
+from issue_orchestrator.control.workflows import (
+    RetrospectiveReviewWorkflow,
+    ReviewWorkflow,
+    ReworkWorkflow,
+    TriageWorkflow,
+)
 from issue_orchestrator.ports import InMemoryProviderCircuitStore
 from issue_orchestrator.ports.event_sink import InMemoryEventSink
 from tests.unit.session_run_helpers import make_session_run_assets
@@ -2870,6 +2877,49 @@ class TestPlanCleanups:
         assert cleanup_actions[0].close_tabs is False
         assert cleanup_actions[0].remove_worktrees is True
 
+    def test_scratch_worktree_cleanup_forces_removal_despite_config(self):
+        """A disposable triage-investigation scratch worktree is always removed
+        on completion, even when the cleanup config keeps worktrees (#6823), so
+        scratch workspaces never accumulate. A non-scratch cleanup still honors
+        the config."""
+        from issue_orchestrator.domain.models import CleanupFacts, ImmediateCleanup
+        from issue_orchestrator.control.actions import ActionType
+
+        config = make_config(triage_review_agent="agent:triage")
+        planner = Planner(config=config, scheduler=Scheduler(config))
+
+        cleanup_facts = CleanupFacts(
+            pending_cleanups=(),
+            reviewed_pr_numbers=frozenset(),
+            close_tabs=True,
+            remove_worktrees=False,  # Config: keep worktrees for inspection
+            immediate_cleanups=(
+                ImmediateCleanup(
+                    5980,
+                    "issue-5980",
+                    "/tmp/repo-triage-5980-abc",
+                    "completed",
+                    scratch_worktree=True,
+                ),
+                ImmediateCleanup(7, "issue-7", "/tmp/worktree-7", "completed"),
+            ),
+        )
+
+        plan = planner.plan(make_snapshot(cleanup_facts=cleanup_facts))
+
+        cleanup_actions = {
+            a.issue_number: a
+            for a in plan.actions
+            if a.action_type == ActionType.CLEANUP_SESSION
+        }
+        # Scratch worktree removed unconditionally; ordinary cleanup honors config.
+        assert cleanup_actions[5980].remove_worktrees is True
+        assert cleanup_actions[7].remove_worktrees is False
+        # F8: the disposable identity survives to the action so the applier can
+        # FORCE removal only for the scratch worktree, never for the coding one.
+        assert cleanup_actions[5980].disposable_worktree is True
+        assert cleanup_actions[7].disposable_worktree is False
+
 
 # =============================================================================
 # BEHAVIOR-CENTRIC TESTS: Priority and Action Ordering
@@ -4313,6 +4363,550 @@ class TestMultiplePendingTypesInteraction:
         # No issue launches (pending work exists)
         issue_launches = [a for a in launch_actions if a.session_type == SessionType.ISSUE]
         assert len(issue_launches) == 0
+
+
+class TestReservedTriageConcurrency:
+    """triage.max_concurrent: a reserved additive budget for the tech lead.
+
+    None (default) = triage shares the worker budget (unchanged). An int = a
+    separate additive budget so the tech lead runs even when workers saturate
+    ``max_concurrent_sessions``.
+    """
+
+    def _planner(self, config) -> Planner:
+        return Planner(
+            config=config,
+            scheduler=Scheduler(config),
+            triage_workflow=TriageWorkflow(config=config, events=InMemoryEventSink()),
+        )
+
+    def _pending_triage(self, number: int = 101) -> PendingTriageReview:
+        return PendingTriageReview(
+            issue_number=number,
+            title="Investigate",
+            flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+            failure=DiscoveredFailure(
+                issue_number=number, issue_title="Investigate", failure_reason="failed"
+            ),
+        )
+
+    def _triage_session(self, number: int, agent_label: str) -> Session:
+        """An active triage session is one whose agent_label is the triage agent."""
+        session = make_session(make_issue(number, labels=[agent_label]))
+        session.agent_label = agent_label
+        return session
+
+    def _triage_launches(self, plan) -> list:
+        return [
+            a
+            for a in plan.actions_of_type(ActionType.LAUNCH_SESSION)
+            if a.session_type == SessionType.TRIAGE
+        ]
+
+    def test_reserved_slot_launches_triage_at_worker_saturation(self):
+        """Worker budget full (shared capacity 0), triage still launches from
+        its own reserved slot."""
+        config = make_config(
+            triage_review_agent="agent:triage", max_concurrent_sessions=1
+        )
+        config.triage.max_concurrent = 1
+        planner = self._planner(config)
+
+        # One long coding session saturates the single worker slot.
+        worker = make_session(make_issue(1))
+        snapshot = make_snapshot(
+            issues=[make_issue(1)],
+            active_sessions=[worker],
+            pending_triage=[self._pending_triage(101)],
+        )
+
+        launches = self._triage_launches(planner.plan(snapshot))
+        assert [a.number for a in launches] == [101]
+
+    def test_shared_budget_none_skips_triage_at_saturation(self):
+        """None (default): triage shares the worker budget, so a full worker
+        budget means no triage launches - unchanged behavior."""
+        config = make_config(
+            triage_review_agent="agent:triage", max_concurrent_sessions=1
+        )
+        assert config.triage.max_concurrent is None
+        planner = self._planner(config)
+
+        worker = make_session(make_issue(1))
+        snapshot = make_snapshot(
+            issues=[make_issue(1)],
+            active_sessions=[worker],
+            pending_triage=[self._pending_triage(101)],
+        )
+
+        assert self._triage_launches(planner.plan(snapshot)) == []
+
+    def _issue_launches(self, plan) -> list:
+        return [
+            a
+            for a in plan.actions_of_type(ActionType.LAUNCH_SESSION)
+            if a.session_type == SessionType.ISSUE
+        ]
+
+    def test_active_triage_session_does_not_reduce_worker_capacity_when_reserved(self):
+        """Additive budget: a running triage session neither consumes worker
+        capacity nor counts against max_concurrent_sessions, so a worker still
+        launches into the free worker slot."""
+        config = make_config(
+            triage_review_agent="agent:triage", max_concurrent_sessions=1
+        )
+        config.triage.max_concurrent = 1
+        planner = self._planner(config)
+
+        # One active triage session; a fresh worker issue is pending.
+        snapshot = make_snapshot(
+            issues=[make_issue(2)],
+            active_sessions=[self._triage_session(50, "agent:triage")],
+        )
+
+        launches = self._issue_launches(planner.plan(snapshot))
+        assert [a.number for a in launches] == [2]
+
+    def test_active_triage_session_consumes_shared_budget_when_none(self):
+        """None (default): a triage session shares the worker budget, so it DOES
+        occupy the single worker slot and no worker launches - unchanged."""
+        config = make_config(
+            triage_review_agent="agent:triage", max_concurrent_sessions=1
+        )
+        planner = self._planner(config)
+
+        snapshot = make_snapshot(
+            issues=[make_issue(2)],
+            active_sessions=[self._triage_session(50, "agent:triage")],
+        )
+
+        assert self._issue_launches(planner.plan(snapshot)) == []
+
+    def test_reserved_budget_bounds_concurrent_triage_launches(self):
+        """A reserved budget of 1 launches at most one triage even with two
+        pending, and the second is skipped."""
+        config = make_config(
+            triage_review_agent="agent:triage", max_concurrent_sessions=1
+        )
+        config.triage.max_concurrent = 1
+        planner = self._planner(config)
+
+        worker = make_session(make_issue(1))
+        snapshot = make_snapshot(
+            issues=[make_issue(1)],
+            active_sessions=[worker],
+            pending_triage=[self._pending_triage(101), self._pending_triage(102)],
+        )
+
+        launches = self._triage_launches(planner.plan(snapshot))
+        assert len(launches) == 1
+
+
+class TestStuckSweepEscalation:
+    """R1 (#6824): stuck-sweep-exhausted issues escalate to needs-human through
+    the Planner/Applier — an authoritative, LABEL-ONLY write (no comment, which
+    could not be made crash-safe), not a direct GitHub call from observation."""
+
+    def test_escalation_is_label_only(self):
+        # R1 (#6824): the authoritative escalation is the idempotent needs-human
+        # LABEL only — no comment (which could not be made retry-safe/durable).
+        config = make_config()
+        planner = Planner(config=config, scheduler=Scheduler(config))
+        needs_human = planner._lm.needs_human  # noqa: SLF001
+
+        plan = planner.plan(make_snapshot(stuck_sweep_escalations=(777,)))
+
+        labels = [
+            a for a in plan.actions
+            if isinstance(a, AddLabelAction) and a.issue_number == 777
+        ]
+        assert [a.label for a in labels] == [needs_human]
+        # No comment is emitted for the escalation (label is authoritative).
+        assert not [
+            a for a in plan.actions
+            if isinstance(a, AddCommentAction) and a.number == 777
+        ]
+
+    def test_no_escalations_when_buffer_empty(self):
+        config = make_config()
+        planner = Planner(config=config, scheduler=Scheduler(config))
+        plan = planner.plan(make_snapshot(stuck_sweep_escalations=()))
+        assert not [
+            a for a in plan.actions
+            if isinstance(a, AddLabelAction) and a.label == planner._lm.needs_human  # noqa: SLF001
+        ]
+
+
+class TestReservedTriageDoesNotStealWorkerReviewCapacity:
+    """F5: reserved triage concurrency must not steal worker review/rework/
+    retrospective capacity. The worker workflows gate on the owner-computed
+    WORKER-only active count, not raw ``snapshot.active_count`` — so an active
+    reserved-triage session leaves the worker slot free. Real workflows are
+    wired so the internal capacity gate actually runs.
+    """
+
+    def _triage_session(self, number: int, agent_label: str) -> Session:
+        session = make_session(make_issue(number, labels=[agent_label]))
+        session.agent_label = agent_label
+        return session
+
+    def _config(self, *, reserved: bool):
+        config = make_config(
+            triage_review_agent="agent:triage",
+            code_review_agent="agent:reviewer",
+            max_concurrent_sessions=1,
+            retrospective_review_enabled=True,
+        )
+        config.retrospective_review_trigger_label = "lack-of-review-redo"
+        if reserved:
+            config.triage.max_concurrent = 1
+        return config
+
+    def _pending_review(self) -> PendingReview:
+        return PendingReview(
+            issue_key=FakeIssueKey(name="1"), pr_number=100, pr_url="url",
+            branch_name="branch", _issue_number=1,
+        )
+
+    def _pending_rework(self) -> PendingRework:
+        return PendingRework(
+            issue_key=FakeIssueKey(name="2"), agent_type="agent:fixer",
+            rework_cycle=1, issue_number=2,
+        )
+
+    def _pending_retrospective(self) -> PendingRetrospectiveReview:
+        return PendingRetrospectiveReview(
+            issue_key=FakeIssueKey(name="3"), issue_number=3,
+            issue_title="Review existing work", agent_label="agent:web",
+            trigger_label="lack-of-review-redo",
+        )
+
+    def _launches_of(self, plan, session_type):
+        return [
+            a
+            for a in plan.actions_of_type(ActionType.LAUNCH_SESSION)
+            if a.session_type == session_type
+        ]
+
+    def test_review_launches_despite_active_reserved_triage(self):
+        config = self._config(reserved=True)
+        planner = Planner(
+            config=config, scheduler=Scheduler(config),
+            review_workflow=ReviewWorkflow(config, InMemoryEventSink()),
+        )
+        snapshot = make_snapshot(
+            pending_reviews=[self._pending_review()],
+            active_sessions=[self._triage_session(50, "agent:triage")],
+        )
+        launches = self._launches_of(planner.plan(snapshot), SessionType.REVIEW)
+        assert [a.number for a in launches] == [100]
+
+    def test_review_shares_budget_and_skips_when_not_reserved(self):
+        config = self._config(reserved=False)
+        assert config.triage.max_concurrent is None
+        planner = Planner(
+            config=config, scheduler=Scheduler(config),
+            review_workflow=ReviewWorkflow(config, InMemoryEventSink()),
+        )
+        snapshot = make_snapshot(
+            pending_reviews=[self._pending_review()],
+            active_sessions=[self._triage_session(50, "agent:triage")],
+        )
+        # Shared budget: the triage session occupies the one worker slot — no
+        # review launches (unchanged behavior).
+        assert self._launches_of(planner.plan(snapshot), SessionType.REVIEW) == []
+
+    def test_rework_launches_despite_active_reserved_triage(self):
+        config = self._config(reserved=True)
+        planner = Planner(
+            config=config, scheduler=Scheduler(config),
+            rework_workflow=ReworkWorkflow(config, InMemoryEventSink()),
+        )
+        snapshot = make_snapshot(
+            pending_reworks=[self._pending_rework()],
+            active_sessions=[self._triage_session(50, "agent:triage")],
+        )
+        launches = self._launches_of(planner.plan(snapshot), SessionType.REWORK)
+        assert [a.number for a in launches] == [2]
+
+    def test_rework_shares_budget_and_skips_when_not_reserved(self):
+        config = self._config(reserved=False)
+        planner = Planner(
+            config=config, scheduler=Scheduler(config),
+            rework_workflow=ReworkWorkflow(config, InMemoryEventSink()),
+        )
+        snapshot = make_snapshot(
+            pending_reworks=[self._pending_rework()],
+            active_sessions=[self._triage_session(50, "agent:triage")],
+        )
+        assert self._launches_of(planner.plan(snapshot), SessionType.REWORK) == []
+
+    def test_retrospective_launches_despite_active_reserved_triage(self):
+        config = self._config(reserved=True)
+        planner = Planner(
+            config=config, scheduler=Scheduler(config),
+            retrospective_review_workflow=RetrospectiveReviewWorkflow(
+                config, InMemoryEventSink()
+            ),
+        )
+        snapshot = make_snapshot(
+            pending_retrospective_reviews=[self._pending_retrospective()],
+            active_sessions=[self._triage_session(50, "agent:triage")],
+        )
+        launches = self._launches_of(
+            planner.plan(snapshot), SessionType.RETROSPECTIVE_REVIEW
+        )
+        assert [a.number for a in launches] == [3]
+
+    def test_retrospective_shares_budget_and_skips_when_not_reserved(self):
+        config = self._config(reserved=False)
+        planner = Planner(
+            config=config, scheduler=Scheduler(config),
+            retrospective_review_workflow=RetrospectiveReviewWorkflow(
+                config, InMemoryEventSink()
+            ),
+        )
+        snapshot = make_snapshot(
+            pending_retrospective_reviews=[self._pending_retrospective()],
+            active_sessions=[self._triage_session(50, "agent:triage")],
+        )
+        assert self._launches_of(
+            planner.plan(snapshot), SessionType.RETROSPECTIVE_REVIEW
+        ) == []
+
+
+class TestE2EFirstClassWorkload:
+    """e2e.occupies_session_slot: E2E as a first-class WORKER workload.
+
+    OFF (default) leaves every capacity path byte-for-byte unchanged. ON, a
+    running E2E occupies one worker slot (worker capacity -1), and a due suite
+    reserves a worker slot AFTER completion work but BEFORE new issues — beating
+    new issues yet never preempting reviews/reworks/triage. It is charged to the
+    worker budget, never the reserved triage slot.
+    """
+
+    def _plain_planner(self, config) -> Planner:
+        return Planner(config=config, scheduler=Scheduler(config))
+
+    def _launches(self, plan, session_type) -> list:
+        return [
+            a
+            for a in plan.actions_of_type(ActionType.LAUNCH_SESSION)
+            if a.session_type == session_type
+        ]
+
+    def _triage_session(self, number: int, agent_label: str) -> Session:
+        session = make_session(make_issue(number, labels=[agent_label]))
+        session.agent_label = agent_label
+        return session
+
+    def _review_workflow(self):
+        wf = Mock()
+        wf.is_configured.return_value = True
+        decision = Mock()
+        decision.should_launch = True
+        decision.skip_reason = None
+        decision.reviews_to_launch = [
+            PendingReview(
+                issue_key=FakeIssueKey(name="1"), pr_number=100, pr_url="url",
+                branch_name="b", _issue_number=1, agent_label=None,
+            )
+        ]
+        wf.should_launch_reviews.return_value = decision
+        return wf
+
+    # ---- OFF path: byte-for-byte unchanged (observed via plan()) ----
+
+    def test_off_shared_budget_fills_every_worker_slot(self):
+        """Flag off (snapshot defaults): with one active session and three
+        available issues the two remaining worker slots BOTH launch — the
+        shared-budget capacity math is unchanged."""
+        config = make_config(max_concurrent_sessions=3)
+        planner = self._plain_planner(config)
+        snap = make_snapshot(
+            issues=[make_issue(2), make_issue(3), make_issue(4)],
+            active_sessions=[make_session(make_issue(1))],
+        )
+        assert snap.e2e_occupies_slot is False
+        assert snap.e2e_due is False
+        assert len(self._launches(planner.plan(snap), SessionType.ISSUE)) == 2
+
+    def test_off_reserved_budget_additive_triage_unchanged(self):
+        """Flag off with a reserved triage budget is unchanged: an active
+        triage session stays additive (worker capacity 2 launches both issues)
+        while the reserved budget still admits one more triage launch."""
+        config = make_config(
+            triage_review_agent="agent:triage", max_concurrent_sessions=3
+        )
+        config.triage.max_concurrent = 2
+        planner = Planner(
+            config=config, scheduler=Scheduler(config),
+            triage_workflow=TriageWorkflow(config=config, events=InMemoryEventSink()),
+        )
+        pending = PendingTriageReview(
+            issue_number=101, title="Investigate",
+            flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+            failure=DiscoveredFailure(
+                issue_number=101, issue_title="Investigate", failure_reason="failed"
+            ),
+        )
+        snap = make_snapshot(
+            issues=[make_issue(2), make_issue(3)],
+            active_sessions=[
+                make_session(make_issue(1)),
+                self._triage_session(50, "agent:triage"),
+            ],
+            pending_triage=[pending],
+        )
+        plan = planner.plan(snap)
+        # worker capacity = 3 - (2 active - 1 triage) = 2 → both issues launch;
+        # reserved = 2 - 1 active triage = 1 → one more triage launches.
+        assert len(self._launches(plan, SessionType.ISSUE)) == 2
+        assert len(self._launches(plan, SessionType.TRIAGE)) == 1
+
+    def test_off_new_issue_launches_normally(self):
+        config = make_config(max_concurrent_sessions=1)
+        planner = self._plain_planner(config)
+        snap = make_snapshot(issues=[make_issue(2)])
+        assert [a.number for a in self._launches(planner.plan(snap), SessionType.ISSUE)] == [2]
+
+    # ---- E2E running: occupies a worker slot ----
+
+    def test_running_reduces_worker_capacity_by_one(self):
+        """max=3, three available issues, an E2E run holding one slot → only
+        two agents launch (worker capacity dropped by 1)."""
+        config = make_config(max_concurrent_sessions=3)
+        planner = self._plain_planner(config)
+        snap = make_snapshot(
+            issues=[make_issue(1), make_issue(2), make_issue(3)],
+            e2e_occupies_slot=True,
+        )
+        assert len(self._launches(planner.plan(snap), SessionType.ISSUE)) == 2
+
+    def test_running_launches_one_fewer_issue(self):
+        """Two slots, two issues, an E2E run holding one → only one agent."""
+        config = make_config(max_concurrent_sessions=2)
+        planner = self._plain_planner(config)
+        snap = make_snapshot(
+            issues=[make_issue(1), make_issue(2)], e2e_occupies_slot=True
+        )
+        assert len(self._launches(planner.plan(snap), SessionType.ISSUE)) == 1
+
+    def test_running_charges_worker_budget_not_reserved_triage(self):
+        """The single worker slot is held by E2E, yet the tech lead still
+        launches from its own reserved slot: E2E is charged to the worker
+        budget, NOT the triage reserved slot."""
+        config = make_config(
+            triage_review_agent="agent:triage", max_concurrent_sessions=1
+        )
+        config.triage.max_concurrent = 1
+        planner = Planner(
+            config=config,
+            scheduler=Scheduler(config),
+            triage_workflow=TriageWorkflow(config=config, events=InMemoryEventSink()),
+        )
+        pending = PendingTriageReview(
+            issue_number=101, title="Investigate",
+            flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+            failure=DiscoveredFailure(
+                issue_number=101, issue_title="Investigate", failure_reason="failed"
+            ),
+        )
+        snap = make_snapshot(
+            issues=[make_issue(1)], pending_triage=[pending], e2e_occupies_slot=True
+        )
+        plan = planner.plan(snap)
+        assert [a.number for a in self._launches(plan, SessionType.TRIAGE)] == [101]
+        assert self._launches(plan, SessionType.ISSUE) == []
+
+    # ---- E2E due: reservation (ahead of issues, behind completion work) ----
+
+    def test_due_reserves_the_only_slot_ahead_of_new_issue(self):
+        config = make_config(max_concurrent_sessions=1)
+        planner = self._plain_planner(config)
+        snap = make_snapshot(issues=[make_issue(2)], e2e_due=True)
+        # The lone worker slot is held back for the due suite → no issue.
+        assert self._launches(planner.plan(snap), SessionType.ISSUE) == []
+
+    def test_due_never_steals_a_slot_from_completion_work(self):
+        """The due reservation is applied AFTER completion work, so it never
+        reduces the capacity reviews draw from: max=2 with two pending reviews
+        and a due suite still launches BOTH reviews."""
+        config = make_config(
+            code_review_agent="agent:reviewer", max_concurrent_sessions=2
+        )
+        wf = Mock()
+        wf.is_configured.return_value = True
+        decision = Mock()
+        decision.should_launch = True
+        decision.skip_reason = None
+        decision.reviews_to_launch = [
+            PendingReview(
+                issue_key=FakeIssueKey(name="1"), pr_number=100, pr_url="u",
+                branch_name="b", _issue_number=1, agent_label=None,
+            ),
+            PendingReview(
+                issue_key=FakeIssueKey(name="2"), pr_number=200, pr_url="u",
+                branch_name="b", _issue_number=2, agent_label=None,
+            ),
+        ]
+        wf.should_launch_reviews.return_value = decision
+        planner = Planner(
+            config=config, scheduler=Scheduler(config), review_workflow=wf
+        )
+        snap = make_snapshot(
+            pending_reviews=list(decision.reviews_to_launch), e2e_due=True
+        )
+        plan = planner.plan(snap)
+        assert len(self._launches(plan, SessionType.REVIEW)) == 2
+
+    def test_due_yields_to_in_flight_review_but_beats_new_issue(self):
+        """max=3, one pending review + two new issues + due suite: the review
+        launches (E2E never preempts it), the suite reserves the next slot, and
+        only ONE of the two new issues launches (E2E beat the other)."""
+        config = make_config(
+            code_review_agent="agent:reviewer", max_concurrent_sessions=3
+        )
+        planner = Planner(
+            config=config, scheduler=Scheduler(config),
+            review_workflow=self._review_workflow(),
+        )
+        snap = make_snapshot(
+            issues=[make_issue(2), make_issue(3)],
+            pending_reviews=[
+                PendingReview(
+                    issue_key=FakeIssueKey(name="1"), pr_number=100, pr_url="url",
+                    branch_name="b", _issue_number=1,
+                )
+            ],
+            e2e_due=True,
+        )
+        plan = planner.plan(snap)
+        assert len(self._launches(plan, SessionType.REVIEW)) == 1
+        assert len(self._launches(plan, SessionType.ISSUE)) == 1
+
+    def test_baseline_without_due_launches_both_new_issues(self):
+        """Same board without the due reservation launches BOTH new issues —
+        proving the missing issue above is the reserved E2E slot, not a fluke."""
+        config = make_config(
+            code_review_agent="agent:reviewer", max_concurrent_sessions=3
+        )
+        planner = Planner(
+            config=config, scheduler=Scheduler(config),
+            review_workflow=self._review_workflow(),
+        )
+        snap = make_snapshot(
+            issues=[make_issue(2), make_issue(3)],
+            pending_reviews=[
+                PendingReview(
+                    issue_key=FakeIssueKey(name="1"), pr_number=100, pr_url="url",
+                    branch_name="b", _issue_number=1,
+                )
+            ],
+        )
+        plan = planner.plan(snap)
+        assert len(self._launches(plan, SessionType.REVIEW)) == 1
+        assert len(self._launches(plan, SessionType.ISSUE)) == 2
 
 
 class TestPlanStaleInProgressCleanup:

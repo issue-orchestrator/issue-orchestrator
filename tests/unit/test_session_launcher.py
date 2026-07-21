@@ -260,6 +260,7 @@ class MockWorktreeManager:
         self.tmp_path = tmp_path
         self.create_calls: list[dict] = []
         self.remove_calls: list[Path] = []
+        self.remove_force_calls: list[tuple[Path, bool]] = []
 
     def create(
         self,
@@ -273,6 +274,7 @@ class MockWorktreeManager:
         base_branch: str | None = None,
         seed_ref: str | None = None,
         reuse_options: WorktreeReuseOptions | None = None,
+        worktree_name: str | None = None,
     ) -> WorktreeInfo:
         self.create_calls.append({
             "repo_root": repo_root,
@@ -283,8 +285,11 @@ class MockWorktreeManager:
             "seed_ref": seed_ref,
             "branch_name": branch_name,
             "reuse_options": reuse_options,
+            "worktree_name": worktree_name,
         })
-        worktree_path = self.tmp_path / f"worktree-{issue_number}"
+        # Honor the scratch worktree_name override so a scratch investigation
+        # gets a distinct path from the focus issue's worktree.
+        worktree_path = self.tmp_path / (worktree_name or f"worktree-{issue_number}")
         worktree_path.mkdir(parents=True, exist_ok=True)
         return WorktreeInfo(
             path=worktree_path,
@@ -292,8 +297,8 @@ class MockWorktreeManager:
         )
 
     def remove(self, worktree_path: Path, *, force: bool = False) -> None:
-        del force
         self.remove_calls.append(worktree_path)
+        self.remove_force_calls.append((worktree_path, force))
 
     def can_remove_without_user_changes(self, worktree_path: Path) -> bool:
         del worktree_path
@@ -775,6 +780,202 @@ class TestLaunchIssueSession:
         assert authority.flavor is TriageSessionFlavor.BATCH_REVIEW
         assert authority.anchor_issue_number == 125
         assert authority.manifest_pr_numbers == ()
+
+    def test_triage_launch_preserves_branch_but_coding_does_not(
+        self, session_launcher, mock_worktree_manager, sample_config, sample_issue, tmp_path
+    ):
+        """A triage launch reuses the subject worktree without mutating its
+        branch (preserve_branch=True), so a stranded branch's unpushed work is
+        read as evidence rather than rebased/reset away. A coding launch keeps
+        the default (preserve_branch=False)."""
+        prompt_path = tmp_path / "prompt.md"
+        sample_config.agents["agent:triage"] = AgentConfig(
+            prompt_path=prompt_path,
+            model="sonnet",
+            timeout_minutes=45,
+        )
+        sample_config.triage_review_agent = "agent:triage"
+
+        coding_result = session_launcher.launch_issue_session(
+            sample_issue, active_sessions=[]
+        )
+        assert coding_result.success is True
+
+        triage_issue = Issue(
+            number=5980,
+            title="Investigate stranded failure",
+            labels=["agent:triage"],
+            repo="test/repo",
+        )
+        triage_result = session_launcher.launch_issue_session(
+            triage_issue, active_sessions=[]
+        )
+        assert triage_result.success is True
+
+        coding_call = next(
+            c for c in mock_worktree_manager.create_calls if c["issue_number"] == 123
+        )
+        triage_call = next(
+            c for c in mock_worktree_manager.create_calls if c["issue_number"] == 5980
+        )
+        assert coding_call["reuse_options"].preserve_branch is False
+        assert triage_call["reuse_options"].preserve_branch is True
+
+    def test_failure_investigation_runs_in_disposable_scratch_worktree(
+        self, session_launcher, mock_worktree_manager, sample_config, tmp_path
+    ):
+        """A FAILURE_INVESTIGATION launch must NOT touch the focus issue's
+        worktree/branch (#6823): it runs in a fresh, run-scoped scratch worktree
+        on a throwaway branch off the base, so the focus branch stays read-only
+        evidence and the scratch workspace is force-fresh (no reuse) with no
+        subject branch to preserve."""
+        prompt_path = tmp_path / "prompt.md"
+        sample_config.agents["agent:triage"] = AgentConfig(
+            prompt_path=prompt_path,
+            model="sonnet",
+            timeout_minutes=45,
+        )
+        sample_config.triage_review_agent = "agent:triage"
+        focus = 5980
+        triage_issue = Issue(
+            number=focus,
+            title="Investigate stranded failure",
+            labels=["agent:triage"],
+            repo="test/repo",
+        )
+
+        result = session_launcher.launch_issue_session(
+            triage_issue,
+            active_sessions=[],
+            triage_scope=TriageLaunchScope(
+                flavor=TriageSessionFlavor.FAILURE_INVESTIGATION
+            ),
+        )
+        assert result.success is True
+
+        call = next(
+            c for c in mock_worktree_manager.create_calls if c["issue_number"] == focus
+        )
+        # Scratch worktree name/branch are keyed to the run, NOT the focus issue.
+        assert call["worktree_name"] is not None
+        assert call["worktree_name"].startswith(f"repo-triage-{focus}-")
+        assert call["worktree_name"] != f"repo-{focus}"
+        assert call["branch_name"] is not None
+        assert call["branch_name"].startswith(f"triage-investigation-{focus}-")
+        # The scratch branch must never look like the focus issue's own branch.
+        assert not call["branch_name"].startswith(f"{focus}-")
+        # Disposable: force-fresh (no reuse), and nothing to preserve.
+        assert call["reuse_options"].disable_reuse is True
+        assert call["reuse_options"].preserve_branch is False
+        # Off the base branch — the configured seed ref is suppressed so the
+        # checkout is clean off base, never seeded from the focus branch.
+        assert call["seed_ref"] is None
+        # The session records that its worktree is a disposable scratch workspace.
+        assert result.session is not None
+        assert result.session.scratch_worktree is True
+        # The scratch worktree path is distinct from the focus issue's worktree.
+        assert result.session.worktree_path != tmp_path / f"worktree-{focus}"
+
+    def test_failed_investigation_launch_removes_scratch_worktree(
+        self, launcher_bundle, mock_worktree_manager, sample_config, tmp_path
+    ):
+        """A scratch investigation worktree has no reuse path, so a launch that
+        fails at terminal-session creation must remove it rather than leak it
+        (#6823) — unlike a coding worktree, which is kept for retry reuse."""
+        prompt_path = tmp_path / "prompt.md"
+        sample_config.agents["agent:triage"] = AgentConfig(
+            prompt_path=prompt_path,
+            model="sonnet",
+            timeout_minutes=45,
+        )
+        sample_config.triage_review_agent = "agent:triage"
+        # Force terminal-session creation to fail after the scratch worktree exists.
+        launcher_bundle.create_session_override[0] = (
+            lambda _name, _cmd, _wd, _title: False
+        )
+        focus = 5980
+        triage_issue = Issue(
+            number=focus,
+            title="Investigate stranded failure",
+            labels=["agent:triage"],
+            repo="test/repo",
+        )
+
+        result = launcher_bundle.launcher.launch_issue_session(
+            triage_issue,
+            active_sessions=[],
+            triage_scope=TriageLaunchScope(
+                flavor=TriageSessionFlavor.FAILURE_INVESTIGATION
+            ),
+        )
+
+        assert result.success is False
+        create_call = next(
+            c for c in mock_worktree_manager.create_calls if c["issue_number"] == focus
+        )
+        scratch_path = tmp_path / create_call["worktree_name"]
+        assert scratch_path in mock_worktree_manager.remove_calls
+        # F8: a disposable scratch worktree is FORCE-removed — a partial launch
+        # can leave an untracked artifact that a non-forced remove would fail on.
+        assert (scratch_path, True) in mock_worktree_manager.remove_force_calls
+
+    def test_coding_launch_uses_focus_worktree_not_scratch(
+        self, session_launcher, mock_worktree_manager, sample_issue
+    ):
+        """An ordinary coding launch is unchanged: no scratch override, so the
+        worktree derives from the issue number and is not a scratch workspace."""
+        result = session_launcher.launch_issue_session(
+            sample_issue, active_sessions=[]
+        )
+        assert result.success is True
+
+        call = next(
+            c for c in mock_worktree_manager.create_calls
+            if c["issue_number"] == sample_issue.number
+        )
+        assert call["worktree_name"] is None
+        assert result.session is not None
+        assert result.session.scratch_worktree is False
+
+    @pytest.mark.parametrize(
+        "flavor",
+        [TriageSessionFlavor.BATCH_REVIEW, TriageSessionFlavor.HEALTH_REVIEW],
+    )
+    def test_batch_and_health_triage_launches_not_scratch(
+        self, session_launcher, mock_worktree_manager, sample_config, tmp_path, flavor
+    ):
+        """Batch and health reviews run on their own anchor worktrees, unchanged
+        (#6823): no scratch override, and preserve_branch stays True so a
+        stranded anchor branch is read rather than rebased away."""
+        prompt_path = tmp_path / "prompt.md"
+        sample_config.agents["agent:triage"] = AgentConfig(
+            prompt_path=prompt_path,
+            model="sonnet",
+            timeout_minutes=45,
+        )
+        sample_config.triage_review_agent = "agent:triage"
+
+        anchor = 7001
+        anchor_issue = Issue(
+            number=anchor,
+            title=f"{flavor.value} anchor",
+            labels=["agent:triage"],
+            repo="test/repo",
+        )
+        result = session_launcher.launch_issue_session(
+            anchor_issue,
+            active_sessions=[],
+            triage_scope=TriageLaunchScope(flavor=flavor),
+        )
+        assert result.success is True
+        call = next(
+            c for c in mock_worktree_manager.create_calls
+            if c["issue_number"] == anchor
+        )
+        assert call["worktree_name"] is None
+        assert call["reuse_options"].preserve_branch is True
+        assert result.session is not None
+        assert result.session.scratch_worktree is False
 
     def test_failed_triage_launch_discards_recorded_authority(
         self, launcher_bundle, sample_config, tmp_path
@@ -4397,6 +4598,8 @@ class TestTriageProducerToLaunchBoundary:
                 log_tail_provider=lambda lines: [],
                 case_file_reader=lambda: (),
                 shipped_fix_reader=lambda limit: (),
+                e2e_health_reader=lambda now: None,
+                session_activity_reader=lambda session: None,
                 clock=lambda: datetime(2026, 7, 10, 12, 0, 0),
             ),
             lambda: state,
@@ -4497,6 +4700,8 @@ class TestTriageProducerToLaunchBoundary:
                 log_tail_provider=lambda lines: [],
                 case_file_reader=lambda: (),
                 shipped_fix_reader=lambda limit: (),
+                e2e_health_reader=lambda now: None,
+                session_activity_reader=lambda session: None,
                 clock=lambda: datetime(2026, 7, 10, 12, 0, 0),
             ),
             lambda: state,
@@ -4625,6 +4830,8 @@ class TestTriageProducerToLaunchBoundary:
                 log_tail_provider=lambda lines: [],
                 case_file_reader=lambda: (),
                 shipped_fix_reader=lambda limit: (),
+                e2e_health_reader=lambda now: None,
+                session_activity_reader=lambda session: None,
                 clock=lambda: datetime(2026, 7, 10, 12, 0, 0),
             ),
             lambda: state,

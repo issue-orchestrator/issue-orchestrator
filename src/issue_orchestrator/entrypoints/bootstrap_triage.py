@@ -11,21 +11,31 @@ per read).
 
 from __future__ import annotations
 
+import logging
+import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from ..infra.logging_config import get_repo_log_path, read_log_tail
 
 if TYPE_CHECKING:
     from ..control.board_snapshot_builder import BoardSnapshotBuilder
     from ..control.fact_gatherer import FactGatherer
+    from ..control.provider_resilience import ProviderResilienceManager
+    from ..ports import Issue
     from ..control.triage_board import TriageBoardPublisher
+    from ..domain.board_snapshot import BoardE2EHealth, SessionActivityFacts
+    from ..domain.models import Session
     from ..infra.config import Config
     from ..infra.orchestrator import Orchestrator
     from ..ports import EventSink, RepositoryHost
+    from ..ports.queue_cache_store import QueueCacheStore
     from ..ports.timeline_store import TimelineStore
     from ..ports.triage_authority import TriageAuthorityStore
+    from ..ports.working_copy import WorkingCopy
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -91,17 +101,46 @@ def create_triage_board_publisher(
     )
 
 
+def _make_provider_circuit_reader(
+    config: "Config", provider_resilience: "ProviderResilienceManager"
+) -> "Callable[[Issue], bool]":
+    """Predicate: is this issue's provider circuit still open? (#6824 F2).
+
+    The stuck sweep treats a ``provider-unavailable`` issue as owned by the
+    resilience manager while its circuit is open (it will resume it), and only
+    re-examines it once the circuit has closed and the issue was orphaned.
+    """
+    from ..control.label_manager import LabelManager
+    from ..control.provider_availability import ProviderAvailabilityPolicy
+
+    policy = ProviderAvailabilityPolicy(config, provider_resilience, LabelManager(config))
+
+    def is_open(issue: "Issue") -> bool:
+        return policy.is_open(policy.provider_for_issue(issue))
+
+    return is_open
+
+
 def create_triage_fact_gatherer(
     config: "Config",
     repository_host: "RepositoryHost | None",
     events: "EventSink",
     authority: "TriageAuthorityStore",
     board_publisher: "TriageBoardPublisher | None",
+    queue_cache_store: "QueueCacheStore | None" = None,
+    provider_resilience: "ProviderResilienceManager | None" = None,
 ) -> "FactGatherer | None":
-    """Wire the read-only triage ledgers and projections as one unit."""
+    """Wire the read-only triage ledgers and projections as one unit.
+
+    ``queue_cache_store`` backs the tech-lead stuck sweep's durable timer +
+    recovery counters (#6823); optional so the testing composition can omit it.
+    ``provider_resilience`` backs the sweep's provider-circuit ownership check
+    (#6824 F2); optional (unwired => provider-unavailable issues stay skipped).
+    """
     if repository_host is None:
         return None
     from ..control.fact_gatherer import FactGatherer
+    from ..infra.e2e_slot_policy import make_e2e_slot_reader
 
     return FactGatherer(
         config=config,
@@ -109,6 +148,15 @@ def create_triage_fact_gatherer(
         events=events,
         triage_authority=authority,
         board_publisher=board_publisher,
+        queue_cache_store=queue_cache_store,
+        # First-class E2E workload observation feed (e2e.occupies_session_slot).
+        # Always wired; a no-op that touches nothing while the flag is off.
+        e2e_slot_reader=make_e2e_slot_reader(config),
+        provider_circuit_open=(
+            _make_provider_circuit_reader(config, provider_resilience)
+            if provider_resilience is not None
+            else None
+        ),
     )
 
 
@@ -117,6 +165,8 @@ def create_triage_composition(
     repository_host: "RepositoryHost | None",
     events: "EventSink",
     fact_gatherer: "FactGatherer | None" = None,
+    queue_cache_store: "QueueCacheStore | None" = None,
+    provider_resilience: "ProviderResilienceManager | None" = None,
 ) -> TriageComposition:
     """Build the triage store and ensure both projections share one publisher."""
     authority = create_triage_authority_store(config)
@@ -127,7 +177,8 @@ def create_triage_composition(
     )
     if fact_gatherer is None:
         fact_gatherer = create_triage_fact_gatherer(
-            config, repository_host, events, authority, board_publisher
+            config, repository_host, events, authority, board_publisher,
+            queue_cache_store, provider_resilience,
         )
     return TriageComposition(
         authority=authority,
@@ -140,6 +191,7 @@ def create_board_snapshot_builder(
     config: "Config",
     timeline_store: "TimelineStore",
     board_publisher: "TriageBoardPublisher | None",
+    working_copy: "WorkingCopy",
 ) -> "BoardSnapshotBuilder":
     """ADR-0031 §3 board-snapshot fact sources over the owned timeline store."""
     from ..control.board_snapshot_builder import BoardSnapshotBuilder
@@ -152,5 +204,112 @@ def create_board_snapshot_builder(
         shipped_fix_reader=(
             board_publisher.shipped_fixes if board_publisher else lambda _limit: ()
         ),
+        e2e_health_reader=_make_e2e_health_reader(config),
+        session_activity_reader=_make_session_activity_reader(working_copy),
         clock=datetime.now,
     )
+
+
+def _make_session_activity_reader(
+    working_copy: "WorkingCopy",
+) -> "Callable[[Session], SessionActivityFacts | None]":
+    """Best-effort hung-EVIDENCE probe feed for each active session (ADR-0031).
+
+    Reads two cheap signals that tell a long-running-but-working session from a
+    genuinely hung one — NEVER age alone: the mtime of the session's terminal
+    recording (its agent output stream, a proxy for "last observable activity",
+    the same file the quiescence detector samples) and the commit count on its
+    branch ahead of base. Both are best-effort: a missing recording or an
+    unreadable/absent worktree degrades that field to its unknown sentinel; the
+    builder's backstop maps any unexpected error to ``None``. The health review
+    reads these to corroborate a hang before proposing the GATED
+    ``kill_hung_session`` (which never auto-executes).
+    """
+    from ..domain.board_snapshot import SessionActivityFacts
+
+    def _read(session: "Session") -> "SessionActivityFacts | None":
+        return SessionActivityFacts(
+            commits_ahead=_session_commits_ahead(working_copy, session),
+            last_activity_at=_recording_last_activity_iso(session),
+        )
+
+    return _read
+
+
+def _recording_last_activity_iso(session: "Session") -> str | None:
+    """Wall-clock ISO of the session recording's last write (mtime), else ``None``.
+
+    The agent's output stream writes the terminal recording, so its mtime is a
+    pragmatic "last observable activity" timestamp. ``None`` when the file is
+    missing or unreadable (``OSError``) — the builder maps that to an unknown
+    idle reading rather than a bogus "idle forever".
+    """
+    recording_path = session.run_assets.terminal_recording.path
+    try:
+        mtime = recording_path.stat().st_mtime
+    except OSError:
+        return None
+    return datetime.fromtimestamp(mtime).isoformat()
+
+
+def _session_commits_ahead(working_copy: "WorkingCopy", session: "Session") -> int:
+    """Commits on the session branch ahead of base, or the unknown sentinel.
+
+    ``COMMITS_AHEAD_UNKNOWN`` when the worktree is gone or the read raises: a
+    real ``0`` (no commits yet — a hang signal when paired with a high idle)
+    must stay distinct from "could not read". Narrows to filesystem/git errors
+    (git subprocess failures are wrapped by the working-copy port as
+    ``GitError``); any other unexpected failure still surfaces via the builder's
+    outer best-effort backstop.
+    """
+    from ..domain.board_snapshot import COMMITS_AHEAD_UNKNOWN
+    from ..ports.git import GitError
+
+    worktree = session.worktree_path
+    try:
+        if not worktree.exists():
+            return COMMITS_AHEAD_UNKNOWN
+        return len(working_copy.get_commits_ahead_of_main(worktree))
+    except (OSError, GitError):
+        return COMMITS_AHEAD_UNKNOWN
+
+
+def _make_e2e_health_reader(
+    config: "Config",
+) -> Callable[[datetime], "BoardE2EHealth | None"]:
+    """Read-only e2e-health projection feed for the board snapshot (ADR-0031).
+
+    Reads the aggregate E2E-suite signal (cadence, red streak, chronic
+    failures, quarantine) from the repo's ``e2e.db`` over a strictly read-only
+    connection, plus the configured cadence/enabled flag and quarantine list.
+    Best-effort: a repo with no ``e2e.db`` (or an unreadable/table-less one)
+    yields ``None`` — a health review of a repo without E2E is fine.
+    """
+    from ..domain.board_snapshot import RECENT_E2E_RUN_WINDOW, BoardE2EHealth
+    from ..infra.e2e_health_reader import read_e2e_health_facts
+    from ..infra.e2e_quarantine import load_quarantine_list
+
+    def _read(now: datetime) -> "BoardE2EHealth | None":
+        db_path = config.repo_root / ".issue-orchestrator" / "e2e.db"
+        if not db_path.exists():
+            return None
+        try:
+            runs, chronic = read_e2e_health_facts(
+                db_path, recent_run_limit=RECENT_E2E_RUN_WINDOW
+            )
+            quarantine = load_quarantine_list(
+                config.repo_root / config.e2e.quarantine_file
+            )
+            return BoardE2EHealth.project(
+                now=now,
+                enabled=config.e2e.enabled,
+                expected_interval_minutes=config.e2e.auto_run_interval_minutes,
+                runs=runs,
+                chronic_failures=chronic,
+                quarantine_count=len(quarantine),
+            )
+        except (OSError, sqlite3.Error, ValueError) as exc:
+            logger.warning("[board] e2e health projection unavailable: %s", exc)
+            return None
+
+    return _read

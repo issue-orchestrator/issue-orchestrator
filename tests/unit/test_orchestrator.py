@@ -52,6 +52,7 @@ class MockWorktreeManager:
         base_branch: str | None = None,
         seed_ref: str | None = None,
         reuse_options: WorktreeReuseOptions | None = None,
+        worktree_name: str | None = None,
     ) -> WorktreeInfo:
         """Track create calls and return mock WorktreeInfo."""
         self.create_calls.append({
@@ -65,6 +66,7 @@ class MockWorktreeManager:
             "pre_push_hook": pre_push_hook,
             "branch_name": branch_name,
             "reuse_options": reuse_options,
+            "worktree_name": worktree_name,
         })
         return WorktreeInfo(path=self.worktree_path, branch_name=self.branch_name)
 
@@ -198,6 +200,161 @@ def test_terminate_issue_runtime_for_issue_delegates_to_canonical_services(sampl
     assert [session.terminal_id for session in orchestrator.state.active_sessions] == [
         "issue-88",
     ]
+
+
+def test_terminate_triage_session_is_behavior_complete(sample_config, tmp_path):
+    # R7 (#6824): the REAL facade terminate is behavior-complete — unlike bare
+    # kill_session (which only stops the terminal), it removes the state machine,
+    # reconciles active_sessions, releases the claim, AND force-removes the
+    # disposable scratch worktree, so a timed-out investigation leaks nothing.
+    orchestrator = create_test_orchestrator(sample_config)
+    session_manager = MagicMock()
+    claim_manager = MagicMock()
+    smm = MagicMock()
+    worktree_manager = MagicMock()
+    object.__setattr__(orchestrator.deps, "session_manager", session_manager)
+    object.__setattr__(orchestrator.deps, "claim_manager", claim_manager)
+    object.__setattr__(orchestrator.deps, "state_machine_manager", smm)
+    object.__setattr__(orchestrator.deps, "worktree_manager", worktree_manager)
+    scratch = tmp_path / "repo-triage-77-abc"
+    triage = SimpleNamespace(
+        terminal_id="triage-77", issue=SimpleNamespace(number=77), lease_id="lease-1",
+        scratch_worktree=True, worktree_path=scratch,
+    )
+    other = SimpleNamespace(
+        terminal_id="issue-88", issue=SimpleNamespace(number=88), lease_id=None,
+        scratch_worktree=False, worktree_path=None,
+    )
+    orchestrator.state.active_sessions = [triage, other]
+
+    outcome = orchestrator.terminate_triage_session(triage)
+
+    assert outcome.clean is True  # every effect succeeded
+    # State machine terminalized (removed)...
+    smm.remove_session_machine.assert_called_once_with("triage-77")
+    # ...terminal stopped through the real session-routing boundary...
+    assert session_manager.stop.call_count == 1
+    assert session_manager.stop.call_args.args[0].name == "triage-77"
+    # ...session reconciled out of active_sessions...
+    assert [s.terminal_id for s in orchestrator.state.active_sessions] == ["issue-88"]
+    # ...claim released...
+    claim_manager.release_claim.assert_called_once_with(77, "lease-1")
+    # ...and the disposable scratch worktree force-removed (no leak).
+    worktree_manager.remove.assert_called_once_with(scratch, force=True)
+
+
+def _terminate_fixture(sample_config, tmp_path):
+    orchestrator = create_test_orchestrator(sample_config)
+    session_manager = MagicMock()
+    claim_manager = MagicMock()
+    smm = MagicMock()
+    worktree_manager = MagicMock()
+    object.__setattr__(orchestrator.deps, "session_manager", session_manager)
+    object.__setattr__(orchestrator.deps, "claim_manager", claim_manager)
+    object.__setattr__(orchestrator.deps, "state_machine_manager", smm)
+    object.__setattr__(orchestrator.deps, "worktree_manager", worktree_manager)
+    scratch = tmp_path / "repo-triage-77-abc"
+    triage = SimpleNamespace(
+        terminal_id="triage-77", issue=SimpleNamespace(number=77), lease_id="lease-1",
+        scratch_worktree=True, worktree_path=scratch,
+    )
+    orchestrator.state.active_sessions = [triage]
+    return orchestrator, triage, session_manager, claim_manager, worktree_manager, scratch
+
+
+def test_terminate_triage_worktree_failure_reports_unclean_with_leaked_path(
+    sample_config, tmp_path
+):
+    # R7 (#6824): if scratch-worktree removal FAILS, the outcome is NOT clean and
+    # names the EXACT leaked path (the sole cleanup-failure owner — no dead
+    # engine-tick ImmediateCleanup retry). Never a silent leak reported as success.
+    orchestrator, triage, sm, cm, wtm, scratch = _terminate_fixture(sample_config, tmp_path)
+    wtm.remove.side_effect = RuntimeError("git worktree remove failed")
+
+    outcome = orchestrator.terminate_triage_session(triage)
+
+    assert outcome.worktree_removed is False and outcome.clean is False
+    assert outcome.leaked_worktree == str(scratch)
+    # Other effects still ran independently.
+    sm.stop.assert_called_once()
+    cm.release_claim.assert_called_once_with(77, "lease-1")
+    assert orchestrator.state.active_sessions == []
+    # The dead engine-tick retry is gone — no ImmediateCleanup is recorded.
+    assert orchestrator.state.immediate_cleanups == []
+
+
+def test_terminate_triage_terminal_failure_does_not_abort_other_effects(
+    sample_config, tmp_path
+):
+    # R7 (#6824): a terminal-stop failure must not abort claim release or worktree
+    # removal — every effect is attempted independently.
+    orchestrator, triage, sm, cm, wtm, scratch = _terminate_fixture(sample_config, tmp_path)
+    sm.stop.side_effect = RuntimeError("terminal already gone")
+
+    outcome = orchestrator.terminate_triage_session(triage)
+
+    assert outcome.terminal_stopped is False
+    # ...yet claim + worktree still handled, and the session reconciled.
+    cm.release_claim.assert_called_once_with(77, "lease-1")
+    wtm.remove.assert_called_once_with(scratch, force=True)
+    assert orchestrator.state.active_sessions == []
+
+
+def test_composed_one_shot_timeout_terminates_via_real_driver_and_facade(
+    sample_config, tmp_path
+):
+    """R8/R7 (#6824): the REAL driver drives the REAL Orchestrator facade to a
+    timeout; the facade terminate leaves NO leaked state machine, claim, active-
+    session record, or disposable scratch worktree — the cross-boundary outcome
+    that separate unit tests with a fake host could not catch. No live GitHub."""
+    from issue_orchestrator.control.triage_trigger import run_targeted_investigations
+
+    orchestrator = create_test_orchestrator(sample_config)
+    session_manager = MagicMock()
+    claim_manager = MagicMock()
+    smm = MagicMock()
+    worktree_manager = MagicMock()
+    repository_host = MagicMock()
+    repository_host.get_issue.return_value = SimpleNamespace(
+        number=77, title="Investigate", body="", milestone=None, labels=["blocked-failed"]
+    )
+    object.__setattr__(orchestrator.deps, "session_manager", session_manager)
+    object.__setattr__(orchestrator.deps, "claim_manager", claim_manager)
+    object.__setattr__(orchestrator.deps, "state_machine_manager", smm)
+    object.__setattr__(orchestrator.deps, "worktree_manager", worktree_manager)
+    object.__setattr__(orchestrator.deps, "repository_host", repository_host)
+
+    scratch = tmp_path / "repo-triage-77-abc"
+    session = SimpleNamespace(
+        terminal_id="triage-77",
+        key=SimpleNamespace(stable_id=lambda: "triage:77"),
+        issue=SimpleNamespace(number=77),
+        lease_id="lease-1",
+        scratch_worktree=True,
+        worktree_path=scratch,
+    )
+
+    def _launch(_triage):
+        # Inject the launched session; the REAL driver then drives + times out.
+        orchestrator.state.active_sessions = [session]
+        return session
+
+    orchestrator.launch_triage_session = _launch
+    orchestrator.tick = lambda: True  # never drains the session -> forces timeout
+    orchestrator.pause = lambda: None
+
+    clock = iter([0, 0, 0, 9_999])  # observed_at, deadline, check#1, check#2 (past)
+    results = run_targeted_investigations(
+        orchestrator, [77], now=lambda: next(clock), sleep=lambda _s: None, timeout_s=1
+    )
+
+    assert results[0].launched is True and results[0].completed is False
+    assert "terminated" in results[0].detail
+    # Behavior-complete cleanup applied by the REAL facade terminate:
+    smm.remove_session_machine.assert_called_once_with("triage-77")
+    claim_manager.release_claim.assert_called_once_with(77, "lease-1")
+    worktree_manager.remove.assert_called_once_with(scratch, force=True)
+    assert orchestrator.state.active_sessions == []
 
 
 def create_test_orchestrator(
@@ -1006,6 +1163,32 @@ class TestHandleSessionCompletion:
         assert cleanup.issue_number == 1
         assert cleanup.terminal_id == session.terminal_id
         assert cleanup.reason == "completed"
+        # An ordinary coding session's worktree is not a scratch workspace.
+        assert cleanup.scratch_worktree is False
+
+    def test_handle_completion_marks_scratch_worktree_for_investigation(
+        self,
+        sample_config,
+        mock_worktree_manager,
+    ):
+        """A disposable triage-investigation scratch session records its
+        ImmediateCleanup as scratch (#6823), so the Planner force-removes the
+        throwaway worktree on completion regardless of the cleanup config."""
+        import dataclasses
+
+        issue = create_issue(1)
+        session = dataclasses.replace(
+            create_session(issue, worktree_path=mock_worktree_manager.worktree_path),
+            scratch_worktree=True,
+        )
+
+        orchestrator = create_test_orchestrator(sample_config, worktree_manager=mock_worktree_manager)
+        orchestrator.state.active_sessions.append(session)
+
+        orchestrator.handle_session_completion(session, SessionStatus.COMPLETED)
+
+        assert len(orchestrator.state.immediate_cleanups) == 1
+        assert orchestrator.state.immediate_cleanups[0].scratch_worktree is True
 
     def test_handle_completion_records_immediate_cleanup_for_blocked(
         self,

@@ -1732,6 +1732,50 @@ class TestUpdateStateAfterAction:
         # Should NOT have added duplicate
         assert len(support_with_state.state.pending_reviews) == 1
 
+    def test_disposable_cleanup_pruned_on_success(self, support_with_state):
+        """F8: a disposable scratch-worktree cleanup fact is dropped once its
+        removal SUCCEEDS, so it is not needlessly re-planned every tick."""
+        from issue_orchestrator.control.actions import CleanupSessionAction
+        from issue_orchestrator.domain.models import ImmediateCleanup
+
+        state = support_with_state.state
+        state.immediate_cleanups.append(
+            ImmediateCleanup(
+                5980, "issue-5980", "/tmp/scratch", "completed", scratch_worktree=True
+            )
+        )
+        action = CleanupSessionAction(
+            issue_number=5980, pr_number=0, terminal_id="issue-5980",
+            worktree_path="/tmp/scratch", remove_worktrees=True, disposable_worktree=True,
+        )
+        result = MagicMock(success=True, details={})
+
+        support_with_state._update_state_after_action(action, result)  # noqa: SLF001
+
+        assert 5980 not in {c.issue_number for c in state.immediate_cleanups}
+
+    def test_disposable_cleanup_retained_on_failure(self, support_with_state):
+        """F8 second guard: a FAILED disposable cleanup keeps its fact so the
+        next tick re-plans the (forced) removal instead of leaking the worktree."""
+        from issue_orchestrator.control.actions import CleanupSessionAction
+        from issue_orchestrator.domain.models import ImmediateCleanup
+
+        state = support_with_state.state
+        state.immediate_cleanups.append(
+            ImmediateCleanup(
+                5980, "issue-5980", "/tmp/scratch", "completed", scratch_worktree=True
+            )
+        )
+        action = CleanupSessionAction(
+            issue_number=5980, pr_number=0, terminal_id="issue-5980",
+            worktree_path="/tmp/scratch", remove_worktrees=True, disposable_worktree=True,
+        )
+        result = MagicMock(success=False, details={})
+
+        support_with_state._update_state_after_action(action, result)  # noqa: SLF001
+
+        assert 5980 in {c.issue_number for c in state.immediate_cleanups}
+
     def test_queue_retrospective_review_adds_to_pending_reviews(
         self,
         support_with_state,

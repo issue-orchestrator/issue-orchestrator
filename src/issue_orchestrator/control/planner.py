@@ -78,7 +78,12 @@ from .awaiting_merge_post_publish_policy import (
 from .reactive_triage_planning import plan_reactive_triage
 from .triage_proposals import plan_approved_triage_op_executions
 from .triage_reaction import TriageReactionPolicy
+from .worker_budget import (
+    active_triage_session_count,
+    active_worker_session_count,
+)
 from .reconciliation import build_expected_for_mutation
+from .stuck_sweep import build_stuck_sweep_escalation_actions
 from .planner_types import OrchestratorSnapshot, Plan, PlanContext, SkippedItem
 from .triage_issue_policy import (
     apply_triage_priority_prefix,
@@ -235,6 +240,13 @@ class Planner:
         escalation_actions = self._plan_discovered_escalations(snapshot)
         actions.extend(escalation_actions)
 
+        # 1d1. Escalate stuck-sweep-exhausted issues to needs-human (#6824 R1):
+        # the stuck-sweep owner defines the authoritative label-only escalation
+        # (re-emitted, idempotent, until acknowledged); applied here through the
+        # Applier, not a direct GitHub call from observation.
+        actions.extend(build_stuck_sweep_escalation_actions(
+            snapshot.stuck_sweep_escalations, self._lm.needs_human))
+
         # 1d2. Handle post-publish escalations (CI checks stuck > timeout,
         # or branch protection blocking merge despite checks passing).
         # Distinct from rework-cycle exhaustion: an *approved* PR being
@@ -309,6 +321,46 @@ class Planner:
 
         return Plan(actions=tuple(actions), skipped=tuple(skipped))
 
+    def _active_triage_count(self, snapshot: OrchestratorSnapshot) -> int:
+        """Number of currently-active triage (tech-lead) sessions.
+
+        Delegates to the worker-budget owner so the "what is a triage session"
+        rule (ADR-0031: agent label == configured ``triage_review_agent``) has
+        a single definition shared with the E2E worker-slot gate.
+        """
+        return active_triage_session_count(self.config, snapshot.active_sessions)
+
+    def _launch_budgets(
+        self, snapshot: OrchestratorSnapshot
+    ) -> tuple[int, Optional[int]]:
+        """Compute ``(worker_capacity, reserved_triage_capacity)`` for this tick.
+
+        ``reserved_triage_capacity`` is ``None`` when ``triage.max_concurrent``
+        is unset: triage then SHARES the worker budget and worker capacity
+        counts every active session, exactly as before (byte-for-byte). When
+        set, active triage sessions are ADDITIVE — they neither consume worker
+        capacity nor count against ``max_concurrent_sessions`` — and triage
+        draws from its own ``max_concurrent - active_triage`` budget so the
+        tech lead can launch even at worker saturation.
+
+        A running first-class E2E workload (``snapshot.e2e_occupies_slot``, only
+        ever set when ``e2e.occupies_session_slot`` is on) occupies one WORKER
+        slot for as long as it runs, so worker capacity drops by 1 — one fewer
+        agent launches. It is charged to the worker budget ONLY: the reserved
+        triage capacity is untouched, so the tech lead still runs in its own
+        slot while E2E holds a worker slot.
+        """
+        reserved = self.config.triage.max_concurrent
+        worker_capacity = self.config.max_concurrent_sessions - (
+            active_worker_session_count(self.config, snapshot.active_sessions)
+        )
+        if snapshot.e2e_occupies_slot:
+            worker_capacity -= 1
+        if reserved is None:
+            return worker_capacity, None
+        active_triage = self._active_triage_count(snapshot)
+        return worker_capacity, reserved - active_triage
+
     def _plan_session_launches(
         self,
         snapshot: OrchestratorSnapshot,
@@ -319,8 +371,19 @@ class Planner:
         """Plan capacity-consuming session launches in priority order."""
         actions: list[Action] = []
         skipped: list[SkippedItem] = []
-        capacity = self.config.max_concurrent_sessions - snapshot.active_count
-        if capacity <= 0:
+        capacity, reserved_triage_capacity = self._launch_budgets(snapshot)
+        # Worker-only active count for the issue scheduler's own slot gate.
+        # Derived from the (pre-decrement) worker capacity so it excludes active
+        # triage sessions exactly when they are additive; in the shared-budget
+        # default this equals snapshot.active_count (unchanged behavior).
+        worker_active_count = self.config.max_concurrent_sessions - capacity
+        # Short-circuit only when NEITHER budget can launch anything. When
+        # triage shares the worker budget (reserved_triage_capacity is None)
+        # this reduces to exactly the original ``capacity <= 0`` guard; a
+        # reserved triage budget lets the tech lead run past worker saturation.
+        if capacity <= 0 and (
+            reserved_triage_capacity is None or reserved_triage_capacity <= 0
+        ):
             logger.debug(
                 "Planner: no capacity available (active=%d, max=%d)",
                 snapshot.active_count,
@@ -337,9 +400,14 @@ class Planner:
         validation_retry_launch_count = 0
         triage_launch_count = 0
 
-        # 2. Plan review launches (highest priority)
+        # 2. Plan review launches (highest priority). The worker workflows gate
+        # on the WORKER-only count (``worker_active_count``, owner: worker_budget),
+        # NOT raw ``snapshot.active_count`` — else a reserved-triage session steals
+        # worker review/rework capacity (#6824 F5).
         if capacity > 0 and self.review_workflow:
-            review_actions, review_skipped = self._plan_reviews(snapshot, capacity, plan_context)
+            review_actions, review_skipped = self._plan_reviews(
+                snapshot, capacity, worker_active_count, plan_context
+            )
             actions.extend(review_actions)
             skipped.extend(review_skipped)
             capacity -= len(review_actions)
@@ -350,6 +418,7 @@ class Planner:
             retrospective_actions, retrospective_skipped = self._plan_retrospective_reviews(
                 snapshot,
                 capacity,
+                worker_active_count,
                 plan_context,
             )
             actions.extend(retrospective_actions)
@@ -359,7 +428,9 @@ class Planner:
 
         # 3. Plan rework launches
         if capacity > 0 and self.rework_workflow:
-            rework_actions, rework_skipped = self._plan_reworks(snapshot, capacity, plan_context)
+            rework_actions, rework_skipped = self._plan_reworks(
+                snapshot, capacity, worker_active_count, plan_context
+            )
             actions.extend(rework_actions)
             skipped.extend(rework_skipped)
             capacity -= len(rework_actions)
@@ -378,18 +449,31 @@ class Planner:
             capacity -= len(validation_retry_actions)
             validation_retry_launch_count = len(validation_retry_actions)
 
-        # 5. Plan triage launches
-        if capacity > 0 and self.triage_workflow:
+        # 5. Plan triage launches. By default triage draws from the shared
+        # worker ``capacity`` (decremented above). When triage.max_concurrent
+        # is set, it draws from its own reserved additive budget instead, so
+        # the tech lead runs even when the worker budget is exhausted, and its
+        # launches do NOT decrement the shared worker capacity.
+        triage_capacity = (
+            capacity if reserved_triage_capacity is None else reserved_triage_capacity
+        )
+        if triage_capacity > 0 and self.triage_workflow:
             triage_actions, triage_skipped = self._plan_triage(
                 snapshot,
-                capacity,
+                triage_capacity,
                 plan_context,
+                reserved=reserved_triage_capacity is not None,
                 suppressed_issue_numbers=suppressed_triage_issue_numbers,
             )
             actions.extend(triage_actions)
             skipped.extend(triage_skipped)
-            capacity -= len(triage_actions)
+            if reserved_triage_capacity is None:
+                capacity -= len(triage_actions)
             triage_launch_count = len(triage_actions)
+
+        # 5b. Reserve one worker slot for a due first-class E2E run — after all
+        # completion work above, before new issues below (see method docstring).
+        capacity = self._reserve_e2e_worker_slot(snapshot, capacity)
 
         # 6. Plan issue launches with remaining capacity.
         #
@@ -414,11 +498,34 @@ class Planner:
                     rework_launch_count, validation_retry_launch_count,
                     triage_launch_count, capacity,
                 )
-            issue_actions, issue_skipped, _ = self._plan_issues(snapshot, capacity)
+            issue_actions, issue_skipped, _ = self._plan_issues(
+                snapshot, capacity, worker_active_count
+            )
             actions.extend(issue_actions)
             skipped.extend(issue_skipped)
 
         return actions, skipped
+
+    def _reserve_e2e_worker_slot(
+        self, snapshot: OrchestratorSnapshot, capacity: int
+    ) -> int:
+        """Hold back one worker slot for a due first-class E2E run.
+
+        ``snapshot.e2e_due`` is only ever set when ``e2e.occupies_session_slot``
+        is on (byte-for-byte off by default), and never at the same time as
+        ``e2e_occupies_slot`` (a run is not "due" while it is already active).
+        The caller invokes this AFTER all in-flight completion work (reviews/
+        retrospectives/reworks/validation-retries/triage) has consumed its
+        share, but BEFORE new issues — so a due suite claims a slot ahead of new
+        issues yet never preempts completion work: on a saturated board the
+        completion work simply leaves nothing to reserve and E2E waits. The
+        reservation only holds the slot back from new-issue launches; the run
+        itself starts post-tick in ``maybe_trigger_e2e``, gated on the freed
+        worker slot.
+        """
+        if snapshot.e2e_due and capacity > 0:
+            return capacity - 1
+        return capacity
 
     def _plan_discovered_reviews(self, snapshot: OrchestratorSnapshot) -> list[Action]:
         """Plan queue actions for discovered reviews from session completions.
@@ -942,7 +1049,12 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                 terminal_id=cleanup.terminal_id,
                 worktree_path=cleanup.worktree_path,
                 close_tabs=facts.close_tabs,
-                remove_worktrees=facts.remove_worktrees,
+                # A disposable triage-investigation scratch worktree is always
+                # removed, even when the config keeps worktrees (#6823).
+                remove_worktrees=facts.remove_worktrees or cleanup.scratch_worktree,
+                # Carry disposable identity so the applier force-removes ONLY the
+                # scratch worktree (leftover artifacts must not leak it) (#6824 F8).
+                disposable_worktree=cleanup.scratch_worktree,
                 reason=f"session {cleanup.reason}",
             ))
             logger.info("Planner: immediate cleanup for issue #%d (%s)",
@@ -1024,8 +1136,15 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
         self,
         snapshot: OrchestratorSnapshot,
         capacity: int,
+        worker_active_count: int,
     ) -> tuple[list[Action], list[SkippedItem], int]:
         """Plan which issues to launch.
+
+        ``worker_active_count`` is the active-session count charged against the
+        worker budget for the scheduler's own slot gate. It equals
+        ``snapshot.active_count`` in the shared-budget default; with a reserved
+        triage budget it excludes active triage sessions so they do not steal
+        worker issue slots (the additive-budget invariant).
 
         Returns:
             Tuple of (actions, skipped_items, capacity_used)
@@ -1156,7 +1275,7 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
         # Pick next batch based on priority
         to_launch = self.scheduler.pick_next_batch(
             available=not_active,
-            current_count=snapshot.active_count,
+            current_count=worker_active_count,
             priority_overrides=list(snapshot.priority_queue),
         )
 
@@ -1294,6 +1413,7 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
         self,
         snapshot: OrchestratorSnapshot,
         capacity: int,
+        worker_active_count: int,
         plan_context: PlanContext,
     ) -> tuple[list[Action], list[SkippedItem]]:
         """Plan which reviews to launch."""
@@ -1304,7 +1424,7 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
 
         decision: ReviewDecision = self.review_workflow.should_launch_reviews(
             pending_reviews=list(snapshot.pending_reviews),
-            active_session_count=snapshot.active_count,
+            active_session_count=worker_active_count,  # worker-only, not raw (#6824 F5)
             paused=snapshot.paused,
         )
 
@@ -1354,6 +1474,7 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
         self,
         snapshot: OrchestratorSnapshot,
         capacity: int,
+        worker_active_count: int,
         plan_context: PlanContext,
     ) -> tuple[list[Action], list[SkippedItem]]:
         """Plan which retrospective reviews to launch."""
@@ -1365,7 +1486,7 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
 
         decision: RetrospectiveReviewDecision = workflow.should_launch_reviews(
             pending_reviews=list(snapshot.pending_retrospective_reviews),
-            active_session_count=snapshot.active_count,
+            active_session_count=worker_active_count,  # worker-only, not raw (#6824 F5)
             paused=snapshot.paused,
         )
         if decision.skip_reason:
@@ -1417,6 +1538,7 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
         self,
         snapshot: OrchestratorSnapshot,
         capacity: int,
+        worker_active_count: int,
         plan_context: PlanContext,
     ) -> tuple[list[Action], list[SkippedItem]]:
         """Plan which reworks to launch."""
@@ -1427,7 +1549,7 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
 
         decision: ReworkDecision = self.rework_workflow.should_launch_reworks(
             pending_reworks=list(snapshot.pending_reworks),
-            active_session_count=snapshot.active_count,
+            active_session_count=worker_active_count,  # worker-only, not raw (#6824 F5)
             paused=snapshot.paused,
         )
 
@@ -1569,9 +1691,17 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
         capacity: int,
         plan_context: PlanContext,
         *,
+        reserved: bool = False,
         suppressed_issue_numbers: frozenset[int] = frozenset(),
     ) -> tuple[list[Action], list[SkippedItem]]:
-        """Plan which triage reviews to launch."""
+        """Plan which triage reviews to launch.
+
+        ``reserved`` selects the budget the launch gate uses: when False
+        (default) triage draws from the shared worker budget and the workflow
+        gates on ``max_concurrent_sessions`` exactly as before; when True
+        ``capacity`` is the reserved additive triage budget and the workflow
+        gates on it directly, so triage launches even at worker saturation.
+        """
         actions: list[Action] = []
         skipped: list[SkippedItem] = []
         if not self.triage_workflow or not self.triage_workflow.is_configured():
@@ -1589,6 +1719,7 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
             pending_triage=pending_triage,
             active_session_count=snapshot.active_count,
             paused=snapshot.paused,
+            reserved_capacity=capacity if reserved else None,
         )
 
         if decision.skip_reason:

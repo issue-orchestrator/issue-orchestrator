@@ -19,6 +19,7 @@ session's name distinguishes them. This module is the single owner for:
 """
 
 import logging
+import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -34,6 +35,7 @@ from ..domain.triage_session import (
     TriageSessionFlavor,
 )
 from .completion_pr_collision import NoCommitsBetweenError
+from .triage_evidence import build_evidence_map, write_evidence_map
 from .triage_manifest_builder import TriageCandidatePolicy, TriageManifestBuilder
 
 if TYPE_CHECKING:
@@ -42,7 +44,7 @@ if TYPE_CHECKING:
     from ..ports import ManifestDownloader, RepositoryHost
     from ..ports.issue import Issue
     from ..ports.triage_authority import TriageAuthorityStore
-    from .worktree_context import WorktreeContext
+    from .worktree_context import ScratchWorktreeIdentity, WorktreeContext
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +54,45 @@ def is_triage_session(
 ) -> bool:
     """True when ``agent_type`` is the configured triage review agent."""
     return bool(triage_review_agent and agent_type == triage_review_agent)
+
+
+def failure_investigation_scratch_identity(
+    config: "Config",
+    issue: "Issue",
+    triage_scope: "TriageLaunchScope | None",
+) -> "ScratchWorktreeIdentity | None":
+    """The disposable scratch worktree identity for a failure investigation (#6823).
+
+    A failure investigation launches as an ``issue-{focus}`` session under the
+    focus issue's number, so without this it would run in the focus issue's OWN
+    worktree on its branch — and the agent could commit into that branch,
+    mutating the very evidence it was sent to read (a live run showed a focus
+    branch advance by a junk agent commit). Gating on the producer-declared
+    ``triage_scope.flavor`` (the reliable signal owned here, ADR-0031) it instead
+    runs in a throwaway worktree on a fresh branch off the base branch, keyed to
+    this run rather than the focus issue: the focus worktree/branch stay pure
+    read-only evidence and an agent commit can only ever land on the disposable
+    branch. The name and branch carry a random token so investigations of the
+    same focus issue never collide, and the branch does NOT start with the focus
+    issue number so ``extract_issue_number_from_branch`` never mistakes it for the
+    focus branch.
+
+    Returns ``None`` for every other flavor (batch/health reviews run on their
+    own anchor worktrees) and for ordinary non-triage issues, leaving their
+    worktree derivation unchanged.
+    """
+    from .worktree_context import ScratchWorktreeIdentity
+
+    if (
+        triage_scope is None
+        or triage_scope.flavor is not TriageSessionFlavor.FAILURE_INVESTIGATION
+    ):
+        return None
+    token = uuid.uuid4().hex[:12]
+    return ScratchWorktreeIdentity(
+        worktree_name=f"{config.repo_root.name}-triage-{issue.number}-{token}",
+        branch_name=f"triage-investigation-{issue.number}-{token}",
+    )
 
 
 def shape_requested_actions_for_triage(
@@ -174,7 +215,7 @@ def prepare_triage_session_data(
     issue: "Issue",
     ctx: "WorktreeContext",
     triage_scope: "TriageLaunchScope | None",
-) -> None:
+) -> tuple[Path, ...]:
     """Prepare per-flavor triage session inputs (ADR-0031).
 
     BATCH_REVIEW keeps the existing PR-manifest prep; FAILURE_INVESTIGATION
@@ -196,7 +237,7 @@ def prepare_triage_session_data(
     BATCH_REVIEW.
     """
     if not is_triage_session(config.triage_review_agent, issue.agent_type):
-        return
+        return ()
     flavor = (triage_scope.flavor if triage_scope is not None else None) or (
         TriageSessionFlavor.HEALTH_REVIEW
         if HEALTH_REVIEW_MARKER_LABEL in issue.labels
@@ -256,6 +297,15 @@ def prepare_triage_session_data(
         run_dir,
         board_snapshot,
     )
+    return _stage_evidence_map(
+        config=config,
+        repository_host=repository_host,
+        ctx=ctx,
+        run_dir=run_dir,
+        flavor=flavor,
+        focus_issue_number=focus_issue,
+        board_snapshot=board_snapshot,
+    )
 
 
 def _write_board_snapshot(
@@ -275,3 +325,74 @@ def _write_board_snapshot(
     snapshot_path = run_dir / "triage-data" / BOARD_SNAPSHOT_FILENAME
     snapshot.write(snapshot_path)
     ctx.update_manifest({"board_snapshot": str(snapshot_path)})
+
+
+def _focus_failure_artifact_hints(
+    board_snapshot: BoardSnapshot, focus_issue_number: int
+) -> tuple[str, ...]:
+    """Artifact-hint paths on the focus issue's board failure, if present.
+
+    The board snapshot already carries recent failures with their on-disk
+    artifact hints; the focus issue's failure (when on the board) supplies the
+    run-dir locations the investigation should start from. Returns empty when
+    the focus issue is not among the recent failures — the sibling-worktree
+    glob in :func:`triage_evidence.build_evidence_map` still finds its run-dirs.
+    """
+    for failure in board_snapshot.recent_failures:
+        if failure.issue_number == focus_issue_number:
+            return tuple(failure.artifact_hints)
+    return ()
+
+
+def _stage_evidence_map(
+    *,
+    config: "Config",
+    repository_host: "RepositoryHost",
+    ctx: "WorktreeContext",
+    run_dir: Path,
+    flavor: TriageSessionFlavor,
+    focus_issue_number: int | None,
+    board_snapshot: BoardSnapshot,
+) -> tuple[Path, ...]:
+    """Best-effort: stage the read-side evidence map for a triage session.
+
+    Returns the map's typed sandbox read-roots (empty on the BATCH_REVIEW no-map
+    path or on a best-effort staging failure) so the launcher can grant a
+    sandboxed tech lead read access to exactly the god-view it advertises, while
+    writes stay confined to the scratch worktree (#6824 R5).
+
+    Unlike :func:`_write_board_snapshot` (fail-fast, because board-snapshot.json
+    is a REQUIRED agent input), the evidence map is an ENHANCEMENT — a
+    deliberate exception to the fail-fast house style. The whole build+write is
+    wrapped so ANY failure only logs a warning and continues: failing to stage
+    evidence must never fail the session launch. The manifest entry is recorded
+    only after a successful write, so it never points at a missing file.
+
+    Per flavor: BATCH_REVIEW gets no evidence map (it audits a PR batch, not
+    orchestrator-state facts); FAILURE_INVESTIGATION gets the full focus map
+    (the god-view substrate + the focus issue's own run-dirs + a GitHub
+    warm-cache); HEALTH_REVIEW gets the full SYSTEM map — the same substrate
+    (all SQLite stores, roots) plus whole-system run-dirs enumerated across
+    every worktree, since it assesses the whole floor and has no single focus
+    (``build_evidence_map`` keys both off ``focus_issue_number`` being None).
+    """
+    if flavor is TriageSessionFlavor.BATCH_REVIEW:
+        return ()
+    try:
+        artifact_hints = (
+            _focus_failure_artifact_hints(board_snapshot, focus_issue_number)
+            if focus_issue_number is not None
+            else ()
+        )
+        evidence = build_evidence_map(
+            config=config,
+            repository_host=repository_host,
+            focus_issue_number=focus_issue_number,
+            artifact_hints=artifact_hints,
+        )
+        path = write_evidence_map(run_dir, evidence)
+        ctx.update_manifest({"evidence_map": str(path)})
+        return evidence.sandbox_read_roots()
+    except Exception as exc:  # noqa: BLE001 - evidence map is best-effort, never fatal
+        logger.warning("[triage] Evidence map staging failed (non-fatal): %s", exc)
+        return ()

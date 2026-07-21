@@ -171,6 +171,11 @@
         },
         string: (el) => el.value,
         optional_string: (el) => (el.value === '' ? null : el.value),
+        optional_integer: (el) => {
+            if (el.value === '') return null;
+            const parsed = parseInt(el.value, 10);
+            return Number.isNaN(parsed) ? null : parsed;
+        },
         dict_enum: (el) => collectDictEditor(el).value,
     };
 
