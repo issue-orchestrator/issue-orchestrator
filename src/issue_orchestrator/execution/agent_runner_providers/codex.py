@@ -58,9 +58,8 @@ class CodexProvider(CLIProvider):
         Args:
             prompt: The task to perform
             model: Model name (e.g., gpt-5.3-codex). If None, uses Codex's default.
-            sandbox_scope: Codex sandbox-scope translation is an ADR-0034
-                follow-up. When set, this raises rather than silently launching
-                an unsandboxed codex agent.
+            sandbox_scope: When set, replaces provider-level approval/sandbox
+                options with the orchestrator-computed Codex permission profile.
             **kwargs: Additional options:
                 - execution_mode: "interactive" (default) or "exec"
                 - approval_mode: "full-auto" (default), "yolo", or "default"
@@ -85,25 +84,24 @@ class CodexProvider(CLIProvider):
                   opt in with ``execution_mode="exec"`` plus
                   ``json_output="true"``.
         """
-        if sandbox_scope is not None:
-            # Fail loud rather than launch an unsandboxed codex agent.
-            self.apply_scope(sandbox_scope)
-
         execution_mode = self._execution_mode(kwargs)
         json_output = self._truthy(kwargs.get("json_output", "false"))
         if execution_mode == "interactive" and json_output:
             raise ValueError("Codex json_output requires execution_mode='exec'")
 
-        cmd = [self.executable]
+        scope_argv = self.apply_scope(sandbox_scope) if sandbox_scope is not None else []
+
+        cmd = [self.executable, *scope_argv]
         if execution_mode == "exec":
             cmd.append("exec")
 
         approval_mode = kwargs.get("approval_mode", "full-auto")
-        self._append_approval_flags(
-            cmd,
-            approval_mode=approval_mode,
-            execution_mode=execution_mode,
-        )
+        if sandbox_scope is None:
+            self._append_approval_flags(
+                cmd,
+                approval_mode=approval_mode,
+                execution_mode=execution_mode,
+            )
 
         # Model (optional - Codex will use default if not specified)
         if model:
@@ -111,12 +109,13 @@ class CodexProvider(CLIProvider):
 
         self._append_reasoning_effort(cmd, kwargs)
 
-        self._append_sandbox_flags(
-            cmd,
-            kwargs,
-            approval_mode=approval_mode,
-            execution_mode=execution_mode,
-        )
+        if sandbox_scope is None:
+            self._append_sandbox_flags(
+                cmd,
+                kwargs,
+                approval_mode=approval_mode,
+                execution_mode=execution_mode,
+            )
 
         if json_output:
             cmd.append("--json")
@@ -127,12 +126,7 @@ class CodexProvider(CLIProvider):
         return cmd
 
     def apply_scope(self, scope: "SandboxScope") -> list[str]:
-        """Codex sandbox-scope translation is an ADR-0034 follow-up.
-
-        Raises rather than silently launching an unsandboxed codex agent. The
-        second slice replaces this with codex ``--sandbox`` / approval-policy
-        flags derived from *scope*.
-        """
+        """Translate *scope* into Codex's enforcing global argv fragment."""
         from .sandbox import CodexSandboxAdapter
 
         return CodexSandboxAdapter().apply_scope(scope)

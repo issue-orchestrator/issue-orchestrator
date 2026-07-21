@@ -50,8 +50,9 @@ class SandboxUnsupportedError(RuntimeError):
 
     ``sandbox: true`` is a security opt-in, so it must FAIL LOUD rather than
     silently launch unsandboxed. The provider-less/custom-``command`` launch mode
-    has no enforcing adapter, and the codex adapter is not implemented yet — both
-    raise this rather than render an unsandboxed command.
+    has no enforcing adapter and raises this rather than render an unsandboxed
+    command. Provider adapters use the same error when a scope cannot be represented
+    by their native sandbox.
     """
 
 # Egress posture for a sandboxed session. This governs a sandboxed agent's
@@ -156,6 +157,9 @@ class SandboxScope:
     given CLI enforces it.
 
     Attributes:
+        working_directory: Session worktree to pin as the provider's cwd. This is
+            explicit rather than inferred from root ordering because cwd is a
+            security-relevant input for provider-native workspace policies.
         read_roots: Filesystem roots to re-allow reads of. Non-empty. NOTE: the
             claude-code sandbox leaves reads OPEN to the whole machine by
             default; ``read_roots`` is not a read *boundary* on its own — the
@@ -170,13 +174,13 @@ class SandboxScope:
             sandboxed process (credentials).
         deny_read_files: Secret paths (``~/`` home-relative, or absolute) whose
             reads must be denied — the fail-closed secret layer (see
-            :data:`DEFAULT_SANDBOX_DENY_READ_FILES`). The provider adapter
-            enforces this list on BOTH tool boundaries: the OS sandbox
-            (``credentials.files``, for Bash) AND the permission layer
-            (``permissions.deny`` Read/Edit/Grep/Glob/Write, for the native file
-            tools the OS sandbox does not reach).
+            :data:`DEFAULT_SANDBOX_DENY_READ_FILES`). Each provider adapter maps
+            these to its native deny mechanism; Claude mirrors them across its OS
+            and native-tool layers, while Codex uses filesystem permission-profile
+            carve-outs.
     """
 
+    working_directory: Path
     read_roots: tuple[Path, ...]
     write_roots: tuple[Path, ...]
     egress: SandboxEgress
@@ -190,6 +194,16 @@ class SandboxScope:
             allowed = ", ".join(get_args(SandboxEgress))
             raise ValueError(
                 f"SandboxScope.egress must be one of {allowed}; got {self.egress!r}"
+            )
+        if not self.write_roots:
+            raise ValueError("SandboxScope.write_roots must not be empty")
+        if self.working_directory not in self.read_roots:
+            raise ValueError(
+                "SandboxScope.working_directory must be present in read_roots"
+            )
+        if self.working_directory not in self.write_roots:
+            raise ValueError(
+                "SandboxScope.working_directory must be present in write_roots"
             )
 
 
@@ -269,6 +283,7 @@ def compute_session_scope(
     # roots without touching the coder/reviewer policy.
     _ = role  # role currently uniform; retained as the extension seam.
     return SandboxScope(
+        working_directory=worktree,
         read_roots=(worktree,),
         write_roots=(worktree,),
         egress="model-only",

@@ -848,8 +848,13 @@ class AgentConfig:
     # Bash and native file-tool WRITES are worktree-scoped, known secrets and
     # restricted egress are denied, and the agent cannot modify its own policy
     # files. Non-secret native READS outside the worktree remain possible by
-    # design (this is not a read jail). Supported only through a provider adapter:
-    # a provider-less/custom-command agent is rejected, and codex fails loud.
+    # design (this is not a read jail). Codex uses an invocation-scoped native
+    # permission profile for equivalent write/secret/egress boundaries; its
+    # additional read roots are also writable because Codex has no read-only
+    # ``--add-dir``. Linked-worktree commits receive narrow access to the current
+    # worktree's Git state/current ref and the shared loose-object store; other
+    # shared Git metadata stays read-only. Provider-less/custom-command agents
+    # are rejected.
     # Distinct from codex's ``provider_args.sandbox`` (a codex CLI policy string).
     sandbox: bool = False
     # Skip code review for this agent (e.g., domain-expert agents that don't produce code)
@@ -1034,7 +1039,7 @@ class AgentConfig:
             )
         if self.provider:
             # The worktree anchors the sandbox's read/write roots; the task kind
-            # selects the role. A codex opt-in fails loud in its adapter.
+            # selects the role. Each provider adapter must enforce or fail loud.
             return self._build_provider_command(
                 rendered_prompt,
                 prompt_for_command,

@@ -68,8 +68,17 @@ agents:
     #   #   - the agent cannot modify its own .claude/settings.json (no self-widen);
     #   #   - non-secret native READS outside the worktree remain possible (not a
     #   #     read jail).
-    #   # Supported only via a provider adapter: a provider-less/custom-`command`
-    #   # agent with sandbox: true is rejected, and codex currently fails loud.
+    #   # Codex 0.138+ has parity through an invocation-scoped permission profile:
+    #   # writes stay on explicit roots, .codex is read-only, known secrets are
+    #   # denied, and command network + web search follow the egress scope. Codex
+    #   # has no read-only --add-dir, so any extra read root is bounded but writable.
+    #   # Linked-worktree commits get narrow Git metadata access: this worktree's
+    #   # admin state, current branch ref/reflog, and shared loose-object store are
+    #   # writable; shared config, hooks, packs, other refs/worktrees stay read-only.
+    #   # Remove legacy Codex `sandbox_mode` from system/user/project config first:
+    #   # Codex disables permission profiles when that key is loaded, so opt-in
+    #   # fails loud instead of silently using the weaker legacy policy.
+    #   # A provider-less/custom-`command` agent with sandbox: true is rejected.
     #   # Per-agent only; not inherited from default_agent.
     # skip_review: false
     # reviewer: "agent:reviewer"     # Override default reviewer
