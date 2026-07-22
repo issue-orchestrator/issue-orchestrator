@@ -37,6 +37,7 @@ from .queue_cache import (
     queue_shrink_confirmation_pending,
     record_issue_refreshes,
 )
+from .blocked_front_queue import front_queue_newly_unblocked
 from .dependency_gate_snapshot import build_refresh_snapshot
 from .fact_gatherer import clear_discovered_facts
 from .issue_fetch_resilience import IssueFetchResilience, TransientIssueFetchError
@@ -831,6 +832,7 @@ def _fetch_and_update_queue(
                 if d.reason == "dependency_blocked"
             ]
             github_workflow.update_dependency_problems(state, dep_blocked)
+            front_queue_newly_unblocked(state, decisions)
             state.dependency_gate_snapshot = build_refresh_snapshot(
                 scheduler.dependency_evaluator, all_issues, state.active_sessions
             )

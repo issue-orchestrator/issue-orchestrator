@@ -43,6 +43,8 @@ from issue_orchestrator.control.reconciliation import (
 )
 from issue_orchestrator.control.session_history import CLOSED_ISSUE_HISTORY_STATUS_REASON
 from issue_orchestrator.control.session_routing import PendingSessionQueues
+from issue_orchestrator.control.scheduler import IssueAvailabilityDecision
+from issue_orchestrator.control.blocked_front_queue import front_queue_newly_unblocked
 from issue_orchestrator.control.actions import (
     ActionResult,
     ActionType,
@@ -3094,3 +3096,89 @@ class TestRunTickHeartbeat:
         assert sample_orchestrator_state.last_tick_started_at > 0
         assert sample_orchestrator_state.last_tick_completed_at == 0.0
         assert sample_orchestrator_state.current_tick_phase == 'active_sessions'
+
+
+class TestFrontQueueNewlyUnblocked:
+    """#6873: issues leaving a blocked state jump to the front of the work queue.
+
+    Keyed on the scheduler's own availability verdict, so it covers BOTH routes
+    out of blocked (blocking-label removal and dependency-gate opening) and never
+    front-queues an issue that was never blocked.
+    """
+
+    @staticmethod
+    def _dec(number: int, available: bool, reason: str) -> IssueAvailabilityDecision:
+        return IssueAvailabilityDecision(
+            issue=make_issue(number), available=available, reason=reason
+        )
+
+    def test_unblocked_issue_moves_to_front(self):
+        state = OrchestratorState()
+        state.previously_blocked_issue_numbers = {5}
+        front_queue_newly_unblocked(
+            state, [self._dec(5, available=True, reason="available")]
+        )
+        assert state.priority_queue == [5]
+        # Nothing is blocked now, so the baseline clears.
+        assert state.previously_blocked_issue_numbers == set()
+
+    def test_still_blocked_is_not_queued(self):
+        state = OrchestratorState()
+        state.previously_blocked_issue_numbers = {5}
+        front_queue_newly_unblocked(
+            state, [self._dec(5, available=False, reason="blocked_label")]
+        )
+        assert state.priority_queue == []
+        assert state.previously_blocked_issue_numbers == {5}
+
+    def test_never_blocked_is_not_queued(self):
+        state = OrchestratorState()
+        front_queue_newly_unblocked(
+            state, [self._dec(9, available=True, reason="available")]
+        )
+        assert state.priority_queue == []
+        assert state.previously_blocked_issue_numbers == set()
+
+    def test_both_label_and_dependency_routes_reach_the_front(self):
+        state = OrchestratorState()
+        state.previously_blocked_issue_numbers = {5, 6}
+        front_queue_newly_unblocked(
+            state,
+            [
+                self._dec(5, available=True, reason="available"),  # label removed
+                self._dec(6, available=True, reason="available"),  # dep gate opened
+            ],
+        )
+        assert set(state.priority_queue) == {5, 6}
+        assert state.previously_blocked_issue_numbers == set()
+
+    def test_newly_blocked_issues_recorded_as_baseline(self):
+        state = OrchestratorState()
+        front_queue_newly_unblocked(
+            state,
+            [
+                self._dec(7, available=False, reason="dependency_blocked"),
+                self._dec(8, available=False, reason="blocked_label"),
+            ],
+        )
+        assert state.priority_queue == []
+        assert state.previously_blocked_issue_numbers == {7, 8}
+
+    def test_left_blocked_but_now_in_progress_is_not_queued(self):
+        # blocked -> actively worked (not available): no queue placement needed.
+        state = OrchestratorState()
+        state.previously_blocked_issue_numbers = {5}
+        front_queue_newly_unblocked(
+            state, [self._dec(5, available=False, reason="in_progress_active_session")]
+        )
+        assert state.priority_queue == []
+        assert state.previously_blocked_issue_numbers == set()
+
+    def test_idempotent_across_scans(self):
+        state = OrchestratorState()
+        state.previously_blocked_issue_numbers = {5}
+        decisions = [self._dec(5, available=True, reason="available")]
+        front_queue_newly_unblocked(state, decisions)
+        # Second scan: 5 has left the baseline, so it is not front-queued again.
+        front_queue_newly_unblocked(state, decisions)
+        assert state.priority_queue == [5]

@@ -1868,6 +1868,13 @@ class OrchestratorState:
     ui_visible_issue_numbers: list[int] = field(default_factory=list)  # Issue numbers currently visible in Flow UI
     ui_visible_updated_at: float = 0.0  # Unix timestamp when UI visibility hint was last updated
     dependency_problems: dict[int, "DependencyProblem"] = field(default_factory=dict)  # Issues blocked by dependencies (to migrate: dict[IssueKey, ...])
+    # #6873: issue numbers the scheduler deemed blocked (blocking label OR
+    # dependency gate) at the last dependency scan. When an issue leaves this
+    # set AND is available again, it jumps to the front of the work queue — it
+    # was already important enough to be in flight, so restoring it is prompt.
+    # In-memory like ``priority_queue`` (GitHub labels stay the crash-safe
+    # truth); a restart simply re-establishes the baseline on the next scan.
+    previously_blocked_issue_numbers: set[int] = field(default_factory=set)
     dependency_gate_snapshot: DependencyGateSnapshot = field(default_factory=DependencyGateSnapshot)  # Producer-evaluated stack gate reports + successor edges for the UI (#6597)
     # Discovered facts pending Planner decision
     discovered_reviews: list[DiscoveredReview] = field(default_factory=list)  # Reviews from completions/scans
