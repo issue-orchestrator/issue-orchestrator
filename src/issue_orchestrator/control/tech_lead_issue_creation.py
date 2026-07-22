@@ -11,7 +11,10 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Callable
 
-from ..domain.tech_lead_session import PROPOSED_TECH_LEAD_LABEL
+from ..domain.tech_lead_session import (
+    PROPOSED_TECH_LEAD_LABEL,
+    is_proposed_tech_lead_gate,
+)
 from ..events import EventName
 from ..ports import make_trace_event
 from .actions import (
@@ -26,6 +29,7 @@ from .tech_lead_issue_policy import resolve_tech_lead_milestone_number
 if TYPE_CHECKING:
     from ..ports import EventSink, RepositoryHost
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
+    from .retry_history_state import ExpediteLane
 
 logger = logging.getLogger(__name__)
 
@@ -165,6 +169,7 @@ def apply_create_tech_lead_issue(
     ops: "TechLeadAuthorityStore | None",
     add_comment: Callable[[int, str], str],
     emit_labels_changed: Callable[[int, list[str], list[str]], None],
+    expedite_lane: "ExpediteLane | None" = None,
 ) -> ActionResult:
     """Create a tech_lead issue and finalize its optional authority ledger."""
     preflight = _creation_preflight(
@@ -223,6 +228,7 @@ def apply_create_tech_lead_issue(
             },
         )
     )
+    _apply_expedite_lane(action, issue_number=issue_number, expedite_lane=expedite_lane)
     finalization_error = _finalize_ledger_backed_creation(
         action,
         issue_number=issue_number,
@@ -236,6 +242,31 @@ def apply_create_tech_lead_issue(
         issue_number=issue_number,
         pr_count=action.pr_count,
     )
+
+
+def _apply_expedite_lane(
+    action: CreateTechLeadIssueAction,
+    *,
+    issue_number: int,
+    expedite_lane: "ExpediteLane | None",
+) -> None:
+    """Route an expedite-marked create_issue onto the worker lane (#6870).
+
+    Inherits the ADR-0031 create_issue gate rather than bypassing it: a GATED
+    (propose-authority) creation carries ``proposed-tech-lead``, so it is only
+    DEFERRED here — the planning cycle promotes it once an operator removes the
+    gate. An UNGATED (execute-authority) creation jumps the lane immediately.
+    Either way the write goes through the ExpediteLane owner, never a direct
+    priority_queue mutation, and the cap is enforced there. Unwired lane (tests
+    / no orchestrator) or a non-expedite action is a no-op.
+    """
+    if not action.expedite or expedite_lane is None:
+        return
+    gated = any(is_proposed_tech_lead_gate(name) for name in action.labels)
+    if gated:
+        expedite_lane.defer_until_ungated(issue_number)
+    else:
+        expedite_lane.expedite_now(issue_number)
 
 
 def _finalize_ledger_backed_creation(

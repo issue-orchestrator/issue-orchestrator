@@ -2,10 +2,19 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+import logging
+from collections.abc import Callable, Collection, Iterable
 from dataclasses import dataclass
+from typing import Literal
 
 from ..domain.models import OrchestratorState
+
+logger = logging.getLogger(__name__)
+
+# Why a tech-lead expedite request did (or did not) reach the worker lane. The
+# owner returns this typed outcome instead of a bare bool so callers surface the
+# reason (#6870) — a cap skip must be logged, never silently dropped.
+ExpediteReason = Literal["expedited", "already_queued", "cap_reached", "disabled"]
 
 
 @dataclass(frozen=True)
@@ -36,6 +45,73 @@ class PendingStateClearResult:
     cleanup_count_before: int
     cleanup_count_after: int
     superseded_prs: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class ExpediteOutcome:
+    """Result of one expedite-lane request (#6870), returned by the owner."""
+
+    issue_number: int
+    expedited: bool
+    reason: ExpediteReason
+    outstanding: int  # tech-lead-expedited issues in priority_queue after this call
+    max_expedited: int
+
+
+@dataclass(frozen=True)
+class ExpediteEligibility:
+    """Which pending expedite follow-ups are promotable this tick (#6870).
+
+    ``eligible`` — issue numbers currently un-gated AND runnable (the gate label
+    removed, no other blocking label). ``in_scope`` — issue numbers still open
+    and in the configured scope; a pending issue absent from this set has been
+    closed/rejected and is pruned rather than kept waiting forever.
+    """
+
+    eligible: frozenset[int]
+    in_scope: frozenset[int]
+
+
+@dataclass(frozen=True)
+class ExpediteLane:
+    """Applier/tick-facing expedite entrypoint bound to live state + the cap.
+
+    The single seam the action applier and the planning cycle use to move a
+    tech-lead follow-up onto the worker lane. Every write is routed through the
+    :class:`RetryHistoryState` owner (never a direct ``priority_queue`` mutation
+    from the applier/controller), and the configured cap travels with the lane
+    so the check-and-insert stays atomic in the owner.
+    """
+
+    owner_factory: Callable[[], "RetryHistoryState"]
+    eligibility_provider: Callable[[], ExpediteEligibility]
+    max_expedited: int
+
+    def expedite_now(self, issue_number: int) -> ExpediteOutcome:
+        """Execute-authority path: jump the lane immediately at creation."""
+        return self.owner_factory().expedite_issue_front(
+            issue_number, max_expedited=self.max_expedited
+        )
+
+    def defer_until_ungated(self, issue_number: int) -> None:
+        """Propose-authority path: remember a gated follow-up for later promotion."""
+        self.owner_factory().record_expedite_pending(issue_number)
+
+    def promote_ungated(self) -> list[ExpediteOutcome]:
+        """Per-tick: promote every pending follow-up whose gate has been removed.
+
+        Short-circuits when nothing is pending (the common case) so the
+        eligibility scan over the cached queues is skipped entirely.
+        """
+        owner = self.owner_factory()
+        if not owner.has_expedite_pending():
+            return []
+        eligibility = self.eligibility_provider()
+        return owner.promote_expedite_pending(
+            eligibility.eligible,
+            eligibility.in_scope,
+            max_expedited=self.max_expedited,
+        )
 
 
 class RetryHistoryState:
@@ -108,6 +184,8 @@ class RetryHistoryState:
             if issue_number in self._state.priority_queue:
                 self._state.priority_queue.remove(issue_number)
                 removed.append(issue_number)
+        # A dequeued issue is no longer an outstanding tech-lead expedite (#6870).
+        self._prune_expedited_ledger()
         return removed
 
     def prioritize_issue_front(self, issue_number: int) -> bool:
@@ -116,6 +194,108 @@ class RetryHistoryState:
             return False
         self._state.priority_queue.insert(0, issue_number)
         return True
+
+    def expedite_issue_front(
+        self, issue_number: int, *, max_expedited: int
+    ) -> ExpediteOutcome:
+        """Front-queue an issue for the tech lead, bounded by the expedite cap (#6870).
+
+        Unlike :meth:`prioritize_issue_front` (the unbounded operator/retry
+        path), this enforces ``tech_lead.max_expedited`` atomically: the cap
+        counts only OUTSTANDING tech-lead-expedited issues — those this owner
+        placed that are still in ``priority_queue`` — so a noisy tech lead can
+        never starve the worker lane, and operator/retry priorities never count
+        against it. Stale ledger entries (an expedited issue since worked or
+        dequeued) are pruned first so the count reflects reality; the check and
+        the insert happen together so the bound cannot be raced.
+
+        ``max_expedited <= 0`` disables the lane (``disabled``); an
+        already-queued issue consumes no slot (``already_queued``); at the cap
+        the request is skipped and LOGGED, never silently truncated
+        (``cap_reached``).
+        """
+        self._prune_expedited_ledger()
+        outstanding = len(self._state.tech_lead_expedited)
+        if max_expedited <= 0:
+            return ExpediteOutcome(
+                issue_number, False, "disabled", outstanding, max_expedited
+            )
+        if issue_number in self._state.priority_queue:
+            return ExpediteOutcome(
+                issue_number, False, "already_queued", outstanding, max_expedited
+            )
+        if outstanding >= max_expedited:
+            logger.info(
+                "[EXPEDITE] Not expediting issue #%d: %d/%d expedite slot(s)"
+                " already outstanding (tech_lead.max_expedited); it will be"
+                " worked at normal priority",
+                issue_number,
+                outstanding,
+                max_expedited,
+            )
+            return ExpediteOutcome(
+                issue_number, False, "cap_reached", outstanding, max_expedited
+            )
+        self._state.priority_queue.insert(0, issue_number)
+        self._state.tech_lead_expedited.append(issue_number)
+        return ExpediteOutcome(
+            issue_number, True, "expedited", outstanding + 1, max_expedited
+        )
+
+    def has_expedite_pending(self) -> bool:
+        """True iff any gated expedite follow-up is awaiting promotion (#6870)."""
+        return bool(self._state.tech_lead_expedite_pending)
+
+    def record_expedite_pending(self, issue_number: int) -> None:
+        """Remember a gated (propose-authority) expedite follow-up (#6870).
+
+        The issue is created behind the ``proposed-tech-lead`` gate, so it must
+        NOT jump the lane yet. :meth:`promote_expedite_pending` moves it to the
+        front once an operator removes the gate.
+        """
+        if issue_number not in self._state.tech_lead_expedite_pending:
+            self._state.tech_lead_expedite_pending.append(issue_number)
+
+    def promote_expedite_pending(
+        self,
+        eligible: Collection[int],
+        in_scope: Collection[int],
+        *,
+        max_expedited: int,
+    ) -> list[ExpediteOutcome]:
+        """Promote gated expedite follow-ups whose gate has been removed (#6870).
+
+        The single point where a propose-authority expedite intent turns into a
+        real front-queue write — exactly when the issue first becomes eligible
+        for work, inheriting the ADR-0031 create_issue gate. A pending issue in
+        ``eligible`` (un-gated + runnable) is expedited under the cap; one still
+        ``in_scope`` but not yet eligible (still gated) stays pending; one absent
+        from scope (closed/rejected) is dropped so the pending set never leaks. A
+        cap-blocked promotion stays pending to retry once a slot frees.
+        """
+        eligible_set = set(eligible)
+        in_scope_set = set(in_scope)
+        outcomes: list[ExpediteOutcome] = []
+        remaining: list[int] = []
+        for issue_number in self._state.tech_lead_expedite_pending:
+            if issue_number in eligible_set:
+                outcome = self.expedite_issue_front(
+                    issue_number, max_expedited=max_expedited
+                )
+                outcomes.append(outcome)
+                if outcome.reason == "cap_reached":
+                    remaining.append(issue_number)
+            elif issue_number in in_scope_set:
+                remaining.append(issue_number)
+        self._state.tech_lead_expedite_pending = remaining
+        return outcomes
+
+    def _prune_expedited_ledger(self) -> None:
+        """Drop expedite-ledger entries no longer in ``priority_queue`` (#6870)."""
+        self._state.tech_lead_expedited = [
+            n for n in self._state.tech_lead_expedited
+            if n in self._state.priority_queue
+        ]
 
     def clear_scratch_retry_pending_state(
         self,
@@ -267,6 +447,15 @@ class RetryHistoryState:
         self._state.priority_queue = [
             n for n in self._state.priority_queue
             if n != issue_number
+        ]
+        # Expedite bookkeeping is issue-scoped queue state (#6870): a scratch
+        # reset drops the issue from both the outstanding ledger and the
+        # awaiting-un-gate pending set alongside priority_queue.
+        self._state.tech_lead_expedited = [
+            n for n in self._state.tech_lead_expedited if n != issue_number
+        ]
+        self._state.tech_lead_expedite_pending = [
+            n for n in self._state.tech_lead_expedite_pending if n != issue_number
         ]
         self._state.queue_pending_shrink_missing_issue_numbers = [
             n for n in self._state.queue_pending_shrink_missing_issue_numbers

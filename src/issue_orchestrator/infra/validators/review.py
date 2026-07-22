@@ -39,6 +39,8 @@ class ReviewWorkflowValidator(ConfigValidator):
         # the cross-field "enabled requires a tech lead agent" check.
         errors.extend(config.tech_lead.stuck_sweep.startup_errors())
         self._validate_stuck_sweep_requires_agent(config, errors)
+        # Expedite lane (#6870): a negative cap is a startup error (0 disables).
+        errors.extend(config.tech_lead.startup_errors())
 
         exchange_mode = config.review_exchange_mode
         self._validate_exchange_mode(exchange_mode, config, errors)

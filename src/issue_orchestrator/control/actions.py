@@ -370,6 +370,7 @@ class CreateTechLeadIssueAction(Action):
     # recompute against a board that by then holds this anchor. "" (batch, or no
     # facts) means never-reviewed: fails toward reviewing (ADR-0031 §4, #6793).
     health_review_fingerprint: str = ""
+    expedite: bool = False  # #6870: front-queue this create_issue follow-up (via the expedite owner; gate-aware)
     action_type: ActionType = field(default=ActionType.CREATE_TECH_LEAD_ISSUE, init=False)
 
 
@@ -387,9 +388,7 @@ class CreateTechLeadProposalIssueAction(CreateTechLeadIssueAction):
 
     op: "StoredTechLeadOp" = field(kw_only=True)
     anchor_issue_number: int = 0
-    action_type: ActionType = field(
-        default=ActionType.CREATE_TECH_LEAD_PROPOSAL_ISSUE, init=False
-    )
+    action_type: ActionType = field(default=ActionType.CREATE_TECH_LEAD_PROPOSAL_ISSUE, init=False)
 
     def __post_init__(self) -> None:
         from ..domain.tech_lead_session import PROPOSED_TECH_LEAD_LABEL

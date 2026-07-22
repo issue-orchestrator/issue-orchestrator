@@ -858,6 +858,10 @@ class Orchestrator:
         with self._state_lock:
             refresh_to_process = self.state.queue_refresh_requested
             self.state.queue_refresh_requested = False
+        # Promote any gated expedite follow-ups whose proposed-tech-lead gate an
+        # operator has removed onto the worker lane before this tick plans (#6870).
+        if (applier := self.deps.action_applier) and applier.expedite_lane:
+            applier.expedite_lane.promote_ungated()
         self._last_network_sync, _ = _run_planning_cycle_impl(self.config, self.deps.events, self._event_context, self.state, self.deps.fact_gatherer, self.deps.planner, self.deps.repository_host, self.scheduler, self._github_workflow, self._apply_plan, self._clear_discovered_facts, self._last_network_sync, refresh_to_process, self._inflight_stable_ids, self._issue_fetch_resilience, self.observer, self.deps.claim_manager, queue_cache_store=self.deps.queue_cache_store, io_claimed_label=self.deps.label_manager.io_claimed)
 
     def _clear_discovered_facts(self, tick: "OrchestratorSnapshot") -> None: self._plan_applier.clear_discovered_facts(tick)

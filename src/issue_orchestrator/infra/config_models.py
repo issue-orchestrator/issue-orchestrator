@@ -467,6 +467,12 @@ class TechLeadConfig:
     # at ``max_concurrent_sessions + tech_lead.max_concurrent``.
     max_concurrent: Optional[int] = None
 
+    # Expedite lane cap (#6870). Bounds how many OUTSTANDING tech-lead-expedited
+    # issues can sit at the front of the worker queue at once, so a noisy tech
+    # lead cannot starve normal work. The default is small; 0 disables the lane
+    # entirely (an expedite request then falls back to normal priority).
+    max_expedited: int = 3
+
     # Per-action-type graduated authority for tech_lead decision proposals
     authority: TechLeadAuthorityConfig = field(default_factory=TechLeadAuthorityConfig)
 
@@ -487,6 +493,7 @@ class TechLeadConfig:
             },
             "priority": self.priority,
             "max_concurrent": self.max_concurrent,
+            "max_expedited": self.max_expedited,
             "authority": self.authority.to_event_dict(),
             "health_review": {
                 "interval_minutes": self.health_review.interval_minutes,
@@ -499,6 +506,21 @@ class TechLeadConfig:
                 "max_recovery_attempts": self.stuck_sweep.max_recovery_attempts,
             },
         }
+
+    def startup_errors(self) -> list[str]:
+        """Own-block invariants for the ``tech_lead`` section (#6870).
+
+        The documented disable value is exactly 0; a negative cap is a
+        misconfiguration that must fail startup loudly, never be silently
+        treated as disabled (mirrors the health-review/stuck-sweep blocks).
+        """
+        errors: list[str] = []
+        if self.max_expedited < 0:
+            errors.append(
+                "tech_lead.max_expedited must be >= 0 (0 disables the expedite "
+                f"lane), got {self.max_expedited}"
+            )
+        return errors
 
 
 @dataclass

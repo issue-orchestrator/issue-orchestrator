@@ -254,10 +254,9 @@ def parse_tech_lead_config(data: dict) -> TechLeadConfig:
         milestone_strategy=milestone_strategy,
         priority=data.get("priority"),
         max_concurrent=max_concurrent,
+        max_expedited=int(data.get("max_expedited", 3)),
         authority=TechLeadAuthorityConfig.from_mapping(data.get("authority", {}) or {}),
-        health_review=TechLeadHealthReviewConfig.from_mapping(
-            data.get("health_review", {}) or {}
-        ),
+        health_review=TechLeadHealthReviewConfig.from_mapping(data.get("health_review", {}) or {}),
         stuck_sweep=StuckSweepConfig.from_mapping(data.get("stuck_sweep", {}) or {}),
     )
 

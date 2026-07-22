@@ -114,6 +114,25 @@ class TestModelDefaults:
         prop = get_settings_json_schema()["review"]["properties"]["tech_lead_max_concurrent"]
         assert prop["x_control"]["kind"] == FORM_CONTROL_OPTIONAL_INTEGER
 
+    def test_tech_lead_max_expedited_default(self):
+        # Expedite lane cap (#6870) defaults to a small positive value.
+        assert ReviewSettings().tech_lead_max_expedited == 3
+
+    def test_tech_lead_max_expedited_accepts_zero_and_positive(self):
+        # 0 disables the lane; positive values bound outstanding expedites.
+        assert ReviewSettings(tech_lead_max_expedited=0).tech_lead_max_expedited == 0
+        assert ReviewSettings(tech_lead_max_expedited=5).tech_lead_max_expedited == 5
+
+    def test_tech_lead_max_expedited_rejects_negative_and_over_cap(self):
+        with pytest.raises(ValidationError):
+            ReviewSettings(tech_lead_max_expedited=-1)
+        with pytest.raises(ValidationError):
+            ReviewSettings(tech_lead_max_expedited=21)
+
+    def test_tech_lead_max_expedited_classifies_to_integer(self):
+        prop = get_settings_json_schema()["review"]["properties"]["tech_lead_max_expedited"]
+        assert prop["x_control"]["kind"] == FORM_CONTROL_INTEGER
+
     def test_goal_pilot_defaults(self):
         m = GoalPilotSettings()
         assert m.enabled is False

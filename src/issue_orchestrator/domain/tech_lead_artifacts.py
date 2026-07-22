@@ -172,6 +172,14 @@ class ProposedTechLeadAction:
     finding_ids: tuple[str, ...] = ()
     pattern_signature: str | None = None
     area: str | None = None
+    # Urgency signal for the expedite lane (#6870): when the tech lead wants a
+    # follow-up worked SOONER, it sets ``expedite: true`` on a ``create_issue``
+    # action. Only meaningful for ``create_issue`` — ``validate()`` rejects it
+    # on any other action type. It composes with the ADR-0031 authority gate:
+    # under ``execute`` the created issue jumps the worker lane immediately;
+    # under ``propose`` it jumps only once the ``proposed-tech-lead`` gate is
+    # removed. The orchestrator (never the agent) performs the queue write.
+    expedite: bool = False
 
     @classmethod
     def from_mapping(cls, data: Any, *, index: int) -> "ProposedTechLeadAction":
@@ -231,6 +239,7 @@ class ProposedTechLeadAction:
             finding_ids=_string_tuple(data.get("finding_ids")),
             pattern_signature=signature,
             area=area,
+            expedite=bool(data.get("expedite", False)),
         )
         action.validate()
         return action
@@ -242,6 +251,16 @@ class ProposedTechLeadAction:
     def validate(self) -> None:
         context = f"proposed action {self.id} ({self.action_type})"
         _validate_action_id(self.id)
+        # Expedite is a create_issue-only urgency signal (#6870): urgency for a
+        # comment, escalation, pattern flag or act-level op is meaningless, so a
+        # decision that sets it elsewhere is a contract violation, never silently
+        # honored. Mirrors the per-action-type field discipline below.
+        if self.expedite and self.action_type != "create_issue":
+            _require(
+                False,
+                f"{context} sets expedite=true, which is only valid on"
+                " create_issue actions (#6870)",
+            )
         # pattern_signature/area must be meaningful whenever present —
         # direct construction bypasses from_mapping's normalization, and the
         # area lands in an `area:*` label, so it obeys label constraints.
@@ -303,6 +322,8 @@ class ProposedTechLeadAction:
             payload["pattern_signature"] = self.pattern_signature
         if self.area:
             payload["area"] = self.area
+        if self.expedite:
+            payload["expedite"] = True
         return payload
 
 

@@ -679,3 +679,38 @@ def test_authority_mode_for_escalate_is_always_execute() -> None:
 
     authority = TechLeadAuthorityConfig()
     assert authority.mode_for("escalate_to_human") == "execute"
+
+
+class TestCreateIssueExpediteProducer:
+    """Expedite intent (#6870) rides the create_issue action, gate-aware."""
+
+    def _expedite_action(self, expedite: bool = True) -> ProposedTechLeadAction:
+        return ProposedTechLeadAction(
+            id="A1",
+            action_type="create_issue",
+            title="Fix the corrupting merge race",
+            body="It corrupts state; needs working now.",
+            expedite=expedite,
+        )
+
+    def test_execute_authority_carries_expedite_and_stays_ungated(self) -> None:
+        # Default authority: create_issue = execute.
+        [planned] = _plan(_decision(self._expedite_action()))
+        assert isinstance(planned, CreateTechLeadIssueAction)
+        assert planned.expedite is True
+        # Execute authority creates an UNGATED issue: no proposed-tech-lead gate,
+        # so the applier expedites it immediately.
+        assert PROPOSED_TECH_LEAD_LABEL not in planned.labels
+
+    def test_propose_authority_carries_expedite_but_is_gated(self) -> None:
+        config = _config(create_issue="propose")
+        [planned] = _plan(_decision(self._expedite_action()), config)
+        assert isinstance(planned, CreateTechLeadIssueAction)
+        assert planned.expedite is True
+        # Propose authority gates the issue: expedite must wait for un-gating.
+        assert PROPOSED_TECH_LEAD_LABEL in planned.labels
+
+    def test_expedite_defaults_false_on_the_action(self) -> None:
+        [planned] = _plan(_decision(self._expedite_action(expedite=False)))
+        assert isinstance(planned, CreateTechLeadIssueAction)
+        assert planned.expedite is False

@@ -457,3 +457,86 @@ class TestDirectConstruction:
     def test_action_validate_is_idempotent_on_parsed(self):
         action = ProposedTechLeadAction.from_mapping(_action(), index=1)
         action.validate()
+
+
+class TestProposedActionExpedite:
+    """The create_issue-only expedite urgency signal (#6870)."""
+
+    def _create_issue(self, **overrides):
+        payload = {
+            "id": "A1",
+            "action_type": "create_issue",
+            "title": "Fix the flaky merge race NOW",
+            "body": "It corrupts state on every 3rd run.",
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_expedite_defaults_false(self):
+        action = ProposedTechLeadAction.from_mapping(self._create_issue(), index=1)
+        assert action.expedite is False
+        # Absent from to_dict when false (mirrors target_is_pr/area).
+        assert "expedite" not in action.to_dict()
+
+    def test_expedite_parses_and_round_trips(self):
+        action = ProposedTechLeadAction.from_mapping(
+            self._create_issue(expedite=True), index=1
+        )
+        assert action.expedite is True
+        payload = action.to_dict()
+        assert payload["expedite"] is True
+        # Full round-trip preserves the flag.
+        assert ProposedTechLeadAction.from_mapping(payload, index=1).expedite is True
+
+    def test_expedite_false_when_explicitly_false(self):
+        action = ProposedTechLeadAction.from_mapping(
+            self._create_issue(expedite=False), index=1
+        )
+        assert action.expedite is False
+
+    @pytest.mark.parametrize(
+        "action_type,extra",
+        [
+            ("post_comment", {"target_number": 7, "body": "b"}),
+            ("escalate_to_human", {"target_number": 7, "body": "b"}),
+            ("flag_pattern", {"body": "b", "pattern_signature": "sig"}),
+            ("reset_retry", {"target_number": 7, "body": "b"}),
+            ("kill_hung_session", {"target_number": 7, "body": "b"}),
+        ],
+    )
+    def test_expedite_rejected_on_non_create_issue(self, action_type, extra):
+        payload = {"id": "A1", "action_type": action_type, "expedite": True}
+        payload.update(extra)
+        with pytest.raises(ValueError, match="only valid on create_issue"):
+            ProposedTechLeadAction.from_mapping(payload, index=1)
+
+    def test_expedite_rejected_on_direct_construction_bypass(self):
+        # Direct construction bypasses from_mapping; validate() re-checks.
+        action = ProposedTechLeadAction(
+            id="A1",
+            action_type="post_comment",
+            target_number=7,
+            body="b",
+            expedite=True,
+        )
+        with pytest.raises(ValueError, match="only valid on create_issue"):
+            action.validate()
+
+    def test_expedite_decision_round_trips_through_payload(self):
+        payload = _payload(
+            findings=[_finding("T1")],
+            proposed_actions=[
+                _action(
+                    aid="A1",
+                    action_type="create_issue",
+                    title="Urgent fix",
+                    body="body",
+                    target_number=None,
+                    expedite=True,
+                )
+            ],
+        )
+        decision = TechLeadDecision.from_agent_payload(payload)
+        assert decision.proposed_actions[0].expedite is True
+        again = TechLeadDecision.from_agent_payload(decision.to_dict())
+        assert again.proposed_actions[0].expedite is True

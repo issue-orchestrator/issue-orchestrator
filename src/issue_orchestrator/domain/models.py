@@ -1835,6 +1835,17 @@ class OrchestratorState:
     failed_this_cycle: set[int] = field(default_factory=set)  # issues that failed since last refresh (prevent immediate retry)
     paused: bool = False
     priority_queue: list[int] = field(default_factory=list)  # manual priority overrides (to migrate: list[IssueKey])
+    # Expedite lane bookkeeping (#6870), owned by RetryHistoryState. Both are
+    # in-memory (like priority_queue itself): GitHub labels stay the crash-safe
+    # source of truth, so a restart between file/approve and pickup simply drops
+    # the intent and the issue is worked at normal priority (graceful, never
+    # silently-wrong). ``tech_lead_expedited`` records which priority_queue
+    # entries the tech lead placed, so the cap counts only tech-lead-expedited
+    # issues (not operator/retry ones). ``tech_lead_expedite_pending`` holds
+    # gated (propose-authority) create_issue follow-ups awaiting the
+    # proposed-tech-lead gate removal, promoted to the front once un-gated.
+    tech_lead_expedited: list[int] = field(default_factory=list)
+    tech_lead_expedite_pending: list[int] = field(default_factory=list)
     session_history: list[SessionHistoryEntry] = field(default_factory=list)  # This session's history
     issues_started_count: int = 0  # Total issues started this session (for max_issues_to_start)
     pending_reviews: list[PendingReview] = field(default_factory=list)  # PRs waiting for code review

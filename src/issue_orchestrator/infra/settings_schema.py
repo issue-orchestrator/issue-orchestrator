@@ -1332,6 +1332,32 @@ class ReviewSettings(BaseModel):
             "yaml_path": "tech_lead.max_concurrent",
         },
     )
+    tech_lead_max_expedited: int = Field(
+        3,
+        title="Max Expedited Tech Lead Issues",
+        description=(
+            "Cap on outstanding tech-lead-expedited issues at the front of the "
+            "worker queue (0 disables the expedite lane)"
+        ),
+        ge=0,
+        le=20,
+        json_schema_extra={
+            "doc_examples": ["0", "3", "5"],
+            "doc_notes": (
+                "When the tech lead files an urgent create_issue follow-up "
+                "(expedite=true), the orchestrator jumps it to the front of the "
+                "worker lane via the same priority queue operators use. This caps "
+                "how many such issues can be outstanding at once so a noisy tech "
+                "lead cannot starve normal work; further expedite requests are "
+                "logged and fall back to normal priority. 0 disables expediting "
+                "entirely. Under 'propose' authority an expedited follow-up jumps "
+                "the lane only after its proposed-tech-lead gate is removed."
+            ),
+            "section": _TECH_LEAD_SECTION,
+            "config_attr": "tech_lead.max_expedited",
+            "yaml_path": "tech_lead.max_expedited",
+        },
+    )
 
     @field_validator(
         "tech_lead_authority_post_comment",

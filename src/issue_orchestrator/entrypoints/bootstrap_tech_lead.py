@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from ..control.board_snapshot_builder import BoardSnapshotBuilder
     from ..control.fact_gatherer import FactGatherer
     from ..control.provider_resilience import ProviderResilienceManager
+    from ..control.retry_history_state import ExpediteEligibility, ExpediteLane
     from ..ports import Issue
     from ..control.tech_lead_board import TechLeadBoardPublisher
     from ..domain.board_snapshot import BoardE2EHealth, SessionActivityFacts
@@ -76,6 +77,45 @@ def wire_tech_lead_act_executors(orchestrator: "Orchestrator") -> None:
     applier.tech_lead_reset_retry = build_tech_lead_reset_retry_executor(orchestrator)
     applier.tech_lead_kill_session = build_tech_lead_kill_session_executor(orchestrator)
     applier.tech_lead_ops = orchestrator.deps.services.tech_lead_authority
+    applier.expedite_lane = build_expedite_lane(orchestrator)
+
+
+def build_expedite_lane(orchestrator: "Orchestrator") -> "ExpediteLane":
+    """Bind the tech-lead expedite lane to live orchestrator state (#6870).
+
+    Closes over ``orchestrator`` so every read (state.priority_queue, the
+    cached runnable/scope queues, the blocking-label policy) sees the current
+    tick's data, and every WRITE routes through a fresh RetryHistoryState owner
+    — the applier and planning cycle never touch priority_queue directly. The
+    configured cap travels on the lane so the owner enforces it atomically.
+
+    Eligibility mirrors the scheduler's availability rule: a pending gated
+    follow-up becomes promotable exactly when it is in the runnable queue with
+    no blocking label left (the ``proposed-tech-lead`` gate removed), i.e. when
+    it first becomes eligible for work.
+    """
+    from ..control.retry_history_state import (
+        ExpediteEligibility,
+        ExpediteLane,
+        RetryHistoryState,
+    )
+
+    def eligibility() -> "ExpediteEligibility":
+        state = orchestrator.state
+        label_manager = orchestrator.deps.label_manager
+        eligible = frozenset(
+            issue.number
+            for issue in state.cached_queue_issues
+            if not label_manager.get_blocking(issue.labels)
+        )
+        in_scope = frozenset(issue.number for issue in state.cached_scope_issues)
+        return ExpediteEligibility(eligible=eligible, in_scope=in_scope)
+
+    return ExpediteLane(
+        owner_factory=lambda: RetryHistoryState(orchestrator.state),
+        eligibility_provider=eligibility,
+        max_expedited=orchestrator.config.tech_lead.max_expedited,
+    )
 
 
 def create_tech_lead_board_publisher(
