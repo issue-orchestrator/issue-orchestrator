@@ -43,7 +43,12 @@ from issue_orchestrator.control.reconciliation import (
 )
 from issue_orchestrator.control.session_history import CLOSED_ISSUE_HISTORY_STATUS_REASON
 from issue_orchestrator.control.session_routing import PendingSessionQueues
-from issue_orchestrator.control.scheduler import IssueAvailabilityDecision
+from issue_orchestrator.control.scheduler import (
+    AvailabilityReason,
+    IssueAvailabilityDecision,
+    Scheduler,
+)
+from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.control.blocked_front_queue import front_queue_newly_unblocked
 from issue_orchestrator.control.actions import (
     ActionResult,
@@ -868,6 +873,44 @@ class TestQueueFetchPlanner:
         )
 
         assert "[FETCH-COST]" in caplog.text
+
+    def test_dependency_scan_passes_active_sessions_to_evaluate(
+        self, mock_event_sink, mock_repository_host
+    ):
+        """#6873 R1 wiring: the dependency-scan availability pass MUST feed live
+        sessions to the scheduler — else an in-progress issue is mis-classified
+        available and the blocked->front policy front-queues actively-worked work.
+        Fails on the pre-fix wiring, which called evaluate_issues without them."""
+        config = self._make_config()
+        issue = make_issue(1, labels=["agent:web"])
+        session = make_session(issue)
+        state = OrchestratorState(
+            active_sessions=[session],
+            cached_queue_issues=[issue],
+            queue_last_full_scan_at=time.time(),
+        )
+        scheduler = Mock()
+        scheduler.evaluate_issues.return_value = []
+        github_workflow = Mock()
+        github_workflow.fetch_all_issues.return_value = [issue]
+
+        _fetch_and_update_queue(
+            config=config,
+            events=mock_event_sink,
+            state=state,
+            repository_host=mock_repository_host,
+            scheduler=scheduler,
+            github_workflow=github_workflow,
+            refresh_requested=True,
+            inflight_stable_ids={},
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
+        )
+
+        scheduler.evaluate_issues.assert_called_once()
+        assert (
+            scheduler.evaluate_issues.call_args.kwargs.get("active_sessions")
+            == state.active_sessions
+        )
 
     def test_blocked_history_issues_are_hot_refresh_candidates(self):
         state = OrchestratorState(
@@ -3101,13 +3144,16 @@ class TestRunTickHeartbeat:
 class TestFrontQueueNewlyUnblocked:
     """#6873: issues leaving a blocked state jump to the front of the work queue.
 
-    Keyed on the scheduler's own availability verdict, so it covers BOTH routes
-    out of blocked (blocking-label removal and dependency-gate opening) and never
-    front-queues an issue that was never blocked.
+    Keyed on the scheduler's own TYPED availability predicates, so it covers BOTH
+    routes out of blocked (blocking-label removal and dependency-gate opening),
+    never front-queues an issue that was never blocked, and hands entries to a
+    bounded owner (``blocked_front_expedited``) with a real release lifecycle.
     """
 
     @staticmethod
-    def _dec(number: int, available: bool, reason: str) -> IssueAvailabilityDecision:
+    def _dec(
+        number: int, available: bool, reason: AvailabilityReason
+    ) -> IssueAvailabilityDecision:
         return IssueAvailabilityDecision(
             issue=make_issue(number), available=available, reason=reason
         )
@@ -3116,25 +3162,26 @@ class TestFrontQueueNewlyUnblocked:
         state = OrchestratorState()
         state.previously_blocked_issue_numbers = {5}
         front_queue_newly_unblocked(
-            state, [self._dec(5, available=True, reason="available")]
+            state, [self._dec(5, True, AvailabilityReason.AVAILABLE)]
         )
         assert state.priority_queue == [5]
-        # Nothing is blocked now, so the baseline clears.
+        assert state.blocked_front_expedited == [5]  # owned for lifecycle
         assert state.previously_blocked_issue_numbers == set()
 
     def test_still_blocked_is_not_queued(self):
         state = OrchestratorState()
         state.previously_blocked_issue_numbers = {5}
         front_queue_newly_unblocked(
-            state, [self._dec(5, available=False, reason="blocked_label")]
+            state, [self._dec(5, False, AvailabilityReason.BLOCKED_LABEL)]
         )
         assert state.priority_queue == []
+        assert state.blocked_front_expedited == []
         assert state.previously_blocked_issue_numbers == {5}
 
     def test_never_blocked_is_not_queued(self):
         state = OrchestratorState()
         front_queue_newly_unblocked(
-            state, [self._dec(9, available=True, reason="available")]
+            state, [self._dec(9, True, AvailabilityReason.AVAILABLE)]
         )
         assert state.priority_queue == []
         assert state.previously_blocked_issue_numbers == set()
@@ -3145,11 +3192,12 @@ class TestFrontQueueNewlyUnblocked:
         front_queue_newly_unblocked(
             state,
             [
-                self._dec(5, available=True, reason="available"),  # label removed
-                self._dec(6, available=True, reason="available"),  # dep gate opened
+                self._dec(5, True, AvailabilityReason.AVAILABLE),
+                self._dec(6, True, AvailabilityReason.AVAILABLE),
             ],
         )
         assert set(state.priority_queue) == {5, 6}
+        assert set(state.blocked_front_expedited) == {5, 6}
         assert state.previously_blocked_issue_numbers == set()
 
     def test_newly_blocked_issues_recorded_as_baseline(self):
@@ -3157,28 +3205,101 @@ class TestFrontQueueNewlyUnblocked:
         front_queue_newly_unblocked(
             state,
             [
-                self._dec(7, available=False, reason="dependency_blocked"),
-                self._dec(8, available=False, reason="blocked_label"),
+                self._dec(7, False, AvailabilityReason.DEPENDENCY_BLOCKED),
+                self._dec(8, False, AvailabilityReason.BLOCKED_LABEL),
             ],
         )
         assert state.priority_queue == []
         assert state.previously_blocked_issue_numbers == {7, 8}
 
-    def test_left_blocked_but_now_in_progress_is_not_queued(self):
-        # blocked -> actively worked (not available): no queue placement needed.
-        state = OrchestratorState()
-        state.previously_blocked_issue_numbers = {5}
-        front_queue_newly_unblocked(
-            state, [self._dec(5, available=False, reason="in_progress_active_session")]
-        )
-        assert state.priority_queue == []
-        assert state.previously_blocked_issue_numbers == set()
-
     def test_idempotent_across_scans(self):
         state = OrchestratorState()
         state.previously_blocked_issue_numbers = {5}
-        decisions = [self._dec(5, available=True, reason="available")]
+        decisions = [self._dec(5, True, AvailabilityReason.AVAILABLE)]
         front_queue_newly_unblocked(state, decisions)
-        # Second scan: 5 has left the baseline, so it is not front-queued again.
+        # Still available next scan (not yet picked up) -> stays; not re-added.
+        front_queue_newly_unblocked(state, decisions)
+        assert state.priority_queue == [5]
+        assert state.blocked_front_expedited == [5]
+
+    # --- R2: bounded-owner lifecycle ---
+
+    def test_reblock_releases_the_owned_entry(self):
+        state = OrchestratorState()
+        state.previously_blocked_issue_numbers = {5}
+        front_queue_newly_unblocked(
+            state, [self._dec(5, True, AvailabilityReason.AVAILABLE)]
+        )
+        assert state.priority_queue == [5] and state.blocked_front_expedited == [5]
+        # Re-blocked next scan: owner releases it from BOTH lane and queue.
+        front_queue_newly_unblocked(
+            state, [self._dec(5, False, AvailabilityReason.BLOCKED_LABEL)]
+        )
+        assert state.priority_queue == []
+        assert state.blocked_front_expedited == []
+        assert state.previously_blocked_issue_numbers == {5}
+
+    def test_picked_up_entry_is_reconciled_out(self):
+        state = OrchestratorState()
+        state.previously_blocked_issue_numbers = {5}
+        front_queue_newly_unblocked(
+            state, [self._dec(5, True, AvailabilityReason.AVAILABLE)]
+        )
+        # Now actively worked (in-progress + live session -> not available).
+        front_queue_newly_unblocked(
+            state, [self._dec(5, False, AvailabilityReason.IN_PROGRESS_ACTIVE_SESSION)]
+        )
+        assert state.priority_queue == []
+        assert state.blocked_front_expedited == []
+
+    def test_operator_priority_is_not_claimed_or_released(self):
+        # An operator-front-queued issue is NOT owned by this lane
+        # (expedite_blocked_front skips an already-queued issue), so the policy
+        # never claims or later releases it.
+        state = OrchestratorState()
+        state.priority_queue = [5]  # operator-owned, no ledger entry
+        state.previously_blocked_issue_numbers = {5}
+        front_queue_newly_unblocked(
+            state, [self._dec(5, True, AvailabilityReason.AVAILABLE)]
+        )
+        assert state.priority_queue == [5]
+        assert state.blocked_front_expedited == []  # never claimed
+        # Even when it re-blocks, the operator entry survives.
+        front_queue_newly_unblocked(
+            state, [self._dec(5, False, AvailabilityReason.BLOCKED_LABEL)]
+        )
+        assert state.priority_queue == [5]
+
+    # --- R1: real scheduler boundary (not a hand-built decision) ---
+
+    def test_real_scheduler_in_progress_active_is_not_front_queued(self):
+        """With the REAL scheduler + a live session, a blocked issue now being
+        actively worked classifies in_progress_active_session and is NOT
+        front-queued — the boundary the hand-built decision masked."""
+        config = Config()
+        scheduler = Scheduler(config=config)
+        in_progress = LabelManager(config).in_progress
+        issue = make_issue(5, labels=[in_progress])
+        session = make_session(issue)
+
+        state = OrchestratorState()
+        state.previously_blocked_issue_numbers = {5}
+        decisions = scheduler.evaluate_issues([issue], active_sessions=[session])
+        front_queue_newly_unblocked(state, decisions)
+        assert state.priority_queue == []
+        assert state.blocked_front_expedited == []
+
+    def test_real_scheduler_without_active_sessions_would_misqueue(self):
+        """Documents WHY active_sessions is load-bearing: omit it and the same
+        in-progress issue is (mis)classified available and WOULD be front-queued —
+        which is exactly what _fetch_and_update_queue must avoid (R1)."""
+        config = Config()
+        scheduler = Scheduler(config=config)
+        in_progress = LabelManager(config).in_progress
+        issue = make_issue(5, labels=[in_progress])
+
+        state = OrchestratorState()
+        state.previously_blocked_issue_numbers = {5}
+        decisions = scheduler.evaluate_issues([issue])  # no active_sessions == the bug
         front_queue_newly_unblocked(state, decisions)
         assert state.priority_queue == [5]

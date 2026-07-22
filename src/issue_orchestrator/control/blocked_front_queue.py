@@ -3,16 +3,19 @@
 A blocked issue — whether by a blocking label or a closed dependency gate — was
 already deemed important enough to be in flight, so when it becomes AVAILABLE
 again it jumps to the front of the work queue instead of sorting to the back
-with fresh backlog. The policy is keyed on the scheduler's own availability
-verdict (:class:`IssueAvailabilityDecision.reason`), so it covers BOTH routes out
-of blocked — a removed blocking label and a re-opened dependency gate — and can
-never drift from ``Scheduler._evaluate_issue``.
+with fresh backlog. The policy keys on the scheduler's own **typed** availability
+predicates (`IssueAvailabilityDecision.is_blocked` / `.available`), so it covers
+both routes out of blocked — a removed blocking label and a re-opened dependency
+gate — and cannot drift from `Scheduler._evaluate_issue` (there are no loose
+string literals here to fall out of sync).
 
-The write routes through the ``priority_queue`` owner (:class:`RetryHistoryState`)
-and uses the unbounded operator/retry lane, NOT the capped tech-lead expedite
-lane (#6870): restoring known work is neither gated nor bounded. The blocked
-baseline is in-memory like ``priority_queue`` itself, so a restart forgets it and
-re-establishes it on the next scan (never a spurious front-queue).
+Writes route through a **bounded owner** on `RetryHistoryState`
+(`expedite_blocked_front` / `release_blocked_front`): the restore lane is
+unbounded (restoring known work is neither gated nor capped) but *ledgered*, so
+its entries have a real lifecycle — released on successful launch (via
+`ExpediteLane.release`) and on re-block / out-of-band unavailability (the
+reconciliation below). Operator-owned priorities are never disturbed, because
+the owner only ever tracks and releases entries this lane itself placed.
 """
 
 from __future__ import annotations
@@ -26,35 +29,41 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Scheduler availability reasons that mean "blocked, but could later unblock".
-_BLOCKED_REASONS = ("blocked_label", "dependency_blocked")
-
 
 def front_queue_newly_unblocked(
     state: "OrchestratorState",
     decisions: "list[IssueAvailabilityDecision]",
 ) -> None:
-    """Move issues that just became schedulable after being blocked to the front."""
+    """Reconcile the blocked->front restore lane against this scan's decisions."""
     from .retry_history_state import RetryHistoryState
 
-    by_reason: dict[str, set[int]] = {}
-    for decision in decisions:
-        by_reason.setdefault(decision.reason, set()).add(decision.issue.number)
+    blocked_now = {d.issue.number for d in decisions if d.is_blocked}
+    available_now = {d.issue.number for d in decisions if d.available}
 
-    blocked_now: set[int] = set()
-    for reason in _BLOCKED_REASONS:
-        blocked_now |= by_reason.get(reason, set())
-    available_now = by_reason.get("available", set())
-
-    newly_schedulable = state.previously_blocked_issue_numbers & available_now
     retry = RetryHistoryState(state)
-    for number in sorted(newly_schedulable):
-        retry.prioritize_issue_front(number)
-    if newly_schedulable:
+
+    # (1) Newly schedulable: blocked at the last scan, available now -> jump the
+    #     front. expedite_blocked_front skips an already-queued issue, so an
+    #     operator/tech-lead priority is neither duplicated nor claimed.
+    newly_schedulable = state.previously_blocked_issue_numbers & available_now
+    added = [n for n in sorted(newly_schedulable) if retry.expedite_blocked_front(n)]
+
+    # (2) Reconcile ownership: a lane-owned entry that is no longer available —
+    #     re-blocked, picked up, or closed — leaves the lane. The launch hook
+    #     also releases on successful pickup; this is the backstop for re-block
+    #     and out-of-band unavailability, so the lane never leaks stale priority.
+    released = [
+        n
+        for n in list(state.blocked_front_expedited)
+        if n not in available_now and retry.release_blocked_front(n)
+    ]
+
+    if added or released:
         logger.info(
-            "[BLOCKED->FRONT] %d issue(s) left a blocked state and moved to the "
-            "front of the queue: %s",
-            len(newly_schedulable),
-            sorted(newly_schedulable),
+            "[BLOCKED->FRONT] +%d to front %s / -%d released %s",
+            len(added),
+            added,
+            len(released),
+            released,
         )
     state.previously_blocked_issue_numbers = blocked_now

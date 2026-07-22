@@ -5,7 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from issue_orchestrator.adapters.github.github_issue import GitHubIssue
-from issue_orchestrator.control.retry_history_state import RetryHistoryState
+from issue_orchestrator.control.retry_history_state import (
+    ExpediteEligibility,
+    ExpediteLane,
+    RetryHistoryState,
+)
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.models import (
     DependencyProblem,
@@ -498,6 +502,7 @@ def _seeded_state_for_contract(target: int, other: int) -> OrchestratorState:
         # not pin a target across a from-scratch reset.
         tech_lead_expedited=[target, other],
         tech_lead_expedite_pending=[target, other],
+        blocked_front_expedited=[target, other],
         # candidate queue removals — should not pin a target across a reset
         queue_pending_shrink_missing_issue_numbers=[target, other],
     )
@@ -558,6 +563,7 @@ def test_clear_scratch_retry_state_contract_no_leaks_for_target() -> None:
     assert target not in state.priority_queue
     assert target not in state.tech_lead_expedited
     assert target not in state.tech_lead_expedite_pending
+    assert target not in state.blocked_front_expedited
     assert target not in state.queue_pending_shrink_missing_issue_numbers
 
     # `other` survives every collection
@@ -589,3 +595,69 @@ def test_clear_scratch_retry_state_contract_no_leaks_for_target() -> None:
     assert other in state.tech_lead_expedited
     assert other in state.tech_lead_expedite_pending
     assert other in state.queue_pending_shrink_missing_issue_numbers
+
+
+# --- #6873: blocked->front bounded owner lane ---
+
+def test_expedite_blocked_front_adds_and_ledgers() -> None:
+    state = OrchestratorState()
+    retry = RetryHistoryState(state)
+    assert retry.expedite_blocked_front(5) is True
+    assert state.priority_queue == [5]
+    assert state.blocked_front_expedited == [5]
+    # Already queued -> no duplicate insert, not re-ledgered.
+    assert retry.expedite_blocked_front(5) is False
+    assert state.priority_queue == [5]
+    assert state.blocked_front_expedited == [5]
+
+
+def test_expedite_blocked_front_skips_already_queued_operator_entry() -> None:
+    state = OrchestratorState(priority_queue=[5])  # operator-owned
+    retry = RetryHistoryState(state)
+    assert retry.expedite_blocked_front(5) is False
+    assert state.blocked_front_expedited == []  # never claimed
+
+
+def test_release_blocked_front_removes_from_queue_and_ledger() -> None:
+    state = OrchestratorState()
+    retry = RetryHistoryState(state)
+    retry.expedite_blocked_front(5)
+    assert retry.release_blocked_front(5) is True
+    assert state.priority_queue == []
+    assert state.blocked_front_expedited == []
+    assert retry.release_blocked_front(5) is False  # idempotent
+
+
+def test_release_blocked_front_is_noop_for_operator_entry() -> None:
+    state = OrchestratorState(priority_queue=[5])  # operator-owned, not lane-owned
+    retry = RetryHistoryState(state)
+    assert retry.release_blocked_front(5) is False
+    assert state.priority_queue == [5]  # operator priority untouched
+
+
+def test_expedite_lane_release_frees_both_tech_lead_and_blocked_front() -> None:
+    state = OrchestratorState()
+    owner = RetryHistoryState(state)
+    owner.expedite_issue_front(10, max_expedited=5)  # tech-lead lane
+    owner.expedite_blocked_front(20)                 # blocked->front lane
+    assert set(state.priority_queue) == {10, 20}
+    lane = ExpediteLane(
+        owner_factory=lambda: RetryHistoryState(state),
+        eligibility_provider=lambda: ExpediteEligibility(
+            eligible=frozenset(), in_scope=frozenset()
+        ),
+        max_expedited=5,
+    )
+    assert lane.release(10) is True
+    assert state.tech_lead_expedited == [] and 10 not in state.priority_queue
+    assert lane.release(20) is True
+    assert state.blocked_front_expedited == [] and 20 not in state.priority_queue
+    assert lane.release(999) is False  # unowned by either lane
+
+
+def test_deprioritize_prunes_blocked_front_ledger() -> None:
+    state = OrchestratorState()
+    RetryHistoryState(state).expedite_blocked_front(5)
+    RetryHistoryState(state).deprioritize_issues([5])
+    assert state.priority_queue == []
+    assert state.blocked_front_expedited == []  # ledger pruned to reality

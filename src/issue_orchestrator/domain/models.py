@@ -1846,6 +1846,12 @@ class OrchestratorState:
     # proposed-tech-lead gate removal, promoted to the front once un-gated.
     tech_lead_expedited: list[int] = field(default_factory=list)
     tech_lead_expedite_pending: list[int] = field(default_factory=list)
+    # #6873: ledger of priority_queue entries the blocked->front policy owns.
+    # Analogous to tech_lead_expedited (an unbounded restore lane rather than a
+    # capped one), it lets the owner release these on successful launch and drop
+    # them on re-block WITHOUT touching operator-owned priorities (the two are
+    # disjoint by construction). In-memory like priority_queue itself.
+    blocked_front_expedited: list[int] = field(default_factory=list)
     session_history: list[SessionHistoryEntry] = field(default_factory=list)  # This session's history
     issues_started_count: int = 0  # Total issues started this session (for max_issues_to_start)
     pending_reviews: list[PendingReview] = field(default_factory=list)  # PRs waiting for code review

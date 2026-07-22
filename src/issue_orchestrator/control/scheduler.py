@@ -8,6 +8,7 @@ import importlib
 import logging
 import re
 from dataclasses import dataclass, field
+from enum import StrEnum
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional, Protocol, Sequence
 
@@ -178,6 +179,22 @@ class SchedulerResult:
     dependency_blocked: list[tuple[Issue, str]] = field(default_factory=list)  # issues blocked by unsatisfied dependencies
 
 
+class AvailabilityReason(StrEnum):
+    """Why the scheduler classified an issue's availability.
+
+    The scheduler's ``_evaluate_issue`` is the SOLE producer of these codes, so
+    co-locating the vocabulary (and the predicates below) here keeps consumers
+    from re-deriving it as loose string literals that could silently drift.
+    """
+
+    CLOSED = "closed"
+    IN_PROGRESS_ACTIVE_SESSION = "in_progress_active_session"
+    PR_PENDING = "pr_pending"
+    BLOCKED_LABEL = "blocked_label"
+    DEPENDENCY_BLOCKED = "dependency_blocked"
+    AVAILABLE = "available"
+
+
 @dataclass(frozen=True)
 class IssueAvailabilityDecision:
     """Availability result for a single issue.
@@ -191,8 +208,25 @@ class IssueAvailabilityDecision:
 
     issue: Issue
     available: bool
-    reason: str
+    reason: AvailabilityReason
     detail: str | None = None
+
+    @property
+    def is_blocked(self) -> bool:
+        """True when blocked in a way that can LATER unblock (label or dep gate).
+
+        Deliberately excludes ``pr_pending`` / ``in_progress_active_session`` /
+        ``closed`` — those are not "blocked and waiting to resume". This is the
+        scheduler-owned predicate the blocked->front policy keys on.
+        """
+        return self.reason in (
+            AvailabilityReason.BLOCKED_LABEL,
+            AvailabilityReason.DEPENDENCY_BLOCKED,
+        )
+
+    @property
+    def is_dependency_blocked(self) -> bool:
+        return self.reason is AvailabilityReason.DEPENDENCY_BLOCKED
 
 
 class Scheduler:
@@ -259,7 +293,7 @@ class Scheduler:
             if decision.available:
                 available.append(decision.issue)
                 continue
-            if decision.reason == "dependency_blocked":
+            if decision.is_dependency_blocked:
                 dependency_blocked.append((decision.issue, decision.detail or "dependency blocked"))
                 logger.debug(
                     "Issue #%d blocked by dependencies: %s",
@@ -294,21 +328,29 @@ class Scheduler:
         check_dependencies: bool,
     ) -> IssueAvailabilityDecision:
         if issue.state == "closed":
-            return IssueAvailabilityDecision(issue=issue, available=False, reason="closed")
+            return IssueAvailabilityDecision(
+                issue=issue, available=False, reason=AvailabilityReason.CLOSED
+            )
 
         # Runtime-aware in-progress gating:
         # Only block if label exists AND session is actually running.
         if self._lm.is_in_progress(issue.labels) and issue.number in active_issue_numbers:
-            return IssueAvailabilityDecision(issue=issue, available=False, reason="in_progress_active_session")
+            return IssueAvailabilityDecision(
+                issue=issue,
+                available=False,
+                reason=AvailabilityReason.IN_PROGRESS_ACTIVE_SESSION,
+            )
 
         # Label exists but no session - stale; planner handles cleanup, so still eligible.
         if self._lm.is_pr_pending(issue.labels):
-            return IssueAvailabilityDecision(issue=issue, available=False, reason="pr_pending")
+            return IssueAvailabilityDecision(
+                issue=issue, available=False, reason=AvailabilityReason.PR_PENDING
+            )
         if self._lm.is_blocking_any(issue.labels):
             return IssueAvailabilityDecision(
                 issue=issue,
                 available=False,
-                reason="blocked_label",
+                reason=AvailabilityReason.BLOCKED_LABEL,
                 detail=self._blocking_label_detail(issue.labels),
             )
 
@@ -322,14 +364,16 @@ class Scheduler:
                 return IssueAvailabilityDecision(
                     issue=issue,
                     available=False,
-                    reason="dependency_blocked",
+                    reason=AvailabilityReason.DEPENDENCY_BLOCKED,
                     detail=report.work_summary(),
                 )
             return IssueAvailabilityDecision(
-                issue=issue, available=True, reason="available"
+                issue=issue, available=True, reason=AvailabilityReason.AVAILABLE
             )
 
-        return IssueAvailabilityDecision(issue=issue, available=True, reason="available")
+        return IssueAvailabilityDecision(
+            issue=issue, available=True, reason=AvailabilityReason.AVAILABLE
+        )
 
     def _blocking_label_detail(self, labels: Sequence[str]) -> str:
         blocking = self._lm.get_blocking(labels)

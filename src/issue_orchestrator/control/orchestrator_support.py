@@ -825,11 +825,11 @@ def _fetch_and_update_queue(
             # dep_blocked is the scheduler's *availability* verdict; the dashboard
             # snapshot is the four-gate state for every lane, evaluated through the
             # dependency-gate owner (not availability) with active-worktree ancestry.
-            decisions = scheduler.evaluate_issues(all_issues)
+            decisions = scheduler.evaluate_issues(all_issues, active_sessions=state.active_sessions)
             dep_blocked = [
                 (d.issue, d.detail or "dependency blocked")
                 for d in decisions
-                if d.reason == "dependency_blocked"
+                if d.is_dependency_blocked
             ]
             github_workflow.update_dependency_problems(state, dep_blocked)
             front_queue_newly_unblocked(state, decisions)
