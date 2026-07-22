@@ -60,7 +60,7 @@ agents:
     prompt: repo-specific/prompts/tech-lead.md
     provider: "claude-code"
     ai_system: "claude-code"
-    model: "opus"
+    model: "fable"
     timeout_minutes: 90
     reviewer: "agent:reviewer"
     provider_args:
