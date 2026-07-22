@@ -963,6 +963,12 @@ class ActionApplier:
         if self.session_launcher is not None:
             session = self.session_launcher(action.session_type, action.number)
             if session:
+                # An expedited issue that is now an active session has jumped
+                # the lane: free its cap slot (via the queue owner, never a
+                # direct priority_queue mutation) so the next urgent tech-lead
+                # finding can be expedited (#6870). No-op for non-expedited work.
+                if self.expedite_lane is not None:
+                    self.expedite_lane.release(session.issue.number)
                 return ActionResult.ok(
                     action,
                     session_name=session.terminal_id,

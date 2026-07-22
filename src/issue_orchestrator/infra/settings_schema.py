@@ -17,7 +17,11 @@ from typing import Any, Literal, Optional, TYPE_CHECKING
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from ..domain.tech_lead_naming import TECH_LEAD_DISPLAY_NAME
-from .config_models import MERGE_QUEUE_PROVIDERS, TECH_LEAD_AUTHORITY_MODES
+from .config_models import (
+    MERGE_QUEUE_PROVIDERS,
+    TECH_LEAD_AUTHORITY_MODES,
+    TECH_LEAD_MAX_EXPEDITED_LIMIT,
+)
 
 _TECH_LEAD_SECTION = f"{TECH_LEAD_DISPLAY_NAME} Review"
 
@@ -1340,7 +1344,7 @@ class ReviewSettings(BaseModel):
             "worker queue (0 disables the expedite lane)"
         ),
         ge=0,
-        le=20,
+        le=TECH_LEAD_MAX_EXPEDITED_LIMIT,
         json_schema_extra={
             "doc_examples": ["0", "3", "5"],
             "doc_notes": (

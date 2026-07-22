@@ -494,6 +494,21 @@ class TestProposedActionExpedite:
         )
         assert action.expedite is False
 
+    @pytest.mark.parametrize("bad", ["false", "true", 1, 0, [], {}, [True]])
+    def test_expedite_rejects_non_boolean_untrusted_input(self, bad):
+        # The decision file is untrusted; a non-JSON-boolean must fail loudly
+        # rather than be coerced (bool("false") is True, bool(1) is True).
+        with pytest.raises(ValueError, match="must be a JSON boolean"):
+            ProposedTechLeadAction.from_mapping(
+                self._create_issue(expedite=bad), index=1
+            )
+
+    def test_expedite_absent_is_default_false_not_rejected(self):
+        # Missing key (None) is the documented default, not a type error.
+        assert ProposedTechLeadAction.from_mapping(
+            self._create_issue(), index=1
+        ).expedite is False
+
     @pytest.mark.parametrize(
         "action_type,extra",
         [

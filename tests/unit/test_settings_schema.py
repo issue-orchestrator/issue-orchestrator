@@ -123,6 +123,9 @@ class TestModelDefaults:
         assert ReviewSettings(tech_lead_max_expedited=0).tech_lead_max_expedited == 0
         assert ReviewSettings(tech_lead_max_expedited=5).tech_lead_max_expedited == 5
 
+    def test_tech_lead_max_expedited_accepts_upper_limit(self):
+        assert ReviewSettings(tech_lead_max_expedited=20).tech_lead_max_expedited == 20
+
     def test_tech_lead_max_expedited_rejects_negative_and_over_cap(self):
         with pytest.raises(ValidationError):
             ReviewSettings(tech_lead_max_expedited=-1)

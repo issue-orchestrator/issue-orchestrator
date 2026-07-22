@@ -435,6 +435,13 @@ class StuckSweepConfig:
         return errors
 
 
+# Upper bound on the expedite-lane cap (#6870). The single source of truth for
+# BOTH the runtime config validation (TechLeadConfig.startup_errors) and the
+# settings-form schema (settings_schema le=...), so the two layers can never
+# accept/reject a value inconsistently.
+TECH_LEAD_MAX_EXPEDITED_LIMIT = 20
+
+
 @dataclass
 class TechLeadConfig:
     """Tech Lead issue configuration.
@@ -510,15 +517,18 @@ class TechLeadConfig:
     def startup_errors(self) -> list[str]:
         """Own-block invariants for the ``tech_lead`` section (#6870).
 
-        The documented disable value is exactly 0; a negative cap is a
-        misconfiguration that must fail startup loudly, never be silently
-        treated as disabled (mirrors the health-review/stuck-sweep blocks).
+        The documented disable value is exactly 0; a value outside
+        ``0..TECH_LEAD_MAX_EXPEDITED_LIMIT`` is a misconfiguration that must fail
+        startup loudly, never be silently treated as disabled (mirrors the
+        health-review/stuck-sweep blocks). The upper bound is shared verbatim
+        with the settings-form schema so both layers agree on the ceiling.
         """
         errors: list[str] = []
-        if self.max_expedited < 0:
+        if not 0 <= self.max_expedited <= TECH_LEAD_MAX_EXPEDITED_LIMIT:
             errors.append(
-                "tech_lead.max_expedited must be >= 0 (0 disables the expedite "
-                f"lane), got {self.max_expedited}"
+                "tech_lead.max_expedited must be between 0 and "
+                f"{TECH_LEAD_MAX_EXPEDITED_LIMIT} (0 disables the expedite lane), "
+                f"got {self.max_expedited}"
             )
         return errors
 

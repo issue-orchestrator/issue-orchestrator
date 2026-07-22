@@ -126,6 +126,36 @@ class TestExpediteOwner:
         assert state.priority_queue == [2]
         assert state.tech_lead_expedited == [2]
 
+    def test_release_expedited_frees_slot_and_dequeues(self):
+        state = OrchestratorState(
+            priority_queue=[9, 5], tech_lead_expedited=[9]
+        )
+        released = RetryHistoryState(state).release_expedited(9)
+        assert released is True
+        # Freed from BOTH the cap ledger and the front queue.
+        assert state.tech_lead_expedited == []
+        assert state.priority_queue == [5]
+
+    def test_release_is_scoped_to_expedited_issues(self):
+        # An operator/retry priority_queue entry (not in the expedite ledger) is
+        # never touched: releasing it is a no-op.
+        state = OrchestratorState(priority_queue=[7], tech_lead_expedited=[])
+        released = RetryHistoryState(state).release_expedited(7)
+        assert released is False
+        assert state.priority_queue == [7]
+
+    def test_release_reopens_a_cap_slot(self):
+        state = OrchestratorState()
+        owner = RetryHistoryState(state)
+        assert owner.expedite_issue_front(1, max_expedited=2).expedited
+        assert owner.expedite_issue_front(2, max_expedited=2).expedited
+        # At the cap.
+        assert owner.expedite_issue_front(3, max_expedited=2).reason == "cap_reached"
+        # #1 gets worked -> slot released -> a further expedite now succeeds.
+        owner.release_expedited(1)
+        assert owner.expedite_issue_front(3, max_expedited=2).expedited
+        assert state.priority_queue[0] == 3
+
 
 # --------------------------------------------------------------------------- #
 # Owner: pending / promotion (decision #2 propose path)                         #
@@ -225,3 +255,59 @@ class TestExpediteApplierGate:
             state, labels=("agent:web",), expedite=True, max_expedited=0
         )
         assert state.priority_queue == []
+
+
+class TestExpediteSlotReleaseIntegration:
+    """B1 regression: launching an expedited issue frees its cap slot."""
+
+    def test_launch_session_releases_the_expedite_slot(self):
+        from issue_orchestrator.control.action_applier import ActionApplier
+        from issue_orchestrator.control.actions import LaunchSessionAction
+        from issue_orchestrator.control.session_manager import SessionType
+
+        state = OrchestratorState()
+        lane = _lane(state, max_expedited=2)
+        # Fill the lane to the cap via the execute path.
+        assert lane.expedite_now(101).expedited
+        assert lane.expedite_now(102).expedited
+        assert lane.expedite_now(103).reason == "cap_reached"
+
+        applier = ActionApplier(labels=Mock(), sessions=Mock(), events=Mock())
+        applier.expedite_lane = lane
+        session = Mock()
+        session.terminal_id = "issue-101"
+        session.issue.number = 101
+        applier.session_launcher = lambda session_type, number: session
+
+        # Issue #101 is picked up as an active session.
+        result = applier.apply(
+            LaunchSessionAction(session_type=SessionType.ISSUE, number=101)
+        )
+        assert result.success
+        # Its cap slot and front-queue entry are freed (via the queue owner).
+        assert 101 not in state.tech_lead_expedited
+        assert 101 not in state.priority_queue
+        # A further expedite now succeeds — the slot was released.
+        assert lane.expedite_now(103).expedited
+        assert 103 in state.priority_queue
+
+    def test_launch_of_non_expedited_issue_leaves_operator_queue_untouched(self):
+        from issue_orchestrator.control.action_applier import ActionApplier
+        from issue_orchestrator.control.actions import LaunchSessionAction
+        from issue_orchestrator.control.session_manager import SessionType
+
+        # Operator priority (not tech-lead-expedited).
+        state = OrchestratorState(priority_queue=[55])
+        applier = ActionApplier(labels=Mock(), sessions=Mock(), events=Mock())
+        applier.expedite_lane = _lane(state, max_expedited=2)
+        session = Mock()
+        session.terminal_id = "issue-55"
+        session.issue.number = 55
+        applier.session_launcher = lambda session_type, number: session
+
+        result = applier.apply(
+            LaunchSessionAction(session_type=SessionType.ISSUE, number=55)
+        )
+        assert result.success
+        # Operator priority_queue semantics are unchanged.
+        assert state.priority_queue == [55]

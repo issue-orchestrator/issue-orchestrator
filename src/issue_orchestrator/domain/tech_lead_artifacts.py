@@ -239,7 +239,9 @@ class ProposedTechLeadAction:
             finding_ids=_string_tuple(data.get("finding_ids")),
             pattern_signature=signature,
             area=area,
-            expedite=bool(data.get("expedite", False)),
+            expedite=_required_bool(
+                data.get("expedite"), f"proposed action {action_id} expedite"
+            ),
         )
         action.validate()
         return action
@@ -570,3 +572,22 @@ def _optional_bounded_str(value: Any, limit: int, context: str) -> str | None:
     """Normalize an optional agent-authored string, enforcing its bound."""
     normalized = _optional_str(value)
     return _bounded(normalized, limit, context) if normalized is not None else None
+
+
+def _required_bool(value: Any, context: str) -> bool:
+    """Strictly parse an optional agent-authored JSON boolean.
+
+    Absent/``None`` defaults to False. Any PRESENT non-boolean is a contract
+    violation — the decision file is untrusted input, so ``"false"``, ``1``,
+    ``[]`` and ``{}`` must fail loudly rather than be coerced (``bool("false")``
+    is True). ``bool`` is a subclass of ``int``; ``isinstance(1, bool)`` is
+    False, so integers are correctly rejected.
+    """
+    if value is None:
+        return False
+    if not isinstance(value, bool):
+        raise ValueError(
+            f"{context} must be a JSON boolean when present,"
+            f" got {type(value).__name__}"
+        )
+    return value

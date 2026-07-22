@@ -97,6 +97,10 @@ class ExpediteLane:
         """Propose-authority path: remember a gated follow-up for later promotion."""
         self.owner_factory().record_expedite_pending(issue_number)
 
+    def release(self, issue_number: int) -> bool:
+        """Lifecycle hook: free an expedited issue's slot once it is worked."""
+        return self.owner_factory().release_expedited(issue_number)
+
     def promote_ungated(self) -> list[ExpediteOutcome]:
         """Per-tick: promote every pending follow-up whose gate has been removed.
 
@@ -289,6 +293,32 @@ class RetryHistoryState:
                 remaining.append(issue_number)
         self._state.tech_lead_expedite_pending = remaining
         return outcomes
+
+    def release_expedited(self, issue_number: int) -> bool:
+        """Free an expedited issue's lane slot once it is being worked (#6870).
+
+        The cap counts OUTSTANDING expedited issues; without a release those
+        slots would never come back (nothing else removes a worked issue from
+        ``priority_queue``), so after ``max_expedited`` expedites every later
+        request would return ``cap_reached`` forever. Hooked into the
+        session-launch lifecycle: once an expedited issue is picked up as an
+        active session it has already jumped the lane, so this drops it from
+        BOTH the expedite ledger (freeing the slot) and ``priority_queue``.
+
+        Scoped to tech-lead-expedited issues: an operator/retry ``priority_queue``
+        entry is never touched — the two sets are disjoint by construction
+        (``expedite_issue_front`` skips an already-queued issue). No-op for a
+        non-expedited issue.
+        """
+        if issue_number not in self._state.tech_lead_expedited:
+            return False
+        self._state.tech_lead_expedited = [
+            n for n in self._state.tech_lead_expedited if n != issue_number
+        ]
+        self._state.priority_queue = [
+            n for n in self._state.priority_queue if n != issue_number
+        ]
+        return True
 
     def _prune_expedited_ledger(self) -> None:
         """Drop expedite-ledger entries no longer in ``priority_queue`` (#6870)."""
