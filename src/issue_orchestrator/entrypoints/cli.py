@@ -24,7 +24,7 @@ from .cli_support import (
     resolve_repo as _resolve_repo,
     run_test_setup as _run_test_setup,
 )
-from .cli_triage import cmd_health_review, cmd_triage
+from .cli_tech_lead import cmd_health_review, cmd_tech_lead
 from .cli_utility_commands import cmd_demo, cmd_doctor, cmd_trace
 
 console = Console()
@@ -107,13 +107,13 @@ def _apply_cli_overrides(args: argparse.Namespace, config: "Config") -> None:  #
 
     # Handle review workflow overrides
     if hasattr(args, "review_label") and args.review_label is not None:
-        config.triage_review_label = args.review_label
-        console.print(f"[dim]Review label: {config.triage_review_label}[/dim]")
+        config.tech_lead_review_label = args.review_label
+        console.print(f"[dim]Review label: {config.tech_lead_review_label}[/dim]")
     if hasattr(args, "review_threshold") and args.review_threshold is not None:
-        config.triage_review_threshold = args.review_threshold
-        if config.triage_review_threshold > 0:
+        config.tech_lead_review_threshold = args.review_threshold
+        if config.tech_lead_review_threshold > 0:
             console.print(
-                f"[dim]Review threshold: {config.triage_review_threshold} PRs[/dim]"
+                f"[dim]Review threshold: {config.tech_lead_review_threshold} PRs[/dim]"
             )
 
 
@@ -681,7 +681,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         console.print("[red]Error: Unable to create GitHub client[/red]")
         return 1
 
-    # Collect all labels to create (base workflow + agents + triage, incl. the
+    # Collect all labels to create (base workflow + agents + tech_lead, incl. the
     # #6779 R3 proposal gate) via the single owner so the CLI and Control
     # Center provision the same set.
     from .setup_wizard_common import required_repo_labels
@@ -926,7 +926,7 @@ def main() -> int:
             output=cmd_output,
             pause=cmd_pause,
             resume=cmd_resume,
-            triage=cmd_triage,
+            tech_lead=cmd_tech_lead,
             health_review=cmd_health_review,
             refresh=cmd_refresh,
             restart=cmd_restart,

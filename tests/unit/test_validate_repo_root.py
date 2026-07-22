@@ -1,6 +1,6 @@
 """Unit tests for ``control_api._validate_repo_root``.
 
-Related to security issue #6017 (F9 from the original triage #5987).
+Related to security issue #6017 (F9 from the original tech_lead #5987).
 The Control API accepts ``repo_root`` from untrusted request bodies;
 this helper is the chokepoint that normalizes and rejects bad input.
 """

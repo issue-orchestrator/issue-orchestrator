@@ -4,7 +4,7 @@ When ``merge_queue.enabled`` is true, this coordinator owns every final
 merge-readiness decision for a reviewer-approved PR: eligibility, the
 stale/conflict classification, the enqueue decision, and failure routing.
 Keeping that policy in one place is the point of the feature — stale checks,
-review gates, and queue outcomes must not drift across planner/review/triage
+review gates, and queue outcomes must not drift across planner/review/tech_lead
 code paths.
 
 Layering note: the coordinator runs inside the awaiting-merge *discovery*
@@ -126,14 +126,14 @@ class MergeQueueCoordinator:
 
         ``enqueue_after`` selects the approval gate, and each gate resolves —
         via the label owner — to its own PR-readiness label. ``code-reviewed``
-        (reviewer approval) and ``triage-reviewed`` (batch triage) are distinct
+        (reviewer approval) and ``tech-lead-reviewed`` (batch tech_lead) are distinct
         lifecycle gates and must not collapse onto one label: a repo configured
-        to wait for triage must not enqueue on code review alone. The triage
-        gate intentionally uses the unprefixed label because the triage
-        subsystem applies it raw (see ``LabelManager.triage_reviewed``).
+        to wait for tech_lead must not enqueue on code review alone. The tech_lead
+        gate intentionally uses the unprefixed label because the tech_lead
+        subsystem applies it raw (see ``LabelManager.tech_lead_reviewed``).
         """
-        if self.config.enqueue_after == "triage-reviewed":
-            return self.label_manager.triage_reviewed
+        if self.config.enqueue_after == "tech-lead-reviewed":
+            return self.label_manager.tech_lead_reviewed
         assert self.config.enqueue_after == "code-reviewed"
         return self.label_manager.code_reviewed
 

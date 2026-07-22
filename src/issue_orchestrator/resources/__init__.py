@@ -20,7 +20,7 @@ def get_coding_done_instructions() -> str:
 def get_reviewer_done_instructions() -> str:
     """Load the canonical reviewer-done instructions.
 
-    Injected into review/triage agent sessions so they know
+    Injected into review/tech lead agent sessions so they know
     how to signal their verdict.
 
     Cached since the content never changes during runtime.
@@ -52,7 +52,7 @@ def get_completion_instructions(task_kind: str) -> str:
     """Load task-specific completion instructions.
 
     Args:
-        task_kind: The task kind value (e.g., "code", "rework", "review", "triage",
+        task_kind: The task kind value (e.g., "code", "rework", "review", "tech_lead",
                   "review_exchange_coder", "review_exchange_reviewer").
 
     Returns:

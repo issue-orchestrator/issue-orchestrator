@@ -920,4 +920,4 @@ tabButtons.forEach(tabBtn => {
     });
 });
 
-// ── Blocked triage: viewed state (localStorage) ──
+// ── Blocked tech_lead: viewed state (localStorage) ──

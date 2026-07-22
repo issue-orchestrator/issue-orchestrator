@@ -52,7 +52,7 @@ def _escape_claude_project_path(path: Path) -> str:
 class ScratchWorktreeIdentity:
     """Disposable, run-scoped worktree identity for an investigation session.
 
-    A triage failure investigation READS its focus issue's branch history and
+    A tech_lead failure investigation READS its focus issue's branch history and
     run-dirs as evidence and must never mutate them (#6823). It therefore runs
     in a throwaway worktree — a unique directory basename plus a fresh branch
     off the base branch, keyed to this run rather than the focus issue — so the
@@ -141,7 +141,7 @@ class WorktreeContext:
                 scratch worktree (its ``worktree_name``/``branch_name``) that is
                 NOT the issue's own worktree — a fresh branch off the base
                 branch, with the configured worktree ``seed_ref`` suppressed so
-                the checkout is clean off the base. Used by a triage failure
+                the checkout is clean off the base. Used by a tech_lead failure
                 investigation so it can never mutate the subject it reads
                 (#6823). Takes precedence over ``branch_name``/``stack_base_branch``.
 

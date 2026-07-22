@@ -36,7 +36,7 @@ class SessionType(Enum):
     REVIEW = "review"
     RETROSPECTIVE_REVIEW = "retrospective-review"
     REWORK = "rework"
-    TRIAGE = "triage"
+    TECH_LEAD = "tech-lead"
 
 
 @dataclass(frozen=True)
@@ -68,7 +68,7 @@ class SessionRef:
         Raises:
             ValueError: If session name format is invalid
         """
-        match = re.match(r"^(issue|review|retrospective-review|rework|triage)-(\d+)$", session_name)
+        match = re.match(r"^(issue|review|retrospective-review|rework|tech-lead)-(\d+)$", session_name)
         if not match:
             raise ValueError(f"Invalid session name format: {session_name}")
         session_type = SessionType(match.group(1))
@@ -96,9 +96,9 @@ class SessionRef:
         return cls(session_type=SessionType.REWORK, number=issue_number)
 
     @classmethod
-    def for_triage(cls, issue_number: int) -> "SessionRef":
-        """Create a session reference for a triage review."""
-        return cls(session_type=SessionType.TRIAGE, number=issue_number)
+    def for_tech_lead(cls, issue_number: int) -> "SessionRef":
+        """Create a session reference for a tech_lead review."""
+        return cls(session_type=SessionType.TECH_LEAD, number=issue_number)
 
 
 @dataclass

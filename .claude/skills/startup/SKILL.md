@@ -178,7 +178,7 @@ After the orchestrator process starts (either in-process or via supervisor),
 4. Discover and restore running sessions
 5. Check in-progress issues (orphaned labels, open PRs, partial work)
 6. Recover pending code reviews
-7. Recover pending triage reviews
+7. Recover pending tech lead reviews
 8. Recover pending validation retries
 9. Recover orphaned cleanups
 10. Resume partial work

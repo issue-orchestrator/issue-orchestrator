@@ -41,14 +41,14 @@ from issue_orchestrator.control.session_launcher import (
 from issue_orchestrator.control.isolation import GRADLE_USER_HOME_ENV
 from issue_orchestrator.control.session_review_support import build_review_existing_work
 from issue_orchestrator.control.session_routing import (
-    TRIAGE_LAUNCH_RETRY_LIMIT,
+    TECH_LEAD_LAUNCH_RETRY_LIMIT,
     PendingSessionQueues,
-    TriageQueueOutcome,
-    TriageRetentionOutcome,
+    TechLeadQueueOutcome,
+    TechLeadRetentionOutcome,
     orchestrator_launch_session,
     orchestrator_launch_review_session,
     orchestrator_launch_rework_session,
-    orchestrator_launch_triage_session,
+    orchestrator_launch_tech_lead_session,
     orchestrator_launch_validation_retry_session,
     session_launcher_callback,
     restore_running_sessions,
@@ -58,13 +58,13 @@ from issue_orchestrator.control.session_routing import (
     kill_session,
     get_session_machine,
 )
-from issue_orchestrator.control.workflows.triage_workflow import TriageWorkflow
+from issue_orchestrator.control.workflows.tech_lead_workflow import TechLeadWorkflow
 from issue_orchestrator.control.actions import (
     ActionResult,
     AddCommentAction,
     AddLabelAction,
-    CreateTriageIssueAction,
-    QueueTriageAction,
+    CreateTechLeadIssueAction,
+    QueueTechLeadAction,
     RemoveLabelAction,
 )
 from issue_orchestrator.control.label_manager import LabelManager
@@ -83,7 +83,7 @@ from issue_orchestrator.domain.models import (
     PendingReview,
     PendingRetrospectiveReview,
     PendingRework,
-    PendingTriageReview,
+    PendingTechLeadReview,
     PendingValidationRetry,
     PendingCleanup,
     OrchestratorState,
@@ -97,9 +97,9 @@ from issue_orchestrator.domain.board_snapshot import (
     BoardFailure,
     BoardSnapshot,
 )
-from issue_orchestrator.domain.triage_session import (
-    TriageLaunchScope,
-    TriageSessionFlavor,
+from issue_orchestrator.domain.tech_lead_session import (
+    TechLeadLaunchScope,
+    TechLeadSessionFlavor,
 )
 from issue_orchestrator.domain.state_machines.issue_machine import IssueStateMachine, IssueState
 from issue_orchestrator.domain.state_machines.session_machine import SessionStateMachine, SessionState
@@ -124,8 +124,8 @@ from issue_orchestrator.ports.pull_request_tracker import PRInfo, PRRef
 from issue_orchestrator.ports.repository_host import DependencyIssueSnapshot
 from issue_orchestrator.ports.session_output import SessionOutput
 from issue_orchestrator.infra.config import Config
-from issue_orchestrator.infra.triage_authority_store import (
-    SqliteTriageAuthorityStore,
+from issue_orchestrator.infra.tech_lead_authority_store import (
+    SqliteTechLeadAuthorityStore,
 )
 from issue_orchestrator.adapters.github import GitHubAdapter
 from issue_orchestrator.adapters.github.cache import GitHubCache
@@ -578,7 +578,7 @@ def _build_launcher_bundle(
         command_runner=mock_command_runner,
         session_output=FileSystemSessionOutput(),
         manifest_downloader=NullManifestDownloader(),
-        triage_authority=SqliteTriageAuthorityStore.for_repo(sample_config.repo_root),
+        tech_lead_authority=SqliteTechLeadAuthorityStore.for_repo(sample_config.repo_root),
         session_exists_fn=mock_session_exists,
         create_session_fn=mock_create_session,
         get_issue_machine=get_issue_machine,
@@ -741,22 +741,22 @@ class TestLaunchIssueSession:
         assert result.session.run_dir is not None
         assert result.session.run_dir.name.endswith("__coding-1")
 
-    def test_triage_session_creates_triage_data_dir_without_manifest(
+    def test_tech_lead_session_creates_tech_lead_data_dir_without_manifest(
         self, session_launcher, sample_config, tmp_path
     ):
-        """Every triage session gets a triage-data dir for its decision
+        """Every tech_lead session gets a tech-lead-data dir for its decision
         artifact pair (ADR-0031), even when no PR manifest exists."""
         prompt_path = tmp_path / "prompt.md"
-        sample_config.agents["agent:triage"] = AgentConfig(
+        sample_config.agents["agent:tech-lead"] = AgentConfig(
             prompt_path=prompt_path,
             model="sonnet",
             timeout_minutes=45,
         )
-        sample_config.triage_review_agent = "agent:triage"
+        sample_config.tech_lead_review_agent = "agent:tech-lead"
         issue = Issue(
             number=125,
             title="Batch Review",
-            labels=["agent:triage"],
+            labels=["agent:tech-lead"],
             repo="test/repo",
         )
 
@@ -764,62 +764,62 @@ class TestLaunchIssueSession:
 
         assert result.success is True
         assert result.session is not None
-        data_dir = result.session.run_dir / "triage-data"
+        data_dir = result.session.run_dir / "tech-lead-data"
         assert data_dir.is_dir()
         # No PRs matched, so no manifest was planted — only the empty dir.
         assert not (data_dir / "manifest.json").exists()
         # The orchestrator-owned launch authority is recorded outside the
         # agent-writable worktree (#6761 re-review F1).
-        authority = SqliteTriageAuthorityStore.for_repo(
+        authority = SqliteTechLeadAuthorityStore.for_repo(
             sample_config.repo_root
         ).load(
             run_id=result.session.run_assets.run_id,
             session_name=result.session.run_assets.session_name,
         )
         assert authority is not None
-        assert authority.flavor is TriageSessionFlavor.BATCH_REVIEW
+        assert authority.flavor is TechLeadSessionFlavor.BATCH_REVIEW
         assert authority.anchor_issue_number == 125
         assert authority.manifest_pr_numbers == ()
 
-    def test_triage_launch_preserves_branch_but_coding_does_not(
+    def test_tech_lead_launch_preserves_branch_but_coding_does_not(
         self, session_launcher, mock_worktree_manager, sample_config, sample_issue, tmp_path
     ):
-        """A triage launch reuses the subject worktree without mutating its
+        """A tech_lead launch reuses the subject worktree without mutating its
         branch (preserve_branch=True), so a stranded branch's unpushed work is
         read as evidence rather than rebased/reset away. A coding launch keeps
         the default (preserve_branch=False)."""
         prompt_path = tmp_path / "prompt.md"
-        sample_config.agents["agent:triage"] = AgentConfig(
+        sample_config.agents["agent:tech-lead"] = AgentConfig(
             prompt_path=prompt_path,
             model="sonnet",
             timeout_minutes=45,
         )
-        sample_config.triage_review_agent = "agent:triage"
+        sample_config.tech_lead_review_agent = "agent:tech-lead"
 
         coding_result = session_launcher.launch_issue_session(
             sample_issue, active_sessions=[]
         )
         assert coding_result.success is True
 
-        triage_issue = Issue(
+        tech_lead_issue = Issue(
             number=5980,
             title="Investigate stranded failure",
-            labels=["agent:triage"],
+            labels=["agent:tech-lead"],
             repo="test/repo",
         )
-        triage_result = session_launcher.launch_issue_session(
-            triage_issue, active_sessions=[]
+        tech_lead_result = session_launcher.launch_issue_session(
+            tech_lead_issue, active_sessions=[]
         )
-        assert triage_result.success is True
+        assert tech_lead_result.success is True
 
         coding_call = next(
             c for c in mock_worktree_manager.create_calls if c["issue_number"] == 123
         )
-        triage_call = next(
+        tech_lead_call = next(
             c for c in mock_worktree_manager.create_calls if c["issue_number"] == 5980
         )
         assert coding_call["reuse_options"].preserve_branch is False
-        assert triage_call["reuse_options"].preserve_branch is True
+        assert tech_lead_call["reuse_options"].preserve_branch is True
 
     def test_failure_investigation_runs_in_disposable_scratch_worktree(
         self, session_launcher, mock_worktree_manager, sample_config, tmp_path
@@ -830,25 +830,25 @@ class TestLaunchIssueSession:
         evidence and the scratch workspace is force-fresh (no reuse) with no
         subject branch to preserve."""
         prompt_path = tmp_path / "prompt.md"
-        sample_config.agents["agent:triage"] = AgentConfig(
+        sample_config.agents["agent:tech-lead"] = AgentConfig(
             prompt_path=prompt_path,
             model="sonnet",
             timeout_minutes=45,
         )
-        sample_config.triage_review_agent = "agent:triage"
+        sample_config.tech_lead_review_agent = "agent:tech-lead"
         focus = 5980
-        triage_issue = Issue(
+        tech_lead_issue = Issue(
             number=focus,
             title="Investigate stranded failure",
-            labels=["agent:triage"],
+            labels=["agent:tech-lead"],
             repo="test/repo",
         )
 
         result = session_launcher.launch_issue_session(
-            triage_issue,
+            tech_lead_issue,
             active_sessions=[],
-            triage_scope=TriageLaunchScope(
-                flavor=TriageSessionFlavor.FAILURE_INVESTIGATION
+            tech_lead_scope=TechLeadLaunchScope(
+                flavor=TechLeadSessionFlavor.FAILURE_INVESTIGATION
             ),
         )
         assert result.success is True
@@ -858,10 +858,10 @@ class TestLaunchIssueSession:
         )
         # Scratch worktree name/branch are keyed to the run, NOT the focus issue.
         assert call["worktree_name"] is not None
-        assert call["worktree_name"].startswith(f"repo-triage-{focus}-")
+        assert call["worktree_name"].startswith(f"repo-tech-lead-{focus}-")
         assert call["worktree_name"] != f"repo-{focus}"
         assert call["branch_name"] is not None
-        assert call["branch_name"].startswith(f"triage-investigation-{focus}-")
+        assert call["branch_name"].startswith(f"tech-lead-investigation-{focus}-")
         # The scratch branch must never look like the focus issue's own branch.
         assert not call["branch_name"].startswith(f"{focus}-")
         # Disposable: force-fresh (no reuse), and nothing to preserve.
@@ -883,29 +883,29 @@ class TestLaunchIssueSession:
         fails at terminal-session creation must remove it rather than leak it
         (#6823) — unlike a coding worktree, which is kept for retry reuse."""
         prompt_path = tmp_path / "prompt.md"
-        sample_config.agents["agent:triage"] = AgentConfig(
+        sample_config.agents["agent:tech-lead"] = AgentConfig(
             prompt_path=prompt_path,
             model="sonnet",
             timeout_minutes=45,
         )
-        sample_config.triage_review_agent = "agent:triage"
+        sample_config.tech_lead_review_agent = "agent:tech-lead"
         # Force terminal-session creation to fail after the scratch worktree exists.
         launcher_bundle.create_session_override[0] = (
             lambda _name, _cmd, _wd, _title: False
         )
         focus = 5980
-        triage_issue = Issue(
+        tech_lead_issue = Issue(
             number=focus,
             title="Investigate stranded failure",
-            labels=["agent:triage"],
+            labels=["agent:tech-lead"],
             repo="test/repo",
         )
 
         result = launcher_bundle.launcher.launch_issue_session(
-            triage_issue,
+            tech_lead_issue,
             active_sessions=[],
-            triage_scope=TriageLaunchScope(
-                flavor=TriageSessionFlavor.FAILURE_INVESTIGATION
+            tech_lead_scope=TechLeadLaunchScope(
+                flavor=TechLeadSessionFlavor.FAILURE_INVESTIGATION
             ),
         )
 
@@ -939,33 +939,33 @@ class TestLaunchIssueSession:
 
     @pytest.mark.parametrize(
         "flavor",
-        [TriageSessionFlavor.BATCH_REVIEW, TriageSessionFlavor.HEALTH_REVIEW],
+        [TechLeadSessionFlavor.BATCH_REVIEW, TechLeadSessionFlavor.HEALTH_REVIEW],
     )
-    def test_batch_and_health_triage_launches_not_scratch(
+    def test_batch_and_health_tech_lead_launches_not_scratch(
         self, session_launcher, mock_worktree_manager, sample_config, tmp_path, flavor
     ):
         """Batch and health reviews run on their own anchor worktrees, unchanged
         (#6823): no scratch override, and preserve_branch stays True so a
         stranded anchor branch is read rather than rebased away."""
         prompt_path = tmp_path / "prompt.md"
-        sample_config.agents["agent:triage"] = AgentConfig(
+        sample_config.agents["agent:tech-lead"] = AgentConfig(
             prompt_path=prompt_path,
             model="sonnet",
             timeout_minutes=45,
         )
-        sample_config.triage_review_agent = "agent:triage"
+        sample_config.tech_lead_review_agent = "agent:tech-lead"
 
         anchor = 7001
         anchor_issue = Issue(
             number=anchor,
             title=f"{flavor.value} anchor",
-            labels=["agent:triage"],
+            labels=["agent:tech-lead"],
             repo="test/repo",
         )
         result = session_launcher.launch_issue_session(
             anchor_issue,
             active_sessions=[],
-            triage_scope=TriageLaunchScope(flavor=flavor),
+            tech_lead_scope=TechLeadLaunchScope(flavor=flavor),
         )
         assert result.success is True
         call = next(
@@ -977,26 +977,26 @@ class TestLaunchIssueSession:
         assert result.session is not None
         assert result.session.scratch_worktree is False
 
-    def test_failed_triage_launch_discards_recorded_authority(
+    def test_failed_tech_lead_launch_discards_recorded_authority(
         self, launcher_bundle, sample_config, tmp_path
     ):
         """A launch that dies AFTER recording its authority must not leak
         the row (#6769 F3): the run never starts, so no completion seam
         would ever discard it."""
         prompt_path = tmp_path / "prompt.md"
-        sample_config.agents["agent:triage"] = AgentConfig(
+        sample_config.agents["agent:tech-lead"] = AgentConfig(
             prompt_path=prompt_path,
             model="sonnet",
             timeout_minutes=45,
         )
-        sample_config.triage_review_agent = "agent:triage"
+        sample_config.tech_lead_review_agent = "agent:tech-lead"
         issue = Issue(
             number=125,
             title="Batch Review",
-            labels=["agent:triage"],
+            labels=["agent:tech-lead"],
             repo="test/repo",
         )
-        # Force the terminal-session creation step (after triage prep) to fail.
+        # Force the terminal-session creation step (after tech_lead prep) to fail.
         launcher_bundle.create_session_override[0] = (
             lambda _name, _cmd, _wd, _title: False
         )
@@ -1006,9 +1006,9 @@ class TestLaunchIssueSession:
         )
 
         assert result.success is False
-        store = SqliteTriageAuthorityStore.for_repo(sample_config.repo_root)
+        store = SqliteTechLeadAuthorityStore.for_repo(sample_config.repo_root)
         conn_rows = store._get_connection().execute(  # noqa: SLF001
-            "SELECT run_id, session_name FROM triage_launch_authority"
+            "SELECT run_id, session_name FROM tech_lead_launch_authority"
         ).fetchall()
         assert conn_rows == [], "failed launch leaked an authority row"
 
@@ -1178,7 +1178,7 @@ class TestLaunchIssueSession:
             command_runner=mock_command_runner,
             session_output=FileSystemSessionOutput(),
             manifest_downloader=NullManifestDownloader(),
-            triage_authority=SqliteTriageAuthorityStore.for_repo(sample_config.repo_root),
+            tech_lead_authority=SqliteTechLeadAuthorityStore.for_repo(sample_config.repo_root),
             session_exists_fn=lambda name: False,
             create_session_fn=lambda name, cmd, wd, title: True,
             get_issue_machine=lambda issue: IssueStateMachine(issue),
@@ -2951,14 +2951,14 @@ class TestOrchestratorLaunchReworkSession:
 
 
 # =============================================================================
-# Triage Session Tests
+# Tech Lead Session Tests
 # =============================================================================
 
 
-class TestPendingSessionQueuesTriageIntake:
-    """Owner-level triage intake invariants (#6768 round 3).
+class TestPendingSessionQueuesTechLeadIntake:
+    """Owner-level tech_lead intake invariants (#6768 round 3).
 
-    PendingSessionQueues is the only writer of state.pending_triage_reviews:
+    PendingSessionQueues is the only writer of state.pending_tech_lead_reviews:
     it constructs the queue item for the declared variant, applies ONE dedup
     rule (issue number vs the pending queue), and returns a typed outcome.
     """
@@ -2966,13 +2966,13 @@ class TestPendingSessionQueuesTriageIntake:
     def test_queue_batch_review_constructs_batch_entry(self):
         state = OrchestratorState()
 
-        outcome = PendingSessionQueues(state).queue_batch_review(7, "Triage Batch")
+        outcome = PendingSessionQueues(state).queue_batch_review(7, "Tech Lead Batch")
 
-        assert outcome is TriageQueueOutcome.QUEUED
-        (entry,) = state.pending_triage_reviews
+        assert outcome is TechLeadQueueOutcome.QUEUED
+        (entry,) = state.pending_tech_lead_reviews
         assert entry.issue_number == 7
-        assert entry.title == "Triage Batch"
-        assert entry.flavor is TriageSessionFlavor.BATCH_REVIEW
+        assert entry.title == "Tech Lead Batch"
+        assert entry.flavor is TechLeadSessionFlavor.BATCH_REVIEW
 
     def test_queue_failure_investigation_constructs_failure_entry(self):
         state = OrchestratorState()
@@ -2984,11 +2984,11 @@ class TestPendingSessionQueuesTriageIntake:
             8, "Investigate: timeout", failure=failure
         )
 
-        assert outcome is TriageQueueOutcome.QUEUED
-        (entry,) = state.pending_triage_reviews
+        assert outcome is TechLeadQueueOutcome.QUEUED
+        (entry,) = state.pending_tech_lead_reviews
         assert entry.issue_number == 8
         assert entry.title == "Investigate: timeout"
-        assert entry.flavor is TriageSessionFlavor.FAILURE_INVESTIGATION
+        assert entry.flavor is TechLeadSessionFlavor.FAILURE_INVESTIGATION
         # The typed triggering failure rides the queue item so the launch-time
         # board snapshot still has it after discovered_failures is cleared.
         assert entry.failure is failure
@@ -2998,19 +2998,19 @@ class TestPendingSessionQueuesTriageIntake:
         failure investigation without it would launch with an empty
         recent_failures section (the P1 defect this guards against)."""
         with pytest.raises(ValueError, match="failure"):
-            PendingTriageReview(
+            PendingTechLeadReview(
                 issue_number=8,
                 title="Investigate: timeout",
-                flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+                flavor=TechLeadSessionFlavor.FAILURE_INVESTIGATION,
             )
 
     def test_batch_review_with_failure_context_fails_fast(self):
         """Batch reviews are threshold-created; failure context is a producer bug."""
         with pytest.raises(ValueError, match="batch"):
-            PendingTriageReview(
+            PendingTechLeadReview(
                 issue_number=7,
-                title="Triage Batch",
-                flavor=TriageSessionFlavor.BATCH_REVIEW,
+                title="Tech Lead Batch",
+                flavor=TechLeadSessionFlavor.BATCH_REVIEW,
                 failure=DiscoveredFailure(
                     issue_number=7, issue_title="x", failure_reason="failed"
                 ),
@@ -3019,19 +3019,19 @@ class TestPendingSessionQueuesTriageIntake:
     def test_duplicate_issue_number_returns_duplicate_without_double_queue(self):
         state = OrchestratorState()
         queues = PendingSessionQueues(state)
-        assert queues.queue_batch_review(7, "Triage Batch") is TriageQueueOutcome.QUEUED
+        assert queues.queue_batch_review(7, "Tech Lead Batch") is TechLeadQueueOutcome.QUEUED
 
-        outcome = queues.queue_batch_review(7, "Triage Batch (retry)")
+        outcome = queues.queue_batch_review(7, "Tech Lead Batch (retry)")
 
-        assert outcome is TriageQueueOutcome.DUPLICATE
-        (entry,) = state.pending_triage_reviews
-        assert entry.title == "Triage Batch"
+        assert outcome is TechLeadQueueOutcome.DUPLICATE
+        (entry,) = state.pending_tech_lead_reviews
+        assert entry.title == "Tech Lead Batch"
 
     def test_dedup_is_by_issue_number_across_variants(self):
         """One rule: an issue already queued is never re-queued, either variant."""
         state = OrchestratorState()
         queues = PendingSessionQueues(state)
-        queues.queue_batch_review(7, "Triage Batch")
+        queues.queue_batch_review(7, "Tech Lead Batch")
 
         outcome = queues.queue_failure_investigation(
             7,
@@ -3041,16 +3041,16 @@ class TestPendingSessionQueuesTriageIntake:
             ),
         )
 
-        assert outcome is TriageQueueOutcome.DUPLICATE
-        (entry,) = state.pending_triage_reviews
-        assert entry.flavor is TriageSessionFlavor.BATCH_REVIEW
+        assert outcome is TechLeadQueueOutcome.DUPLICATE
+        (entry,) = state.pending_tech_lead_reviews
+        assert entry.flavor is TechLeadSessionFlavor.BATCH_REVIEW
 
-    def test_retain_triage_for_retry_is_bounded_by_the_owner(self):
+    def test_retain_tech_lead_for_retry_is_bounded_by_the_owner(self):
         """Retryable launch failures retain the item; the owner bounds retries.
 
         The queued investigation is the only cross-tick record, so retention is
         the default — but bounded: the owner signals EXHAUSTED on the
-        TRIAGE_LAUNCH_RETRY_LIMIT-th failure so a genuinely broken input
+        TECH_LEAD_LAUNCH_RETRY_LIMIT-th failure so a genuinely broken input
         cannot relaunch-loop forever. EXHAUSTED does NOT remove the item here
         (#6771 round 4): destructive removal is the launch caller's commit
         protocol, run only after the durable needs-human transition lands, so
@@ -3066,27 +3066,27 @@ class TestPendingSessionQueuesTriageIntake:
             ),
         )
 
-        for attempt in range(1, TRIAGE_LAUNCH_RETRY_LIMIT):
-            assert queues.retain_triage_for_retry(8) is TriageRetentionOutcome.RETAINED
-            (entry,) = state.pending_triage_reviews
+        for attempt in range(1, TECH_LEAD_LAUNCH_RETRY_LIMIT):
+            assert queues.retain_tech_lead_for_retry(8) is TechLeadRetentionOutcome.RETAINED
+            (entry,) = state.pending_tech_lead_reviews
             assert entry.retryable_launch_failures == attempt
 
-        assert queues.retain_triage_for_retry(8) is TriageRetentionOutcome.EXHAUSTED
-        assert len(state.pending_triage_reviews) == 1, (
+        assert queues.retain_tech_lead_for_retry(8) is TechLeadRetentionOutcome.EXHAUSTED
+        assert len(state.pending_tech_lead_reviews) == 1, (
             "EXHAUSTED must retain the record; the caller commits the drop only "
             "after the durable needs-human transition succeeds"
         )
 
-    def test_retain_triage_for_retry_for_unqueued_issue_fails_fast(self):
+    def test_retain_tech_lead_for_retry_for_unqueued_issue_fails_fast(self):
         """Retaining an item that is not queued is an upstream invariant bug."""
         with pytest.raises(ValueError, match="no such item is queued"):
-            PendingSessionQueues(OrchestratorState()).retain_triage_for_retry(999)
+            PendingSessionQueues(OrchestratorState()).retain_tech_lead_for_retry(999)
 
-    def test_remove_triage_removes_only_matching_issue(self):
-        """remove_triage completes the owner lifecycle (#6768 round 4)."""
+    def test_remove_tech_lead_removes_only_matching_issue(self):
+        """remove_tech_lead completes the owner lifecycle (#6768 round 4)."""
         state = OrchestratorState()
         queues = PendingSessionQueues(state)
-        queues.queue_batch_review(7, "Triage Batch")
+        queues.queue_batch_review(7, "Tech Lead Batch")
         queues.queue_failure_investigation(
             8,
             "Investigate: timeout",
@@ -3095,64 +3095,64 @@ class TestPendingSessionQueuesTriageIntake:
             ),
         )
 
-        queues.remove_triage(7)
+        queues.remove_tech_lead(7)
 
-        (entry,) = state.pending_triage_reviews
+        (entry,) = state.pending_tech_lead_reviews
         assert entry.issue_number == 8
 
-        queues.remove_triage(999)  # unknown issue: no-op
-        assert len(state.pending_triage_reviews) == 1
+        queues.remove_tech_lead(999)  # unknown issue: no-op
+        assert len(state.pending_tech_lead_reviews) == 1
 
 
-def _make_queued_triage(
+def _make_queued_tech_lead(
     issue_number: int = 789,
-    flavor: TriageSessionFlavor = TriageSessionFlavor.BATCH_REVIEW,
-) -> PendingTriageReview:
+    flavor: TechLeadSessionFlavor = TechLeadSessionFlavor.BATCH_REVIEW,
+) -> PendingTechLeadReview:
     failure = (
         DiscoveredFailure(
             issue_number=issue_number,
-            issue_title="Triage batch",
+            issue_title="Tech Lead batch",
             failure_reason="failed",
         )
-        if flavor is TriageSessionFlavor.FAILURE_INVESTIGATION
+        if flavor is TechLeadSessionFlavor.FAILURE_INVESTIGATION
         else None
     )
-    return PendingTriageReview(
-        issue_number=issue_number, title="Triage batch", flavor=flavor, failure=failure
+    return PendingTechLeadReview(
+        issue_number=issue_number, title="Tech Lead batch", flavor=flavor, failure=failure
     )
 
 
-def _stub_triage_launcher(result: LaunchResult) -> MagicMock:
-    """SessionLauncher stub for triage wrapper tests (no restorable terminals)."""
+def _stub_tech_lead_launcher(result: LaunchResult) -> MagicMock:
+    """SessionLauncher stub for tech_lead wrapper tests (no restorable terminals)."""
     launcher = MagicMock()
     launcher.launch_issue_session.return_value = result
     launcher.session_manager.runner.discover_running_sessions.return_value = []
     return launcher
 
 
-class TestOrchestratorLaunchTriageSession:
-    """Tests for orchestrator_launch_triage_session (queue lifecycle owner)."""
+class TestOrchestratorLaunchTechLeadSession:
+    """Tests for orchestrator_launch_tech_lead_session (queue lifecycle owner)."""
 
-    def test_raises_when_no_triage_agent(self, sample_config):
-        """Verify raises ValueError when no triage agent configured."""
-        sample_config.triage_review_agent = None
+    def test_raises_when_no_tech_lead_agent(self, sample_config):
+        """Verify raises ValueError when no tech lead agent configured."""
+        sample_config.tech_lead_review_agent = None
 
-        with pytest.raises(ValueError, match="Invalid triage agent"):
-            orchestrator_launch_triage_session(
-                _make_queued_triage(),
+        with pytest.raises(ValueError, match="Invalid tech lead agent"):
+            orchestrator_launch_tech_lead_session(
+                _make_queued_tech_lead(),
                 OrchestratorState(),
                 sample_config,
                 MagicMock(),
                 MagicMock(),
             )
 
-    def test_raises_when_triage_agent_not_in_config(self, sample_config):
-        """Verify raises ValueError when triage agent not configured."""
-        sample_config.triage_review_agent = "agent:missing"
+    def test_raises_when_tech_lead_agent_not_in_config(self, sample_config):
+        """Verify raises ValueError when tech lead agent not configured."""
+        sample_config.tech_lead_review_agent = "agent:missing"
 
-        with pytest.raises(ValueError, match="Invalid triage agent"):
-            orchestrator_launch_triage_session(
-                _make_queued_triage(),
+        with pytest.raises(ValueError, match="Invalid tech lead agent"):
+            orchestrator_launch_tech_lead_session(
+                _make_queued_tech_lead(),
                 OrchestratorState(),
                 sample_config,
                 MagicMock(),
@@ -3161,7 +3161,7 @@ class TestOrchestratorLaunchTriageSession:
 
     @pytest.mark.parametrize(
         "flavor",
-        [TriageSessionFlavor.BATCH_REVIEW, TriageSessionFlavor.FAILURE_INVESTIGATION],
+        [TechLeadSessionFlavor.BATCH_REVIEW, TechLeadSessionFlavor.FAILURE_INVESTIGATION],
     )
     def test_launches_with_queue_items_own_flavor(self, sample_config, flavor):
         """The queue item's flavor travels to the launch verbatim (#6768 B5).
@@ -3170,11 +3170,11 @@ class TestOrchestratorLaunchTriageSession:
         the other (batch reviews launched as failure investigations skip
         manifest prep and audit nothing).
         """
-        sample_config.triage_review_agent = "agent:web"
-        launcher = _stub_triage_launcher(LaunchResult(session=None, success=False))
+        sample_config.tech_lead_review_agent = "agent:web"
+        launcher = _stub_tech_lead_launcher(LaunchResult(session=None, success=False))
 
-        orchestrator_launch_triage_session(
-            _make_queued_triage(flavor=flavor),
+        orchestrator_launch_tech_lead_session(
+            _make_queued_tech_lead(flavor=flavor),
             OrchestratorState(),
             sample_config,
             launcher,
@@ -3185,30 +3185,30 @@ class TestOrchestratorLaunchTriageSession:
         issue = call.args[0]
         assert issue.number == 789
         assert "agent:web" in issue.labels
-        assert call.kwargs["triage_scope"].flavor is flavor
+        assert call.kwargs["tech_lead_scope"].flavor is flavor
 
     def test_successful_launch_removes_item_from_queue(self, sample_config, tmp_path):
         """Reviewer scenario: a launched item must not stay queued (#6768 r4)."""
-        sample_config.triage_review_agent = "agent:web"
+        sample_config.tech_lead_review_agent = "agent:web"
         state = OrchestratorState()
-        PendingSessionQueues(state).queue_batch_review(789, "Triage batch")
+        PendingSessionQueues(state).queue_batch_review(789, "Tech Lead batch")
         session = Session(
             key=SessionKey(issue=FakeIssueKey("789"), task=TaskKind.CODE),
-            issue=Issue(number=789, title="Triage batch", labels=["agent:web"]),
+            issue=Issue(number=789, title="Tech Lead batch", labels=["agent:web"]),
             agent_config=AgentConfig(prompt_path=tmp_path / "p.md", timeout_minutes=45),
             terminal_id="issue-789",
             worktree_path=tmp_path,
-            branch_name="789-triage",
+            branch_name="789-tech-lead",
             run_assets=make_session_run_assets(tmp_path, session_name="issue-789"),
         )
-        launcher = _stub_triage_launcher(LaunchResult(session=session, success=True))
+        launcher = _stub_tech_lead_launcher(LaunchResult(session=session, success=True))
 
-        result = orchestrator_launch_triage_session(
-            state.pending_triage_reviews[0], state, sample_config, launcher, MagicMock()
+        result = orchestrator_launch_tech_lead_session(
+            state.pending_tech_lead_reviews[0], state, sample_config, launcher, MagicMock()
         )
 
         assert result is session
-        assert state.pending_triage_reviews == []
+        assert state.pending_tech_lead_reviews == []
         assert state.active_sessions == [session]
 
     def test_keep_queued_launch_retains_item_for_retry(self, sample_config):
@@ -3217,19 +3217,19 @@ class TestOrchestratorLaunchTriageSession:
         (The other retention case is ``retry_queued`` — a transient
         required-input prep failure — covered by the bounded-retention tests.)
         """
-        sample_config.triage_review_agent = "agent:web"
+        sample_config.tech_lead_review_agent = "agent:web"
         state = OrchestratorState()
-        PendingSessionQueues(state).queue_batch_review(789, "Triage batch")
-        launcher = _stub_triage_launcher(
+        PendingSessionQueues(state).queue_batch_review(789, "Tech Lead batch")
+        launcher = _stub_tech_lead_launcher(
             LaunchResult(session=None, success=False, keep_queued=True)
         )
 
-        result = orchestrator_launch_triage_session(
-            state.pending_triage_reviews[0], state, sample_config, launcher, MagicMock()
+        result = orchestrator_launch_tech_lead_session(
+            state.pending_tech_lead_reviews[0], state, sample_config, launcher, MagicMock()
         )
 
         assert result is None
-        assert len(state.pending_triage_reviews) == 1
+        assert len(state.pending_tech_lead_reviews) == 1
 
     def test_permanent_launch_failure_drops_item(self, sample_config):
         """Non-retryable failure drops the item instead of relaunch-looping.
@@ -3237,7 +3237,7 @@ class TestOrchestratorLaunchTriageSession:
         Labels-as-truth recovers a dropped batch at startup; a dropped failure
         investigation is a best-effort audit (mirrors the review consumer).
         """
-        sample_config.triage_review_agent = "agent:web"
+        sample_config.tech_lead_review_agent = "agent:web"
         state = OrchestratorState()
         PendingSessionQueues(state).queue_failure_investigation(
             789,
@@ -3246,20 +3246,20 @@ class TestOrchestratorLaunchTriageSession:
                 issue_number=789, issue_title="x", failure_reason="failed"
             ),
         )
-        launcher = _stub_triage_launcher(LaunchResult(session=None, success=False))
+        launcher = _stub_tech_lead_launcher(LaunchResult(session=None, success=False))
 
-        result = orchestrator_launch_triage_session(
-            state.pending_triage_reviews[0], state, sample_config, launcher, MagicMock()
+        result = orchestrator_launch_tech_lead_session(
+            state.pending_tech_lead_reviews[0], state, sample_config, launcher, MagicMock()
         )
 
         assert result is None
-        assert state.pending_triage_reviews == []
+        assert state.pending_tech_lead_reviews == []
 
 
-class TestLaunchTriageIssueSessionFlavors:
-    """Launch-side triage flavor regressions (#6768 B4 / ADR-0031).
+class TestLaunchTechLeadIssueSessionFlavors:
+    """Launch-side tech_lead flavor regressions (#6768 B4 / ADR-0031).
 
-    Both triage variants launch through launch_issue_session; the flavor must
+    Both tech_lead variants launch through launch_issue_session; the flavor must
     decide whether the global batch PR manifest is prepared, and the
     assignment file must always record what the session was asked to do.
     """
@@ -3278,15 +3278,15 @@ class TestLaunchTriageIssueSessionFlavors:
         return identities
 
     @staticmethod
-    def _enable_triage_agent(config, tmp_path: Path) -> None:
-        prompt_path = tmp_path / "triage-prompt.md"
-        prompt_path.write_text("Triage prompt")
-        config.agents["agent:triage"] = AgentConfig(
+    def _enable_tech_lead_agent(config, tmp_path: Path) -> None:
+        prompt_path = tmp_path / "tech-lead-prompt.md"
+        prompt_path.write_text("Tech Lead prompt")
+        config.agents["agent:tech-lead"] = AgentConfig(
             prompt_path=prompt_path,
             model="sonnet",
             timeout_minutes=45,
         )
-        config.triage_review_agent = "agent:triage"
+        config.tech_lead_review_agent = "agent:tech-lead"
 
     @staticmethod
     def _started_run_dir(mock_events) -> Path:
@@ -3296,7 +3296,7 @@ class TestLaunchTriageIssueSessionFlavors:
         return Path(started.data["run_dir"])
 
     @staticmethod
-    def _triage_pr(number: int) -> PRInfo:
+    def _tech_lead_pr(number: int) -> PRInfo:
         return PRInfo(
             number=number,
             title=f"PR {number}",
@@ -3318,10 +3318,10 @@ class TestLaunchTriageIssueSessionFlavors:
         run with the same identity hits the create-once conflict.
         """
         config = launcher_bundle.launcher.config
-        self._enable_triage_agent(config, tmp_path)
-        mock_repo_host.prs_with_label = [self._triage_pr(555)]
+        self._enable_tech_lead_agent(config, tmp_path)
+        mock_repo_host.prs_with_label = [self._tech_lead_pr(555)]
         issue = Issue(
-            number=903, title="Batch Review", labels=["agent:triage"], repo="test/repo"
+            number=903, title="Batch Review", labels=["agent:tech-lead"], repo="test/repo"
         )
         monkeypatch.setattr(
             AgentConfig,
@@ -3334,11 +3334,11 @@ class TestLaunchTriageIssueSessionFlavors:
 
         # The record DID happen before the raise (the agent-visible copy
         # exists), and the guard discarded the durable row on the way out.
-        assignment_files = list(Path(str(tmp_path)).rglob("triage-assignment.json"))
+        assignment_files = list(Path(str(tmp_path)).rglob("tech-lead-assignment.json"))
         assert assignment_files, "authority was never recorded - test lost its premise"
         identities = self._run_identities(tmp_path)
         assert identities, "no run manifest found - cannot verify by typed identity"
-        store = SqliteTriageAuthorityStore.for_repo(config.repo_root)
+        store = SqliteTechLeadAuthorityStore.for_repo(config.repo_root)
         for run_id, session_name in identities:
             assert (
                 store.load(run_id=run_id, session_name=session_name) is None
@@ -3356,12 +3356,12 @@ class TestLaunchTriageIssueSessionFlavors:
         must sit at the boundary, not after the post-start bookkeeping.
         """
         config = launcher_bundle.launcher.config
-        self._enable_triage_agent(config, tmp_path)
-        mock_repo_host.prs_with_label = [self._triage_pr(555)]
+        self._enable_tech_lead_agent(config, tmp_path)
+        mock_repo_host.prs_with_label = [self._tech_lead_pr(555)]
         issue = Issue(
-            number=907, title="Batch Review", labels=["agent:triage"], repo="test/repo"
+            number=907, title="Batch Review", labels=["agent:tech-lead"], repo="test/repo"
         )
-        store = SqliteTriageAuthorityStore.for_repo(config.repo_root)
+        store = SqliteTechLeadAuthorityStore.for_repo(config.repo_root)
         monkeypatch.setattr(
             type(launcher_bundle.launcher),
             "_trigger_issue_session_state_transitions",
@@ -3383,10 +3383,10 @@ class TestLaunchTriageIssueSessionFlavors:
         self, launcher_bundle, mock_repo_host, mock_events, tmp_path
     ):
         config = launcher_bundle.launcher.config
-        self._enable_triage_agent(config, tmp_path)
-        mock_repo_host.prs_with_label = [self._triage_pr(555)]
+        self._enable_tech_lead_agent(config, tmp_path)
+        mock_repo_host.prs_with_label = [self._tech_lead_pr(555)]
         issue = Issue(
-            number=901, title="Batch Review", labels=["agent:triage"], repo="test/repo"
+            number=901, title="Batch Review", labels=["agent:tech-lead"], repo="test/repo"
         )
 
         result = launcher_bundle.launcher.launch_issue_session(
@@ -3395,16 +3395,16 @@ class TestLaunchTriageIssueSessionFlavors:
 
         assert result.success is True
         assert mock_repo_host.get_prs_with_label_calls == [
-            (config.triage_watch_label, "all")
+            (config.tech_lead_watch_label, "all")
         ]
         run_dir = self._started_run_dir(mock_events)
         run_manifest = json.loads((run_dir / "manifest.json").read_text())
-        assert run_manifest["triage_manifest"] == str(
-            run_dir / "triage-data" / "manifest.json"
+        assert run_manifest["tech_lead_manifest"] == str(
+            run_dir / "tech-lead-data" / "manifest.json"
         )
-        assert (run_dir / "triage-data" / "manifest.json").exists()
-        assignment_path = run_dir / "triage-data" / "triage-assignment.json"
-        assert run_manifest["triage_assignment"] == str(assignment_path)
+        assert (run_dir / "tech-lead-data" / "manifest.json").exists()
+        assignment_path = run_dir / "tech-lead-data" / "tech-lead-assignment.json"
+        assert run_manifest["tech_lead_assignment"] == str(assignment_path)
         assignment = json.loads(assignment_path.read_text())
         assert assignment["flavor"] == "batch_review"
         assert assignment["focus_issue_number"] is None
@@ -3413,20 +3413,20 @@ class TestLaunchTriageIssueSessionFlavors:
         self, launcher_bundle, mock_repo_host, mock_events, tmp_path
     ):
         config = launcher_bundle.launcher.config
-        self._enable_triage_agent(config, tmp_path)
-        mock_repo_host.prs_with_label = [self._triage_pr(555)]
+        self._enable_tech_lead_agent(config, tmp_path)
+        mock_repo_host.prs_with_label = [self._tech_lead_pr(555)]
         issue = Issue(
             number=902,
             title="Investigate: session timed out",
-            labels=["agent:triage"],
+            labels=["agent:tech-lead"],
             repo="test/repo",
         )
 
         result = launcher_bundle.launcher.launch_issue_session(
             issue,
             active_sessions=[],
-            triage_scope=TriageLaunchScope(
-                flavor=TriageSessionFlavor.FAILURE_INVESTIGATION
+            tech_lead_scope=TechLeadLaunchScope(
+                flavor=TechLeadSessionFlavor.FAILURE_INVESTIGATION
             ),
         )
 
@@ -3435,21 +3435,21 @@ class TestLaunchTriageIssueSessionFlavors:
         assert mock_repo_host.get_prs_with_label_calls == []
         run_dir = self._started_run_dir(mock_events)
         run_manifest = json.loads((run_dir / "manifest.json").read_text())
-        assert "triage_manifest" not in run_manifest
-        assert not (run_dir / "triage-data" / "manifest.json").exists()
-        assignment_path = run_dir / "triage-data" / "triage-assignment.json"
-        assert run_manifest["triage_assignment"] == str(assignment_path)
+        assert "tech_lead_manifest" not in run_manifest
+        assert not (run_dir / "tech-lead-data" / "manifest.json").exists()
+        assignment_path = run_dir / "tech-lead-data" / "tech-lead-assignment.json"
+        assert run_manifest["tech_lead_assignment"] == str(assignment_path)
         assignment = json.loads(assignment_path.read_text())
         assert assignment["flavor"] == "failure_investigation"
         assert assignment["focus_issue_number"] == 902
         assert assignment["focus_reason"] == "Investigate: session timed out"
 
-    def test_non_triage_session_gets_neither_manifest_nor_assignment(
+    def test_non_tech_lead_session_gets_neither_manifest_nor_assignment(
         self, launcher_bundle, sample_issue, mock_repo_host, mock_events, tmp_path
     ):
         config = launcher_bundle.launcher.config
-        self._enable_triage_agent(config, tmp_path)
-        mock_repo_host.prs_with_label = [self._triage_pr(555)]
+        self._enable_tech_lead_agent(config, tmp_path)
+        mock_repo_host.prs_with_label = [self._tech_lead_pr(555)]
 
         result = launcher_bundle.launcher.launch_issue_session(
             sample_issue, active_sessions=[]
@@ -3459,9 +3459,9 @@ class TestLaunchTriageIssueSessionFlavors:
         assert mock_repo_host.get_prs_with_label_calls == []
         run_dir = self._started_run_dir(mock_events)
         run_manifest = json.loads((run_dir / "manifest.json").read_text())
-        assert "triage_manifest" not in run_manifest
-        assert "triage_assignment" not in run_manifest
-        assert not (run_dir / "triage-data").exists()
+        assert "tech_lead_manifest" not in run_manifest
+        assert "tech_lead_assignment" not in run_manifest
+        assert not (run_dir / "tech-lead-data").exists()
 
     def test_batch_flavor_writes_board_snapshot_with_manifest_entry(
         self, launcher_bundle, mock_repo_host, mock_events, tmp_path
@@ -3473,11 +3473,11 @@ class TestLaunchTriageIssueSessionFlavors:
         fetch — no new call types.
         """
         config = launcher_bundle.launcher.config
-        self._enable_triage_agent(config, tmp_path)
-        mock_repo_host.prs_with_label = [self._triage_pr(555)]
+        self._enable_tech_lead_agent(config, tmp_path)
+        mock_repo_host.prs_with_label = [self._tech_lead_pr(555)]
         provider = launcher_bundle.board_snapshot_provider
         issue = Issue(
-            number=901, title="Batch Review", labels=["agent:triage"], repo="test/repo"
+            number=901, title="Batch Review", labels=["agent:tech-lead"], repo="test/repo"
         )
 
         result = launcher_bundle.launcher.launch_issue_session(
@@ -3488,7 +3488,7 @@ class TestLaunchTriageIssueSessionFlavors:
         # Batch reviews take the whole-board view: no focus issue.
         assert provider.calls == [None]
         run_dir = self._started_run_dir(mock_events)
-        snapshot_path = run_dir / "triage-data" / "board-snapshot.json"
+        snapshot_path = run_dir / "tech-lead-data" / "board-snapshot.json"
         run_manifest = json.loads((run_dir / "manifest.json").read_text())
         assert run_manifest["board_snapshot"] == str(snapshot_path)
         # The written file must parse back through the typed reader.
@@ -3496,7 +3496,7 @@ class TestLaunchTriageIssueSessionFlavors:
         assert snapshot.orchestrator_paused is False
         # No new repository-host call types: only the batch manifest fetch.
         assert mock_repo_host.get_prs_with_label_calls == [
-            (config.triage_watch_label, "all")
+            (config.tech_lead_watch_label, "all")
         ]
         assert mock_repo_host.add_label_calls == []
         assert mock_repo_host.remove_label_calls == []
@@ -3507,37 +3507,37 @@ class TestLaunchTriageIssueSessionFlavors:
     ):
         """Failure investigations get a snapshot scoped to the failed issue."""
         config = launcher_bundle.launcher.config
-        self._enable_triage_agent(config, tmp_path)
+        self._enable_tech_lead_agent(config, tmp_path)
         provider = launcher_bundle.board_snapshot_provider
         issue = Issue(
             number=902,
             title="Investigate: session timed out",
-            labels=["agent:triage"],
+            labels=["agent:tech-lead"],
             repo="test/repo",
         )
 
         result = launcher_bundle.launcher.launch_issue_session(
             issue,
             active_sessions=[],
-            triage_scope=TriageLaunchScope(
-                flavor=TriageSessionFlavor.FAILURE_INVESTIGATION
+            tech_lead_scope=TechLeadLaunchScope(
+                flavor=TechLeadSessionFlavor.FAILURE_INVESTIGATION
             ),
         )
 
         assert result.success is True
         assert provider.calls == [902]
         run_dir = self._started_run_dir(mock_events)
-        snapshot_path = run_dir / "triage-data" / "board-snapshot.json"
+        snapshot_path = run_dir / "tech-lead-data" / "board-snapshot.json"
         run_manifest = json.loads((run_dir / "manifest.json").read_text())
         assert run_manifest["board_snapshot"] == str(snapshot_path)
         assert BoardSnapshot.read(snapshot_path).schema_version == BOARD_SNAPSHOT_SCHEMA_VERSION
         # Still no PR manifest — and no GitHub reads at all for this flavor.
-        assert "triage_manifest" not in run_manifest
+        assert "tech_lead_manifest" not in run_manifest
         assert mock_repo_host.get_prs_with_label_calls == []
 
     @staticmethod
     def _launch(queued, state, launcher_bundle):
-        session = orchestrator_launch_triage_session(
+        session = orchestrator_launch_tech_lead_session(
             queued,
             state,
             launcher_bundle.launcher.config,
@@ -3555,7 +3555,7 @@ class TestLaunchTriageIssueSessionFlavors:
         The action applier is faked at its port boundary (``apply`` returns a
         successful ``ActionResult`` carrying ``details``, the shape the real
         applier produces), so ``apply_plan`` runs the real success-handling
-        path — including the post-apply state update that queues triage work.
+        path — including the post-apply state update that queues tech_lead work.
         """
         from issue_orchestrator.control.planner_types import Plan
 
@@ -3590,26 +3590,26 @@ class TestLaunchTriageIssueSessionFlavors:
     ):
         """The ADR-0031 §4 marker label alone selects HEALTH_REVIEW.
 
-        No explicit ``triage_flavor``: startup recovery relaunches the anchor
+        No explicit ``tech_lead_flavor``: startup recovery relaunches the anchor
         from its labels (crash-safe truth), so the marker must derive the
         flavor — no PR manifest query or build, a board-wide snapshot, and an
         anchor-only authority record (no focus issue, empty manifest set).
         """
-        from issue_orchestrator.domain.triage_session import (
+        from issue_orchestrator.domain.tech_lead_session import (
             HEALTH_REVIEW_MARKER_LABEL,
         )
-        from issue_orchestrator.infra.triage_authority_store import (
-            SqliteTriageAuthorityStore as TriageAuthorityStore,
+        from issue_orchestrator.infra.tech_lead_authority_store import (
+            SqliteTechLeadAuthorityStore as TechLeadAuthorityStore,
         )
 
         config = launcher_bundle.launcher.config
-        self._enable_triage_agent(config, tmp_path)
-        mock_repo_host.prs_with_label = [self._triage_pr(555)]
+        self._enable_tech_lead_agent(config, tmp_path)
+        mock_repo_host.prs_with_label = [self._tech_lead_pr(555)]
         provider = launcher_bundle.board_snapshot_provider
         issue = Issue(
             number=905,
             title="Health Review — walk the floor",
-            labels=["agent:triage", HEALTH_REVIEW_MARKER_LABEL],
+            labels=["agent:tech-lead", HEALTH_REVIEW_MARKER_LABEL],
             repo="test/repo",
         )
 
@@ -3622,27 +3622,27 @@ class TestLaunchTriageIssueSessionFlavors:
         assert mock_repo_host.get_prs_with_label_calls == []
         run_dir = self._started_run_dir(mock_events)
         run_manifest = json.loads((run_dir / "manifest.json").read_text())
-        assert "triage_manifest" not in run_manifest
-        assert not (run_dir / "triage-data" / "manifest.json").exists()
+        assert "tech_lead_manifest" not in run_manifest
+        assert not (run_dir / "tech-lead-data" / "manifest.json").exists()
         # Board-wide snapshot: no focus issue.
         assert provider.calls == [None]
         assert run_manifest["board_snapshot"] == str(
-            run_dir / "triage-data" / "board-snapshot.json"
+            run_dir / "tech-lead-data" / "board-snapshot.json"
         )
         # The agent-readable assignment records the health flavor, no focus.
         assignment = json.loads(
-            (run_dir / "triage-data" / "triage-assignment.json").read_text()
+            (run_dir / "tech-lead-data" / "tech-lead-assignment.json").read_text()
         )
         assert assignment["flavor"] == "health_review"
         assert assignment["focus_issue_number"] is None
         assert assignment["focus_reason"] == ""
         # The trusted authority record: anchor-only scope (#6761 rr F1).
-        authority = TriageAuthorityStore.for_repo(config.repo_root).load(
+        authority = TechLeadAuthorityStore.for_repo(config.repo_root).load(
             run_id=result.session.run_assets.run_id,
             session_name=result.session.run_assets.session_name,
         )
         assert authority is not None
-        assert authority.flavor is TriageSessionFlavor.HEALTH_REVIEW
+        assert authority.flavor is TechLeadSessionFlavor.HEALTH_REVIEW
         assert authority.anchor_issue_number == 905
         assert authority.focus_issue_number is None
         assert authority.manifest_pr_numbers == ()
@@ -3661,12 +3661,12 @@ class TestLaunchTriageIssueSessionFlavors:
         reset_retry'd by it. The grant must decide the scope, and unrelated
         failures must stay visible as context without widening it.
         """
-        from issue_orchestrator.domain.triage_session import (
+        from issue_orchestrator.domain.tech_lead_session import (
             HEALTH_REVIEW_MARKER_LABEL,
         )
 
         config = launcher_bundle.launcher.config
-        self._enable_triage_agent(config, tmp_path)
+        self._enable_tech_lead_agent(config, tmp_path)
         provider = launcher_bundle.board_snapshot_provider
         assert isinstance(provider, RecordingBoardSnapshotProvider)
         provider.recent_failures = [
@@ -3680,15 +3680,15 @@ class TestLaunchTriageIssueSessionFlavors:
         issue = Issue(
             number=905,
             title="Health Review — problem storm",
-            labels=["agent:triage", HEALTH_REVIEW_MARKER_LABEL],
+            labels=["agent:tech-lead", HEALTH_REVIEW_MARKER_LABEL],
             repo="test/repo",
         )
 
         result = launcher_bundle.launcher.launch_issue_session(
             issue,
             active_sessions=[],
-            triage_scope=TriageLaunchScope(
-                flavor=TriageSessionFlavor.HEALTH_REVIEW,
+            tech_lead_scope=TechLeadLaunchScope(
+                flavor=TechLeadSessionFlavor.HEALTH_REVIEW,
                 problem_issue_numbers=(41, 42, 43),
             ),
         )
@@ -3699,12 +3699,12 @@ class TestLaunchTriageIssueSessionFlavors:
         )
         run_dir = self._started_run_dir(mock_events)
         snapshot = BoardSnapshot.read(
-            run_dir / "triage-data" / "board-snapshot.json"
+            run_dir / "tech-lead-data" / "board-snapshot.json"
         )
         assert 99 in {f.issue_number for f in snapshot.recent_failures}, (
             "unrelated failures stay on the board as context"
         )
-        authority = SqliteTriageAuthorityStore.for_repo(config.repo_root).load(
+        authority = SqliteTechLeadAuthorityStore.for_repo(config.repo_root).load(
             run_id=result.session.run_assets.run_id,
             session_name=result.session.run_assets.session_name,
         )
@@ -3725,12 +3725,12 @@ class TestLaunchTriageIssueSessionFlavors:
         authority just because the review happened to start while they were
         queued.
         """
-        from issue_orchestrator.domain.triage_session import (
+        from issue_orchestrator.domain.tech_lead_session import (
             HEALTH_REVIEW_MARKER_LABEL,
         )
 
         config = launcher_bundle.launcher.config
-        self._enable_triage_agent(config, tmp_path)
+        self._enable_tech_lead_agent(config, tmp_path)
         provider = launcher_bundle.board_snapshot_provider
         assert isinstance(provider, RecordingBoardSnapshotProvider)
         provider.recent_failures = [
@@ -3739,20 +3739,20 @@ class TestLaunchTriageIssueSessionFlavors:
         issue = Issue(
             number=906,
             title="Health Review — walk the floor",
-            labels=["agent:triage", HEALTH_REVIEW_MARKER_LABEL],
+            labels=["agent:tech-lead", HEALTH_REVIEW_MARKER_LABEL],
             repo="test/repo",
         )
 
         result = launcher_bundle.launcher.launch_issue_session(
             issue,
             active_sessions=[],
-            triage_scope=TriageLaunchScope(
-                flavor=TriageSessionFlavor.HEALTH_REVIEW
+            tech_lead_scope=TechLeadLaunchScope(
+                flavor=TechLeadSessionFlavor.HEALTH_REVIEW
             ),
         )
 
         assert result.success is True
-        authority = SqliteTriageAuthorityStore.for_repo(config.repo_root).load(
+        authority = SqliteTechLeadAuthorityStore.for_repo(config.repo_root).load(
             run_id=result.session.run_assets.run_id,
             session_name=result.session.run_assets.session_name,
         )
@@ -3761,7 +3761,7 @@ class TestLaunchTriageIssueSessionFlavors:
         assert authority.allowed_act_level_targets() == frozenset()
         run_dir = self._started_run_dir(mock_events)
         snapshot = BoardSnapshot.read(
-            run_dir / "triage-data" / "board-snapshot.json"
+            run_dir / "tech-lead-data" / "board-snapshot.json"
         )
         assert [f.issue_number for f in snapshot.recent_failures] == [99], (
             "the periodic review still SEES the failing issue as context"
@@ -3779,13 +3779,13 @@ class TestLaunchTriageIssueSessionFlavors:
         failure list (#6780). Fixing F1 must not silently strip the
         authority of an anchor that reaches launch by this path.
         """
-        from issue_orchestrator.domain.triage_session import (
+        from issue_orchestrator.domain.tech_lead_session import (
             HEALTH_REVIEW_MARKER_LABEL,
         )
 
         config = launcher_bundle.launcher.config
-        self._enable_triage_agent(config, tmp_path)
-        store = SqliteTriageAuthorityStore.for_repo(config.repo_root)
+        self._enable_tech_lead_agent(config, tmp_path)
+        store = SqliteTechLeadAuthorityStore.for_repo(config.repo_root)
         store.record_storm_cohort(
             anchor_issue_number=907,
             cohort=tuple(
@@ -3801,7 +3801,7 @@ class TestLaunchTriageIssueSessionFlavors:
         issue = Issue(
             number=907,
             title="Health Review — problem storm",
-            labels=["agent:triage", HEALTH_REVIEW_MARKER_LABEL],
+            labels=["agent:tech-lead", HEALTH_REVIEW_MARKER_LABEL],
             repo="test/repo",
         )
 
@@ -3815,7 +3815,7 @@ class TestLaunchTriageIssueSessionFlavors:
             session_name=result.session.run_assets.session_name,
         )
         assert authority is not None
-        assert authority.flavor is TriageSessionFlavor.HEALTH_REVIEW
+        assert authority.flavor is TechLeadSessionFlavor.HEALTH_REVIEW
         assert authority.problem_issue_numbers == (41, 42, 43), (
             "the ledger is the fallback cohort source, not the board snapshot"
         )
@@ -3830,31 +3830,31 @@ class TestLaunchTriageIssueSessionFlavors:
         batch manifest query, a board-wide snapshot, a health assignment —
         and the launched item must leave the queue.
         """
-        from issue_orchestrator.domain.triage_session import (
+        from issue_orchestrator.domain.tech_lead_session import (
             HEALTH_REVIEW_MARKER_LABEL,
         )
 
         config = launcher_bundle.launcher.config
-        TestLaunchTriageIssueSessionFlavors._enable_triage_agent(config, tmp_path)
+        TestLaunchTechLeadIssueSessionFlavors._enable_tech_lead_agent(config, tmp_path)
         mock_repo_host.prs_with_label = [
-            TestLaunchTriageIssueSessionFlavors._triage_pr(555)
+            TestLaunchTechLeadIssueSessionFlavors._tech_lead_pr(555)
         ]
         state = OrchestratorState()
 
         self._apply_actions(
             state,
             [
-                CreateTriageIssueAction(
+                CreateTechLeadIssueAction(
                     title="Health Review — walk the floor",
                     body="Walk the floor",
-                    labels=("agent:triage", HEALTH_REVIEW_MARKER_LABEL),
+                    labels=("agent:tech-lead", HEALTH_REVIEW_MARKER_LABEL),
                     pr_count=0,
                 )
             ],
             issue_number=905,
         )
-        (queued,) = state.pending_triage_reviews
-        assert queued.flavor is TriageSessionFlavor.HEALTH_REVIEW
+        (queued,) = state.pending_tech_lead_reviews
+        assert queued.flavor is TechLeadSessionFlavor.HEALTH_REVIEW
         assert queued.failure is None
         # The intake stamped the interval marker (dedup for the next tick).
         assert state.last_health_review_at > 0.0
@@ -3862,16 +3862,16 @@ class TestLaunchTriageIssueSessionFlavors:
         session = self._launch(queued, state, launcher_bundle)
 
         # A launched item leaves the queue and cannot be relaunched next tick.
-        assert state.pending_triage_reviews == []
+        assert state.pending_tech_lead_reviews == []
         assert state.active_sessions == [session]
         # Health review must NOT query or build the batch PR manifest...
         assert mock_repo_host.get_prs_with_label_calls == []
-        run_dir = TestLaunchTriageIssueSessionFlavors._started_run_dir(mock_events)
+        run_dir = TestLaunchTechLeadIssueSessionFlavors._started_run_dir(mock_events)
         run_manifest = json.loads((run_dir / "manifest.json").read_text())
-        assert "triage_manifest" not in run_manifest
+        assert "tech_lead_manifest" not in run_manifest
         # ...its assignment records the health flavor with no focus...
         assignment = json.loads(
-            (run_dir / "triage-data" / "triage-assignment.json").read_text()
+            (run_dir / "tech-lead-data" / "tech-lead-assignment.json").read_text()
         )
         assert assignment["flavor"] == "health_review"
         assert assignment["focus_issue_number"] is None
@@ -3891,7 +3891,7 @@ class TestLaunchTriageIssueSessionFlavors:
         discovered_failures buffer is already cleared and there is no
         labels-as-truth recovery, so one transient SQLite/log/filesystem
         error must not delete the investigation forever. Retention is
-        bounded: after TRIAGE_LAUNCH_RETRY_LIMIT retryable failures the queue
+        bounded: after TECH_LEAD_LAUNCH_RETRY_LIMIT retryable failures the queue
         owner drops the item and the drop is a DURABLE needs-human
         transition (#6771 round 3): needs-human label + explanatory comment
         through the launcher's owning action boundary, then the
@@ -3899,7 +3899,7 @@ class TestLaunchTriageIssueSessionFlavors:
         survive an orchestrator restart.
         """
         config = launcher_bundle.launcher.config
-        self._enable_triage_agent(config, tmp_path)
+        self._enable_tech_lead_agent(config, tmp_path)
         launcher_bundle.board_snapshot_provider.error = RuntimeError("boom")
         state = OrchestratorState()
         PendingSessionQueues(state).queue_failure_investigation(
@@ -3911,20 +3911,20 @@ class TestLaunchTriageIssueSessionFlavors:
         )
 
         # Transient failures below the bound: the investigation stays queued.
-        for attempt in range(1, TRIAGE_LAUNCH_RETRY_LIMIT):
-            session = orchestrator_launch_triage_session(
-                state.pending_triage_reviews[0],
+        for attempt in range(1, TECH_LEAD_LAUNCH_RETRY_LIMIT):
+            session = orchestrator_launch_tech_lead_session(
+                state.pending_tech_lead_reviews[0],
                 state,
                 config,
                 launcher_bundle.launcher,
                 MagicMock(),
             )
             assert session is None
-            assert len(state.pending_triage_reviews) == 1, (
+            assert len(state.pending_tech_lead_reviews) == 1, (
                 "a retryable prep failure must retain the queued investigation"
             )
             assert (
-                state.pending_triage_reviews[0].retryable_launch_failures == attempt
+                state.pending_tech_lead_reviews[0].retryable_launch_failures == attempt
             )
 
         # Each attempt failed loudly through the established launch seam.
@@ -3932,21 +3932,21 @@ class TestLaunchTriageIssueSessionFlavors:
             e for e in mock_events.events
             if str(e.name) == str(EventName.SESSION_START_FAILED)
         ]
-        assert len(failed_events) == TRIAGE_LAUNCH_RETRY_LIMIT - 1
-        assert failed_events[0].data["reason"] == "triage_session_data_failed"
+        assert len(failed_events) == TECH_LEAD_LAUNCH_RETRY_LIMIT - 1
+        assert failed_events[0].data["reason"] == "tech_lead_session_data_failed"
         assert not any(str(e.name) == "session.started" for e in mock_events.events)
         assert mock_worktree_manager.remove_calls, "worktree must be cleaned up"
 
         # The final failure exhausts the bounded policy: dropped AND surfaced.
-        session = orchestrator_launch_triage_session(
-            state.pending_triage_reviews[0],
+        session = orchestrator_launch_tech_lead_session(
+            state.pending_tech_lead_reviews[0],
             state,
             config,
             launcher_bundle.launcher,
             MagicMock(),
         )
         assert session is None
-        assert state.pending_triage_reviews == []
+        assert state.pending_tech_lead_reviews == []
         needs_human = [
             e for e in mock_events.events
             if str(e.name) == str(EventName.ISSUE_NEEDS_HUMAN)
@@ -3969,7 +3969,7 @@ class TestLaunchTriageIssueSessionFlavors:
             if isinstance(a, AddLabelAction) and a.issue_number == 903
         ]
         assert [a.label for a in labels] == [
-            LabelManager(config).triage_needs_human,
+            LabelManager(config).tech_lead_needs_human,
             "needs-human",
         ]
         comments = [
@@ -3978,20 +3978,20 @@ class TestLaunchTriageIssueSessionFlavors:
         ]
         assert len(comments) == 1
         assert "failure_investigation" in comments[0].comment
-        assert str(TRIAGE_LAUNCH_RETRY_LIMIT) in comments[0].comment
+        assert str(TECH_LEAD_LAUNCH_RETRY_LIMIT) in comments[0].comment
         assert "boom" in comments[0].comment
 
     def _drive_to_exhaustion(
         self, state, config, launcher_bundle
     ) -> None:
-        """Drive a queued investigation through TRIAGE_LAUNCH_RETRY_LIMIT failures.
+        """Drive a queued investigation through TECH_LEAD_LAUNCH_RETRY_LIMIT failures.
 
         Every attempt fails at required-input prep (board snapshot error), so
         the LIMIT-th attempt reaches the EXHAUSTED escalation/commit path.
         """
-        for _ in range(TRIAGE_LAUNCH_RETRY_LIMIT):
-            orchestrator_launch_triage_session(
-                state.pending_triage_reviews[0],
+        for _ in range(TECH_LEAD_LAUNCH_RETRY_LIMIT):
+            orchestrator_launch_tech_lead_session(
+                state.pending_tech_lead_reviews[0],
                 state,
                 config,
                 launcher_bundle.launcher,
@@ -4020,7 +4020,7 @@ class TestLaunchTriageIssueSessionFlavors:
         a later retry cannot double-post it).
         """
         config = launcher_bundle.launcher.config
-        self._enable_triage_agent(config, tmp_path)
+        self._enable_tech_lead_agent(config, tmp_path)
         launcher_bundle.board_snapshot_provider.error = RuntimeError("boom")
 
         def apply_action(action):
@@ -4036,10 +4036,10 @@ class TestLaunchTriageIssueSessionFlavors:
 
         # Recoverable record retained — destructive removal did not precede
         # the (failed) durable transition.
-        assert len(state.pending_triage_reviews) == 1
+        assert len(state.pending_tech_lead_reviews) == 1
         assert (
-            state.pending_triage_reviews[0].retryable_launch_failures
-            >= TRIAGE_LAUNCH_RETRY_LIMIT
+            state.pending_tech_lead_reviews[0].retryable_launch_failures
+            >= TECH_LEAD_LAUNCH_RETRY_LIMIT
         )
         # No event may claim a durable needs-human transition that never landed.
         assert not any(
@@ -4049,7 +4049,7 @@ class TestLaunchTriageIssueSessionFlavors:
             call.args[0] for call in launcher_bundle.action_applier.apply.call_args_list
         ]
         # Marker and label were attempted in order; comment short-circuited.
-        marker = LabelManager(config).triage_needs_human
+        marker = LabelManager(config).tech_lead_needs_human
         assert any(
             isinstance(a, AddLabelAction) and a.label == marker for a in applied
         )
@@ -4072,7 +4072,7 @@ class TestLaunchTriageIssueSessionFlavors:
         public routing boundary.
         """
         config = launcher_bundle.launcher.config
-        self._enable_triage_agent(config, tmp_path)
+        self._enable_tech_lead_agent(config, tmp_path)
         launcher_bundle.board_snapshot_provider.error = RuntimeError("boom")
 
         comment_fails = {"active": True}
@@ -4094,7 +4094,7 @@ class TestLaunchTriageIssueSessionFlavors:
 
         # Comment failed → item retained, event withheld, but the label
         # (source of truth) was applied.
-        assert len(state.pending_triage_reviews) == 1
+        assert len(state.pending_tech_lead_reviews) == 1
         assert not any(
             str(e.name) == str(EventName.ISSUE_NEEDS_HUMAN) for e in mock_events.events
         )
@@ -4106,20 +4106,20 @@ class TestLaunchTriageIssueSessionFlavors:
         )
         assert any(
             isinstance(a, AddLabelAction)
-            and a.label == LabelManager(config).triage_needs_human
+            and a.label == LabelManager(config).tech_lead_needs_human
             for a in applied
         )
 
         # Later tick: the transient GitHub error clears; escalation now commits.
         comment_fails["active"] = False
-        orchestrator_launch_triage_session(
-            state.pending_triage_reviews[0],
+        orchestrator_launch_tech_lead_session(
+            state.pending_tech_lead_reviews[0],
             state,
             config,
             launcher_bundle.launcher,
             MagicMock(),
         )
-        assert state.pending_triage_reviews == [], (
+        assert state.pending_tech_lead_reviews == [], (
             "the drop must commit only after the durable transition succeeds"
         )
         needs_human = [
@@ -4134,9 +4134,9 @@ class TestLaunchTriageIssueSessionFlavors:
     ):
         """A needs-human transition cannot exist without provenance."""
         config = launcher_bundle.launcher.config
-        self._enable_triage_agent(config, tmp_path)
+        self._enable_tech_lead_agent(config, tmp_path)
         launcher_bundle.board_snapshot_provider.error = RuntimeError("boom")
-        marker = LabelManager(config).triage_needs_human
+        marker = LabelManager(config).tech_lead_needs_human
 
         def apply_action(action):
             if isinstance(action, AddLabelAction) and action.label == marker:
@@ -4148,7 +4148,7 @@ class TestLaunchTriageIssueSessionFlavors:
         self._queue_investigation(state)
         self._drive_to_exhaustion(state, config, launcher_bundle)
 
-        assert len(state.pending_triage_reviews) == 1
+        assert len(state.pending_tech_lead_reviews) == 1
         applied = [
             call.args[0] for call in launcher_bundle.action_applier.apply.call_args_list
         ]
@@ -4171,7 +4171,7 @@ class TestLaunchTriageIssueSessionFlavors:
     ):
         """A later tick clears both labels after the investigation launches."""
         config = launcher_bundle.launcher.config
-        self._enable_triage_agent(config, tmp_path)
+        self._enable_tech_lead_agent(config, tmp_path)
         launcher_bundle.board_snapshot_provider.error = RuntimeError("boom")
         labels = LabelManager(config)
         github_labels: set[str] = set()
@@ -4199,14 +4199,14 @@ class TestLaunchTriageIssueSessionFlavors:
         self._queue_investigation(state)
         self._drive_to_exhaustion(state, config, launcher_bundle)
 
-        assert labels.triage_needs_human in github_labels
+        assert labels.tech_lead_needs_human in github_labels
         assert labels.needs_human in github_labels
-        assert len(state.pending_triage_reviews) == 1
+        assert len(state.pending_tech_lead_reviews) == 1
 
         comment_fails["active"] = False
         launcher_bundle.board_snapshot_provider.error = None
-        session = orchestrator_launch_triage_session(
-            state.pending_triage_reviews[0],
+        session = orchestrator_launch_tech_lead_session(
+            state.pending_tech_lead_reviews[0],
             state,
             config,
             launcher_bundle.launcher,
@@ -4214,13 +4214,13 @@ class TestLaunchTriageIssueSessionFlavors:
         )
 
         assert session is not None
-        assert state.pending_triage_reviews == []
-        launcher_bundle.launcher.reconcile_stale_triage_needs_human(
+        assert state.pending_tech_lead_reviews == []
+        launcher_bundle.launcher.reconcile_stale_tech_lead_needs_human(
             state.active_sessions
         )
 
         assert labels.needs_human not in github_labels
-        assert labels.triage_needs_human not in github_labels
+        assert labels.tech_lead_needs_human not in github_labels
         removals = [
             action
             for action in (
@@ -4229,11 +4229,11 @@ class TestLaunchTriageIssueSessionFlavors:
             )
             if isinstance(action, RemoveLabelAction)
             and action.issue_number == 903
-            and action.label in {labels.needs_human, labels.triage_needs_human}
+            and action.label in {labels.needs_human, labels.tech_lead_needs_human}
         ]
         assert [action.label for action in removals] == [
             labels.needs_human,
-            labels.triage_needs_human,
+            labels.tech_lead_needs_human,
         ]
 
     @staticmethod
@@ -4261,7 +4261,7 @@ class TestLaunchTriageIssueSessionFlavors:
     ):
         """Failed external removal is reconstructed from labels on the next tick."""
         labels = LabelManager(launcher_bundle.launcher.config)
-        github_labels = {labels.triage_needs_human, labels.needs_human}
+        github_labels = {labels.tech_lead_needs_human, labels.needs_human}
         needs_human_remove_fails = {"active": True}
 
         fresh_labels = launcher_bundle.launcher.repository_host.get_issue_labels_fresh
@@ -4283,16 +4283,16 @@ class TestLaunchTriageIssueSessionFlavors:
         launcher_bundle.action_applier.apply = MagicMock(side_effect=apply_action)
         active = [
             self._restored_session(
-                903, [labels.triage_needs_human, labels.needs_human], tmp_path
+                903, [labels.tech_lead_needs_human, labels.needs_human], tmp_path
             )
         ]
         launches_before = sum(
             1 for event in mock_events.events if str(event.name) == "session.started"
         )
 
-        launcher_bundle.launcher.reconcile_stale_triage_needs_human(active)
+        launcher_bundle.launcher.reconcile_stale_tech_lead_needs_human(active)
 
-        assert github_labels == {labels.triage_needs_human, labels.needs_human}
+        assert github_labels == {labels.tech_lead_needs_human, labels.needs_human}
         first_pass = [
             call.args[0] for call in launcher_bundle.action_applier.apply.call_args_list
         ]
@@ -4303,7 +4303,7 @@ class TestLaunchTriageIssueSessionFlavors:
         ] == [labels.needs_human]
 
         needs_human_remove_fails["active"] = False
-        launcher_bundle.launcher.reconcile_stale_triage_needs_human(active)
+        launcher_bundle.launcher.reconcile_stale_tech_lead_needs_human(active)
 
         assert github_labels == set()
         all_removals = [
@@ -4314,7 +4314,7 @@ class TestLaunchTriageIssueSessionFlavors:
         assert [action.label for action in all_removals] == [
             labels.needs_human,
             labels.needs_human,
-            labels.triage_needs_human,
+            labels.tech_lead_needs_human,
         ]
         assert (
             sum(
@@ -4331,9 +4331,9 @@ class TestLaunchTriageIssueSessionFlavors:
         """Restored sessions need no side record to distinguish label ownership."""
         labels = LabelManager(launcher_bundle.launcher.config)
         github_labels = {
-            903: {labels.triage_needs_human, labels.needs_human},
+            903: {labels.tech_lead_needs_human, labels.needs_human},
             904: {labels.needs_human},
-            905: {labels.triage_needs_human},
+            905: {labels.tech_lead_needs_human},
         }
         launcher_bundle.launcher.repository_host.get_issue_labels_fresh.side_effect = (
             lambda issue_number: list(github_labels[issue_number])
@@ -4351,7 +4351,7 @@ class TestLaunchTriageIssueSessionFlavors:
             self._restored_session(905, list(github_labels[905]), tmp_path),
         ]
 
-        launcher_bundle.launcher.reconcile_stale_triage_needs_human(restored)
+        launcher_bundle.launcher.reconcile_stale_tech_lead_needs_human(restored)
 
         assert github_labels[903] == set()
         assert github_labels[904] == {labels.needs_human}
@@ -4365,8 +4365,8 @@ class TestLaunchTriageIssueSessionFlavors:
             (action.issue_number, action.label) for action in removals
         ] == [
             (903, labels.needs_human),
-            (903, labels.triage_needs_human),
-            (905, labels.triage_needs_human),
+            (903, labels.tech_lead_needs_human),
+            (905, labels.tech_lead_needs_human),
         ]
 
     def test_restart_discovers_marker_only_without_queue_or_active_session(
@@ -4374,7 +4374,7 @@ class TestLaunchTriageIssueSessionFlavors:
     ):
         """A fresh launcher recovers the durable marker without memory state."""
         labels = LabelManager(launcher_bundle.launcher.config)
-        mock_repo_host.labels[903] = {labels.triage_needs_human}
+        mock_repo_host.labels[903] = {labels.tech_lead_needs_human}
 
         def apply_action(action):
             if isinstance(action, AddLabelAction):
@@ -4383,15 +4383,15 @@ class TestLaunchTriageIssueSessionFlavors:
 
         launcher_bundle.action_applier.apply = MagicMock(side_effect=apply_action)
 
-        launcher_bundle.launcher.reconcile_stale_triage_needs_human([])
+        launcher_bundle.launcher.reconcile_stale_tech_lead_needs_human([])
 
         assert mock_repo_host.labels[903] == {
-            labels.triage_needs_human,
+            labels.tech_lead_needs_human,
             labels.needs_human,
         }
         assert mock_repo_host.list_issues_calls == [
             (
-                [labels.triage_needs_human],
+                [labels.tech_lead_needs_human],
                 "open",
                 100,
             )
@@ -4402,7 +4402,7 @@ class TestLaunchTriageIssueSessionFlavors:
         ]
         assert any(
             isinstance(action, AddCommentAction)
-            and "recovered an interrupted triage" in action.comment
+            and "recovered an interrupted tech_lead" in action.comment
             for action in applied
         )
         assert [
@@ -4425,10 +4425,10 @@ class TestLaunchTriageIssueSessionFlavors:
             issue_number=903,
             reason="failure investigation exhausted",
             comment="failure investigation could not launch",
-            context="triage_exhausted",
+            context="tech_lead_exhausted",
             event_data={"issue_number": 903},
         )
-        launcher_bundle.launcher.reconcile_stale_triage_needs_human(
+        launcher_bundle.launcher.reconcile_stale_tech_lead_needs_human(
             [self._restored_session(903, [labels.needs_human], tmp_path)]
         )
 
@@ -4440,7 +4440,7 @@ class TestLaunchTriageIssueSessionFlavors:
         ]
         assert not any(
             isinstance(action, AddLabelAction)
-            and action.label == labels.triage_needs_human
+            and action.label == labels.tech_lead_needs_human
             for action in applied
         )
         assert not any(isinstance(action, RemoveLabelAction) for action in applied)
@@ -4454,18 +4454,18 @@ class TestLaunchTriageIssueSessionFlavors:
         )
         launcher_bundle.action_applier.apply.reset_mock()
 
-        launcher_bundle.launcher.reconcile_stale_triage_needs_human(
+        launcher_bundle.launcher.reconcile_stale_tech_lead_needs_human(
             [self._restored_session(903, [], tmp_path)]
         )
 
         launcher_bundle.action_applier.apply.assert_not_called()
 
-class TestTriageProducerToLaunchBoundary:
+class TestTechLeadProducerToLaunchBoundary:
     """The flavor set at the producer boundary must survive queue -> launch (#6768 B5).
 
-    The pending-triage queue carries both variants; these tests drive the real
+    The pending-tech-lead queue carries both variants; these tests drive the real
     producer handlers into the queue and the queued item through
-    orchestrator_launch_triage_session into the real SessionLauncher, asserting
+    orchestrator_launch_tech_lead_session into the real SessionLauncher, asserting
     the launch behaves per the producer's flavor (manifest prep + written
     assignment) and empties the queue (#6768 round 4).
     """
@@ -4477,7 +4477,7 @@ class TestTriageProducerToLaunchBoundary:
         The action applier is faked at its port boundary (``apply`` returns a
         successful ``ActionResult`` carrying ``details``, the shape the real
         applier produces), so ``apply_plan`` runs the real success-handling
-        path — including the post-apply state update that queues triage work.
+        path — including the post-apply state update that queues tech_lead work.
         """
         from issue_orchestrator.control.planner_types import Plan
 
@@ -4509,7 +4509,7 @@ class TestTriageProducerToLaunchBoundary:
 
     @staticmethod
     def _launch(queued, state, launcher_bundle):
-        session = orchestrator_launch_triage_session(
+        session = orchestrator_launch_tech_lead_session(
             queued,
             state,
             launcher_bundle.launcher.config,
@@ -4522,52 +4522,52 @@ class TestTriageProducerToLaunchBoundary:
     def test_threshold_batch_issue_launches_as_batch_review(
         self, launcher_bundle, mock_repo_host, mock_events, tmp_path
     ):
-        """_handle_create_triage_issue -> queue -> launch prepares the manifest."""
+        """_handle_create_tech_lead_issue -> queue -> launch prepares the manifest."""
         config = launcher_bundle.launcher.config
-        TestLaunchTriageIssueSessionFlavors._enable_triage_agent(config, tmp_path)
+        TestLaunchTechLeadIssueSessionFlavors._enable_tech_lead_agent(config, tmp_path)
         mock_repo_host.prs_with_label = [
-            TestLaunchTriageIssueSessionFlavors._triage_pr(555)
+            TestLaunchTechLeadIssueSessionFlavors._tech_lead_pr(555)
         ]
         state = OrchestratorState()
 
         self._apply_actions(
             state,
             [
-                CreateTriageIssueAction(
-                    title="Triage Batch Review: 5 PRs pending",
+                CreateTechLeadIssueAction(
+                    title="Tech Lead Batch Review: 5 PRs pending",
                     body="Review these PRs",
-                    labels=("agent:triage",),
+                    labels=("agent:tech-lead",),
                     pr_count=5,
                 )
             ],
             issue_number=903,
         )
-        (queued,) = state.pending_triage_reviews
-        assert queued.flavor is TriageSessionFlavor.BATCH_REVIEW
+        (queued,) = state.pending_tech_lead_reviews
+        assert queued.flavor is TechLeadSessionFlavor.BATCH_REVIEW
 
         session = self._launch(queued, state, launcher_bundle)
 
         # A launched item leaves the queue and cannot be relaunched next tick.
-        assert state.pending_triage_reviews == []
+        assert state.pending_tech_lead_reviews == []
         assert state.active_sessions == [session]
-        decision = TriageWorkflow(config, NullEventSink()).should_launch_triage(
-            state.pending_triage_reviews, len(state.active_sessions), paused=False
+        decision = TechLeadWorkflow(config, NullEventSink()).should_launch_tech_lead(
+            state.pending_tech_lead_reviews, len(state.active_sessions), paused=False
         )
         assert decision.should_launch is False
-        assert decision.triage_to_launch == ()
+        assert decision.tech_lead_to_launch == ()
 
         # Batch review must prepare the PR manifest...
         assert mock_repo_host.get_prs_with_label_calls == [
-            (config.triage_watch_label, "all")
+            (config.tech_lead_watch_label, "all")
         ]
-        run_dir = TestLaunchTriageIssueSessionFlavors._started_run_dir(mock_events)
+        run_dir = TestLaunchTechLeadIssueSessionFlavors._started_run_dir(mock_events)
         run_manifest = json.loads((run_dir / "manifest.json").read_text())
-        assert run_manifest["triage_manifest"] == str(
-            run_dir / "triage-data" / "manifest.json"
+        assert run_manifest["tech_lead_manifest"] == str(
+            run_dir / "tech-lead-data" / "manifest.json"
         )
         # ...and record a batch assignment for the completion planner.
         assignment = json.loads(
-            (run_dir / "triage-data" / "triage-assignment.json").read_text()
+            (run_dir / "tech-lead-data" / "tech-lead-assignment.json").read_text()
         )
         assert assignment["flavor"] == "batch_review"
         assert assignment["focus_issue_number"] is None
@@ -4582,10 +4582,10 @@ class TestTriageProducerToLaunchBoundary:
         mock_command_runner,
         tmp_path,
     ):
-        """_handle_queue_triage -> queue -> launch skips the manifest query.
+        """_handle_queue_tech_lead -> queue -> launch skips the manifest query.
 
         Also the P1 producer-to-snapshot regression: the failure is discovered
-        on tick N (queued via QueueTriageAction), the per-tick
+        on tick N (queued via QueueTechLeadAction), the per-tick
         discovered_failures buffer is cleared after planning, and the launch
         happens on tick N+1 — the written board snapshot must still contain
         the investigation's own triggering failure. Uses the REAL
@@ -4614,9 +4614,9 @@ class TestTriageProducerToLaunchBoundary:
             board_snapshot_provider=provider,
         )
         config = launcher_bundle.launcher.config
-        TestLaunchTriageIssueSessionFlavors._enable_triage_agent(config, tmp_path)
+        TestLaunchTechLeadIssueSessionFlavors._enable_tech_lead_agent(config, tmp_path)
         mock_repo_host.prs_with_label = [
-            TestLaunchTriageIssueSessionFlavors._triage_pr(555)
+            TestLaunchTechLeadIssueSessionFlavors._tech_lead_pr(555)
         ]
         diagnostic = tmp_path / "failure-diagnostic.md"
         diagnostic.write_text("what went wrong")
@@ -4625,7 +4625,7 @@ class TestTriageProducerToLaunchBoundary:
         self._apply_actions(
             state,
             [
-                QueueTriageAction(
+                QueueTechLeadAction(
                     issue_number=904,
                     title="Investigate: Test issue (timed_out)",
                     failure=DiscoveredFailure(
@@ -4638,8 +4638,8 @@ class TestTriageProducerToLaunchBoundary:
                 )
             ],
         )
-        (queued,) = state.pending_triage_reviews
-        assert queued.flavor is TriageSessionFlavor.FAILURE_INVESTIGATION
+        (queued,) = state.pending_tech_lead_reviews
+        assert queued.flavor is TechLeadSessionFlavor.FAILURE_INVESTIGATION
         assert queued.failure is not None
 
         # Tick boundary: the orchestrator clears the per-tick fact buffer.
@@ -4649,17 +4649,17 @@ class TestTriageProducerToLaunchBoundary:
         session = self._launch(queued, state, launcher_bundle)
 
         # A launched item leaves the queue and cannot be relaunched next tick.
-        assert state.pending_triage_reviews == []
+        assert state.pending_tech_lead_reviews == []
         assert state.active_sessions == [session]
 
         # Failure investigation must NOT query or build the batch PR manifest...
         assert mock_repo_host.get_prs_with_label_calls == []
-        run_dir = TestLaunchTriageIssueSessionFlavors._started_run_dir(mock_events)
+        run_dir = TestLaunchTechLeadIssueSessionFlavors._started_run_dir(mock_events)
         run_manifest = json.loads((run_dir / "manifest.json").read_text())
-        assert "triage_manifest" not in run_manifest
+        assert "tech_lead_manifest" not in run_manifest
         # ...and its assignment records the focused investigation.
         assignment = json.loads(
-            (run_dir / "triage-data" / "triage-assignment.json").read_text()
+            (run_dir / "tech-lead-data" / "tech-lead-assignment.json").read_text()
         )
         assert assignment["flavor"] == "failure_investigation"
         assert assignment["focus_issue_number"] == 904
@@ -4668,7 +4668,7 @@ class TestTriageProducerToLaunchBoundary:
         # its real artifact hints — across the queue boundary even though the
         # live buffer was cleared (#6762: hints must reach the agent, not be
         # dropped at the projection).
-        snapshot = BoardSnapshot.read(run_dir / "triage-data" / "board-snapshot.json")
+        snapshot = BoardSnapshot.read(run_dir / "tech-lead-data" / "board-snapshot.json")
         assert [
             (f.issue_number, f.failure_reason, f.artifact_hints)
             for f in snapshot.recent_failures
@@ -4716,7 +4716,7 @@ class TestTriageProducerToLaunchBoundary:
             board_snapshot_provider=provider,
         )
         config = launcher_bundle.launcher.config
-        TestLaunchTriageIssueSessionFlavors._enable_triage_agent(config, tmp_path)
+        TestLaunchTechLeadIssueSessionFlavors._enable_tech_lead_agent(config, tmp_path)
 
         queues = PendingSessionQueues(state)
         # The unrelated investigation that survives the storm collapse.
@@ -4735,20 +4735,20 @@ class TestTriageProducerToLaunchBoundary:
         )
         (queued,) = [
             item
-            for item in state.pending_triage_reviews
-            if item.flavor is TriageSessionFlavor.HEALTH_REVIEW
+            for item in state.pending_tech_lead_reviews
+            if item.flavor is TechLeadSessionFlavor.HEALTH_REVIEW
         ]
 
         session = self._launch(queued, state, launcher_bundle)
 
-        run_dir = TestLaunchTriageIssueSessionFlavors._started_run_dir(mock_events)
+        run_dir = TestLaunchTechLeadIssueSessionFlavors._started_run_dir(mock_events)
         snapshot = BoardSnapshot.read(
-            run_dir / "triage-data" / "board-snapshot.json"
+            run_dir / "tech-lead-data" / "board-snapshot.json"
         )
         assert 99 in {f.issue_number for f in snapshot.recent_failures}, (
             "the unrelated failure is real board context and must stay visible"
         )
-        authority = SqliteTriageAuthorityStore.for_repo(config.repo_root).load(
+        authority = SqliteTechLeadAuthorityStore.for_repo(config.repo_root).load(
             run_id=session.run_assets.run_id,
             session_name=session.run_assets.session_name,
         )
@@ -4780,18 +4780,18 @@ class TestTriageProducerToLaunchBoundary:
         issues that triggered it.
 
         Drives the real chain through real SQLite: intake -> restart ->
-        recover -> launch -> TriageLaunchAuthority.
+        recover -> launch -> TechLeadLaunchAuthority.
         """
-        from issue_orchestrator.control.actions import CreateTriageIssueAction
+        from issue_orchestrator.control.actions import CreateTechLeadIssueAction
         from issue_orchestrator.control.health_review_trigger import (
-            intake_created_triage_anchor,
-            recover_pending_triage_anchors,
+            intake_created_tech_lead_anchor,
+            recover_pending_tech_lead_anchors,
         )
-        from issue_orchestrator.domain.triage_session import (
+        from issue_orchestrator.domain.tech_lead_session import (
             HEALTH_REVIEW_MARKER_LABEL,
         )
 
-        authority_store = SqliteTriageAuthorityStore.for_repo(
+        authority_store = SqliteTechLeadAuthorityStore.for_repo(
             sample_config.repo_root
         )
         cohort = tuple(
@@ -4808,11 +4808,11 @@ class TestTriageProducerToLaunchBoundary:
         # Tick N (pre-crash process): the anchor is created and intake
         # persists the cohort before collapsing the investigations.
         pre_crash_state = OrchestratorState()
-        intake_created_triage_anchor(
-            CreateTriageIssueAction(
+        intake_created_tech_lead_anchor(
+            CreateTechLeadIssueAction(
                 title="Health Review — problem storm",
                 body="Problem storm",
-                labels=("agent:triage", HEALTH_REVIEW_MARKER_LABEL),
+                labels=("agent:tech-lead", HEALTH_REVIEW_MARKER_LABEL),
                 pr_count=0,
                 storm_problems=cohort,
             ),
@@ -4846,30 +4846,30 @@ class TestTriageProducerToLaunchBoundary:
             board_snapshot_provider=provider,
         )
         config = launcher_bundle.launcher.config
-        TestLaunchTriageIssueSessionFlavors._enable_triage_agent(config, tmp_path)
+        TestLaunchTechLeadIssueSessionFlavors._enable_tech_lead_agent(config, tmp_path)
         # The open anchor comes back from its marker label — the only
         # crash-safe truth a restart has.
         mock_repo_host.issues = {
             905: Issue(
                 number=905,
                 title="Health Review — problem storm",
-                labels=["agent:triage", HEALTH_REVIEW_MARKER_LABEL],
+                labels=["agent:tech-lead", HEALTH_REVIEW_MARKER_LABEL],
                 repo="test/repo",
             )
         }
 
         # Startup recovery rehydrates the anchor AND its cohort.
-        recover_pending_triage_anchors(
+        recover_pending_tech_lead_anchors(
             state,
             repository_host=mock_repo_host,
             config=config,
             session_exists=lambda name: False,
-            triage_authority=authority_store,
+            tech_lead_authority=authority_store,
         )
 
-        (queued,) = state.pending_triage_reviews
+        (queued,) = state.pending_tech_lead_reviews
         assert queued.issue_number == 905
-        assert queued.flavor is TriageSessionFlavor.HEALTH_REVIEW
+        assert queued.flavor is TechLeadSessionFlavor.HEALTH_REVIEW
         assert queued.problem_cohort == cohort, (
             "the recovered anchor must carry the same typed cohort it was "
             "created with, hints included"
@@ -4879,9 +4879,9 @@ class TestTriageProducerToLaunchBoundary:
         # authority record scopes act-level proposals to those same issues.
         session = self._launch(queued, state, launcher_bundle)
 
-        run_dir = TestLaunchTriageIssueSessionFlavors._started_run_dir(mock_events)
+        run_dir = TestLaunchTechLeadIssueSessionFlavors._started_run_dir(mock_events)
         snapshot = BoardSnapshot.read(
-            run_dir / "triage-data" / "board-snapshot.json"
+            run_dir / "tech-lead-data" / "board-snapshot.json"
         )
         assert snapshot.problem_issue_numbers() == frozenset({41, 42, 43})
         authority = authority_store.load(
@@ -4889,7 +4889,7 @@ class TestTriageProducerToLaunchBoundary:
             session_name=session.run_assets.session_name,
         )
         assert authority is not None
-        assert authority.flavor is TriageSessionFlavor.HEALTH_REVIEW
+        assert authority.flavor is TechLeadSessionFlavor.HEALTH_REVIEW
         assert authority.problem_issue_numbers == (41, 42, 43)
         assert authority.allowed_act_level_targets() == frozenset({41, 42, 43})
 
@@ -4910,13 +4910,13 @@ class TestTriageProducerToLaunchBoundary:
         remit is to walk the board, not to remediate a specific cohort.
         """
         from issue_orchestrator.control.health_review_trigger import (
-            recover_pending_triage_anchors,
+            recover_pending_tech_lead_anchors,
         )
-        from issue_orchestrator.domain.triage_session import (
+        from issue_orchestrator.domain.tech_lead_session import (
             HEALTH_REVIEW_MARKER_LABEL,
         )
 
-        authority_store = SqliteTriageAuthorityStore.for_repo(
+        authority_store = SqliteTechLeadAuthorityStore.for_repo(
             sample_config.repo_root
         )
         launcher_bundle = _build_launcher_bundle(
@@ -4928,39 +4928,39 @@ class TestTriageProducerToLaunchBoundary:
             mock_command_runner,
         )
         config = launcher_bundle.launcher.config
-        TestLaunchTriageIssueSessionFlavors._enable_triage_agent(config, tmp_path)
+        TestLaunchTechLeadIssueSessionFlavors._enable_tech_lead_agent(config, tmp_path)
         mock_repo_host.issues = {
             906: Issue(
                 number=906,
                 title="Health Review — walk the floor",
-                labels=["agent:triage", HEALTH_REVIEW_MARKER_LABEL],
+                labels=["agent:tech-lead", HEALTH_REVIEW_MARKER_LABEL],
                 repo="test/repo",
             )
         }
 
         state = OrchestratorState()
-        recover_pending_triage_anchors(
+        recover_pending_tech_lead_anchors(
             state,
             repository_host=mock_repo_host,
             config=config,
             session_exists=lambda name: False,
-            triage_authority=authority_store,
+            tech_lead_authority=authority_store,
         )
 
-        (queued,) = state.pending_triage_reviews
-        assert queued.flavor is TriageSessionFlavor.HEALTH_REVIEW
+        (queued,) = state.pending_tech_lead_reviews
+        assert queued.flavor is TechLeadSessionFlavor.HEALTH_REVIEW
         assert queued.problem_cohort == ()
 
-    def test_queue_triage_action_without_failure_context_fails_fast(self):
+    def test_queue_tech_lead_action_without_failure_context_fails_fast(self):
         """The action boundary rejects failure investigations lacking context.
 
-        ``QueueTriageAction.failure`` is a required keyword field: an
+        ``QueueTechLeadAction.failure`` is a required keyword field: an
         investigation cannot even be DESCRIBED without its triggering failure
-        (``PendingTriageReview.__post_init__`` remains as defense-in-depth
+        (``PendingTechLeadReview.__post_init__`` remains as defense-in-depth
         for untyped callers reaching the queue owner directly).
         """
         with pytest.raises(TypeError, match="failure"):
-            QueueTriageAction(
+            QueueTechLeadAction(
                 issue_number=904,
                 title="Investigate: Test issue (timed_out)",
                 reason="Session failed with status 'timed_out'",
@@ -4995,8 +4995,8 @@ class TestSessionLauncherCallback:
             calls.append(("rework", n))
             return None
 
-        def triage_fn(n):
-            calls.append(("triage", n))
+        def tech_lead_fn(n):
+            calls.append(("tech_lead", n))
             return None
 
         session_launcher_callback(
@@ -5006,7 +5006,7 @@ class TestSessionLauncherCallback:
             review_fn,
             retrospective_fn,
             rework_fn,
-            triage_fn,
+            tech_lead_fn,
         )
         session_launcher_callback(
             SessionType.REVIEW,
@@ -5015,7 +5015,7 @@ class TestSessionLauncherCallback:
             review_fn,
             retrospective_fn,
             rework_fn,
-            triage_fn,
+            tech_lead_fn,
         )
         session_launcher_callback(
             SessionType.RETROSPECTIVE_REVIEW,
@@ -5024,7 +5024,7 @@ class TestSessionLauncherCallback:
             review_fn,
             retrospective_fn,
             rework_fn,
-            triage_fn,
+            tech_lead_fn,
         )
 
         assert calls == [("issue", 123), ("review", 456), ("retrospective", 789)]
@@ -5937,7 +5937,7 @@ class TestHandleSessionCompletion:
         mock_action_applier = MagicMock()
         mock_observer = MagicMock()
         config = MagicMock()
-        config.cleanup.without_triage.close_ai_session_tabs = True
+        config.cleanup.without_tech_lead.close_ai_session_tabs = True
         config.code_review_agent = None
 
         handle_session_completion(
@@ -5999,7 +5999,7 @@ class TestHandleSessionCompletion:
             pr_number=None,
         )
         config = MagicMock()
-        config.cleanup.without_triage.close_ai_session_tabs = True
+        config.cleanup.without_tech_lead.close_ai_session_tabs = True
         config.code_review_agent = None
         run_dir = Path(session.run_assets.run_dir)
         claude_log = run_dir / "claude.jsonl"
@@ -6481,7 +6481,7 @@ class TestHandleSessionCompletion:
         mock_action_applier = MagicMock()
         mock_observer = MagicMock()
         config = MagicMock()
-        config.cleanup.without_triage.close_ai_session_tabs = True
+        config.cleanup.without_tech_lead.close_ai_session_tabs = True
         config.code_review_agent = "agent:reviewer"
 
         handle_session_completion(
@@ -6539,7 +6539,7 @@ class TestHandleSessionCompletion:
         mock_action_applier = MagicMock()
         mock_observer = MagicMock()
         config = MagicMock()
-        config.cleanup.without_triage.close_ai_session_tabs = True
+        config.cleanup.without_tech_lead.close_ai_session_tabs = True
         config.code_review_agent = None
 
         handle_session_completion(
@@ -6786,7 +6786,7 @@ class TestStackRelaunchGate:
             command_runner=mock_command_runner,
             session_output=FileSystemSessionOutput(),
             manifest_downloader=NullManifestDownloader(),
-            triage_authority=SqliteTriageAuthorityStore.for_repo(sample_config.repo_root),
+            tech_lead_authority=SqliteTechLeadAuthorityStore.for_repo(sample_config.repo_root),
             session_exists_fn=lambda name: False,
             create_session_fn=lambda name, cmd, wd, title: True,
             get_issue_machine=lambda issue: IssueStateMachine(issue),

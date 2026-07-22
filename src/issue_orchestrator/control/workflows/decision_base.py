@@ -1,6 +1,6 @@
 """Base class for workflow decisions.
 
-All workflow decisions (Review, Rework, Triage) share a common pattern:
+All workflow decisions (Review, Rework, Tech Lead) share a common pattern:
 - should_launch: bool
 - items_to_launch: tuple of items
 - skip_reason: Optional[str]

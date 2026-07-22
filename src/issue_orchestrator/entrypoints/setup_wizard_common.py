@@ -12,14 +12,14 @@ from urllib.parse import urlparse
 import yaml
 
 from ..control.label_manager import (
-    TRIAGE_NEEDS_HUMAN_LABEL,
-    triage_issue_label_metadata,
+    TECH_LEAD_NEEDS_HUMAN_LABEL,
+    tech_lead_issue_label_metadata,
 )
-from ..infra.config_value_rules import resolve_triage_watch_label
+from ..infra.config_value_rules import resolve_tech_lead_watch_label
 from .setup_wizard_prompts import (
     build_code_review_prompt_text,
     build_starter_prompt_text,
-    build_triage_review_prompt_text,
+    build_tech_lead_review_prompt_text,
 )
 
 if TYPE_CHECKING:
@@ -324,7 +324,7 @@ def create_code_review_prompt(
     path.write_text(content)
 
 
-def create_triage_review_prompt(
+def create_tech_lead_review_prompt(
     path: Path,
     review_label: str,
     reviewed_label: str,
@@ -332,8 +332,8 @@ def create_triage_review_prompt(
     *,
     agent_name: str | None = None,
 ) -> None:
-    """Create a triage-review prompt file."""
-    content = build_triage_review_prompt_text(review_label, reviewed_label)
+    """Create a tech-lead-review prompt file."""
+    content = build_tech_lead_review_prompt_text(review_label, reviewed_label)
     if file_collector is not None:
         file_collector.add_write(path, content, "create", kind="prompt", agent=agent_name)
         return
@@ -351,10 +351,10 @@ def write_missing_setup_prompts(
     code_review_agent = review_config.get("default")
     code_review_label = review_config.get("code_review_label", "needs-code-review")
     code_reviewed_label = review_config.get("code_reviewed_label", "code-reviewed")
-    triage_review_agent = review_config.get("triage_review_agent")
-    triage_reviewed_label = review_config.get("triage_reviewed_label", "triage-reviewed")
-    triage_watch_label = resolve_triage_watch_label(
-        review_config.get("triage_review_label"), code_reviewed_label
+    tech_lead_review_agent = review_config.get("tech_lead_review_agent")
+    tech_lead_reviewed_label = review_config.get("tech_lead_reviewed_label", "tech-lead-reviewed")
+    tech_lead_watch_label = resolve_tech_lead_watch_label(
+        review_config.get("tech_lead_review_label"), code_reviewed_label
     )
 
     created_paths: list[Path] = []
@@ -374,8 +374,8 @@ def write_missing_setup_prompts(
         is_code_review_agent = (
             agent_name == code_review_agent or agent_name.lower() == "agent:reviewer"
         )
-        is_triage_review_agent = (
-            agent_name == triage_review_agent or "triage" in agent_name.lower()
+        is_tech_lead_review_agent = (
+            agent_name == tech_lead_review_agent or "tech_lead" in agent_name.lower()
         )
 
         if is_code_review_agent:
@@ -386,11 +386,11 @@ def write_missing_setup_prompts(
                 file_collector=file_collector,
                 agent_name=agent_name,
             )
-        elif is_triage_review_agent:
-            create_triage_review_prompt(
+        elif is_tech_lead_review_agent:
+            create_tech_lead_review_prompt(
                 prompt_path,
-                triage_watch_label,
-                triage_reviewed_label,
+                tech_lead_watch_label,
+                tech_lead_reviewed_label,
                 file_collector=file_collector,
                 agent_name=agent_name,
             )
@@ -459,9 +459,9 @@ def _plan_setup_labels(
             "Agent needs human input",
         ),
         (
-            prefixed(TRIAGE_NEEDS_HUMAN_LABEL),
+            prefixed(TECH_LEAD_NEEDS_HUMAN_LABEL),
             "D4C5F9",
-            "Orchestrator-owned triage needs-human provenance",
+            "Orchestrator-owned tech_lead needs-human provenance",
         ),
     ]
 
@@ -487,32 +487,32 @@ def _plan_setup_labels(
             ]
         )
 
-    triage_review_agent = review_config.get("triage_review_agent")
-    if triage_review_agent:
-        from ..domain.triage_session import (
+    tech_lead_review_agent = review_config.get("tech_lead_review_agent")
+    if tech_lead_review_agent:
+        from ..domain.tech_lead_session import (
             HEALTH_REVIEW_MARKER_LABEL,
-            PROPOSED_TRIAGE_LABEL,
-            TRIAGE_OBSERVATION_LABEL,
+            PROPOSED_TECH_LEAD_LABEL,
+            TECH_LEAD_OBSERVATION_LABEL,
         )
-        observation_color, observation_description = triage_issue_label_metadata(
-            TRIAGE_OBSERVATION_LABEL
+        observation_color, observation_description = tech_lead_issue_label_metadata(
+            TECH_LEAD_OBSERVATION_LABEL
         )
 
         all_labels.extend(
             [
                 (
-                    review_config.get("triage_reviewed_label", "triage-reviewed"),
+                    review_config.get("tech_lead_reviewed_label", "tech-lead-reviewed"),
                     "1D76DB",
-                    "PR has been triage reviewed",
+                    "PR has been tech_lead reviewed",
                 ),
-                # Gate label for act-level triage proposals (#6779 R3): a fresh
+                # Gate label for act-level tech_lead proposals (#6779 R3): a fresh
                 # install must provision it, else a proposal issue is created
-                # with the triage/filter labels but no blocking gate and becomes
-                # schedulable as ordinary triage work.
+                # with the tech_lead/filter labels but no blocking gate and becomes
+                # schedulable as ordinary tech_lead work.
                 (
-                    PROPOSED_TRIAGE_LABEL,
+                    PROPOSED_TECH_LEAD_LABEL,
                     "B60205",
-                    "Triage proposal awaiting operator approval",
+                    "Tech Lead proposal awaiting operator approval",
                 ),
                 # Health-review anchor marker (ADR-0031 §4): same class of
                 # orchestrator-managed workflow label; a fresh install needs it
@@ -523,7 +523,7 @@ def _plan_setup_labels(
                     "Periodic health-review anchor",
                 ),
                 (
-                    TRIAGE_OBSERVATION_LABEL,
+                    TECH_LEAD_OBSERVATION_LABEL,
                     observation_color,
                     observation_description,
                 ),
@@ -536,12 +536,12 @@ def _plan_setup_labels(
 def required_repo_labels(config: "Config") -> list[str]:
     """The full label set the CLI ``init`` command provisions (single owner).
 
-    Base workflow labels (including the orchestrator-owned ``triage-needs-human``
+    Base workflow labels (including the orchestrator-owned ``tech-lead-needs-human``
     marker from the #6771 redesign) + priority tiers + configured worker agents
-    + triage workflow labels (the #6779 R3 proposal gate, the triage-agent
+    + tech_lead workflow labels (the #6779 R3 proposal gate, the tech-lead-agent
     label, the health-review marker, and the #6781 observation marker) when
-    triage is configured. De-duped so labels appearing in more than one source
-    (e.g. an agent that is also the triage agent) are not provisioned twice.
+    tech_lead is configured. De-duped so labels appearing in more than one source
+    (e.g. an agent that is also the tech lead agent) are not provisioned twice.
     """
     from ..control.label_manager import LabelManager
 
@@ -550,27 +550,27 @@ def required_repo_labels(config: "Config") -> list[str]:
         lm.in_progress,
         lm.blocked,
         lm.needs_human,
-        lm.triage_needs_human,
+        lm.tech_lead_needs_human,
         "priority:high",
         "priority:medium",
         "priority:low",
     ]
     labels.extend(config.agents.keys())
-    if config.triage_review_agent:
-        from ..domain.triage_session import (
+    if config.tech_lead_review_agent:
+        from ..domain.tech_lead_session import (
             HEALTH_REVIEW_MARKER_LABEL,
-            PROPOSED_TRIAGE_LABEL,
-            TRIAGE_OBSERVATION_LABEL,
+            PROPOSED_TECH_LEAD_LABEL,
+            TECH_LEAD_OBSERVATION_LABEL,
         )
 
         labels.extend(
             label
             for label in (
-                config.triage_review_agent,
-                config.triage_reviewed_label,
-                PROPOSED_TRIAGE_LABEL,
+                config.tech_lead_review_agent,
+                config.tech_lead_reviewed_label,
+                PROPOSED_TECH_LEAD_LABEL,
                 HEALTH_REVIEW_MARKER_LABEL,
-                TRIAGE_OBSERVATION_LABEL,
+                TECH_LEAD_OBSERVATION_LABEL,
             )
             if label
         )
@@ -763,10 +763,10 @@ __all__ = [
     "build_code_review_prompt_text",
     "build_github_auth_check",
     "build_starter_prompt_text",
-    "build_triage_review_prompt_text",
+    "build_tech_lead_review_prompt_text",
     "create_code_review_prompt",
     "create_starter_prompt",
-    "create_triage_review_prompt",
+    "create_tech_lead_review_prompt",
     "detect_repo",
     "fetch_github_labels",
     "find_existing_config",

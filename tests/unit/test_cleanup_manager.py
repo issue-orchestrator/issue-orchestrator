@@ -3,7 +3,7 @@
 Tests focus on behavior:
 - Processing deferred cleanups when PRs have review labels
 - Orphaned cleanup recovery at startup
-- Throttling for triage issue creation failures
+- Throttling for tech_lead issue creation failures
 - Error handling in cleanup operations
 """
 
@@ -60,14 +60,14 @@ def make_pending_cleanup(
 def mock_config():
     """Create a mock config with reasonable defaults."""
     config = MagicMock()
-    config.triage_review_agent = None
+    config.tech_lead_review_agent = None
     config.code_review_agent = None
-    config.triage_reviewed_label = "triage-reviewed"
+    config.tech_lead_reviewed_label = "tech-lead-reviewed"
     config.code_reviewed_label = "code-reviewed"
-    config.cleanup.with_triage.close_ai_session_tabs = True
-    config.cleanup.with_triage.remove_worktrees = True
-    config.cleanup.without_triage.close_ai_session_tabs = True
-    config.cleanup.without_triage.remove_worktrees = True
+    config.cleanup.with_tech_lead.close_ai_session_tabs = True
+    config.cleanup.with_tech_lead.remove_worktrees = True
+    config.cleanup.without_tech_lead.close_ai_session_tabs = True
+    config.cleanup.without_tech_lead.remove_worktrees = True
     config.agents = {}
     return config
 
@@ -126,30 +126,30 @@ def cleanup_manager(cleanup_manager_bundle):
 # --- Test: Throttling ---
 
 
-class TestTriageIssueThrottling:
-    """Test throttling logic for triage issue creation failures."""
+class TestTechLeadIssueThrottling:
+    """Test throttling logic for tech_lead issue creation failures."""
 
     def test_should_retry_returns_true_initially(self, cleanup_manager):
         """First attempt always allowed before any failure."""
-        assert cleanup_manager.should_retry_triage_issue() is True
+        assert cleanup_manager.should_retry_tech_lead_issue() is True
 
     def test_should_retry_returns_false_after_failure(self, cleanup_manager):
         """Should not retry immediately after failure."""
-        cleanup_manager.mark_triage_issue_failure()
+        cleanup_manager.mark_tech_lead_issue_failure()
 
-        assert cleanup_manager.should_retry_triage_issue(cooldown_seconds=60) is False
+        assert cleanup_manager.should_retry_tech_lead_issue(cooldown_seconds=60) is False
 
     def test_should_retry_returns_true_after_cooldown(self, cleanup_manager, monkeypatch):
         """Should allow retry after cooldown expires."""
         import time
 
-        cleanup_manager.mark_triage_issue_failure()
+        cleanup_manager.mark_tech_lead_issue_failure()
 
         # Simulate cooldown expiration by mocking time to be 2 minutes later
         original_time = time.time
         monkeypatch.setattr(time, "time", lambda: original_time() + 120)
 
-        assert cleanup_manager.should_retry_triage_issue(cooldown_seconds=60) is True
+        assert cleanup_manager.should_retry_tech_lead_issue(cooldown_seconds=60) is True
 
 
 # --- Test: Process Deferred Cleanups ---
@@ -167,7 +167,7 @@ class TestProcessDeferredCleanups:
         self, cleanup_manager, mock_config, caplog
     ):
         """Without review workflow configured, cleanups are not processed."""
-        mock_config.triage_review_agent = None
+        mock_config.tech_lead_review_agent = None
         mock_config.code_review_agent = None
 
         pending = [
@@ -185,12 +185,12 @@ class TestProcessDeferredCleanups:
         assert result == pending
         assert "no review workflow configured" in caplog.text
 
-    def test_triage_workflow_cleans_up_reviewed_prs(
+    def test_tech_lead_workflow_cleans_up_reviewed_prs(
         self, cleanup_manager, mock_config, mock_repository_host
     ):
-        """With triage workflow, PRs with triage-reviewed label are cleaned."""
-        mock_config.triage_review_agent = "agent:triage"
-        mock_config.triage_reviewed_label = "triage-reviewed"
+        """With tech_lead workflow, PRs with tech-lead-reviewed label are cleaned."""
+        mock_config.tech_lead_review_agent = "agent:tech-lead"
+        mock_config.tech_lead_reviewed_label = "tech-lead-reviewed"
 
         pending = [
             make_pending_cleanup(
@@ -205,20 +205,20 @@ class TestProcessDeferredCleanups:
         mock_repository_host.get_prs_with_label.return_value = [
             PRInfo(
                 number=456, url="...", title="PR", branch="123-fix",
-                labels=["triage-reviewed"], body="", state="open"
+                labels=["tech-lead-reviewed"], body="", state="open"
             )
         ]
 
         result = cleanup_manager.process_deferred_cleanups(pending)
 
         assert result == []  # Cleanup was processed and removed
-        mock_repository_host.get_prs_with_label.assert_called_once_with("triage-reviewed")
+        mock_repository_host.get_prs_with_label.assert_called_once_with("tech-lead-reviewed")
 
     def test_code_review_workflow_cleans_up_reviewed_prs(
         self, cleanup_manager, mock_config, mock_repository_host
     ):
         """With code review workflow, PRs with code-reviewed label are cleaned."""
-        mock_config.triage_review_agent = None
+        mock_config.tech_lead_review_agent = None
         mock_config.code_review_agent = "agent:reviewer"
         mock_config.code_reviewed_label = "code-reviewed"
 
@@ -248,7 +248,7 @@ class TestProcessDeferredCleanups:
         self, cleanup_manager, mock_config, mock_repository_host
     ):
         """PRs without the review label remain in pending list."""
-        mock_config.triage_review_agent = "agent:triage"
+        mock_config.tech_lead_review_agent = "agent:tech-lead"
 
         pending = [
             make_pending_cleanup(
@@ -271,8 +271,8 @@ class TestProcessDeferredCleanups:
         self, cleanup_manager, cleanup_manager_bundle, mock_config, mock_repository_host
     ):
         """Session is killed when close_ai_session_tabs is True."""
-        mock_config.triage_review_agent = "agent:triage"
-        mock_config.cleanup.with_triage.close_ai_session_tabs = True
+        mock_config.tech_lead_review_agent = "agent:tech-lead"
+        mock_config.cleanup.with_tech_lead.close_ai_session_tabs = True
 
         pending = [
             make_pending_cleanup(
@@ -295,8 +295,8 @@ class TestProcessDeferredCleanups:
         self, cleanup_manager, mock_config, mock_repository_host, mock_worktree_manager
     ):
         """Worktree is removed when remove_worktrees is True."""
-        mock_config.triage_review_agent = "agent:triage"
-        mock_config.cleanup.with_triage.remove_worktrees = True
+        mock_config.tech_lead_review_agent = "agent:tech-lead"
+        mock_config.cleanup.with_tech_lead.remove_worktrees = True
 
         worktree_path = Path("/tmp/issue-123-worktree")
         pending = [
@@ -320,7 +320,7 @@ class TestProcessDeferredCleanups:
         self, cleanup_manager, cleanup_manager_bundle, mock_config, mock_repository_host, caplog
     ):
         """Session kill failure is logged and cleanup remains pending."""
-        mock_config.triage_review_agent = "agent:triage"
+        mock_config.tech_lead_review_agent = "agent:tech-lead"
         cleanup_manager_bundle.kill_session.side_effect = Exception("Session not found")
 
         pending = [
@@ -347,7 +347,7 @@ class TestProcessDeferredCleanups:
         self, cleanup_manager, mock_config, mock_repository_host, mock_worktree_manager, caplog
     ):
         """Worktree removal failure is logged and cleanup remains pending."""
-        mock_config.triage_review_agent = "agent:triage"
+        mock_config.tech_lead_review_agent = "agent:tech-lead"
         mock_worktree_manager.remove.side_effect = Exception("Permission denied")
 
         pending = [
@@ -374,7 +374,7 @@ class TestProcessDeferredCleanups:
         self, cleanup_manager, mock_config, mock_repository_host, mock_worktree_manager
     ):
         """Runtime-only untracked artifacts do not strand deferred cleanups."""
-        mock_config.triage_review_agent = "agent:triage"
+        mock_config.tech_lead_review_agent = "agent:tech-lead"
         worktree_path = Path("/tmp/worktree")
         mock_worktree_manager.remove.side_effect = [Exception("dirty"), None]
         mock_worktree_manager.can_remove_without_user_changes.return_value = True
@@ -404,7 +404,7 @@ class TestProcessDeferredCleanups:
         self, cleanup_manager, mock_config, mock_repository_host, mock_worktree_manager
     ):
         """Tracked or non-runtime dirty state remains pending for operator review."""
-        mock_config.triage_review_agent = "agent:triage"
+        mock_config.tech_lead_review_agent = "agent:tech-lead"
         worktree_path = Path("/tmp/worktree")
         mock_worktree_manager.remove.side_effect = Exception("dirty")
         mock_worktree_manager.can_remove_without_user_changes.return_value = False
@@ -431,7 +431,7 @@ class TestProcessDeferredCleanups:
         self, cleanup_manager, mock_config, mock_repository_host, caplog
     ):
         """PR fetch failure returns unchanged list."""
-        mock_config.triage_review_agent = "agent:triage"
+        mock_config.tech_lead_review_agent = "agent:tech-lead"
         mock_repository_host.get_prs_with_label.side_effect = Exception("API error")
 
         pending = [
@@ -453,7 +453,7 @@ class TestProcessDeferredCleanups:
         self, cleanup_manager, mock_config, mock_repository_host
     ):
         """Repository-host failures fail the cleanup cycle instead of looking empty."""
-        mock_config.triage_review_agent = "agent:triage"
+        mock_config.tech_lead_review_agent = "agent:tech-lead"
         mock_repository_host.get_prs_with_label.side_effect = GitHubHttpError(
             "GitHub unavailable",
             status_code=503,
@@ -476,7 +476,7 @@ class TestProcessDeferredCleanups:
         self, cleanup_manager, mock_config, mock_repository_host
     ):
         """Multiple cleanups can be processed in one call."""
-        mock_config.triage_review_agent = "agent:triage"
+        mock_config.tech_lead_review_agent = "agent:tech-lead"
 
         pending = [
             make_pending_cleanup(
@@ -516,7 +516,7 @@ class TestRecoverOrphanedCleanups:
 
     def test_returns_zero_without_review_workflow(self, cleanup_manager, mock_config):
         """Without review workflow, returns 0 (no cleanup needed)."""
-        mock_config.triage_review_agent = None
+        mock_config.tech_lead_review_agent = None
         mock_config.code_review_agent = None
 
         result = cleanup_manager.recover_orphaned_cleanups()
@@ -525,8 +525,8 @@ class TestRecoverOrphanedCleanups:
 
     def test_returns_zero_without_cleanup_label(self, cleanup_manager, mock_config):
         """Without cleanup label configured, returns 0."""
-        mock_config.triage_review_agent = "agent:triage"
-        mock_config.triage_reviewed_label = None
+        mock_config.tech_lead_review_agent = "agent:tech-lead"
+        mock_config.tech_lead_reviewed_label = None
 
         result = cleanup_manager.recover_orphaned_cleanups()
 
@@ -536,7 +536,7 @@ class TestRecoverOrphanedCleanups:
         self, cleanup_manager, mock_config, mock_repository_host
     ):
         """With no reviewed PRs, returns 0."""
-        mock_config.triage_review_agent = "agent:triage"
+        mock_config.tech_lead_review_agent = "agent:tech-lead"
         mock_repository_host.get_prs_with_label.return_value = []
 
         result = cleanup_manager.recover_orphaned_cleanups()
@@ -547,7 +547,7 @@ class TestRecoverOrphanedCleanups:
         self, cleanup_manager, cleanup_manager_bundle, mock_config, mock_repository_host, mock_worktree_manager
     ):
         """Sessions still running are not cleaned up."""
-        mock_config.triage_review_agent = "agent:triage"
+        mock_config.tech_lead_review_agent = "agent:tech-lead"
         mock_repository_host.get_prs_with_label.return_value = [
             PRInfo(number=456, url="...", title="PR", branch="123-fix",
                    labels=[], body="", state="open")
@@ -566,8 +566,8 @@ class TestRecoverOrphanedCleanups:
         self, cleanup_manager, cleanup_manager_bundle, mock_config, mock_repository_host, mock_worktree_manager, tmp_path
     ):
         """Orphaned worktrees are cleaned up."""
-        mock_config.triage_review_agent = "agent:triage"
-        mock_config.agents = {"agent:triage": MagicMock()}
+        mock_config.tech_lead_review_agent = "agent:tech-lead"
+        mock_config.agents = {"agent:tech-lead": MagicMock()}
 
         mock_repository_host.get_prs_with_label.return_value = [
             PRInfo(number=456, url="...", title="PR", branch="123-fix",
@@ -592,7 +592,7 @@ class TestRecoverOrphanedCleanups:
         self, cleanup_manager, mock_config, mock_repository_host, caplog
     ):
         """PR fetch failure during recovery is logged, returns 0."""
-        mock_config.triage_review_agent = "agent:triage"
+        mock_config.tech_lead_review_agent = "agent:tech-lead"
         mock_repository_host.get_prs_with_label.side_effect = Exception("Network error")
 
         with caplog.at_level(logging.WARNING):
@@ -605,7 +605,7 @@ class TestRecoverOrphanedCleanups:
         self, cleanup_manager, mock_config, mock_repository_host
     ):
         """Repository-host failures fail recovery instead of looking empty."""
-        mock_config.triage_review_agent = "agent:triage"
+        mock_config.tech_lead_review_agent = "agent:tech-lead"
         mock_repository_host.get_prs_with_label.side_effect = GitHubHttpError(
             "GitHub unavailable",
             status_code=503,
@@ -620,7 +620,7 @@ class TestRecoverOrphanedCleanups:
         self, cleanup_manager, mock_config, mock_repository_host
     ):
         """Startup message callback is invoked if provided."""
-        mock_config.triage_review_agent = "agent:triage"
+        mock_config.tech_lead_review_agent = "agent:tech-lead"
         mock_repository_host.get_prs_with_label.return_value = []
 
         callback = MagicMock()
@@ -632,8 +632,8 @@ class TestRecoverOrphanedCleanups:
         self, cleanup_manager, cleanup_manager_bundle, mock_config, mock_repository_host, mock_worktree_manager, tmp_path, caplog
     ):
         """Worktree removal failure is logged and not counted as cleaned."""
-        mock_config.triage_review_agent = "agent:triage"
-        mock_config.agents = {"agent:triage": MagicMock()}
+        mock_config.tech_lead_review_agent = "agent:tech-lead"
+        mock_config.agents = {"agent:tech-lead": MagicMock()}
 
         mock_repository_host.get_prs_with_label.return_value = [
             PRInfo(number=456, url="...", title="PR", branch="123-fix",
@@ -658,8 +658,8 @@ class TestRecoverOrphanedCleanups:
         self, cleanup_manager, mock_config, mock_repository_host, mock_worktree_manager
     ):
         """PRs where issue number can't be extracted are skipped."""
-        mock_config.triage_review_agent = "agent:triage"
-        mock_config.agents = {"agent:triage": MagicMock()}
+        mock_config.tech_lead_review_agent = "agent:tech-lead"
+        mock_config.agents = {"agent:tech-lead": MagicMock()}
 
         mock_repository_host.get_prs_with_label.return_value = [
             PRInfo(number=456, url="...", title="PR", branch="weird-branch-name",

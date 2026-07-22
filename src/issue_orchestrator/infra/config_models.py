@@ -3,20 +3,20 @@
 from dataclasses import dataclass, field
 from typing import Optional
 
-from ..domain.triage_artifacts import UNWIRED_ACT_LEVEL_TRIAGE_ACTIONS
+from ..domain.tech_lead_artifacts import UNWIRED_ACT_LEVEL_TECH_LEAD_ACTIONS
 
 
 @dataclass
-class CleanupWithTriage:
-    """Cleanup settings when triage review is enabled."""
+class CleanupWithTechLead:
+    """Cleanup settings when tech_lead review is enabled."""
 
     close_ai_session_tabs: bool = True
     remove_worktrees: bool = False
 
 
 @dataclass
-class CleanupWithoutTriage:
-    """Cleanup settings when triage review is NOT enabled."""
+class CleanupWithoutTechLead:
+    """Cleanup settings when tech_lead review is NOT enabled."""
 
     wait_for_code_review: bool = True  # True = after code review, False = on completion
     close_ai_session_tabs: bool = True
@@ -27,8 +27,8 @@ class CleanupWithoutTriage:
 class CleanupConfig:
     """Cleanup configuration - when to close tabs and remove worktrees."""
 
-    with_triage: CleanupWithTriage = field(default_factory=CleanupWithTriage)
-    without_triage: CleanupWithoutTriage = field(default_factory=CleanupWithoutTriage)
+    with_tech_lead: CleanupWithTechLead = field(default_factory=CleanupWithTechLead)
+    without_tech_lead: CleanupWithoutTechLead = field(default_factory=CleanupWithoutTechLead)
 
 
 @dataclass
@@ -226,17 +226,17 @@ class FilteringConfig:
 
 @dataclass
 class MilestoneStrategyConfig:
-    """Milestone assignment strategy for triage issues."""
+    """Milestone assignment strategy for tech_lead issues."""
 
     inherit_from_issues: Optional[str] = "latest"  # "earliest" | "latest" | None
     explicit: Optional[str] = None  # Explicit milestone name
 
 
-TRIAGE_AUTHORITY_MODES = ("execute", "propose")
+TECH_LEAD_AUTHORITY_MODES = ("execute", "propose")
 
 # Action types whose authority mode is configurable. escalate_to_human is
 # deliberately absent: it is the non-configurable floor and always executes.
-TRIAGE_AUTHORITY_CONFIGURABLE_ACTIONS = (
+TECH_LEAD_AUTHORITY_CONFIGURABLE_ACTIONS = (
     "post_comment",
     "create_issue",
     "flag_pattern",
@@ -246,14 +246,14 @@ TRIAGE_AUTHORITY_CONFIGURABLE_ACTIONS = (
 
 
 @dataclass
-class TriageAuthorityConfig:
-    """Per-action-type authority modes for triage decision proposals (ADR-0031).
+class TechLeadAuthorityConfig:
+    """Per-action-type authority modes for tech_lead decision proposals (ADR-0031).
 
     ``execute`` — the orchestrator performs the proposed action directly.
     ``propose`` — for ``post_comment``/``flag_pattern``: shadow mode (the
     proposal is surfaced as would-have-done). For ``create_issue`` and
     act-level actions: a GATED ISSUE (#6778) — the proposal is created as a
-    GitHub issue carrying ``proposed-triage``; removing that label is
+    GitHub issue carrying ``proposed-tech-lead``; removing that label is
     per-instance operator approval. Per-instance approval and config-level
     trust coexist.
 
@@ -274,22 +274,22 @@ class TriageAuthorityConfig:
     kill_hung_session: str = "propose"
 
     @classmethod
-    def from_mapping(cls, data: dict) -> "TriageAuthorityConfig":
-        """Parse the ``triage.authority`` YAML section, validating modes."""
+    def from_mapping(cls, data: dict) -> "TechLeadAuthorityConfig":
+        """Parse the ``tech_lead.authority`` YAML section, validating modes."""
         defaults = cls()
         values: dict[str, str] = {}
-        for key in TRIAGE_AUTHORITY_CONFIGURABLE_ACTIONS:
+        for key in TECH_LEAD_AUTHORITY_CONFIGURABLE_ACTIONS:
             value = data.get(key, getattr(defaults, key))
-            if value not in TRIAGE_AUTHORITY_MODES:
+            if value not in TECH_LEAD_AUTHORITY_MODES:
                 raise ValueError(
-                    f"triage.authority.{key} must be one of"
-                    f" {list(TRIAGE_AUTHORITY_MODES)}, got {value!r}"
+                    f"tech_lead.authority.{key} must be one of"
+                    f" {list(TECH_LEAD_AUTHORITY_MODES)}, got {value!r}"
                 )
             values[key] = value
         return cls(**values)
 
     def mode_for(self, action_type: str) -> str:
-        """Return the authority mode for a proposed triage action type.
+        """Return the authority mode for a proposed tech_lead action type.
 
         ``escalate_to_human`` ALWAYS returns ``execute`` — routing to a
         human is the fail-safe floor and cannot be configured away.
@@ -298,14 +298,14 @@ class TriageAuthorityConfig:
         """
         if action_type == "escalate_to_human":
             return "execute"
-        if action_type not in TRIAGE_AUTHORITY_CONFIGURABLE_ACTIONS:
-            raise ValueError(f"unknown triage action type: {action_type!r}")
+        if action_type not in TECH_LEAD_AUTHORITY_CONFIGURABLE_ACTIONS:
+            raise ValueError(f"unknown tech_lead action type: {action_type!r}")
         return getattr(self, action_type)
 
     def to_event_dict(self) -> dict:
         """All five graduated-authority modes, for config event payloads."""
         return {
-            key: getattr(self, key) for key in TRIAGE_AUTHORITY_CONFIGURABLE_ACTIONS
+            key: getattr(self, key) for key in TECH_LEAD_AUTHORITY_CONFIGURABLE_ACTIONS
         }
 
     def startup_errors(self) -> list[str]:
@@ -314,23 +314,23 @@ class TriageAuthorityConfig:
         ``execute`` on an act-level action whose DIRECT executor is not
         wired yet must be a startup configuration error, never a silent
         no-op (#6764). ``reset_retry`` is wired and no longer rejected; the
-        unwired set lives in ``UNWIRED_ACT_LEVEL_TRIAGE_ACTIONS``. The
+        unwired set lives in ``UNWIRED_ACT_LEVEL_TECH_LEAD_ACTIONS``. The
         rejection is deliberate even though ``kill_hung_session`` ships as
         GATED PROPOSAL ISSUES under ``propose`` (#6778): the gated tier is
         the point — per-instance approval, not config-level trust.
         """
         errors: list[str] = []
-        for key in TRIAGE_AUTHORITY_CONFIGURABLE_ACTIONS:
+        for key in TECH_LEAD_AUTHORITY_CONFIGURABLE_ACTIONS:
             mode = getattr(self, key)
-            if mode not in TRIAGE_AUTHORITY_MODES:
+            if mode not in TECH_LEAD_AUTHORITY_MODES:
                 errors.append(
-                    f"triage.authority.{key} must be one of"
-                    f" {list(TRIAGE_AUTHORITY_MODES)}, got {mode!r}"
+                    f"tech_lead.authority.{key} must be one of"
+                    f" {list(TECH_LEAD_AUTHORITY_MODES)}, got {mode!r}"
                 )
-        for key in sorted(UNWIRED_ACT_LEVEL_TRIAGE_ACTIONS):
+        for key in sorted(UNWIRED_ACT_LEVEL_TECH_LEAD_ACTIONS):
             if getattr(self, key) == "execute":
                 errors.append(
-                    f"triage.authority.{key}: direct 'execute' is not wired"
+                    f"tech_lead.authority.{key}: direct 'execute' is not wired"
                     " yet (#6764); use 'propose' — proposals surface as"
                     " gated issues awaiting per-instance approval (#6778)"
                 )
@@ -338,11 +338,11 @@ class TriageAuthorityConfig:
 
 
 @dataclass
-class TriageHealthReviewConfig:
+class TechLeadHealthReviewConfig:
     """Periodic and problem-storm health-review trigger settings (ADR-0031).
 
     ``interval_minutes`` drives the planner-side trigger: every N minutes
-    the orchestrator creates a health-review anchor issue for the triage
+    the orchestrator creates a health-review anchor issue for the tech_lead
     agent to walk the board snapshot. 0 (the default) disables the trigger.
 
     ``storm_threshold`` is the number of recent blocked/failed problem issues
@@ -355,8 +355,8 @@ class TriageHealthReviewConfig:
     storm_window_minutes: int = 5
 
     @classmethod
-    def from_mapping(cls, data: dict) -> "TriageHealthReviewConfig":
-        """Parse the ``triage.health_review`` YAML sub-dict."""
+    def from_mapping(cls, data: dict) -> "TechLeadHealthReviewConfig":
+        """Parse the ``tech_lead.health_review`` YAML sub-dict."""
         return cls(
             interval_minutes=int(data.get("interval_minutes", 0)),
             storm_threshold=int(data.get("storm_threshold", 3)),
@@ -373,17 +373,17 @@ class TriageHealthReviewConfig:
         errors: list[str] = []
         if self.interval_minutes < 0:
             errors.append(
-                "triage.health_review.interval_minutes must be >= 0 "
+                "tech_lead.health_review.interval_minutes must be >= 0 "
                 f"(0 disables the trigger), got {self.interval_minutes}"
             )
         if self.storm_threshold < 0:
             errors.append(
-                "triage.health_review.storm_threshold must be >= 0 "
+                "tech_lead.health_review.storm_threshold must be >= 0 "
                 f"(0 disables storm escalation), got {self.storm_threshold}"
             )
         if self.storm_window_minutes <= 0:
             errors.append(
-                "triage.health_review.storm_window_minutes must be > 0, got "
+                "tech_lead.health_review.storm_window_minutes must be > 0, got "
                 f"{self.storm_window_minutes}"
             )
         return errors
@@ -395,7 +395,7 @@ class StuckSweepConfig:
 
     A bounded, timer-gated backstop that re-injects open issues stuck in a
     terminal blocking state (that the normal loop cannot re-discover) into the
-    reactive-triage pipeline. ``interval_minutes`` is the cadence;
+    reactive-tech-lead pipeline. ``interval_minutes`` is the cadence;
     ``max_recovery_attempts`` bounds re-injection per issue before the sweep
     surfaces it as exhausted (needs human attention) instead of looping.
     ``enabled`` is False (off) by default.
@@ -407,7 +407,7 @@ class StuckSweepConfig:
 
     @classmethod
     def from_mapping(cls, data: dict) -> "StuckSweepConfig":
-        """Parse the ``triage.stuck_sweep`` YAML sub-dict."""
+        """Parse the ``tech_lead.stuck_sweep`` YAML sub-dict."""
         return cls(
             enabled=bool(data.get("enabled", False)),
             interval_minutes=int(data.get("interval_minutes", 15)),
@@ -415,12 +415,12 @@ class StuckSweepConfig:
         )
 
     def startup_errors(self) -> list[str]:
-        """Own-block invariants; the enabled-requires-triage-agent cross-field
+        """Own-block invariants; the enabled-requires-tech-lead-agent cross-field
         check lives in the review validator (it reads other config sections)."""
         errors: list[str] = []
         if self.interval_minutes < 1:
             errors.append(
-                "triage.stuck_sweep.interval_minutes must be >= 1 — a zero (or "
+                "tech_lead.stuck_sweep.interval_minutes must be >= 1 — a zero (or "
                 "negative) interval makes stuck_sweep_due true every tick, i.e. an "
                 "unthrottled GitHub scan on every loop, which #6823 forbids; a "
                 "cadence of 0 is meaningless, so set enabled: false to turn the "
@@ -428,7 +428,7 @@ class StuckSweepConfig:
             )
         if self.max_recovery_attempts < 1:
             errors.append(
-                "triage.stuck_sweep.max_recovery_attempts must be >= 1 "
+                "tech_lead.stuck_sweep.max_recovery_attempts must be >= 1 "
                 f"(bounds re-injection before escalation), got "
                 f"{self.max_recovery_attempts}"
             )
@@ -436,11 +436,11 @@ class StuckSweepConfig:
 
 
 @dataclass
-class TriageConfig:
-    """Triage issue configuration.
+class TechLeadConfig:
+    """Tech Lead issue configuration.
 
     Controls how labels and milestones are assigned to orchestrator-created
-    triage issues, which triage decision proposals the orchestrator
+    tech_lead issues, which tech_lead decision proposals the orchestrator
     executes versus surfaces (ADR-0031), and the periodic health-review
     trigger (ADR-0031 §4).
     """
@@ -448,7 +448,7 @@ class TriageConfig:
     # Labels to inherit from source issues (if any source issue has the label)
     inherit_labels: list[str] = field(default_factory=list)
 
-    # Labels always applied to triage issues
+    # Labels always applied to tech_lead issues
     explicit_labels: list[str] = field(default_factory=list)
 
     # Milestone assignment strategy
@@ -457,27 +457,27 @@ class TriageConfig:
     # Optional explicit priority label
     priority: Optional[str] = None
 
-    # Reserved concurrency for triage sessions. None (the default) = triage
-    # shares the worker budget (``max_concurrent_sessions``): triage counts
+    # Reserved concurrency for tech_lead sessions. None (the default) = tech_lead
+    # shares the worker budget (``max_concurrent_sessions``): tech_lead counts
     # against it and is planned from the shared capacity, exactly as before.
-    # An int = a SEPARATE additive triage budget: triage sessions run from
-    # their own ``triage.max_concurrent`` slots and are NOT subtracted from
+    # An int = a SEPARATE additive tech_lead budget: tech_lead sessions run from
+    # their own ``tech_lead.max_concurrent`` slots and are NOT subtracted from
     # the worker ``max_concurrent_sessions``, so the tech lead can run even
     # when the worker budget is saturated. Total live agents are then bounded
-    # at ``max_concurrent_sessions + triage.max_concurrent``.
+    # at ``max_concurrent_sessions + tech_lead.max_concurrent``.
     max_concurrent: Optional[int] = None
 
-    # Per-action-type graduated authority for triage decision proposals
-    authority: TriageAuthorityConfig = field(default_factory=TriageAuthorityConfig)
+    # Per-action-type graduated authority for tech_lead decision proposals
+    authority: TechLeadAuthorityConfig = field(default_factory=TechLeadAuthorityConfig)
 
     # Periodic health-review trigger (ADR-0031 §4)
-    health_review: TriageHealthReviewConfig = field(default_factory=TriageHealthReviewConfig)
+    health_review: TechLeadHealthReviewConfig = field(default_factory=TechLeadHealthReviewConfig)
 
     # Tech-lead attention sweep for stuck issues (ADR-0031, #6823)
     stuck_sweep: StuckSweepConfig = field(default_factory=StuckSweepConfig)
 
     def to_event_dict(self) -> dict:
-        """Serialized ``triage`` section for config event payloads."""
+        """Serialized ``tech_lead`` section for config event payloads."""
         return {
             "inherit_labels": list(self.inherit_labels),
             "explicit_labels": list(self.explicit_labels),
@@ -559,11 +559,11 @@ class E2EConfig:
     # Make an E2E run a first-class workload in the concurrency budget. None of
     # today's parallel behavior changes while this is False (the default): E2E
     # triggers alongside agents. When True, an E2E run counts against the WORKER
-    # budget (``max_concurrent_sessions``) — NOT the reserved triage slot: it
+    # budget (``max_concurrent_sessions``) — NOT the reserved tech_lead slot: it
     # starts only when a worker slot is free, and while it runs it occupies one
     # slot so the planner launches one fewer agent (they interleave over time).
     # A due suite claims a slot AHEAD of new issues but BEHIND in-flight
-    # completion work (reviews/reworks/validation-retries/triage), which are
+    # completion work (reviews/reworks/validation-retries/tech_lead), which are
     # never preempted. Leave off unless the machine is resource-constrained
     # enough that a second full orchestrator workload starves live agents.
     occupies_session_slot: bool = False
@@ -664,7 +664,7 @@ class GoalPilotConfig:
 # Allowed values for the merge_queue section, validated at parse time so a typo
 # fails loud at config load rather than silently picking a wrong policy branch.
 MERGE_QUEUE_PROVIDERS = ("github",)
-MERGE_QUEUE_GATES = ("code-reviewed", "triage-reviewed")
+MERGE_QUEUE_GATES = ("code-reviewed", "tech-lead-reviewed")
 MERGE_QUEUE_FAILURE_ACTIONS = ("rework", "needs_human")
 
 

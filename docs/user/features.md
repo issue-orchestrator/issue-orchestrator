@@ -30,7 +30,7 @@ that the work is finished.
 
 - Claims eligible GitHub issues and moves them through queued, running,
   blocked, awaiting-merge, and completed states.
-- Routes work to configured agent roles such as coder, reviewer, or triage.
+- Routes work to configured agent roles such as coder, reviewer, or tech_lead.
 - Requires agents to finish through structured commands such as `coding-done`
   and `reviewer-done`.
 - Treats the agent's completion message as a claim, then checks the work before

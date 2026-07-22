@@ -104,8 +104,8 @@ from .review_exchange_pr_comment import (
     build_review_exchange_pr_comment_body,
 )
 from .test_skip_guard import scan_added_test_skip_guards
-from .triage_completion import triage_decision_processing_error
-from .triage_session_policy import is_benign_triage_no_commits, is_triage_session, shape_requested_actions_for_triage
+from .tech_lead_completion import tech_lead_decision_processing_error
+from .tech_lead_session_policy import is_benign_tech_lead_no_commits, is_tech_lead_session, shape_requested_actions_for_tech_lead
 from .worktree_head import current_worktree_head_sha
 from ..ports.pull_request_tracker import PRInfo
 from ..ports.working_copy import PushResult
@@ -114,7 +114,7 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from ..infra.config import Config
-    from ..ports.triage_authority import TriageAuthorityStore
+    from ..ports.tech_lead_authority import TechLeadAuthorityStore
     from .stack_base import StackBaseDecision
     from .stack_publish_gate import StackBaseGate
 
@@ -127,18 +127,18 @@ class _MissingReviewArtifactReader:
         )
 
 
-class _MissingTriageAuthorityStore:
-    """Fail-fast default: triage completions require the wired port.
+class _MissingTechLeadAuthorityStore:
+    """Fail-fast default: tech_lead completions require the wired port.
 
     Production always injects the SQLite-backed store from bootstrap; a test
-    that exercises a triage completion without wiring the port surfaces the
+    that exercises a tech_lead completion without wiring the port surfaces the
     misconfiguration immediately instead of silently fail-safing.
     """
 
     def _fail(self) -> Any:
         raise RuntimeError(
-            "CompletionProcessor requires triage_authority to process a "
-            "triage session completion (wired in entrypoints/bootstrap.py)"
+            "CompletionProcessor requires tech_lead_authority to process a "
+            "tech_lead session completion (wired in entrypoints/bootstrap.py)"
         )
 
     def record(self, *, run_id: str, session_name: str, authority: Any) -> None:
@@ -188,7 +188,7 @@ class CompletionProcessor:
         review_exchange_canceller: ReviewExchangeCanceller | None = None,
         review_artifact_reader: ReviewArtifactReader | None = None,
         runtime_identity: RuntimeIdentity | None = None,
-        triage_authority: "TriageAuthorityStore | None" = None,
+        tech_lead_authority: "TechLeadAuthorityStore | None" = None,
     ):
         """Initialize the processor with required adapters.
 
@@ -212,8 +212,8 @@ class CompletionProcessor:
                 the async review-exchange job reaches a terminal failure.
             review_artifact_reader: Reader for run-scoped review artifacts.
             runtime_identity: Running orchestrator identity to stamp on PRs.
-            triage_authority: Orchestrator-owned triage launch-authority port
-                (ADR-0031). Required whenever triage completions are
+            tech_lead_authority: Orchestrator-owned tech_lead launch-authority port
+                (ADR-0031). Required whenever tech_lead completions are
                 processed; the fail-fast default raises on first use.
         """
         self.label_adapter = label_adapter
@@ -262,8 +262,8 @@ class CompletionProcessor:
             git_adapter=git_adapter,
         )
         self._review_artifact_reader = review_artifact_reader or _MissingReviewArtifactReader()
-        self._triage_authority: "TriageAuthorityStore" = (
-            triage_authority or _MissingTriageAuthorityStore()
+        self._tech_lead_authority: "TechLeadAuthorityStore" = (
+            tech_lead_authority or _MissingTechLeadAuthorityStore()
         )
         self._runtime_identity = runtime_identity
         # Optional stack publish-gate owner (ADR-0029 / #6596). When attached, a
@@ -350,10 +350,10 @@ class CompletionProcessor:
             completion_path
         )
 
-    def _is_triage_session(self, agent_label: str | None) -> bool:
-        """Triage identity via the ADR-0031 owner (config-declared triage agent)."""
-        triage_agent = self._config.triage_review_agent if self._config else None
-        return is_triage_session(triage_agent, agent_label)
+    def _is_tech_lead_session(self, agent_label: str | None) -> bool:
+        """Tech Lead identity via the ADR-0031 owner (config-declared tech lead agent)."""
+        tech_lead_agent = self._config.tech_lead_review_agent if self._config else None
+        return is_tech_lead_session(tech_lead_agent, agent_label)
 
     def validate_worktree_state(
         self, worktree: Path, record: CompletionRecord
@@ -764,11 +764,11 @@ class CompletionProcessor:
                 return ProcessingResult(
                     success=False, message=agent_error, errors=[agent_error]
                 )
-        # Triage prompts promise no orchestrator comments (ADR-0031); the
+        # Tech Lead prompts promise no orchestrator comments (ADR-0031); the
         # record is untrusted intent, so shape it once at the door.
-        if self._is_triage_session(agent_label):
+        if self._is_tech_lead_session(agent_label):
             record.requested_actions = list(
-                shape_requested_actions_for_triage(tuple(record.requested_actions))
+                shape_requested_actions_for_tech_lead(tuple(record.requested_actions))
             )
         requested_actions = tuple(record.requested_actions)
         running_query = ReviewExchangeRunningQuery(
@@ -892,7 +892,7 @@ class CompletionProcessor:
             cleanup_completion_record_fn=self._cleanup_completion_record,
         )
 
-    def _reject_triage_completion_if_invalid(
+    def _reject_tech_lead_completion_if_invalid(
         self,
         *,
         record: CompletionRecord,
@@ -900,39 +900,39 @@ class CompletionProcessor:
         issue_number: int,
         run_assets: SessionRunAssets,
     ) -> ProcessingResult | None:
-        """Authoritative triage authority + pair validation (ADR-0031).
+        """Authoritative tech_lead authority + pair validation (ADR-0031).
 
-        A COMPLETED triage session must have a trusted launch-authority
+        A COMPLETED tech_lead session must have a trusted launch-authority
         record (#6761 re-review F1) and a valid decision artifact pair
         (#6761 F3). Running here — in the pre-action policy phase, before
         the completion record is preserved and before ANY requested action
         executes (#6769 finding 1) — a rejection produces ZERO push/PR/
         comment calls and a failed processing result whose tagged error is
         classified critical, so history records FAILED for every flavor and
-        the triage failure labeling path fires downstream.
+        the tech_lead failure labeling path fires downstream.
         """
-        if self._config is None or not self._is_triage_session(agent_label):
+        if self._config is None or not self._is_tech_lead_session(agent_label):
             return None
         if record.outcome is not CompletionOutcome.COMPLETED:
             return None
-        triage_error = triage_decision_processing_error(
+        tech_lead_error = tech_lead_decision_processing_error(
             self._config,
-            triage_authority=self._triage_authority,
+            tech_lead_authority=self._tech_lead_authority,
             run_dir=run_assets.run_dir,
             run_id=run_assets.run_id,
             session_name=run_assets.session_name,
         )
-        if triage_error is None:
+        if tech_lead_error is None:
             return None
         logger.warning(
-            "Triage completion rejected before any action for issue #%d: %s",
+            "Tech Lead completion rejected before any action for issue #%d: %s",
             issue_number,
-            triage_error,
+            tech_lead_error,
         )
         return ProcessingResult(
             success=False,
-            message=f"Triage completion rejected: {triage_error}",
-            errors=[triage_error],
+            message=f"Tech Lead completion rejected: {tech_lead_error}",
+            errors=[tech_lead_error],
         )
 
     def _check_pre_action_policies(
@@ -946,18 +946,18 @@ class CompletionProcessor:
         agent_label: str | None,
     ) -> ProcessingResult | None:
         """Run completion policies that must pass before any action executes."""
-        # First: triage scope/decision authority (#6769 finding 1). Checked
-        # ahead of the worktree policies because a rejected triage completion
+        # First: tech_lead scope/decision authority (#6769 finding 1). Checked
+        # ahead of the worktree policies because a rejected tech_lead completion
         # must produce zero GitHub calls — the worktree handlers below post
         # diagnostic comments.
-        triage_rejection = self._reject_triage_completion_if_invalid(
+        tech_lead_rejection = self._reject_tech_lead_completion_if_invalid(
             record=record,
             agent_label=agent_label,
             issue_number=issue_number,
             run_assets=run_assets,
         )
-        if triage_rejection is not None:
-            return triage_rejection
+        if tech_lead_rejection is not None:
+            return tech_lead_rejection
 
         worktree_state = self.validate_worktree_state(worktree, record)
         if not worktree_state.ok:
@@ -1713,10 +1713,10 @@ class CompletionProcessor:
                 exchange_result=exchange_result,
             )
         except Exception as e:
-            # A clean triage audit has nothing to publish; that is success,
+            # A clean tech_lead audit has nothing to publish; that is success,
             # not publish-failure (ADR-0031 / #6768 B1).
-            if self._is_triage_session(agent_label) and is_benign_triage_no_commits(action, e):
-                logger.info("[triage] clean audit, nothing to publish: issue=#%d", issue_number)
+            if self._is_tech_lead_session(agent_label) and is_benign_tech_lead_no_commits(action, e):
+                logger.info("[tech_lead] clean audit, nothing to publish: issue=#%d", issue_number)
                 return self._ActionResult(branch=branch)
             logger.exception(
                 "Exception executing action %s for #%d: %s",

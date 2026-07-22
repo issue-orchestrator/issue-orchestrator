@@ -52,7 +52,7 @@ def make_snapshot(
         active_sessions=tuple(),
         pending_reviews=tuple(),
         pending_reworks=tuple(),
-        pending_triage=tuple(),
+        pending_tech_lead=tuple(),
         paused=False,
         stale_claim_issues=tuple(stale_claim_issues or []),
         **kwargs,

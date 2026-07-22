@@ -48,7 +48,7 @@ class IssueTracker(Protocol):
                 If provided and missing after cached fetch, retry without cache.
             exhaustive: If True, the paginated walk must FAIL LOUD rather than
                 return a silently partial set (#6779 R17). Authoritative callers
-                (the exhaustive open triage-agent anchor scan) pass this so
+                (the exhaustive open tech-lead-agent anchor scan) pass this so
                 planning/recovery can never proceed from a truncated list; a
                 later-page HTTP/transport failure or a cap-exhausted scan raises.
 

@@ -61,7 +61,7 @@ find . -name "*.py" | head -20
 If you are adding or touching logic that:
 - Blocks/guards behavior (e.g., "if X, don't launch")
 - Applies labels, claims, or other workflow state
-- Must be called from multiple entrypoints (issue/review/rework/triage)
+- Must be called from multiple entrypoints (issue/review/rework/tech lead)
 
 Then default to **centralizing the policy** in a shared helper/module and reuse it. Do not rely on remembering to reapply the check in every call site. If you decide not to centralize, explicitly justify why.
 

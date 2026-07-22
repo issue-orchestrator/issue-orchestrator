@@ -5,7 +5,7 @@ This module extracts cleanup logic from the orchestrator:
 2. recover_orphaned_cleanups - Clean up orphaned worktrees on startup
 
 Cleanup is deferred when:
-- Triage workflow: wait for triage-reviewed label
+- Tech Lead workflow: wait for tech-lead-reviewed label
 - Code review workflow: wait for code-reviewed label
 """
 
@@ -54,18 +54,18 @@ class CleanupManager:
         self._session_exists = session_exists_fn
         self._get_worktree_path = get_worktree_path_fn
         self._get_session_name = get_session_name_fn
-        self._triage_issue_last_failure: float | None = None
+        self._tech_lead_issue_last_failure: float | None = None
 
-    def should_retry_triage_issue(self, cooldown_seconds: int = 60) -> bool:
-        """Throttle triage issue creation failures to avoid tight retry loops."""
+    def should_retry_tech_lead_issue(self, cooldown_seconds: int = 60) -> bool:
+        """Throttle tech_lead issue creation failures to avoid tight retry loops."""
         now = time.time()
-        if self._triage_issue_last_failure is None:
+        if self._tech_lead_issue_last_failure is None:
             return True
-        return (now - self._triage_issue_last_failure) >= cooldown_seconds
+        return (now - self._tech_lead_issue_last_failure) >= cooldown_seconds
 
-    def mark_triage_issue_failure(self) -> None:
-        """Record a triage issue creation failure for throttling."""
-        self._triage_issue_last_failure = time.time()
+    def mark_tech_lead_issue_failure(self) -> None:
+        """Record a tech_lead issue creation failure for throttling."""
+        self._tech_lead_issue_last_failure = time.time()
 
     def process_deferred_cleanups(
         self,
@@ -74,7 +74,7 @@ class CleanupManager:
         """Process deferred cleanups for sessions awaiting review completion.
 
         Checks pending cleanups and performs cleanup when:
-        - Triage workflow: PR has triage-reviewed label
+        - Tech Lead workflow: PR has tech-lead-reviewed label
         - Code review workflow: PR has code-reviewed label
 
         Args:
@@ -104,8 +104,8 @@ class CleanupManager:
 
     def _get_cleanup_label(self) -> str | None:
         """Get the label that indicates review is complete."""
-        if self.config.triage_review_agent:
-            label = self.config.triage_reviewed_label
+        if self.config.tech_lead_review_agent:
+            label = self.config.tech_lead_reviewed_label
         elif self.config.code_review_agent:
             label = self.config.code_reviewed_label
         else:
@@ -131,14 +131,14 @@ class CleanupManager:
 
     def _get_cleanup_settings(self) -> tuple[bool, bool]:
         """Get cleanup settings (close_tabs, remove_worktrees) based on workflow."""
-        if self.config.triage_review_agent:
+        if self.config.tech_lead_review_agent:
             return (
-                self.config.cleanup.with_triage.close_ai_session_tabs,
-                self.config.cleanup.with_triage.remove_worktrees,
+                self.config.cleanup.with_tech_lead.close_ai_session_tabs,
+                self.config.cleanup.with_tech_lead.remove_worktrees,
             )
         return (
-            self.config.cleanup.without_triage.close_ai_session_tabs,
-            self.config.cleanup.without_triage.remove_worktrees,
+            self.config.cleanup.without_tech_lead.close_ai_session_tabs,
+            self.config.cleanup.without_tech_lead.remove_worktrees,
         )
 
     def _process_pending_cleanups(
@@ -238,7 +238,7 @@ class CleanupManager:
         """Recover and process orphaned cleanups from before restart.
 
         Called during startup to clean up worktrees for PRs that were reviewed
-        (have triage-reviewed or code-reviewed label) but weren't cleaned up before
+        (have tech-lead-reviewed or code-reviewed label) but weren't cleaned up before
         the orchestrator stopped.
 
         Args:

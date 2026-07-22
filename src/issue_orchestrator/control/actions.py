@@ -29,11 +29,11 @@ from ..domain.models import (
     AwaitingMergeTerminalStatus,
     DiscoveredFailure,
 )
-from ..domain.triage_session import TriageSessionFlavor
+from ..domain.tech_lead_session import TechLeadSessionFlavor
 from .session_manager import SessionType
 
 if TYPE_CHECKING:
-    from ..domain.triage_session import StoredTriageOp
+    from ..domain.tech_lead_session import StoredTechLeadOp
     from .reconciliation import ExpectedState
 
 
@@ -66,30 +66,30 @@ class ActionType(Enum):
     QUEUE_REVIEW = "queue_review"
     QUEUE_RETROSPECTIVE_REVIEW = "queue_retrospective_review"
     QUEUE_REWORK = "queue_rework"
-    QUEUE_TRIAGE = "queue_triage"
+    QUEUE_TECH_LEAD = "queue_tech_lead"
 
     # Issue creation
-    CREATE_TRIAGE_ISSUE = "create_triage_issue"
+    CREATE_TECH_LEAD_ISSUE = "create_tech_lead_issue"
 
     # Gated act-level proposal issue: create + record the stored op (#6778)
-    CREATE_TRIAGE_PROPOSAL_ISSUE = "create_triage_proposal_issue"
+    CREATE_TECH_LEAD_PROPOSAL_ISSUE = "create_tech_lead_proposal_issue"
 
     # Pattern case-file issue: create + record the pattern ledger row (#6781)
-    CREATE_TRIAGE_CASE_FILE_ISSUE = "create_triage_case_file_issue"
+    CREATE_TECH_LEAD_CASE_FILE_ISSUE = "create_tech_lead_case_file_issue"
 
-    # Triage decision proposals (event-only surfacing, ADR-0031)
-    SURFACE_TRIAGE_PROPOSAL = "surface_triage_proposal"
+    # Tech Lead decision proposals (event-only surfacing, ADR-0031)
+    SURFACE_TECH_LEAD_PROPOSAL = "surface_tech_lead_proposal"
 
-    # Act-level triage execution: scratch reset via the reset owner (#6764)
+    # Act-level tech_lead execution: scratch reset via the reset owner (#6764)
     RESET_RETRY_ISSUE = "reset_retry_issue"
 
-    # Act-level triage execution: terminate issue runtime (#6778, approved ops)
+    # Act-level tech_lead execution: terminate issue runtime (#6778, approved ops)
     KILL_HUNG_SESSION = "kill_hung_session"
 
     # Confirm-and-discard terminal gated-proposal ledger rows (#6779 R7/R10):
     # the single mutating boundary for proposal-op cleanup, applied off the
     # read-only fact path so fact gathering stays side-effect free.
-    DISCARD_TERMINAL_TRIAGE_PROPOSAL_OPS = "discard_terminal_triage_proposal_ops"
+    DISCARD_TERMINAL_TECH_LEAD_PROPOSAL_OPS = "discard_terminal_tech_lead_proposal_ops"
 
     # Escalation
     ESCALATE_TO_HUMAN = "escalate_to_human"
@@ -108,13 +108,13 @@ class ActionType(Enum):
 
 
 # These actions deliberately share one apply-time owner: all create a
-# triage-authored issue, while proposal and case-file variants additionally
+# tech-lead-authored issue, while proposal and case-file variants additionally
 # finalize their respective authority-ledger record.
-TRIAGE_ISSUE_CREATION_ACTION_TYPES: frozenset[ActionType] = frozenset(
+TECH_LEAD_ISSUE_CREATION_ACTION_TYPES: frozenset[ActionType] = frozenset(
     {
-        ActionType.CREATE_TRIAGE_ISSUE,
-        ActionType.CREATE_TRIAGE_PROPOSAL_ISSUE,
-        ActionType.CREATE_TRIAGE_CASE_FILE_ISSUE,
+        ActionType.CREATE_TECH_LEAD_ISSUE,
+        ActionType.CREATE_TECH_LEAD_PROPOSAL_ISSUE,
+        ActionType.CREATE_TECH_LEAD_CASE_FILE_ISSUE,
     }
 )
 
@@ -289,12 +289,12 @@ class QueueReworkAction(Action):
 
 
 @dataclass(frozen=True)
-class QueueTriageAction(Action):
-    """Queue an issue for triage review (failure investigation).
+class QueueTechLeadAction(Action):
+    """Queue an issue for tech_lead review (failure investigation).
 
     ``failure`` is a REQUIRED keyword field, not optional: this action serves
     only failure investigations (batch/health anchors ride
-    :class:`CreateTriageIssueAction`), and every investigation exists because
+    :class:`CreateTechLeadIssueAction`), and every investigation exists because
     a failure was discovered. It carries the typed triggering-failure context
     across the plan/apply boundary: the planner reads it from the per-tick
     ``discovered_failures`` buffer (cleared after planning), and the applier
@@ -305,22 +305,22 @@ class QueueTriageAction(Action):
     issue_number: int = 0
     title: str = ""
     failure: DiscoveredFailure = field(kw_only=True)
-    action_type: ActionType = field(default=ActionType.QUEUE_TRIAGE, init=False)
+    action_type: ActionType = field(default=ActionType.QUEUE_TECH_LEAD, init=False)
 
 
 @dataclass(frozen=True)
-class TriageMilestoneIntent:
-    """Configured milestone intent for an orchestrator-created triage issue.
+class TechLeadMilestoneIntent:
+    """Configured milestone intent for an orchestrator-created tech_lead issue.
 
-    Carried on :class:`CreateTriageIssueAction` so the explicit-strategy
+    Carried on :class:`CreateTechLeadIssueAction` so the explicit-strategy
     name -> number resolution happens ONCE, at the create-issue execution
-    boundary (``action_applier._apply_create_triage_issue``), never at
+    boundary (``action_applier._apply_create_tech_lead_issue``), never at
     planning or completion time (#6769 finding 4): a shadow-mode
     ``create_issue`` proposal plans zero GitHub reads, and an unresolvable
     configured name fails the creation loudly instead of the completion.
 
     Exactly one shape at a time:
-    - ``explicit_name`` — ``triage.milestone_strategy.explicit``; the applier
+    - ``explicit_name`` — ``tech_lead.milestone_strategy.explicit``; the applier
       resolves it against the repository's milestones and fails loudly when
       it matches none.
     - ``inherited_number`` — a number already known at planning time
@@ -334,15 +334,15 @@ class TriageMilestoneIntent:
     def __post_init__(self) -> None:
         if self.explicit_name is not None and self.inherited_number is not None:
             raise ValueError(
-                "TriageMilestoneIntent carries a name OR a number, never both"
+                "TechLeadMilestoneIntent carries a name OR a number, never both"
             )
 
 
 @dataclass(frozen=True)
-class CreateTriageIssueAction(Action):
-    """Create a triage review issue when PR threshold is met.
+class CreateTechLeadIssueAction(Action):
+    """Create a tech_lead review issue when PR threshold is met.
 
-    The Planner produces this when triage_facts.pr_count >= threshold.
+    The Planner produces this when tech_lead_facts.pr_count >= threshold.
     The orchestrator applies it by creating the GitHub issue. Both creation
     paths — the planner's batch tracking issue and decision-driven follow-up
     issues — share this one action, so the applier is the single milestone
@@ -353,7 +353,7 @@ class CreateTriageIssueAction(Action):
     body: str = ""
     labels: tuple[str, ...] = field(default_factory=tuple)
     pr_count: int = 0
-    milestone: TriageMilestoneIntent = field(default_factory=TriageMilestoneIntent)
+    milestone: TechLeadMilestoneIntent = field(default_factory=TechLeadMilestoneIntent)
     # Non-empty only for an immediate problem-storm health review. Preserves
     # the exact discovery facts across create -> durable ledger -> pending
     # queue -> launch, so the cohort the anchor is authorized over is the one
@@ -364,57 +364,57 @@ class CreateTriageIssueAction(Action):
     # to create the anchor (health-review trigger vs batch planning) states it
     # here, so the applier reports the decision instead of re-deriving it from
     # marker labels at the creation boundary (#6780).
-    flavor: TriageSessionFlavor = TriageSessionFlavor.BATCH_REVIEW
+    flavor: TechLeadSessionFlavor = TechLeadSessionFlavor.BATCH_REVIEW
     # The board fingerprint the health-review trigger fired on, carried to the
     # post-creation stamp so "reviewed" records what justified the review, not a
     # recompute against a board that by then holds this anchor. "" (batch, or no
     # facts) means never-reviewed: fails toward reviewing (ADR-0031 §4, #6793).
     health_review_fingerprint: str = ""
-    action_type: ActionType = field(default=ActionType.CREATE_TRIAGE_ISSUE, init=False)
+    action_type: ActionType = field(default=ActionType.CREATE_TECH_LEAD_ISSUE, init=False)
 
 
 @dataclass(frozen=True)
-class CreateTriageProposalIssueAction(CreateTriageIssueAction):
-    """Create a GATED act-level triage proposal issue (#6778, ADR-0031 §2).
+class CreateTechLeadProposalIssueAction(CreateTechLeadIssueAction):
+    """Create a GATED act-level tech_lead proposal issue (#6778, ADR-0031 §2).
 
-    A ``CreateTriageIssueAction`` that additionally carries the typed
-    :class:`StoredTriageOp`. The applier creates the issue AND records the op
+    A ``CreateTechLeadIssueAction`` that additionally carries the typed
+    :class:`StoredTechLeadOp`. The applier creates the issue AND records the op
     create-once in the orchestrator-owned authority store, keyed by the new
     issue number, then links the proposal from the session's anchor issue.
     The issue body is human documentation only — execution consumes the
     stored op, never the body (tamper boundary).
     """
 
-    op: "StoredTriageOp" = field(kw_only=True)
+    op: "StoredTechLeadOp" = field(kw_only=True)
     anchor_issue_number: int = 0
     action_type: ActionType = field(
-        default=ActionType.CREATE_TRIAGE_PROPOSAL_ISSUE, init=False
+        default=ActionType.CREATE_TECH_LEAD_PROPOSAL_ISSUE, init=False
     )
 
     def __post_init__(self) -> None:
-        from ..domain.triage_session import PROPOSED_TRIAGE_LABEL
+        from ..domain.tech_lead_session import PROPOSED_TECH_LEAD_LABEL
 
         # Self-validating type: an ungated proposal issue would be
         # schedulable before any approval. (Baseline note: this branch is an
         # accepted control_policy_branch_sites entry — the invariant is
         # inherently about the gate label, not scattered policy.)
-        if PROPOSED_TRIAGE_LABEL not in self.labels:
+        if PROPOSED_TECH_LEAD_LABEL not in self.labels:
             raise ValueError(
-                "CreateTriageProposalIssueAction must carry the"
-                f" {PROPOSED_TRIAGE_LABEL!r} gate label"
+                "CreateTechLeadProposalIssueAction must carry the"
+                f" {PROPOSED_TECH_LEAD_LABEL!r} gate label"
             )
         if self.anchor_issue_number <= 0:
             raise ValueError(
-                "CreateTriageProposalIssueAction requires a positive"
+                "CreateTechLeadProposalIssueAction requires a positive"
                 " anchor_issue_number"
             )
 
 
 @dataclass(frozen=True)
-class CreateTriageCaseFileIssueAction(CreateTriageIssueAction):
+class CreateTechLeadCaseFileIssueAction(CreateTechLeadIssueAction):
     """Create a pattern CASE-FILE issue for a flag_pattern proposal (#6781).
 
-    A ``CreateTriageIssueAction`` that additionally carries the pattern
+    A ``CreateTechLeadIssueAction`` that additionally carries the pattern
     signature (the durable ledger key) and optional area. The applier
     creates the issue AND records the (signature -> issue) ledger row
     create-once in the orchestrator-owned authority store; later
@@ -429,35 +429,35 @@ class CreateTriageCaseFileIssueAction(CreateTriageIssueAction):
     dedup_comment: str = ""
     additional_observation_comments: tuple[str, ...] = ()
     action_type: ActionType = field(
-        default=ActionType.CREATE_TRIAGE_CASE_FILE_ISSUE, init=False
+        default=ActionType.CREATE_TECH_LEAD_CASE_FILE_ISSUE, init=False
     )
 
     def __post_init__(self) -> None:
-        from ..domain.triage_session import require_case_file_observation_label
+        from ..domain.tech_lead_session import require_case_file_observation_label
 
         # Self-validating type: an empty signature could never accrue
         # evidence. The observation-label invariant is delegated to its
         # domain owner (an unlabeled case file would be schedulable work).
         if not self.pattern_signature.strip():
             raise ValueError(
-                "CreateTriageCaseFileIssueAction requires a non-empty"
+                "CreateTechLeadCaseFileIssueAction requires a non-empty"
                 " pattern_signature (the ledger key)"
             )
         if not self.dedup_comment.strip():
             raise ValueError(
-                "CreateTriageCaseFileIssueAction requires a non-empty"
+                "CreateTechLeadCaseFileIssueAction requires a non-empty"
                 " dedup_comment for apply-time ledger reconciliation"
             )
         require_case_file_observation_label(self.labels)
 
 
 @dataclass(frozen=True)
-class SurfaceTriageProposalAction(Action):
-    """Surface a triage decision proposal without executing it (ADR-0031).
+class SurfaceTechLeadProposalAction(Action):
+    """Surface a tech_lead decision proposal without executing it (ADR-0031).
 
     Emitted for propose-mode (shadow) authority, ``flag_pattern`` records,
     and rejected decision artifacts. The applier only publishes a trace
-    event (``TRIAGE_ACTION_PROPOSED``, or ``TRIAGE_DECISION_REJECTED`` when
+    event (``TECH_LEAD_ACTION_PROPOSED``, or ``TECH_LEAD_DECISION_REJECTED`` when
     ``mode == "rejected"``) — it makes NO GitHub calls.
 
     ``mode`` values:
@@ -468,7 +468,7 @@ class SurfaceTriageProposalAction(Action):
       failure detail.
     """
 
-    issue_number: int = 0  # The triage session's anchor issue
+    issue_number: int = 0  # The tech_lead session's anchor issue
     action_id: str = ""
     proposal_type: str = ""
     target_number: int = 0  # 0 = no target
@@ -478,25 +478,25 @@ class SurfaceTriageProposalAction(Action):
     finding_ids: tuple[str, ...] = ()
     mode: str = ""  # "shadow" | "pattern" | "rejected"
     action_type: ActionType = field(
-        default=ActionType.SURFACE_TRIAGE_PROPOSAL, init=False
+        default=ActionType.SURFACE_TECH_LEAD_PROPOSAL, init=False
     )
 
 
 @dataclass(frozen=True)
 class ResetRetryIssueAction(Action):
-    """Execute a triage ``reset_retry`` proposal via the reset owner (#6764).
+    """Execute a tech_lead ``reset_retry`` proposal via the reset owner (#6764).
 
-    Planned by ``plan_triage_decision_actions`` ONLY when
-    ``triage.authority.reset_retry`` is ``execute``. Proposals are
+    Planned by ``plan_tech_lead_decision_actions`` ONLY when
+    ``tech_lead.authority.reset_retry`` is ``execute``. Proposals are
     stale-checkable facts, not commands (ADR-0031 §2): the applier's owner
     re-validates the recorded preconditions against current state at
     execution time and downgrades to a surfaced proposal
-    (``TRIAGE_ACTION_PROPOSED``, ``mode="stale_downgrade"``) when the board
+    (``TECH_LEAD_ACTION_PROPOSED``, ``mode="stale_downgrade"``) when the board
     has moved — no mutations are posted on the downgrade path.
 
-    ``anchor_issue_number`` is the triage session's anchor issue — the event
+    ``anchor_issue_number`` is the tech_lead session's anchor issue — the event
     surface a downgrade is reported against, mirroring
-    :class:`SurfaceTriageProposalAction`. For failure investigations and
+    :class:`SurfaceTechLeadProposalAction`. For failure investigations and
     health reviews the immutable launch scope forces
     ``issue_number == anchor_issue_number``.
     """
@@ -523,10 +523,10 @@ class ResetRetryIssueAction(Action):
 class KillHungSessionAction(Action):
     """Execute an APPROVED ``kill_hung_session`` proposal op (#6778).
 
-    Planned ONLY from an approved gated proposal's :class:`StoredTriageOp`
+    Planned ONLY from an approved gated proposal's :class:`StoredTechLeadOp`
     (there is no direct execute-authority tier yet — startup rejects
-    ``triage.authority.kill_hung_session: execute``). The applier's owner
-    (``triage_kill_session``) re-validates that the target issue still has an
+    ``tech_lead.authority.kill_hung_session: execute``). The applier's owner
+    (``tech_lead_kill_session``) re-validates that the target issue still has an
     active session and applies the issue-runtime termination boundary — the
     same ``terminate_issue_runtime`` the reset owner uses, WITHOUT the reset.
     Stale proposals downgrade with no mutations, mirroring ``reset_retry``.
@@ -558,7 +558,7 @@ class KillHungSessionAction(Action):
 
 
 @dataclass(frozen=True)
-class DiscardTerminalTriageProposalOpsAction(Action):
+class DiscardTerminalTechLeadProposalOpsAction(Action):
     """Confirm-and-discard terminal gated-proposal ledger rows (#6779 R7/R10).
 
     Emitted by the planner from a read-only fact (``candidate_issue_numbers``):
@@ -575,7 +575,7 @@ class DiscardTerminalTriageProposalOpsAction(Action):
 
     candidate_issue_numbers: tuple[int, ...] = ()
     action_type: ActionType = field(
-        default=ActionType.DISCARD_TERMINAL_TRIAGE_PROPOSAL_OPS, init=False
+        default=ActionType.DISCARD_TERMINAL_TECH_LEAD_PROPOSAL_OPS, init=False
     )
 
 
@@ -666,7 +666,7 @@ class CleanupSessionAction(Action):
     worktree_path: str = ""
     close_tabs: bool = True
     remove_worktrees: bool = True
-    # A run-scoped triage scratch worktree is DISPOSABLE (throwaway artifacts): the
+    # A run-scoped tech_lead scratch worktree is DISPOSABLE (throwaway artifacts): the
     # applier force-removes ONLY this identity, never a reusable coding worktree (#6824 F8).
     disposable_worktree: bool = False
     action_type: ActionType = field(default=ActionType.CLEANUP_SESSION, init=False)

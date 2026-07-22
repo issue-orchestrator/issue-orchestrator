@@ -169,24 +169,24 @@ class OrchestratorProcess:
                 "code_review_label": self.config.code_review_label,
                 "code_reviewed_label": self.config.code_reviewed_label,
                 "max_rework_cycles": self.config.max_rework_cycles,
-                "triage_review_agent": self.config.triage_review_agent,
-                "triage_review_label": self.config.triage_review_label,
-                "triage_reviewed_label": self.config.triage_reviewed_label,
-                "triage_review_threshold": self.config.triage_review_threshold,
-                "triage_review_on_failure": self.config.triage_review_on_failure,
+                "tech_lead_review_agent": self.config.tech_lead_review_agent,
+                "tech_lead_review_label": self.config.tech_lead_review_label,
+                "tech_lead_reviewed_label": self.config.tech_lead_reviewed_label,
+                "tech_lead_review_threshold": self.config.tech_lead_review_threshold,
+                "tech_lead_review_on_failure": self.config.tech_lead_review_on_failure,
                 "exchange": {
                     "mode": self.config.review_exchange_mode,
                 },
             },
             "cleanup": {
-                "with_triage": {
-                    "close_ai_session_tabs": self.config.cleanup.with_triage.close_ai_session_tabs,
-                    "remove_worktrees": self.config.cleanup.with_triage.remove_worktrees,
+                "with_tech_lead": {
+                    "close_ai_session_tabs": self.config.cleanup.with_tech_lead.close_ai_session_tabs,
+                    "remove_worktrees": self.config.cleanup.with_tech_lead.remove_worktrees,
                 },
-                "without_triage": {
-                    "wait_for_code_review": self.config.cleanup.without_triage.wait_for_code_review,
-                    "close_ai_session_tabs": self.config.cleanup.without_triage.close_ai_session_tabs,
-                    "remove_worktrees": self.config.cleanup.without_triage.remove_worktrees,
+                "without_tech_lead": {
+                    "wait_for_code_review": self.config.cleanup.without_tech_lead.wait_for_code_review,
+                    "close_ai_session_tabs": self.config.cleanup.without_tech_lead.close_ai_session_tabs,
+                    "remove_worktrees": self.config.cleanup.without_tech_lead.remove_worktrees,
                 },
             },
             "security": {

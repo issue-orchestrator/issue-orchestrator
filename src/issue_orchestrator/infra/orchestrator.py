@@ -9,8 +9,8 @@ from typing import TYPE_CHECKING, ClassVar, Optional, cast
 if TYPE_CHECKING:
     from ..control.planner_types import OrchestratorSnapshot, Plan
     from ..control.session_manager import SessionRef, SessionType
-    from ..control.triage_trigger import TriageTerminationOutcome
-    from ..domain.triage_session import TriageLaunchScope
+    from ..control.tech_lead_trigger import TechLeadTerminationOutcome
+    from ..domain.tech_lead_session import TechLeadLaunchScope
     from ..ports.session_runner import DiscoveredSession
     from .e2e_db import E2ERun
 
@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 from .config import Config
 from ..ports.issue import Issue
-from ..domain.models import Session, SessionStatus, OrchestratorState, PendingRetrospectiveReview, PendingReview, PendingRework, PendingTriageReview, AgentConfig, ORCHESTRATOR_PR_MARKER
+from ..domain.models import Session, SessionStatus, OrchestratorState, PendingRetrospectiveReview, PendingReview, PendingRework, PendingTechLeadReview, AgentConfig, ORCHESTRATOR_PR_MARKER
 from ..observation.observer import SessionObserver
 from ..control.scheduler import Scheduler
 from ..domain.state_machines.issue_machine import IssueStateMachine
@@ -52,7 +52,7 @@ from ..control.session_routing import (
     orchestrator_launch_retrospective_review_session as _launch_retrospective_review_session,
     orchestrator_launch_rework_session as _launch_rework_session,
     orchestrator_launch_validation_retry_session as _launch_validation_retry_session,
-    orchestrator_launch_triage_session as _launch_triage_session,
+    orchestrator_launch_tech_lead_session as _launch_tech_lead_session,
     session_launcher_callback as _session_launcher_callback,
     restore_running_sessions as _restore_running_sessions,
     parse_session_ref as _parse_session_ref,
@@ -74,7 +74,7 @@ from ..control.completion_handler import (
     CompletionHandler,
     launch_review_by_number as _ch_launch_review_by_number,
     launch_rework_by_number as _ch_launch_rework_by_number,
-    launch_triage_by_number as _ch_launch_triage_by_number,
+    launch_tech_lead_by_number as _ch_launch_tech_lead_by_number,
     get_review_machine as _ch_get_review_machine,
 )
 from ..control.startup_manager import StartupManager
@@ -171,10 +171,10 @@ class Orchestrator:
         """Kill a session by terminal ID (public wrapper)."""
         self._kill_session(name)
 
-    def terminate_triage_session(
+    def terminate_tech_lead_session(
         self, session: "Session"
-    ) -> "TriageTerminationOutcome":
-        """Behavior-complete termination of a triage session on timeout (#6824 R7).
+    ) -> "TechLeadTerminationOutcome":
+        """Behavior-complete termination of a tech_lead session on timeout (#6824 R7).
 
         ``kill_session`` only stops the terminal, and a one-shot command runs NO
         further tick after this — so a recorded cleanup fact would never be
@@ -186,14 +186,14 @@ class Orchestrator:
 
         EVERY effect is attempted independently — a failure of one (e.g. the
         terminal stop) never aborts the others — and the result is a typed
-        :class:`TriageTerminationOutcome`, the SOLE owner of a failed one-shot
+        :class:`TechLeadTerminationOutcome`, the SOLE owner of a failed one-shot
         cleanup: on a scratch-worktree removal failure the outcome carries the
         exact ``leaked_worktree`` path so the command can require explicit
         operator removal. (No engine tick ever runs after this — the only caller
         is the on-demand driver, which pauses and ``close()``s — so there is no
         second, tick-based retry mechanism; #6824 R7.)
         """
-        from ..control.triage_trigger import TriageTerminationOutcome
+        from ..control.tech_lead_trigger import TechLeadTerminationOutcome
 
         n = session.issue.number
 
@@ -203,7 +203,7 @@ class Orchestrator:
                 return True
             except Exception:
                 logger.warning(
-                    "[TRIAGE] Failed to %s for issue #%d on timeout terminate",
+                    "[TECH_LEAD] Failed to %s for issue #%d on timeout terminate",
                     what, n, exc_info=True,
                 )
                 return False
@@ -236,7 +236,7 @@ class Orchestrator:
         leaked_worktree = (
             str(session.worktree_path) if (disposable and not worktree_removed) else None
         )
-        return TriageTerminationOutcome(
+        return TechLeadTerminationOutcome(
             terminal_stopped=terminal_stopped,
             machine_removed=machine_removed,
             claim_released=claim_released,
@@ -296,7 +296,7 @@ class Orchestrator:
         return CompletionHandler(
             self.config, self.deps.events, self.deps.repository_host,
             lambda issue: smm.issue_machines.get(issue.number), lambda s: smm.session_machines.get(s), lambda n: smm.review_machines.get(n),
-            self.deps.session_output, self.deps.triage_authority, lambda n: active_session_run_id(self.state.active_sessions, n),
+            self.deps.session_output, self.deps.tech_lead_authority, lambda n: active_session_run_id(self.state.active_sessions, n),
             remove_session_machine_fn=smm.remove_session_machine, label_manager=self.deps.label_manager,
         )
 
@@ -305,7 +305,7 @@ class Orchestrator:
         return SessionLauncher(
             self.config, self.deps.events, self.deps.repository_host, self.deps.action_applier, self.deps.session_manager,
             self.deps.worktree_manager, self.deps.working_copy, self.deps.command_runner, self.deps.session_output,
-            self.deps.manifest_downloader, self.deps.triage_authority,
+            self.deps.manifest_downloader, self.deps.tech_lead_authority,
             lambda name: _session_exists(name, self.deps.session_manager, self.deps.events),
             self._create_session, self._get_issue_machine, self._get_session_machine,
             self._get_review_machine, self._refresh_issue, self.scheduler.dependency_evaluator,
@@ -328,12 +328,12 @@ class Orchestrator:
             get_review_machine=self._get_review_machine,
             kill_session=lambda name: _kill_session(name, self.deps.session_manager, self.deps.events),
             queue_cache_store=self.deps.queue_cache_store,
-            triage_authority=self.deps.triage_authority,
+            tech_lead_authority=self.deps.tech_lead_authority,
         )
 
     def _get_session_name(self, number: int, session_type: str = "issue") -> str: return get_session_name(number, session_type)
     def _get_worktree_path(self, issue_number: int, agent_config: AgentConfig) -> Path: return get_worktree_path(self.config, issue_number, agent_config)
-    def session_launcher_callback(self, session_type: "SessionType", number: int) -> Optional[Session]: return _session_launcher_callback(session_type, number, self._launch_issue_by_number, self._launch_review_by_number, self._launch_retrospective_review_by_number, self._launch_rework_by_number, self._launch_triage_by_number)
+    def session_launcher_callback(self, session_type: "SessionType", number: int) -> Optional[Session]: return _session_launcher_callback(session_type, number, self._launch_issue_by_number, self._launch_review_by_number, self._launch_retrospective_review_by_number, self._launch_rework_by_number, self._launch_tech_lead_by_number)
     def _launch_issue_by_number(self, n: int) -> Optional[Session]: return _gw_launch_issue_by_number(n, self.state.cached_queue_issues, self.launch_session, lambda: setattr(self.state, 'issues_started_count', self.state.issues_started_count + 1))
     def _launch_review_by_number(self, n: int) -> Optional[Session]: return _ch_launch_review_by_number(n, self.state.pending_reviews, self.launch_review_session)
     def _launch_retrospective_review_by_number(self, n: int) -> Optional[Session]:
@@ -345,7 +345,7 @@ class Orchestrator:
         if retry is None:
             return None
         return _launch_validation_retry_session(retry, self.state, self._session_launcher, self.deps.session_restorer)
-    def _launch_triage_by_number(self, n: int) -> Optional[Session]: return _ch_launch_triage_by_number(n, self.state.pending_triage_reviews, self.launch_triage_session)
+    def _launch_tech_lead_by_number(self, n: int) -> Optional[Session]: return _ch_launch_tech_lead_by_number(n, self.state.pending_tech_lead_reviews, self.launch_tech_lead_session)
 
     def _get_issue_machine(self, issue: Issue) -> Optional[IssueStateMachine]: return _gw_get_issue_machine(issue, self.deps.state_machine_manager)
     def _get_session_machine(self, name: str, n: int, timeout: int) -> Optional[SessionStateMachine]: return _sl_get_session_machine(name, n, timeout, self.deps.state_machine_manager)
@@ -384,7 +384,7 @@ class Orchestrator:
             queue_cache_store=self.deps.queue_cache_store,
             label_manager=self.deps.label_manager,
             label_store=self.deps.label_store,
-            triage_authority=self.deps.services.triage_authority,
+            tech_lead_authority=self.deps.services.tech_lead_authority,
         )
 
     async def startup(self) -> None:
@@ -455,8 +455,8 @@ class Orchestrator:
                 sessions_root,
             )
 
-    def launch_session(self, issue: Issue, *, triage_scope: "TriageLaunchScope | None" = None) -> Optional[Session]:
-        return _launch_session(issue, self.state, self._session_launcher, self.deps.session_restorer, triage_scope=triage_scope)
+    def launch_session(self, issue: Issue, *, tech_lead_scope: "TechLeadLaunchScope | None" = None) -> Optional[Session]:
+        return _launch_session(issue, self.state, self._session_launcher, self.deps.session_restorer, tech_lead_scope=tech_lead_scope)
     def handle_session_completion(self, session: Session, status: SessionStatus) -> None: _handle_session_completion(session, status, self.state, self._completion_handler, self.deps.action_applier, self.observer, self.deps.worktree_manager, self._kill_session, self.config, self.deps.session_output, publish_recovery=self.deps.publish_recovery)
 
     def tick(self) -> bool:
@@ -474,7 +474,7 @@ class Orchestrator:
             # Reconcile completed off-thread publish retries; success clears
             # failure state, while failures remain retryable.
             self.deps.publish_recovery.drain_completed_retries(self.state)
-            self._session_launcher.reconcile_stale_triage_needs_human(
+            self._session_launcher.reconcile_stale_tech_lead_needs_human(
                 self.state.active_sessions, discover_markers=not self.state.paused
             )
             self._loop_iteration, cont = _run_tick_impl(
@@ -515,7 +515,7 @@ class Orchestrator:
             orchestrator_instance_id=self.deps.services.instance_id,
             # Worker-slot start-gate for a first-class E2E run: only when
             # e2e.occupies_session_slot is on does this decide whether the run
-            # starts. Same worker-budget accounting the planner uses (triage's
+            # starts. Same worker-budget accounting the planner uses (tech_lead's
             # reserved slot excluded), so E2E competes for the WORKER budget,
             # not the tech-lead's slot. Computed after the tick's launches, so
             # it sees the slot the planner reserved for a due suite left free.
@@ -1122,8 +1122,8 @@ class Orchestrator:
     def _github_workflow(self) -> GitHubWorkflow: return GitHubWorkflow(self.config, self.deps.events, self.deps.repository_host, self.deps.fact_gatherer, self.deps.pr_scanner, self.deps.label_sync, self._event_context, self.deps.label_manager, self.scheduler.dependency_evaluator)
     def launch_review_session(self, review: PendingReview) -> Optional[Session]: return _launch_review_session(review, self.state, self._session_launcher, self.deps.session_restorer)
     def launch_retrospective_review_session(self, review: PendingRetrospectiveReview) -> Optional[Session]: return _launch_retrospective_review_session(review, self.state, self._session_launcher, self.deps.session_restorer)
-    def launch_triage_session(self, triage: PendingTriageReview) -> Optional[Session]: return _launch_triage_session(triage, self.state, self.config, self._session_launcher, self.deps.session_restorer)
-    def ensure_health_review_anchor(self) -> Optional[PendingTriageReview]: return _ensure_on_demand_health_review_anchor(state=self.state, config=self.config, repository_host=self.deps.repository_host, action_applier=self.deps.action_applier, queue_cache_store=self.deps.queue_cache_store, triage_authority=self.deps.triage_authority, now=time.time())
+    def launch_tech_lead_session(self, tech_lead: PendingTechLeadReview) -> Optional[Session]: return _launch_tech_lead_session(tech_lead, self.state, self.config, self._session_launcher, self.deps.session_restorer)
+    def ensure_health_review_anchor(self) -> Optional[PendingTechLeadReview]: return _ensure_on_demand_health_review_anchor(state=self.state, config=self.config, repository_host=self.deps.repository_host, action_applier=self.deps.action_applier, queue_cache_store=self.deps.queue_cache_store, tech_lead_authority=self.deps.tech_lead_authority, now=time.time())
     def process_deferred_cleanups(self) -> None: self.state.pending_cleanups = self._github_workflow.process_deferred_cleanups(self.state.pending_cleanups, self._cleanup_manager)
     def _recover_orphaned_cleanups(self) -> None: self._plan_applier.recover_orphaned_cleanups()
     def scan_needs_code_review_prs(self) -> None: self._github_workflow.scan_needs_code_review_prs(self.state)

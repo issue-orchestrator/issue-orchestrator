@@ -568,7 +568,7 @@ async def dismiss_issue(
         labels_to_remove = [
             lm.blocked,
             lm.needs_human,
-            lm.triage_needs_human,
+            lm.tech_lead_needs_human,
             lm.blocked_failed,
             lm.in_progress,
         ]

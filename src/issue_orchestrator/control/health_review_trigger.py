@@ -12,15 +12,15 @@ Single owner for the trigger side of the health-review lifecycle:
   orchestrator never re-walks an unchanged board (the storm trigger is exempt);
 - **planning**: the anchor-issue creation action when the review is due, no
   open anchor or pending launch already covers it, and the owned
-  paused/capacity gate (``TriageWorkflow``) says go — anchor shaping (labels,
-  priority title, milestone intent) comes from the ``triage_issue_policy``
+  paused/capacity gate (``TechLeadWorkflow``) says go — anchor shaping (labels,
+  priority title, milestone intent) comes from the ``tech_lead_issue_policy``
   owner, same as batch anchors;
 - **intake**: after a successful creation, route the anchor into the pending
   queue through the owning :class:`PendingSessionQueues` operation for the
   variant the marker label declares (batch vs health — #6768 round 3 typed
   intake), and stamp/persist ``state.last_health_review_at`` so neither the
   next tick nor a restart double-fires. A problem-storm anchor additionally
-  records its cohort in the durable ledger (``TriageAuthorityStore``) BEFORE
+  records its cohort in the durable ledger (``TechLeadAuthorityStore``) BEFORE
   collapsing the superseded per-issue investigations — the collapse is
   earned by persistence, never assumed (#6780);
 - **restart reconciliation**: hydrate ``last_health_review_at`` from the
@@ -31,9 +31,9 @@ Single owner for the trigger side of the health-review lifecycle:
   EXISTS, but they cannot carry which problems it owns (#6780).
 
 The anchor issue then rides the existing batch-issue lifecycle: it is picked
-up like any triage-agent issue, the launcher derives the HEALTH_REVIEW flavor
+up like any tech-lead-agent issue, the launcher derives the HEALTH_REVIEW flavor
 from the marker label, and completion closes the anchor when a valid decision
-pair lands (see ``triage_session_policy`` / ``triage_completion``).
+pair lands (see ``tech_lead_session_policy`` / ``tech_lead_completion``).
 """
 
 from __future__ import annotations
@@ -44,29 +44,29 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Callable, Iterable, Optional, Protocol, Sequence
 
-from ..domain.triage_session import HEALTH_REVIEW_MARKER_LABEL, TriageSessionFlavor
-from .actions import CreateTriageIssueAction
+from ..domain.tech_lead_session import HEALTH_REVIEW_MARKER_LABEL, TechLeadSessionFlavor
+from .actions import CreateTechLeadIssueAction
 from .board_review_fingerprint import board_review_fingerprint
-from .triage_issue_policy import (
-    apply_triage_priority_prefix,
+from .tech_lead_issue_policy import (
+    apply_tech_lead_priority_prefix,
     health_review_issue_labels,
-    triage_issue_milestone_intent,
+    tech_lead_issue_milestone_intent,
 )
 
 if TYPE_CHECKING:
     from ..domain.models import (
         DiscoveredFailure,
         OrchestratorState,
-        PendingTriageReview,
-        TriageFacts,
+        PendingTechLeadReview,
+        TechLeadFacts,
     )
     from ..infra.config import Config
     from ..ports import Issue, RepositoryHost
     from ..ports.queue_cache_store import QueueCacheStore
-    from ..ports.triage_authority import TriageAuthorityStore
+    from ..ports.tech_lead_authority import TechLeadAuthorityStore
     from .actions import Action, ActionResult
-    from .session_routing import TriageQueueOutcome
-    from .workflows import TriageWorkflow
+    from .session_routing import TechLeadQueueOutcome
+    from .workflows import TechLeadWorkflow
 
 
 class SupportsApplyAction(Protocol):
@@ -85,9 +85,9 @@ HEALTH_REVIEW_ISSUE_TITLE = "Health Review — walk the floor"
 
 # Marker-scoped anchor lookups (health-review dedup / last-fired) match at
 # most a handful of issues, so a single 100-item page (the GitHub API page
-# maximum) is exhaustive for them. The BROAD triage-agent scan instead uses
-# the paginated ``TRIAGE_PROPOSAL_SCAN_LIMIT`` (#6779 R4), because gated
-# proposals share the triage-agent label and could crowd an older anchor past
+# maximum) is exhaustive for them. The BROAD tech-lead-agent scan instead uses
+# the paginated ``TECH_LEAD_PROPOSAL_SCAN_LIMIT`` (#6779 R4), because gated
+# proposals share the tech-lead-agent label and could crowd an older anchor past
 # a fixed first page (#6763 findings 4 and 7).
 _ANCHOR_SCAN_LIMIT = 100
 
@@ -95,11 +95,11 @@ _HEALTH_REVIEW_ISSUE_BODY = """## Periodic Health Review (ADR-0031 §4)
 
 Walk the floor: review the orchestrator board holistically instead of
 auditing a PR batch. Your session receives a board snapshot
-(`triage-data/board-snapshot.json`) with active sessions, pending/blocked
+(`tech-lead-data/board-snapshot.json`) with active sessions, pending/blocked
 queues, recent failures, timeline extracts, and an orchestrator log tail.
 
 Look for hung or aging sessions, queue pile-ups, repeated failures, and
-cross-job patterns. Report findings and propose actions through the triage
+cross-job patterns. Report findings and propose actions through the tech_lead
 decision artifact; the orchestrator closes this issue when the review lands.
 """
 
@@ -120,17 +120,17 @@ launching per-issue investigations:
 
 {cohort}
 
-Walk the floor using `triage-data/board-snapshot.json`. Diagnose shared root
-causes and propose group remediation through the triage decision artifact.
+Walk the floor using `tech-lead-data/board-snapshot.json`. Diagnose shared root
+causes and propose group remediation through the tech_lead decision artifact.
 Each act-level proposal remains individually gated and re-validated.
 """
 
 
 def health_review_interval_minutes(config: "Config") -> int:
-    """Effective health-review interval; 0 when disabled or no triage agent."""
-    if not config.triage_review_agent:
+    """Effective health-review interval; 0 when disabled or no tech lead agent."""
+    if not config.tech_lead_review_agent:
         return 0
-    return config.triage.health_review.interval_minutes
+    return config.tech_lead.health_review.interval_minutes
 
 
 @dataclass(frozen=True)
@@ -229,30 +229,30 @@ def _scoped_issues(
 
 def _anchor_query_labels(config: "Config", *extra: str) -> list[str]:
     """Server-side label scope for anchor queries (agent + filter + extras)."""
-    if not config.triage_review_agent:
+    if not config.tech_lead_review_agent:
         raise ValueError(
-            "triage anchor discovery requires a configured triage_review_agent"
+            "tech_lead anchor discovery requires a configured tech_lead_review_agent"
         )
     return [
         value
-        for value in (config.triage_review_agent, config.filtering.label, *extra)
+        for value in (config.tech_lead_review_agent, config.filtering.label, *extra)
         if value
     ]
 
 
-def discover_open_triage_anchor_issues(
+def discover_open_tech_lead_anchor_issues(
     repository_host: "RepositoryHost", config: "Config"
 ) -> list["Issue"]:
-    """Scoped, exhaustive discovery of open triage anchor issues.
+    """Scoped, exhaustive discovery of open tech_lead anchor issues.
 
     Single owner for anchor eligibility, shared by fact gathering and startup
     recovery (#6763 finding 7). Both paths must apply the same
     ``filtering.label`` scope — startup queueing an out-of-scope anchor would
     let a run-scoped restart launch another run's health review — and both
-    must page the COMPLETE open set: gated proposals share the triage-agent
+    must page the COMPLETE open set: gated proposals share the tech-lead-agent
     label (#6778), so a proposal backlog could otherwise push an older anchor
     (or approved op) past a small window. The exhaustive scan bound is the
-    shared ``TRIAGE_PROPOSAL_SCAN_LIMIT`` (#6779 R4, paginated), so the SAME
+    shared ``TECH_LEAD_PROPOSAL_SCAN_LIMIT`` (#6779 R4, paginated), so the SAME
     open scan feeds both anchor classification and proposal reconciliation.
 
     The scan is AUTHORITATIVE, so it is requested ``exhaustive`` (#6779 R17): a
@@ -262,12 +262,12 @@ def discover_open_triage_anchor_issues(
     delay an approved op indefinitely, so a failed scan must block this tick's
     planning/recovery — it is never consumed as "no anchors".
     """
-    from .triage_proposals import TRIAGE_PROPOSAL_SCAN_LIMIT
+    from .tech_lead_proposals import TECH_LEAD_PROPOSAL_SCAN_LIMIT
 
     issues = repository_host.list_issues(
         labels=_anchor_query_labels(config),
         state="open",
-        limit=TRIAGE_PROPOSAL_SCAN_LIMIT,
+        limit=TECH_LEAD_PROPOSAL_SCAN_LIMIT,
         exhaustive=True,
     )
     return _scoped_issues(issues, config.filtering.label)
@@ -279,9 +279,9 @@ def discover_open_health_review_anchor(
     """Marker-scoped open health-anchor lookup (crash-safe dedup, finding 4).
 
     Scoping the query on the marker label itself makes the lookup exhaustive
-    even when the broader triage-agent scan is crowded past its page size.
+    even when the broader tech-lead-agent scan is crowded past its page size.
     Callers invoke this only while a creation decision is actually pending
-    (GitHub API discipline — see ``FactGatherer.gather_triage_facts``).
+    (GitHub API discipline — see ``FactGatherer.gather_tech_lead_facts``).
     """
     issues = repository_host.list_issues(
         labels=_anchor_query_labels(config, HEALTH_REVIEW_MARKER_LABEL),
@@ -296,10 +296,10 @@ def discover_open_health_review_anchor(
     return scoped[0].number if scoped else None
 
 
-def classify_triage_anchor_issues(
+def classify_tech_lead_anchor_issues(
     issues: Iterable["Issue"], filter_label: Optional[str]
 ) -> tuple[Optional[int], Optional[int]]:
-    """Classify open triage-agent issues into (batch, health_review) anchors.
+    """Classify open tech-lead-agent issues into (batch, health_review) anchors.
 
     One pass over the shared anchor discovery scan — the marker label
     identifies health-review anchors, the historical title match identifies
@@ -314,22 +314,22 @@ def classify_triage_anchor_issues(
             health = issue.number if health is None else health
             continue
         if batch is None and (
-            "Batch Review" in issue.title or "Triage Review" in issue.title
+            "Batch Review" in issue.title or "Tech Lead Review" in issue.title
         ):
             batch = issue.number
     return batch, health
 
 
 def plan_health_review_issue_creation(
-    facts: "Optional[TriageFacts]",
-    pending_triage: Sequence["PendingTriageReview"],
+    facts: "Optional[TechLeadFacts]",
+    pending_tech_lead: Sequence["PendingTechLeadReview"],
     config: "Config",
     *,
-    workflow: "TriageWorkflow",
+    workflow: "TechLeadWorkflow",
     active_session_count: int,
     paused: bool,
     storm_problems: Sequence["DiscoveredFailure"] = (),
-) -> Optional[CreateTriageIssueAction]:
+) -> Optional[CreateTechLeadIssueAction]:
     """Plan the health-review anchor creation when triggered, not duplicated,
     and allowed by the owned paused/capacity gate.
 
@@ -341,7 +341,7 @@ def plan_health_review_issue_creation(
     pending-launch queue (covers the window before the label scan refreshes;
     queue items carry a typed flavor, #6768 B5), and
     ``state.last_health_review_at`` (already folded into
-    ``facts.health_review_due``). The gate runs last so TRIAGE_SKIPPED is
+    ``facts.health_review_due``). The gate runs last so TECH_LEAD_SKIPPED is
     only emitted when a creation would otherwise happen; due-ness persists
     (no stamp), so creation retries once the gate opens.
 
@@ -355,7 +355,7 @@ def plan_health_review_issue_creation(
     get minted.
 
     Anchor shaping (labels including the marker, configured priority title,
-    milestone intent) comes from the ``triage_issue_policy`` owner — the same
+    milestone intent) comes from the ``tech_lead_issue_policy`` owner — the same
     policy batch anchors get (#6763 finding 5).
     """
     interval_due = bool(facts and facts.health_review_due)
@@ -371,8 +371,8 @@ def plan_health_review_issue_creation(
         )
         return None
     if any(
-        pending.flavor is TriageSessionFlavor.HEALTH_REVIEW
-        for pending in pending_triage
+        pending.flavor is TechLeadSessionFlavor.HEALTH_REVIEW
+        for pending in pending_tech_lead
     ):
         logger.debug("Planner: health review already pending launch")
         return None
@@ -400,7 +400,7 @@ def build_health_review_anchor_action(
     fingerprint: str,
     storm_problems: Sequence["DiscoveredFailure"] = (),
     reason: Optional[str] = None,
-) -> CreateTriageIssueAction:
+) -> CreateTechLeadIssueAction:
     """Shape the health-review anchor's create action (single shaping owner).
 
     Every health-review anchor — periodic (:func:`plan_health_review_issue_creation`,
@@ -413,11 +413,11 @@ def build_health_review_anchor_action(
     trigger (the on-demand path) may override the human-readable ``reason``.
     """
     labels = health_review_issue_labels(config)
-    title = apply_triage_priority_prefix(config, HEALTH_REVIEW_ISSUE_TITLE)
+    title = apply_tech_lead_priority_prefix(config, HEALTH_REVIEW_ISSUE_TITLE)
     # Milestone travels as INTENT; the applier resolves an explicit name at
     # the create-issue execution boundary (#6769 finding 4). Health anchors
     # have no source PRs, so only the explicit strategy can apply.
-    milestone = triage_issue_milestone_intent(config, ())
+    milestone = tech_lead_issue_milestone_intent(config, ())
     trigger_reason = reason or (
         f"problem storm: {len(storm_problems)} issues inside settle window"
         if storm_problems
@@ -428,7 +428,7 @@ def build_health_review_anchor_action(
         labels,
         trigger_reason,
     )
-    return CreateTriageIssueAction(
+    return CreateTechLeadIssueAction(
         title=title,
         body=(
             _problem_storm_issue_body(storm_problems)
@@ -442,7 +442,7 @@ def build_health_review_anchor_action(
         reason=trigger_reason,
         # This owner decides the variant; the marker label in ``labels`` is the
         # crash-safe restatement of the same decision for recovery/intake.
-        flavor=TriageSessionFlavor.HEALTH_REVIEW,
+        flavor=TechLeadSessionFlavor.HEALTH_REVIEW,
         health_review_fingerprint=fingerprint,
     )
 
@@ -454,7 +454,7 @@ def _queue_anchor_by_marker(
     labels: Iterable[str],
     *,
     storm_problems: tuple["DiscoveredFailure", ...] = (),
-) -> "TriageQueueOutcome":
+) -> "TechLeadQueueOutcome":
     """Route an orchestrator-created anchor to its variant's owner queue op.
 
     The marker label declares the variant (labels are the crash-safe truth
@@ -480,7 +480,7 @@ def _queue_anchor_by_marker(
 
 
 def _persist_storm_cohort(
-    triage_authority: "Optional[TriageAuthorityStore]",
+    tech_lead_authority: "Optional[TechLeadAuthorityStore]",
     issue_number: int,
     storm_problems: tuple["DiscoveredFailure", ...],
 ) -> bool:
@@ -497,12 +497,12 @@ def _persist_storm_cohort(
     exists on GitHub, so this cannot be reported as an apply failure (same
     rule as :func:`record_health_review_creation`). Returning False keeps the
     individual investigations queued, so the problems are still worked —
-    degraded to per-issue triage, never dropped, never silent.
+    degraded to per-issue tech_lead, never dropped, never silent.
     """
-    if not storm_problems or triage_authority is None:
+    if not storm_problems or tech_lead_authority is None:
         return False
     try:
-        triage_authority.record_storm_cohort(
+        tech_lead_authority.record_storm_cohort(
             anchor_issue_number=issue_number, cohort=storm_problems
         )
     except Exception:
@@ -518,14 +518,14 @@ def _persist_storm_cohort(
     return True
 
 
-def intake_created_triage_anchor(
-    action: CreateTriageIssueAction,
+def intake_created_tech_lead_anchor(
+    action: CreateTechLeadIssueAction,
     issue_number: int,
     state: "OrchestratorState",
     store: "Optional[QueueCacheStore]",
-    triage_authority: "Optional[TriageAuthorityStore]" = None,
-) -> "TriageQueueOutcome":
-    """Route a successfully created triage anchor into the pending queue.
+    tech_lead_authority: "Optional[TechLeadAuthorityStore]" = None,
+) -> "TechLeadQueueOutcome":
+    """Route a successfully created tech_lead anchor into the pending queue.
 
     A storm anchor first records its cohort in the durable ledger, which is
     what earns it the right to collapse the individual investigations; see
@@ -534,7 +534,7 @@ def intake_created_triage_anchor(
     the marker label).
     """
     persisted = _persist_storm_cohort(
-        triage_authority, issue_number, action.storm_problems
+        tech_lead_authority, issue_number, action.storm_problems
     )
     outcome = _queue_anchor_by_marker(
         state,
@@ -547,11 +547,11 @@ def intake_created_triage_anchor(
     return outcome
 
 
-def queue_recovered_triage_anchor(
+def queue_recovered_tech_lead_anchor(
     state: "OrchestratorState",
     issue: "Issue",
-    triage_authority: "Optional[TriageAuthorityStore]" = None,
-) -> "TriageQueueOutcome":
+    tech_lead_authority: "Optional[TechLeadAuthorityStore]" = None,
+) -> "TechLeadQueueOutcome":
     """Route a recovered open anchor into the pending queue (startup).
 
     Same marker rule as creation intake: the queued flavor is forwarded
@@ -562,15 +562,15 @@ def queue_recovered_triage_anchor(
 
     A storm anchor also recovers its COHORT from the durable ledger (#6780).
     The cohort is the anchor's act-level authority: the queued item
-    hands it to launch as a ``TriageLaunchScope``, which becomes
-    ``TriageLaunchAuthority.problem_issue_numbers``. Recovering without it
+    hands it to launch as a ``TechLeadLaunchScope``, which becomes
+    ``TechLeadLaunchAuthority.problem_issue_numbers``. Recovering without it
     (the in-memory queue is gone after a crash, and the issue BODY is mutable
     human documentation, never authority) would launch a health review that
     rejects every proposal for the very issues that triggered it.
     """
     cohort = (
-        triage_authority.load_storm_cohort(anchor_issue_number=issue.number)
-        if triage_authority is not None
+        tech_lead_authority.load_storm_cohort(anchor_issue_number=issue.number)
+        if tech_lead_authority is not None
         else None
     )
     if cohort:
@@ -596,9 +596,9 @@ def ensure_on_demand_health_review_anchor(
     repository_host: "RepositoryHost",
     action_applier: "SupportsApplyAction",
     queue_cache_store: "Optional[QueueCacheStore]",
-    triage_authority: "Optional[TriageAuthorityStore]",
+    tech_lead_authority: "Optional[TechLeadAuthorityStore]",
     now: float,
-) -> "Optional[PendingTriageReview]":
+) -> "Optional[PendingTechLeadReview]":
     """Discover-or-create the health-review anchor and queue it for launch NOW.
 
     The on-demand counterpart to the periodic/planner path (ADR-0031 §4). It
@@ -609,21 +609,21 @@ def ensure_on_demand_health_review_anchor(
     existing lifecycle, reused verbatim:
 
     * an already-open anchor (:func:`discover_open_health_review_anchor`) is
-      requeued through :func:`queue_recovered_triage_anchor` — the SAME owner
+      requeued through :func:`queue_recovered_tech_lead_anchor` — the SAME owner
       startup recovery uses, so a storm anchor keeps its durable cohort;
     * otherwise the anchor is shaped by the shared
       :func:`build_health_review_anchor_action`, created through the same apply
-      path the tick uses, and routed through :func:`intake_created_triage_anchor`
+      path the tick uses, and routed through :func:`intake_created_tech_lead_anchor`
       (which queues it AND stamps ``last_health_review_at`` + the walked
       fingerprint, so the very next timer tick will not double-fire).
 
-    Returns the queued HEALTH_REVIEW :class:`PendingTriageReview` for the driver
-    to launch, or ``None`` when no triage agent is configured (health review is
+    Returns the queued HEALTH_REVIEW :class:`PendingTechLeadReview` for the driver
+    to launch, or ``None`` when no tech lead agent is configured (health review is
     meaningless without one) or anchor creation failed.
     """
-    if not config.triage_review_agent:
+    if not config.tech_lead_review_agent:
         logger.warning(
-            "On-demand health review requested but no triage_review_agent is "
+            "On-demand health review requested but no tech_lead_review_agent is "
             "configured; nothing to launch"
         )
         return None
@@ -636,7 +636,7 @@ def ensure_on_demand_health_review_anchor(
             )
             return None
         logger.info("Reusing open health-review anchor #%d on demand", existing)
-        queue_recovered_triage_anchor(state, issue, triage_authority)
+        queue_recovered_tech_lead_anchor(state, issue, tech_lead_authority)
         anchor_number: Optional[int] = existing
     else:
         anchor_number = _create_on_demand_health_anchor(
@@ -644,7 +644,7 @@ def ensure_on_demand_health_review_anchor(
             config=config,
             action_applier=action_applier,
             queue_cache_store=queue_cache_store,
-            triage_authority=triage_authority,
+            tech_lead_authority=tech_lead_authority,
             now=now,
         )
         if anchor_number is None:
@@ -658,7 +658,7 @@ def _create_on_demand_health_anchor(
     config: "Config",
     action_applier: "SupportsApplyAction",
     queue_cache_store: "Optional[QueueCacheStore]",
-    triage_authority: "Optional[TriageAuthorityStore]",
+    tech_lead_authority: "Optional[TechLeadAuthorityStore]",
     now: float,
 ) -> Optional[int]:
     """Shape + create + intake a fresh on-demand health-review anchor.
@@ -669,7 +669,7 @@ def _create_on_demand_health_anchor(
     board with nothing reviewable) records as "never reviewed", which fails
     toward re-reviewing on the next timer tick, never toward silent suppression.
     Creation goes through the tick's real apply path and
-    :func:`intake_created_triage_anchor`, so the anchor is queued and the
+    :func:`intake_created_tech_lead_anchor`, so the anchor is queued and the
     fingerprint stamped exactly as a timer-created anchor would be.
     """
     fingerprint = health_review_decision(config, state, now).fingerprint
@@ -691,105 +691,105 @@ def _create_on_demand_health_anchor(
             "On-demand health-review anchor creation returned no issue number"
         )
         return None
-    intake_created_triage_anchor(
-        action, issue_number, state, queue_cache_store, triage_authority
+    intake_created_tech_lead_anchor(
+        action, issue_number, state, queue_cache_store, tech_lead_authority
     )
     return issue_number
 
 
 def _queued_health_review(
     state: "OrchestratorState", anchor_number: int
-) -> "Optional[PendingTriageReview]":
+) -> "Optional[PendingTechLeadReview]":
     """The queued HEALTH_REVIEW pending item for the anchor, if present.
 
-    Both intake paths append a HEALTH_REVIEW ``PendingTriageReview`` to the
+    Both intake paths append a HEALTH_REVIEW ``PendingTechLeadReview`` to the
     pending queue (or find it already there on a DUPLICATE), so the launch
     driver reads the typed item back rather than reconstructing it.
     """
     return next(
         (
             item
-            for item in state.pending_triage_reviews
+            for item in state.pending_tech_lead_reviews
             if item.issue_number == anchor_number
-            and item.flavor is TriageSessionFlavor.HEALTH_REVIEW
+            and item.flavor is TechLeadSessionFlavor.HEALTH_REVIEW
         ),
         None,
     )
 
 
-def recover_pending_triage_anchors(
+def recover_pending_tech_lead_anchors(
     state: "OrchestratorState",
     *,
     repository_host: "RepositoryHost",
     config: "Config",
     session_exists: Callable[[str], bool],
-    triage_authority: "TriageAuthorityStore | None",
+    tech_lead_authority: "TechLeadAuthorityStore | None",
 ) -> None:
-    """Requeue open triage anchors on startup (crash-safe label recovery).
+    """Requeue open tech_lead anchors on startup (crash-safe label recovery).
 
-    Gated triage proposals share the triage agent label (#6778) but are
+    Gated tech_lead proposals share the tech lead agent label (#6778) but are
     never anchors: gate-labeled issues await operator approval, and
     op-backed issues without the gate label are approved ops the planner
     executes from the fact scan. Requeuing either as a batch anchor would
-    launch a triage session on a proposal issue — the same
-    ``reconcile_triage_proposals`` owner the fact gatherer uses excludes
+    launch a tech_lead session on a proposal issue — the same
+    ``reconcile_tech_lead_proposals`` owner the fact gatherer uses excludes
     them here, over an EXHAUSTIVE open scan (#6779 R4) so a proposal backlog
     can never hide an anchor. Startup recovery is read-only (#6779 R10):
     leaked/terminal ledger rows are NOT discarded here — the first control
     tick's fact gatherer surfaces them as cleanup candidates and the planner's
     confirm-and-discard action self-heals them.
     Pattern case files (#6781) share the label too and are pure evidence
-    ledgers. The same ``split_triage_case_file_issues`` owner the fact gatherer
+    ledgers. The same ``split_tech_lead_case_file_issues`` owner the fact gatherer
     uses excludes them here before anchor recovery.
     """
-    from .session_routing import TriageQueueOutcome
-    from .triage_case_files import split_triage_case_file_issues
-    from .triage_proposals import reconcile_triage_proposals
+    from .session_routing import TechLeadQueueOutcome
+    from .tech_lead_case_files import split_tech_lead_case_file_issues
+    from .tech_lead_proposals import reconcile_tech_lead_proposals
 
-    assert config.triage_review_agent is not None  # caller-gated
+    assert config.tech_lead_review_agent is not None  # caller-gated
     # Shared scoped/exhaustive anchor discovery (#6763 finding 7) feeds the
     # proposal reconciliation (#6779 R2/R4): the SAME exhaustive open scan the
     # fact gatherer classifies, so startup applies the same filtering.label
     # eligibility rule and a proposal backlog can never hide an anchor.
-    issues = discover_open_triage_anchor_issues(repository_host, config)
+    issues = discover_open_tech_lead_anchor_issues(repository_host, config)
     ops = (
-        dict(triage_authority.list_ops())
-        if triage_authority is not None
+        dict(tech_lead_authority.list_ops())
+        if tech_lead_authority is not None
         else {}
     )
-    reconciled = reconcile_triage_proposals(issues, ops=ops)
+    reconciled = reconcile_tech_lead_proposals(issues, ops=ops)
     proposal_skipped = len(issues) - len(reconciled.anchor_candidate_issues)
-    anchors, case_files = split_triage_case_file_issues(
+    anchors, case_files = split_tech_lead_case_file_issues(
         reconciled.anchor_candidate_issues
     )
     if proposal_skipped:
         print(
-            f"  Skipped {proposal_skipped} gated triage proposal issue(s) (#6778)"
+            f"  Skipped {proposal_skipped} gated tech_lead proposal issue(s) (#6778)"
         )
     if case_files:
         print(f"  Skipped {len(case_files)} pattern case file(s) (#6781)")
     for issue in anchors:
         if session_exists(f"issue-{issue.number}"):
-            print(f"  triage issue #{issue.number}: Already running")
+            print(f"  tech_lead issue #{issue.number}: Already running")
             continue
         # The ADR-0031 §4 marker label declares the anchor's variant; the
         # owner routes it (#6768 B5: queued flavor reaches launch verbatim)
         # and rehydrates a storm anchor's cohort from the durable ledger
         # (#6780: the recovered anchor must keep its act-level scope).
-        outcome = queue_recovered_triage_anchor(state, issue, triage_authority)
-        if outcome is TriageQueueOutcome.DUPLICATE:
-            print(f"  triage issue #{issue.number}: Already queued")
+        outcome = queue_recovered_tech_lead_anchor(state, issue, tech_lead_authority)
+        if outcome is TechLeadQueueOutcome.DUPLICATE:
+            print(f"  tech_lead issue #{issue.number}: Already queued")
             continue
-        print(f"  triage issue #{issue.number}: Queued ({issue.title})")
-    if state.pending_triage_reviews:
+        print(f"  tech_lead issue #{issue.number}: Queued ({issue.title})")
+    if state.pending_tech_lead_reviews:
         print(
-            f"  Found {len(state.pending_triage_reviews)} triage review(s)"
+            f"  Found {len(state.pending_tech_lead_reviews)} tech_lead review(s)"
             " to process"
         )
 
 
 def record_health_review_creation(
-    action: CreateTriageIssueAction,
+    action: CreateTechLeadIssueAction,
     state: "OrchestratorState",
     store: "Optional[QueueCacheStore]",
     now: Optional[float] = None,
@@ -810,7 +810,7 @@ def record_health_review_creation(
     state.last_health_review_at = stamped_at
     # Record the board the trigger DECIDED on, carried verbatim on the action —
     # never a fresh recompute. By now the anchor has been created and queued
-    # into state.pending_triage_reviews, which is itself part of the board, so
+    # into state.pending_tech_lead_reviews, which is itself part of the board, so
     # recomputing here would stamp a transient state that only exists between
     # creation and launch and that the board never returns to. The gate would
     # then never match and would re-fire every interval forever — the exact

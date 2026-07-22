@@ -169,7 +169,7 @@ def _prune_issue_runtime_state(*, state: Any, issue_number: int) -> None:
     state.active_sessions = [s for s in state.active_sessions if s.issue.number != issue_number]
     state.pending_reviews = [r for r in state.pending_reviews if r.issue_number != issue_number]
     state.pending_reworks = [r for r in state.pending_reworks if r.resolve_issue_number() != issue_number]
-    state.pending_triage_reviews = [r for r in state.pending_triage_reviews if r.issue_number != issue_number]
+    state.pending_tech_lead_reviews = [r for r in state.pending_tech_lead_reviews if r.issue_number != issue_number]
     state.pending_validation_retries = [r for r in state.pending_validation_retries if r.issue_number != issue_number]
     state.discovered_reviews = [r for r in state.discovered_reviews if r.issue_number != issue_number]
     state.discovered_reworks = [r for r in state.discovered_reworks if r.issue_number != issue_number]

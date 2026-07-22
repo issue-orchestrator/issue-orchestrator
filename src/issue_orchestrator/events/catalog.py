@@ -15,7 +15,7 @@ Domains:
 - dependency: Issue dependencies (blocked, unblocked)
 - review: Code review workflow (started, queued, escalated)
 - rework: Rework cycle (started)
-- triage: Triage workflow (issue_created)
+- tech_lead: Tech Lead workflow (issue_created)
 - cleanup: Cleanup operations (completed)
 - validation: Local validation hooks (started, completed)
 - config: Configuration events (merged)
@@ -161,8 +161,8 @@ class EventName(str, Enum):
     REVIEW_CHANGES_REQUESTED = "review.changes_requested"
     REVIEW_REWORK_STARTED = "review.rework_started"
     REVIEW_REWORK_COMPLETED = "review.rework_completed"
-    REVIEW_TRIAGE_STARTED = "review.triage_started"
-    REVIEW_TRIAGE_APPROVED = "review.triage_approved"
+    REVIEW_TECH_LEAD_STARTED = "review.tech_lead_started"
+    REVIEW_TECH_LEAD_APPROVED = "review.tech_lead_approved"
     REVIEW_MERGED = "review.merged"
     REVIEW_CLOSED = "review.closed"
     REVIEW_COMMENT_ADDED = "review.comment_added"
@@ -188,20 +188,20 @@ class EventName(str, Enum):
     REWORK_ESCALATING = "rework.escalating"
 
     # =========================================================================
-    # Triage workflow
+    # Tech Lead workflow
     # =========================================================================
-    TRIAGE_ISSUE_CREATED = "triage.issue_created"
-    TRIAGE_SKIPPED = "triage.skipped"
-    TRIAGE_LAUNCHING = "triage.launching"
-    # Triage decision artifact wiring (ADR-0031); internal trace events only
-    TRIAGE_ACTION_PROPOSED = "triage.action_proposed"
+    TECH_LEAD_ISSUE_CREATED = "tech_lead.issue_created"
+    TECH_LEAD_SKIPPED = "tech_lead.skipped"
+    TECH_LEAD_LAUNCHING = "tech_lead.launching"
+    # Tech Lead decision artifact wiring (ADR-0031); internal trace events only
+    TECH_LEAD_ACTION_PROPOSED = "tech_lead.action_proposed"
     # Act-level proposal executed by the orchestrator (#6764), completing
     # the propose/execute pair (mirrors GOAL_PILOT_ACTION_*).
-    TRIAGE_ACTION_EXECUTED = "triage.action_executed"
-    TRIAGE_DECISION_REJECTED = "triage.decision_rejected"
+    TECH_LEAD_ACTION_EXECUTED = "tech_lead.action_executed"
+    TECH_LEAD_DECISION_REJECTED = "tech_lead.decision_rejected"
     # Tech-lead attention sweep re-injected stuck issues / flagged exhausted
     # ones (#6823); internal trace event only (not a public UI event).
-    TRIAGE_STUCK_SWEEP = "triage.stuck_sweep"
+    TECH_LEAD_STUCK_SWEEP = "tech_lead.stuck_sweep"
 
     # =========================================================================
     # Cleanup operations
@@ -412,7 +412,7 @@ class PublicEventName(str, Enum):
     REWORK_STARTED = "rework.started"
     REWORK_LAUNCHING = "rework.launching"
 
-    TRIAGE_LAUNCHING = "triage.launching"
+    TECH_LEAD_LAUNCHING = "tech_lead.launching"
 
     VALIDATION_STARTED = "validation.started"
     VALIDATION_COMPLETED = "validation.completed"

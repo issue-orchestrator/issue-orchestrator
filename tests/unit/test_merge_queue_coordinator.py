@@ -156,17 +156,17 @@ def test_pr_without_gate_label_is_not_enqueued() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# enqueue_after gate resolution — code-reviewed vs triage-reviewed are distinct
+# enqueue_after gate resolution — code-reviewed vs tech-lead-reviewed are distinct
 # --------------------------------------------------------------------------- #
 
 
-def test_triage_gate_does_not_enqueue_on_code_reviewed_alone() -> None:
-    """A repo waiting for triage must NOT enqueue a merely code-reviewed PR."""
+def test_tech_lead_gate_does_not_enqueue_on_code_reviewed_alone() -> None:
+    """A repo waiting for tech_lead must NOT enqueue a merely code-reviewed PR."""
     repo = MagicMock()
-    coordinator, _ = _coordinator(repo, enqueue_after="triage-reviewed")
+    coordinator, _ = _coordinator(repo, enqueue_after="tech-lead-reviewed")
 
     followup = coordinator.classify(
-        pr=_pr("clean", labels=["code-reviewed"]),  # not yet triage-reviewed
+        pr=_pr("clean", labels=["code-reviewed"]),  # not yet tech-lead-reviewed
         issue=_issue(),
         issue_number=228,
         pr_number=318,
@@ -177,12 +177,12 @@ def test_triage_gate_does_not_enqueue_on_code_reviewed_alone() -> None:
     assert followup == type(followup)()
 
 
-def test_triage_gate_enqueues_once_triage_reviewed_present() -> None:
+def test_tech_lead_gate_enqueues_once_tech_lead_reviewed_present() -> None:
     repo = MagicMock()
-    coordinator, _ = _coordinator(repo, enqueue_after="triage-reviewed")
+    coordinator, _ = _coordinator(repo, enqueue_after="tech-lead-reviewed")
 
     followup = coordinator.classify(
-        pr=_pr("clean", labels=["code-reviewed", "triage-reviewed"]),
+        pr=_pr("clean", labels=["code-reviewed", "tech-lead-reviewed"]),
         issue=_issue(),
         issue_number=228,
         pr_number=318,
@@ -193,8 +193,8 @@ def test_triage_gate_enqueues_once_triage_reviewed_present() -> None:
     assert followup.enqueue.pr_number == 318
 
 
-def test_code_reviewed_gate_does_not_require_triage_reviewed() -> None:
-    """The code-reviewed gate must enqueue without waiting for triage."""
+def test_code_reviewed_gate_does_not_require_tech_lead_reviewed() -> None:
+    """The code-reviewed gate must enqueue without waiting for tech_lead."""
     repo = MagicMock()
     coordinator, _ = _coordinator(repo, enqueue_after="code-reviewed")
 
@@ -209,17 +209,17 @@ def test_code_reviewed_gate_does_not_require_triage_reviewed() -> None:
     assert followup.enqueue is not None
 
 
-def test_triage_gate_honors_custom_triage_reviewed_label() -> None:
+def test_tech_lead_gate_honors_custom_tech_lead_reviewed_label() -> None:
     config = Config()
-    config.triage_reviewed_label = "batch-triaged"
+    config.tech_lead_reviewed_label = "batch-triaged"
     repo = MagicMock()
     coordinator, _ = _coordinator(
-        repo, enqueue_after="triage-reviewed", config=config
+        repo, enqueue_after="tech-lead-reviewed", config=config
     )
 
-    # The default triage label no longer satisfies the gate.
+    # The default tech_lead label no longer satisfies the gate.
     not_yet = coordinator.classify(
-        pr=_pr("clean", labels=["code-reviewed", "triage-reviewed"]),
+        pr=_pr("clean", labels=["code-reviewed", "tech-lead-reviewed"]),
         issue=_issue(),
         issue_number=228,
         pr_number=318,
@@ -238,19 +238,19 @@ def test_triage_gate_honors_custom_triage_reviewed_label() -> None:
     assert queued.enqueue is not None
 
 
-def test_triage_gate_matches_raw_label_even_with_label_prefix() -> None:
-    """The triage subsystem writes the triage label unprefixed, so the gate
+def test_tech_lead_gate_matches_raw_label_even_with_label_prefix() -> None:
+    """The tech_lead subsystem writes the tech_lead label unprefixed, so the gate
     must match that raw label even when a label_prefix is configured."""
     config = Config()
     config.label_prefix = "bot"
     repo = MagicMock()
     coordinator, _ = _coordinator(
-        repo, enqueue_after="triage-reviewed", config=config
+        repo, enqueue_after="tech-lead-reviewed", config=config
     )
 
     followup = coordinator.classify(
-        # Raw triage label is what completion planning actually applies.
-        pr=_pr("clean", labels=["bot:code-reviewed", "triage-reviewed"]),
+        # Raw tech_lead label is what completion planning actually applies.
+        pr=_pr("clean", labels=["bot:code-reviewed", "tech-lead-reviewed"]),
         issue=_issue(),
         issue_number=228,
         pr_number=318,

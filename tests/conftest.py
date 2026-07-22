@@ -917,9 +917,9 @@ def build_test_orchestrator_deps(
 
     _label_sync = label_sync or LabelSync(labels=repo_host, events=events, pr_tracker=repo_host)
     event_hub = EventHub()
-    # Create manifest downloader for triage sessions
-    from issue_orchestrator.execution.triage_downloader import TriageDownloader
-    manifest_downloader = TriageDownloader(
+    # Create manifest downloader for tech_lead sessions
+    from issue_orchestrator.execution.tech_lead_downloader import TechLeadDownloader
+    manifest_downloader = TechLeadDownloader(
         repository_host=repo_host,
         command_runner=command_runner,
     )
@@ -965,10 +965,10 @@ def build_test_orchestrator_deps(
     label_manager = LabelManager(config)
     label_store = LabelStore(config.repo_root / ".issue-orchestrator" / "label_store.sqlite")
     attempt_store = create_attempt_store(config)
-    from issue_orchestrator.infra.triage_authority_store import (
-        SqliteTriageAuthorityStore,
+    from issue_orchestrator.infra.tech_lead_authority_store import (
+        SqliteTechLeadAuthorityStore,
     )
-    triage_authority = SqliteTriageAuthorityStore.for_repo(config.repo_root)
+    tech_lead_authority = SqliteTechLeadAuthorityStore.for_repo(config.repo_root)
 
     _action_applier.claim_gate = claim_gate
     # build_test_orchestrator_deps() returns deps without a live Orchestrator state.
@@ -986,7 +986,7 @@ def build_test_orchestrator_deps(
         timeline_writer=timeline_writer,
         goal_pilot_store=goal_pilot_store,
         attempt_store=attempt_store,
-        triage_authority=triage_authority,
+        tech_lead_authority=tech_lead_authority,
     )
 
     from issue_orchestrator.execution.json_publish_retry_locator_store import (
@@ -1009,7 +1009,7 @@ def build_test_orchestrator_deps(
         # the raw optional argument which is None when callers omit it.
         action_applier=_action_applier,
         code_review_agent_configured=bool(config.code_review_agent),
-        triage_authority=triage_authority,
+        tech_lead_authority=tech_lead_authority,
     )
     # Same post-construction wiring as bootstrap: the ActionApplier abandons
     # publish retries at issue terminal boundaries via the runtime terminator.

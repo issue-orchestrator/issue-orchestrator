@@ -21,22 +21,22 @@ from types import SimpleNamespace
 import pytest
 
 from issue_orchestrator.adapters.github.errors import GitHubHttpError
-from issue_orchestrator.control.actions import ActionResult, CreateTriageIssueAction
+from issue_orchestrator.control.actions import ActionResult, CreateTechLeadIssueAction
 from issue_orchestrator.control.health_review_trigger import (
     HEALTH_REVIEW_ISSUE_TITLE,
     board_review_fingerprint,
     discover_open_health_review_anchor,
-    discover_open_triage_anchor_issues,
+    discover_open_tech_lead_anchor_issues,
     ensure_on_demand_health_review_anchor,
     health_review_decision,
     health_review_due,
     hydrate_last_health_review_at,
-    intake_created_triage_anchor,
+    intake_created_tech_lead_anchor,
     most_recent_health_anchor_created_at,
     plan_health_review_issue_creation,
     record_health_review_creation,
 )
-from issue_orchestrator.control.triage_issue_policy import (
+from issue_orchestrator.control.tech_lead_issue_policy import (
     health_review_issue_labels,
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey
@@ -44,20 +44,20 @@ from issue_orchestrator.domain.models import (
     DiscoveredFailure,
     Issue,
     OrchestratorState,
-    TriageFacts,
+    TechLeadFacts,
 )
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
-from issue_orchestrator.domain.triage_session import (
+from issue_orchestrator.domain.tech_lead_session import (
     HEALTH_REVIEW_MARKER_LABEL,
-    TriageSessionFlavor,
+    TechLeadSessionFlavor,
 )
 from issue_orchestrator.infra.config import Config
 
 
 def _config(interval_minutes: int = 60, *, filter_label: str | None = None) -> Config:
     config = Config()
-    config.triage_review_agent = "agent:triage"
-    config.triage.health_review.interval_minutes = interval_minutes
+    config.tech_lead_review_agent = "agent:tech-lead"
+    config.tech_lead.health_review.interval_minutes = interval_minutes
     config.filtering.label = filter_label
     return config
 
@@ -164,7 +164,7 @@ class TestPersistFailureReconciliation:
         config = _config()
         store = _FakeStore(raise_on_save=True)
         state = OrchestratorState()
-        action = CreateTriageIssueAction(
+        action = CreateTechLeadIssueAction(
             title=HEALTH_REVIEW_ISSUE_TITLE,
             labels=health_review_issue_labels(config),
         )
@@ -183,7 +183,7 @@ class TestPersistFailureReconciliation:
         config = _config(interval_minutes=60)
         store = _FakeStore(stored=0.0, raise_on_save=True)
         fired_at = 1_000_000.0
-        action = CreateTriageIssueAction(
+        action = CreateTechLeadIssueAction(
             title=HEALTH_REVIEW_ISSUE_TITLE,
             labels=health_review_issue_labels(config),
         )
@@ -268,18 +268,18 @@ class TestSharedAnchorDiscovery:
         in_scope = Issue(
             number=1,
             title="Batch",
-            labels=["agent:triage", "io:e2e:run-1"],
+            labels=["agent:tech-lead", "io:e2e:run-1"],
             state="open",
         )
         out_of_scope = Issue(
             number=2,
             title="Health Review — walk the floor",
-            labels=["agent:triage", HEALTH_REVIEW_MARKER_LABEL],
+            labels=["agent:tech-lead", HEALTH_REVIEW_MARKER_LABEL],
             state="open",
         )
         tracker = _AnchorTracker([in_scope, out_of_scope])
 
-        found = discover_open_triage_anchor_issues(tracker, config)
+        found = discover_open_tech_lead_anchor_issues(tracker, config)
 
         assert [issue.number for issue in found] == [1]
 
@@ -288,12 +288,12 @@ class TestSharedAnchorDiscovery:
         first page strands an older anchor (the pre-fix startup limit=20 bug)."""
         config = _config()
         crowd = [
-            Issue(number=n, title=f"Batch {n}", labels=["agent:triage"], state="open")
+            Issue(number=n, title=f"Batch {n}", labels=["agent:tech-lead"], state="open")
             for n in range(1, 26)
         ]
         tracker = _AnchorTracker(crowd)
 
-        found = discover_open_triage_anchor_issues(tracker, config)
+        found = discover_open_tech_lead_anchor_issues(tracker, config)
 
         assert len(found) == 25
         assert all(call["limit"] >= 25 for call in tracker.calls)
@@ -303,10 +303,10 @@ class TestSharedAnchorDiscovery:
         fails loud on a truncated read instead of returning a partial set."""
         config = _config()
         tracker = _AnchorTracker(
-            [Issue(number=1, title="Batch", labels=["agent:triage"], state="open")]
+            [Issue(number=1, title="Batch", labels=["agent:tech-lead"], state="open")]
         )
 
-        discover_open_triage_anchor_issues(tracker, config)
+        discover_open_tech_lead_anchor_issues(tracker, config)
 
         assert tracker.calls
         assert all(call.get("exhaustive") is True for call in tracker.calls)
@@ -326,18 +326,18 @@ class TestSharedAnchorDiscovery:
                 )
 
         with pytest.raises(GitHubHttpError):
-            discover_open_triage_anchor_issues(_RaisingTracker(), _config())
+            discover_open_tech_lead_anchor_issues(_RaisingTracker(), _config())
 
     def test_marker_scoped_lookup_finds_anchor_beyond_the_broad_page(self) -> None:
         config = _config()
         crowd = [
-            Issue(number=n, title=f"Batch {n}", labels=["agent:triage"], state="open")
+            Issue(number=n, title=f"Batch {n}", labels=["agent:tech-lead"], state="open")
             for n in range(1, 15)
         ]
         anchor = Issue(
             number=200,
             title=HEALTH_REVIEW_ISSUE_TITLE,
-            labels=["agent:triage", HEALTH_REVIEW_MARKER_LABEL],
+            labels=["agent:tech-lead", HEALTH_REVIEW_MARKER_LABEL],
             state="open",
         )
         tracker = _AnchorTracker([*crowd, anchor])
@@ -439,8 +439,8 @@ class TestHealthReviewDueGate:
 
 
 class TestFingerprintStampAndHydrate:
-    def _action(self, config, fingerprint: str = "") -> CreateTriageIssueAction:
-        return CreateTriageIssueAction(
+    def _action(self, config, fingerprint: str = "") -> CreateTechLeadIssueAction:
+        return CreateTechLeadIssueAction(
             title=HEALTH_REVIEW_ISSUE_TITLE,
             labels=health_review_issue_labels(config),
             health_review_fingerprint=fingerprint,
@@ -513,7 +513,7 @@ class TestGateSuppressesAcrossRealCreation:
     """The gate's central guarantee, driven through the production intake path
     rather than a hand-stamped fingerprint (#6793).
 
-    Creating the review queues the anchor into ``state.pending_triage_reviews``,
+    Creating the review queues the anchor into ``state.pending_tech_lead_reviews``,
     which is itself part of the board. A stamp that recomputed the fingerprint
     here would record that transient state and never match the settled board
     again — re-firing every interval forever, the exact waste this gate exists
@@ -533,21 +533,21 @@ class TestGateSuppressesAcrossRealCreation:
         decision = health_review_decision(config, state, now=T0)
         assert decision.due is True
 
-        action = CreateTriageIssueAction(
+        action = CreateTechLeadIssueAction(
             title=HEALTH_REVIEW_ISSUE_TITLE,
             labels=health_review_issue_labels(config),
             health_review_fingerprint=decision.fingerprint,
         )
-        intake_created_triage_anchor(action, 900, state, store)
+        intake_created_tech_lead_anchor(action, 900, state, store)
         state.last_health_review_at = T0  # intake stamps wall-clock time.time()
 
         # The anchor is queued: the board is transiently different...
-        assert len(state.pending_triage_reviews) == 1
+        assert len(state.pending_tech_lead_reviews) == 1
         # ...but what we recorded is the board we DECIDED on, not that transient.
         assert state.last_reviewed_board_fingerprint == settled
 
         # The review launches and completes; the board settles back unchanged.
-        state.pending_triage_reviews.clear()
+        state.pending_tech_lead_reviews.clear()
         assert board_review_fingerprint(state, T0 + 3600) == settled
 
         # Nothing changed -> no re-walk. This is the whole point of the gate.
@@ -563,14 +563,14 @@ class TestGateSuppressesAcrossRealCreation:
         state = _board(blocked=[1, 2, 3])
 
         decision = health_review_decision(config, state, now=T0)
-        action = CreateTriageIssueAction(
+        action = CreateTechLeadIssueAction(
             title=HEALTH_REVIEW_ISSUE_TITLE,
             labels=health_review_issue_labels(config),
             health_review_fingerprint=decision.fingerprint,
         )
-        intake_created_triage_anchor(action, 900, state, store)
+        intake_created_tech_lead_anchor(action, 900, state, store)
         state.last_health_review_at = T0
-        state.pending_triage_reviews.clear()
+        state.pending_tech_lead_reviews.clear()
 
         state.dependency_problems[4] = object()  # a new issue got blocked
         assert health_review_due(config, state, now=T0 + 3600) is True
@@ -581,13 +581,13 @@ class TestGateSuppressesAcrossRealCreation:
         config = _config(interval_minutes=60)
         store = _FakeStore()
         state = _board(blocked=[1])
-        action = CreateTriageIssueAction(
+        action = CreateTechLeadIssueAction(
             title=HEALTH_REVIEW_ISSUE_TITLE,
             labels=health_review_issue_labels(config),
         )
-        intake_created_triage_anchor(action, 900, state, store)
+        intake_created_tech_lead_anchor(action, 900, state, store)
         state.last_health_review_at = 100_000.0
-        state.pending_triage_reviews.clear()
+        state.pending_tech_lead_reviews.clear()
         assert state.last_reviewed_board_fingerprint == ""
         assert health_review_due(config, state, now=100_000.0 + 3600) is True
 
@@ -613,7 +613,7 @@ class TestPlannerCarriesTheDecidedFingerprint:
 
     def test_interval_anchor_carries_the_fingerprint(self) -> None:
         config = _config(interval_minutes=60)
-        facts = TriageFacts(
+        facts = TechLeadFacts(
             health_review_due=True, health_review_fingerprint="abc123"
         )
         action = self._plan(config, facts)
@@ -624,7 +624,7 @@ class TestPlannerCarriesTheDecidedFingerprint:
         # A storm review walks the board as well, so the periodic gate must
         # count it as reviewed rather than re-walking straight after it.
         config = _config(interval_minutes=60)
-        facts = TriageFacts(
+        facts = TechLeadFacts(
             health_review_due=False, health_review_fingerprint="storm-board"
         )
         action = self._plan(
@@ -642,16 +642,16 @@ class TestPlannerCarriesTheDecidedFingerprint:
         state = _board(blocked=[1, 2, 3])
 
         decision = health_review_decision(config, state, now=T0)
-        facts = TriageFacts(
+        facts = TechLeadFacts(
             health_review_due=decision.due,
             health_review_fingerprint=decision.fingerprint,
         )
         action = self._plan(config, facts)
         assert action is not None
 
-        intake_created_triage_anchor(action, 900, state, store)
+        intake_created_tech_lead_anchor(action, 900, state, store)
         state.last_health_review_at = T0  # intake stamps wall-clock time.time()
-        state.pending_triage_reviews.clear()  # review launched and completed
+        state.pending_tech_lead_reviews.clear()  # review launched and completed
 
         assert health_review_due(config, state, now=T0 + 3600) is False
 
@@ -683,7 +683,7 @@ class _FakeApplier:
     def __init__(self, *, issue_number: int = 777, success: bool = True) -> None:
         self._issue_number = issue_number
         self._success = success
-        self.applied: list[CreateTriageIssueAction] = []
+        self.applied: list[CreateTechLeadIssueAction] = []
 
     def apply(self, action):
         self.applied.append(action)
@@ -729,21 +729,21 @@ class TestEnsureOnDemandHealthReviewAnchor:
             repository_host=repo,
             action_applier=applier,
             queue_cache_store=store,
-            triage_authority=None,
+            tech_lead_authority=None,
             now=now,
         )
 
         # An anchor was shaped + created through the real apply path...
         assert len(applier.applied) == 1
         action = applier.applied[0]
-        assert action.flavor is TriageSessionFlavor.HEALTH_REVIEW
+        assert action.flavor is TechLeadSessionFlavor.HEALTH_REVIEW
         assert HEALTH_REVIEW_MARKER_LABEL in action.labels
         assert action.health_review_fingerprint == expected_fp
         # ...queued as a HEALTH_REVIEW pending item, and returned for launch.
         assert result is not None
         assert result.issue_number == 777
-        assert result.flavor is TriageSessionFlavor.HEALTH_REVIEW
-        assert result in state.pending_triage_reviews
+        assert result.flavor is TechLeadSessionFlavor.HEALTH_REVIEW
+        assert result in state.pending_tech_lead_reviews
         # ...and the walked fingerprint was stamped (memory + durable store).
         assert state.last_reviewed_board_fingerprint == expected_fp
         assert store.saved_fingerprints == [expected_fp]
@@ -760,22 +760,22 @@ class TestEnsureOnDemandHealthReviewAnchor:
             repository_host=repo,
             action_applier=applier,
             queue_cache_store=_FakeStore(),
-            triage_authority=None,
+            tech_lead_authority=None,
             now=5_000_000.0,
         )
 
         assert applier.applied == []  # no new anchor created
         assert result is not None
         assert result.issue_number == 200
-        assert result.flavor is TriageSessionFlavor.HEALTH_REVIEW
-        assert result in state.pending_triage_reviews
+        assert result.flavor is TechLeadSessionFlavor.HEALTH_REVIEW
+        assert result in state.pending_tech_lead_reviews
         # Recovery of an existing anchor does not stamp (creation time stands).
         assert state.last_reviewed_board_fingerprint == ""
 
-    def test_no_triage_agent_returns_none_without_touching_github(self) -> None:
+    def test_no_tech_lead_agent_returns_none_without_touching_github(self) -> None:
         config = Config()
-        config.triage_review_agent = None
-        config.triage.health_review.interval_minutes = 60
+        config.tech_lead_review_agent = None
+        config.tech_lead.health_review.interval_minutes = 60
         repo = _HealthAnchorRepo([])
         applier = _FakeApplier()
 
@@ -785,7 +785,7 @@ class TestEnsureOnDemandHealthReviewAnchor:
             repository_host=repo,
             action_applier=applier,
             queue_cache_store=None,
-            triage_authority=None,
+            tech_lead_authority=None,
             now=1.0,
         )
 
@@ -805,11 +805,11 @@ class TestEnsureOnDemandHealthReviewAnchor:
             repository_host=repo,
             action_applier=applier,
             queue_cache_store=_FakeStore(),
-            triage_authority=None,
+            tech_lead_authority=None,
             now=5_000_000.0,
         )
 
         assert result is None
         assert len(applier.applied) == 1  # attempted
-        assert state.pending_triage_reviews == []
+        assert state.pending_tech_lead_reviews == []
         assert state.last_reviewed_board_fingerprint == ""

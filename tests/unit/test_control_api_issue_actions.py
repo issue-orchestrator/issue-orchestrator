@@ -977,13 +977,13 @@ class TestDismissIssueEndpoint:
         assert data["success"] is True
         assert "dismiss" in data["message"].lower()
 
-        # Verify all dismissible labels, including triage provenance, were targeted.
+        # Verify all dismissible labels, including tech_lead provenance, were targeted.
         removed_issue_numbers = [num for num, _ in removed_labels]
         assert all(num == 123 for num in removed_issue_numbers)
         assert {label for _, label in removed_labels} == {
             "blocked",
             "blocked-needs-human",
-            "triage-needs-human",
+            "tech-lead-needs-human",
             "blocked-failed",
             "in-progress",
         }

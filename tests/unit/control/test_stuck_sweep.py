@@ -6,7 +6,7 @@ wiring through fake ports (a recording repository host and a real
 when not due), the scan/injection that re-injects a stuck issue as a
 ``timed_out`` recovered failure, the done guard, dedup/ownership, the bounded
 recovery counter + exhaustion escalation, machinery/human exclusions, config
-parsing, and the end-to-end wiring into the reactive-triage reaction model.
+parsing, and the end-to-end wiring into the reactive-tech-lead reaction model.
 """
 
 from __future__ import annotations
@@ -20,10 +20,10 @@ from issue_orchestrator.control.stuck_sweep import (
     run_stuck_sweep,
     stuck_sweep_due,
 )
-from issue_orchestrator.control.triage_reaction import TriageReactionPolicy
+from issue_orchestrator.control.tech_lead_reaction import TechLeadReactionPolicy
 from issue_orchestrator.domain.models import Issue, OrchestratorState
 from issue_orchestrator.infra.config import Config
-from issue_orchestrator.infra.config_sections import parse_triage_config
+from issue_orchestrator.infra.config_sections import parse_tech_lead_config
 from issue_orchestrator.ports.event_sink import InMemoryEventSink
 
 
@@ -32,17 +32,17 @@ def _config(
     enabled: bool = True,
     interval_minutes: int = 15,
     max_recovery_attempts: int = 3,
-    triage_agent: str | None = "agent:triage",
+    tech_lead_agent: str | None = "agent:tech-lead",
     on_failure: bool = True,
     filter_label: str | None = None,
 ) -> Config:
     config = Config()
-    config.triage_review_agent = triage_agent
-    config.triage_review_on_failure = on_failure
+    config.tech_lead_review_agent = tech_lead_agent
+    config.tech_lead_review_on_failure = on_failure
     config.filtering.label = filter_label
-    config.triage.stuck_sweep.enabled = enabled
-    config.triage.stuck_sweep.interval_minutes = interval_minutes
-    config.triage.stuck_sweep.max_recovery_attempts = max_recovery_attempts
+    config.tech_lead.stuck_sweep.enabled = enabled
+    config.tech_lead.stuck_sweep.interval_minutes = interval_minutes
+    config.tech_lead.stuck_sweep.max_recovery_attempts = max_recovery_attempts
     return config
 
 
@@ -112,12 +112,12 @@ def test_due_true_when_elapsed():
     assert stuck_sweep_due(config, state, now=10_000.0 + 15 * 60) is True
 
 
-def test_due_false_without_triage_agent():
-    config = _config(triage_agent=None)
+def test_due_false_without_tech_lead_agent():
+    config = _config(tech_lead_agent=None)
     assert stuck_sweep_due(config, OrchestratorState(), now=10_000.0) is False
 
 
-def test_due_false_without_triage_on_failure():
+def test_due_false_without_tech_lead_on_failure():
     config = _config(on_failure=False)
     assert stuck_sweep_due(config, OrchestratorState(), now=10_000.0) is False
 
@@ -220,19 +220,19 @@ def test_done_guard_skips_issue_without_blocking_label():
 
 
 def test_excludes_machinery_and_reconciler_owned_labels():
-    # F2 (#6824): only proposed-triage/triage-observation are BLANKET machinery
+    # F2 (#6824): only proposed-tech-lead/tech-lead-observation are BLANKET machinery
     # exclusions. provider-unavailable is owned while its circuit is open (the
-    # default None predicate treats it as owned), and the triage-needs-human
+    # default None predicate treats it as owned), and the tech-lead-needs-human
     # MARKER is reconciler-owned — both skipped, but not permanently blind.
     config = _config()
     state = OrchestratorState()
     labels = LabelManager(config)
     host = _RecordingHost(
         [
-            _issue(2, labels=[labels.triage_needs_human]),   # marker: reconciler owns
+            _issue(2, labels=[labels.tech_lead_needs_human]),   # marker: reconciler owns
             _issue(3, labels=[labels.provider_unavailable]),  # circuit owns (default)
-            _issue(4, labels=["proposed-triage"]),            # machinery
-            _issue(5, labels=["triage-observation"]),         # machinery
+            _issue(4, labels=["proposed-tech-lead"]),            # machinery
+            _issue(5, labels=["tech-lead-observation"]),         # machinery
         ]
     )
     result = run_stuck_sweep(config, state, host, labels, now=1.0)
@@ -241,7 +241,7 @@ def test_excludes_machinery_and_reconciler_owned_labels():
 
 
 def test_bare_needs_human_is_eligible_for_reexamination():
-    # F2 (#6824): a BARE needs-human (operator escalation, no triage marker) is
+    # F2 (#6824): a BARE needs-human (operator escalation, no tech_lead marker) is
     # eligible — re-injecting it is how a superseding investigation is created.
     config = _config()
     state = OrchestratorState()
@@ -302,10 +302,10 @@ def test_open_proposal_target_is_not_reinjected_or_charged():
 def test_dedup_skips_active_pending_cohort_and_discovered():
     config = _config()
     state = OrchestratorState()
-    # 11 is in an active session; 12 is a pending triage review; 13 is a cohort
+    # 11 is in an active session; 12 is a pending tech_lead review; 13 is a cohort
     # member of a pending storm review; 14 was discovered this tick.
     state.active_sessions = [SimpleNamespace(issue=SimpleNamespace(number=11))]
-    state.pending_triage_reviews = [
+    state.pending_tech_lead_reviews = [
         SimpleNamespace(issue_number=12, problem_cohort=()),
         SimpleNamespace(
             issue_number=99,
@@ -407,7 +407,7 @@ def test_empty_scan_returns_empty_result():
 
 
 # ---------------------------------------------------------------------------
-# fact_gatherer wiring -> reactive-triage reaction
+# fact_gatherer wiring -> reactive-tech-lead reaction
 # ---------------------------------------------------------------------------
 
 
@@ -426,7 +426,7 @@ def test_due_sweep_populates_snapshot_and_reaction_investigates():
     assert state.last_stuck_sweep_at > 0.0
 
     # The reaction model classifies the timed_out failure as INVESTIGATE.
-    reaction = TriageReactionPolicy(
+    reaction = TechLeadReactionPolicy(
         config=config,
         labels=LabelManager(config),
         dependency_evaluator=None,
@@ -436,7 +436,7 @@ def test_due_sweep_populates_snapshot_and_reaction_investigates():
 
     # An observation event was emitted for the sweep.
     names = {event.name for event in events.events}
-    assert "triage.stuck_sweep" in names
+    assert "tech_lead.stuck_sweep" in names
 
 
 def test_exhausted_issue_flows_to_snapshot_for_planner_escalation():
@@ -570,10 +570,10 @@ def test_disabled_sweep_injects_nothing_via_fact_gatherer():
 
 
 def test_stuck_sweep_config_defaults():
-    triage = parse_triage_config({})
-    assert triage.stuck_sweep.enabled is False
-    assert triage.stuck_sweep.interval_minutes == 15
-    assert triage.stuck_sweep.max_recovery_attempts == 3
+    tech_lead = parse_tech_lead_config({})
+    assert tech_lead.stuck_sweep.enabled is False
+    assert tech_lead.stuck_sweep.interval_minutes == 15
+    assert tech_lead.stuck_sweep.max_recovery_attempts == 3
 
 
 def test_config_rejects_zero_interval_minutes():
@@ -581,14 +581,14 @@ def test_config_rejects_zero_interval_minutes():
     # unthrottled GitHub scan on every loop. A zero cadence is meaningless; reject
     # it at config validation (disable via enabled: false instead).
     for enabled in (True, False):
-        cfg = parse_triage_config(
+        cfg = parse_tech_lead_config(
             {"stuck_sweep": {"enabled": enabled, "interval_minutes": 0}}
         ).stuck_sweep
         assert any("interval_minutes" in e for e in cfg.startup_errors()), (
             f"interval 0 must be rejected (enabled={enabled})"
         )
     # A positive interval validates.
-    ok = parse_triage_config(
+    ok = parse_tech_lead_config(
         {"stuck_sweep": {"enabled": True, "interval_minutes": 1}}
     ).stuck_sweep
     assert ok.startup_errors() == []
@@ -604,7 +604,7 @@ def test_due_false_for_zero_interval_even_if_elapsed():
 
 
 def test_stuck_sweep_config_parsed_from_yaml_dict():
-    triage = parse_triage_config(
+    tech_lead = parse_tech_lead_config(
         {
             "stuck_sweep": {
                 "enabled": True,
@@ -613,10 +613,10 @@ def test_stuck_sweep_config_parsed_from_yaml_dict():
             }
         }
     )
-    assert triage.stuck_sweep.enabled is True
-    assert triage.stuck_sweep.interval_minutes == 30
-    assert triage.stuck_sweep.max_recovery_attempts == 5
-    assert triage.to_event_dict()["stuck_sweep"] == {
+    assert tech_lead.stuck_sweep.enabled is True
+    assert tech_lead.stuck_sweep.interval_minutes == 30
+    assert tech_lead.stuck_sweep.max_recovery_attempts == 5
+    assert tech_lead.to_event_dict()["stuck_sweep"] == {
         "enabled": True,
         "interval_minutes": 30,
         "max_recovery_attempts": 5,

@@ -47,7 +47,7 @@ from ..domain.models import (
     PendingRework,
     Session,
 )
-from ..domain.triage_session import TriageCaseFileSummary, TriageShippedFixSummary
+from ..domain.tech_lead_session import TechLeadCaseFileSummary, TechLeadShippedFixSummary
 from ..ports.timeline_store import TimelineRecord
 
 logger = logging.getLogger(__name__)
@@ -70,8 +70,8 @@ class BoardSnapshotBuilder:
         *,
         timeline_reader: Callable[[int, int], Sequence[TimelineRecord]],
         log_tail_provider: Callable[[int], list[str]],
-        case_file_reader: Callable[[], Sequence[TriageCaseFileSummary]],
-        shipped_fix_reader: Callable[[int], Sequence[TriageShippedFixSummary]],
+        case_file_reader: Callable[[], Sequence[TechLeadCaseFileSummary]],
+        shipped_fix_reader: Callable[[int], Sequence[TechLeadShippedFixSummary]],
         e2e_health_reader: Callable[[datetime], BoardE2EHealth | None],
         session_activity_reader: Callable[[Session], SessionActivityFacts | None],
         clock: Callable[[], datetime],
@@ -309,12 +309,12 @@ class BoardSnapshotBuilder:
                     detail=_clip(_rework_detail(rework)),
                 )
             )
-        for triage in state.pending_triage_reviews:
+        for tech_lead in state.pending_tech_lead_reviews:
             entries.append(
                 BoardQueueEntry(
-                    queue="pending_triage",
-                    issue_number=triage.issue_number,
-                    detail=_clip(triage.title),
+                    queue="pending_tech_lead",
+                    issue_number=tech_lead.issue_number,
+                    detail=_clip(tech_lead.title),
                 )
             )
         for retry in state.pending_validation_retries:
@@ -389,7 +389,7 @@ class StateBoardSnapshotProvider:
 
     - the live buffer, holding failures discovered THIS tick; and
     - the typed failure context preserved on queued
-      ``PendingTriageReview`` items (``PendingTriageReview.failure``) — a
+      ``PendingTechLeadReview`` items (``PendingTechLeadReview.failure``) — a
       failure investigation discovered on tick N launches on tick N+1, after
       the buffer was cleared, so without this merge the investigation's own
       triggering failure would be missing from its snapshot.
@@ -436,9 +436,9 @@ def _merge_failure_sources(state: OrchestratorState) -> tuple[DiscoveredFailure,
     live = tuple(state.discovered_failures)
     seen = {failure.issue_number for failure in live}
     queued: list[DiscoveredFailure] = []
-    for triage in state.pending_triage_reviews:
+    for tech_lead in state.pending_tech_lead_reviews:
         candidates = (
-            (triage.failure,) if triage.failure is not None else triage.problem_cohort
+            (tech_lead.failure,) if tech_lead.failure is not None else tech_lead.problem_cohort
         )
         for failure in candidates:
             if failure.issue_number in seen:
@@ -489,8 +489,8 @@ def _clip(text: str) -> str:
 
 
 def _area_signals(
-    case_files: Sequence[TriageCaseFileSummary],
-    shipped_fix_history: Sequence[TriageShippedFixSummary],
+    case_files: Sequence[TechLeadCaseFileSummary],
+    shipped_fix_history: Sequence[TechLeadShippedFixSummary],
 ) -> list[BoardAreaSignal]:
     """Assemble bounded cross-signature step-back facts by area/seam."""
     distinct_patterns: dict[str, int] = {}

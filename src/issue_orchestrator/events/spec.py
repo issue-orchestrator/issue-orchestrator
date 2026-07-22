@@ -98,8 +98,8 @@ EVENT_SPEC: dict[PublicEventName, EventSpec] = {
     PublicEventName.REWORK_STARTED: EventSpec(phase='rework', step='started', status='started', level='detail'),
     PublicEventName.REWORK_LAUNCHING: EventSpec(phase='rework', step='launching', status='started', level='detail'),
 
-    # ----- Triage -----
-    PublicEventName.TRIAGE_LAUNCHING: EventSpec(phase='system', step='triage.launching', status='started', level='detail'),
+    # ----- Tech Lead -----
+    PublicEventName.TECH_LEAD_LAUNCHING: EventSpec(phase='system', step='tech_lead.launching', status='started', level='detail'),
 
     # ----- Validation -----
     PublicEventName.VALIDATION_STARTED: EventSpec(phase='orchestrator', step='validation.started', status='started', level='detail'),

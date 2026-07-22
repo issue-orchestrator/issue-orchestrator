@@ -62,10 +62,10 @@ class ProviderAvailabilityPolicy:
             if provider:
                 providers_by_issue.setdefault(issue_num, set()).add(provider)
 
-        triage_provider = self.provider_for_agent_label(self.config.triage_review_agent)
-        if triage_provider:
-            for triage in snapshot.pending_triage:
-                providers_by_issue.setdefault(triage.issue_number, set()).add(triage_provider)
+        tech_lead_provider = self.provider_for_agent_label(self.config.tech_lead_review_agent)
+        if tech_lead_provider:
+            for tech_lead in snapshot.pending_tech_lead:
+                providers_by_issue.setdefault(tech_lead.issue_number, set()).add(tech_lead_provider)
 
         return providers_by_issue
 

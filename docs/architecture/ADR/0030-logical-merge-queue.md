@@ -21,7 +21,7 @@ running in the awaiting-merge discovery phase under the
 Observer → Planner → ActionApplier contract. Its config section is live and
 user-documented: `merge_queue.enabled`, `merge_queue.provider` (today
 constrained to `github`), `merge_queue.enqueue_after`
-(`code-reviewed` | `triage-reviewed`), and `merge_queue.failure_action`
+(`code-reviewed` | `tech-lead-reviewed`), and `merge_queue.failure_action`
 (`rework` | `needs_human`), with `merge_queue.enqueued` / `merge_queue.failed`
 trace events. This ADR extends that feature. It must not create a second
 queue-policy owner beside it.

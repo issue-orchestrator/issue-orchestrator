@@ -73,7 +73,7 @@ class TestReconcileFromCache:
         assert repo.fetched == []
 
     def test_adds_missing_rows_using_cache(self, store, label_manager):
-        # GitHub has blocked + triage provenance + pr-pending; the store
+        # GitHub has blocked + tech_lead provenance + pr-pending; the store
         # under-records them. Reconcile fills the gap so the mirror matches.
         store.add_label(228, "pr-pending")
         repo = _FakeRepositoryHost({})
@@ -83,7 +83,7 @@ class TestReconcileFromCache:
                 {
                     228: [
                         "blocked",
-                        "triage-needs-human",
+                        "tech-lead-needs-human",
                         "pr-pending",
                         "agent:web",
                     ]
@@ -94,7 +94,7 @@ class TestReconcileFromCache:
         assert store.load_labels(228) == {
             "pr-pending",
             "blocked",
-            "triage-needs-human",
+            "tech-lead-needs-human",
         }
         assert result.labels_added == 2
         assert result.labels_removed == 0

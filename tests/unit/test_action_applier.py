@@ -20,8 +20,8 @@ from issue_orchestrator.control.actions import (
     QueueReviewAction,
     EnqueueToMergeQueueAction,
     EscalateToHumanAction,
-    CreateTriageIssueAction,
-    SurfaceTriageProposalAction,
+    CreateTechLeadIssueAction,
+    SurfaceTechLeadProposalAction,
     CleanupSessionAction,
     RemoveWorktreeAction,
     ReconcileHistoryEntryAction,
@@ -43,13 +43,13 @@ from issue_orchestrator.domain.models import (
     Session,
     SessionHistoryEntry,
 )
-from issue_orchestrator.domain.triage_session import (
+from issue_orchestrator.domain.tech_lead_session import (
     HEALTH_REVIEW_MARKER_LABEL,
-    TriageSessionFlavor,
+    TechLeadSessionFlavor,
 )
 from issue_orchestrator.events import EventName
 from issue_orchestrator.ports.claim_manager import ClaimManager
-from issue_orchestrator.ports.triage_authority import InMemoryTriageAuthorityStore
+from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthorityStore
 
 
 @pytest.fixture
@@ -366,9 +366,9 @@ class TestReconcileHistoryEntryAction:
             pr_url="https://github.com/test/repo/pull/318",
             issue_labels=("Area:db",),
         )
-        store = InMemoryTriageAuthorityStore()
+        store = InMemoryTechLeadAuthorityStore()
         applier.history_owner = SessionHistoryOwner([entry])
-        applier.triage_ops = store
+        applier.tech_lead_ops = store
 
         result = applier.apply(ReconcileHistoryEntryAction(
             issue_number=228,
@@ -403,7 +403,7 @@ class TestReconcileHistoryEntryAction:
         store = MagicMock()
         store.record_shipped_fix.side_effect = RuntimeError("disk full")
         applier.history_owner = SessionHistoryOwner([entry])
-        applier.triage_ops = store
+        applier.tech_lead_ops = store
 
         result = applier.apply(ReconcileHistoryEntryAction(
             issue_number=228,
@@ -456,7 +456,7 @@ class TestReconcileHistoryEntryAction:
         )
         store = MagicMock()
         applier.history_owner = SessionHistoryOwner([entry])
-        applier.triage_ops = store
+        applier.tech_lead_ops = store
 
         result = applier.apply(ReconcileHistoryEntryAction(
             issue_number=229,
@@ -1410,17 +1410,17 @@ class TestEscalateToHumanAction:
         assert result.success
 
 
-class TestCreateTriageIssueAction:
-    """Tests for CREATE_TRIAGE_ISSUE action."""
+class TestCreateTechLeadIssueAction:
+    """Tests for CREATE_TECH_LEAD_ISSUE action."""
 
-    def test_create_triage_issue_success(self, applier, mock_repository_host, mock_events):
-        """Test successful triage issue creation."""
+    def test_create_tech_lead_issue_success(self, applier, mock_repository_host, mock_events):
+        """Test successful tech_lead issue creation."""
         mock_repository_host.create_issue.return_value = {"number": 100, "html_url": "https://github.com/owner/repo/issues/100"}
 
-        action = CreateTriageIssueAction(
+        action = CreateTechLeadIssueAction(
             title="Batch Review: 5 PRs",
             body="Review these PRs...",
-            labels=("agent:triage",),
+            labels=("agent:tech-lead",),
             pr_count=5,
         )
 
@@ -1436,7 +1436,7 @@ class TestCreateTriageIssueAction:
         """Storm escalation is machine-observable without parsing log text."""
         mock_repository_host.create_issue.return_value = {"number": 100}
         trigger = "problem storm: 3 issues inside settle window"
-        action = CreateTriageIssueAction(
+        action = CreateTechLeadIssueAction(
             title="Repository health review",
             body="Review this problem cohort",
             labels=(HEALTH_REVIEW_MARKER_LABEL,),
@@ -1446,7 +1446,7 @@ class TestCreateTriageIssueAction:
                 DiscoveredFailure(43, "Problem 43", "failed"),
             ),
             reason=trigger,
-            flavor=TriageSessionFlavor.HEALTH_REVIEW,
+            flavor=TechLeadSessionFlavor.HEALTH_REVIEW,
         )
 
         result = applier.apply(action)
@@ -1455,19 +1455,19 @@ class TestCreateTriageIssueAction:
         [created] = [
             call.args[0]
             for call in mock_events.publish.call_args_list
-            if call.args[0].name == EventName.TRIAGE_ISSUE_CREATED.value
+            if call.args[0].name == EventName.TECH_LEAD_ISSUE_CREATED.value
         ]
         assert created.data == {
             "issue_number": 100,
             "pr_count": 0,
             "trigger": trigger,
             "storm_problem_count": 3,
-            "flavor": TriageSessionFlavor.HEALTH_REVIEW.value,
+            "flavor": TechLeadSessionFlavor.HEALTH_REVIEW.value,
         }
 
     @pytest.mark.parametrize(
         "flavor",
-        [TriageSessionFlavor.BATCH_REVIEW, TriageSessionFlavor.HEALTH_REVIEW],
+        [TechLeadSessionFlavor.BATCH_REVIEW, TechLeadSessionFlavor.HEALTH_REVIEW],
     )
     def test_creation_reports_the_authored_flavor_without_reading_labels(
         self, applier, mock_repository_host, mock_events, flavor
@@ -1479,7 +1479,7 @@ class TestCreateTriageIssueAction:
         lifecycle policy in the generic applier (#6780).
         """
         mock_repository_host.create_issue.return_value = {"number": 100}
-        action = CreateTriageIssueAction(
+        action = CreateTechLeadIssueAction(
             title="Anchor",
             body="Body",
             # Deliberately contradicts the flavor for BATCH_REVIEW: a label the
@@ -1493,18 +1493,18 @@ class TestCreateTriageIssueAction:
         [created] = [
             call.args[0]
             for call in mock_events.publish.call_args_list
-            if call.args[0].name == EventName.TRIAGE_ISSUE_CREATED.value
+            if call.args[0].name == EventName.TECH_LEAD_ISSUE_CREATED.value
         ]
         assert created.data["flavor"] == flavor.value
 
-    def test_create_triage_issue_no_repo_host(self, applier):
-        """Test triage issue creation without repository host."""
+    def test_create_tech_lead_issue_no_repo_host(self, applier):
+        """Test tech_lead issue creation without repository host."""
         applier.repository_host = None
 
-        action = CreateTriageIssueAction(
+        action = CreateTechLeadIssueAction(
             title="Batch Review: 5 PRs",
             body="Review these PRs...",
-            labels=("agent:triage",),
+            labels=("agent:tech-lead",),
             pr_count=5,
         )
 
@@ -1513,26 +1513,26 @@ class TestCreateTriageIssueAction:
         assert not result.success
         assert "No repository_host" in result.error
 
-    def test_create_triage_issue_without_milestone_makes_no_milestone_read(
+    def test_create_tech_lead_issue_without_milestone_makes_no_milestone_read(
         self, applier, mock_repository_host
     ):
         """Empty/number intents never touch the milestones API (#6769 F4)."""
         mock_repository_host.create_issue.return_value = {"number": 100}
 
         result = applier.apply(
-            CreateTriageIssueAction(title="T", body="B", labels=(), pr_count=1)
+            CreateTechLeadIssueAction(title="T", body="B", labels=(), pr_count=1)
         )
 
         assert result.success
         mock_repository_host.list_milestones.assert_not_called()
         assert mock_repository_host.create_issue.call_args.kwargs["milestone"] is None
 
-    def test_create_triage_issue_resolves_explicit_name_at_creation(
+    def test_create_tech_lead_issue_resolves_explicit_name_at_creation(
         self, applier, mock_repository_host
     ):
         """THE resolution boundary: the planned name becomes a number here,
         with exactly one list_milestones read (#6769 finding 4)."""
-        from issue_orchestrator.control.actions import TriageMilestoneIntent
+        from issue_orchestrator.control.actions import TechLeadMilestoneIntent
 
         mock_repository_host.list_milestones.return_value = [
             {"number": 3, "title": "M3"},
@@ -1541,12 +1541,12 @@ class TestCreateTriageIssueAction:
         mock_repository_host.create_issue.return_value = {"number": 100}
 
         result = applier.apply(
-            CreateTriageIssueAction(
+            CreateTechLeadIssueAction(
                 title="T",
                 body="B",
                 labels=(),
                 pr_count=1,
-                milestone=TriageMilestoneIntent(explicit_name="M5"),
+                milestone=TechLeadMilestoneIntent(explicit_name="M5"),
             )
         )
 
@@ -1554,24 +1554,24 @@ class TestCreateTriageIssueAction:
         mock_repository_host.list_milestones.assert_called_once()
         assert mock_repository_host.create_issue.call_args.kwargs["milestone"] == 5
 
-    def test_create_triage_issue_unresolvable_name_fails_loudly_without_creating(
+    def test_create_tech_lead_issue_unresolvable_name_fails_loudly_without_creating(
         self, applier, mock_repository_host
     ):
         """execute + unresolvable configured name -> loud applier failure;
         the issue is never created (#6769 finding 4)."""
-        from issue_orchestrator.control.actions import TriageMilestoneIntent
+        from issue_orchestrator.control.actions import TechLeadMilestoneIntent
 
         mock_repository_host.list_milestones.return_value = [
             {"number": 3, "title": "M3"},
         ]
 
         result = applier.apply(
-            CreateTriageIssueAction(
+            CreateTechLeadIssueAction(
                 title="T",
                 body="B",
                 labels=(),
                 pr_count=1,
-                milestone=TriageMilestoneIntent(explicit_name="Nope"),
+                milestone=TechLeadMilestoneIntent(explicit_name="Nope"),
             )
         )
 
@@ -1580,8 +1580,8 @@ class TestCreateTriageIssueAction:
         mock_repository_host.create_issue.assert_not_called()
 
 
-class TestSurfaceTriageProposalAction:
-    """Tests for SURFACE_TRIAGE_PROPOSAL action (ADR-0031)."""
+class TestSurfaceTechLeadProposalAction:
+    """Tests for SURFACE_TECH_LEAD_PROPOSAL action (ADR-0031)."""
 
     def _proposal(self, **overrides):
         defaults = dict(
@@ -1594,10 +1594,10 @@ class TestSurfaceTriageProposalAction:
             body_preview="Reset issue #17 from scratch",
             finding_ids=("T1", "T2"),
             mode="shadow",
-            reason="triage proposal A1 (reset_retry) surfaced as shadow",
+            reason="tech_lead proposal A1 (reset_retry) surfaced as shadow",
         )
         defaults.update(overrides)
-        return SurfaceTriageProposalAction(**defaults)
+        return SurfaceTechLeadProposalAction(**defaults)
 
     def test_shadow_proposal_emits_action_proposed_with_full_payload(
         self, applier, mock_events, mock_repository_host
@@ -1608,7 +1608,7 @@ class TestSurfaceTriageProposalAction:
         published = [
             call.args[0]
             for call in mock_events.publish.call_args_list
-            if call.args[0].name == EventName.TRIAGE_ACTION_PROPOSED.value
+            if call.args[0].name == EventName.TECH_LEAD_ACTION_PROPOSED.value
         ]
         assert len(published) == 1
         assert published[0].data == {
@@ -1632,8 +1632,8 @@ class TestSurfaceTriageProposalAction:
 
         assert result.success
         names = [call.args[0].name for call in mock_events.publish.call_args_list]
-        assert EventName.TRIAGE_ACTION_PROPOSED.value in names
-        assert EventName.TRIAGE_DECISION_REJECTED.value not in names
+        assert EventName.TECH_LEAD_ACTION_PROPOSED.value in names
+        assert EventName.TECH_LEAD_DECISION_REJECTED.value not in names
 
     def test_rejected_mode_emits_decision_rejected(
         self, applier, mock_events, mock_repository_host, mock_labels
@@ -1645,8 +1645,8 @@ class TestSurfaceTriageProposalAction:
                 target_number=0,
                 finding_ids=(),
                 mode="rejected",
-                body_preview="triage decision missing or empty: x",
-                reason="triage decision rejected (missing_decision)",
+                body_preview="tech_lead decision missing or empty: x",
+                reason="tech_lead decision rejected (missing_decision)",
             )
         )
 
@@ -1654,13 +1654,13 @@ class TestSurfaceTriageProposalAction:
         published = [
             call.args[0]
             for call in mock_events.publish.call_args_list
-            if call.args[0].name == EventName.TRIAGE_DECISION_REJECTED.value
+            if call.args[0].name == EventName.TECH_LEAD_DECISION_REJECTED.value
         ]
         assert len(published) == 1
         assert published[0].data["proposal_type"] == "decision"
         assert published[0].data["mode"] == "rejected"
         assert published[0].data["body_preview"] == (
-            "triage decision missing or empty: x"
+            "tech_lead decision missing or empty: x"
         )
         assert not mock_repository_host.method_calls
         assert not mock_labels.method_calls
@@ -2702,16 +2702,16 @@ class TestClaimGateAudit:
     # - LAUNCH_VALIDATION_RETRY: does its own claim acquisition in session_launcher
     # - STOP_SESSION: local terminal operation (killing sessions)
     # - CREATE_WORKTREE / REMOVE_WORKTREE: local filesystem only
-    # - QUEUE_RETROSPECTIVE_REVIEW / QUEUE_REWORK / QUEUE_TRIAGE: local state operations
-    # - CREATE_TRIAGE_ISSUE: creates a NEW issue, not modifying a claimed one
-    # - CREATE_TRIAGE_PROPOSAL_ISSUE: creates a NEW gated issue + records the
-    #   stored op (#6778); the anchor link comment targets the triage
+    # - QUEUE_RETROSPECTIVE_REVIEW / QUEUE_REWORK / QUEUE_TECH_LEAD: local state operations
+    # - CREATE_TECH_LEAD_ISSUE: creates a NEW issue, not modifying a claimed one
+    # - CREATE_TECH_LEAD_PROPOSAL_ISSUE: creates a NEW gated issue + records the
+    #   stored op (#6778); the anchor link comment targets the tech_lead
     #   session's own anchor issue, never a claimed coding issue
-    # - CREATE_TRIAGE_CASE_FILE_ISSUE: creates a NEW observation-labeled case
+    # - CREATE_TECH_LEAD_CASE_FILE_ISSUE: creates a NEW observation-labeled case
     #   file + records the pattern ledger row (#6781); the repeat-observation
     #   evidence comment targets that orchestrator-owned case file, never a
     #   claimed coding issue
-    # - SURFACE_TRIAGE_PROPOSAL: emits a trace event only, no GitHub calls
+    # - SURFACE_TECH_LEAD_PROPOSAL: emits a trace event only, no GitHub calls
     # - RESET_RETRY_ISSUE: owner command (#6764) - every GitHub write it
     #   triggers is delegated to the reset owner, which routes label/PR
     #   mutations back through this applier's claim-verified handlers
@@ -2720,7 +2720,7 @@ class TestClaimGateAudit:
     #   issue-runtime termination boundary (sessions/jobs/pair); its only
     #   GitHub writes are the proposal-issue outcome comment + close, on the
     #   unclaimed gated proposal issue the operator just approved.
-    # - DISCARD_TERMINAL_TRIAGE_PROPOSAL_OPS: orchestrator-owned ledger cleanup
+    # - DISCARD_TERMINAL_TECH_LEAD_PROPOSAL_OPS: orchestrator-owned ledger cleanup
     #   (#6779 R7/R10) - confirms each absent proposal with a targeted READ
     #   (get_issue_state) and discards only the local authority-store op row;
     #   it never writes GitHub state and never touches a claimed coding issue.
@@ -2735,14 +2735,14 @@ class TestClaimGateAudit:
         ActionType.REMOVE_WORKTREE,
         ActionType.QUEUE_RETROSPECTIVE_REVIEW,
         ActionType.QUEUE_REWORK,
-        ActionType.QUEUE_TRIAGE,
-        ActionType.CREATE_TRIAGE_ISSUE,
-        ActionType.CREATE_TRIAGE_PROPOSAL_ISSUE,
-        ActionType.CREATE_TRIAGE_CASE_FILE_ISSUE,
-        ActionType.SURFACE_TRIAGE_PROPOSAL,
+        ActionType.QUEUE_TECH_LEAD,
+        ActionType.CREATE_TECH_LEAD_ISSUE,
+        ActionType.CREATE_TECH_LEAD_PROPOSAL_ISSUE,
+        ActionType.CREATE_TECH_LEAD_CASE_FILE_ISSUE,
+        ActionType.SURFACE_TECH_LEAD_PROPOSAL,
         ActionType.RESET_RETRY_ISSUE,
         ActionType.KILL_HUNG_SESSION,
-        ActionType.DISCARD_TERMINAL_TRIAGE_PROPOSAL_OPS,
+        ActionType.DISCARD_TERMINAL_TECH_LEAD_PROPOSAL_OPS,
         ActionType.CLEANUP_SESSION,
         ActionType.RECONCILE_HISTORY_ENTRY,
         ActionType.CREATE_PR,

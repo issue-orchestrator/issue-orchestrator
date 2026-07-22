@@ -58,7 +58,7 @@ from issue_orchestrator.domain.models import (
     OrchestratorState,
     PendingReview,
     PendingRework,
-    PendingTriageReview,
+    PendingTechLeadReview,
     PendingCleanup,
     DiscoveredAwaitingMergeDrift,
     DiscoveredAwaitingMergeEscalation,
@@ -76,7 +76,7 @@ from issue_orchestrator.domain.models import (
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
-from issue_orchestrator.domain.triage_session import TriageSessionFlavor
+from issue_orchestrator.domain.tech_lead_session import TechLeadSessionFlavor
 from tests.unit.session_run_helpers import make_session_run_assets
 from issue_orchestrator.events import EventName
 from issue_orchestrator.ports import TraceEvent
@@ -127,7 +127,7 @@ def sample_orchestrator_state():
         paused=False,
         pending_reviews=[],
         pending_reworks=[],
-        pending_triage_reviews=[],
+        pending_tech_lead_reviews=[],
         discovered_reviews=[],
         discovered_reworks=[],
         discovered_escalations=[],
@@ -1293,8 +1293,8 @@ class TestOrchestratorSupportApplyPlan:
         """Create an OrchestratorSupport instance for testing."""
         mock_config = MagicMock()
         mock_config.cleanup = MagicMock()
-        mock_config.cleanup.without_triage = MagicMock()
-        mock_config.cleanup.without_triage.close_ai_session_tabs = False
+        mock_config.cleanup.without_tech_lead = MagicMock()
+        mock_config.cleanup.without_tech_lead.close_ai_session_tabs = False
         mock_config.code_review_agent = None
 
         mock_session_manager = MagicMock()
@@ -1304,7 +1304,7 @@ class TestOrchestratorSupportApplyPlan:
         mock_worktree_manager = MagicMock()
         mock_state_machine_manager = MagicMock()
         mock_cleanup_manager = MagicMock()
-        mock_cleanup_manager.should_retry_triage_issue = Mock(return_value=True)
+        mock_cleanup_manager.should_retry_tech_lead_issue = Mock(return_value=True)
 
         return OrchestratorSupport(
             config=mock_config,
@@ -1413,17 +1413,17 @@ class TestOrchestratorSupportApplyPlan:
         event_names = [e.name for e in mock_event_sink.events]
         assert EventName.RECONCILIATION_REQUIRED in event_names
 
-    def test_triage_issue_skipped_on_cooldown(self, support, mock_event_sink):
-        """CREATE_TRIAGE_ISSUE action is skipped when on cooldown."""
+    def test_tech_lead_issue_skipped_on_cooldown(self, support, mock_event_sink):
+        """CREATE_TECH_LEAD_ISSUE action is skipped when on cooldown."""
         mock_action = MagicMock()
-        mock_action.action_type = ActionType.CREATE_TRIAGE_ISSUE
+        mock_action.action_type = ActionType.CREATE_TECH_LEAD_ISSUE
 
         plan = MagicMock()
         plan.action_count = 1
         plan.actions = [mock_action]
 
         # Set cooldown active
-        support.cleanup_manager.should_retry_triage_issue = Mock(return_value=False)
+        support.cleanup_manager.should_retry_tech_lead_issue = Mock(return_value=False)
 
         support.apply_plan(plan, Mock())
 
@@ -1500,8 +1500,8 @@ class TestOrchestratorSupportClearDiscoveredFacts:
         """Create an OrchestratorSupport instance for testing."""
         mock_config = MagicMock()
         mock_config.cleanup = MagicMock()
-        mock_config.cleanup.without_triage = MagicMock()
-        mock_config.cleanup.without_triage.close_ai_session_tabs = False
+        mock_config.cleanup.without_tech_lead = MagicMock()
+        mock_config.cleanup.without_tech_lead.close_ai_session_tabs = False
         mock_config.code_review_agent = None
 
         return OrchestratorSupport(
@@ -1630,19 +1630,19 @@ class TestUpdateStateAfterAction:
     ):
         """Create support with accessible state.
 
-        A real in-memory triage authority is wired because the storm collapse
+        A real in-memory tech_lead authority is wired because the storm collapse
         is bound to DURABLE cohort persistence (#6780): the composition
         root always supplies the store, and without one intake declines to
         retire the individual investigations.
         """
-        from issue_orchestrator.ports.triage_authority import (
-            InMemoryTriageAuthorityStore,
+        from issue_orchestrator.ports.tech_lead_authority import (
+            InMemoryTechLeadAuthorityStore,
         )
 
         mock_config = MagicMock()
         mock_config.cleanup = MagicMock()
-        mock_config.cleanup.without_triage = MagicMock()
-        mock_config.cleanup.without_triage.close_ai_session_tabs = False
+        mock_config.cleanup.without_tech_lead = MagicMock()
+        mock_config.cleanup.without_tech_lead.close_ai_session_tabs = False
         mock_config.code_review_agent = None
 
         return OrchestratorSupport(
@@ -1660,7 +1660,7 @@ class TestUpdateStateAfterAction:
             cleanup_manager=MagicMock(),
             get_review_machine=Mock(),
             kill_session=Mock(),
-            triage_authority=InMemoryTriageAuthorityStore(),
+            tech_lead_authority=InMemoryTechLeadAuthorityStore(),
         )
 
     @staticmethod
@@ -1670,7 +1670,7 @@ class TestUpdateStateAfterAction:
         The action applier is faked at its port boundary (``apply`` returns a
         successful ``ActionResult`` carrying ``details``, the shape the real
         applier produces), so ``apply_plan`` runs the real success-handling
-        path — including the post-apply state update that queues triage work.
+        path — including the post-apply state update that queues tech_lead work.
         This keeps coverage on the public planner/action-owner command path
         rather than reaching into the private ``_update_state_after_action``.
         """
@@ -1941,14 +1941,14 @@ class TestUpdateStateAfterAction:
         # Should have removed from pending_cleanups
         assert len(support_with_state.state.pending_cleanups) == 0
 
-    def test_create_triage_issue_adds_to_pending_triage(self, support_with_state):
-        """CREATE_TRIAGE_ISSUE action adds to pending_triage_reviews."""
-        from issue_orchestrator.control.actions import CreateTriageIssueAction
+    def test_create_tech_lead_issue_adds_to_pending_tech_lead(self, support_with_state):
+        """CREATE_TECH_LEAD_ISSUE action adds to pending_tech_lead_reviews."""
+        from issue_orchestrator.control.actions import CreateTechLeadIssueAction
 
-        action = CreateTriageIssueAction(
-            title="Triage Batch Review",
+        action = CreateTechLeadIssueAction(
+            title="Tech Lead Batch Review",
             body="Review these PRs",
-            labels=("agent:triage",),
+            labels=("agent:tech-lead",),
             pr_count=5,
         )
         result = MagicMock(success=True, details={"issue_number": 999})
@@ -1956,22 +1956,22 @@ class TestUpdateStateAfterAction:
         # noqa: SLF001 - Testing state mutation behavior of private method
         support_with_state._update_state_after_action(action, result)  # noqa: SLF001
 
-        # Should have added to pending_triage_reviews as a batch review:
+        # Should have added to pending_tech_lead_reviews as a batch review:
         # threshold-created tracking issues audit the PR manifest (#6768 B5).
-        assert len(support_with_state.state.pending_triage_reviews) == 1
-        triage = support_with_state.state.pending_triage_reviews[0]
-        assert triage.issue_number == 999
-        assert triage.flavor is TriageSessionFlavor.BATCH_REVIEW
+        assert len(support_with_state.state.pending_tech_lead_reviews) == 1
+        tech_lead = support_with_state.state.pending_tech_lead_reviews[0]
+        assert tech_lead.issue_number == 999
+        assert tech_lead.flavor is TechLeadSessionFlavor.BATCH_REVIEW
 
-    def test_queue_triage_adds_failure_investigation(self, support_with_state):
-        """QUEUE_TRIAGE queues a failure investigation, not a batch review (#6768 B5)."""
-        from issue_orchestrator.control.actions import QueueTriageAction
+    def test_queue_tech_lead_adds_failure_investigation(self, support_with_state):
+        """QUEUE_TECH_LEAD queues a failure investigation, not a batch review (#6768 B5)."""
+        from issue_orchestrator.control.actions import QueueTechLeadAction
         from issue_orchestrator.domain.models import DiscoveredFailure
 
         failure = DiscoveredFailure(
             issue_number=42, issue_title="Test issue", failure_reason="failed"
         )
-        action = QueueTriageAction(
+        action = QueueTechLeadAction(
             issue_number=42,
             title="Investigate: Test issue (failed)",
             failure=failure,
@@ -1982,51 +1982,51 @@ class TestUpdateStateAfterAction:
         # noqa: SLF001 - Testing state mutation behavior of private method
         support_with_state._update_state_after_action(action, result)  # noqa: SLF001
 
-        assert len(support_with_state.state.pending_triage_reviews) == 1
-        triage = support_with_state.state.pending_triage_reviews[0]
-        assert triage.issue_number == 42
-        assert triage.flavor is TriageSessionFlavor.FAILURE_INVESTIGATION
+        assert len(support_with_state.state.pending_tech_lead_reviews) == 1
+        tech_lead = support_with_state.state.pending_tech_lead_reviews[0]
+        assert tech_lead.issue_number == 42
+        assert tech_lead.flavor is TechLeadSessionFlavor.FAILURE_INVESTIGATION
         # The typed failure context rides the queue item so the launch-time
         # board snapshot (a later tick) still contains the triggering failure.
-        assert triage.failure is failure
+        assert tech_lead.failure is failure
 
-    def test_queue_triage_without_failure_context_fails_fast(self, support_with_state):
-        """A QUEUE_TRIAGE action lacking failure context is a producer bug.
+    def test_queue_tech_lead_without_failure_context_fails_fast(self, support_with_state):
+        """A QUEUE_TECH_LEAD action lacking failure context is a producer bug.
 
-        ``QueueTriageAction.failure`` is a required keyword field, so the
+        ``QueueTechLeadAction.failure`` is a required keyword field, so the
         contract is enforced at action CONSTRUCTION — an investigation cannot
         even be described without its triggering failure.
         """
-        from issue_orchestrator.control.actions import QueueTriageAction
+        from issue_orchestrator.control.actions import QueueTechLeadAction
 
         with pytest.raises(TypeError, match="failure"):
-            QueueTriageAction(
+            QueueTechLeadAction(
                 issue_number=42,
                 title="Investigate: Test issue (failed)",
                 reason="Session failed with status 'failed'",
             )
 
-        assert support_with_state.state.pending_triage_reviews == []
+        assert support_with_state.state.pending_tech_lead_reviews == []
 
-    def test_create_triage_issue_dedups_existing_queue_entry(self, support_with_state):
+    def test_create_tech_lead_issue_dedups_existing_queue_entry(self, support_with_state):
         """The create-success path must not double-queue an issue (#6768 round 3).
 
         Before the owner API, this producer appended without any dedup check.
         """
-        from issue_orchestrator.control.actions import CreateTriageIssueAction
-        from issue_orchestrator.domain.models import PendingTriageReview
+        from issue_orchestrator.control.actions import CreateTechLeadIssueAction
+        from issue_orchestrator.domain.models import PendingTechLeadReview
 
-        existing = PendingTriageReview(
+        existing = PendingTechLeadReview(
             issue_number=999,
-            title="Triage Batch Review",
-            flavor=TriageSessionFlavor.BATCH_REVIEW,
+            title="Tech Lead Batch Review",
+            flavor=TechLeadSessionFlavor.BATCH_REVIEW,
         )
-        support_with_state.state.pending_triage_reviews.append(existing)
+        support_with_state.state.pending_tech_lead_reviews.append(existing)
 
-        action = CreateTriageIssueAction(
-            title="Triage Batch Review",
+        action = CreateTechLeadIssueAction(
+            title="Tech Lead Batch Review",
             body="Review these PRs",
-            labels=("agent:triage",),
+            labels=("agent:tech-lead",),
             pr_count=5,
         )
         result = MagicMock(success=True, details={"issue_number": 999})
@@ -2034,18 +2034,18 @@ class TestUpdateStateAfterAction:
         # noqa: SLF001 - Testing state mutation behavior of private method
         support_with_state._update_state_after_action(action, result)  # noqa: SLF001
 
-        assert support_with_state.state.pending_triage_reviews == [existing]
+        assert support_with_state.state.pending_tech_lead_reviews == [existing]
 
-    def test_batch_triage_issue_does_not_stamp_health_review(self, support_with_state):
+    def test_batch_tech_lead_issue_does_not_stamp_health_review(self, support_with_state):
         """Unmarked batch creation must NOT touch last_health_review_at."""
-        from issue_orchestrator.control.actions import CreateTriageIssueAction
+        from issue_orchestrator.control.actions import CreateTechLeadIssueAction
 
         store = MagicMock()
         support_with_state.queue_cache_store = store
-        action = CreateTriageIssueAction(
-            title="Triage Batch Review",
+        action = CreateTechLeadIssueAction(
+            title="Tech Lead Batch Review",
             body="Review these PRs",
-            labels=("agent:triage",),
+            labels=("agent:tech-lead",),
             pr_count=5,
         )
 
@@ -2054,25 +2054,25 @@ class TestUpdateStateAfterAction:
         assert support_with_state.state.last_health_review_at == 0.0
         store.save_last_health_review_at.assert_not_called()
         # And the intake routed to the BATCH owner operation, not health.
-        (triage,) = support_with_state.state.pending_triage_reviews
-        assert triage.flavor is TriageSessionFlavor.BATCH_REVIEW
+        (tech_lead,) = support_with_state.state.pending_tech_lead_reviews
+        assert tech_lead.flavor is TechLeadSessionFlavor.BATCH_REVIEW
 
     def test_marker_labeled_creation_stamps_and_persists_health_review(
         self, support_with_state
     ):
         """Marker-labeled creation queues a HEALTH_REVIEW and stamps state AND
         the durable store (ADR-0031 §4)."""
-        from issue_orchestrator.control.actions import CreateTriageIssueAction
-        from issue_orchestrator.domain.triage_session import (
+        from issue_orchestrator.control.actions import CreateTechLeadIssueAction
+        from issue_orchestrator.domain.tech_lead_session import (
             HEALTH_REVIEW_MARKER_LABEL,
         )
 
         store = MagicMock()
         support_with_state.queue_cache_store = store
-        action = CreateTriageIssueAction(
+        action = CreateTechLeadIssueAction(
             title="Health Review — walk the floor",
             body="Walk the floor",
-            labels=("agent:triage", HEALTH_REVIEW_MARKER_LABEL),
+            labels=("agent:tech-lead", HEALTH_REVIEW_MARKER_LABEL),
             pr_count=0,
         )
 
@@ -2082,20 +2082,20 @@ class TestUpdateStateAfterAction:
         stamped = support_with_state.state.last_health_review_at
         assert stamped >= before
         store.save_last_health_review_at.assert_called_once_with(stamped)
-        # The anchor enters the pending-triage launch queue with the variant
+        # The anchor enters the pending-tech-lead launch queue with the variant
         # the marker label declares (typed intake, #6768 round 3).
-        (triage,) = support_with_state.state.pending_triage_reviews
-        assert triage.issue_number == 1000
-        assert triage.flavor is TriageSessionFlavor.HEALTH_REVIEW
+        (tech_lead,) = support_with_state.state.pending_tech_lead_reviews
+        assert tech_lead.issue_number == 1000
+        assert tech_lead.flavor is TechLeadSessionFlavor.HEALTH_REVIEW
 
     def test_storm_health_creation_replaces_member_investigations(
         self, support_with_state
     ):
         """Successful anchor intake atomically leaves one health review and
         zero per-member failure investigations (#6780)."""
-        from issue_orchestrator.control.actions import CreateTriageIssueAction
+        from issue_orchestrator.control.actions import CreateTechLeadIssueAction
         from issue_orchestrator.domain.models import DiscoveredFailure
-        from issue_orchestrator.domain.triage_session import (
+        from issue_orchestrator.domain.tech_lead_session import (
             HEALTH_REVIEW_MARKER_LABEL,
         )
 
@@ -2110,18 +2110,18 @@ class TestUpdateStateAfterAction:
                 f"Investigate {failure.issue_number}",
                 failure=failure,
             )
-        action = CreateTriageIssueAction(
+        action = CreateTechLeadIssueAction(
             title="Health Review — walk the floor",
             body="Problem storm",
-            labels=("agent:triage", HEALTH_REVIEW_MARKER_LABEL),
+            labels=("agent:tech-lead", HEALTH_REVIEW_MARKER_LABEL),
             pr_count=0,
             storm_problems=cohort,
         )
 
         self._apply_via_plan(support_with_state, [action], issue_number=1000)
 
-        [queued] = support_with_state.state.pending_triage_reviews
-        assert queued.flavor is TriageSessionFlavor.HEALTH_REVIEW
+        [queued] = support_with_state.state.pending_tech_lead_reviews
+        assert queued.flavor is TechLeadSessionFlavor.HEALTH_REVIEW
         assert queued.problem_cohort == cohort
 
     @staticmethod
@@ -2129,12 +2129,12 @@ class TestUpdateStateAfterAction:
         from issue_orchestrator.infra.config import Config
 
         config = Config(repo="test/repo", max_concurrent_sessions=3)
-        config.triage_review_agent = "agent:triage"
-        config.triage_review_on_failure = True
+        config.tech_lead_review_agent = "agent:tech-lead"
+        config.tech_lead_review_on_failure = True
         # Isolate the storm path from the periodic health-review interval.
-        config.triage.health_review.interval_minutes = 0
-        config.triage.health_review.storm_threshold = 3
-        config.triage.health_review.storm_window_minutes = 5
+        config.tech_lead.health_review.interval_minutes = 0
+        config.tech_lead.health_review.storm_threshold = 3
+        config.tech_lead.health_review.storm_window_minutes = 5
         return config
 
     def _plan_storm_tick(self, support, config):
@@ -2142,7 +2142,7 @@ class TestUpdateStateAfterAction:
         from issue_orchestrator.control.planner import Planner
         from issue_orchestrator.control.planner_types import OrchestratorSnapshot
         from issue_orchestrator.control.scheduler import Scheduler
-        from issue_orchestrator.control.workflows import TriageWorkflow
+        from issue_orchestrator.control.workflows import TechLeadWorkflow
         from issue_orchestrator.ports.event_sink import InMemoryEventSink
 
         for number in (41, 42, 43):
@@ -2154,7 +2154,7 @@ class TestUpdateStateAfterAction:
         planner = Planner(
             config=config,
             scheduler=Scheduler(config),
-            triage_workflow=TriageWorkflow(config=config, events=InMemoryEventSink()),
+            tech_lead_workflow=TechLeadWorkflow(config=config, events=InMemoryEventSink()),
             clock=lambda: 1_100.0,
         )
         snapshot = OrchestratorSnapshot.from_state(
@@ -2179,8 +2179,8 @@ class TestUpdateStateAfterAction:
     def _queued_investigation_numbers(support) -> list[int]:
         return sorted(
             t.issue_number
-            for t in support.state.pending_triage_reviews
-            if t.flavor is TriageSessionFlavor.FAILURE_INVESTIGATION
+            for t in support.state.pending_tech_lead_reviews
+            if t.flavor is TechLeadSessionFlavor.FAILURE_INVESTIGATION
         )
 
     def test_escalated_storm_collapses_investigations_into_anchor_cohort(
@@ -2200,8 +2200,8 @@ class TestUpdateStateAfterAction:
         clear_discovered_facts(support_with_state.state, config, tick_paused=False)
 
         assert self._queued_investigation_numbers(support_with_state) == []
-        (queued,) = support_with_state.state.pending_triage_reviews
-        assert queued.flavor is TriageSessionFlavor.HEALTH_REVIEW
+        (queued,) = support_with_state.state.pending_tech_lead_reviews
+        assert queued.flavor is TechLeadSessionFlavor.HEALTH_REVIEW
         assert sorted(p.issue_number for p in queued.problem_cohort) == [41, 42, 43]
 
     def test_storm_investigations_survive_a_failed_anchor_create(
@@ -2224,7 +2224,7 @@ class TestUpdateStateAfterAction:
         # in the real applier and always succeed.
         support_with_state.action_applier.apply.side_effect = lambda action: (
             ActionResult.fail(action, error="GitHub 403")
-            if action.action_type == ActionType.CREATE_TRIAGE_ISSUE
+            if action.action_type == ActionType.CREATE_TECH_LEAD_ISSUE
             else ActionResult.ok(action)
         )
         support_with_state.apply_plan(
@@ -2327,11 +2327,11 @@ class TestUpdateStateAfterAction:
 
         config = self._storm_config()
         # An already-pending health review defers a new storm anchor.
-        support_with_state.state.pending_triage_reviews.append(
-            PendingTriageReview(
+        support_with_state.state.pending_tech_lead_reviews.append(
+            PendingTechLeadReview(
                 issue_number=999,
                 title="Health Review",
-                flavor=TriageSessionFlavor.HEALTH_REVIEW,
+                flavor=TechLeadSessionFlavor.HEALTH_REVIEW,
             )
         )
         plan = self._plan_storm_tick(support_with_state, config)
@@ -2362,7 +2362,7 @@ class TestUpdateStateAfterAction:
         authority = MagicMock()
         authority.record_storm_cohort.side_effect = RuntimeError("disk full")
         authority.list_storm_cohorts.return_value = ()
-        support_with_state.triage_authority = authority
+        support_with_state.tech_lead_authority = authority
         plan = self._plan_storm_tick(support_with_state, config)
 
         with caplog.at_level("ERROR"):
@@ -2376,8 +2376,8 @@ class TestUpdateStateAfterAction:
         assert self._queued_investigation_numbers(support_with_state) == [41, 42, 43]
         (anchor,) = [
             t
-            for t in support_with_state.state.pending_triage_reviews
-            if t.flavor is TriageSessionFlavor.HEALTH_REVIEW
+            for t in support_with_state.state.pending_tech_lead_reviews
+            if t.flavor is TechLeadSessionFlavor.HEALTH_REVIEW
         ]
         assert anchor.problem_cohort == (), (
             "an anchor that could not persist its cohort must not claim one"
@@ -2388,15 +2388,15 @@ class TestUpdateStateAfterAction:
         self, support_with_state, caplog
     ):
         """Persistence failure warns but keeps the in-memory stamp and queue entry."""
-        from issue_orchestrator.control.actions import CreateTriageIssueAction
-        from issue_orchestrator.domain.triage_session import (
+        from issue_orchestrator.control.actions import CreateTechLeadIssueAction
+        from issue_orchestrator.domain.tech_lead_session import (
             HEALTH_REVIEW_MARKER_LABEL,
         )
 
         store = MagicMock()
         store.save_last_health_review_at.side_effect = RuntimeError("disk full")
         support_with_state.queue_cache_store = store
-        action = CreateTriageIssueAction(
+        action = CreateTechLeadIssueAction(
             title="Health Review — walk the floor",
             body="Walk the floor",
             labels=(HEALTH_REVIEW_MARKER_LABEL,),
@@ -2407,15 +2407,15 @@ class TestUpdateStateAfterAction:
             self._apply_via_plan(support_with_state, [action], issue_number=1001)
 
         assert support_with_state.state.last_health_review_at > 0.0
-        assert len(support_with_state.state.pending_triage_reviews) == 1
+        assert len(support_with_state.state.pending_tech_lead_reviews) == 1
         assert "last_health_review_at" in caplog.text
 
-    def test_queue_triage_dedups_existing_queue_entry(self, support_with_state):
-        """Repeated QUEUE_TRIAGE for the same issue stays a single queue entry."""
-        from issue_orchestrator.control.actions import QueueTriageAction
+    def test_queue_tech_lead_dedups_existing_queue_entry(self, support_with_state):
+        """Repeated QUEUE_TECH_LEAD for the same issue stays a single queue entry."""
+        from issue_orchestrator.control.actions import QueueTechLeadAction
         from issue_orchestrator.domain.models import DiscoveredFailure
 
-        action = QueueTriageAction(
+        action = QueueTechLeadAction(
             issue_number=42,
             title="Investigate: Test issue (failed)",
             failure=DiscoveredFailure(
@@ -2429,7 +2429,7 @@ class TestUpdateStateAfterAction:
         support_with_state._update_state_after_action(action, result)  # noqa: SLF001
         support_with_state._update_state_after_action(action, result)  # noqa: SLF001
 
-        assert len(support_with_state.state.pending_triage_reviews) == 1
+        assert len(support_with_state.state.pending_tech_lead_reviews) == 1
 
 
 # =============================================================================
@@ -2738,8 +2738,8 @@ class TestImmediateCleanup:
         """Create support for cleanup testing."""
         mock_config = MagicMock()
         mock_config.cleanup = MagicMock()
-        mock_config.cleanup.without_triage = MagicMock()
-        mock_config.cleanup.without_triage.close_ai_session_tabs = True
+        mock_config.cleanup.without_tech_lead = MagicMock()
+        mock_config.cleanup.without_tech_lead.close_ai_session_tabs = True
         mock_config.code_review_agent = None
 
         mock_worktree_manager = MagicMock()

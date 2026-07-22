@@ -8,12 +8,12 @@ rules:
       - pattern: $STATE.active_sessions = $VALUE
       - pattern: $STATE.pending_reviews = $VALUE
       - pattern: $STATE.pending_reworks = $VALUE
-      - pattern: $STATE.pending_triage_reviews = $VALUE
+      - pattern: $STATE.pending_tech_lead_reviews = $VALUE
       - pattern: $STATE.pending_validation_retries = $VALUE
       - pattern: $STATE.active_sessions.append(...)
       - pattern: $STATE.pending_reviews.append(...)
       - pattern: $STATE.pending_reworks.append(...)
-      - pattern: $STATE.pending_triage_reviews.append(...)
+      - pattern: $STATE.pending_tech_lead_reviews.append(...)
       - pattern: $STATE.pending_validation_retries.append(...)
       - pattern: $STATE.discovered_reviews.append(...)
       - pattern: $STATE.discovered_reworks.append(...)

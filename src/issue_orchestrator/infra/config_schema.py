@@ -24,7 +24,7 @@ from .config_models import (
     SessionInteractionsConfig,
     SqliteBackupConfig,
     TimelineConfig,
-    TriageConfig,
+    TechLeadConfig,
     ValidationConfig,
 )
 from .config_sections import ALLOWED_AGENT_FIELDS, ALLOWED_TOP_LEVEL_FIELDS
@@ -148,7 +148,7 @@ def allowed_config_shape() -> dict[str, ConfigShape]:
         "sqlite_backup": dataclass_config_shape(SqliteBackupConfig),
         "state": _leaf_keys("file"),
         "timeline": dataclass_config_shape(TimelineConfig),
-        "triage": dataclass_config_shape(TriageConfig),
+        "tech_lead": dataclass_config_shape(TechLeadConfig),
         "validation": dataclass_config_shape(ValidationConfig),
     }
     shape["execution"] = {
@@ -213,13 +213,13 @@ def allowed_config_shape() -> dict[str, ConfigShape]:
         "default": LEAF,
         "code_review_label": LEAF,
         "code_reviewed_label": LEAF,
-        "triage_review_agent": LEAF,
-        "triage_follow_up_agent": LEAF,
-        "triage_review_label": LEAF,
-        "triage_reviewed_label": LEAF,
-        "triage_failed_label": LEAF,
-        "triage_review_threshold": LEAF,
-        "triage_review_on_failure": LEAF,
+        "tech_lead_review_agent": LEAF,
+        "tech_lead_follow_up_agent": LEAF,
+        "tech_lead_review_label": LEAF,
+        "tech_lead_reviewed_label": LEAF,
+        "tech_lead_failed_label": LEAF,
+        "tech_lead_review_threshold": LEAF,
+        "tech_lead_review_on_failure": LEAF,
         "max_rework_cycles": LEAF,
         "max_consecutive_publish_failures": LEAF,
         "max_consecutive_review_exchange_failures": LEAF,

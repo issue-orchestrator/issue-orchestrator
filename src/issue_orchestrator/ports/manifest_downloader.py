@@ -1,4 +1,4 @@
-"""ManifestDownloader port for downloading PR data for triage sessions.
+"""ManifestDownloader port for downloading PR data for tech_lead sessions.
 
 Execution-only: control layer provides manifest and path; adapters fetch data.
 """
@@ -7,17 +7,17 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
-    from ..domain.triage_manifest import TriageManifest
+    from ..domain.tech_lead_manifest import TechLeadManifest
 
 
 class ManifestDownloader(Protocol):
-    """Protocol for downloading PR data based on a triage manifest."""
+    """Protocol for downloading PR data based on a tech_lead manifest."""
 
     def download(
         self,
-        manifest: "TriageManifest",
+        manifest: "TechLeadManifest",
         worktree_path: Path,
-    ) -> "TriageManifest":
+    ) -> "TechLeadManifest":
         """Fetch all PR data and update manifest with local file paths.
 
         Args:
@@ -35,8 +35,8 @@ class NullManifestDownloader:
 
     def download(
         self,
-        manifest: "TriageManifest",
+        manifest: "TechLeadManifest",
         worktree_path: Path,
-    ) -> "TriageManifest":
+    ) -> "TechLeadManifest":
         """Return manifest unchanged."""
         return manifest

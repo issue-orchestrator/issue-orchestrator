@@ -13,10 +13,10 @@ from collections.abc import Callable
 from functools import partial
 
 from ..domain.models import AwaitingMergeTerminalStatus, SessionHistoryEntry
-from ..domain.triage_session import triage_area_from_labels
+from ..domain.tech_lead_session import tech_lead_area_from_labels
 from ..events import EventName
 from ..ports import EventSink, make_trace_event
-from ..ports.triage_authority import TriageAuthorityStore
+from ..ports.tech_lead_authority import TechLeadAuthorityStore
 from .actions import ActionResult, ReconcileHistoryEntryAction
 from .session_history import HistoryReconciliationMutation, SessionHistoryOwner
 
@@ -30,7 +30,7 @@ def apply_history_reconciliation(
     *,
     history_owner: SessionHistoryOwner | None,
     events: EventSink,
-    triage_authority: TriageAuthorityStore | None,
+    tech_lead_authority: TechLeadAuthorityStore | None,
     terminate_issue_runtime: IssueRuntimeTerminator,
 ) -> ActionResult:
     """Reconcile one terminal PR fact through all owning boundaries."""
@@ -42,7 +42,7 @@ def apply_history_reconciliation(
         pr_url=action.pr_url,
         status=action.status,
         status_reason=action.reason,
-        before_transition=_shipped_fix_recorder(action.status, triage_authority),
+        before_transition=_shipped_fix_recorder(action.status, tech_lead_authority),
     )
     if not isinstance(outcome, HistoryReconciliationMutation):
         _log_noop(action, outcome.reason, outcome.current_status)
@@ -94,7 +94,7 @@ def apply_history_reconciliation(
 
 def _shipped_fix_recorder(
     status: AwaitingMergeTerminalStatus,
-    authority: TriageAuthorityStore | None,
+    authority: TechLeadAuthorityStore | None,
 ) -> Callable[[SessionHistoryEntry], None] | None:
     if status != "merged":
         return None
@@ -102,15 +102,15 @@ def _shipped_fix_recorder(
 
 
 def _record_area_tagged_shipped_fix(
-    authority: TriageAuthorityStore | None,
+    authority: TechLeadAuthorityStore | None,
     entry: SessionHistoryEntry,
 ) -> None:
-    area = triage_area_from_labels(entry.issue_labels)
+    area = tech_lead_area_from_labels(entry.issue_labels)
     if not area:
         return
     if authority is None:
         raise RuntimeError(
-            "Triage authority store is required to record an area-tagged"
+            "Tech Lead authority store is required to record an area-tagged"
             f" shipped fix for issue #{entry.issue_number}"
         )
     if entry.pr_url is None:

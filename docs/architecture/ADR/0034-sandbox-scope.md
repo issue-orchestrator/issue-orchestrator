@@ -3,11 +3,11 @@
 **Status:** Proposed
 **Date:** 2026-07-19
 **Tracking issue:** #6859
-**Related:** ADR-0031 (triage tech lead), ADR-0033 / #6858 (tech-lead run representation)
+**Related:** ADR-0031 (tech lead), ADR-0033 / #6858 (tech-lead run representation)
 
 ## Context
 
-Every claude-code agent (backend/frontend/mobile/triage) runs
+Every claude-code agent (backend/frontend/mobile/tech lead) runs
 `permission_mode: bypassPermissions` — full local machine access, no OS
 isolation. The god-view (ADR-0031 evidence-map) makes the **tech-lead the
 broadest-read agent**, which makes it the *worst* one to leave un-sandboxed

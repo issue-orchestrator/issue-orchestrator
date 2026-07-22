@@ -38,7 +38,7 @@ from issue_orchestrator.domain.models import (
     PendingReview,
     PendingRetrospectiveReview,
     PendingRework,
-    PendingTriageReview,
+    PendingTechLeadReview,
     PendingValidationRetry,
     AgentConfig,
     DiscoveredAwaitingMergeDrift,
@@ -50,13 +50,13 @@ from issue_orchestrator.domain.models import (
 
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
-from issue_orchestrator.domain.triage_session import TriageSessionFlavor
+from issue_orchestrator.domain.tech_lead_session import TechLeadSessionFlavor
 from issue_orchestrator.control.provider_resilience import ProviderResilienceManager
 from issue_orchestrator.control.workflows import (
     RetrospectiveReviewWorkflow,
     ReviewWorkflow,
     ReworkWorkflow,
-    TriageWorkflow,
+    TechLeadWorkflow,
 )
 from issue_orchestrator.ports import InMemoryProviderCircuitStore
 from issue_orchestrator.ports.event_sink import InMemoryEventSink
@@ -120,7 +120,7 @@ def make_snapshot(
     active_sessions: list[Session] | None = None,
     pending_reviews: list[PendingReview] | None = None,
     pending_reworks: list[PendingRework] | None = None,
-    pending_triage: list[PendingTriageReview] | None = None,
+    pending_tech_lead: list[PendingTechLeadReview] | None = None,
     paused: bool = False,
     **kwargs,
 ) -> OrchestratorSnapshot:
@@ -130,7 +130,7 @@ def make_snapshot(
         active_sessions=tuple(active_sessions or []),
         pending_reviews=tuple(pending_reviews or []),
         pending_reworks=tuple(pending_reworks or []),
-        pending_triage=tuple(pending_triage or []),
+        pending_tech_lead=tuple(pending_tech_lead or []),
         paused=paused,
         **kwargs,
     )
@@ -181,14 +181,14 @@ class TestPlanEmpty:
 
 
 class TestProviderResilienceLabels:
-    def test_removes_label_when_review_rework_triage_providers_recover(self):
+    def test_removes_label_when_review_rework_tech_lead_providers_recover(self):
         config = make_config()
         config.code_review_agent = "agent:reviewer"
-        config.triage_review_agent = "agent:triage"
+        config.tech_lead_review_agent = "agent:tech-lead"
         config.agents["agent:web"] = AgentConfig(prompt_path=Path("/tmp/web.md"), provider=None)
         config.agents["agent:reviewer"] = AgentConfig(prompt_path=Path("/tmp/review.md"), provider="review-provider")
         config.agents["agent:fixer"] = AgentConfig(prompt_path=Path("/tmp/fix.md"), provider="rework-provider")
-        config.agents["agent:triage"] = AgentConfig(prompt_path=Path("/tmp/triage.md"), provider="triage-provider")
+        config.agents["agent:tech-lead"] = AgentConfig(prompt_path=Path("/tmp/tech-lead.md"), provider="tech-lead-provider")
 
         scheduler = Scheduler(config)
         provider_resilience = ProviderResilienceManager(
@@ -216,15 +216,15 @@ class TestProviderResilienceLabels:
             rework_cycle=1,
             issue_number=2,
         )
-        pending_triage = PendingTriageReview(
-            issue_number=3, title="Triage 3", flavor=TriageSessionFlavor.BATCH_REVIEW
+        pending_tech_lead = PendingTechLeadReview(
+            issue_number=3, title="Tech Lead 3", flavor=TechLeadSessionFlavor.BATCH_REVIEW
         )
 
         snapshot = make_snapshot(
             issues=[issue1, issue2, issue3],
             pending_reviews=[pending_review],
             pending_reworks=[pending_rework],
-            pending_triage=[pending_triage],
+            pending_tech_lead=[pending_tech_lead],
         )
 
         plan = planner.plan(snapshot)
@@ -1158,50 +1158,50 @@ class TestPlanAwaitingMergeReconciliations:
         assert action.expected.required_labels == frozenset({"pr-pending"})
 
 
-class TestPlanTriageIssueCreation:
-    """Tests for Planner's _plan_triage_issue_creation method.
+class TestPlanTechLeadIssueCreation:
+    """Tests for Planner's _plan_tech_lead_issue_creation method.
 
-    This method processes TriageFacts and produces CreateTriageIssueAction
-    when the threshold is met and no existing triage issue exists.
+    This method processes TechLeadFacts and produces CreateTechLeadIssueAction
+    when the threshold is met and no existing tech_lead issue exists.
     """
 
-    def test_creates_triage_issue_at_threshold(self):
-        """Planner produces CreateTriageIssueAction when threshold is met."""
-        from issue_orchestrator.domain.models import TriageFacts
+    def test_creates_tech_lead_issue_at_threshold(self):
+        """Planner produces CreateTechLeadIssueAction when threshold is met."""
+        from issue_orchestrator.domain.models import TechLeadFacts
         from issue_orchestrator.control.actions import ActionType
 
         config = make_config(
-            triage_review_agent="agent:triage",
-            triage_review_threshold=3,
-            triage_reviewed_label="triage-reviewed",
+            tech_lead_review_agent="agent:tech-lead",
+            tech_lead_review_threshold=3,
+            tech_lead_reviewed_label="tech-lead-reviewed",
         )
         scheduler = Scheduler(config)
         planner = Planner(config=config, scheduler=scheduler)
 
-        triage_facts = TriageFacts(
+        tech_lead_facts = TechLeadFacts(
             pr_count=3,
             threshold=3,
-            existing_triage_issue=None,
+            existing_tech_lead_issue=None,
             watch_label="code-reviewed",
             prs=((1, "PR 1"), (2, "PR 2"), (3, "PR 3")),
         )
 
         snapshot = make_snapshot(
-            triage_facts=triage_facts,
+            tech_lead_facts=tech_lead_facts,
         )
 
         plan = planner.plan(snapshot)
 
-        create_actions = [a for a in plan.actions if a.action_type == ActionType.CREATE_TRIAGE_ISSUE]
+        create_actions = [a for a in plan.actions if a.action_type == ActionType.CREATE_TECH_LEAD_ISSUE]
         assert len(create_actions) == 1
         action = create_actions[0]
-        assert "Triage Batch Review" in action.title
+        assert "Tech Lead Batch Review" in action.title
         assert action.pr_count == 3
-        assert "agent:triage" in action.labels
+        assert "agent:tech-lead" in action.labels
 
     def test_completed_closed_batch_does_not_retrigger_empty_batch(self):
         """Reviewer repro (#6768 r5): after a successful batch (PRs carry
-        triage-reviewed, tracker closed) re-gathering + planning against the
+        tech-lead-reviewed, tracker closed) re-gathering + planning against the
         same PR observations must not create an empty successor batch.
 
         Facts come from the REAL FactGatherer so the shared candidate
@@ -1213,140 +1213,140 @@ class TestPlanTriageIssueCreation:
         from issue_orchestrator.ports.pull_request_tracker import PRInfo
 
         config = make_config(
-            triage_review_agent="agent:triage",
-            triage_review_threshold=2,
-            triage_reviewed_label="triage-reviewed",
+            tech_lead_review_agent="agent:tech-lead",
+            tech_lead_review_threshold=2,
+            tech_lead_reviewed_label="tech-lead-reviewed",
         )
         host = MagicMock()
         host.get_prs_with_label.return_value = [
             PRInfo(number=1, url="...", title="PR 1", branch="b1",
-                   labels=["code-reviewed", "triage-reviewed"], body="", state="open"),
+                   labels=["code-reviewed", "tech-lead-reviewed"], body="", state="open"),
             PRInfo(number=2, url="...", title="PR 2", branch="b2",
-                   labels=["code-reviewed", "triage-reviewed"], body="", state="open"),
+                   labels=["code-reviewed", "tech-lead-reviewed"], body="", state="open"),
         ]
         # The completed batch's tracking issue is CLOSED: open-state queries
         # (the finder's contract) no longer return it.
         host.list_issues.return_value = []
 
-        facts = FactGatherer(config=config, repository_host=host).gather_triage_facts(
+        facts = FactGatherer(config=config, repository_host=host).gather_tech_lead_facts(
             OrchestratorState()
         )
         assert facts is not None
         assert facts.pr_count == 0
-        assert facts.existing_triage_issue is None
+        assert facts.existing_tech_lead_issue is None
 
         scheduler = Scheduler(config)
         planner = Planner(config=config, scheduler=scheduler)
-        plan = planner.plan(make_snapshot(triage_facts=facts))
+        plan = planner.plan(make_snapshot(tech_lead_facts=facts))
 
         create_actions = [
-            a for a in plan.actions if a.action_type == ActionType.CREATE_TRIAGE_ISSUE
+            a for a in plan.actions if a.action_type == ActionType.CREATE_TECH_LEAD_ISSUE
         ]
         assert create_actions == []
 
-    def test_no_triage_issue_below_threshold(self):
-        """Planner produces no CreateTriageIssueAction when below threshold."""
-        from issue_orchestrator.domain.models import TriageFacts
+    def test_no_tech_lead_issue_below_threshold(self):
+        """Planner produces no CreateTechLeadIssueAction when below threshold."""
+        from issue_orchestrator.domain.models import TechLeadFacts
         from issue_orchestrator.control.actions import ActionType
 
         config = make_config(
-            triage_review_agent="agent:triage",
-            triage_review_threshold=5,
+            tech_lead_review_agent="agent:tech-lead",
+            tech_lead_review_threshold=5,
         )
         scheduler = Scheduler(config)
         planner = Planner(config=config, scheduler=scheduler)
 
-        triage_facts = TriageFacts(
+        tech_lead_facts = TechLeadFacts(
             pr_count=2,  # Below threshold of 5
             threshold=5,
-            existing_triage_issue=None,
+            existing_tech_lead_issue=None,
             watch_label="code-reviewed",
             prs=((1, "PR 1"), (2, "PR 2")),
         )
 
         snapshot = make_snapshot(
-            triage_facts=triage_facts,
+            tech_lead_facts=tech_lead_facts,
         )
 
         plan = planner.plan(snapshot)
 
-        create_actions = [a for a in plan.actions if a.action_type == ActionType.CREATE_TRIAGE_ISSUE]
+        create_actions = [a for a in plan.actions if a.action_type == ActionType.CREATE_TECH_LEAD_ISSUE]
         assert len(create_actions) == 0
 
-    def test_no_triage_issue_when_existing_issue(self):
-        """Planner produces no CreateTriageIssueAction when existing issue exists."""
-        from issue_orchestrator.domain.models import TriageFacts
+    def test_no_tech_lead_issue_when_existing_issue(self):
+        """Planner produces no CreateTechLeadIssueAction when existing issue exists."""
+        from issue_orchestrator.domain.models import TechLeadFacts
         from issue_orchestrator.control.actions import ActionType
 
         config = make_config(
-            triage_review_agent="agent:triage",
-            triage_review_threshold=3,
+            tech_lead_review_agent="agent:tech-lead",
+            tech_lead_review_threshold=3,
         )
         scheduler = Scheduler(config)
         planner = Planner(config=config, scheduler=scheduler)
 
-        triage_facts = TriageFacts(
+        tech_lead_facts = TechLeadFacts(
             pr_count=5,  # Above threshold
             threshold=3,
-            existing_triage_issue=100,  # Already exists!
+            existing_tech_lead_issue=100,  # Already exists!
             watch_label="code-reviewed",
             prs=tuple(),
         )
 
         snapshot = make_snapshot(
-            triage_facts=triage_facts,
+            tech_lead_facts=tech_lead_facts,
         )
 
         plan = planner.plan(snapshot)
 
-        create_actions = [a for a in plan.actions if a.action_type == ActionType.CREATE_TRIAGE_ISSUE]
+        create_actions = [a for a in plan.actions if a.action_type == ActionType.CREATE_TECH_LEAD_ISSUE]
         assert len(create_actions) == 0
 
-    def test_no_triage_issue_when_no_facts(self):
-        """Planner produces no CreateTriageIssueAction when triage_facts is None."""
+    def test_no_tech_lead_issue_when_no_facts(self):
+        """Planner produces no CreateTechLeadIssueAction when tech_lead_facts is None."""
         from issue_orchestrator.control.actions import ActionType
 
-        config = make_config()  # No triage config
+        config = make_config()  # No tech_lead config
         scheduler = Scheduler(config)
         planner = Planner(config=config, scheduler=scheduler)
 
         snapshot = make_snapshot(
-            triage_facts=None,  # No facts gathered
+            tech_lead_facts=None,  # No facts gathered
         )
 
         plan = planner.plan(snapshot)
 
-        create_actions = [a for a in plan.actions if a.action_type == ActionType.CREATE_TRIAGE_ISSUE]
+        create_actions = [a for a in plan.actions if a.action_type == ActionType.CREATE_TECH_LEAD_ISSUE]
         assert len(create_actions) == 0
 
-    def test_triage_issue_body_includes_pr_list(self):
-        """Planner includes PR details in triage issue body."""
-        from issue_orchestrator.domain.models import TriageFacts
+    def test_tech_lead_issue_body_includes_pr_list(self):
+        """Planner includes PR details in tech_lead issue body."""
+        from issue_orchestrator.domain.models import TechLeadFacts
         from issue_orchestrator.control.actions import ActionType
 
         config = make_config(
-            triage_review_agent="agent:triage",
-            triage_review_threshold=2,
-            triage_reviewed_label="triage-reviewed",
+            tech_lead_review_agent="agent:tech-lead",
+            tech_lead_review_threshold=2,
+            tech_lead_reviewed_label="tech-lead-reviewed",
         )
         scheduler = Scheduler(config)
         planner = Planner(config=config, scheduler=scheduler)
 
-        triage_facts = TriageFacts(
+        tech_lead_facts = TechLeadFacts(
             pr_count=2,
             threshold=2,
-            existing_triage_issue=None,
+            existing_tech_lead_issue=None,
             watch_label="code-reviewed",
             prs=((10, "Fix bug A"), (20, "Add feature B")),
         )
 
         snapshot = make_snapshot(
-            triage_facts=triage_facts,
+            tech_lead_facts=tech_lead_facts,
         )
 
         plan = planner.plan(snapshot)
 
-        create_actions = [a for a in plan.actions if a.action_type == ActionType.CREATE_TRIAGE_ISSUE]
+        create_actions = [a for a in plan.actions if a.action_type == ActionType.CREATE_TECH_LEAD_ISSUE]
         assert len(create_actions) == 1
         body = create_actions[0].body
         assert "PR #10" in body
@@ -1354,56 +1354,56 @@ class TestPlanTriageIssueCreation:
         assert "PR #20" in body
         assert "Add feature B" in body
         assert "code-reviewed" in body
-        assert "triage-reviewed" in body
+        assert "tech-lead-reviewed" in body
 
-    def test_triage_issue_explicit_milestone_applied(self):
+    def test_tech_lead_issue_explicit_milestone_applied(self):
         """Explicit milestone strategy travels as a NAME intent (#6769 F4).
 
         The planner plans the configured name; the create-issue applier is
         the single name->number resolution boundary, so planning makes zero
         milestone API reads.
         """
-        from issue_orchestrator.domain.models import TriageFacts
-        from issue_orchestrator.control.actions import ActionType, TriageMilestoneIntent
-        from issue_orchestrator.infra.config import MilestoneStrategyConfig, TriageConfig
+        from issue_orchestrator.domain.models import TechLeadFacts
+        from issue_orchestrator.control.actions import ActionType, TechLeadMilestoneIntent
+        from issue_orchestrator.infra.config import MilestoneStrategyConfig, TechLeadConfig
 
         config = make_config(
-            triage_review_agent="agent:triage",
-            triage_review_threshold=1,
-            triage_reviewed_label="triage-reviewed",
+            tech_lead_review_agent="agent:tech-lead",
+            tech_lead_review_threshold=1,
+            tech_lead_reviewed_label="tech-lead-reviewed",
         )
-        config.triage = TriageConfig(
+        config.tech_lead = TechLeadConfig(
             milestone_strategy=MilestoneStrategyConfig(explicit="M5"),
         )
         scheduler = Scheduler(config)
         planner = Planner(config=config, scheduler=scheduler)
 
-        triage_facts = TriageFacts(
+        tech_lead_facts = TechLeadFacts(
             pr_count=1,
             threshold=1,
-            existing_triage_issue=None,
+            existing_tech_lead_issue=None,
             watch_label="code-reviewed",
             prs=((1, "PR 1"),),
         )
 
-        plan = planner.plan(make_snapshot(triage_facts=triage_facts))
+        plan = planner.plan(make_snapshot(tech_lead_facts=tech_lead_facts))
 
-        create_actions = [a for a in plan.actions if a.action_type == ActionType.CREATE_TRIAGE_ISSUE]
+        create_actions = [a for a in plan.actions if a.action_type == ActionType.CREATE_TECH_LEAD_ISSUE]
         assert len(create_actions) == 1
-        assert create_actions[0].milestone == TriageMilestoneIntent(explicit_name="M5")
+        assert create_actions[0].milestone == TechLeadMilestoneIntent(explicit_name="M5")
 
-    def test_triage_issue_inherits_labels_from_source(self):
-        """Planner inherits labels from source issues based on triage config."""
-        from issue_orchestrator.domain.models import TriageFacts
+    def test_tech_lead_issue_inherits_labels_from_source(self):
+        """Planner inherits labels from source issues based on tech_lead config."""
+        from issue_orchestrator.domain.models import TechLeadFacts
         from issue_orchestrator.control.actions import ActionType
-        from issue_orchestrator.infra.config import TriageConfig, MilestoneStrategyConfig
+        from issue_orchestrator.infra.config import TechLeadConfig, MilestoneStrategyConfig
 
         config = make_config(
-            triage_review_agent="agent:triage",
-            triage_review_threshold=2,
+            tech_lead_review_agent="agent:tech-lead",
+            tech_lead_review_threshold=2,
         )
         # Configure label inheritance
-        config.triage = TriageConfig(
+        config.tech_lead = TechLeadConfig(
             inherit_labels=["io-e2e-test-data", "team:backend"],
             explicit_labels=["needs-batch-review"],
             milestone_strategy=MilestoneStrategyConfig(),
@@ -1413,60 +1413,60 @@ class TestPlanTriageIssueCreation:
         planner = Planner(config=config, scheduler=scheduler)
 
         # Source labels include one that should be inherited
-        triage_facts = TriageFacts(
+        tech_lead_facts = TechLeadFacts(
             pr_count=3,
             threshold=2,
-            existing_triage_issue=None,
+            existing_tech_lead_issue=None,
             watch_label="code-reviewed",
             prs=((1, "PR 1"), (2, "PR 2"), (3, "PR 3")),
             source_labels=frozenset(["io-e2e-test-data", "other-label"]),
             source_milestones=(),
         )
 
-        snapshot = make_snapshot(triage_facts=triage_facts)
+        snapshot = make_snapshot(tech_lead_facts=tech_lead_facts)
         plan = planner.plan(snapshot)
 
-        create_actions = [a for a in plan.actions if a.action_type == ActionType.CREATE_TRIAGE_ISSUE]
+        create_actions = [a for a in plan.actions if a.action_type == ActionType.CREATE_TECH_LEAD_ISSUE]
         assert len(create_actions) == 1
         action = create_actions[0]
 
         # Should have agent label, explicit labels, and inherited labels
-        assert "agent:triage" in action.labels
+        assert "agent:tech-lead" in action.labels
         assert "needs-batch-review" in action.labels
         assert "io-e2e-test-data" in action.labels  # Inherited (was in source_labels)
         assert "team:backend" not in action.labels  # Not inherited (not in source_labels)
         assert action.title.startswith("[P2-000]")
 
-    def test_triage_issue_inherits_milestone_latest(self):
+    def test_tech_lead_issue_inherits_milestone_latest(self):
         """Planner picks latest milestone from source issues."""
-        from issue_orchestrator.domain.models import TriageFacts
+        from issue_orchestrator.domain.models import TechLeadFacts
         from issue_orchestrator.control.actions import ActionType
-        from issue_orchestrator.infra.config import TriageConfig, MilestoneStrategyConfig
+        from issue_orchestrator.infra.config import TechLeadConfig, MilestoneStrategyConfig
 
         config = make_config(
-            triage_review_agent="agent:triage",
-            triage_review_threshold=2,
+            tech_lead_review_agent="agent:tech-lead",
+            tech_lead_review_threshold=2,
         )
-        config.triage = TriageConfig(
+        config.tech_lead = TechLeadConfig(
             milestone_strategy=MilestoneStrategyConfig(inherit_from_issues="latest"),
         )
         scheduler = Scheduler(config)
         planner = Planner(config=config, scheduler=scheduler)
 
-        triage_facts = TriageFacts(
+        tech_lead_facts = TechLeadFacts(
             pr_count=2,
             threshold=2,
-            existing_triage_issue=None,
+            existing_tech_lead_issue=None,
             watch_label="code-reviewed",
             prs=((1, "PR 1"), (2, "PR 2")),
             source_labels=frozenset(),
             source_milestones=((1, "M1"), (3, "M3"), (2, "M2")),  # Unsorted
         )
 
-        snapshot = make_snapshot(triage_facts=triage_facts)
+        snapshot = make_snapshot(tech_lead_facts=tech_lead_facts)
         plan = planner.plan(snapshot)
 
-        create_actions = [a for a in plan.actions if a.action_type == ActionType.CREATE_TRIAGE_ISSUE]
+        create_actions = [a for a in plan.actions if a.action_type == ActionType.CREATE_TECH_LEAD_ISSUE]
         assert len(create_actions) == 1
         action = create_actions[0]
 
@@ -1475,36 +1475,36 @@ class TestPlanTriageIssueCreation:
         assert action.milestone.inherited_number == 3
         assert action.milestone.explicit_name is None
 
-    def test_triage_issue_inherits_milestone_earliest(self):
+    def test_tech_lead_issue_inherits_milestone_earliest(self):
         """Planner picks earliest milestone from source issues."""
-        from issue_orchestrator.domain.models import TriageFacts
+        from issue_orchestrator.domain.models import TechLeadFacts
         from issue_orchestrator.control.actions import ActionType
-        from issue_orchestrator.infra.config import TriageConfig, MilestoneStrategyConfig
+        from issue_orchestrator.infra.config import TechLeadConfig, MilestoneStrategyConfig
 
         config = make_config(
-            triage_review_agent="agent:triage",
-            triage_review_threshold=2,
+            tech_lead_review_agent="agent:tech-lead",
+            tech_lead_review_threshold=2,
         )
-        config.triage = TriageConfig(
+        config.tech_lead = TechLeadConfig(
             milestone_strategy=MilestoneStrategyConfig(inherit_from_issues="earliest"),
         )
         scheduler = Scheduler(config)
         planner = Planner(config=config, scheduler=scheduler)
 
-        triage_facts = TriageFacts(
+        tech_lead_facts = TechLeadFacts(
             pr_count=2,
             threshold=2,
-            existing_triage_issue=None,
+            existing_tech_lead_issue=None,
             watch_label="code-reviewed",
             prs=((1, "PR 1"), (2, "PR 2")),
             source_labels=frozenset(),
             source_milestones=((3, "M3"), (1, "M1"), (2, "M2")),  # Unsorted
         )
 
-        snapshot = make_snapshot(triage_facts=triage_facts)
+        snapshot = make_snapshot(tech_lead_facts=tech_lead_facts)
         plan = planner.plan(snapshot)
 
-        create_actions = [a for a in plan.actions if a.action_type == ActionType.CREATE_TRIAGE_ISSUE]
+        create_actions = [a for a in plan.actions if a.action_type == ActionType.CREATE_TECH_LEAD_ISSUE]
         assert len(create_actions) == 1
         action = create_actions[0]
 
@@ -1513,15 +1513,15 @@ class TestPlanTriageIssueCreation:
         assert action.milestone.explicit_name is None
 
 
-class TestPlanApprovedTriageOpExecutions:
+class TestPlanApprovedTechLeadOpExecutions:
     """Approved gated proposals (#6778): the plan carries the stored op's
     execution action; still-gated proposals plan nothing."""
 
     @staticmethod
     def _op(target: int, op_type: str = "reset_retry"):
-        from issue_orchestrator.domain.triage_session import StoredTriageOp
+        from issue_orchestrator.domain.tech_lead_session import StoredTechLeadOp
 
-        return StoredTriageOp(
+        return StoredTechLeadOp(
             op_type=op_type,
             target_issue_number=target,
             rationale="r",
@@ -1532,19 +1532,19 @@ class TestPlanApprovedTriageOpExecutions:
         )
 
     def _plan(self, approved_ops):
-        from issue_orchestrator.domain.models import TriageFacts
+        from issue_orchestrator.domain.models import TechLeadFacts
 
         config = make_config(
-            triage_review_agent="agent:triage",
-            triage_review_threshold=3,
-            triage_reviewed_label="triage-reviewed",
+            tech_lead_review_agent="agent:tech-lead",
+            tech_lead_review_threshold=3,
+            tech_lead_reviewed_label="tech-lead-reviewed",
         )
         planner = Planner(config=config, scheduler=Scheduler(config))
         snapshot = make_snapshot(
-            triage_facts=TriageFacts(
+            tech_lead_facts=TechLeadFacts(
                 threshold=3,
                 watch_label="code-reviewed",
-                approved_triage_ops=approved_ops,
+                approved_tech_lead_ops=approved_ops,
             ),
         )
         return planner.plan(snapshot)
@@ -1554,11 +1554,11 @@ class TestPlanApprovedTriageOpExecutions:
             KillHungSessionAction,
             ResetRetryIssueAction,
         )
-        from issue_orchestrator.domain.triage_session import ApprovedTriageOp
+        from issue_orchestrator.domain.tech_lead_session import ApprovedTechLeadOp
 
         plan = self._plan((
-            ApprovedTriageOp(proposal_issue_number=500, op=self._op(13)),
-            ApprovedTriageOp(
+            ApprovedTechLeadOp(proposal_issue_number=500, op=self._op(13)),
+            ApprovedTechLeadOp(
                 proposal_issue_number=501,
                 op=self._op(14, "kill_hung_session"),
             ),
@@ -1586,16 +1586,16 @@ class TestPlanApprovedTriageOpExecutions:
         )
 
     def _plan_with_candidates(self, candidates):
-        from issue_orchestrator.domain.models import TriageFacts
+        from issue_orchestrator.domain.models import TechLeadFacts
 
         config = make_config(
-            triage_review_agent="agent:triage",
-            triage_review_threshold=3,
-            triage_reviewed_label="triage-reviewed",
+            tech_lead_review_agent="agent:tech-lead",
+            tech_lead_review_threshold=3,
+            tech_lead_reviewed_label="tech-lead-reviewed",
         )
         planner = Planner(config=config, scheduler=Scheduler(config))
         snapshot = make_snapshot(
-            triage_facts=TriageFacts(
+            tech_lead_facts=TechLeadFacts(
                 threshold=3,
                 watch_label="code-reviewed",
                 absent_proposal_op_candidates=candidates,
@@ -1605,10 +1605,10 @@ class TestPlanApprovedTriageOpExecutions:
 
     def test_absent_op_candidates_emit_confirm_and_discard_action(self):
         """R7/R10: the planner turns the read-only absent-candidate fact into a
-        single DiscardTerminalTriageProposalOpsAction; the applier confirms each
+        single DiscardTerminalTechLeadProposalOpsAction; the applier confirms each
         with a targeted read before discarding."""
         from issue_orchestrator.control.actions import (
-            DiscardTerminalTriageProposalOpsAction,
+            DiscardTerminalTechLeadProposalOpsAction,
         )
 
         plan = self._plan_with_candidates((501, 777))
@@ -1616,19 +1616,19 @@ class TestPlanApprovedTriageOpExecutions:
         [discard] = [
             a
             for a in plan.actions
-            if isinstance(a, DiscardTerminalTriageProposalOpsAction)
+            if isinstance(a, DiscardTerminalTechLeadProposalOpsAction)
         ]
         assert discard.candidate_issue_numbers == (501, 777)
 
     def test_no_absent_candidates_plans_no_discard(self):
         from issue_orchestrator.control.actions import (
-            DiscardTerminalTriageProposalOpsAction,
+            DiscardTerminalTechLeadProposalOpsAction,
         )
 
         plan = self._plan_with_candidates(())
 
         assert not any(
-            isinstance(a, DiscardTerminalTriageProposalOpsAction)
+            isinstance(a, DiscardTerminalTechLeadProposalOpsAction)
             for a in plan.actions
         )
 
@@ -1637,55 +1637,55 @@ class TestPlanHealthReviewIssueCreation:
     """Health-review anchor creation planning (ADR-0031 §4).
 
     Policy lives in control/health_review_trigger; these tests exercise it
-    through the full planner (facts -> CreateTriageIssueAction).
+    through the full planner (facts -> CreateTechLeadIssueAction).
     """
 
     @staticmethod
     def _make_planner(interval_minutes: int = 60, events=None):
-        config = make_config(triage_review_agent="agent:triage")
-        config.triage.health_review.interval_minutes = interval_minutes
+        config = make_config(tech_lead_review_agent="agent:tech-lead")
+        config.tech_lead.health_review.interval_minutes = interval_minutes
         # The periodic trigger routes through the owned paused/capacity gate
-        # (TriageWorkflow), so the planner MUST carry that workflow — the same
-        # owner that emits TRIAGE_SKIPPED (#6763 finding 2).
+        # (TechLeadWorkflow), so the planner MUST carry that workflow — the same
+        # owner that emits TECH_LEAD_SKIPPED (#6763 finding 2).
         events = events if events is not None else InMemoryEventSink()
-        workflow = TriageWorkflow(config=config, events=events)
+        workflow = TechLeadWorkflow(config=config, events=events)
         planner = Planner(
-            config=config, scheduler=Scheduler(config), triage_workflow=workflow
+            config=config, scheduler=Scheduler(config), tech_lead_workflow=workflow
         )
         return planner, config
 
     @staticmethod
     def _health_facts(**kwargs):
-        from issue_orchestrator.domain.models import TriageFacts
+        from issue_orchestrator.domain.models import TechLeadFacts
 
         defaults = {"health_review_due": True, "existing_health_review_issue": None}
         defaults.update(kwargs)
-        return TriageFacts(**defaults)
+        return TechLeadFacts(**defaults)
 
     @staticmethod
     def _create_actions(plan):
         return [
             a for a in plan.actions
-            if a.action_type == ActionType.CREATE_TRIAGE_ISSUE
+            if a.action_type == ActionType.CREATE_TECH_LEAD_ISSUE
         ]
 
     def test_creates_anchor_with_agent_and_marker_labels_when_due(self):
-        from issue_orchestrator.domain.triage_session import (
+        from issue_orchestrator.domain.tech_lead_session import (
             HEALTH_REVIEW_MARKER_LABEL,
         )
 
         planner, _ = self._make_planner()
-        plan = planner.plan(make_snapshot(triage_facts=self._health_facts()))
+        plan = planner.plan(make_snapshot(tech_lead_facts=self._health_facts()))
 
         actions = self._create_actions(plan)
         assert len(actions) == 1
         action = actions[0]
         assert action.title == "Health Review — walk the floor"
-        assert "agent:triage" in action.labels
+        assert "agent:tech-lead" in action.labels
         assert HEALTH_REVIEW_MARKER_LABEL in action.labels
         # The owner states the variant on the action; the creation boundary
         # reports that decision rather than re-reading the marker label (#6780).
-        assert action.flavor is TriageSessionFlavor.HEALTH_REVIEW
+        assert action.flavor is TechLeadSessionFlavor.HEALTH_REVIEW
         assert action.pr_count == 0
         assert "board snapshot" in action.body.lower()
         assert "ADR-0031" in action.body
@@ -1695,7 +1695,7 @@ class TestPlanHealthReviewIssueCreation:
         planner, config = self._make_planner()
         config.filtering.label = "io:e2e:run-1"
 
-        plan = planner.plan(make_snapshot(triage_facts=self._health_facts()))
+        plan = planner.plan(make_snapshot(tech_lead_facts=self._health_facts()))
 
         (action,) = self._create_actions(plan)
         assert "io:e2e:run-1" in action.labels
@@ -1704,7 +1704,7 @@ class TestPlanHealthReviewIssueCreation:
         planner, _ = self._make_planner()
         facts = self._health_facts(health_review_due=False)
 
-        plan = planner.plan(make_snapshot(triage_facts=facts))
+        plan = planner.plan(make_snapshot(tech_lead_facts=facts))
 
         assert self._create_actions(plan) == []
 
@@ -1715,11 +1715,11 @@ class TestPlanHealthReviewIssueCreation:
         The cohort is also queued as individual investigations in the same
         plan: the anchor's intake collapses them on a successful create, so
         persisting first is what keeps the problems recoverable if the create
-        never lands (#6780). See TestReactiveTriageStormEscalation.
+        never lands (#6780). See TestReactiveTechLeadStormEscalation.
         """
         planner, config = self._make_planner(interval_minutes=0)
-        config.triage.health_review.storm_threshold = 3
-        config.triage.health_review.storm_window_minutes = 5
+        config.tech_lead.health_review.storm_threshold = 3
+        config.tech_lead.health_review.storm_window_minutes = 5
         problems = tuple(
             DiscoveredFailure(
                 issue_number=number,
@@ -1732,7 +1732,7 @@ class TestPlanHealthReviewIssueCreation:
         planner = Planner(
             config=config,
             scheduler=Scheduler(config),
-            triage_workflow=TriageWorkflow(config, InMemoryEventSink()),
+            tech_lead_workflow=TechLeadWorkflow(config, InMemoryEventSink()),
             clock=lambda: 1_100.0,
         )
 
@@ -1741,32 +1741,32 @@ class TestPlanHealthReviewIssueCreation:
         [action] = self._create_actions(plan)
         assert tuple(p.issue_number for p in action.storm_problems) == (1, 2, 3)
         assert action.reason == "problem storm: 3 issues inside settle window"
-        assert action.flavor is TriageSessionFlavor.HEALTH_REVIEW
+        assert action.flavor is TechLeadSessionFlavor.HEALTH_REVIEW
         assert "instead of" in action.body
         # Persist-first: the cohort is queued ahead of the anchor that retires it.
         assert sorted(
-            a.issue_number for a in plan.actions_of_type(ActionType.QUEUE_TRIAGE)
+            a.issue_number for a in plan.actions_of_type(ActionType.QUEUE_TECH_LEAD)
         ) == [1, 2, 3]
 
     def test_skips_when_existing_anchor_open(self):
         planner, _ = self._make_planner()
         facts = self._health_facts(existing_health_review_issue=321)
 
-        plan = planner.plan(make_snapshot(triage_facts=facts))
+        plan = planner.plan(make_snapshot(tech_lead_facts=facts))
 
         assert self._create_actions(plan) == []
 
     def test_skips_when_health_review_pending_launch(self):
         """Dedup keys off the queue item's typed flavor, not its title."""
         planner, _ = self._make_planner()
-        pending = PendingTriageReview(
+        pending = PendingTechLeadReview(
             issue_number=321,
             title="renamed by an operator",
-            flavor=TriageSessionFlavor.HEALTH_REVIEW,
+            flavor=TechLeadSessionFlavor.HEALTH_REVIEW,
         )
 
         plan = planner.plan(
-            make_snapshot(triage_facts=self._health_facts(), pending_triage=[pending])
+            make_snapshot(tech_lead_facts=self._health_facts(), pending_tech_lead=[pending])
         )
 
         assert self._create_actions(plan) == []
@@ -1775,14 +1775,14 @@ class TestPlanHealthReviewIssueCreation:
         """A queued BATCH item must not dedupe the health anchor (independent
         triggers; only a pending HEALTH_REVIEW covers the creation window)."""
         planner, _ = self._make_planner()
-        pending = PendingTriageReview(
+        pending = PendingTechLeadReview(
             issue_number=100,
-            title="Triage Batch Review: 5 PRs pending",
-            flavor=TriageSessionFlavor.BATCH_REVIEW,
+            title="Tech Lead Batch Review: 5 PRs pending",
+            flavor=TechLeadSessionFlavor.BATCH_REVIEW,
         )
 
         plan = planner.plan(
-            make_snapshot(triage_facts=self._health_facts(), pending_triage=[pending])
+            make_snapshot(tech_lead_facts=self._health_facts(), pending_tech_lead=[pending])
         )
 
         assert len(self._create_actions(plan)) == 1
@@ -1794,34 +1794,34 @@ class TestPlanHealthReviewIssueCreation:
             health_review_due=False, pr_count=0, threshold=0, watch_label=""
         )
 
-        plan = planner.plan(make_snapshot(triage_facts=facts))
+        plan = planner.plan(make_snapshot(tech_lead_facts=facts))
 
         assert self._create_actions(plan) == []
 
     @staticmethod
-    def _triage_skipped(events: InMemoryEventSink):
-        return [e for e in events.events if e.name == "triage.skipped"]
+    def _tech_lead_skipped(events: InMemoryEventSink):
+        return [e for e in events.events if e.name == "tech_lead.skipped"]
 
-    def test_paused_skips_creation_and_emits_triage_skipped(self):
+    def test_paused_skips_creation_and_emits_tech_lead_skipped(self):
         """A due health review, while paused, files NO anchor and is observably
         skipped through the owned gate (not silently dropped, #6763 finding 2).
 
         ``Planner.plan()`` early-returns an empty plan when paused; the health
-        gate must still run so TRIAGE_SKIPPED carries the paused reason.
+        gate must still run so TECH_LEAD_SKIPPED carries the paused reason.
         """
         events = InMemoryEventSink()
         planner, _ = self._make_planner(events=events)
 
         plan = planner.plan(
-            make_snapshot(triage_facts=self._health_facts(), paused=True)
+            make_snapshot(tech_lead_facts=self._health_facts(), paused=True)
         )
 
         assert self._create_actions(plan) == []
-        skipped = self._triage_skipped(events)
+        skipped = self._tech_lead_skipped(events)
         assert [e.data["reason"] for e in skipped] == ["orchestrator_paused"]
 
-    def test_at_capacity_skips_creation_and_emits_triage_skipped(self):
-        """At capacity the anchor is NOT filed and TRIAGE_SKIPPED carries the
+    def test_at_capacity_skips_creation_and_emits_tech_lead_skipped(self):
+        """At capacity the anchor is NOT filed and TECH_LEAD_SKIPPED carries the
         capacity reason — the phase-1 create must route through the gate, not
         fire before it (#6763 finding 2)."""
         events = InMemoryEventSink()
@@ -1831,12 +1831,12 @@ class TestPlanHealthReviewIssueCreation:
 
         plan = planner.plan(
             make_snapshot(
-                triage_facts=self._health_facts(), active_sessions=active
+                tech_lead_facts=self._health_facts(), active_sessions=active
             )
         )
 
         assert self._create_actions(plan) == []
-        skipped = self._triage_skipped(events)
+        skipped = self._tech_lead_skipped(events)
         assert len(skipped) == 1
         assert skipped[0].data["reason"] == "no_capacity"
         assert skipped[0].data["active"] == 2
@@ -1844,17 +1844,17 @@ class TestPlanHealthReviewIssueCreation:
 
     def test_open_gate_still_creates_and_emits_no_skip(self):
         """Belt and braces: with the gate open the anchor is filed and NO
-        spurious TRIAGE_SKIPPED is emitted (the happy path stays clean)."""
+        spurious TECH_LEAD_SKIPPED is emitted (the happy path stays clean)."""
         events = InMemoryEventSink()
         planner, _ = self._make_planner(events=events)
 
-        plan = planner.plan(make_snapshot(triage_facts=self._health_facts()))
+        plan = planner.plan(make_snapshot(tech_lead_facts=self._health_facts()))
 
         assert len(self._create_actions(plan)) == 1
-        assert self._triage_skipped(events) == []
+        assert self._tech_lead_skipped(events) == []
 
 
-class TestReactiveTriageStormEscalation:
+class TestReactiveTechLeadStormEscalation:
     """Persist-first storm escalation (#6780).
 
     The cohort is ALWAYS queued as individual investigations — the pending
@@ -1872,19 +1872,19 @@ class TestReactiveTriageStormEscalation:
 
     def _planner(self, *, max_concurrent: int = 3, events=None):
         config = make_config(
-            triage_review_agent="agent:triage",
-            triage_review_on_failure=True,
+            tech_lead_review_agent="agent:tech-lead",
+            tech_lead_review_on_failure=True,
             max_concurrent_sessions=max_concurrent,
         )
         # Isolate the storm path from the periodic interval.
-        config.triage.health_review.interval_minutes = 0
-        config.triage.health_review.storm_threshold = 3
-        config.triage.health_review.storm_window_minutes = 5
+        config.tech_lead.health_review.interval_minutes = 0
+        config.tech_lead.health_review.storm_threshold = 3
+        config.tech_lead.health_review.storm_window_minutes = 5
         events = events if events is not None else InMemoryEventSink()
         planner = Planner(
             config=config,
             scheduler=Scheduler(config),
-            triage_workflow=TriageWorkflow(config=config, events=events),
+            tech_lead_workflow=TechLeadWorkflow(config=config, events=events),
             clock=lambda: self.STORM_CLOCK,
         )
         return planner, config
@@ -1901,16 +1901,16 @@ class TestReactiveTriageStormEscalation:
         )
 
     @staticmethod
-    def _queued_triage_issue_numbers(plan) -> list[int]:
+    def _queued_tech_lead_issue_numbers(plan) -> list[int]:
         return sorted(
             a.issue_number
             for a in plan.actions
-            if a.action_type == ActionType.QUEUE_TRIAGE
+            if a.action_type == ActionType.QUEUE_TECH_LEAD
         )
 
     def test_storm_persists_cohort_before_planning_its_anchor(self):
         """Persist-first: an escalating storm queues the cohort as individual
-        investigations AND plans the anchor, with the QUEUE_TRIAGE actions
+        investigations AND plans the anchor, with the QUEUE_TECH_LEAD actions
         ordered strictly BEFORE the create. Intake collapses them on a
         successful create; if the create never lands, those queued items are
         what keeps the cohort alive (#6780)."""
@@ -1918,15 +1918,15 @@ class TestReactiveTriageStormEscalation:
 
         plan = planner.plan(make_snapshot(discovered_failures=self._cohort()))
 
-        assert len(plan.actions_of_type(ActionType.CREATE_TRIAGE_ISSUE)) == 1
-        assert self._queued_triage_issue_numbers(plan) == [1, 2, 3]
+        assert len(plan.actions_of_type(ActionType.CREATE_TECH_LEAD_ISSUE)) == 1
+        assert self._queued_tech_lead_issue_numbers(plan) == [1, 2, 3]
         # Ordering is load-bearing: apply_plan applies in plan order, and the
         # anchor's intake is what retires the investigations it supersedes.
         action_types = [a.action_type for a in plan.actions]
         last_queue = max(
-            i for i, t in enumerate(action_types) if t == ActionType.QUEUE_TRIAGE
+            i for i, t in enumerate(action_types) if t == ActionType.QUEUE_TECH_LEAD
         )
-        assert action_types.index(ActionType.CREATE_TRIAGE_ISSUE) > last_queue
+        assert action_types.index(ActionType.CREATE_TECH_LEAD_ISSUE) > last_queue
 
     def test_storm_defers_to_investigations_when_anchor_already_open(self):
         """A not-due tick with an open anchor must not mint a second one.
@@ -1939,40 +1939,40 @@ class TestReactiveTriageStormEscalation:
         for the gatherer-driven half of this contract; this half asserts the
         planner honours the fact.
         """
-        from issue_orchestrator.domain.models import TriageFacts
+        from issue_orchestrator.domain.models import TechLeadFacts
 
         planner, _ = self._planner()
-        facts = TriageFacts(
+        facts = TechLeadFacts(
             health_review_due=False, existing_health_review_issue=555
         )
 
         plan = planner.plan(
-            make_snapshot(discovered_failures=self._cohort(), triage_facts=facts)
+            make_snapshot(discovered_failures=self._cohort(), tech_lead_facts=facts)
         )
 
         # No anchor carries the cohort, so the individual investigations must
         # be queued instead of silently dropped.
-        assert plan.actions_of_type(ActionType.CREATE_TRIAGE_ISSUE) == []
-        assert self._queued_triage_issue_numbers(plan) == [1, 2, 3]
+        assert plan.actions_of_type(ActionType.CREATE_TECH_LEAD_ISSUE) == []
+        assert self._queued_tech_lead_issue_numbers(plan) == [1, 2, 3]
 
     def test_storm_defers_to_investigations_when_health_review_pending(self):
         planner, _ = self._planner()
         pending = [
-            PendingTriageReview(
+            PendingTechLeadReview(
                 issue_number=777,
                 title="Health Review",
-                flavor=TriageSessionFlavor.HEALTH_REVIEW,
+                flavor=TechLeadSessionFlavor.HEALTH_REVIEW,
             )
         ]
 
         plan = planner.plan(
             make_snapshot(
-                discovered_failures=self._cohort(), pending_triage=pending
+                discovered_failures=self._cohort(), pending_tech_lead=pending
             )
         )
 
-        assert plan.actions_of_type(ActionType.CREATE_TRIAGE_ISSUE) == []
-        assert self._queued_triage_issue_numbers(plan) == [1, 2, 3]
+        assert plan.actions_of_type(ActionType.CREATE_TECH_LEAD_ISSUE) == []
+        assert self._queued_tech_lead_issue_numbers(plan) == [1, 2, 3]
 
     def test_storm_defers_to_investigations_when_at_capacity(self):
         planner, _ = self._planner(max_concurrent=2)
@@ -1984,8 +1984,8 @@ class TestReactiveTriageStormEscalation:
             )
         )
 
-        assert plan.actions_of_type(ActionType.CREATE_TRIAGE_ISSUE) == []
-        assert self._queued_triage_issue_numbers(plan) == [1, 2, 3]
+        assert plan.actions_of_type(ActionType.CREATE_TECH_LEAD_ISSUE) == []
+        assert self._queued_tech_lead_issue_numbers(plan) == [1, 2, 3]
 
     def test_paused_storm_plans_nothing(self):
         """A paused tick plans no reactive actions: apply_plan refuses to apply
@@ -2005,10 +2005,10 @@ class TestReactiveTriageStormEscalation:
     def _cohort_with_one_already_queued(self):
         """Cohort where #1 is already a queued investigation and #2/#3 are
         freshly discovered — enough members to trip the storm threshold."""
-        already = PendingTriageReview(
+        already = PendingTechLeadReview(
             issue_number=1,
             title="Investigate 1",
-            flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+            flavor=TechLeadSessionFlavor.FAILURE_INVESTIGATION,
             failure=DiscoveredFailure(
                 issue_number=1,
                 issue_title="Problem 1",
@@ -2020,11 +2020,11 @@ class TestReactiveTriageStormEscalation:
         return already, discovered
 
     @staticmethod
-    def _launched_triage_issue_numbers(plan) -> list[int]:
+    def _launched_tech_lead_issue_numbers(plan) -> list[int]:
         return sorted(
             a.number
             for a in plan.actions_of_type(ActionType.LAUNCH_SESSION)
-            if a.session_type == SessionType.TRIAGE
+            if a.session_type == SessionType.TECH_LEAD
         )
 
     def test_escalated_storm_suppresses_a_member_investigation_launch(self):
@@ -2035,34 +2035,34 @@ class TestReactiveTriageStormEscalation:
 
         plan = planner.plan(
             make_snapshot(
-                discovered_failures=discovered, pending_triage=[already]
+                discovered_failures=discovered, pending_tech_lead=[already]
             )
         )
 
-        assert len(plan.actions_of_type(ActionType.CREATE_TRIAGE_ISSUE)) == 1
-        assert self._launched_triage_issue_numbers(plan) == []
+        assert len(plan.actions_of_type(ActionType.CREATE_TECH_LEAD_ISSUE)) == 1
+        assert self._launched_tech_lead_issue_numbers(plan) == []
 
     def test_deferred_storm_does_not_suppress_a_member_investigation_launch(self):
         """When the cohort is deferred, the already-queued member investigation
         must be allowed to launch — the deferred storm suppresses nothing."""
-        from issue_orchestrator.domain.models import TriageFacts
+        from issue_orchestrator.domain.models import TechLeadFacts
 
         planner, _ = self._planner()
         already, discovered = self._cohort_with_one_already_queued()
-        facts = TriageFacts(
+        facts = TechLeadFacts(
             health_review_due=False, existing_health_review_issue=555
         )
 
         plan = planner.plan(
             make_snapshot(
                 discovered_failures=discovered,
-                pending_triage=[already],
-                triage_facts=facts,
+                pending_tech_lead=[already],
+                tech_lead_facts=facts,
             )
         )
 
-        assert plan.actions_of_type(ActionType.CREATE_TRIAGE_ISSUE) == []
-        assert self._launched_triage_issue_numbers(plan) == [1]
+        assert plan.actions_of_type(ActionType.CREATE_TECH_LEAD_ISSUE) == []
+        assert self._launched_tech_lead_issue_numbers(plan) == [1]
 
 
 class TestPlanDiscoveredReworks:
@@ -2577,17 +2577,17 @@ class TestPlanDiscoveredFailures:
     """Tests for the planner's failure-investigation queueing.
 
     Exercised through the public ``plan()`` API: DiscoveredFailure facts from
-    session completions produce QueueTriageAction for the orchestrator to apply.
+    session completions produce QueueTechLeadAction for the orchestrator to apply.
     """
 
-    def test_plans_triage_action_for_discovered_failure(self):
-        """Planner produces QueueTriageAction for discovered failures."""
+    def test_plans_tech_lead_action_for_discovered_failure(self):
+        """Planner produces QueueTechLeadAction for discovered failures."""
         from issue_orchestrator.domain.models import DiscoveredFailure
         from issue_orchestrator.control.actions import ActionType
 
         config = make_config(
-            triage_review_agent="agent:triage",
-            triage_review_on_failure=True,
+            tech_lead_review_agent="agent:tech-lead",
+            tech_lead_review_on_failure=True,
         )
         scheduler = Scheduler(config)
         planner = Planner(config=config, scheduler=scheduler)
@@ -2604,10 +2604,10 @@ class TestPlanDiscoveredFailures:
 
         plan = planner.plan(snapshot)
 
-        # Should have a QueueTriageAction
-        triage_actions = [a for a in plan.actions if a.action_type == ActionType.QUEUE_TRIAGE]
-        assert len(triage_actions) == 1
-        action = triage_actions[0]
+        # Should have a QueueTechLeadAction
+        tech_lead_actions = [a for a in plan.actions if a.action_type == ActionType.QUEUE_TECH_LEAD]
+        assert len(tech_lead_actions) == 1
+        action = tech_lead_actions[0]
         assert action.issue_number == 42
         assert "failed" in action.title
         # The typed failure context must ride the action across the plan/apply
@@ -2616,14 +2616,14 @@ class TestPlanDiscoveredFailures:
         # the investigation's own triggering failure.
         assert action.failure is discovered
 
-    def test_no_triage_action_when_disabled(self):
-        """Planner produces no triage actions when triage_review_on_failure is disabled."""
+    def test_no_tech_lead_action_when_disabled(self):
+        """Planner produces no tech_lead actions when tech_lead_review_on_failure is disabled."""
         from issue_orchestrator.domain.models import DiscoveredFailure
         from issue_orchestrator.control.actions import ActionType
 
         config = make_config(
-            triage_review_agent="agent:triage",
-            triage_review_on_failure=False,  # Disabled
+            tech_lead_review_agent="agent:tech-lead",
+            tech_lead_review_on_failure=False,  # Disabled
         )
         scheduler = Scheduler(config)
         planner = Planner(config=config, scheduler=scheduler)
@@ -2640,17 +2640,17 @@ class TestPlanDiscoveredFailures:
 
         plan = planner.plan(snapshot)
 
-        triage_actions = [a for a in plan.actions if a.action_type == ActionType.QUEUE_TRIAGE]
-        assert len(triage_actions) == 0
+        tech_lead_actions = [a for a in plan.actions if a.action_type == ActionType.QUEUE_TECH_LEAD]
+        assert len(tech_lead_actions) == 0
 
-    def test_no_triage_action_when_no_agent_configured(self):
-        """Planner produces no triage actions when no triage_review_agent configured."""
+    def test_no_tech_lead_action_when_no_agent_configured(self):
+        """Planner produces no tech_lead actions when no tech_lead_review_agent configured."""
         from issue_orchestrator.domain.models import DiscoveredFailure
         from issue_orchestrator.control.actions import ActionType
 
         config = make_config(
-            triage_review_agent=None,  # Not configured
-            triage_review_on_failure=True,
+            tech_lead_review_agent=None,  # Not configured
+            tech_lead_review_on_failure=True,
         )
         scheduler = Scheduler(config)
         planner = Planner(config=config, scheduler=scheduler)
@@ -2667,17 +2667,17 @@ class TestPlanDiscoveredFailures:
 
         plan = planner.plan(snapshot)
 
-        triage_actions = [a for a in plan.actions if a.action_type == ActionType.QUEUE_TRIAGE]
-        assert len(triage_actions) == 0
+        tech_lead_actions = [a for a in plan.actions if a.action_type == ActionType.QUEUE_TECH_LEAD]
+        assert len(tech_lead_actions) == 0
 
-    def test_skips_already_queued_triage(self):
-        """Planner skips failures for issues already queued for triage."""
+    def test_skips_already_queued_tech_lead(self):
+        """Planner skips failures for issues already queued for tech_lead."""
         from issue_orchestrator.domain.models import DiscoveredFailure
         from issue_orchestrator.control.actions import ActionType
 
         config = make_config(
-            triage_review_agent="agent:triage",
-            triage_review_on_failure=True,
+            tech_lead_review_agent="agent:tech-lead",
+            tech_lead_review_on_failure=True,
         )
         scheduler = Scheduler(config)
         planner = Planner(config=config, scheduler=scheduler)
@@ -2688,11 +2688,11 @@ class TestPlanDiscoveredFailures:
             failure_reason="failed",
         )
 
-        # Already queued for triage
-        pending_triage = PendingTriageReview(
+        # Already queued for tech_lead
+        pending_tech_lead = PendingTechLeadReview(
             issue_number=42,
             title="Already queued",
-            flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+            flavor=TechLeadSessionFlavor.FAILURE_INVESTIGATION,
             failure=DiscoveredFailure(
                 issue_number=42, issue_title="Already queued", failure_reason="failed"
             ),
@@ -2700,21 +2700,21 @@ class TestPlanDiscoveredFailures:
 
         snapshot = make_snapshot(
             discovered_failures=(discovered,),
-            pending_triage=[pending_triage],
+            pending_tech_lead=[pending_tech_lead],
         )
 
         plan = planner.plan(snapshot)
 
-        triage_actions = [a for a in plan.actions if a.action_type == ActionType.QUEUE_TRIAGE]
-        assert len(triage_actions) == 0
+        tech_lead_actions = [a for a in plan.actions if a.action_type == ActionType.QUEUE_TECH_LEAD]
+        assert len(tech_lead_actions) == 0
 
-    def test_no_triage_actions_when_no_discovered_failures(self):
-        """Planner produces no triage actions when no discovered failures."""
+    def test_no_tech_lead_actions_when_no_discovered_failures(self):
+        """Planner produces no tech_lead actions when no discovered failures."""
         from issue_orchestrator.control.actions import ActionType
 
         config = make_config(
-            triage_review_agent="agent:triage",
-            triage_review_on_failure=True,
+            tech_lead_review_agent="agent:tech-lead",
+            tech_lead_review_on_failure=True,
         )
         scheduler = Scheduler(config)
         planner = Planner(config=config, scheduler=scheduler)
@@ -2725,8 +2725,8 @@ class TestPlanDiscoveredFailures:
 
         plan = planner.plan(snapshot)
 
-        triage_actions = [a for a in plan.actions if a.action_type == ActionType.QUEUE_TRIAGE]
-        assert len(triage_actions) == 0
+        tech_lead_actions = [a for a in plan.actions if a.action_type == ActionType.QUEUE_TECH_LEAD]
+        assert len(tech_lead_actions) == 0
 
 
 class TestPlanCleanups:
@@ -2827,7 +2827,7 @@ class TestPlanCleanups:
         from issue_orchestrator.domain.models import CleanupFacts, ImmediateCleanup
         from issue_orchestrator.control.actions import ActionType
 
-        config = make_config(triage_review_agent="agent:triage")
+        config = make_config(tech_lead_review_agent="agent:tech-lead")
         planner = Planner(config=config, scheduler=Scheduler(config))
 
         cleanup_facts = CleanupFacts(
@@ -2878,14 +2878,14 @@ class TestPlanCleanups:
         assert cleanup_actions[0].remove_worktrees is True
 
     def test_scratch_worktree_cleanup_forces_removal_despite_config(self):
-        """A disposable triage-investigation scratch worktree is always removed
+        """A disposable tech-lead-investigation scratch worktree is always removed
         on completion, even when the cleanup config keeps worktrees (#6823), so
         scratch workspaces never accumulate. A non-scratch cleanup still honors
         the config."""
         from issue_orchestrator.domain.models import CleanupFacts, ImmediateCleanup
         from issue_orchestrator.control.actions import ActionType
 
-        config = make_config(triage_review_agent="agent:triage")
+        config = make_config(tech_lead_review_agent="agent:tech-lead")
         planner = Planner(config=config, scheduler=Scheduler(config))
 
         cleanup_facts = CleanupFacts(
@@ -2897,7 +2897,7 @@ class TestPlanCleanups:
                 ImmediateCleanup(
                     5980,
                     "issue-5980",
-                    "/tmp/repo-triage-5980-abc",
+                    "/tmp/repo-tech-lead-5980-abc",
                     "completed",
                     scratch_worktree=True,
                 ),
@@ -2946,10 +2946,10 @@ class TestFailureInvestigationCleanupLifecycle:
             OrchestratorState,
         )
 
-        config = make_config(triage_review_agent="agent:triage")
-        config.triage_review_on_failure = True
-        config.cleanup.with_triage.remove_worktrees = True
-        config.cleanup.with_triage.close_ai_session_tabs = True
+        config = make_config(tech_lead_review_agent="agent:tech-lead")
+        config.tech_lead_review_on_failure = True
+        config.cleanup.with_tech_lead.remove_worktrees = True
+        config.cleanup.with_tech_lead.close_ai_session_tabs = True
 
         gatherer = FactGatherer(config=config, repository_host=MagicMock())
         planner = Planner(config=config, scheduler=Scheduler(config))
@@ -2978,7 +2978,7 @@ class TestFailureInvestigationCleanupLifecycle:
             facts = gatherer.gather_cleanup_facts(state)
             snapshot = make_snapshot(
                 active_sessions=list(state.active_sessions),
-                pending_triage=list(state.pending_triage_reviews),
+                pending_tech_lead=list(state.pending_tech_lead_reviews),
                 discovered_failures=tuple(state.discovered_failures),
                 cleanup_facts=facts,
             )
@@ -2990,11 +2990,11 @@ class TestFailureInvestigationCleanupLifecycle:
                 if a.action_type == ActionType.CLEANUP_SESSION
             ]
 
-        # Tick 1 — discovery: triage is queued AND no removal is applied for
+        # Tick 1 — discovery: tech_lead is queued AND no removal is applied for
         # the held worktree even though remove_worktrees is configured true.
         plan = plan_tick()
         queue_actions = [
-            a for a in plan.actions if a.action_type == ActionType.QUEUE_TRIAGE
+            a for a in plan.actions if a.action_type == ActionType.QUEUE_TECH_LEAD
         ]
         assert len(queue_actions) == 1
         assert cleanup_actions(plan) == []
@@ -3011,7 +3011,7 @@ class TestFailureInvestigationCleanupLifecycle:
         # Tick 2 — investigation queued: still held; queued hints readable.
         plan = plan_tick()
         assert cleanup_actions(plan) == []
-        queued = state.pending_triage_reviews[0]
+        queued = state.pending_tech_lead_reviews[0]
         assert queued.failure is not None
         assert all(Path(h).exists() for h in queued.failure.artifact_hints), (
             "the investigation must launch with readable artifact hints"
@@ -3020,10 +3020,10 @@ class TestFailureInvestigationCleanupLifecycle:
         assert [c.issue_number for c in state.immediate_cleanups] == [42]
 
         # Tick 3 — investigation active: launch consumed the queue item and
-        # registered the triage session; the hold follows the session.
-        PendingSessionQueues(state).remove_triage(42)
+        # registered the tech_lead session; the hold follows the session.
+        PendingSessionQueues(state).remove_tech_lead(42)
         state.active_sessions.append(
-            make_session(make_issue(42, labels=["agent:triage"]))
+            make_session(make_issue(42, labels=["agent:tech-lead"]))
         )
         plan = plan_tick()
         assert cleanup_actions(plan) == []
@@ -3059,38 +3059,38 @@ class TestStormCohortCleanupLifecycle:
     def test_collapsed_cohort_is_held_until_the_health_review_ends(self, tmp_path):
         from issue_orchestrator.control.actions import (
             ActionType,
-            CreateTriageIssueAction,
+            CreateTechLeadIssueAction,
         )
         from issue_orchestrator.control.fact_gatherer import (
             FactGatherer,
             clear_discovered_facts,
         )
         from issue_orchestrator.control.health_review_trigger import (
-            intake_created_triage_anchor,
+            intake_created_tech_lead_anchor,
         )
         from issue_orchestrator.control.session_routing import PendingSessionQueues
         from issue_orchestrator.domain.models import (
             ImmediateCleanup,
             OrchestratorState,
         )
-        from issue_orchestrator.domain.triage_session import (
+        from issue_orchestrator.domain.tech_lead_session import (
             HEALTH_REVIEW_MARKER_LABEL,
         )
-        from issue_orchestrator.ports.triage_authority import (
-            InMemoryTriageAuthorityStore,
+        from issue_orchestrator.ports.tech_lead_authority import (
+            InMemoryTechLeadAuthorityStore,
         )
 
-        config = make_config(triage_review_agent="agent:triage")
-        config.triage_review_on_failure = True
-        config.cleanup.with_triage.remove_worktrees = True
-        config.triage.health_review.storm_threshold = 3
-        config.triage.health_review.storm_window_minutes = 5
+        config = make_config(tech_lead_review_agent="agent:tech-lead")
+        config.tech_lead_review_on_failure = True
+        config.cleanup.with_tech_lead.remove_worktrees = True
+        config.tech_lead.health_review.storm_threshold = 3
+        config.tech_lead.health_review.storm_window_minutes = 5
 
-        authority = InMemoryTriageAuthorityStore()
+        authority = InMemoryTechLeadAuthorityStore()
         gatherer = FactGatherer(
             config=config,
             repository_host=MagicMock(),
-            triage_authority=authority,
+            tech_lead_authority=authority,
         )
         planner = Planner(config=config, scheduler=Scheduler(config))
         state = OrchestratorState()
@@ -3122,7 +3122,7 @@ class TestStormCohortCleanupLifecycle:
             return planner.plan(
                 make_snapshot(
                     active_sessions=list(state.active_sessions),
-                    pending_triage=list(state.pending_triage_reviews),
+                    pending_tech_lead=list(state.pending_tech_lead_reviews),
                     discovered_failures=tuple(state.discovered_failures),
                     cleanup_facts=facts,
                 )
@@ -3137,7 +3137,7 @@ class TestStormCohortCleanupLifecycle:
 
         # Tick 1 — the storm escalates. The real intake owner collapses the
         # investigations into the anchor's cohort, exactly as the post-apply
-        # seam does for a successful CreateTriageIssueAction.
+        # seam does for a successful CreateTechLeadIssueAction.
         queues = PendingSessionQueues(state)
         for failure in cohort:
             queues.queue_failure_investigation(
@@ -3145,11 +3145,11 @@ class TestStormCohortCleanupLifecycle:
                 f"Investigate {failure.issue_number}",
                 failure=failure,
             )
-        intake_created_triage_anchor(
-            CreateTriageIssueAction(
+        intake_created_tech_lead_anchor(
+            CreateTechLeadIssueAction(
                 title="Health Review — walk the floor",
                 body="Problem storm",
-                labels=("agent:triage", HEALTH_REVIEW_MARKER_LABEL),
+                labels=("agent:tech-lead", HEALTH_REVIEW_MARKER_LABEL),
                 pr_count=0,
                 storm_problems=tuple(cohort),
             ),
@@ -3160,7 +3160,7 @@ class TestStormCohortCleanupLifecycle:
         )
         clear_discovered_facts(state, config, authority, tick_paused=False)
 
-        assert [t.issue_number for t in state.pending_triage_reviews] == [999], (
+        assert [t.issue_number for t in state.pending_tech_lead_reviews] == [999], (
             "the collapse must leave exactly the anchor queued"
         )
         assert sorted(c.issue_number for c in state.immediate_cleanups) == [
@@ -3173,7 +3173,7 @@ class TestStormCohortCleanupLifecycle:
         # worktree, and the hints the review will read are still on disk.
         assert cleanup_numbers(plan_tick()) == []
         clear_discovered_facts(state, config, authority, tick_paused=False)
-        (queued,) = state.pending_triage_reviews
+        (queued,) = state.pending_tech_lead_reviews
         assert all(
             Path(hint).exists()
             for problem in queued.problem_cohort
@@ -3183,9 +3183,9 @@ class TestStormCohortCleanupLifecycle:
         # Tick 3 — anchor ACTIVE: launch consumed the queue item, so the
         # durable cohort ledger is the only thing still naming these
         # artifacts. The hold must follow the running review.
-        queues.remove_triage(999)
+        queues.remove_tech_lead(999)
         state.active_sessions.append(
-            make_session(make_issue(999, labels=["agent:triage"]))
+            make_session(make_issue(999, labels=["agent:tech-lead"]))
         )
         assert cleanup_numbers(plan_tick()) == []
         clear_discovered_facts(state, config, authority, tick_paused=False)
@@ -3213,7 +3213,7 @@ class TestStormCohortCleanupLifecycle:
     def test_inert_cohort_row_does_not_hold_cleanup_forever(self, tmp_path):
         """A row whose anchor is neither pending nor active grants no hold.
 
-        The ledger is intersected with live triage work precisely so that a
+        The ledger is intersected with live tech_lead work precisely so that a
         row leaked by an anchor that never reached completion (dropped after
         exhausted launch retries) cannot strand a worktree forever.
         """
@@ -3223,15 +3223,15 @@ class TestStormCohortCleanupLifecycle:
             ImmediateCleanup,
             OrchestratorState,
         )
-        from issue_orchestrator.ports.triage_authority import (
-            InMemoryTriageAuthorityStore,
+        from issue_orchestrator.ports.tech_lead_authority import (
+            InMemoryTechLeadAuthorityStore,
         )
 
-        config = make_config(triage_review_agent="agent:triage")
-        config.triage_review_on_failure = True
-        config.cleanup.with_triage.remove_worktrees = True
+        config = make_config(tech_lead_review_agent="agent:tech-lead")
+        config.tech_lead_review_on_failure = True
+        config.cleanup.with_tech_lead.remove_worktrees = True
 
-        authority = InMemoryTriageAuthorityStore()
+        authority = InMemoryTechLeadAuthorityStore()
         authority.record_storm_cohort(
             anchor_issue_number=999,
             cohort=(DiscoveredFailure(41, "Problem 41", "failed"),),
@@ -3239,7 +3239,7 @@ class TestStormCohortCleanupLifecycle:
         gatherer = FactGatherer(
             config=config,
             repository_host=MagicMock(),
-            triage_authority=authority,
+            tech_lead_authority=authority,
         )
         planner = Planner(config=config, scheduler=Scheduler(config))
 
@@ -3260,7 +3260,7 @@ class TestStormCohortCleanupLifecycle:
 
 
 class TestActionPriority:
-    """Tests for action priority: Reviews > Reworks > Triage > Issues.
+    """Tests for action priority: Reviews > Reworks > Tech Lead > Issues.
 
     The planner enforces a strict priority order to ensure completed work
     (PRs waiting for review) is processed before starting new work.
@@ -3304,13 +3304,13 @@ class TestActionPriority:
         assert launch_actions[0].session_type == SessionType.REVIEW
         assert launch_actions[0].number == 100
 
-    def test_reworks_take_priority_over_triage(self):
-        """Reworks are launched before triage when both are available."""
+    def test_reworks_take_priority_over_tech_lead(self):
+        """Reworks are launched before tech_lead when both are available."""
         from tests.conftest import MockEventSink
 
         config = make_config(
             code_review_agent="agent:reviewer",
-            triage_review_agent="agent:triage",
+            tech_lead_review_agent="agent:tech-lead",
             max_concurrent_sessions=1,
         )
         scheduler = Scheduler(config)
@@ -3329,24 +3329,24 @@ class TestActionPriority:
         mock_rework_workflow.should_launch_reworks.return_value = mock_decision
         mock_rework_workflow.should_escalate.return_value = Mock(should_escalate=False)
 
-        # Mock triage workflow (should not be called if reworks consume capacity)
-        mock_triage_workflow = Mock()
-        mock_triage_workflow.is_configured.return_value = True
+        # Mock tech_lead workflow (should not be called if reworks consume capacity)
+        mock_tech_lead_workflow = Mock()
+        mock_tech_lead_workflow.is_configured.return_value = True
 
         planner = Planner(
             config=config,
             scheduler=scheduler,
             rework_workflow=mock_rework_workflow,
-            triage_workflow=mock_triage_workflow,
+            tech_lead_workflow=mock_tech_lead_workflow,
         )
 
         snapshot = make_snapshot(
             pending_reworks=[pending_rework],
-            pending_triage=[
-                PendingTriageReview(
+            pending_tech_lead=[
+                PendingTechLeadReview(
                     issue_number=2,
                     title="Investigate failure",
-                    flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+                    flavor=TechLeadSessionFlavor.FAILURE_INVESTIGATION,
                     failure=DiscoveredFailure(
                         issue_number=2,
                         issue_title="Investigate failure",
@@ -3358,7 +3358,7 @@ class TestActionPriority:
 
         plan = planner.plan(snapshot)
 
-        # Should launch rework (priority over triage)
+        # Should launch rework (priority over tech_lead)
         launch_actions = plan.actions_of_type(ActionType.LAUNCH_SESSION)
         assert len(launch_actions) == 1
         assert launch_actions[0].session_type == SessionType.REWORK
@@ -3488,7 +3488,7 @@ class TestActionPriority:
         assert len(issue_actions) == 0
 
     def test_issues_launched_when_no_pending_work(self):
-        """New issues are launched when no reviews, reworks, or triage are pending."""
+        """New issues are launched when no reviews, reworks, or tech_lead are pending."""
         config = make_config(max_concurrent_sessions=3)
         scheduler = Scheduler(config)
         planner = Planner(config=config, scheduler=scheduler)
@@ -3497,7 +3497,7 @@ class TestActionPriority:
             issues=[make_issue(1), make_issue(2)],
             pending_reviews=[],
             pending_reworks=[],
-            pending_triage=[],
+            pending_tech_lead=[],
         )
 
         plan = planner.plan(snapshot)
@@ -3524,7 +3524,7 @@ class TestEdgeCases:
             active_sessions=[],
             pending_reviews=[],
             pending_reworks=[],
-            pending_triage=[],
+            pending_tech_lead=[],
             discovered_reviews=(),
             discovered_reworks=(),
             discovered_escalations=(),
@@ -3917,14 +3917,14 @@ class TestPlanQueueActionsOnlyPhase:
         escalate_actions = [a for a in plan.actions if a.action_type == ActionType.ESCALATE_TO_HUMAN]
         assert len(escalate_actions) == 1
 
-    def test_triage_queue_actions_produced_at_capacity(self):
-        """Triage queue actions are generated even when at max capacity."""
+    def test_tech_lead_queue_actions_produced_at_capacity(self):
+        """Tech Lead queue actions are generated even when at max capacity."""
         from issue_orchestrator.domain.models import DiscoveredFailure
 
         config = make_config(
             max_concurrent_sessions=1,
-            triage_review_agent="agent:triage",
-            triage_review_on_failure=True,
+            tech_lead_review_agent="agent:tech-lead",
+            tech_lead_review_on_failure=True,
         )
         scheduler = Scheduler(config)
         planner = Planner(config=config, scheduler=scheduler)
@@ -3946,9 +3946,9 @@ class TestPlanQueueActionsOnlyPhase:
 
         plan = planner.plan(snapshot)
 
-        # Triage queue action should still be produced
-        triage_actions = [a for a in plan.actions if a.action_type == ActionType.QUEUE_TRIAGE]
-        assert len(triage_actions) == 1
+        # Tech Lead queue action should still be produced
+        tech_lead_actions = [a for a in plan.actions if a.action_type == ActionType.QUEUE_TECH_LEAD]
+        assert len(tech_lead_actions) == 1
 
     def test_cleanup_actions_produced_at_capacity(self):
         """Cleanup actions are generated even when at max capacity."""
@@ -4075,7 +4075,7 @@ class TestSnapshotFromState:
             DiscoveredRework,
             DiscoveredEscalation,
             DiscoveredFailure,
-            TriageFacts,
+            TechLeadFacts,
             CleanupFacts,
         )
 
@@ -4093,10 +4093,10 @@ class TestSnapshotFromState:
         rework = PendingRework(issue_key=FakeIssueKey(name="2"), agent_type="agent:dev", rework_cycle=1)
         state.pending_reworks = [rework]
 
-        triage = PendingTriageReview(
-            issue_number=3, title="Triage", flavor=TriageSessionFlavor.BATCH_REVIEW
+        tech_lead = PendingTechLeadReview(
+            issue_number=3, title="Tech Lead", flavor=TechLeadSessionFlavor.BATCH_REVIEW
         )
-        state.pending_triage_reviews = [triage]
+        state.pending_tech_lead_reviews = [tech_lead]
         validation_retry = PendingValidationRetry(
             issue_number=4,
             issue_title="Retry",
@@ -4130,7 +4130,7 @@ class TestSnapshotFromState:
         discovered_rework = DiscoveredRework(issue_number=11, pr_number=111, branch_name="b", agent_type="a", rework_cycle=1)
         discovered_escalation = DiscoveredEscalation(issue_number=12, pr_number=112, rework_cycle=5)
         discovered_failure = DiscoveredFailure(issue_number=13, issue_title="F", failure_reason="failed")
-        triage_facts = TriageFacts(pr_count=2, threshold=3)
+        tech_lead_facts = TechLeadFacts(pr_count=2, threshold=3)
         cleanup_facts = CleanupFacts(pending_cleanups=(), reviewed_pr_numbers=frozenset())
 
         snapshot = OrchestratorSnapshot.from_state(
@@ -4147,7 +4147,7 @@ class TestSnapshotFromState:
             discovered_reworks=[discovered_rework],
             discovered_escalations=[discovered_escalation],
             discovered_failures=[discovered_failure],
-            triage_facts=triage_facts,
+            tech_lead_facts=tech_lead_facts,
             cleanup_facts=cleanup_facts,
         )
 
@@ -4159,7 +4159,7 @@ class TestSnapshotFromState:
         assert snapshot.max_issues_to_start == 10
         assert len(snapshot.pending_reviews) == 1
         assert len(snapshot.pending_reworks) == 1
-        assert len(snapshot.pending_triage) == 1
+        assert len(snapshot.pending_tech_lead) == 1
         assert len(snapshot.pending_validation_retries) == 1
         assert len(snapshot.discovered_reviews) == 1
         assert len(snapshot.discovered_awaiting_merge_reconciliations) == 1
@@ -4167,7 +4167,7 @@ class TestSnapshotFromState:
         assert len(snapshot.discovered_reworks) == 1
         assert len(snapshot.discovered_escalations) == 1
         assert len(snapshot.discovered_failures) == 1
-        assert snapshot.triage_facts is not None
+        assert snapshot.tech_lead_facts is not None
         assert snapshot.cleanup_facts is not None
 
 
@@ -4234,13 +4234,13 @@ class TestMultiplePendingTypesInteraction:
     """Tests for interactions when multiple pending types exist simultaneously."""
 
     def test_pending_work_gets_priority_remaining_capacity_goes_to_issues(self):
-        """Pending review/triage consume slots first, remaining capacity goes to issues."""
+        """Pending review/tech_lead consume slots first, remaining capacity goes to issues."""
         from tests.conftest import MockEventSink
-        from issue_orchestrator.control.workflows import ReviewWorkflow, TriageWorkflow
+        from issue_orchestrator.control.workflows import ReviewWorkflow, TechLeadWorkflow
 
         config = make_config(
             code_review_agent="agent:reviewer",
-            triage_review_agent="agent:triage",
+            tech_lead_review_agent="agent:tech-lead",
             max_concurrent_sessions=5,
         )
         scheduler = Scheduler(config)
@@ -4249,7 +4249,7 @@ class TestMultiplePendingTypesInteraction:
             config=config,
             scheduler=scheduler,
             review_workflow=ReviewWorkflow(config=config, events=events),
-            triage_workflow=TriageWorkflow(config=config, events=events),
+            tech_lead_workflow=TechLeadWorkflow(config=config, events=events),
         )
 
         pending_review = PendingReview(
@@ -4259,10 +4259,10 @@ class TestMultiplePendingTypesInteraction:
             branch_name="issue-100",
             _issue_number=100,
         )
-        pending_triage = PendingTriageReview(
+        pending_tech_lead = PendingTechLeadReview(
             issue_number=101,
             title="Investigate",
-            flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+            flavor=TechLeadSessionFlavor.FAILURE_INVESTIGATION,
             failure=DiscoveredFailure(
                 issue_number=101, issue_title="Investigate", failure_reason="failed"
             ),
@@ -4271,7 +4271,7 @@ class TestMultiplePendingTypesInteraction:
         snapshot = make_snapshot(
             issues=[make_issue(100), make_issue(1), make_issue(2)],
             pending_reviews=[pending_review],
-            pending_triage=[pending_triage],
+            pending_tech_lead=[pending_tech_lead],
         )
 
         plan = planner.plan(snapshot)
@@ -4280,13 +4280,13 @@ class TestMultiplePendingTypesInteraction:
             a for a in plan.actions_of_type(ActionType.LAUNCH_SESSION)
             if a.session_type == SessionType.ISSUE
         ]
-        review_triage_actions = [
+        review_tech_lead_actions = [
             a for a in plan.actions_of_type(ActionType.LAUNCH_SESSION)
-            if a.session_type in {SessionType.REVIEW, SessionType.TRIAGE}
+            if a.session_type in {SessionType.REVIEW, SessionType.TECH_LEAD}
         ]
-        # Review + triage get 2 slots, issue 100 excluded (has pending review),
+        # Review + tech_lead get 2 slots, issue 100 excluded (has pending review),
         # issues 1 and 2 get the remaining 3 slots
-        assert len(review_triage_actions) == 2
+        assert len(review_tech_lead_actions) == 2
         assert len(issue_actions) == 2
         assert {a.number for a in issue_actions} == {1, 2}
 
@@ -4296,12 +4296,12 @@ class TestMultiplePendingTypesInteraction:
         from issue_orchestrator.control.workflows import (
             ReviewWorkflow,
             ReworkWorkflow,
-            TriageWorkflow,
+            TechLeadWorkflow,
         )
 
         config = make_config(
             code_review_agent="agent:reviewer",
-            triage_review_agent="agent:triage",
+            tech_lead_review_agent="agent:tech-lead",
             max_concurrent_sessions=3,
         )
         scheduler = Scheduler(config)
@@ -4309,9 +4309,9 @@ class TestMultiplePendingTypesInteraction:
 
         review_workflow = ReviewWorkflow(config=config, events=events)
         rework_workflow = ReworkWorkflow(config=config, events=events)
-        triage_workflow = TriageWorkflow(config=config, events=events)
+        tech_lead_workflow = TechLeadWorkflow(config=config, events=events)
 
-        # 1 review, 1 rework, 1 triage, 3 issues - only 3 capacity
+        # 1 review, 1 rework, 1 tech_lead, 3 issues - only 3 capacity
         pending_review = PendingReview(
             issue_key=FakeIssueKey(name="1"),
             pr_number=101,
@@ -4324,10 +4324,10 @@ class TestMultiplePendingTypesInteraction:
             agent_type="agent:dev",
             rework_cycle=1,
         )
-        pending_triage = PendingTriageReview(
+        pending_tech_lead = PendingTechLeadReview(
             issue_number=3,
             title="Investigate",
-            flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+            flavor=TechLeadSessionFlavor.FAILURE_INVESTIGATION,
             failure=DiscoveredFailure(
                 issue_number=3, issue_title="Investigate", failure_reason="failed"
             ),
@@ -4338,14 +4338,14 @@ class TestMultiplePendingTypesInteraction:
             scheduler=scheduler,
             review_workflow=review_workflow,
             rework_workflow=rework_workflow,
-            triage_workflow=triage_workflow,
+            tech_lead_workflow=tech_lead_workflow,
         )
 
         snapshot = make_snapshot(
             issues=[make_issue(4), make_issue(5), make_issue(6)],
             pending_reviews=[pending_review],
             pending_reworks=[pending_rework],
-            pending_triage=[pending_triage],
+            pending_tech_lead=[pending_tech_lead],
         )
 
         plan = planner.plan(snapshot)
@@ -4354,21 +4354,21 @@ class TestMultiplePendingTypesInteraction:
         launch_actions = plan.actions_of_type(ActionType.LAUNCH_SESSION)
         assert len(launch_actions) == 3
 
-        # Priority order: review first, then rework, then triage
+        # Priority order: review first, then rework, then tech_lead
         types = [a.session_type for a in launch_actions]
         assert types[0] == SessionType.REVIEW
         assert types[1] == SessionType.REWORK
-        assert types[2] == SessionType.TRIAGE
+        assert types[2] == SessionType.TECH_LEAD
 
         # No issue launches (pending work exists)
         issue_launches = [a for a in launch_actions if a.session_type == SessionType.ISSUE]
         assert len(issue_launches) == 0
 
 
-class TestReservedTriageConcurrency:
-    """triage.max_concurrent: a reserved additive budget for the tech lead.
+class TestReservedTechLeadConcurrency:
+    """tech_lead.max_concurrent: a reserved additive budget for the tech lead.
 
-    None (default) = triage shares the worker budget (unchanged). An int = a
+    None (default) = tech_lead shares the worker budget (unchanged). An int = a
     separate additive budget so the tech lead runs even when workers saturate
     ``max_concurrent_sessions``.
     """
@@ -4377,39 +4377,39 @@ class TestReservedTriageConcurrency:
         return Planner(
             config=config,
             scheduler=Scheduler(config),
-            triage_workflow=TriageWorkflow(config=config, events=InMemoryEventSink()),
+            tech_lead_workflow=TechLeadWorkflow(config=config, events=InMemoryEventSink()),
         )
 
-    def _pending_triage(self, number: int = 101) -> PendingTriageReview:
-        return PendingTriageReview(
+    def _pending_tech_lead(self, number: int = 101) -> PendingTechLeadReview:
+        return PendingTechLeadReview(
             issue_number=number,
             title="Investigate",
-            flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+            flavor=TechLeadSessionFlavor.FAILURE_INVESTIGATION,
             failure=DiscoveredFailure(
                 issue_number=number, issue_title="Investigate", failure_reason="failed"
             ),
         )
 
-    def _triage_session(self, number: int, agent_label: str) -> Session:
-        """An active triage session is one whose agent_label is the triage agent."""
+    def _tech_lead_session(self, number: int, agent_label: str) -> Session:
+        """An active tech_lead session is one whose agent_label is the tech lead agent."""
         session = make_session(make_issue(number, labels=[agent_label]))
         session.agent_label = agent_label
         return session
 
-    def _triage_launches(self, plan) -> list:
+    def _tech_lead_launches(self, plan) -> list:
         return [
             a
             for a in plan.actions_of_type(ActionType.LAUNCH_SESSION)
-            if a.session_type == SessionType.TRIAGE
+            if a.session_type == SessionType.TECH_LEAD
         ]
 
-    def test_reserved_slot_launches_triage_at_worker_saturation(self):
-        """Worker budget full (shared capacity 0), triage still launches from
+    def test_reserved_slot_launches_tech_lead_at_worker_saturation(self):
+        """Worker budget full (shared capacity 0), tech_lead still launches from
         its own reserved slot."""
         config = make_config(
-            triage_review_agent="agent:triage", max_concurrent_sessions=1
+            tech_lead_review_agent="agent:tech-lead", max_concurrent_sessions=1
         )
-        config.triage.max_concurrent = 1
+        config.tech_lead.max_concurrent = 1
         planner = self._planner(config)
 
         # One long coding session saturates the single worker slot.
@@ -4417,29 +4417,29 @@ class TestReservedTriageConcurrency:
         snapshot = make_snapshot(
             issues=[make_issue(1)],
             active_sessions=[worker],
-            pending_triage=[self._pending_triage(101)],
+            pending_tech_lead=[self._pending_tech_lead(101)],
         )
 
-        launches = self._triage_launches(planner.plan(snapshot))
+        launches = self._tech_lead_launches(planner.plan(snapshot))
         assert [a.number for a in launches] == [101]
 
-    def test_shared_budget_none_skips_triage_at_saturation(self):
-        """None (default): triage shares the worker budget, so a full worker
-        budget means no triage launches - unchanged behavior."""
+    def test_shared_budget_none_skips_tech_lead_at_saturation(self):
+        """None (default): tech_lead shares the worker budget, so a full worker
+        budget means no tech_lead launches - unchanged behavior."""
         config = make_config(
-            triage_review_agent="agent:triage", max_concurrent_sessions=1
+            tech_lead_review_agent="agent:tech-lead", max_concurrent_sessions=1
         )
-        assert config.triage.max_concurrent is None
+        assert config.tech_lead.max_concurrent is None
         planner = self._planner(config)
 
         worker = make_session(make_issue(1))
         snapshot = make_snapshot(
             issues=[make_issue(1)],
             active_sessions=[worker],
-            pending_triage=[self._pending_triage(101)],
+            pending_tech_lead=[self._pending_tech_lead(101)],
         )
 
-        assert self._triage_launches(planner.plan(snapshot)) == []
+        assert self._tech_lead_launches(planner.plan(snapshot)) == []
 
     def _issue_launches(self, plan) -> list:
         return [
@@ -4448,57 +4448,57 @@ class TestReservedTriageConcurrency:
             if a.session_type == SessionType.ISSUE
         ]
 
-    def test_active_triage_session_does_not_reduce_worker_capacity_when_reserved(self):
-        """Additive budget: a running triage session neither consumes worker
+    def test_active_tech_lead_session_does_not_reduce_worker_capacity_when_reserved(self):
+        """Additive budget: a running tech_lead session neither consumes worker
         capacity nor counts against max_concurrent_sessions, so a worker still
         launches into the free worker slot."""
         config = make_config(
-            triage_review_agent="agent:triage", max_concurrent_sessions=1
+            tech_lead_review_agent="agent:tech-lead", max_concurrent_sessions=1
         )
-        config.triage.max_concurrent = 1
+        config.tech_lead.max_concurrent = 1
         planner = self._planner(config)
 
-        # One active triage session; a fresh worker issue is pending.
+        # One active tech_lead session; a fresh worker issue is pending.
         snapshot = make_snapshot(
             issues=[make_issue(2)],
-            active_sessions=[self._triage_session(50, "agent:triage")],
+            active_sessions=[self._tech_lead_session(50, "agent:tech-lead")],
         )
 
         launches = self._issue_launches(planner.plan(snapshot))
         assert [a.number for a in launches] == [2]
 
-    def test_active_triage_session_consumes_shared_budget_when_none(self):
-        """None (default): a triage session shares the worker budget, so it DOES
+    def test_active_tech_lead_session_consumes_shared_budget_when_none(self):
+        """None (default): a tech_lead session shares the worker budget, so it DOES
         occupy the single worker slot and no worker launches - unchanged."""
         config = make_config(
-            triage_review_agent="agent:triage", max_concurrent_sessions=1
+            tech_lead_review_agent="agent:tech-lead", max_concurrent_sessions=1
         )
         planner = self._planner(config)
 
         snapshot = make_snapshot(
             issues=[make_issue(2)],
-            active_sessions=[self._triage_session(50, "agent:triage")],
+            active_sessions=[self._tech_lead_session(50, "agent:tech-lead")],
         )
 
         assert self._issue_launches(planner.plan(snapshot)) == []
 
-    def test_reserved_budget_bounds_concurrent_triage_launches(self):
-        """A reserved budget of 1 launches at most one triage even with two
+    def test_reserved_budget_bounds_concurrent_tech_lead_launches(self):
+        """A reserved budget of 1 launches at most one tech_lead even with two
         pending, and the second is skipped."""
         config = make_config(
-            triage_review_agent="agent:triage", max_concurrent_sessions=1
+            tech_lead_review_agent="agent:tech-lead", max_concurrent_sessions=1
         )
-        config.triage.max_concurrent = 1
+        config.tech_lead.max_concurrent = 1
         planner = self._planner(config)
 
         worker = make_session(make_issue(1))
         snapshot = make_snapshot(
             issues=[make_issue(1)],
             active_sessions=[worker],
-            pending_triage=[self._pending_triage(101), self._pending_triage(102)],
+            pending_tech_lead=[self._pending_tech_lead(101), self._pending_tech_lead(102)],
         )
 
-        launches = self._triage_launches(planner.plan(snapshot))
+        launches = self._tech_lead_launches(planner.plan(snapshot))
         assert len(launches) == 1
 
 
@@ -4537,29 +4537,29 @@ class TestStuckSweepEscalation:
         ]
 
 
-class TestReservedTriageDoesNotStealWorkerReviewCapacity:
-    """F5: reserved triage concurrency must not steal worker review/rework/
+class TestReservedTechLeadDoesNotStealWorkerReviewCapacity:
+    """F5: reserved tech_lead concurrency must not steal worker review/rework/
     retrospective capacity. The worker workflows gate on the owner-computed
     WORKER-only active count, not raw ``snapshot.active_count`` — so an active
-    reserved-triage session leaves the worker slot free. Real workflows are
+    reserved-tech-lead session leaves the worker slot free. Real workflows are
     wired so the internal capacity gate actually runs.
     """
 
-    def _triage_session(self, number: int, agent_label: str) -> Session:
+    def _tech_lead_session(self, number: int, agent_label: str) -> Session:
         session = make_session(make_issue(number, labels=[agent_label]))
         session.agent_label = agent_label
         return session
 
     def _config(self, *, reserved: bool):
         config = make_config(
-            triage_review_agent="agent:triage",
+            tech_lead_review_agent="agent:tech-lead",
             code_review_agent="agent:reviewer",
             max_concurrent_sessions=1,
             retrospective_review_enabled=True,
         )
         config.retrospective_review_trigger_label = "lack-of-review-redo"
         if reserved:
-            config.triage.max_concurrent = 1
+            config.tech_lead.max_concurrent = 1
         return config
 
     def _pending_review(self) -> PendingReview:
@@ -4588,7 +4588,7 @@ class TestReservedTriageDoesNotStealWorkerReviewCapacity:
             if a.session_type == session_type
         ]
 
-    def test_review_launches_despite_active_reserved_triage(self):
+    def test_review_launches_despite_active_reserved_tech_lead(self):
         config = self._config(reserved=True)
         planner = Planner(
             config=config, scheduler=Scheduler(config),
@@ -4596,27 +4596,27 @@ class TestReservedTriageDoesNotStealWorkerReviewCapacity:
         )
         snapshot = make_snapshot(
             pending_reviews=[self._pending_review()],
-            active_sessions=[self._triage_session(50, "agent:triage")],
+            active_sessions=[self._tech_lead_session(50, "agent:tech-lead")],
         )
         launches = self._launches_of(planner.plan(snapshot), SessionType.REVIEW)
         assert [a.number for a in launches] == [100]
 
     def test_review_shares_budget_and_skips_when_not_reserved(self):
         config = self._config(reserved=False)
-        assert config.triage.max_concurrent is None
+        assert config.tech_lead.max_concurrent is None
         planner = Planner(
             config=config, scheduler=Scheduler(config),
             review_workflow=ReviewWorkflow(config, InMemoryEventSink()),
         )
         snapshot = make_snapshot(
             pending_reviews=[self._pending_review()],
-            active_sessions=[self._triage_session(50, "agent:triage")],
+            active_sessions=[self._tech_lead_session(50, "agent:tech-lead")],
         )
-        # Shared budget: the triage session occupies the one worker slot — no
+        # Shared budget: the tech_lead session occupies the one worker slot — no
         # review launches (unchanged behavior).
         assert self._launches_of(planner.plan(snapshot), SessionType.REVIEW) == []
 
-    def test_rework_launches_despite_active_reserved_triage(self):
+    def test_rework_launches_despite_active_reserved_tech_lead(self):
         config = self._config(reserved=True)
         planner = Planner(
             config=config, scheduler=Scheduler(config),
@@ -4624,7 +4624,7 @@ class TestReservedTriageDoesNotStealWorkerReviewCapacity:
         )
         snapshot = make_snapshot(
             pending_reworks=[self._pending_rework()],
-            active_sessions=[self._triage_session(50, "agent:triage")],
+            active_sessions=[self._tech_lead_session(50, "agent:tech-lead")],
         )
         launches = self._launches_of(planner.plan(snapshot), SessionType.REWORK)
         assert [a.number for a in launches] == [2]
@@ -4637,11 +4637,11 @@ class TestReservedTriageDoesNotStealWorkerReviewCapacity:
         )
         snapshot = make_snapshot(
             pending_reworks=[self._pending_rework()],
-            active_sessions=[self._triage_session(50, "agent:triage")],
+            active_sessions=[self._tech_lead_session(50, "agent:tech-lead")],
         )
         assert self._launches_of(planner.plan(snapshot), SessionType.REWORK) == []
 
-    def test_retrospective_launches_despite_active_reserved_triage(self):
+    def test_retrospective_launches_despite_active_reserved_tech_lead(self):
         config = self._config(reserved=True)
         planner = Planner(
             config=config, scheduler=Scheduler(config),
@@ -4651,7 +4651,7 @@ class TestReservedTriageDoesNotStealWorkerReviewCapacity:
         )
         snapshot = make_snapshot(
             pending_retrospective_reviews=[self._pending_retrospective()],
-            active_sessions=[self._triage_session(50, "agent:triage")],
+            active_sessions=[self._tech_lead_session(50, "agent:tech-lead")],
         )
         launches = self._launches_of(
             planner.plan(snapshot), SessionType.RETROSPECTIVE_REVIEW
@@ -4668,7 +4668,7 @@ class TestReservedTriageDoesNotStealWorkerReviewCapacity:
         )
         snapshot = make_snapshot(
             pending_retrospective_reviews=[self._pending_retrospective()],
-            active_sessions=[self._triage_session(50, "agent:triage")],
+            active_sessions=[self._tech_lead_session(50, "agent:tech-lead")],
         )
         assert self._launches_of(
             planner.plan(snapshot), SessionType.RETROSPECTIVE_REVIEW
@@ -4681,8 +4681,8 @@ class TestE2EFirstClassWorkload:
     OFF (default) leaves every capacity path byte-for-byte unchanged. ON, a
     running E2E occupies one worker slot (worker capacity -1), and a due suite
     reserves a worker slot AFTER completion work but BEFORE new issues — beating
-    new issues yet never preempting reviews/reworks/triage. It is charged to the
-    worker budget, never the reserved triage slot.
+    new issues yet never preempting reviews/reworks/tech_lead. It is charged to the
+    worker budget, never the reserved tech_lead slot.
     """
 
     def _plain_planner(self, config) -> Planner:
@@ -4695,7 +4695,7 @@ class TestE2EFirstClassWorkload:
             if a.session_type == session_type
         ]
 
-    def _triage_session(self, number: int, agent_label: str) -> Session:
+    def _tech_lead_session(self, number: int, agent_label: str) -> Session:
         session = make_session(make_issue(number, labels=[agent_label]))
         session.agent_label = agent_label
         return session
@@ -4731,21 +4731,21 @@ class TestE2EFirstClassWorkload:
         assert snap.e2e_due is False
         assert len(self._launches(planner.plan(snap), SessionType.ISSUE)) == 2
 
-    def test_off_reserved_budget_additive_triage_unchanged(self):
-        """Flag off with a reserved triage budget is unchanged: an active
-        triage session stays additive (worker capacity 2 launches both issues)
-        while the reserved budget still admits one more triage launch."""
+    def test_off_reserved_budget_additive_tech_lead_unchanged(self):
+        """Flag off with a reserved tech_lead budget is unchanged: an active
+        tech_lead session stays additive (worker capacity 2 launches both issues)
+        while the reserved budget still admits one more tech_lead launch."""
         config = make_config(
-            triage_review_agent="agent:triage", max_concurrent_sessions=3
+            tech_lead_review_agent="agent:tech-lead", max_concurrent_sessions=3
         )
-        config.triage.max_concurrent = 2
+        config.tech_lead.max_concurrent = 2
         planner = Planner(
             config=config, scheduler=Scheduler(config),
-            triage_workflow=TriageWorkflow(config=config, events=InMemoryEventSink()),
+            tech_lead_workflow=TechLeadWorkflow(config=config, events=InMemoryEventSink()),
         )
-        pending = PendingTriageReview(
+        pending = PendingTechLeadReview(
             issue_number=101, title="Investigate",
-            flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+            flavor=TechLeadSessionFlavor.FAILURE_INVESTIGATION,
             failure=DiscoveredFailure(
                 issue_number=101, issue_title="Investigate", failure_reason="failed"
             ),
@@ -4754,15 +4754,15 @@ class TestE2EFirstClassWorkload:
             issues=[make_issue(2), make_issue(3)],
             active_sessions=[
                 make_session(make_issue(1)),
-                self._triage_session(50, "agent:triage"),
+                self._tech_lead_session(50, "agent:tech-lead"),
             ],
-            pending_triage=[pending],
+            pending_tech_lead=[pending],
         )
         plan = planner.plan(snap)
-        # worker capacity = 3 - (2 active - 1 triage) = 2 → both issues launch;
-        # reserved = 2 - 1 active triage = 1 → one more triage launches.
+        # worker capacity = 3 - (2 active - 1 tech_lead) = 2 → both issues launch;
+        # reserved = 2 - 1 active tech_lead = 1 → one more tech_lead launches.
         assert len(self._launches(plan, SessionType.ISSUE)) == 2
-        assert len(self._launches(plan, SessionType.TRIAGE)) == 1
+        assert len(self._launches(plan, SessionType.TECH_LEAD)) == 1
 
     def test_off_new_issue_launches_normally(self):
         config = make_config(max_concurrent_sessions=1)
@@ -4792,31 +4792,31 @@ class TestE2EFirstClassWorkload:
         )
         assert len(self._launches(planner.plan(snap), SessionType.ISSUE)) == 1
 
-    def test_running_charges_worker_budget_not_reserved_triage(self):
+    def test_running_charges_worker_budget_not_reserved_tech_lead(self):
         """The single worker slot is held by E2E, yet the tech lead still
         launches from its own reserved slot: E2E is charged to the worker
-        budget, NOT the triage reserved slot."""
+        budget, NOT the tech_lead reserved slot."""
         config = make_config(
-            triage_review_agent="agent:triage", max_concurrent_sessions=1
+            tech_lead_review_agent="agent:tech-lead", max_concurrent_sessions=1
         )
-        config.triage.max_concurrent = 1
+        config.tech_lead.max_concurrent = 1
         planner = Planner(
             config=config,
             scheduler=Scheduler(config),
-            triage_workflow=TriageWorkflow(config=config, events=InMemoryEventSink()),
+            tech_lead_workflow=TechLeadWorkflow(config=config, events=InMemoryEventSink()),
         )
-        pending = PendingTriageReview(
+        pending = PendingTechLeadReview(
             issue_number=101, title="Investigate",
-            flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+            flavor=TechLeadSessionFlavor.FAILURE_INVESTIGATION,
             failure=DiscoveredFailure(
                 issue_number=101, issue_title="Investigate", failure_reason="failed"
             ),
         )
         snap = make_snapshot(
-            issues=[make_issue(1)], pending_triage=[pending], e2e_occupies_slot=True
+            issues=[make_issue(1)], pending_tech_lead=[pending], e2e_occupies_slot=True
         )
         plan = planner.plan(snap)
-        assert [a.number for a in self._launches(plan, SessionType.TRIAGE)] == [101]
+        assert [a.number for a in self._launches(plan, SessionType.TECH_LEAD)] == [101]
         assert self._launches(plan, SessionType.ISSUE) == []
 
     # ---- E2E due: reservation (ahead of issues, behind completion work) ----

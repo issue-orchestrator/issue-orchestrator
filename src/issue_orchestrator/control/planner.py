@@ -29,11 +29,12 @@ from ..infra.config import Config
 from ..infra.logging_config import issue_log
 from ..ports.issue import Issue
 from ..domain.models import (
-    TriageFacts,
+    TechLeadFacts,
     active_retrospective_review_issue_numbers,
 )
 from ..domain.post_publish_escalation import build_post_publish_escalation_comment
-from ..domain.triage_session import TriageSessionFlavor
+from ..domain.tech_lead_naming import TECH_LEAD_DISPLAY_NAME
+from ..domain.tech_lead_session import TechLeadSessionFlavor
 
 if TYPE_CHECKING:
     from .provider_resilience import ProviderResilienceManager
@@ -48,8 +49,8 @@ from .workflows import (
     RetrospectiveReviewDecision,
     ReworkWorkflow,
     ReworkDecision,
-    TriageWorkflow,
-    TriageDecision,
+    TechLeadWorkflow,
+    TechLeadDecision,
 )
 from .actions import (
     Action,
@@ -61,8 +62,8 @@ from .actions import (
     QueueReviewAction,
     QueueRetrospectiveReviewAction,
     QueueReworkAction,
-    CreateTriageIssueAction,
-    DiscardTerminalTriageProposalOpsAction,
+    CreateTechLeadIssueAction,
+    DiscardTerminalTechLeadProposalOpsAction,
     EnqueueToMergeQueueAction,
     EscalateToHumanAction,
     CleanupSessionAction,
@@ -75,20 +76,20 @@ from .awaiting_merge_post_publish_policy import (
     build_post_publish_validation_comment,
     POST_PUBLISH_VALIDATION_SOURCE,
 )
-from .reactive_triage_planning import plan_reactive_triage
-from .triage_proposals import plan_approved_triage_op_executions
-from .triage_reaction import TriageReactionPolicy
+from .reactive_tech_lead_planning import plan_reactive_tech_lead
+from .tech_lead_proposals import plan_approved_tech_lead_op_executions
+from .tech_lead_reaction import TechLeadReactionPolicy
 from .worker_budget import (
-    active_triage_session_count,
+    active_tech_lead_session_count,
     active_worker_session_count,
 )
 from .reconciliation import build_expected_for_mutation
 from .stuck_sweep import build_stuck_sweep_escalation_actions
 from .planner_types import OrchestratorSnapshot, Plan, PlanContext, SkippedItem
-from .triage_issue_policy import (
-    apply_triage_priority_prefix,
+from .tech_lead_issue_policy import (
+    apply_tech_lead_priority_prefix,
     batch_review_issue_labels,
-    triage_issue_milestone_intent,
+    tech_lead_issue_milestone_intent,
 )
 
 logger = logging.getLogger(__name__)
@@ -101,7 +102,7 @@ class Planner:
     describing what actions should be taken. It delegates to:
     - Scheduler for issue prioritization and availability
     - DependencyEvaluator for dependency checking
-    - Workflow classes for review/rework/triage decisions
+    - Workflow classes for review/rework/tech_lead decisions
 
     The planner does NOT:
     - Make API calls
@@ -118,7 +119,7 @@ class Planner:
         review_workflow: Optional[ReviewWorkflow] = None,
         retrospective_review_workflow: Optional[RetrospectiveReviewWorkflow] = None,
         rework_workflow: Optional[ReworkWorkflow] = None,
-        triage_workflow: Optional[TriageWorkflow] = None,
+        tech_lead_workflow: Optional[TechLeadWorkflow] = None,
         provider_resilience: Optional["ProviderResilienceManager"] = None,
         label_manager: Optional["LabelManager"] = None,
         clock: Callable[[], float] = time.time,
@@ -131,7 +132,7 @@ class Planner:
             dependency_evaluator: Optional dependency checking
             review_workflow: Optional review decision logic
             rework_workflow: Optional rework decision logic
-            triage_workflow: Optional triage decision logic
+            tech_lead_workflow: Optional tech_lead decision logic
             label_manager: Label registry for prefix-aware queries.
         """
         self.config = config
@@ -140,14 +141,14 @@ class Planner:
         self.review_workflow = review_workflow
         self.retrospective_review_workflow = retrospective_review_workflow
         self.rework_workflow = rework_workflow
-        self.triage_workflow = triage_workflow
+        self.tech_lead_workflow = tech_lead_workflow
         self.provider_resilience = provider_resilience
         self.provider_policy = ProviderAvailabilityPolicy(config, provider_resilience) if provider_resilience else None
         if label_manager is None:
             from .label_manager import LabelManager
             label_manager = LabelManager(config)
         self._lm = label_manager
-        self._triage_reactions = TriageReactionPolicy(
+        self._tech_lead_reactions = TechLeadReactionPolicy(
             config=config,
             labels=label_manager,
             dependency_evaluator=self.dependency_evaluator,
@@ -185,15 +186,15 @@ class Planner:
         """
         actions: list[Action] = []
         skipped: list[SkippedItem] = []
-        reaction = self._triage_reactions.assess(snapshot)
-        # Reactive triage is one ATOMIC decision (#6780) owned by
-        # reactive_triage_planning: storm escalation vs individual
+        reaction = self._tech_lead_reactions.assess(snapshot)
+        # Reactive tech_lead is one ATOMIC decision (#6780) owned by
+        # reactive_tech_lead_planning: storm escalation vs individual
         # investigations, computed once so suppression is bound to actual
         # cohort persistence. Computing it here (before the paused
         # early-return) also runs the health-review gate exactly once, so its
-        # TRIAGE_SKIPPED still fires while paused.
-        reactive = plan_reactive_triage(
-            snapshot, reaction, self.config, workflow=self.triage_workflow
+        # TECH_LEAD_SKIPPED still fires while paused.
+        reactive = plan_reactive_tech_lead(
+            snapshot, reaction, self.config, workflow=self.tech_lead_workflow
         )
 
         # Check if paused
@@ -203,7 +204,7 @@ class Planner:
             # apply anything while paused. The discovered facts a paused tick
             # cannot act on are instead RETAINED by clear_discovered_facts, so
             # a storm cohort survives the pause (#6780). The health-review
-            # gate already ran above for its TRIAGE_SKIPPED emission (#6763).
+            # gate already ran above for its TECH_LEAD_SKIPPED emission (#6763).
             return Plan.empty()
 
         plan_context = PlanContext(issue_labels_by_number={
@@ -260,25 +261,25 @@ class Planner:
         merge_queue_actions = self._plan_merge_queue_enqueues(snapshot)
         actions.extend(merge_queue_actions)
 
-        # 1e+1f2. Reactive triage (tech-lead reaction, ADR-0031): the storm
+        # 1e+1f2. Reactive tech_lead (tech-lead reaction, ADR-0031): the storm
         # cohort escalates to one unscheduled health-review anchor OR the
         # individual failure investigations queue — decided atomically above so
         # a suppressed cohort is never lost — plus any due periodic anchor.
         actions.extend(reactive.actions)
 
-        # 1f. Create triage issue if threshold met
-        triage_create_action = self._plan_triage_issue_creation(snapshot)
-        if triage_create_action:
-            actions.append(triage_create_action)
+        # 1f. Create tech_lead issue if threshold met
+        tech_lead_create_action = self._plan_tech_lead_issue_creation(snapshot)
+        if tech_lead_create_action:
+            actions.append(tech_lead_create_action)
 
-        # 1f3. Execute APPROVED gated triage proposals (#6778): the operator
-        # removed the proposed-triage label, so the fact scan classified the
-        # stored op as approved. Policy lives in triage_proposals; the
+        # 1f3. Execute APPROVED gated tech_lead proposals (#6778): the operator
+        # removed the proposed-tech-lead label, so the fact scan classified the
+        # stored op as approved. Policy lives in tech_lead_proposals; the
         # appliers re-validate preconditions and finalize the proposal issue.
-        if snapshot.triage_facts and snapshot.triage_facts.approved_triage_ops:
+        if snapshot.tech_lead_facts and snapshot.tech_lead_facts.approved_tech_lead_ops:
             actions.extend(
-                plan_approved_triage_op_executions(
-                    snapshot.triage_facts.approved_triage_ops
+                plan_approved_tech_lead_op_executions(
+                    snapshot.tech_lead_facts.approved_tech_lead_ops
                 )
             )
 
@@ -289,13 +290,13 @@ class Planner:
         # discarding — absence from a possibly-truncated scan must never delete
         # a live op.
         candidates = (
-            snapshot.triage_facts.absent_proposal_op_candidates
-            if snapshot.triage_facts
+            snapshot.tech_lead_facts.absent_proposal_op_candidates
+            if snapshot.tech_lead_facts
             else ()
         )
         if candidates:
             actions.append(
-                DiscardTerminalTriageProposalOpsAction(
+                DiscardTerminalTechLeadProposalOpsAction(
                     candidate_issue_numbers=candidates
                 )
             )
@@ -314,43 +315,43 @@ class Planner:
             # Suppress individual investigation launches only when the cohort
             # was actually escalated this tick; on a deferred storm the fallback
             # investigations must be allowed to launch (#6780).
-            suppressed_triage_issue_numbers=reactive.suppressed_issue_numbers,
+            suppressed_tech_lead_issue_numbers=reactive.suppressed_issue_numbers,
         )
         actions.extend(launch_actions)
         skipped.extend(launch_skipped)
 
         return Plan(actions=tuple(actions), skipped=tuple(skipped))
 
-    def _active_triage_count(self, snapshot: OrchestratorSnapshot) -> int:
-        """Number of currently-active triage (tech-lead) sessions.
+    def _active_tech_lead_count(self, snapshot: OrchestratorSnapshot) -> int:
+        """Number of currently-active tech_lead (tech-lead) sessions.
 
-        Delegates to the worker-budget owner so the "what is a triage session"
-        rule (ADR-0031: agent label == configured ``triage_review_agent``) has
+        Delegates to the worker-budget owner so the "what is a tech_lead session"
+        rule (ADR-0031: agent label == configured ``tech_lead_review_agent``) has
         a single definition shared with the E2E worker-slot gate.
         """
-        return active_triage_session_count(self.config, snapshot.active_sessions)
+        return active_tech_lead_session_count(self.config, snapshot.active_sessions)
 
     def _launch_budgets(
         self, snapshot: OrchestratorSnapshot
     ) -> tuple[int, Optional[int]]:
-        """Compute ``(worker_capacity, reserved_triage_capacity)`` for this tick.
+        """Compute ``(worker_capacity, reserved_tech_lead_capacity)`` for this tick.
 
-        ``reserved_triage_capacity`` is ``None`` when ``triage.max_concurrent``
-        is unset: triage then SHARES the worker budget and worker capacity
+        ``reserved_tech_lead_capacity`` is ``None`` when ``tech_lead.max_concurrent``
+        is unset: tech_lead then SHARES the worker budget and worker capacity
         counts every active session, exactly as before (byte-for-byte). When
-        set, active triage sessions are ADDITIVE — they neither consume worker
-        capacity nor count against ``max_concurrent_sessions`` — and triage
-        draws from its own ``max_concurrent - active_triage`` budget so the
+        set, active tech_lead sessions are ADDITIVE — they neither consume worker
+        capacity nor count against ``max_concurrent_sessions`` — and tech_lead
+        draws from its own ``max_concurrent - active_tech_lead`` budget so the
         tech lead can launch even at worker saturation.
 
         A running first-class E2E workload (``snapshot.e2e_occupies_slot``, only
         ever set when ``e2e.occupies_session_slot`` is on) occupies one WORKER
         slot for as long as it runs, so worker capacity drops by 1 — one fewer
         agent launches. It is charged to the worker budget ONLY: the reserved
-        triage capacity is untouched, so the tech lead still runs in its own
+        tech_lead capacity is untouched, so the tech lead still runs in its own
         slot while E2E holds a worker slot.
         """
-        reserved = self.config.triage.max_concurrent
+        reserved = self.config.tech_lead.max_concurrent
         worker_capacity = self.config.max_concurrent_sessions - (
             active_worker_session_count(self.config, snapshot.active_sessions)
         )
@@ -358,31 +359,31 @@ class Planner:
             worker_capacity -= 1
         if reserved is None:
             return worker_capacity, None
-        active_triage = self._active_triage_count(snapshot)
-        return worker_capacity, reserved - active_triage
+        active_tech_lead = self._active_tech_lead_count(snapshot)
+        return worker_capacity, reserved - active_tech_lead
 
     def _plan_session_launches(
         self,
         snapshot: OrchestratorSnapshot,
         plan_context: PlanContext,
         *,
-        suppressed_triage_issue_numbers: frozenset[int] = frozenset(),
+        suppressed_tech_lead_issue_numbers: frozenset[int] = frozenset(),
     ) -> tuple[list[Action], list[SkippedItem]]:
         """Plan capacity-consuming session launches in priority order."""
         actions: list[Action] = []
         skipped: list[SkippedItem] = []
-        capacity, reserved_triage_capacity = self._launch_budgets(snapshot)
+        capacity, reserved_tech_lead_capacity = self._launch_budgets(snapshot)
         # Worker-only active count for the issue scheduler's own slot gate.
         # Derived from the (pre-decrement) worker capacity so it excludes active
-        # triage sessions exactly when they are additive; in the shared-budget
+        # tech_lead sessions exactly when they are additive; in the shared-budget
         # default this equals snapshot.active_count (unchanged behavior).
         worker_active_count = self.config.max_concurrent_sessions - capacity
         # Short-circuit only when NEITHER budget can launch anything. When
-        # triage shares the worker budget (reserved_triage_capacity is None)
+        # tech_lead shares the worker budget (reserved_tech_lead_capacity is None)
         # this reduces to exactly the original ``capacity <= 0`` guard; a
-        # reserved triage budget lets the tech lead run past worker saturation.
+        # reserved tech_lead budget lets the tech lead run past worker saturation.
         if capacity <= 0 and (
-            reserved_triage_capacity is None or reserved_triage_capacity <= 0
+            reserved_tech_lead_capacity is None or reserved_tech_lead_capacity <= 0
         ):
             logger.debug(
                 "Planner: no capacity available (active=%d, max=%d)",
@@ -392,17 +393,17 @@ class Planner:
             return actions, skipped
 
         # PRIORITY ORDER: Reviews > Retrospective Reviews > Reworks >
-        # Validation Retries > Triage > New Issues.
+        # Validation Retries > Tech Lead > New Issues.
         # This ensures completed work gets reviewed before starting new work.
         review_launch_count = 0
         retrospective_review_launch_count = 0
         rework_launch_count = 0
         validation_retry_launch_count = 0
-        triage_launch_count = 0
+        tech_lead_launch_count = 0
 
         # 2. Plan review launches (highest priority). The worker workflows gate
         # on the WORKER-only count (``worker_active_count``, owner: worker_budget),
-        # NOT raw ``snapshot.active_count`` — else a reserved-triage session steals
+        # NOT raw ``snapshot.active_count`` — else a reserved-tech-lead session steals
         # worker review/rework capacity (#6824 F5).
         if capacity > 0 and self.review_workflow:
             review_actions, review_skipped = self._plan_reviews(
@@ -449,27 +450,27 @@ class Planner:
             capacity -= len(validation_retry_actions)
             validation_retry_launch_count = len(validation_retry_actions)
 
-        # 5. Plan triage launches. By default triage draws from the shared
-        # worker ``capacity`` (decremented above). When triage.max_concurrent
+        # 5. Plan tech_lead launches. By default tech_lead draws from the shared
+        # worker ``capacity`` (decremented above). When tech_lead.max_concurrent
         # is set, it draws from its own reserved additive budget instead, so
         # the tech lead runs even when the worker budget is exhausted, and its
         # launches do NOT decrement the shared worker capacity.
-        triage_capacity = (
-            capacity if reserved_triage_capacity is None else reserved_triage_capacity
+        tech_lead_capacity = (
+            capacity if reserved_tech_lead_capacity is None else reserved_tech_lead_capacity
         )
-        if triage_capacity > 0 and self.triage_workflow:
-            triage_actions, triage_skipped = self._plan_triage(
+        if tech_lead_capacity > 0 and self.tech_lead_workflow:
+            tech_lead_actions, tech_lead_skipped = self._plan_tech_lead(
                 snapshot,
-                triage_capacity,
+                tech_lead_capacity,
                 plan_context,
-                reserved=reserved_triage_capacity is not None,
-                suppressed_issue_numbers=suppressed_triage_issue_numbers,
+                reserved=reserved_tech_lead_capacity is not None,
+                suppressed_issue_numbers=suppressed_tech_lead_issue_numbers,
             )
-            actions.extend(triage_actions)
-            skipped.extend(triage_skipped)
-            if reserved_triage_capacity is None:
-                capacity -= len(triage_actions)
-            triage_launch_count = len(triage_actions)
+            actions.extend(tech_lead_actions)
+            skipped.extend(tech_lead_skipped)
+            if reserved_tech_lead_capacity is None:
+                capacity -= len(tech_lead_actions)
+            tech_lead_launch_count = len(tech_lead_actions)
 
         # 5b. Reserve one worker slot for a due first-class E2E run — after all
         # completion work above, before new issues below (see method docstring).
@@ -477,26 +478,26 @@ class Planner:
 
         # 6. Plan issue launches with remaining capacity.
         #
-        # Reviews/reworks/triage get priority (they consumed capacity above),
+        # Reviews/reworks/tech_lead get priority (they consumed capacity above),
         # but any leftover capacity goes to new issues. We never starve issue
-        # launches just because review/rework/triage actions were planned.
+        # launches just because review/rework/tech_lead actions were planned.
         if capacity > 0:
             pending_work_planned = (
                 review_launch_count
                 + retrospective_review_launch_count
                 + rework_launch_count
                 + validation_retry_launch_count
-                + triage_launch_count
+                + tech_lead_launch_count
             )
             if pending_work_planned:
                 logger.info(
                     "Planner: pending work consumed %d slot(s) "
-                    "(reviews=%d, retrospective_reviews=%d, reworks=%d, validation_retries=%d, triage=%d), "
+                    "(reviews=%d, retrospective_reviews=%d, reworks=%d, validation_retries=%d, tech_lead=%d), "
                     "%d slot(s) remain for issues",
                     pending_work_planned, review_launch_count,
                     retrospective_review_launch_count,
                     rework_launch_count, validation_retry_launch_count,
-                    triage_launch_count, capacity,
+                    tech_lead_launch_count, capacity,
                 )
             issue_actions, issue_skipped, _ = self._plan_issues(
                 snapshot, capacity, worker_active_count
@@ -515,7 +516,7 @@ class Planner:
         is on (byte-for-byte off by default), and never at the same time as
         ``e2e_occupies_slot`` (a run is not "due" while it is already active).
         The caller invokes this AFTER all in-flight completion work (reviews/
-        retrospectives/reworks/validation-retries/triage) has consumed its
+        retrospectives/reworks/validation-retries/tech_lead) has consumed its
         share, but BEFORE new issues — so a due suite claims a slot ahead of new
         issues yet never preempts completion work: on a saturated board the
         completion work simply leaves nothing to reserve and E2E waits. The
@@ -761,55 +762,55 @@ class Planner:
                 plan_context.record_remove(issue.number, label)
         return actions
 
-    def _plan_triage_issue_creation(self, snapshot: OrchestratorSnapshot) -> Optional[CreateTriageIssueAction]:
-        """Plan triage issue creation if threshold is met."""
-        if not snapshot.triage_facts:
+    def _plan_tech_lead_issue_creation(self, snapshot: OrchestratorSnapshot) -> Optional[CreateTechLeadIssueAction]:
+        """Plan tech_lead issue creation if threshold is met."""
+        if not snapshot.tech_lead_facts:
             return None
 
-        facts = snapshot.triage_facts
-        if not self._should_create_triage_issue(facts):
+        facts = snapshot.tech_lead_facts
+        if not self._should_create_tech_lead_issue(facts):
             return None
 
-        title, body = self._build_triage_issue_content(facts)
+        title, body = self._build_tech_lead_issue_content(facts)
         labels = batch_review_issue_labels(self.config, source_labels=facts.source_labels)
         # Milestone travels as INTENT; the applier resolves an explicit name
         # at the create-issue execution boundary (#6769 finding 4).
-        milestone = triage_issue_milestone_intent(self.config, facts.source_milestones)
+        milestone = tech_lead_issue_milestone_intent(self.config, facts.source_milestones)
 
-        logger.info("Planner: creating triage issue for %d PRs (labels=%s, milestone=%s)", facts.pr_count, labels, milestone)
-        return CreateTriageIssueAction(
+        logger.info("Planner: creating tech_lead issue for %d PRs (labels=%s, milestone=%s)", facts.pr_count, labels, milestone)
+        return CreateTechLeadIssueAction(
             title=title, body=body, labels=labels, pr_count=facts.pr_count,
             milestone=milestone, reason=f"threshold met: {facts.pr_count} >= {facts.threshold}",
         )
 
-    def _should_create_triage_issue(self, facts: "TriageFacts") -> bool:
-        """Check if triage issue should be created."""
+    def _should_create_tech_lead_issue(self, facts: "TechLeadFacts") -> bool:
+        """Check if tech_lead issue should be created."""
         if facts.threshold <= 0:
             # Batch trigger disabled; facts may exist for the health review
             # alone (ADR-0031 §4), which plans its own anchor creation.
             return False
         if facts.pr_count < facts.threshold:
-            logger.debug("Planner: triage threshold not met (%d/%d)", facts.pr_count, facts.threshold)
+            logger.debug("Planner: tech_lead threshold not met (%d/%d)", facts.pr_count, facts.threshold)
             return False
-        if facts.existing_triage_issue:
-            logger.debug("Planner: triage issue #%d already exists", facts.existing_triage_issue)
+        if facts.existing_tech_lead_issue:
+            logger.debug("Planner: tech_lead issue #%d already exists", facts.existing_tech_lead_issue)
             return False
         return True
 
-    def _build_triage_issue_content(self, facts: "TriageFacts") -> tuple[str, str]:
-        """Build title and body for triage issue."""
+    def _build_tech_lead_issue_content(self, facts: "TechLeadFacts") -> tuple[str, str]:
+        """Build title and body for tech_lead issue."""
         pr_list = "\n".join(f"- PR #{pr[0]}: {pr[1]}" for pr in facts.prs)
-        body = f"""## Triage Batch Review Triggered
+        body = f"""## Tech Lead Batch Review Triggered
 
-{facts.pr_count} PRs have passed code review and are ready for triage review:
+{facts.pr_count} PRs have passed code review and are ready for tech_lead review:
 
 {pr_list}
 
 Review these PRs for patterns, architectural concerns, and process improvements.
-Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` after review.
+Flip labels from `{facts.watch_label}` to `{self.config.tech_lead_reviewed_label}` after review.
 """
-        title = apply_triage_priority_prefix(
-            self.config, f"Triage Batch Review: {facts.pr_count} PRs pending"
+        title = apply_tech_lead_priority_prefix(
+            self.config, f"{TECH_LEAD_DISPLAY_NAME} Batch Review: {facts.pr_count} PRs pending"
         )
         return title, body
 
@@ -1029,17 +1030,17 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                            issue_number, pr_number)
 
         # 2. Immediate cleanups - ready to execute now, EXCEPT run assets that
-        # pending/active triage work still references (#6771, #6780):
+        # pending/active tech_lead work still references (#6771, #6780):
         # cleaning those up before the investigation or health review
         # launches deletes the artifact hints it was queued to read. The hold
-        # set comes from the triage-problem-artifact owner in the fact
+        # set comes from the tech-lead-problem-artifact owner in the fact
         # gatherer, which is also what retains these entries across the
         # end-of-tick fact clear; they are re-planned once the hold releases.
         for cleanup in facts.immediate_cleanups:
             if cleanup.issue_number in facts.held_issue_numbers:
                 logger.info(
                     "Planner: holding cleanup for issue #%d — pending or active "
-                    "triage work still references its run assets",
+                    "tech_lead work still references its run assets",
                     cleanup.issue_number,
                 )
                 continue
@@ -1049,7 +1050,7 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                 terminal_id=cleanup.terminal_id,
                 worktree_path=cleanup.worktree_path,
                 close_tabs=facts.close_tabs,
-                # A disposable triage-investigation scratch worktree is always
+                # A disposable tech-lead-investigation scratch worktree is always
                 # removed, even when the config keeps worktrees (#6823).
                 remove_worktrees=facts.remove_worktrees or cleanup.scratch_worktree,
                 # Carry disposable identity so the applier force-removes ONLY the
@@ -1143,7 +1144,7 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
         ``worker_active_count`` is the active-session count charged against the
         worker budget for the scheduler's own slot gate. It equals
         ``snapshot.active_count`` in the shared-budget default; with a reserved
-        triage budget it excludes active triage sessions so they do not steal
+        tech_lead budget it excludes active tech_lead sessions so they do not steal
         worker issue slots (the additive-budget invariant).
 
         Returns:
@@ -1685,7 +1686,7 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
 
         return actions, skipped
 
-    def _plan_triage(
+    def _plan_tech_lead(
         self,
         snapshot: OrchestratorSnapshot,
         capacity: int,
@@ -1694,51 +1695,51 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
         reserved: bool = False,
         suppressed_issue_numbers: frozenset[int] = frozenset(),
     ) -> tuple[list[Action], list[SkippedItem]]:
-        """Plan which triage reviews to launch.
+        """Plan which tech_lead reviews to launch.
 
         ``reserved`` selects the budget the launch gate uses: when False
-        (default) triage draws from the shared worker budget and the workflow
+        (default) tech_lead draws from the shared worker budget and the workflow
         gates on ``max_concurrent_sessions`` exactly as before; when True
-        ``capacity`` is the reserved additive triage budget and the workflow
-        gates on it directly, so triage launches even at worker saturation.
+        ``capacity`` is the reserved additive tech_lead budget and the workflow
+        gates on it directly, so tech_lead launches even at worker saturation.
         """
         actions: list[Action] = []
         skipped: list[SkippedItem] = []
-        if not self.triage_workflow or not self.triage_workflow.is_configured():
+        if not self.tech_lead_workflow or not self.tech_lead_workflow.is_configured():
             return actions, skipped
 
-        pending_triage = [
+        pending_tech_lead = [
             item
-            for item in snapshot.pending_triage
+            for item in snapshot.pending_tech_lead
             if not (
-                item.flavor is TriageSessionFlavor.FAILURE_INVESTIGATION
+                item.flavor is TechLeadSessionFlavor.FAILURE_INVESTIGATION
                 and item.issue_number in suppressed_issue_numbers
             )
         ]
-        decision: TriageDecision = self.triage_workflow.should_launch_triage(
-            pending_triage=pending_triage,
+        decision: TechLeadDecision = self.tech_lead_workflow.should_launch_tech_lead(
+            pending_tech_lead=pending_tech_lead,
             active_session_count=snapshot.active_count,
             paused=snapshot.paused,
             reserved_capacity=capacity if reserved else None,
         )
 
         if decision.skip_reason:
-            for triage in pending_triage:
+            for tech_lead in pending_tech_lead:
                 skipped.append(SkippedItem(
-                    item_type="triage",
-                    number=triage.issue_number,
+                    item_type="tech_lead",
+                    number=tech_lead.issue_number,
                     reason=decision.skip_reason,
                 ))
             return actions, skipped
 
         if decision.should_launch:
-            provider = self.provider_policy.provider_for_agent_label(self.config.triage_review_agent) if self.provider_policy else None
-            for triage in decision.triage_to_launch[:capacity]:
+            provider = self.provider_policy.provider_for_agent_label(self.config.tech_lead_review_agent) if self.provider_policy else None
+            for tech_lead in decision.tech_lead_to_launch[:capacity]:
                 if provider and self.provider_policy and self.provider_policy.is_open(provider):
                     self._record_provider_skip(
-                        issue_number=triage.issue_number,
-                        item_type="triage",
-                        item_number=triage.issue_number,
+                        issue_number=tech_lead.issue_number,
+                        item_type="tech_lead",
+                        item_number=tech_lead.issue_number,
                         provider=provider,
                         actions=actions,
                         skipped=skipped,
@@ -1746,12 +1747,12 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                     )
                     continue
                 actions.append(LaunchSessionAction(
-                    session_type=SessionType.TRIAGE,
-                    number=triage.issue_number,
+                    session_type=SessionType.TECH_LEAD,
+                    number=tech_lead.issue_number,
                     command="",  # Orchestrator will fill in
                     working_dir="",  # Orchestrator will fill in
-                    title=triage.title,
-                    reason=f"triage review for #{triage.issue_number}",
+                    title=tech_lead.title,
+                    reason=f"tech_lead review for #{tech_lead.issue_number}",
                 ))
 
         return actions, skipped

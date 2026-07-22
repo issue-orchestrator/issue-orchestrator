@@ -208,13 +208,13 @@ def test_build_issue_timeline_status_mapping():
         TimelineRecord(
             event_id="e8",
             timestamp="2026-02-06T00:07:00Z",
-            event="triage.issue_created",
+            event="tech_lead.issue_created",
             data={"issue_number": 123},
         ),
         TimelineRecord(
             event_id="e9",
             timestamp="2026-02-06T00:08:00Z",
-            event="triage.skipped",
+            event="tech_lead.skipped",
             data={"issue_number": 123},
         ),
         TimelineRecord(

@@ -17,7 +17,7 @@ from issue_orchestrator.entrypoints.cli_tools.setup_wizard import (
     ConsolePrompter,
     check_prerequisites,
     create_starter_prompt,
-    create_triage_review_prompt,
+    create_tech_lead_review_prompt,
     detect_repo,
     fetch_github_labels,
     find_existing_config,
@@ -176,29 +176,29 @@ def test_setup_wizard_ui_mode_copy_is_client_neutral() -> None:
     assert "Browser dashboard at localhost (recommended)" not in text
 
 
-class TestCreateTriageReviewPrompt:
-    """Test the create_triage_review_prompt function."""
+class TestCreateTechLeadReviewPrompt:
+    """Test the create_tech_lead_review_prompt function."""
 
-    def test_creates_triage_prompt_with_labels(self, tmp_path):
-        """Test that triage prompt is created with label values substituted."""
-        prompt_path = tmp_path / "triage.md"
+    def test_creates_tech_lead_prompt_with_labels(self, tmp_path):
+        """Test that tech_lead prompt is created with label values substituted."""
+        prompt_path = tmp_path / "tech-lead.md"
 
-        create_triage_review_prompt(prompt_path, "needs-triage-review", "triage-reviewed")
+        create_tech_lead_review_prompt(prompt_path, "needs-tech-lead-review", "tech-lead-reviewed")
 
         assert prompt_path.exists()
         content = prompt_path.read_text()
 
         # Check labels are substituted (not placeholders)
-        assert "needs-triage-review" in content
-        assert "triage-reviewed" in content
+        assert "needs-tech-lead-review" in content
+        assert "tech-lead-reviewed" in content
         assert "{review_label}" not in content
         assert "{reviewed_label}" not in content
 
     def test_forbids_gh_and_promises_manifest_labeling(self, tmp_path):
         """Test the manifest contract: no gh usage, orchestrator labels manifest PRs."""
-        prompt_path = tmp_path / "triage.md"
+        prompt_path = tmp_path / "tech-lead.md"
 
-        create_triage_review_prompt(prompt_path, "my-review-label", "my-reviewed-label")
+        create_tech_lead_review_prompt(prompt_path, "my-review-label", "my-reviewed-label")
 
         content = prompt_path.read_text()
 
@@ -220,12 +220,12 @@ class TestCreateTriageReviewPrompt:
         """
         import re
 
-        prompt_path = tmp_path / "triage.md"
-        create_triage_review_prompt(prompt_path, "review", "reviewed")
+        prompt_path = tmp_path / "tech-lead.md"
+        create_tech_lead_review_prompt(prompt_path, "review", "reviewed")
         sources = {"generated prompt": prompt_path.read_text()}
 
         repo_root = Path(__file__).resolve().parents[2]
-        for example in ("triage-review.md", "triage-data-sources.md"):
+        for example in ("tech-lead-review.md", "tech-lead-data-sources.md"):
             sources[example] = (repo_root / "examples" / "prompts" / example).read_text()
 
         forbidden = re.compile(r"sessions/\*|head -1|ls -d")
@@ -237,24 +237,24 @@ class TestCreateTriageReviewPrompt:
     def test_includes_flavor_assignment_contract(self, tmp_path):
         """Prompts must lead with the assignment contract (ADR-0031).
 
-        Both triage flavors share one launch path; the prompt must direct the
-        agent to read triage-assignment.json and behave per flavor, including
+        Both tech_lead flavors share one launch path; the prompt must direct the
+        agent to read tech-lead-assignment.json and behave per flavor, including
         never auditing PRs during a failure investigation. Covers the
         generated prompt and the packaged/dogfood prompt variants.
         """
-        prompt_path = tmp_path / "triage.md"
-        create_triage_review_prompt(prompt_path, "review", "reviewed")
+        prompt_path = tmp_path / "tech-lead.md"
+        create_tech_lead_review_prompt(prompt_path, "review", "reviewed")
         sources = {"generated prompt": prompt_path.read_text()}
 
         repo_root = Path(__file__).resolve().parents[2]
         for variant in (
-            repo_root / "examples" / "prompts" / "triage-review.md",
-            repo_root / "repo-specific" / "prompts" / "triage.md",
+            repo_root / "examples" / "prompts" / "tech-lead-review.md",
+            repo_root / "repo-specific" / "prompts" / "tech-lead.md",
         ):
             sources[str(variant.relative_to(repo_root))] = variant.read_text()
 
         for name, text in sources.items():
-            assert "triage-assignment.json" in text, f"{name} missing assignment file"
+            assert "tech-lead-assignment.json" in text, f"{name} missing assignment file"
             assert "Your Assignment" in text, f"{name} missing assignment section"
             assert "batch_review" in text, f"{name} missing batch flavor"
             assert "failure_investigation" in text, f"{name} missing failure flavor"
@@ -262,7 +262,7 @@ class TestCreateTriageReviewPrompt:
             assert "health_review" in text, f"{name} missing health flavor"
 
     def test_includes_board_snapshot_contract(self, tmp_path):
-        """All triage prompt sources must document the board snapshot file.
+        """All tech_lead prompt sources must document the board snapshot file.
 
         The ADR-0031 §3 observation surface only pays off if agents are told
         it exists: the generated prompt, both packaged/dogfood prompt
@@ -270,15 +270,15 @@ class TestCreateTriageReviewPrompt:
         board-snapshot.json (the data-sources doc lists it alongside the
         manifest as a primary local source).
         """
-        prompt_path = tmp_path / "triage.md"
-        create_triage_review_prompt(prompt_path, "review", "reviewed")
+        prompt_path = tmp_path / "tech-lead.md"
+        create_tech_lead_review_prompt(prompt_path, "review", "reviewed")
         sources = {"generated prompt": prompt_path.read_text()}
 
         repo_root = Path(__file__).resolve().parents[2]
         for variant in (
-            repo_root / "examples" / "prompts" / "triage-review.md",
-            repo_root / "examples" / "prompts" / "triage-data-sources.md",
-            repo_root / "repo-specific" / "prompts" / "triage.md",
+            repo_root / "examples" / "prompts" / "tech-lead-review.md",
+            repo_root / "examples" / "prompts" / "tech-lead-data-sources.md",
+            repo_root / "repo-specific" / "prompts" / "tech-lead.md",
         ):
             sources[str(variant.relative_to(repo_root))] = variant.read_text()
 
@@ -287,9 +287,9 @@ class TestCreateTriageReviewPrompt:
 
     def test_substitutes_label_variables(self, tmp_path):
         """Test that label placeholders are substituted with actual values."""
-        prompt_path = tmp_path / "triage.md"
+        prompt_path = tmp_path / "tech-lead.md"
 
-        create_triage_review_prompt(prompt_path, "review", "reviewed")
+        create_tech_lead_review_prompt(prompt_path, "review", "reviewed")
 
         content = prompt_path.read_text()
 
@@ -302,9 +302,9 @@ class TestCreateTriageReviewPrompt:
 
     def test_includes_review_workflow(self, tmp_path):
         """Test that review workflow is included."""
-        prompt_path = tmp_path / "triage.md"
+        prompt_path = tmp_path / "tech-lead.md"
 
-        create_triage_review_prompt(prompt_path, "review", "reviewed")
+        create_tech_lead_review_prompt(prompt_path, "review", "reviewed")
 
         content = prompt_path.read_text()
 
@@ -317,11 +317,11 @@ class TestCreateTriageReviewPrompt:
         """Test that manifest-based PR investigation steps are included."""
         prompt_path = tmp_path / "cto.md"
 
-        create_triage_review_prompt(prompt_path, "review", "reviewed")
+        create_tech_lead_review_prompt(prompt_path, "review", "reviewed")
 
         content = prompt_path.read_text()
 
-        assert "triage-data" in content
+        assert "tech-lead-data" in content
         assert "manifest.json" in content
         assert "pr-<number>-diff.txt" in content
         assert "pr-<number>-meta.json" in content
@@ -331,7 +331,7 @@ class TestCreateTriageReviewPrompt:
         """Test that coding-done completion instructions are included."""
         prompt_path = tmp_path / "cto.md"
 
-        create_triage_review_prompt(prompt_path, "review", "reviewed")
+        create_tech_lead_review_prompt(prompt_path, "review", "reviewed")
 
         content = prompt_path.read_text()
 
@@ -345,7 +345,7 @@ class TestCreateTriageReviewPrompt:
         """Test that parent directories are created."""
         prompt_path = tmp_path / "deep" / "nested" / "cto.md"
 
-        create_triage_review_prompt(prompt_path, "review", "reviewed")
+        create_tech_lead_review_prompt(prompt_path, "review", "reviewed")
 
         assert prompt_path.exists()
 
@@ -582,14 +582,14 @@ class TestSetupWizardSharedHelpers:
             "agents": {
                 "agent:backend": {"prompt": ".prompts/backend.md"},
                 "agent:reviewer": {"prompt": ".prompts/reviewer.md"},
-                "agent:triage": {"prompt": ".prompts/triage.md"},
+                "agent:tech-lead": {"prompt": ".prompts/tech-lead.md"},
             },
             "review": {
                 "default": "agent:reviewer",
                 "code_review_label": "needs-review",
                 "code_reviewed_label": "reviewed",
-                "triage_review_agent": "agent:triage",
-                "triage_reviewed_label": "triage-reviewed",
+                "tech_lead_review_agent": "agent:tech-lead",
+                "tech_lead_reviewed_label": "tech-lead-reviewed",
             },
         }
 
@@ -602,16 +602,16 @@ class TestSetupWizardSharedHelpers:
         assert created_paths == [
             tmp_path / ".prompts" / "backend.md",
             tmp_path / ".prompts" / "reviewer.md",
-            tmp_path / ".prompts" / "triage.md",
+            tmp_path / ".prompts" / "tech-lead.md",
         ]
         writes_by_agent = {write.agent: write for write in collector.writes}
         assert "coding-done" in writes_by_agent["agent:backend"].content
         assert "needs-review" in writes_by_agent["agent:reviewer"].content
         assert "reviewer-done approved" in writes_by_agent["agent:reviewer"].content
-        triage_content = writes_by_agent["agent:triage"].content
-        assert "triage-data" in triage_content
-        assert "coding-done completed" in triage_content
-        assert "reviewer-done" not in triage_content
+        tech_lead_content = writes_by_agent["agent:tech-lead"].content
+        assert "tech-lead-data" in tech_lead_content
+        assert "coding-done completed" in tech_lead_content
+        assert "reviewer-done" not in tech_lead_content
 
     def test_plan_setup_labels_matches_cli_defaults(self):
         """CLI setup should keep priority labels and default-agent review gating."""
@@ -623,7 +623,7 @@ class TestSetupWizardSharedHelpers:
             "labels": {"prefix": "io"},
             "review": {
                 "default": "agent:reviewer",
-                "triage_review_agent": "agent:triage",
+                "tech_lead_review_agent": "agent:tech-lead",
             },
         })
 
@@ -632,28 +632,28 @@ class TestSetupWizardSharedHelpers:
         assert "agent:reviewer" in label_names
         assert "priority:high" in label_names
         assert "io:in-progress" in label_names
-        assert "io:triage-needs-human" in label_names
+        assert "io:tech-lead-needs-human" in label_names
         assert "needs-code-review" in label_names
         assert "code-reviewed" in label_names
-        assert "triage-reviewed" in label_names
-        # R3: a triage-enabled config provisions the act-level proposal gate
+        assert "tech-lead-reviewed" in label_names
+        # R3: a tech-lead-enabled config provisions the act-level proposal gate
         # (raw, never prefixed), health-review marker, and the static blocking
         # observation marker. Dynamic area:* labels are provisioned at apply.
-        assert "proposed-triage" in label_names
-        assert "triage:health-review" in label_names
-        assert "triage-observation" in label_names
+        assert "proposed-tech-lead" in label_names
+        assert "tech_lead:health-review" in label_names
+        assert "tech-lead-observation" in label_names
 
-    def test_plan_setup_labels_omits_gate_without_triage(self):
-        """No triage agent -> no gate label to provision."""
+    def test_plan_setup_labels_omits_gate_without_tech_lead(self):
+        """No tech lead agent -> no gate label to provision."""
         labels = plan_setup_labels({
             "agents": {"agent:backend": {}},
             "review": {"default": "agent:reviewer"},
         })
         label_names = {name for name, _, _ in labels}
-        assert "proposed-triage" not in label_names
-        assert "triage-observation" not in label_names
+        assert "proposed-tech-lead" not in label_names
+        assert "tech-lead-observation" not in label_names
 
-    def test_required_repo_labels_includes_triage_gate(self):
+    def test_required_repo_labels_includes_tech_lead_gate(self):
         """The CLI `init` label set (single owner) provisions the R3 gate."""
         from unittest.mock import Mock
 
@@ -664,20 +664,20 @@ class TestSetupWizardSharedHelpers:
 
         config = Config()
         config.agents = {"agent:backend": Mock()}
-        config.triage_review_agent = "agent:triage"
-        config.triage_reviewed_label = "triage-reviewed"
+        config.tech_lead_review_agent = "agent:tech-lead"
+        config.tech_lead_reviewed_label = "tech-lead-reviewed"
 
         labels = required_repo_labels(config)
 
-        assert "proposed-triage" in labels
-        assert "agent:triage" in labels
-        assert "triage:health-review" in labels
-        assert "triage-observation" in labels
+        assert "proposed-tech-lead" in labels
+        assert "agent:tech-lead" in labels
+        assert "tech_lead:health-review" in labels
+        assert "tech-lead-observation" in labels
         assert "agent:backend" in labels
         # De-duped: no label appears twice.
         assert len(labels) == len(set(labels))
 
-    def test_required_repo_labels_omits_triage_when_unconfigured(self):
+    def test_required_repo_labels_omits_tech_lead_when_unconfigured(self):
         from unittest.mock import Mock
 
         from issue_orchestrator.entrypoints.setup_wizard_common import (
@@ -690,8 +690,8 @@ class TestSetupWizardSharedHelpers:
 
         labels = required_repo_labels(config)
 
-        assert "proposed-triage" not in labels
-        assert "triage-observation" not in labels
+        assert "proposed-tech-lead" not in labels
+        assert "tech-lead-observation" not in labels
         assert "agent:backend" in labels
 
     def test_plan_setup_labels_can_preserve_control_api_behavior(self):
@@ -1194,11 +1194,11 @@ class TestWizardNewProject:
             "agent:reviewer",       # code review agent
             "needs-code-review",    # code review label
             "code-reviewed",        # code reviewed label
-            True,                   # enable Stage 2: triage batch review
-            "agent:triage",            # triage review agent
-            "triage-reviewed",         # triage reviewed label
+            True,                   # enable Stage 2: tech_lead batch review
+            "agent:tech-lead",            # tech_lead review agent
+            "tech-lead-reviewed",         # tech_lead reviewed label
             "5",                    # threshold
-            "agent:backend",           # triage follow-up worker agent (#6779 R14)
+            "agent:backend",           # tech_lead follow-up worker agent (#6779 R14)
         ])
 
         config = wizard_new_project(prompter)
@@ -1209,13 +1209,13 @@ class TestWizardNewProject:
         assert config["review"]["code_review_label"] == "needs-code-review"
         assert config["review"]["code_reviewed_label"] == "code-reviewed"
 
-        # Stage 2: Triage Batch Review
-        assert config["review"]["triage_review_agent"] == "agent:triage"
-        # R14: a configured triage agent must also route create_issue follow-ups
+        # Stage 2: Tech Lead Batch Review
+        assert config["review"]["tech_lead_review_agent"] == "agent:tech-lead"
+        # R14: a configured tech lead agent must also route create_issue follow-ups
         # to a worker agent, so the wizard collects it up front.
-        assert config["review"]["triage_follow_up_agent"] == "agent:backend"
-        assert config["review"]["triage_reviewed_label"] == "triage-reviewed"
-        assert config["review"]["triage_review_threshold"] == 5
+        assert config["review"]["tech_lead_follow_up_agent"] == "agent:backend"
+        assert config["review"]["tech_lead_reviewed_label"] == "tech-lead-reviewed"
+        assert config["review"]["tech_lead_review_threshold"] == 5
 
     @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.detect_repo")
     @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard._get_repository_host")

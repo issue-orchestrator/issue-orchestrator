@@ -96,22 +96,22 @@ class TestModelDefaults:
         assert m.enabled is False
         assert m.default_reviewer is None
         assert m.max_rework_cycles == 5
-        # Reserved triage concurrency defaults to unset (share worker budget).
-        assert m.triage_max_concurrent is None
+        # Reserved tech_lead concurrency defaults to unset (share worker budget).
+        assert m.tech_lead_max_concurrent is None
 
-    def test_triage_max_concurrent_accepts_none_and_positive_int(self):
-        assert ReviewSettings(triage_max_concurrent=None).triage_max_concurrent is None
-        assert ReviewSettings(triage_max_concurrent=1).triage_max_concurrent == 1
-        assert ReviewSettings(triage_max_concurrent=3).triage_max_concurrent == 3
+    def test_tech_lead_max_concurrent_accepts_none_and_positive_int(self):
+        assert ReviewSettings(tech_lead_max_concurrent=None).tech_lead_max_concurrent is None
+        assert ReviewSettings(tech_lead_max_concurrent=1).tech_lead_max_concurrent == 1
+        assert ReviewSettings(tech_lead_max_concurrent=3).tech_lead_max_concurrent == 3
 
-    def test_triage_max_concurrent_rejects_zero_and_negative(self):
+    def test_tech_lead_max_concurrent_rejects_zero_and_negative(self):
         with pytest.raises(ValidationError):
-            ReviewSettings(triage_max_concurrent=0)
+            ReviewSettings(tech_lead_max_concurrent=0)
         with pytest.raises(ValidationError):
-            ReviewSettings(triage_max_concurrent=-1)
+            ReviewSettings(tech_lead_max_concurrent=-1)
 
-    def test_triage_max_concurrent_classifies_to_optional_integer(self):
-        prop = get_settings_json_schema()["review"]["properties"]["triage_max_concurrent"]
+    def test_tech_lead_max_concurrent_classifies_to_optional_integer(self):
+        prop = get_settings_json_schema()["review"]["properties"]["tech_lead_max_concurrent"]
         assert prop["x_control"]["kind"] == FORM_CONTROL_OPTIONAL_INTEGER
 
     def test_goal_pilot_defaults(self):
@@ -206,52 +206,52 @@ class TestValidation:
         """ge=0: the dashboard and YAML must reject -5, not treat it as disabled
         (the documented disable value is exactly 0, #6763 finding 8)."""
         with pytest.raises(ValidationError):
-            ReviewSettings(triage_health_review_interval_minutes=-5)
+            ReviewSettings(tech_lead_health_review_interval_minutes=-5)
 
     def test_health_review_interval_accepts_zero_and_positive(self):
-        """0 disables; a positive value is accepted when a triage agent is set
+        """0 disables; a positive value is accepted when a tech lead agent is set
         (a positive value alone is a cross-field error — see below)."""
         assert (
             ReviewSettings(
-                triage_health_review_interval_minutes=0
-            ).triage_health_review_interval_minutes
+                tech_lead_health_review_interval_minutes=0
+            ).tech_lead_health_review_interval_minutes
             == 0
         )
         assert (
             ReviewSettings(
-                triage_health_review_interval_minutes=240,
-                triage_agent="agent:triage",
-            ).triage_health_review_interval_minutes
+                tech_lead_health_review_interval_minutes=240,
+                tech_lead_agent="agent:tech-lead",
+            ).tech_lead_health_review_interval_minutes
             == 240
         )
 
     def test_positive_health_review_interval_without_agent_rejected(self):
-        """Cross-field invariant (#6776): a positive interval with no triage
+        """Cross-field invariant (#6776): a positive interval with no tech_lead
         agent must be rejected at the settings/POST boundary, never silently
         disabled at runtime."""
-        with pytest.raises(ValidationError, match="no triage agent is configured"):
-            ReviewSettings(triage_health_review_interval_minutes=60)
-        with pytest.raises(ValidationError, match="no triage agent is configured"):
+        with pytest.raises(ValidationError, match="no tech lead agent is configured"):
+            ReviewSettings(tech_lead_health_review_interval_minutes=60)
+        with pytest.raises(ValidationError, match="no tech lead agent is configured"):
             ReviewSettings(
-                triage_health_review_interval_minutes=60, triage_agent=""
+                tech_lead_health_review_interval_minutes=60, tech_lead_agent=""
             )
 
     def test_zero_interval_without_agent_is_valid(self):
         """0 + no agent is the documented disabled state and must validate."""
         assert (
             ReviewSettings(
-                triage_health_review_interval_minutes=0
-            ).triage_health_review_interval_minutes
+                tech_lead_health_review_interval_minutes=0
+            ).tech_lead_health_review_interval_minutes
             == 0
         )
 
     def test_health_review_storm_settings_enforce_bounds(self):
-        assert ReviewSettings().triage_health_review_storm_threshold == 3
-        assert ReviewSettings().triage_health_review_storm_window_minutes == 5
+        assert ReviewSettings().tech_lead_health_review_storm_threshold == 3
+        assert ReviewSettings().tech_lead_health_review_storm_window_minutes == 5
         with pytest.raises(ValidationError):
-            ReviewSettings(triage_health_review_storm_threshold=-1)
+            ReviewSettings(tech_lead_health_review_storm_threshold=-1)
         with pytest.raises(ValidationError):
-            ReviewSettings(triage_health_review_storm_window_minutes=0)
+            ReviewSettings(tech_lead_health_review_storm_window_minutes=0)
 
     def test_web_port_min(self):
         with pytest.raises(ValidationError):
@@ -322,9 +322,9 @@ class TestFromConfig:
         cfg.review_enabled = True
         cfg.code_review_agent = "agent:reviewer"
         cfg.max_rework_cycles = 3
-        cfg.triage_review_agent = "agent:triage"
-        cfg.triage_review_threshold = 5
-        cfg.triage.max_concurrent = 2
+        cfg.tech_lead_review_agent = "agent:tech-lead"
+        cfg.tech_lead_review_threshold = 5
+        cfg.tech_lead.max_concurrent = 2
         cfg.validation.quick.cmd = "make validate-quick"
         cfg.validation.quick.timeout_seconds = 90
         cfg.validation.publish.cmd = "make validate-pr"
@@ -408,28 +408,28 @@ class TestFromConfig:
         assert rev.enabled is True
         assert rev.default_reviewer == "agent:reviewer"
         assert rev.max_rework_cycles == 3
-        assert rev.triage_agent == "agent:triage"
-        assert rev.triage_threshold == 5
-        assert rev.triage_max_concurrent == 2
+        assert rev.tech_lead_agent == "agent:tech-lead"
+        assert rev.tech_lead_threshold == 5
+        assert rev.tech_lead_max_concurrent == 2
 
-    def test_triage_max_concurrent_round_trips_through_apply(self):
+    def test_tech_lead_max_concurrent_round_trips_through_apply(self):
         # None (share worker budget) and a reserved int must both survive the
         # from_config -> apply_to round-trip against the live Config attribute.
         cfg = Config()
-        assert cfg.triage.max_concurrent is None
-        cfg.triage.max_concurrent = 2
+        assert cfg.tech_lead.max_concurrent is None
+        cfg.tech_lead.max_concurrent = 2
         tabs = from_config(cfg)
-        assert tabs["review"].triage_max_concurrent == 2
+        assert tabs["review"].tech_lead_max_concurrent == 2
 
         back = Config()
         apply_to(tabs, back)
-        assert back.triage.max_concurrent == 2
+        assert back.tech_lead.max_concurrent == 2
 
         # Unset round-trips back to None (not 0), preserving the shared-budget
         # semantics the planner keys off (``is None``).
-        tabs["review"].triage_max_concurrent = None
+        tabs["review"].tech_lead_max_concurrent = None
         apply_to(tabs, back)
-        assert back.triage.max_concurrent is None
+        assert back.tech_lead.max_concurrent is None
 
     def test_advanced_tab(self):
         tabs = from_config(self._make_config())
@@ -510,7 +510,7 @@ class TestFormControlClassification:
             classify_form_control("review.items", {"type": "array"})
 
     def test_optional_int_classifies_to_optional_integer(self):
-        # Optional[int] (triage.max_concurrent) projects to a nullable integer
+        # Optional[int] (tech_lead.max_concurrent) projects to a nullable integer
         # input: empty means unset (None), a value is a bounded integer. The
         # registry grew this projection deliberately - the old fail-loud guard
         # for [integer, null] is now a supported control.
@@ -567,19 +567,19 @@ class TestFormControlClassification:
         """
         schemas = get_settings_json_schema()
         prop = schemas["review"]["properties"][
-            "triage_health_review_interval_minutes"
+            "tech_lead_health_review_interval_minutes"
         ]
         assert prop["minimum"] == 0
         control = classify_form_control(
-            "review.triage_health_review_interval_minutes", prop
+            "review.tech_lead_health_review_interval_minutes", prop
         )
         assert control["kind"] == FORM_CONTROL_INTEGER
 
     @pytest.mark.parametrize(
         ("name", "minimum"),
         [
-            ("triage_health_review_storm_threshold", 0),
-            ("triage_health_review_storm_window_minutes", 1),
+            ("tech_lead_health_review_storm_threshold", 0),
+            ("tech_lead_health_review_storm_window_minutes", 1),
         ],
     )
     def test_health_review_storm_settings_project_accessible_number_controls(
@@ -600,11 +600,11 @@ class TestFormControlClassification:
         """
         with pytest.raises(ValidationError) as exc_info:
             ReviewSettings.model_validate(
-                {"triage_health_review_interval_minutes": -5}
+                {"tech_lead_health_review_interval_minutes": -5}
             )
         errors = exc_info.value.errors()
         assert any(
-            err["loc"][-1] == "triage_health_review_interval_minutes"
+            err["loc"][-1] == "tech_lead_health_review_interval_minutes"
             for err in errors
         ), errors
 
@@ -757,11 +757,11 @@ class TestApplyTo:
         cfg = Config()
         tabs = from_config(cfg)
         tabs["filtering"] = FilteringSettings(label=None)
-        tabs["review"] = ReviewSettings(default_reviewer=None, triage_agent=None)
+        tabs["review"] = ReviewSettings(default_reviewer=None, tech_lead_agent=None)
         apply_to(tabs, cfg)
         assert cfg.filtering.label is None
         assert cfg.code_review_agent is None
-        assert cfg.triage_review_agent is None
+        assert cfg.tech_lead_review_agent is None
 
 
 # ---------------------------------------------------------------------------
@@ -1025,7 +1025,7 @@ class TestDoctorCheckFields:
         names = {f["name"] for f in fields}
         assert "quarantine_file" in names
         assert "default_reviewer" in names
-        assert "triage_agent" in names
+        assert "tech_lead_agent" in names
 
     def test_field_has_required_keys(self):
         for field in get_doctor_check_fields():
@@ -1044,7 +1044,7 @@ class TestDoctorCheckFields:
         ref_fields = [f for f in get_doctor_check_fields()
                       if f["doctor_check"] == DOCTOR_CHECK_REFERENCES_AGENT]
         assert any(f["name"] == "default_reviewer" for f in ref_fields)
-        assert any(f["name"] == "triage_agent" for f in ref_fields)
+        assert any(f["name"] == "tech_lead_agent" for f in ref_fields)
 
 
 # ---------------------------------------------------------------------------
@@ -1198,9 +1198,9 @@ class TestDriftDetection:
                                     and isinstance(comp.value, ast.Name)
                                     and comp.value.id == "config"):
                                 # Check if the left side is config.code_review_agent
-                                # or config.triage_review_agent
+                                # or config.tech_lead_review_agent
                                 if (isinstance(node.left, ast.Attribute)
-                                        and node.left.attr in ("code_review_agent", "triage_review_agent")):
+                                        and node.left.attr in ("code_review_agent", "tech_lead_review_agent")):
                                     raise AssertionError(
                                         f"review.py hardcodes '{node.left.attr} not in config.agents'. "
                                         "Use doctor_check='references_agent' in settings_schema.py."

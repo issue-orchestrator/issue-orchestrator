@@ -96,9 +96,9 @@ _EXPORTS = {
     "ReviewArtifactContent": (".review_artifact_reader", "ReviewArtifactContent"),
     "ReviewArtifactReadCommand": (".review_artifact_reader", "ReviewArtifactReadCommand"),
     "ReviewArtifactReader": (".review_artifact_reader", "ReviewArtifactReader"),
-    "TriageAuthorityStore": (".triage_authority", "TriageAuthorityStore"),
-    "InMemoryTriageAuthorityStore": (
-        ".triage_authority", "InMemoryTriageAuthorityStore",
+    "TechLeadAuthorityStore": (".tech_lead_authority", "TechLeadAuthorityStore"),
+    "InMemoryTechLeadAuthorityStore": (
+        ".tech_lead_authority", "InMemoryTechLeadAuthorityStore",
     ),
 }
 
@@ -177,8 +177,8 @@ __all__ = (
     "ReviewArtifactContent",
     "ReviewArtifactReadCommand",
     "ReviewArtifactReader",
-    "TriageAuthorityStore",
-    "InMemoryTriageAuthorityStore",
+    "TechLeadAuthorityStore",
+    "InMemoryTechLeadAuthorityStore",
 )
 
 

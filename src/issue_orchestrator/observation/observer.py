@@ -91,8 +91,8 @@ class SessionObserver:
             return int(session_name.replace("review-", ""))
         elif session_name.startswith("rework-"):
             return int(session_name.replace("rework-", ""))
-        elif session_name.startswith("triage-"):
-            return int(session_name.replace("triage-", ""))
+        elif session_name.startswith("tech-lead-"):
+            return int(session_name.replace("tech-lead-", ""))
         else:
             raise ValueError(f"Unknown session name format: {session_name}")
 

@@ -8,7 +8,7 @@ Each workflow is a tickable module that:
 Workflows:
 - ReviewWorkflow: Handles code review lifecycle
 - ReworkWorkflow: Handles rework cycle after review rejection
-- TriageWorkflow: Decides when pending triage reviews launch
+- TechLeadWorkflow: Decides when pending tech_lead reviews launch
 
 Architecture principle: workflows contain POLICY (what should happen),
 not MECHANICS (how to do it). Mechanics live in execution adapters.
@@ -21,7 +21,7 @@ from .retrospective_review_workflow import (
     RetrospectiveReviewWorkflow,
 )
 from .rework_workflow import ReworkWorkflow, ReworkDecision
-from .triage_workflow import TriageWorkflow, TriageDecision
+from .tech_lead_workflow import TechLeadWorkflow, TechLeadDecision
 
 __all__ = [
     "WorkflowDecision",
@@ -31,6 +31,6 @@ __all__ = [
     "RetrospectiveReviewDecision",
     "ReworkWorkflow",
     "ReworkDecision",
-    "TriageWorkflow",
-    "TriageDecision",
+    "TechLeadWorkflow",
+    "TechLeadDecision",
 ]

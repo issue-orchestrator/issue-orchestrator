@@ -1500,27 +1500,27 @@ agents:
         assert config.retrospective_review_trigger_label == "retrospective-review"
         assert config.retrospective_reviewed_label == "retrospective-reviewed"
         assert config.retrospective_changes_requested_label == "retrospective-changes-requested"
-        # triage review defaults
-        assert config.triage_review_agent is None
-        assert config.triage_review_label is None
-        assert config.triage_reviewed_label == "triage-reviewed"
-        assert config.triage_failed_label == "triage-failed"
-        assert config.triage_review_threshold == 0
-        assert config.triage_review_on_failure is True
+        # tech_lead review defaults
+        assert config.tech_lead_review_agent is None
+        assert config.tech_lead_review_label is None
+        assert config.tech_lead_reviewed_label == "tech-lead-reviewed"
+        assert config.tech_lead_failed_label == "tech-lead-failed"
+        assert config.tech_lead_review_threshold == 0
+        assert config.tech_lead_review_on_failure is True
 
-    def test_triage_watch_label_single_owner(self):
-        """triage_watch_label is the one derivation every consumer must share.
+    def test_tech_lead_watch_label_single_owner(self):
+        """tech_lead_watch_label is the one derivation every consumer must share.
 
         Fact gathering, manifest building, and prompt generation all key PR
         selection off this property; drift between them lets the threshold
         trigger on one PR set while the session audits another (#6768 B3).
         """
         config = Config()
-        assert config.triage_watch_label == "code-reviewed"
+        assert config.tech_lead_watch_label == "code-reviewed"
         config.code_reviewed_label = "my-reviewed"
-        assert config.triage_watch_label == "my-reviewed"
-        config.triage_review_label = "audit-me"
-        assert config.triage_watch_label == "audit-me"
+        assert config.tech_lead_watch_label == "my-reviewed"
+        config.tech_lead_review_label = "audit-me"
+        assert config.tech_lead_watch_label == "audit-me"
 
     def test_goal_pilot_defaults(self):
         """Goal Pilot defaults to disabled with journeys-only approvals."""
@@ -1596,7 +1596,7 @@ agents:
   agent:reviewer:
     prompt: /tmp/prompt.txt
     ai_system: codex
-  agent:triage:
+  agent:tech-lead:
     prompt: /tmp/prompt.txt
     ai_system: claude-code
 
@@ -1627,9 +1627,9 @@ review:
     reviewed_label: lack-of-review-reviewed
     changes_requested_label: lack-of-review-needs-work
   keep_current_approach_label: reviewer-keep-current-approach
-  triage_review_agent: agent:triage
-  triage_reviewed_label: triage-reviewed
-  triage_review_threshold: 5
+  tech_lead_review_agent: agent:tech-lead
+  tech_lead_reviewed_label: tech-lead-reviewed
+  tech_lead_review_threshold: 5
 """
         config_file = tmp_path / ".issue-orchestrator.yaml"
         config_file.write_text(config_content)
@@ -1654,9 +1654,9 @@ review:
         assert config.retrospective_reviewed_label == "lack-of-review-reviewed"
         assert config.retrospective_changes_requested_label == "lack-of-review-needs-work"
         assert config.review_keep_current_approach_label == "reviewer-keep-current-approach"
-        assert config.triage_review_agent == "agent:triage"
-        assert config.triage_reviewed_label == "triage-reviewed"
-        assert config.triage_review_threshold == 5
+        assert config.tech_lead_review_agent == "agent:tech-lead"
+        assert config.tech_lead_reviewed_label == "tech-lead-reviewed"
+        assert config.tech_lead_review_threshold == 5
 
     def test_retrospective_review_requires_default_reviewer(self, tmp_path):
         """Retrospective review cannot run without a reviewer agent."""
@@ -1732,17 +1732,17 @@ review:
         assert config.code_review_agent == "agent:reviewer"
         assert config.code_review_label == "needs-code-review"  # default
         assert config.code_reviewed_label == "code-reviewed"  # default
-        assert config.triage_review_agent is None  # not configured
-        assert config.triage_review_threshold == 0  # default
+        assert config.tech_lead_review_agent is None  # not configured
+        assert config.tech_lead_review_threshold == 0  # default
 
     def test_review_threshold_zero_means_manual_only(self):
-        """Test that triage_review_threshold=0 means manual triage review only."""
+        """Test that tech_lead_review_threshold=0 means manual tech_lead review only."""
         config = Config()
-        config.triage_review_agent = "agent:triage"
-        config.triage_review_threshold = 0
+        config.tech_lead_review_agent = "agent:tech-lead"
+        config.tech_lead_review_threshold = 0
 
         # Threshold of 0 means auto-trigger is disabled
-        assert config.triage_review_threshold == 0
+        assert config.tech_lead_review_threshold == 0
 
     def test_validation_coverage_guardrail_from_yaml(self, tmp_path):
         """Test loading coverage guardrail config."""
@@ -2058,7 +2058,7 @@ review:
         assert not any("unsupported ai_system" in e for e in errors)
 
     def test_review_exchange_ignores_unrelated_agents(self, tmp_path):
-        """Test via-mcp validation ignores unrelated agents (e.g., triage)."""
+        """Test via-mcp validation ignores unrelated agents (e.g., tech_lead)."""
         prompt_file = tmp_path / "prompt.txt"
         prompt_file.write_text("Prompt content")
 
@@ -2073,14 +2073,14 @@ agents:
   agent:reviewer:
     prompt: {prompt_file}
     ai_system: codex
-  agent:triage:
+  agent:tech-lead:
     prompt: {prompt_file}
     ai_system: gemini
 
 review:
   enabled: true
   default: agent:reviewer
-  triage_review_agent: agent:triage
+  tech_lead_review_agent: agent:tech-lead
   exchange:
     mode: via-mcp
 """
@@ -2370,16 +2370,16 @@ class TestCleanupConfig:
         """Test that cleanup config has sensible defaults."""
         config = Config()
 
-        # with_triage defaults
-        assert config.cleanup.with_triage.close_ai_session_tabs is True
-        assert config.cleanup.with_triage.remove_worktrees is False
+        # with_tech_lead defaults
+        assert config.cleanup.with_tech_lead.close_ai_session_tabs is True
+        assert config.cleanup.with_tech_lead.remove_worktrees is False
 
-        # without_triage defaults
-        assert config.cleanup.without_triage.wait_for_code_review is True
-        assert config.cleanup.without_triage.close_ai_session_tabs is True
-        assert config.cleanup.without_triage.remove_worktrees is False
+        # without_tech_lead defaults
+        assert config.cleanup.without_tech_lead.wait_for_code_review is True
+        assert config.cleanup.without_tech_lead.close_ai_session_tabs is True
+        assert config.cleanup.without_tech_lead.remove_worktrees is False
 
-    def test_cleanup_config_from_yaml_with_triage(self, tmp_path):
+    def test_cleanup_config_from_yaml_with_tech_lead(self, tmp_path):
         """Test loading cleanup config for CTO workflow."""
         config_content = """
 worktrees:
@@ -2390,7 +2390,7 @@ agents:
     prompt: /tmp/prompt.txt
 
 cleanup:
-  with_triage:
+  with_tech_lead:
     close_ai_session_tabs: false
     remove_worktrees: true
 """
@@ -2399,13 +2399,13 @@ cleanup:
 
         config = Config.load(config_file)
 
-        assert config.cleanup.with_triage.close_ai_session_tabs is False
-        assert config.cleanup.with_triage.remove_worktrees is True
-        # without_triage should have defaults
-        assert config.cleanup.without_triage.wait_for_code_review is True
-        assert config.cleanup.without_triage.close_ai_session_tabs is True
+        assert config.cleanup.with_tech_lead.close_ai_session_tabs is False
+        assert config.cleanup.with_tech_lead.remove_worktrees is True
+        # without_tech_lead should have defaults
+        assert config.cleanup.without_tech_lead.wait_for_code_review is True
+        assert config.cleanup.without_tech_lead.close_ai_session_tabs is True
 
-    def test_cleanup_config_from_yaml_without_triage(self, tmp_path):
+    def test_cleanup_config_from_yaml_without_tech_lead(self, tmp_path):
         """Test loading cleanup config for non-CTO workflow."""
         config_content = """
 worktrees:
@@ -2416,7 +2416,7 @@ agents:
     prompt: /tmp/prompt.txt
 
 cleanup:
-  without_triage:
+  without_tech_lead:
     wait_for_code_review: false
     close_ai_session_tabs: true
     remove_worktrees: true
@@ -2426,12 +2426,12 @@ cleanup:
 
         config = Config.load(config_file)
 
-        assert config.cleanup.without_triage.wait_for_code_review is False
-        assert config.cleanup.without_triage.close_ai_session_tabs is True
-        assert config.cleanup.without_triage.remove_worktrees is True
-        # with_triage should have defaults
-        assert config.cleanup.with_triage.close_ai_session_tabs is True
-        assert config.cleanup.with_triage.remove_worktrees is False
+        assert config.cleanup.without_tech_lead.wait_for_code_review is False
+        assert config.cleanup.without_tech_lead.close_ai_session_tabs is True
+        assert config.cleanup.without_tech_lead.remove_worktrees is True
+        # with_tech_lead should have defaults
+        assert config.cleanup.with_tech_lead.close_ai_session_tabs is True
+        assert config.cleanup.with_tech_lead.remove_worktrees is False
 
     def test_cleanup_config_from_yaml_both_sections(self, tmp_path):
         """Test loading cleanup config with both sections specified."""
@@ -2444,10 +2444,10 @@ agents:
     prompt: /tmp/prompt.txt
 
 cleanup:
-  with_triage:
+  with_tech_lead:
     close_ai_session_tabs: true
     remove_worktrees: true
-  without_triage:
+  without_tech_lead:
     wait_for_code_review: false
     close_ai_session_tabs: false
     remove_worktrees: false
@@ -2457,14 +2457,14 @@ cleanup:
 
         config = Config.load(config_file)
 
-        # with_triage
-        assert config.cleanup.with_triage.close_ai_session_tabs is True
-        assert config.cleanup.with_triage.remove_worktrees is True
+        # with_tech_lead
+        assert config.cleanup.with_tech_lead.close_ai_session_tabs is True
+        assert config.cleanup.with_tech_lead.remove_worktrees is True
 
-        # without_triage
-        assert config.cleanup.without_triage.wait_for_code_review is False
-        assert config.cleanup.without_triage.close_ai_session_tabs is False
-        assert config.cleanup.without_triage.remove_worktrees is False
+        # without_tech_lead
+        assert config.cleanup.without_tech_lead.wait_for_code_review is False
+        assert config.cleanup.without_tech_lead.close_ai_session_tabs is False
+        assert config.cleanup.without_tech_lead.remove_worktrees is False
 
     def test_cleanup_config_partial_fields_use_defaults(self, tmp_path):
         """Test that unspecified cleanup fields use defaults."""
@@ -2477,7 +2477,7 @@ agents:
     prompt: /tmp/prompt.txt
 
 cleanup:
-  with_triage:
+  with_tech_lead:
     remove_worktrees: true
 """
         config_file = tmp_path / ".issue-orchestrator.yaml"
@@ -2486,9 +2486,9 @@ cleanup:
         config = Config.load(config_file)
 
         # Specified field
-        assert config.cleanup.with_triage.remove_worktrees is True
+        assert config.cleanup.with_tech_lead.remove_worktrees is True
         # Unspecified field should use default
-        assert config.cleanup.with_triage.close_ai_session_tabs is True
+        assert config.cleanup.with_tech_lead.close_ai_session_tabs is True
 
     def test_cleanup_config_empty_section_uses_defaults(self, tmp_path):
         """Test that empty cleanup section uses all defaults."""
@@ -2508,11 +2508,11 @@ cleanup: {}
         config = Config.load(config_file)
 
         # All defaults
-        assert config.cleanup.with_triage.close_ai_session_tabs is True
-        assert config.cleanup.with_triage.remove_worktrees is False
-        assert config.cleanup.without_triage.wait_for_code_review is True
-        assert config.cleanup.without_triage.close_ai_session_tabs is True
-        assert config.cleanup.without_triage.remove_worktrees is False
+        assert config.cleanup.with_tech_lead.close_ai_session_tabs is True
+        assert config.cleanup.with_tech_lead.remove_worktrees is False
+        assert config.cleanup.without_tech_lead.wait_for_code_review is True
+        assert config.cleanup.without_tech_lead.close_ai_session_tabs is True
+        assert config.cleanup.without_tech_lead.remove_worktrees is False
 
     def test_cleanup_config_missing_section_uses_defaults(self, tmp_path):
         """Test that missing cleanup section uses all defaults."""
@@ -2530,9 +2530,9 @@ agents:
         config = Config.load(config_file)
 
         # All defaults when section is missing
-        assert config.cleanup.with_triage.close_ai_session_tabs is True
-        assert config.cleanup.with_triage.remove_worktrees is False
-        assert config.cleanup.without_triage.wait_for_code_review is True
+        assert config.cleanup.with_tech_lead.close_ai_session_tabs is True
+        assert config.cleanup.with_tech_lead.remove_worktrees is False
+        assert config.cleanup.without_tech_lead.wait_for_code_review is True
 
 
 class TestConfigValidation:
@@ -2937,27 +2937,27 @@ e2e:
         assert config.e2e.flake_window_runs == 20
 
 
-class TestTriageConfig:
-    """Tests for triage issue configuration."""
+class TestTechLeadConfig:
+    """Tests for tech_lead issue configuration."""
 
-    def test_triage_config_defaults(self):
-        """TriageConfig should have sensible defaults."""
+    def test_tech_lead_config_defaults(self):
+        """TechLeadConfig should have sensible defaults."""
         config = Config()
 
-        assert config.triage.inherit_labels == []
-        assert config.triage.explicit_labels == []
-        assert config.triage.milestone_strategy.inherit_from_issues == "latest"
-        assert config.triage.milestone_strategy.explicit is None
-        assert config.triage.priority is None
+        assert config.tech_lead.inherit_labels == []
+        assert config.tech_lead.explicit_labels == []
+        assert config.tech_lead.milestone_strategy.inherit_from_issues == "latest"
+        assert config.tech_lead.milestone_strategy.explicit is None
+        assert config.tech_lead.priority is None
 
-    def test_triage_config_from_yaml(self, tmp_path):
-        """Test loading triage config from YAML."""
+    def test_tech_lead_config_from_yaml(self, tmp_path):
+        """Test loading tech_lead config from YAML."""
         config_content = """
 agents:
   agent:test:
     prompt: /tmp/prompt.txt
 
-triage:
+tech_lead:
   inherit_labels:
     - "io-e2e-test-data"
     - "team:backend"
@@ -2972,19 +2972,19 @@ triage:
 
         config = Config.load(config_file)
 
-        assert config.triage.inherit_labels == ["io-e2e-test-data", "team:backend"]
-        assert config.triage.explicit_labels == ["needs-batch-review"]
-        assert config.triage.milestone_strategy.inherit_from_issues == "earliest"
-        assert config.triage.priority == "P1"
+        assert config.tech_lead.inherit_labels == ["io-e2e-test-data", "team:backend"]
+        assert config.tech_lead.explicit_labels == ["needs-batch-review"]
+        assert config.tech_lead.milestone_strategy.inherit_from_issues == "earliest"
+        assert config.tech_lead.priority == "P1"
 
-    def test_triage_config_explicit_milestone(self, tmp_path):
+    def test_tech_lead_config_explicit_milestone(self, tmp_path):
         """Test explicit milestone overrides inherit strategy."""
         config_content = """
 agents:
   agent:test:
     prompt: /tmp/prompt.txt
 
-triage:
+tech_lead:
   milestone_strategy:
     explicit: "v2.0"
 """
@@ -2993,18 +2993,18 @@ triage:
 
         config = Config.load(config_file)
 
-        assert config.triage.milestone_strategy.explicit == "v2.0"
+        assert config.tech_lead.milestone_strategy.explicit == "v2.0"
         # inherit_from_issues still has default but explicit takes precedence in planner
-        assert config.triage.milestone_strategy.inherit_from_issues == "latest"
+        assert config.tech_lead.milestone_strategy.inherit_from_issues == "latest"
 
-    def test_triage_config_comma_separated_labels(self, tmp_path):
+    def test_tech_lead_config_comma_separated_labels(self, tmp_path):
         """Test that comma-separated label strings are parsed."""
         config_content = """
 agents:
   agent:test:
     prompt: /tmp/prompt.txt
 
-triage:
+tech_lead:
   inherit_labels: "label1, label2, label3"
   explicit_labels: "explicit1"
 """
@@ -3013,43 +3013,43 @@ triage:
 
         config = Config.load(config_file)
 
-        assert config.triage.inherit_labels == ["label1", "label2", "label3"]
-        assert config.triage.explicit_labels == ["explicit1"]
+        assert config.tech_lead.inherit_labels == ["label1", "label2", "label3"]
+        assert config.tech_lead.explicit_labels == ["explicit1"]
 
-    def test_triage_config_empty_section_uses_defaults(self, tmp_path):
-        """Test that empty triage section uses defaults."""
+    def test_tech_lead_config_empty_section_uses_defaults(self, tmp_path):
+        """Test that empty tech_lead section uses defaults."""
         config_content = """
 agents:
   agent:test:
     prompt: /tmp/prompt.txt
 
-triage: {}
+tech_lead: {}
 """
         config_file = tmp_path / ".issue-orchestrator.yaml"
         config_file.write_text(config_content)
 
         config = Config.load(config_file)
 
-        assert config.triage.inherit_labels == []
-        assert config.triage.explicit_labels == []
-        assert config.triage.milestone_strategy.inherit_from_issues == "latest"
-        assert config.triage.priority is None
+        assert config.tech_lead.inherit_labels == []
+        assert config.tech_lead.explicit_labels == []
+        assert config.tech_lead.milestone_strategy.inherit_from_issues == "latest"
+        assert config.tech_lead.priority is None
 
-    def test_triage_config_included_in_to_event_dict(self):
-        """triage config should be included in to_event_dict output."""
+    def test_tech_lead_config_included_in_to_event_dict(self):
+        """tech_lead config should be included in to_event_dict output."""
         config = Config()
-        config.triage.inherit_labels.append("test-label")
-        config.triage.explicit_labels.append("explicit-label")
-        config.triage.authority.post_comment = "propose"
+        config.tech_lead.inherit_labels.append("test-label")
+        config.tech_lead.explicit_labels.append("explicit-label")
+        config.tech_lead.authority.post_comment = "propose"
 
         result = config.to_event_dict()
 
-        assert "triage" in result
-        assert result["triage"]["inherit_labels"] == ["test-label"]
-        assert result["triage"]["explicit_labels"] == ["explicit-label"]
-        assert result["triage"]["milestone_strategy"]["inherit_from_issues"] == "latest"
+        assert "tech_lead" in result
+        assert result["tech_lead"]["inherit_labels"] == ["test-label"]
+        assert result["tech_lead"]["explicit_labels"] == ["explicit-label"]
+        assert result["tech_lead"]["milestone_strategy"]["inherit_from_issues"] == "latest"
         # All five graduated-authority modes are operator-visible (#6761 F7).
-        assert result["triage"]["authority"] == {
+        assert result["tech_lead"]["authority"] == {
             "post_comment": "propose",
             "create_issue": "execute",
             "flag_pattern": "execute",
@@ -3057,27 +3057,27 @@ triage: {}
             "kill_hung_session": "propose",
         }
 
-    def test_triage_authority_defaults(self):
+    def test_tech_lead_authority_defaults(self):
         """Authority defaults: GitHub-write actions execute, act-level propose."""
         config = Config()
 
-        assert config.triage.authority.post_comment == "execute"
-        assert config.triage.authority.create_issue == "execute"
-        assert config.triage.authority.flag_pattern == "execute"
-        assert config.triage.authority.reset_retry == "propose"
-        assert config.triage.authority.kill_hung_session == "propose"
+        assert config.tech_lead.authority.post_comment == "execute"
+        assert config.tech_lead.authority.create_issue == "execute"
+        assert config.tech_lead.authority.flag_pattern == "execute"
+        assert config.tech_lead.authority.reset_retry == "propose"
+        assert config.tech_lead.authority.kill_hung_session == "propose"
         assert config.validate() == [] or not any(
-            "triage.authority" in e for e in config.validate()
+            "tech_lead.authority" in e for e in config.validate()
         )
 
-    def test_triage_authority_from_yaml(self, tmp_path):
-        """triage.authority.<key> parses per-action-type modes."""
+    def test_tech_lead_authority_from_yaml(self, tmp_path):
+        """tech_lead.authority.<key> parses per-action-type modes."""
         config_content = """
 agents:
   agent:test:
     prompt: /tmp/prompt.txt
 
-triage:
+tech_lead:
   authority:
     post_comment: propose
     create_issue: propose
@@ -3087,24 +3087,24 @@ triage:
 
         config = Config.load(config_file)
 
-        assert config.triage.authority.post_comment == "propose"
-        assert config.triage.authority.create_issue == "propose"
+        assert config.tech_lead.authority.post_comment == "propose"
+        assert config.tech_lead.authority.create_issue == "propose"
         # Unset keys keep defaults
-        assert config.triage.authority.flag_pattern == "execute"
-        assert config.triage.authority.reset_retry == "propose"
+        assert config.tech_lead.authority.flag_pattern == "execute"
+        assert config.tech_lead.authority.reset_retry == "propose"
 
-    def test_triage_max_concurrent_defaults_to_none(self):
-        """Unset triage.max_concurrent shares the worker budget (None)."""
-        assert Config().triage.max_concurrent is None
+    def test_tech_lead_max_concurrent_defaults_to_none(self):
+        """Unset tech_lead.max_concurrent shares the worker budget (None)."""
+        assert Config().tech_lead.max_concurrent is None
 
-    def test_triage_max_concurrent_from_yaml(self, tmp_path):
-        """triage.max_concurrent parses into a reserved additive budget."""
+    def test_tech_lead_max_concurrent_from_yaml(self, tmp_path):
+        """tech_lead.max_concurrent parses into a reserved additive budget."""
         config_content = """
 agents:
   agent:test:
     prompt: /tmp/prompt.txt
 
-triage:
+tech_lead:
   max_concurrent: 2
 """
         config_file = tmp_path / ".issue-orchestrator.yaml"
@@ -3112,80 +3112,80 @@ triage:
 
         config = Config.load(config_file)
 
-        assert config.triage.max_concurrent == 2
-        assert config.triage.to_event_dict()["max_concurrent"] == 2
+        assert config.tech_lead.max_concurrent == 2
+        assert config.tech_lead.to_event_dict()["max_concurrent"] == 2
 
-    def test_triage_max_concurrent_rejects_below_one(self):
+    def test_tech_lead_max_concurrent_rejects_below_one(self):
         """A reserved budget < 1 is a misconfiguration; fail startup loudly."""
         config = Config()
-        config.triage.max_concurrent = 0
+        config.tech_lead.max_concurrent = 0
         errors = config.validate()
-        assert any("triage.max_concurrent" in e for e in errors), errors
+        assert any("tech_lead.max_concurrent" in e for e in errors), errors
 
-    def test_triage_authority_bad_value_rejected_at_load(self, tmp_path):
+    def test_tech_lead_authority_bad_value_rejected_at_load(self, tmp_path):
         """A mode outside execute|propose fails config parsing loudly."""
         config_content = """
 agents:
   agent:test:
     prompt: /tmp/prompt.txt
 
-triage:
+tech_lead:
   authority:
     post_comment: yolo
 """
         config_file = tmp_path / ".issue-orchestrator.yaml"
         config_file.write_text(config_content)
 
-        with pytest.raises(ValueError, match="triage.authority.post_comment"):
+        with pytest.raises(ValueError, match="tech_lead.authority.post_comment"):
             Config.load(config_file)
 
     @pytest.mark.parametrize("key", ["kill_hung_session"])
-    def test_triage_authority_unwired_act_level_execute_is_startup_error(self, key):
+    def test_tech_lead_authority_unwired_act_level_execute_is_startup_error(self, key):
         """Unwired act-level 'execute' must fail startup validation, never no-op."""
         config = Config()
-        setattr(config.triage.authority, key, "execute")
+        setattr(config.tech_lead.authority, key, "execute")
 
         errors = config.validate()
 
         assert any(
-            f"triage.authority.{key}" in e and "#6764" in e for e in errors
+            f"tech_lead.authority.{key}" in e and "#6764" in e for e in errors
         ), errors
 
-    def test_triage_authority_reset_retry_execute_is_valid_at_startup(self):
+    def test_tech_lead_authority_reset_retry_execute_is_valid_at_startup(self):
         """reset_retry is wired (#6764 first slice): execute passes validation."""
         config = Config()
-        config.triage.authority.reset_retry = "execute"
+        config.tech_lead.authority.reset_retry = "execute"
 
         errors = config.validate()
 
-        assert not any("triage.authority.reset_retry" in e for e in errors), errors
+        assert not any("tech_lead.authority.reset_retry" in e for e in errors), errors
 
-    def test_triage_authority_mode_for_floor_and_unknown(self):
+    def test_tech_lead_authority_mode_for_floor_and_unknown(self):
         """escalate_to_human always executes; unknown action types raise."""
         config = Config()
-        config.triage.authority.post_comment = "propose"
+        config.tech_lead.authority.post_comment = "propose"
 
-        assert config.triage.authority.mode_for("escalate_to_human") == "execute"
-        assert config.triage.authority.mode_for("post_comment") == "propose"
-        with pytest.raises(ValueError, match="unknown triage action type"):
-            config.triage.authority.mode_for("push_code")
+        assert config.tech_lead.authority.mode_for("escalate_to_human") == "execute"
+        assert config.tech_lead.authority.mode_for("post_comment") == "propose"
+        with pytest.raises(ValueError, match="unknown tech_lead action type"):
+            config.tech_lead.authority.mode_for("push_code")
 
-    def test_triage_health_review_default_disabled(self):
+    def test_tech_lead_health_review_default_disabled(self):
         """Periodic review is off; problem-storm escalation has safe defaults."""
         config = Config()
 
-        assert config.triage.health_review.interval_minutes == 0
-        assert config.triage.health_review.storm_threshold == 3
-        assert config.triage.health_review.storm_window_minutes == 5
+        assert config.tech_lead.health_review.interval_minutes == 0
+        assert config.tech_lead.health_review.storm_threshold == 3
+        assert config.tech_lead.health_review.storm_window_minutes == 5
 
-    def test_triage_health_review_from_yaml(self, tmp_path):
-        """triage.health_review.interval_minutes parses as an int."""
+    def test_tech_lead_health_review_from_yaml(self, tmp_path):
+        """tech_lead.health_review.interval_minutes parses as an int."""
         config_content = """
 agents:
   agent:test:
     prompt: /tmp/prompt.txt
 
-triage:
+tech_lead:
   health_review:
     interval_minutes: 240
     storm_threshold: 4
@@ -3196,11 +3196,11 @@ triage:
 
         config = Config.load(config_file)
 
-        assert config.triage.health_review.interval_minutes == 240
-        assert config.triage.health_review.storm_threshold == 4
-        assert config.triage.health_review.storm_window_minutes == 10
+        assert config.tech_lead.health_review.interval_minutes == 240
+        assert config.tech_lead.health_review.storm_threshold == 4
+        assert config.tech_lead.health_review.storm_window_minutes == 10
 
-    def test_triage_health_review_negative_interval_is_startup_error(self):
+    def test_tech_lead_health_review_negative_interval_is_startup_error(self):
         """A negative interval is a misconfiguration, never silently disabled.
 
         The documented disable value is exactly 0; ``-5`` must fail startup
@@ -3208,32 +3208,32 @@ triage:
         off with an out-of-range number (#6763 finding 8).
         """
         config = Config()
-        config.triage.health_review.interval_minutes = -5
+        config.tech_lead.health_review.interval_minutes = -5
 
         errors = config.validate()
 
         assert any(
-            "triage.health_review.interval_minutes" in e and "-5" in e
+            "tech_lead.health_review.interval_minutes" in e and "-5" in e
             for e in errors
         ), errors
 
-    def test_triage_health_review_startup_errors_reports_negative(self):
+    def test_tech_lead_health_review_startup_errors_reports_negative(self):
         """The owning config block reports its own invariant (single owner)."""
         config = Config()
-        config.triage.health_review.interval_minutes = -1
+        config.tech_lead.health_review.interval_minutes = -1
 
-        errors = config.triage.health_review.startup_errors()
+        errors = config.tech_lead.health_review.startup_errors()
 
         assert len(errors) == 1
         assert ">= 0" in errors[0]
 
-    def test_triage_health_review_zero_and_positive_have_no_startup_errors(self):
+    def test_tech_lead_health_review_zero_and_positive_have_no_startup_errors(self):
         """0 (disabled) and any positive interval are both valid."""
         config = Config()
-        config.triage.health_review.interval_minutes = 0
-        assert config.triage.health_review.startup_errors() == []
-        config.triage.health_review.interval_minutes = 240
-        assert config.triage.health_review.startup_errors() == []
+        config.tech_lead.health_review.interval_minutes = 0
+        assert config.tech_lead.health_review.startup_errors() == []
+        config.tech_lead.health_review.interval_minutes = 240
+        assert config.tech_lead.health_review.startup_errors() == []
 
     @pytest.mark.parametrize(
         ("attr", "value", "path"),
@@ -3242,15 +3242,15 @@ triage:
             ("storm_window_minutes", 0, "storm_window_minutes"),
         ],
     )
-    def test_triage_health_review_rejects_invalid_storm_settings(
+    def test_tech_lead_health_review_rejects_invalid_storm_settings(
         self, attr: str, value: int, path: str
     ) -> None:
         config = Config()
-        setattr(config.triage.health_review, attr, value)
+        setattr(config.tech_lead.health_review, attr, value)
 
         errors = config.validate()
 
-        assert any(f"triage.health_review.{path}" in error for error in errors)
+        assert any(f"tech_lead.health_review.{path}" in error for error in errors)
 
 
 class TestSchedulingConfig:
@@ -3310,13 +3310,13 @@ scheduling:
         errors = config.validate()
         assert "scheduling.default_priority_tier must be between 0 and 9" in errors
 
-    def test_triage_priority_invalid_format(self, tmp_path):
+    def test_tech_lead_priority_invalid_format(self, tmp_path):
         config_content = """
 agents:
   agent:test:
     prompt: /tmp/prompt.txt
 
-triage:
+tech_lead:
   priority: "priority:high"
 """
         config_file = tmp_path / ".issue-orchestrator.yaml"
@@ -3325,7 +3325,7 @@ triage:
         config = Config.load(config_file)
 
         errors = config.validate()
-        assert "triage.priority must be a tier like 'P0'..'P9'" in errors
+        assert "tech_lead.priority must be a tier like 'P0'..'P9'" in errors
 
 
 class TestValidationConfig:

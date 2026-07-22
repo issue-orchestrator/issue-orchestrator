@@ -15,11 +15,11 @@ def test_exchange_pairs_ignore_unreviewable_agents(tmp_path: Path) -> None:
     config.review_enabled = True
     config.review_exchange_mode = "via-mcp"
     config.code_review_agent = "agent:reviewer"
-    config.triage_review_agent = "agent:triage"
+    config.tech_lead_review_agent = "agent:tech-lead"
     config.agents = {
         "agent:coder": AgentConfig(prompt_path=prompt, ai_system="claude-code"),
         "agent:reviewer": AgentConfig(prompt_path=prompt, ai_system="codex"),
-        "agent:triage": AgentConfig(prompt_path=prompt, ai_system="codex"),
+        "agent:tech-lead": AgentConfig(prompt_path=prompt, ai_system="codex"),
         "agent:skip": AgentConfig(prompt_path=prompt, skip_review=True),
     }
 
@@ -27,4 +27,4 @@ def test_exchange_pairs_ignore_unreviewable_agents(tmp_path: Path) -> None:
 
     assert ("agent:coder", "agent:reviewer") in pairs
     assert all(pair[0] != "agent:skip" for pair in pairs)
-    assert all(pair[0] != "agent:triage" for pair in pairs)  # triage reviewer is excluded
+    assert all(pair[0] != "agent:tech-lead" for pair in pairs)  # tech_lead reviewer is excluded

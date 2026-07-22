@@ -113,7 +113,7 @@ class TestRunSchemaChecks:
         cfg = Config()
         cfg.review_enabled = True
         cfg.code_review_agent = None
-        cfg.triage_review_agent = None
+        cfg.tech_lead_review_agent = None
         cfg.e2e.issue_agent_label = None
 
         checks = run_schema_checks(cfg)

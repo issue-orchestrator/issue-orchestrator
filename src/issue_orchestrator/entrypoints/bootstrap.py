@@ -76,15 +76,15 @@ from ..control.completion_dispatcher import (
     SynchronousCompletionDispatcher,
 )
 from ..control.dependency_evaluator import DependencyEvaluator
-from ..control.workflows import ReviewWorkflow, RetrospectiveReviewWorkflow, ReworkWorkflow, TriageWorkflow
+from ..control.workflows import ReviewWorkflow, RetrospectiveReviewWorkflow, ReworkWorkflow, TechLeadWorkflow
 from ..control.claim_gate import ClaimGate
 from ..control.lease_renewer import LeaseRenewer
 from ..control.worktree_manager import extract_issue_branches
 from ..infra import gh_audit, runtime_identity
-from .bootstrap_triage import (
+from .bootstrap_tech_lead import (
     create_board_snapshot_builder,
-    create_triage_composition,
-    wire_triage_act_executors,
+    create_tech_lead_composition,
+    wire_tech_lead_act_executors,
 )
 from ..infra.repo_identity import state_dir
 from ..infra.secret_env import (
@@ -113,7 +113,7 @@ if TYPE_CHECKING:
         InMemoryPersistentExchangePairRegistry,
     )
     from ..ports.turn_mailbox import TurnMailbox
-    from ..ports.triage_authority import TriageAuthorityStore
+    from ..ports.tech_lead_authority import TechLeadAuthorityStore
     from ..control.background_job_supervisor import BackgroundJobSupervisor
 
 logger = logging.getLogger(__name__)
@@ -366,7 +366,7 @@ def _create_planner(
     review_workflow = ReviewWorkflow(config=config, events=events)
     retrospective_review_workflow = RetrospectiveReviewWorkflow(config=config, events=events)
     rework_workflow = ReworkWorkflow(config=config, events=events, label_manager=label_manager)
-    triage_workflow = TriageWorkflow(config=config, events=events)
+    tech_lead_workflow = TechLeadWorkflow(config=config, events=events)
 
     planner = Planner(
         config=config,
@@ -375,7 +375,7 @@ def _create_planner(
         review_workflow=review_workflow,
         retrospective_review_workflow=retrospective_review_workflow,
         rework_workflow=rework_workflow,
-        triage_workflow=triage_workflow,
+        tech_lead_workflow=tech_lead_workflow,
         provider_resilience=provider_resilience,
         label_manager=label_manager,
     )
@@ -444,7 +444,7 @@ def _create_completion_components(
     pair_registry: "InMemoryPersistentExchangePairRegistry | None" = None,
     attempt_store: "AttemptStore | None" = None,
     turn_mailbox: "TurnMailbox | None" = None,
-    triage_authority: "TriageAuthorityStore | None" = None,
+    tech_lead_authority: "TechLeadAuthorityStore | None" = None,
 ) -> tuple["CompletionProcessor | None", "SessionController | None"]:
     """Create completion processor and session controller."""
     from ..control.completion_processor import CompletionProcessor
@@ -498,7 +498,7 @@ def _create_completion_components(
         review_exchange_canceller=_cancel_review_exchange,
         review_artifact_reader=ManifestReviewArtifactReader(),
         runtime_identity=runtime_identity.resolve_runtime_identity(),
-        triage_authority=triage_authority,
+        tech_lead_authority=tech_lead_authority,
     ) if github else None
 
     session_controller_instance = SessionController(
@@ -559,7 +559,7 @@ def _build_publish_recovery(
     fresh_issue_reader: "FreshIssueReader",
     action_applier: "ActionApplier",
     config: Config,
-    triage_authority: "TriageAuthorityStore",
+    tech_lead_authority: "TechLeadAuthorityStore",
 ) -> "PublishRecoveryService":
     """Wire the "Retry publish" owner: durable locator store + dedicated runner.
 
@@ -585,7 +585,7 @@ def _build_publish_recovery(
         fresh_issue_reader=fresh_issue_reader,
         action_applier=action_applier,
         code_review_agent_configured=bool(config.code_review_agent),
-        triage_authority=triage_authority,
+        tech_lead_authority=tech_lead_authority,
     )
 
 
@@ -678,7 +678,7 @@ def build_orchestrator(
     from ..control.session_restorer import SessionRestorer
     from ..control.state_machine_manager import StateMachineManager
     from ..adapters.github.fresh_issue_reader import GitHubFreshIssueReader
-    from ..execution.triage_downloader import TriageDownloader
+    from ..execution.tech_lead_downloader import TechLeadDownloader
     from ..execution.e2e_issue_tracker_adapter import GitHubE2EIssueTracker
 
     install_gh_guard()
@@ -769,8 +769,8 @@ def build_orchestrator(
     goal_pilot_store = SqliteGoalPilotStore(repo_root=config.repo_root)
     attempt_store = create_attempt_store(config)
 
-    # Create manifest downloader for triage sessions
-    manifest_downloader = TriageDownloader(
+    # Create manifest downloader for tech_lead sessions
+    manifest_downloader = TechLeadDownloader(
         repository_host=github,
         command_runner=command_runner,
     ) if github else None
@@ -792,13 +792,13 @@ def build_orchestrator(
         reconcile=True,
     ) if github else None
 
-    triage = create_triage_composition(
+    tech_lead = create_tech_lead_composition(
         config, github, events, queue_cache_store=queue_cache_store,
         provider_resilience=provider_resilience,
     )
-    triage_authority = triage.authority
-    triage_board_publisher = triage.board_publisher
-    fact_gatherer = triage.fact_gatherer
+    tech_lead_authority = tech_lead.authority
+    tech_lead_board_publisher = tech_lead.board_publisher
+    fact_gatherer = tech_lead.fact_gatherer
 
     # Create PR scanner and session restorer
     pr_scanner = (
@@ -850,7 +850,7 @@ def build_orchestrator(
         pair_registry=pair_registry,
         attempt_store=attempt_store,
         turn_mailbox=turn_mailbox,
-        triage_authority=triage_authority,
+        tech_lead_authority=tech_lead_authority,
     )
     _wire_stack_publish_gate(
         completion_processor, _dependency_evaluator, github, command_runner, config,
@@ -893,7 +893,7 @@ def build_orchestrator(
         fresh_issue_reader=fresh_issue_reader,
         action_applier=action_applier,
         config=config,
-        triage_authority=triage_authority,
+        tech_lead_authority=tech_lead_authority,
     )
 
     # Build infrastructure services bundle
@@ -923,7 +923,7 @@ def build_orchestrator(
         timeline_writer=timeline_writer,
         goal_pilot_store=goal_pilot_store,
         attempt_store=attempt_store,
-        triage_authority=triage_authority,
+        tech_lead_authority=tech_lead_authority,
         pair_registry=pair_registry,
         turn_mailbox=turn_mailbox,
         background_job_supervisor=background_job_supervisor,
@@ -959,7 +959,7 @@ def build_orchestrator(
         completion_dispatcher=BackgroundCompletionDispatcher(ThreadBackgroundJobRunner()),
         health_gate=health_gate,
         board_snapshot_builder=create_board_snapshot_builder(
-            config, timeline_store, triage_board_publisher, working_copy
+            config, timeline_store, tech_lead_board_publisher, working_copy
         ),
         claim_manager=claim_manager,
         claim_gate=claim_gate,
@@ -970,7 +970,7 @@ def build_orchestrator(
 
     orchestrator = Orchestrator(config=config, deps=deps)
     # Act-level executor wiring closes over live orchestrator state (#6764/#6778).
-    wire_triage_act_executors(orchestrator)
+    wire_tech_lead_act_executors(orchestrator)
     return orchestrator
 
 
@@ -1080,9 +1080,9 @@ def build_orchestrator_for_testing(
     goal_pilot_store = SqliteGoalPilotStore(repo_root=config.repo_root)
     attempt_store = create_attempt_store(config)
 
-    from ..execution.triage_downloader import TriageDownloader
+    from ..execution.tech_lead_downloader import TechLeadDownloader
     from unittest.mock import MagicMock
-    manifest_downloader = TriageDownloader(
+    manifest_downloader = TechLeadDownloader(
         repository_host=github,
         command_runner=command_runner,
     )
@@ -1112,10 +1112,10 @@ def build_orchestrator_for_testing(
             reconcile=False,  # Disable for testing by default
         )
 
-    triage = create_triage_composition(config, github, events, fact_gatherer)
-    triage_authority_for_testing = triage.authority
-    triage_board_publisher_for_testing = triage.board_publisher
-    fact_gatherer = triage.fact_gatherer
+    tech_lead = create_tech_lead_composition(config, github, events, fact_gatherer)
+    tech_lead_authority_for_testing = tech_lead.authority
+    tech_lead_board_publisher_for_testing = tech_lead.board_publisher
+    fact_gatherer = tech_lead.fact_gatherer
     assert fact_gatherer is not None
 
     # Create HealthGate for testing
@@ -1161,7 +1161,7 @@ def build_orchestrator_for_testing(
     if action_applier is not None:
         action_applier.pair_registry = pair_registry_for_testing
         action_applier.background_job_supervisor = background_job_supervisor
-        action_applier.triage_ops = triage_authority_for_testing
+        action_applier.tech_lead_ops = tech_lead_authority_for_testing
 
     def _cancel_review_exchange_for_testing(
         issue_number: int,
@@ -1190,7 +1190,7 @@ def build_orchestrator_for_testing(
         review_exchange_canceller=_cancel_review_exchange_for_testing,
         review_artifact_reader=ManifestReviewArtifactReader(),
         runtime_identity=runtime_identity.resolve_runtime_identity(),
-        triage_authority=triage_authority_for_testing,
+        tech_lead_authority=tech_lead_authority_for_testing,
     )
     _wire_stack_publish_gate(
         completion_processor, _dependency_evaluator, github, command_runner, config,
@@ -1238,7 +1238,7 @@ def build_orchestrator_for_testing(
         fresh_issue_reader=fresh_issue_reader,
         action_applier=action_applier,
         config=config,
-        triage_authority=triage_authority_for_testing,
+        tech_lead_authority=tech_lead_authority_for_testing,
     )
 
     # Queue cache store for testing (uses repo_root state dir)
@@ -1268,7 +1268,7 @@ def build_orchestrator_for_testing(
         timeline_writer=timeline_writer,
         goal_pilot_store=goal_pilot_store,
         attempt_store=attempt_store,
-        triage_authority=triage_authority_for_testing,
+        tech_lead_authority=tech_lead_authority_for_testing,
         pair_registry=pair_registry_for_testing,
         turn_mailbox=turn_mailbox,
         background_job_supervisor=background_job_supervisor,
@@ -1301,7 +1301,7 @@ def build_orchestrator_for_testing(
         completion_dispatcher=SynchronousCompletionDispatcher(),
         health_gate=health_gate,
         board_snapshot_builder=create_board_snapshot_builder(
-            config, timeline_store, triage_board_publisher_for_testing, working_copy
+            config, timeline_store, tech_lead_board_publisher_for_testing, working_copy
         ),
         claim_manager=claim_manager,
         claim_gate=claim_gate,

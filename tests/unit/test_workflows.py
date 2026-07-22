@@ -12,13 +12,13 @@ from issue_orchestrator.control.workflows.rework_workflow import (
     ReworkDecision,
     EscalationDecision,
 )
-from issue_orchestrator.control.workflows.triage_workflow import (
-    TriageWorkflow,
-    TriageDecision,
+from issue_orchestrator.control.workflows.tech_lead_workflow import (
+    TechLeadWorkflow,
+    TechLeadDecision,
 )
-from issue_orchestrator.domain.models import PendingReview, PendingRework, PendingTriageReview
+from issue_orchestrator.domain.models import PendingReview, PendingRework, PendingTechLeadReview
 from issue_orchestrator.domain.issue_key import FakeIssueKey
-from issue_orchestrator.domain.triage_session import TriageSessionFlavor
+from issue_orchestrator.domain.tech_lead_session import TechLeadSessionFlavor
 from issue_orchestrator.ports import NullEventSink, TraceEvent
 
 
@@ -58,13 +58,13 @@ def make_pending_rework(issue_number: int, pr_number: int = None, rework_cycle: 
     )
 
 
-def make_pending_triage(
+def make_pending_tech_lead(
     issue_number: int,
     title: str = "Test",
-    flavor: TriageSessionFlavor = TriageSessionFlavor.BATCH_REVIEW,
-) -> PendingTriageReview:
-    """Create a PendingTriageReview for testing (workflow logic is flavor-agnostic)."""
-    return PendingTriageReview(
+    flavor: TechLeadSessionFlavor = TechLeadSessionFlavor.BATCH_REVIEW,
+) -> PendingTechLeadReview:
+    """Create a PendingTechLeadReview for testing (workflow logic is flavor-agnostic)."""
+    return PendingTechLeadReview(
         issue_number=issue_number,
         title=title,
         flavor=flavor,
@@ -353,14 +353,14 @@ class TestBoundedReworkEscalation:
             assert decision.should_escalate
 
 
-class TestTriageWorkflow:
-    """Test the TriageWorkflow class."""
+class TestTechLeadWorkflow:
+    """Test the TechLeadWorkflow class."""
 
     @pytest.fixture
     def mock_config(self):
         config = MagicMock()
-        config.triage_review_agent = "agent:triage"
-        config.triage_review_threshold = 3
+        config.tech_lead_review_agent = "agent:tech-lead"
+        config.tech_lead_review_threshold = 3
         config.max_concurrent_sessions = 3
         return config
 
@@ -370,27 +370,27 @@ class TestTriageWorkflow:
 
     @pytest.fixture
     def workflow(self, mock_config, collecting_sink):
-        return TriageWorkflow(config=mock_config, events=collecting_sink)
+        return TechLeadWorkflow(config=mock_config, events=collecting_sink)
 
     def test_is_configured_returns_true_when_configured(self, workflow):
-        """Test is_configured returns True when triage_review_agent is set."""
+        """Test is_configured returns True when tech_lead_review_agent is set."""
         assert workflow.is_configured() is True
 
     def test_is_configured_returns_false_when_not_configured(self, collecting_sink):
         """Test is_configured returns False when not configured."""
         config = MagicMock()
-        config.triage_review_agent = None
-        workflow = TriageWorkflow(config=config, events=collecting_sink)
+        config.tech_lead_review_agent = None
+        workflow = TechLeadWorkflow(config=config, events=collecting_sink)
         assert workflow.is_configured() is False
 
     def test_should_launch_skips_when_not_configured(self, collecting_sink):
         """Test skips when not configured."""
         config = MagicMock()
-        config.triage_review_agent = None
-        workflow = TriageWorkflow(config=config, events=collecting_sink)
+        config.tech_lead_review_agent = None
+        workflow = TechLeadWorkflow(config=config, events=collecting_sink)
 
-        decision = workflow.should_launch_triage(
-            pending_triage=[make_pending_triage(100)],
+        decision = workflow.should_launch_tech_lead(
+            pending_tech_lead=[make_pending_tech_lead(100)],
             active_session_count=0,
             paused=False,
         )
@@ -399,8 +399,8 @@ class TestTriageWorkflow:
 
     def test_should_launch_skips_when_queue_empty(self, workflow):
         """Test skips when queue is empty."""
-        decision = workflow.should_launch_triage(
-            pending_triage=[],
+        decision = workflow.should_launch_tech_lead(
+            pending_tech_lead=[],
             active_session_count=0,
             paused=False,
         )
@@ -408,27 +408,27 @@ class TestTriageWorkflow:
         assert not decision.should_launch
         assert "No pending" in decision.skip_reason
 
-    def test_should_launch_returns_triage_up_to_capacity(self, workflow):
-        """Test returns triage reviews up to capacity."""
+    def test_should_launch_returns_tech_lead_up_to_capacity(self, workflow):
+        """Test returns tech_lead reviews up to capacity."""
         pending = [
-            make_pending_triage(100, "Test 1"),
-            make_pending_triage(101, "Test 2"),
-            make_pending_triage(102, "Test 3"),
+            make_pending_tech_lead(100, "Test 1"),
+            make_pending_tech_lead(101, "Test 2"),
+            make_pending_tech_lead(102, "Test 3"),
         ]
 
-        decision = workflow.should_launch_triage(
-            pending_triage=pending,
+        decision = workflow.should_launch_tech_lead(
+            pending_tech_lead=pending,
             active_session_count=1,
             paused=False,
         )
 
         assert decision.should_launch
-        assert len(decision.triage_to_launch) == 2
+        assert len(decision.tech_lead_to_launch) == 2
 
     def test_shared_budget_skips_when_worker_budget_full(self, workflow):
-        """None (default): a full worker budget skips triage - unchanged."""
-        decision = workflow.should_launch_triage(
-            pending_triage=[make_pending_triage(100)],
+        """None (default): a full worker budget skips tech_lead - unchanged."""
+        decision = workflow.should_launch_tech_lead(
+            pending_tech_lead=[make_pending_tech_lead(100)],
             active_session_count=3,  # == max_concurrent_sessions
             paused=False,
         )
@@ -438,32 +438,32 @@ class TestTriageWorkflow:
     def test_reserved_capacity_launches_despite_full_worker_budget(self, workflow):
         """reserved_capacity gates on the reserved additive budget, so a full
         worker budget no longer blocks the tech lead."""
-        pending = [make_pending_triage(100), make_pending_triage(101)]
-        decision = workflow.should_launch_triage(
-            pending_triage=pending,
+        pending = [make_pending_tech_lead(100), make_pending_tech_lead(101)]
+        decision = workflow.should_launch_tech_lead(
+            pending_tech_lead=pending,
             active_session_count=3,  # worker budget full
             paused=False,
             reserved_capacity=1,
         )
         assert decision.should_launch
         # Bounded by the reserved budget, not by max_concurrent_sessions.
-        assert len(decision.triage_to_launch) == 1
+        assert len(decision.tech_lead_to_launch) == 1
 
     def test_reserved_capacity_zero_skips(self, workflow):
         """A reserved budget already fully in use skips with a reserved reason."""
-        decision = workflow.should_launch_triage(
-            pending_triage=[make_pending_triage(100)],
+        decision = workflow.should_launch_tech_lead(
+            pending_tech_lead=[make_pending_tech_lead(100)],
             active_session_count=0,
             paused=False,
             reserved_capacity=0,
         )
         assert not decision.should_launch
-        assert "reserved triage capacity" in decision.skip_reason
+        assert "reserved tech_lead capacity" in decision.skip_reason
 
     def test_reserved_capacity_still_honors_paused(self, workflow):
         """Paused is the floor: a reserved budget does not override it."""
-        decision = workflow.should_launch_triage(
-            pending_triage=[make_pending_triage(100)],
+        decision = workflow.should_launch_tech_lead(
+            pending_tech_lead=[make_pending_tech_lead(100)],
             active_session_count=0,
             paused=True,
             reserved_capacity=1,

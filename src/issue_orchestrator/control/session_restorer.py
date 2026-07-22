@@ -33,7 +33,7 @@ _CANONICAL_SESSION_PREFIXES = (
     "review-",
     RETROSPECTIVE_REVIEW_TERMINAL_PREFIX,
     "rework-",
-    "triage-",
+    "tech-lead-",
 )
 _REVIEW_SESSION_RE = re.compile(r"^review-(\d+)$")
 _REVIEW_TITLE_RE = re.compile(r"\bReview PR #(\d+)\b")

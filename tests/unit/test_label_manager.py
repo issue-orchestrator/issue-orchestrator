@@ -39,7 +39,7 @@ class _StubConfig:
     review_keep_current_approach_label: str = "reviewer-keep-current-approach"
     code_review_label: str | None = None
     code_reviewed_label: str | None = None
-    triage_reviewed_label: str | None = None
+    tech_lead_reviewed_label: str | None = None
     retrospective_review_trigger_label: str = "retrospective-review"
     retrospective_reviewed_label: str = "retrospective-reviewed"
     retrospective_changes_requested_label: str = "retrospective-changes-requested"
@@ -84,12 +84,12 @@ class TestNamedProperties:
         assert lm.retrospective_reviewed == "retrospective-reviewed"
         assert lm.retrospective_changes_requested == "retrospective-changes-requested"
 
-    def test_triage_reviewed_default(self, lm: LabelManager) -> None:
-        assert lm.triage_reviewed == "triage-reviewed"
+    def test_tech_lead_reviewed_default(self, lm: LabelManager) -> None:
+        assert lm.tech_lead_reviewed == "tech-lead-reviewed"
 
-    def test_triage_reviewed_custom(self) -> None:
-        cfg = _StubConfig(triage_reviewed_label="batch-triaged")
-        assert LabelManager(cfg).triage_reviewed == "batch-triaged"  # type: ignore[arg-type]
+    def test_tech_lead_reviewed_custom(self) -> None:
+        cfg = _StubConfig(tech_lead_reviewed_label="batch-triaged")
+        assert LabelManager(cfg).tech_lead_reviewed == "batch-triaged"  # type: ignore[arg-type]
 
     def test_blocked(self, lm: LabelManager) -> None:
         assert lm.blocked == "blocked"
@@ -103,8 +103,8 @@ class TestNamedProperties:
     def test_needs_human(self, lm: LabelManager) -> None:
         assert lm.needs_human == "needs-human"
 
-    def test_triage_needs_human(self, lm: LabelManager) -> None:
-        assert lm.triage_needs_human == "triage-needs-human"
+    def test_tech_lead_needs_human(self, lm: LabelManager) -> None:
+        assert lm.tech_lead_needs_human == "tech-lead-needs-human"
 
     def test_repository_initialization_labels_include_marker_and_agents(
         self, lm: LabelManager
@@ -112,7 +112,7 @@ class TestNamedProperties:
         labels = lm.repository_initialization_labels(["agent:backend"])
 
         assert lm.needs_human in labels
-        assert lm.triage_needs_human in labels
+        assert lm.tech_lead_needs_human in labels
         assert labels[-1] == "agent:backend"
 
     def test_blocked_cross_milestone(self, lm: LabelManager) -> None:
@@ -164,8 +164,8 @@ class TestNamedPropertiesPrefixed:
     def test_publish_failed(self, plm: LabelManager) -> None:
         assert plm.publish_failed == "bot:publish-failed"
 
-    def test_triage_needs_human(self, plm: LabelManager) -> None:
-        assert plm.triage_needs_human == "bot:triage-needs-human"
+    def test_tech_lead_needs_human(self, plm: LabelManager) -> None:
+        assert plm.tech_lead_needs_human == "bot:tech-lead-needs-human"
 
     def test_reset_retry_scratch_pending(self, plm: LabelManager) -> None:
         assert plm.reset_retry_scratch_pending == "bot:reset-retry-scratch-pending"
@@ -191,10 +191,10 @@ class TestNamedPropertiesPrefixed:
         assert plm.run_audit_requested == "bot:needs-run-audit"
         assert plm.run_audit_completed == "bot:run-audit-complete"
 
-    def test_triage_reviewed_is_not_prefixed(self, plm: LabelManager) -> None:
-        # The triage subsystem applies this label raw; it must NOT be prefixed,
+    def test_tech_lead_reviewed_is_not_prefixed(self, plm: LabelManager) -> None:
+        # The tech_lead subsystem applies this label raw; it must NOT be prefixed,
         # or merge-queue/cleanup gates would never match the real PR label.
-        assert plm.triage_reviewed == "triage-reviewed"
+        assert plm.tech_lead_reviewed == "tech-lead-reviewed"
 
 
 # ===================================================================
@@ -264,7 +264,7 @@ class TestBlocking:
 
     def test_non_blocking(self, lm: LabelManager) -> None:
         assert lm.is_blocking("in-progress") is False
-        assert lm.is_blocking(lm.triage_needs_human) is False
+        assert lm.is_blocking(lm.tech_lead_needs_human) is False
 
     def test_legacy_needs_human(self, lm: LabelManager) -> None:
         assert lm.is_blocking("needs-human") is True
@@ -428,7 +428,7 @@ class TestRecoveredWorkflowLabels:
             "blocked",
             "blocked:pr-closed",
             "needs-human",
-            "triage-needs-human",
+            "tech-lead-needs-human",
         ]
         assert lm.recovered_workflow_labels(labels) == labels
 
@@ -466,7 +466,7 @@ class TestRecoveredWorkflowLabels:
         assert lm.is_recovered_workflow_label("publish-failed") is True
         assert lm.is_recovered_workflow_label("publish-fail-count-9") is True
         assert lm.is_recovered_workflow_label("blocked:claim-lost") is True
-        assert lm.is_recovered_workflow_label("triage-needs-human") is True
+        assert lm.is_recovered_workflow_label("tech-lead-needs-human") is True
         assert lm.is_recovered_workflow_label("in-progress") is False
         assert lm.is_recovered_workflow_label("agent:backend") is False
 
@@ -557,8 +557,8 @@ class TestToLabelConfigDict:
         assert d["code_reviewed"] == "bot:reviewed-ok"
 
 
-class TestProposedTriageLabel:
-    """Gated triage proposal label (#6778): blocking-class, raw, reserved."""
+class TestProposedTechLeadLabel:
+    """Gated tech_lead proposal label (#6778): blocking-class, raw, reserved."""
 
     @pytest.fixture
     def lm(self) -> LabelManager:
@@ -569,44 +569,44 @@ class TestProposedTriageLabel:
         return LabelManager(_StubConfig(label_prefix="bot"))  # type: ignore[arg-type]
 
     def test_is_blocking(self, lm: LabelManager) -> None:
-        assert lm.is_blocking("proposed-triage") is True
-        assert lm.is_blocking_any(["agent:backend", "proposed-triage"]) is True
+        assert lm.is_blocking("proposed-tech-lead") is True
+        assert lm.is_blocking_any(["agent:backend", "proposed-tech-lead"]) is True
 
     def test_is_blocking_gate_is_case_insensitive(self, lm: LabelManager) -> None:
         """R15 (normal create-issue gate): GitHub folds label names, so a repo
-        whose canonical spelling is ``Proposed-Triage`` still keeps the proposal
+        whose canonical spelling is ``Proposed-Tech-Lead`` still keeps the proposal
         out of pickup. Blocking classification must match the case-insensitive
         reconciliation predicate — otherwise a canonical-cased gate would be
         schedulable as ordinary work while reconciliation treats it as approved."""
-        for spelling in ("proposed-triage", "Proposed-Triage", "PROPOSED-TRIAGE"):
+        for spelling in ("proposed-tech-lead", "Proposed-Tech-Lead", "PROPOSED-TECH-LEAD"):
             assert lm.is_blocking(spelling) is True, spelling
-        assert lm.is_blocking_any(["agent:backend", "Proposed-Triage"]) is True
+        assert lm.is_blocking_any(["agent:backend", "Proposed-Tech-Lead"]) is True
 
     def test_is_blocking_gate_case_insensitive_with_prefix(
         self, plm: LabelManager
     ) -> None:
         """The raw (never-prefixed) gate still folds case under a configured
         prefix — the gate is matched on its own name, not the prefix path."""
-        assert plm.is_blocking("Proposed-Triage") is True
+        assert plm.is_blocking("Proposed-Tech-Lead") is True
 
     def test_raw_even_with_prefix(self, plm: LabelManager) -> None:
-        """Triage-subsystem labels never take the orchestrator prefix."""
-        assert plm.proposed_triage == "proposed-triage"
-        assert plm.is_blocking("proposed-triage") is True
-        assert plm.is_ours("proposed-triage") is True
+        """Tech-Lead-subsystem labels never take the orchestrator prefix."""
+        assert plm.proposed_tech_lead == "proposed-tech-lead"
+        assert plm.is_blocking("proposed-tech-lead") is True
+        assert plm.is_ours("proposed-tech-lead") is True
 
     def test_describe(self, lm: LabelManager) -> None:
-        assert lm.describe("proposed-triage") == (
-            "Triage proposal awaiting operator approval"
+        assert lm.describe("proposed-tech-lead") == (
+            "Tech Lead proposal awaiting operator approval"
         )
 
     def test_workflow_reserved_case_insensitively(self, lm: LabelManager) -> None:
         """Agent-proposed labels must not bypass the gate by case-flipping."""
-        assert lm.is_workflow_reserved("proposed-triage") is True
-        assert lm.is_workflow_reserved("Proposed-Triage") is True
+        assert lm.is_workflow_reserved("proposed-tech-lead") is True
+        assert lm.is_workflow_reserved("Proposed-Tech-Lead") is True
 
 
-class TestTriageObservationLabel:
+class TestTechLeadObservationLabel:
     """Pattern case-file label (#6781): blocking-class (never picked up),
     raw (never prefixed), workflow-reserved."""
 
@@ -620,19 +620,19 @@ class TestTriageObservationLabel:
 
     def test_is_blocking_excludes_from_pickup(self, lm: LabelManager) -> None:
         """A case file carrying the observation label is never scheduled."""
-        assert lm.is_blocking("triage-observation") is True
-        assert lm.is_blocking_any(["agent:backend", "triage-observation"]) is True
+        assert lm.is_blocking("tech-lead-observation") is True
+        assert lm.is_blocking_any(["agent:backend", "tech-lead-observation"]) is True
 
     def test_raw_even_with_prefix(self, plm: LabelManager) -> None:
-        assert plm.triage_observation == "triage-observation"
-        assert plm.is_blocking("triage-observation") is True
-        assert plm.is_ours("triage-observation") is True
+        assert plm.tech_lead_observation == "tech-lead-observation"
+        assert plm.is_blocking("tech-lead-observation") is True
+        assert plm.is_ours("tech-lead-observation") is True
 
     def test_describe(self, lm: LabelManager) -> None:
-        assert lm.describe("triage-observation") == (
-            "Pattern case file (triage observation ledger)"
+        assert lm.describe("tech-lead-observation") == (
+            "Pattern case file (tech_lead observation ledger)"
         )
 
     def test_workflow_reserved_case_insensitively(self, lm: LabelManager) -> None:
-        assert lm.is_workflow_reserved("triage-observation") is True
-        assert lm.is_workflow_reserved("Triage-Observation") is True
+        assert lm.is_workflow_reserved("tech-lead-observation") is True
+        assert lm.is_workflow_reserved("Tech-Lead-Observation") is True

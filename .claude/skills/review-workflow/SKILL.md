@@ -1,6 +1,6 @@
 ---
 name: review-workflow
-description: Understand the code review pipeline, triage batch reviews, failure investigation, and rework cycles. Use when working on review labels, code review agents, triage configuration, or the needs-rework flow.
+description: Understand the code review pipeline, tech lead batch reviews, failure investigation, and rework cycles. Use when working on review labels, code review agents, tech lead configuration, or the needs-rework flow.
 ---
 
 # Review Workflow
@@ -10,7 +10,7 @@ This skill provides context for the multi-stage review pipeline.
 ## When to Use
 
 - Working on code review pipeline
-- Configuring triage batch reviews
+- Configuring tech lead batch reviews
 - Understanding rework cycles
 - Working with review-related labels
 - Failure investigation flow
@@ -22,7 +22,7 @@ Read this file for context:
 
 ## Review Checklist: Cross-Cutting Policy
 
-When reviewing changes that touch review/rework/triage/session launch paths, scan for:
+When reviewing changes that touch review/rework/tech lead/session launch paths, scan for:
 - **Duplicated policy checks** spread across planner/launcher/execution (claims, provider availability, labels, gating).
 - **Split responsibility** where correctness relies on multiple call sites remembering to call a check.
 - **Label lifecycle consistency**: add/remove paths should be symmetric and account for all session types.
@@ -113,16 +113,16 @@ Approved   Changes Requested
   Label: needs-code-review → code-reviewed OR needs-rework
   Rework loop uses rework-cycle labels up to max_rework_cycles
        │
-[Triage Review] (batch, threshold-triggered)
-  Label: code-reviewed → triage-reviewed
+[Tech Lead Review] (batch, threshold-triggered)
+  Label: code-reviewed → tech-lead-reviewed
        │
    Manual merge
 
 
 Session FAILED/BLOCKED/TIMEOUT
        │
-[Failure Investigation] (if triage_review_on_failure: true)
-  - Triage agent reviews what went wrong
+[Failure Investigation] (if tech_lead_review_on_failure: true)
+  - Tech Lead agent reviews what went wrong
   - Uses _plan_discovered_failures()
   - Helps identify patterns in failures
 ```
@@ -154,12 +154,12 @@ validation artifacts from runs before the scratch boundary.
 |--------|---------|
 | `control/workflows/review_workflow.py` | Review launch decision policy |
 | `control/workflows/rework_workflow.py` | Rework launch/escalation decision policy |
-| `control/workflows/triage_workflow.py` | Failure/batch triage decision policy |
+| `control/workflows/tech_lead_workflow.py` | Failure/batch tech lead decision policy |
 | `control/github_workflow.py` | Review/rework discovery and queueing logic |
 | `control/session_launcher.py` | Review session launch path and review exchange setup |
 | `control/session_rework_launcher.py` | Rework session launch path |
 | `control/review_exchange_loop.py` | Local coder/reviewer exchange loop |
-| `control/planner.py::_plan_discovered_failures()` | Queue triage to investigate failures |
+| `control/planner.py::_plan_discovered_failures()` | Queue tech lead to investigate failures |
 | `infra/orchestrator.py` | Runtime facade that delegates to the review workflow helpers |
 
 ## Configuration
@@ -181,8 +181,8 @@ review:
       max_no_progress: 2
       require_validation: true
 
-  # Triage
-  triage_review_agent: "agent:triage"
-  triage_review_threshold: 5        # Batch review after N PRs
-  triage_review_on_failure: true    # Investigate failures (default: true)
+  # Tech Lead
+  tech_lead_review_agent: "agent:tech-lead"
+  tech_lead_review_threshold: 5        # Batch review after N PRs
+  tech_lead_review_on_failure: true    # Investigate failures (default: true)
 ```

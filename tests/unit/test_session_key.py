@@ -25,7 +25,7 @@ class TestTaskKind:
         assert TaskKind.CODE.value == "code"
         assert TaskKind.REVIEW.value == "review"
         assert TaskKind.REWORK.value == "rework"
-        assert TaskKind.TRIAGE.value == "triage"
+        assert TaskKind.TECH_LEAD.value == "tech-lead"
         assert TaskKind.RETROSPECTIVE_REVIEW.value == "retrospective-review"
 
     def test_task_kind_all_members(self):
@@ -34,7 +34,7 @@ class TestTaskKind:
             TaskKind.CODE,
             TaskKind.REVIEW,
             TaskKind.REWORK,
-            TaskKind.TRIAGE,
+            TaskKind.TECH_LEAD,
             TaskKind.RETROSPECTIVE_REVIEW,
         }
 
@@ -47,7 +47,7 @@ class TestTaskKind:
         """Coding-style tasks produce commits and may publish a PR."""
         assert TaskKind.CODE.is_review_only is False
         assert TaskKind.REWORK.is_review_only is False
-        assert TaskKind.TRIAGE.is_review_only is False
+        assert TaskKind.TECH_LEAD.is_review_only is False
 
     @pytest.mark.parametrize(
         "session_name, expected",
@@ -55,7 +55,7 @@ class TestTaskKind:
             ("issue-42", TaskKind.CODE),
             ("coding-2", TaskKind.CODE),  # validation-retry phase label
             ("rework-42", TaskKind.REWORK),
-            ("triage-42", TaskKind.TRIAGE),
+            ("tech-lead-42", TaskKind.TECH_LEAD),
             ("review-7", TaskKind.REVIEW),
             ("retrospective-review-42", TaskKind.RETROSPECTIVE_REVIEW),
         ],
@@ -205,7 +205,7 @@ class TestSessionKeyStableId:
         assert SessionKey(issue=issue, task=TaskKind.CODE).stable_id() == "code:M1-011"
         assert SessionKey(issue=issue, task=TaskKind.REVIEW).stable_id() == "review:M1-011"
         assert SessionKey(issue=issue, task=TaskKind.REWORK).stable_id() == "rework:M1-011"
-        assert SessionKey(issue=issue, task=TaskKind.TRIAGE).stable_id() == "triage:M1-011"
+        assert SessionKey(issue=issue, task=TaskKind.TECH_LEAD).stable_id() == "tech-lead:M1-011"
         assert (
             SessionKey(issue=issue, task=TaskKind.RETROSPECTIVE_REVIEW).stable_id()
             == "retrospective-review:M1-011"

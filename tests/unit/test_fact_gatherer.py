@@ -16,7 +16,7 @@ from issue_orchestrator.domain.models import (
     PendingReview,
     PendingRework,
     PendingCleanup,
-    PendingTriageReview,
+    PendingTechLeadReview,
     DiscoveredAwaitingMergeDrift,
     DiscoveredAwaitingMergeReconciliation,
     DiscoveredFailure,
@@ -35,12 +35,12 @@ def mock_config():
     config.repo = "owner/repo"
     config.max_concurrent_sessions = 3
     config.filtering.max_to_start = 5
-    config.triage_review_agent = None
-    config.triage_review_threshold = 0
-    config.triage_review_label = None
+    config.tech_lead_review_agent = None
+    config.tech_lead_review_threshold = 0
+    config.tech_lead_review_label = None
     config.code_review_agent = None
     config.code_reviewed_label = None
-    config.triage_reviewed_label = None
+    config.tech_lead_reviewed_label = None
     return config
 
 
@@ -311,56 +311,56 @@ class TestFactGathererEvents:
         assert snapshot.max_issues_to_start is None
 
 
-class TestFactGathererTriageFacts:
-    """Tests for gather_triage_facts method."""
+class TestFactGathererTechLeadFacts:
+    """Tests for gather_tech_lead_facts method."""
 
-    def test_triage_facts_returns_none_when_not_configured(
+    def test_tech_lead_facts_returns_none_when_not_configured(
         self, fact_gatherer, sample_state
     ):
-        """Test returns None when triage review not configured."""
-        result = fact_gatherer.gather_triage_facts(sample_state)
+        """Test returns None when tech_lead review not configured."""
+        result = fact_gatherer.gather_tech_lead_facts(sample_state)
 
         assert result is None
 
-    def test_triage_facts_returns_none_when_threshold_zero(
+    def test_tech_lead_facts_returns_none_when_threshold_zero(
         self, fact_gatherer, sample_state, mock_config
     ):
         """Test returns None when threshold is 0."""
-        mock_config.triage_review_agent = "agent:triage"
-        mock_config.triage_review_threshold = 0
+        mock_config.tech_lead_review_agent = "agent:tech-lead"
+        mock_config.tech_lead_review_threshold = 0
 
-        result = fact_gatherer.gather_triage_facts(sample_state)
+        result = fact_gatherer.gather_tech_lead_facts(sample_state)
 
         assert result is None
 
-    def test_triage_facts_uses_default_watch_label_when_none_configured(
+    def test_tech_lead_facts_uses_default_watch_label_when_none_configured(
         self, fact_gatherer, sample_state, mock_config, mock_repository_host
     ):
         """With agent+threshold set, the watch label falls back to the default.
 
-        The single watch-label owner (Config.triage_watch_label, #6768 B3)
+        The single watch-label owner (Config.tech_lead_watch_label, #6768 B3)
         returns "code-reviewed" when neither label is configured — the same
         default the manifest builder always applied — instead of silently
         disabling the trigger while the manifest side stayed armed.
         """
-        mock_config.triage_review_agent = "agent:triage"
-        mock_config.triage_review_threshold = 5
-        mock_config.triage_review_label = None
+        mock_config.tech_lead_review_agent = "agent:tech-lead"
+        mock_config.tech_lead_review_threshold = 5
+        mock_config.tech_lead_review_label = None
         mock_config.code_reviewed_label = None
         mock_repository_host.get_prs_with_label.return_value = []
         mock_repository_host.list_issues.return_value = []
 
-        result = fact_gatherer.gather_triage_facts(sample_state)
+        result = fact_gatherer.gather_tech_lead_facts(sample_state)
 
         assert result is not None
         assert result.watch_label == "code-reviewed"
 
-    def test_triage_facts_counts_prs_with_label(
+    def test_tech_lead_facts_counts_prs_with_label(
         self, fact_gatherer, sample_state, mock_config, mock_repository_host
     ):
         """Test counts PRs with the watch label."""
-        mock_config.triage_review_agent = "agent:triage"
-        mock_config.triage_review_threshold = 2
+        mock_config.tech_lead_review_agent = "agent:tech-lead"
+        mock_config.tech_lead_review_threshold = 2
         mock_config.code_reviewed_label = "code-reviewed"
 
         mock_repository_host.get_prs_with_label.return_value = [
@@ -370,99 +370,99 @@ class TestFactGathererTriageFacts:
         ]
         mock_repository_host.list_issues.return_value = []
 
-        result = fact_gatherer.gather_triage_facts(sample_state)
+        result = fact_gatherer.gather_tech_lead_facts(sample_state)
 
         assert result is not None
         assert result.pr_count == 3
         assert result.threshold == 2
         assert result.watch_label == "code-reviewed"
 
-    def test_triage_facts_exclude_terminally_triaged_prs(
+    def test_tech_lead_facts_exclude_terminally_triaged_prs(
         self, fact_gatherer, sample_state, mock_config, mock_repository_host
     ):
         """Terminally-triaged PRs never count toward the threshold (#6768 r5).
 
         Fact gathering shares the manifest builder's candidate predicate;
-        counting triage-reviewed/triage-failed PRs that the manifest then
+        counting tech-lead-reviewed/tech-lead-failed PRs that the manifest then
         filters out is what created endless empty-batch tracking issues.
         """
-        mock_config.triage_review_agent = "agent:triage"
-        mock_config.triage_review_threshold = 2
+        mock_config.tech_lead_review_agent = "agent:tech-lead"
+        mock_config.tech_lead_review_threshold = 2
         mock_config.code_reviewed_label = "code-reviewed"
 
         mock_repository_host.get_prs_with_label.return_value = [
             PRInfo(number=10, url="...", title="Still pending", branch="b1",
                    labels=["code-reviewed"], body="", state="open"),
             PRInfo(number=11, url="...", title="Audited", branch="b2",
-                   labels=["code-reviewed", "triage-reviewed"], body="", state="open"),
+                   labels=["code-reviewed", "tech-lead-reviewed"], body="", state="open"),
             PRInfo(number=12, url="...", title="Audit failed", branch="b3",
-                   labels=["code-reviewed", "triage-failed"], body="", state="open"),
+                   labels=["code-reviewed", "tech-lead-failed"], body="", state="open"),
         ]
         mock_repository_host.list_issues.return_value = []
 
-        result = fact_gatherer.gather_triage_facts(sample_state)
+        result = fact_gatherer.gather_tech_lead_facts(sample_state)
 
         assert result is not None
         assert result.pr_count == 1
         assert result.prs == ((10, "Still pending"),)
 
-    def test_triage_facts_never_read_milestones(
+    def test_tech_lead_facts_never_read_milestones(
         self, fact_gatherer, sample_state, mock_config, mock_repository_host
     ):
         """Fact gathering is observation only (#6769 finding 4): even with
         the explicit strategy configured and creation imminent, milestone
         name->number resolution belongs to the create-issue applier — the
         gatherer must make zero list_milestones calls."""
-        mock_config.triage_review_agent = "agent:triage"
-        mock_config.triage_review_threshold = 1
+        mock_config.tech_lead_review_agent = "agent:tech-lead"
+        mock_config.tech_lead_review_threshold = 1
         mock_config.code_reviewed_label = "code-reviewed"
-        mock_config.triage.milestone_strategy.explicit = "M5"
+        mock_config.tech_lead.milestone_strategy.explicit = "M5"
         mock_repository_host.get_prs_with_label.return_value = [
             PRInfo(number=10, url="...", title="PR 10", branch="b1", labels=[], body="", state="open"),
         ]
         mock_repository_host.list_issues.return_value = []
 
-        result = fact_gatherer.gather_triage_facts(sample_state)
+        result = fact_gatherer.gather_tech_lead_facts(sample_state)
 
         assert result is not None
         assert result.pr_count == 1
         mock_repository_host.list_milestones.assert_not_called()
 
-    def test_triage_facts_detects_existing_issue(
+    def test_tech_lead_facts_detects_existing_issue(
         self, fact_gatherer, sample_state, mock_config, mock_repository_host
     ):
-        """Test detects existing triage review issue."""
-        mock_config.triage_review_agent = "agent:triage"
-        mock_config.triage_review_threshold = 2
+        """Test detects existing tech_lead review issue."""
+        mock_config.tech_lead_review_agent = "agent:tech-lead"
+        mock_config.tech_lead_review_threshold = 2
         mock_config.code_reviewed_label = "code-reviewed"
 
         mock_repository_host.get_prs_with_label.return_value = []
         mock_repository_host.list_issues.return_value = [
-            Issue(number=100, title="Batch Review: 5 PRs", labels=["agent:triage"]),
+            Issue(number=100, title="Batch Review: 5 PRs", labels=["agent:tech-lead"]),
         ]
 
-        result = fact_gatherer.gather_triage_facts(sample_state)
+        result = fact_gatherer.gather_tech_lead_facts(sample_state)
 
         assert result is not None
-        assert result.existing_triage_issue == 100
+        assert result.existing_tech_lead_issue == 100
 
-    def test_triage_facts_ignore_closed_batch_tracking_issue(
+    def test_tech_lead_facts_ignore_closed_batch_tracking_issue(
         self, fact_gatherer, sample_state, mock_config, mock_repository_host
     ):
         """A CLOSED batch tracking issue no longer suppresses batch creation (#6768 r4).
 
         Successful batch completion closes the tracking issue; the existing-batch
         finder queries state="open", so the closed batch stops matching and
-        existing_triage_issue clears, allowing the next threshold trigger.
+        existing_tech_lead_issue clears, allowing the next threshold trigger.
         """
-        mock_config.triage_review_agent = "agent:triage"
-        mock_config.triage_review_threshold = 2
+        mock_config.tech_lead_review_agent = "agent:tech-lead"
+        mock_config.tech_lead_review_threshold = 2
         mock_config.code_reviewed_label = "code-reviewed"
 
         closed_batch = Issue(
             number=100,
-            title="Triage Batch Review: 5 PRs pending",
-            labels=["agent:triage"],
+            title="Tech Lead Batch Review: 5 PRs pending",
+            labels=["agent:tech-lead"],
         )
 
         def list_issues(labels=None, state="open", limit=100, **kwargs):
@@ -474,61 +474,61 @@ class TestFactGathererTriageFacts:
         mock_repository_host.get_prs_with_label.return_value = []
         mock_repository_host.list_issues.side_effect = list_issues
 
-        result = fact_gatherer.gather_triage_facts(sample_state)
+        result = fact_gatherer.gather_tech_lead_facts(sample_state)
 
         assert result is not None
-        assert result.existing_triage_issue is None
+        assert result.existing_tech_lead_issue is None
 
-    def test_triage_facts_ignores_existing_issue_outside_filter_label(
+    def test_tech_lead_facts_ignores_existing_issue_outside_filter_label(
         self, fact_gatherer, sample_state, mock_config, mock_repository_host
     ):
-        """Test filtered runs ignore triage issues outside the active label scope."""
-        mock_config.triage_review_agent = "agent:triage"
-        mock_config.triage_review_threshold = 2
+        """Test filtered runs ignore tech_lead issues outside the active label scope."""
+        mock_config.tech_lead_review_agent = "agent:tech-lead"
+        mock_config.tech_lead_review_threshold = 2
         mock_config.code_reviewed_label = "code-reviewed"
         mock_config.filtering.label = "io:e2e:run-1"
 
         mock_repository_host.get_prs_with_label.return_value = []
         mock_repository_host.list_issues.return_value = [
-            Issue(number=100, title="Batch Review: 5 PRs", labels=["agent:triage"]),
+            Issue(number=100, title="Batch Review: 5 PRs", labels=["agent:tech-lead"]),
         ]
 
-        result = fact_gatherer.gather_triage_facts(sample_state)
+        result = fact_gatherer.gather_tech_lead_facts(sample_state)
 
         assert result is not None
-        assert result.existing_triage_issue is None
+        assert result.existing_tech_lead_issue is None
 
-    def test_triage_facts_uses_triage_label_over_code_reviewed(
+    def test_tech_lead_facts_uses_tech_lead_label_over_code_reviewed(
         self, fact_gatherer, sample_state, mock_config, mock_repository_host
     ):
-        """Test prefers triage_review_label over code_reviewed_label."""
-        mock_config.triage_review_agent = "agent:triage"
-        mock_config.triage_review_threshold = 2
-        mock_config.triage_review_label = "ready-for-triage"
+        """Test prefers tech_lead_review_label over code_reviewed_label."""
+        mock_config.tech_lead_review_agent = "agent:tech-lead"
+        mock_config.tech_lead_review_threshold = 2
+        mock_config.tech_lead_review_label = "ready-for-tech-lead"
         mock_config.code_reviewed_label = "code-reviewed"
 
         mock_repository_host.get_prs_with_label.return_value = []
         mock_repository_host.list_issues.return_value = []
 
-        result = fact_gatherer.gather_triage_facts(sample_state)
+        result = fact_gatherer.gather_tech_lead_facts(sample_state)
 
         assert result is not None
-        assert result.watch_label == "ready-for-triage"
-        mock_repository_host.get_prs_with_label.assert_called_with("ready-for-triage", state="all")
+        assert result.watch_label == "ready-for-tech-lead"
+        mock_repository_host.get_prs_with_label.assert_called_with("ready-for-tech-lead", state="all")
 
-    def test_triage_facts_collects_labels_from_prs_and_linked_issues(
+    def test_tech_lead_facts_collects_labels_from_prs_and_linked_issues(
         self, fact_gatherer, sample_state, mock_config, mock_repository_host
     ):
         """Test collects labels from both PRs and their linked issues.
 
-        When gathering triage facts, source_labels should include:
+        When gathering tech_lead facts, source_labels should include:
         - Labels directly on the PRs
         - Labels on issues linked from the PR body/title (e.g., "Fixes #123")
 
-        This enables triage.inherit_labels to work with labels from linked issues.
+        This enables tech_lead.inherit_labels to work with labels from linked issues.
         """
-        mock_config.triage_review_agent = "agent:triage"
-        mock_config.triage_review_threshold = 2
+        mock_config.tech_lead_review_agent = "agent:tech-lead"
+        mock_config.tech_lead_review_threshold = 2
         mock_config.code_reviewed_label = "code-reviewed"
 
         # PRs have some labels and reference linked issues in their titles
@@ -565,7 +565,7 @@ class TestFactGathererTriageFacts:
 
         mock_repository_host.get_issue.side_effect = get_issue_side_effect
 
-        result = fact_gatherer.gather_triage_facts(sample_state)
+        result = fact_gatherer.gather_tech_lead_facts(sample_state)
 
         assert result is not None
         # Should include PR labels
@@ -584,7 +584,7 @@ class _LabelFilteringTracker:
 
     Returns only issues that carry EVERY requested label, then applies the
     page ``limit`` — exactly the behavior that lets an older anchor fall off a
-    too-small first page of the broad triage-agent scan (#6763 finding 4). It
+    too-small first page of the broad tech-lead-agent scan (#6763 finding 4). It
     records each query so tests can prove the dedup lookup is marker-scoped.
     """
 
@@ -617,15 +617,15 @@ class _LabelFilteringTracker:
 class TestFactGathererHealthReviewFacts:
     """Health-review trigger facts (ADR-0031 §4).
 
-    The interval gates the health fields, triage_review_threshold gates the
+    The interval gates the health fields, tech_lead_review_threshold gates the
     batch fields — each feature works alone, and both share ONE list_issues
     scan for anchor-issue dedup (GitHub API discipline).
     """
 
     @staticmethod
     def _arm_health_review(mock_config, interval_minutes: int = 60) -> None:
-        mock_config.triage_review_agent = "agent:triage"
-        mock_config.triage.health_review.interval_minutes = interval_minutes
+        mock_config.tech_lead_review_agent = "agent:tech-lead"
+        mock_config.tech_lead.health_review.interval_minutes = interval_minutes
 
     def test_due_when_interval_elapsed_with_batch_disabled(
         self, fact_gatherer, sample_state, mock_config, mock_repository_host
@@ -635,7 +635,7 @@ class TestFactGathererHealthReviewFacts:
         sample_state.last_health_review_at = 1_000.0
         sample_state.priority_queue = [42]  # non-empty board: not suppressed by the change-gate
 
-        result = fact_gatherer.gather_triage_facts(sample_state, now=1_000.0 + 3600)
+        result = fact_gatherer.gather_tech_lead_facts(sample_state, now=1_000.0 + 3600)
 
         assert result is not None
         assert result.health_review_due is True
@@ -657,7 +657,7 @@ class TestFactGathererHealthReviewFacts:
         self._arm_health_review(mock_config, interval_minutes=60)
         sample_state.last_health_review_at = 1_000.0
 
-        result = fact_gatherer.gather_triage_facts(sample_state, now=1_000.0 + 1800)
+        result = fact_gatherer.gather_tech_lead_facts(sample_state, now=1_000.0 + 1800)
 
         assert result is not None
         assert result.health_review_due is False
@@ -669,7 +669,7 @@ class TestFactGathererHealthReviewFacts:
         self._arm_health_review(mock_config, interval_minutes=60)
         sample_state.priority_queue = [42]  # a backlog item to review on first run
 
-        result = fact_gatherer.gather_triage_facts(sample_state, now=999_999.0)
+        result = fact_gatherer.gather_tech_lead_facts(sample_state, now=999_999.0)
 
         assert result is not None
         assert result.health_review_due is True
@@ -678,35 +678,35 @@ class TestFactGathererHealthReviewFacts:
         self, fact_gatherer, sample_state, mock_config, mock_repository_host
     ):
         """interval=0 + threshold=0 keeps the pre-existing None (no API calls)."""
-        mock_config.triage_review_agent = "agent:triage"
-        mock_config.triage.health_review.interval_minutes = 0
+        mock_config.tech_lead_review_agent = "agent:tech-lead"
+        mock_config.tech_lead.health_review.interval_minutes = 0
 
-        assert fact_gatherer.gather_triage_facts(sample_state) is None
+        assert fact_gatherer.gather_tech_lead_facts(sample_state) is None
         mock_repository_host.list_issues.assert_not_called()
         mock_repository_host.get_prs_with_label.assert_not_called()
 
-    def test_interval_without_triage_agent_is_disabled(
+    def test_interval_without_tech_lead_agent_is_disabled(
         self, fact_gatherer, sample_state, mock_config, mock_repository_host
     ):
-        mock_config.triage_review_agent = None
-        mock_config.triage.health_review.interval_minutes = 60
+        mock_config.tech_lead_review_agent = None
+        mock_config.tech_lead.health_review.interval_minutes = 60
 
-        assert fact_gatherer.gather_triage_facts(sample_state) is None
+        assert fact_gatherer.gather_tech_lead_facts(sample_state) is None
         mock_repository_host.list_issues.assert_not_called()
 
     def test_health_only_facts_skip_explicit_milestone_resolution(
         self, fact_gatherer, sample_state, mock_config, mock_repository_host
     ):
-        """Batch-disabled facts never resolve triage.milestone_strategy.explicit.
+        """Batch-disabled facts never resolve tech_lead.milestone_strategy.explicit.
 
         The name -> number lookup costs a list_milestones call that only batch
         creation consumes; health-only gathering must not pay it (GitHub API
         discipline) nor fail on an unresolvable name.
         """
         self._arm_health_review(mock_config)
-        mock_config.triage.milestone_strategy.explicit = "M9"
+        mock_config.tech_lead.milestone_strategy.explicit = "M9"
 
-        result = fact_gatherer.gather_triage_facts(sample_state, now=999_999.0)
+        result = fact_gatherer.gather_tech_lead_facts(sample_state, now=999_999.0)
 
         assert result is not None
         mock_repository_host.list_milestones.assert_not_called()
@@ -716,10 +716,10 @@ class TestFactGathererHealthReviewFacts:
         """Put ``count`` fresh problems on the board with threshold=3."""
         from issue_orchestrator.domain.models import DiscoveredFailure
 
-        mock_config.triage_review_agent = "agent:triage"
-        mock_config.triage_review_on_failure = True
-        mock_config.triage.health_review.storm_threshold = 3
-        mock_config.triage.health_review.storm_window_minutes = 5
+        mock_config.tech_lead_review_agent = "agent:tech-lead"
+        mock_config.tech_lead_review_on_failure = True
+        mock_config.tech_lead.health_review.storm_threshold = 3
+        mock_config.tech_lead.health_review.storm_window_minutes = 5
         for number in range(41, 41 + count):
             sample_state.record_discovered_failure(
                 DiscoveredFailure(number, f"Problem {number}", "failed")
@@ -727,14 +727,14 @@ class TestFactGathererHealthReviewFacts:
 
     @staticmethod
     def _open_anchor():
-        from issue_orchestrator.domain.triage_session import (
+        from issue_orchestrator.domain.tech_lead_session import (
             HEALTH_REVIEW_MARKER_LABEL,
         )
 
         return Issue(
             number=100,
             title="Health Review — walk the floor",
-            labels=["agent:triage", HEALTH_REVIEW_MARKER_LABEL],
+            labels=["agent:tech-lead", HEALTH_REVIEW_MARKER_LABEL],
         )
 
     def test_storm_arms_anchor_scan_when_interval_is_not_due(
@@ -753,7 +753,7 @@ class TestFactGathererHealthReviewFacts:
         self._arm_storm(mock_config, sample_state)
         mock_repository_host.list_issues.return_value = [self._open_anchor()]
 
-        result = fact_gatherer.gather_triage_facts(sample_state, now=999_060.0)
+        result = fact_gatherer.gather_tech_lead_facts(sample_state, now=999_060.0)
 
         assert result is not None
         assert result.health_review_due is False
@@ -768,11 +768,11 @@ class TestFactGathererHealthReviewFacts:
         gather the dedup fact — otherwise gathering bails out before any scan
         and every storm mints another anchor.
         """
-        mock_config.triage.health_review.interval_minutes = 0
+        mock_config.tech_lead.health_review.interval_minutes = 0
         self._arm_storm(mock_config, sample_state)
         mock_repository_host.list_issues.return_value = [self._open_anchor()]
 
-        result = fact_gatherer.gather_triage_facts(sample_state, now=999_999.0)
+        result = fact_gatherer.gather_tech_lead_facts(sample_state, now=999_999.0)
 
         assert result is not None
         assert result.health_review_due is False
@@ -785,28 +785,28 @@ class TestFactGathererHealthReviewFacts:
 
         Two problems cannot escalate, so a not-due tick still makes zero calls.
         """
-        mock_config.triage.health_review.interval_minutes = 0
+        mock_config.tech_lead.health_review.interval_minutes = 0
         self._arm_storm(mock_config, sample_state, count=2)
 
-        assert fact_gatherer.gather_triage_facts(sample_state, now=999_999.0) is None
+        assert fact_gatherer.gather_tech_lead_facts(sample_state, now=999_999.0) is None
         mock_repository_host.list_issues.assert_not_called()
 
     def test_disabled_storm_threshold_arms_no_scan(
         self, fact_gatherer, sample_state, mock_config, mock_repository_host
     ):
         """storm_threshold=0 disables escalation, so it arms nothing either."""
-        mock_config.triage.health_review.interval_minutes = 0
+        mock_config.tech_lead.health_review.interval_minutes = 0
         self._arm_storm(mock_config, sample_state, count=5)
-        mock_config.triage.health_review.storm_threshold = 0
+        mock_config.tech_lead.health_review.storm_threshold = 0
 
-        assert fact_gatherer.gather_triage_facts(sample_state, now=999_999.0) is None
+        assert fact_gatherer.gather_tech_lead_facts(sample_state, now=999_999.0) is None
         mock_repository_host.list_issues.assert_not_called()
 
     def test_existing_marker_labeled_issue_detected(
         self, fact_gatherer, sample_state, mock_config, mock_repository_host
     ):
         """An open marker-labeled anchor dedupes creation (crash-safe)."""
-        from issue_orchestrator.domain.triage_session import (
+        from issue_orchestrator.domain.tech_lead_session import (
             HEALTH_REVIEW_MARKER_LABEL,
         )
 
@@ -815,44 +815,44 @@ class TestFactGathererHealthReviewFacts:
             Issue(
                 number=200,
                 title="Health Review — walk the floor",
-                labels=["agent:triage", HEALTH_REVIEW_MARKER_LABEL],
+                labels=["agent:tech-lead", HEALTH_REVIEW_MARKER_LABEL],
             ),
         ]
 
         sample_state.priority_queue = [42]  # non-empty board so the anchor scan runs
-        result = fact_gatherer.gather_triage_facts(sample_state, now=999_999.0)
+        result = fact_gatherer.gather_tech_lead_facts(sample_state, now=999_999.0)
 
         assert result is not None
         assert result.health_review_due is True
         assert result.existing_health_review_issue == 200
         # The marker-labeled anchor must NOT be misread as a batch anchor.
-        assert result.existing_triage_issue is None
+        assert result.existing_tech_lead_issue is None
         mock_repository_host.list_issues.assert_called_once()
 
     def test_both_triggers_share_one_issue_scan(
         self, fact_gatherer, sample_state, mock_config, mock_repository_host
     ):
         """Batch + health armed together: one list_issues call, both classified."""
-        from issue_orchestrator.domain.triage_session import (
+        from issue_orchestrator.domain.tech_lead_session import (
             HEALTH_REVIEW_MARKER_LABEL,
         )
 
         self._arm_health_review(mock_config)
-        mock_config.triage_review_threshold = 2
+        mock_config.tech_lead_review_threshold = 2
         mock_config.code_reviewed_label = "code-reviewed"
         mock_repository_host.list_issues.return_value = [
-            Issue(number=100, title="Batch Review: 5 PRs", labels=["agent:triage"]),
+            Issue(number=100, title="Batch Review: 5 PRs", labels=["agent:tech-lead"]),
             Issue(
                 number=200,
                 title="Health Review — walk the floor",
-                labels=["agent:triage", HEALTH_REVIEW_MARKER_LABEL],
+                labels=["agent:tech-lead", HEALTH_REVIEW_MARKER_LABEL],
             ),
         ]
 
-        result = fact_gatherer.gather_triage_facts(sample_state, now=999_999.0)
+        result = fact_gatherer.gather_tech_lead_facts(sample_state, now=999_999.0)
 
         assert result is not None
-        assert result.existing_triage_issue == 100
+        assert result.existing_tech_lead_issue == 100
         assert result.existing_health_review_issue == 200
         assert result.watch_label == "code-reviewed"
         mock_repository_host.list_issues.assert_called_once()
@@ -861,7 +861,7 @@ class TestFactGathererHealthReviewFacts:
         self, fact_gatherer, sample_state, mock_config, mock_repository_host
     ):
         """Filtered runs ignore anchors outside the active label scope."""
-        from issue_orchestrator.domain.triage_session import (
+        from issue_orchestrator.domain.tech_lead_session import (
             HEALTH_REVIEW_MARKER_LABEL,
         )
 
@@ -871,11 +871,11 @@ class TestFactGathererHealthReviewFacts:
             Issue(
                 number=200,
                 title="Health Review — walk the floor",
-                labels=["agent:triage", HEALTH_REVIEW_MARKER_LABEL],
+                labels=["agent:tech-lead", HEALTH_REVIEW_MARKER_LABEL],
             ),
         ]
 
-        result = fact_gatherer.gather_triage_facts(sample_state, now=999_999.0)
+        result = fact_gatherer.gather_tech_lead_facts(sample_state, now=999_999.0)
 
         assert result is not None
         assert result.existing_health_review_issue is None
@@ -889,7 +889,7 @@ class TestFactGathererHealthReviewFacts:
         self._arm_health_review(mock_config, interval_minutes=60)
         sample_state.last_health_review_at = 1_000.0
 
-        result = fact_gatherer.gather_triage_facts(sample_state, now=1_000.0 + 1800)
+        result = fact_gatherer.gather_tech_lead_facts(sample_state, now=1_000.0 + 1800)
 
         assert result is not None
         assert result.health_review_due is False
@@ -906,42 +906,42 @@ class TestFactGathererHealthReviewFacts:
         self, sample_state, mock_config
     ):
         """Crash-safe dedup must be exhaustive: a marker anchor sitting BEYOND
-        the first ten triage-agent items is still found, so no duplicate anchor
+        the first ten tech-lead-agent items is still found, so no duplicate anchor
         is created (#6763 finding 4).
 
         The fake honors GitHub's label AND-filter plus page limit, so a broad
-        ``[triage_agent]``/limit=10 scan would strand the anchor at position
+        ``[tech_lead_agent]``/limit=10 scan would strand the anchor at position
         11; the marker-scoped lookup finds it regardless of position.
         """
-        from issue_orchestrator.domain.triage_session import (
+        from issue_orchestrator.domain.tech_lead_session import (
             HEALTH_REVIEW_MARKER_LABEL,
         )
 
         self._arm_health_review(mock_config)
         crowd = [
-            Issue(number=n, title=f"Batch {n}", labels=["agent:triage"])
+            Issue(number=n, title=f"Batch {n}", labels=["agent:tech-lead"])
             for n in range(1, 12)
         ]
         anchor = Issue(
             number=200,
             title="Health Review — walk the floor",
-            labels=["agent:triage", HEALTH_REVIEW_MARKER_LABEL],
+            labels=["agent:tech-lead", HEALTH_REVIEW_MARKER_LABEL],
         )
         tracker = _LabelFilteringTracker([*crowd, anchor])
         gatherer = FactGatherer(config=mock_config, repository_host=tracker)
         sample_state.priority_queue = [42]  # non-empty board so the anchor scan runs
 
-        result = gatherer.gather_triage_facts(sample_state, now=999_999.0)
+        result = gatherer.gather_tech_lead_facts(sample_state, now=999_999.0)
 
         assert result is not None
         assert result.health_review_due is True
         assert result.existing_health_review_issue == 200
-        # The due health review uses the shared exhaustive triage-agent scan,
+        # The due health review uses the shared exhaustive tech-lead-agent scan,
         # which both finds the anchor beyond the first page and supplies open
         # case files to the health-review snapshot (#6781).
         assert tracker.calls == [
             {
-                "labels": ["agent:triage"],
+                "labels": ["agent:tech-lead"],
                 "state": "open",
                 "limit": 2000,
                 "exhaustive": True,
@@ -979,7 +979,7 @@ class TestFactGathererCleanupFacts:
                 worktree_path=Path("/tmp/wt"),
             )
         ]
-        mock_config.triage_review_agent = None
+        mock_config.tech_lead_review_agent = None
         mock_config.code_review_agent = None
 
         result = fact_gatherer.gather_cleanup_facts(sample_state)
@@ -990,14 +990,14 @@ class TestFactGathererCleanupFacts:
         assert result.reviewed_pr_numbers == frozenset()  # No review label to check
         assert len(result.pending_cleanups) == 1
 
-    def test_cleanup_facts_with_triage_workflow(
+    def test_cleanup_facts_with_tech_lead_workflow(
         self, fact_gatherer, sample_state, mock_config, mock_repository_host
     ):
-        """Test cleanup facts with triage review workflow."""
-        mock_config.triage_review_agent = "agent:triage"
-        mock_config.triage_reviewed_label = "triage-reviewed"
-        mock_config.cleanup.with_triage.close_ai_session_tabs = True
-        mock_config.cleanup.with_triage.remove_worktrees = True
+        """Test cleanup facts with tech_lead review workflow."""
+        mock_config.tech_lead_review_agent = "agent:tech-lead"
+        mock_config.tech_lead_reviewed_label = "tech-lead-reviewed"
+        mock_config.cleanup.with_tech_lead.close_ai_session_tabs = True
+        mock_config.cleanup.with_tech_lead.remove_worktrees = True
 
         sample_state.pending_cleanups = [
             PendingCleanup(
@@ -1025,12 +1025,12 @@ class TestFactGathererCleanupFacts:
     def test_cleanup_facts_with_code_review_workflow(
         self, fact_gatherer, sample_state, mock_config, mock_repository_host
     ):
-        """Test cleanup facts with code review workflow (no triage)."""
-        mock_config.triage_review_agent = None
+        """Test cleanup facts with code review workflow (no tech_lead)."""
+        mock_config.tech_lead_review_agent = None
         mock_config.code_review_agent = "agent:reviewer"
         mock_config.code_reviewed_label = "code-reviewed"
-        mock_config.cleanup.without_triage.close_ai_session_tabs = False
-        mock_config.cleanup.without_triage.remove_worktrees = True
+        mock_config.cleanup.without_tech_lead.close_ai_session_tabs = False
+        mock_config.cleanup.without_tech_lead.remove_worktrees = True
 
         sample_state.pending_cleanups = [
             PendingCleanup(
@@ -1061,8 +1061,8 @@ class TestFactGathererCleanupFacts:
         On API error, we still return CleanupFacts but with empty reviewed_pr_numbers.
         This allows immediate cleanups to still work even if deferred cleanup lookup fails.
         """
-        mock_config.triage_review_agent = "agent:triage"
-        mock_config.triage_reviewed_label = "triage-reviewed"
+        mock_config.tech_lead_review_agent = "agent:tech-lead"
+        mock_config.tech_lead_reviewed_label = "tech-lead-reviewed"
 
         sample_state.pending_cleanups = [
             PendingCleanup(
@@ -1089,8 +1089,8 @@ class TestFactGathererCleanupFacts:
         self, fact_gatherer, sample_state, mock_config, mock_repository_host
     ):
         """Repository-host failures should fail the snapshot instead of hiding staleness."""
-        mock_config.triage_review_agent = "agent:triage"
-        mock_config.triage_reviewed_label = "triage-reviewed"
+        mock_config.tech_lead_review_agent = "agent:tech-lead"
+        mock_config.tech_lead_reviewed_label = "tech-lead-reviewed"
         sample_state.pending_cleanups = [
             PendingCleanup(
                 issue=Issue(number=1, title="Test issue", labels=[]),
@@ -1229,9 +1229,9 @@ class TestGatedProposalScanClassification:
     """The ONE anchor scan classifies gated proposals too (#6778)."""
 
     def _op(self, target: int, op_type: str = "reset_retry"):
-        from issue_orchestrator.domain.triage_session import StoredTriageOp
+        from issue_orchestrator.domain.tech_lead_session import StoredTechLeadOp
 
-        return StoredTriageOp(
+        return StoredTechLeadOp(
             op_type=op_type,
             target_issue_number=target,
             rationale="r",
@@ -1242,20 +1242,20 @@ class TestGatedProposalScanClassification:
         )
 
     def _gatherer(self, mock_config, mock_repository_host, ops):
-        from issue_orchestrator.ports.triage_authority import (
-            InMemoryTriageAuthorityStore,
+        from issue_orchestrator.ports.tech_lead_authority import (
+            InMemoryTechLeadAuthorityStore,
         )
 
-        mock_config.triage_review_agent = "triage-agent"
-        mock_config.triage_review_threshold = 5
+        mock_config.tech_lead_review_agent = "tech-lead-agent"
+        mock_config.tech_lead_review_threshold = 5
         mock_config.code_reviewed_label = "code-reviewed"
-        store = InMemoryTriageAuthorityStore()
+        store = InMemoryTechLeadAuthorityStore()
         for issue_number, op in ops:
             store.record_op(issue_number=issue_number, op=op)
         return FactGatherer(
             config=mock_config,
             repository_host=mock_repository_host,
-            triage_authority=store,
+            tech_lead_authority=store,
         )
 
     def test_approved_op_classified_from_same_scan(
@@ -1265,20 +1265,20 @@ class TestGatedProposalScanClassification:
         classification still works on the remaining issues — all from one
         list_issues call."""
         mock_repository_host.list_issues.return_value = [
-            Issue(number=500, title="Triage proposal: reset & retry issue #13 from scratch", labels=["triage-agent"]),
-            Issue(number=7, title="Triage Batch Review: 3 PRs pending", labels=["triage-agent"]),
+            Issue(number=500, title="Tech Lead proposal: reset & retry issue #13 from scratch", labels=["tech-lead-agent"]),
+            Issue(number=7, title="Tech Lead Batch Review: 3 PRs pending", labels=["tech-lead-agent"]),
         ]
         gatherer = self._gatherer(
             mock_config, mock_repository_host, [(500, self._op(13))]
         )
 
-        facts = gatherer.gather_triage_facts(sample_state)
+        facts = gatherer.gather_tech_lead_facts(sample_state)
 
         assert facts is not None
-        [approved] = facts.approved_triage_ops
+        [approved] = facts.approved_tech_lead_ops
         assert approved.proposal_issue_number == 500
         assert approved.op.target_issue_number == 13
-        assert facts.existing_triage_issue == 7
+        assert facts.existing_tech_lead_issue == 7
         # Exactly one issue scan was made for anchors + proposals.
         assert mock_repository_host.list_issues.call_count == 1
 
@@ -1288,8 +1288,8 @@ class TestGatedProposalScanClassification:
         mock_repository_host.list_issues.return_value = [
             Issue(
                 number=500,
-                title="Triage proposal: kill hung session for issue #14",
-                labels=["triage-agent", "proposed-triage"],
+                title="Tech Lead proposal: kill hung session for issue #14",
+                labels=["tech-lead-agent", "proposed-tech-lead"],
             ),
         ]
         gatherer = self._gatherer(
@@ -1298,29 +1298,29 @@ class TestGatedProposalScanClassification:
             [(500, self._op(14, "kill_hung_session"))],
         )
 
-        facts = gatherer.gather_triage_facts(sample_state)
+        facts = gatherer.gather_tech_lead_facts(sample_state)
 
         assert facts is not None
-        assert facts.approved_triage_ops == ()
-        assert facts.existing_triage_issue is None
+        assert facts.approved_tech_lead_ops == ()
+        assert facts.existing_tech_lead_issue is None
         assert facts.existing_health_review_issue is None
 
     def test_exhaustive_scan_limit_prevents_hiding_ops_behind_a_backlog(
         self, mock_config, mock_repository_host, sample_state
     ) -> None:
         """R4: the anchor/proposal scan pages the COMPLETE matching set."""
-        from issue_orchestrator.control.triage_proposals import (
-            TRIAGE_PROPOSAL_SCAN_LIMIT,
+        from issue_orchestrator.control.tech_lead_proposals import (
+            TECH_LEAD_PROPOSAL_SCAN_LIMIT,
         )
 
         mock_repository_host.list_issues.return_value = []
         gatherer = self._gatherer(mock_config, mock_repository_host, [])
 
-        gatherer.gather_triage_facts(sample_state)
+        gatherer.gather_tech_lead_facts(sample_state)
 
         _, kwargs = mock_repository_host.list_issues.call_args
-        assert kwargs["limit"] == TRIAGE_PROPOSAL_SCAN_LIMIT
-        assert TRIAGE_PROPOSAL_SCAN_LIMIT > 100  # forces the adapter to paginate
+        assert kwargs["limit"] == TECH_LEAD_PROPOSAL_SCAN_LIMIT
+        assert TECH_LEAD_PROPOSAL_SCAN_LIMIT > 100  # forces the adapter to paginate
 
     def test_ledger_row_absent_from_scan_is_surfaced_as_candidate_read_only(
         self, mock_config, mock_repository_host, sample_state
@@ -1328,12 +1328,12 @@ class TestGatedProposalScanClassification:
         """R7/R10: an op whose proposal issue is absent from the exhaustive scan
         is surfaced as a cleanup CANDIDATE, but fact gathering is READ-ONLY —
         it must NOT discard the ledger row during observation. Cleanup flows
-        through the planner's DiscardTerminalTriageProposalOpsAction/owner,
+        through the planner's DiscardTerminalTechLeadProposalOpsAction/owner,
         which confirms with a targeted read first (a truncated scan must never
         delete a live op)."""
         # #500 is still an open proposal; #501's issue is absent from the scan.
         mock_repository_host.list_issues.return_value = [
-            Issue(number=500, title="Triage proposal", labels=["triage-agent", "proposed-triage"]),
+            Issue(number=500, title="Tech Lead proposal", labels=["tech-lead-agent", "proposed-tech-lead"]),
         ]
         gatherer = self._gatherer(
             mock_config,
@@ -1341,65 +1341,65 @@ class TestGatedProposalScanClassification:
             [(500, self._op(13)), (501, self._op(14, "kill_hung_session"))],
         )
 
-        facts = gatherer.gather_triage_facts(sample_state)
+        facts = gatherer.gather_tech_lead_facts(sample_state)
 
         # The absent row is surfaced as a candidate...
         assert facts is not None
         assert facts.absent_proposal_op_candidates == (501,)
         # ...but the store is UNTOUCHED — observation never mutates the ledger.
-        assert sorted(n for n, _ in gatherer.triage_authority.list_ops()) == [500, 501]
+        assert sorted(n for n, _ in gatherer.tech_lead_authority.list_ops()) == [500, 501]
         # A second scan is still read-only (no self-heal happens here).
-        gatherer.gather_triage_facts(sample_state)
-        assert sorted(n for n, _ in gatherer.triage_authority.list_ops()) == [500, 501]
+        gatherer.gather_tech_lead_facts(sample_state)
+        assert sorted(n for n, _ in gatherer.tech_lead_authority.list_ops()) == [500, 501]
 
     def test_without_store_gate_labeled_issues_are_still_excluded(
         self, mock_config, mock_repository_host, sample_state
     ) -> None:
-        mock_config.triage_review_agent = "triage-agent"
-        mock_config.triage_review_threshold = 5
+        mock_config.tech_lead_review_agent = "tech-lead-agent"
+        mock_config.tech_lead_review_threshold = 5
         mock_config.code_reviewed_label = "code-reviewed"
         mock_repository_host.list_issues.return_value = [
             Issue(
                 number=500,
-                title="Triage proposal: reset & retry issue #13 from scratch",
-                labels=["triage-agent", "proposed-triage"],
+                title="Tech Lead proposal: reset & retry issue #13 from scratch",
+                labels=["tech-lead-agent", "proposed-tech-lead"],
             ),
         ]
         gatherer = FactGatherer(
             config=mock_config, repository_host=mock_repository_host
         )
 
-        facts = gatherer.gather_triage_facts(sample_state)
+        facts = gatherer.gather_tech_lead_facts(sample_state)
 
         assert facts is not None
-        assert facts.approved_triage_ops == ()
-        assert facts.existing_triage_issue is None
+        assert facts.approved_tech_lead_ops == ()
+        assert facts.existing_tech_lead_issue is None
     def _gatherer_batch_disabled(self, mock_config, mock_repository_host, ops):
-        """Threshold=0 (batch trigger OFF) but a triage agent + wired ledger.
+        """Threshold=0 (batch trigger OFF) but a tech lead agent + wired ledger.
 
         The proposal machinery must still reconcile in this shape (#6779 R12):
         proposal advancement is decoupled from the batch review threshold.
         """
-        from issue_orchestrator.ports.triage_authority import (
-            InMemoryTriageAuthorityStore,
+        from issue_orchestrator.ports.tech_lead_authority import (
+            InMemoryTechLeadAuthorityStore,
         )
 
-        mock_config.triage_review_agent = "triage-agent"
-        mock_config.triage_review_threshold = 0  # batch trigger disabled
+        mock_config.tech_lead_review_agent = "tech-lead-agent"
+        mock_config.tech_lead_review_threshold = 0  # batch trigger disabled
         mock_config.code_reviewed_label = "code-reviewed"
-        store = InMemoryTriageAuthorityStore()
+        store = InMemoryTechLeadAuthorityStore()
         for issue_number, op in ops:
             store.record_op(issue_number=issue_number, op=op)
         return FactGatherer(
             config=mock_config,
             repository_host=mock_repository_host,
-            triage_authority=store,
+            tech_lead_authority=store,
         )
 
     def test_batch_disabled_proposals_still_execute_and_clean_up(
         self, mock_config, mock_repository_host, sample_state
     ) -> None:
-        """R12: with the batch threshold at 0 (batch trigger OFF) but a triage
+        """R12: with the batch threshold at 0 (batch trigger OFF) but a tech_lead
         agent configured, an APPROVED gated proposal's op is still executed and
         a terminal/absent proposal op is still surfaced for cleanup. Proposal
         reconcile is decoupled from the batch review threshold — otherwise
@@ -1408,7 +1408,7 @@ class TestGatedProposalScanClassification:
         # #500 is approved (op-backed issue WITHOUT the gate label); #501's
         # issue is absent from the scan (terminal cleanup candidate).
         mock_repository_host.list_issues.return_value = [
-            Issue(number=500, title="Triage proposal for issue #13", labels=["triage-agent"]),
+            Issue(number=500, title="Tech Lead proposal for issue #13", labels=["tech-lead-agent"]),
         ]
         gatherer = self._gatherer_batch_disabled(
             mock_config,
@@ -1416,13 +1416,13 @@ class TestGatedProposalScanClassification:
             [(500, self._op(13)), (501, self._op(14, "kill_hung_session"))],
         )
 
-        facts = gatherer.gather_triage_facts(sample_state)
+        facts = gatherer.gather_tech_lead_facts(sample_state)
 
         assert facts is not None
         assert facts.threshold == 0  # batch trigger stays OFF
-        assert facts.existing_triage_issue is None  # no batch anchor surfaced
+        assert facts.existing_tech_lead_issue is None  # no batch anchor surfaced
         # The approved op is executed even though the batch threshold is 0.
-        [approved] = facts.approved_triage_ops
+        [approved] = facts.approved_tech_lead_ops
         assert approved.proposal_issue_number == 500
         assert approved.op.target_issue_number == 13
         # The terminal/absent op is still surfaced for cleanup.
@@ -1431,13 +1431,13 @@ class TestGatedProposalScanClassification:
     def test_batch_disabled_empty_ledger_makes_no_scan(
         self, mock_config, mock_repository_host, sample_state
     ) -> None:
-        """R12 frugality: batch threshold 0 + triage agent but an EMPTY ledger
+        """R12 frugality: batch threshold 0 + tech lead agent but an EMPTY ledger
         has nothing to reconcile, so it produces None and makes ZERO GitHub
         calls (no scan is worth making)."""
-        mock_config.triage.health_review.interval_minutes = 0
+        mock_config.tech_lead.health_review.interval_minutes = 0
         gatherer = self._gatherer_batch_disabled(mock_config, mock_repository_host, [])
 
-        assert gatherer.gather_triage_facts(sample_state) is None
+        assert gatherer.gather_tech_lead_facts(sample_state) is None
         mock_repository_host.list_issues.assert_not_called()
 
 
@@ -1445,48 +1445,48 @@ class TestCaseFileScanClassification:
     """The ONE anchor scan also classifies open pattern case files (#6781)."""
 
     def _gatherer(self, mock_config, mock_repository_host, *, board_publisher=None):
-        from issue_orchestrator.ports.triage_authority import (
-            InMemoryTriageAuthorityStore,
+        from issue_orchestrator.ports.tech_lead_authority import (
+            InMemoryTechLeadAuthorityStore,
         )
 
-        mock_config.triage_review_agent = "triage-agent"
-        mock_config.triage_review_threshold = 5
+        mock_config.tech_lead_review_agent = "tech-lead-agent"
+        mock_config.tech_lead_review_threshold = 5
         mock_config.code_reviewed_label = "code-reviewed"
         return FactGatherer(
             config=mock_config,
             repository_host=mock_repository_host,
-            triage_authority=InMemoryTriageAuthorityStore(),
+            tech_lead_authority=InMemoryTechLeadAuthorityStore(),
             board_publisher=board_publisher,
         )
 
     def test_case_file_classified_into_snapshot_and_never_anchor(
         self, mock_config, mock_repository_host, sample_state
     ) -> None:
-        from issue_orchestrator.domain.triage_session import TRIAGE_OBSERVATION_LABEL
+        from issue_orchestrator.domain.tech_lead_session import TECH_LEAD_OBSERVATION_LABEL
 
         mock_repository_host.list_issues.return_value = [
             Issue(
                 number=800,
                 # A title that LOOKS like an anchor must not fool the split.
-                title="Triage Batch Review: recurring db timeout",
-                labels=["triage-agent", TRIAGE_OBSERVATION_LABEL, "area:db"],
+                title="Tech Lead Batch Review: recurring db timeout",
+                labels=["tech-lead-agent", TECH_LEAD_OBSERVATION_LABEL, "area:db"],
             ),
             Issue(
                 number=7,
-                title="Triage Batch Review: 3 PRs pending",
-                labels=["triage-agent"],
+                title="Tech Lead Batch Review: 3 PRs pending",
+                labels=["tech-lead-agent"],
             ),
         ]
         gatherer = self._gatherer(mock_config, mock_repository_host)
 
-        facts = gatherer.gather_triage_facts(sample_state)
+        facts = gatherer.gather_tech_lead_facts(sample_state)
 
         assert facts is not None
         [case_file] = facts.open_case_files
         assert case_file.issue_number == 800
         assert case_file.area == "db"
         # The observation-labeled issue is NEVER an anchor; #7 still is.
-        assert facts.existing_triage_issue == 7
+        assert facts.existing_tech_lead_issue == 7
         # The anchor scan ran, so the projection is authoritative this tick.
         assert facts.case_files_scanned is True
         # Still just one issue scan for anchors + proposals + case files.
@@ -1495,7 +1495,7 @@ class TestCaseFileScanClassification:
     def test_board_publisher_receives_facts_and_health_review_timestamp(
         self, mock_config, mock_repository_host, sample_state
     ) -> None:
-        from issue_orchestrator.domain.triage_session import TRIAGE_OBSERVATION_LABEL
+        from issue_orchestrator.domain.tech_lead_session import TECH_LEAD_OBSERVATION_LABEL
 
         class _RecordingPublisher:
             def __init__(self) -> None:
@@ -1509,14 +1509,14 @@ class TestCaseFileScanClassification:
             Issue(
                 number=800,
                 title="Pattern case file: db-timeout",
-                labels=["triage-agent", TRIAGE_OBSERVATION_LABEL],
+                labels=["tech-lead-agent", TECH_LEAD_OBSERVATION_LABEL],
             ),
         ]
         gatherer = self._gatherer(
             mock_config, mock_repository_host, board_publisher=publisher
         )
 
-        facts = gatherer.gather_triage_facts(sample_state)
+        facts = gatherer.gather_tech_lead_facts(sample_state)
 
         # Fire-and-forget projection sink got the gathered facts + state.
         assert len(publisher.calls) == 1
@@ -1534,33 +1534,33 @@ class TestCaseFileScanClassification:
         ``case_files_scanned`` flag the gatherer stamps actually governs whether
         the projection the board snapshot builder reads is retained.
         """
-        from issue_orchestrator.control.triage_board import (
-            TriageBoardPublisher,
-            triage_board_path,
+        from issue_orchestrator.control.tech_lead_board import (
+            TechLeadBoardPublisher,
+            tech_lead_board_path,
         )
-        from issue_orchestrator.domain.triage_session import (
-            TRIAGE_OBSERVATION_LABEL,
+        from issue_orchestrator.domain.tech_lead_session import (
+            TECH_LEAD_OBSERVATION_LABEL,
         )
-        from issue_orchestrator.ports.triage_authority import (
-            InMemoryTriageAuthorityStore,
+        from issue_orchestrator.ports.tech_lead_authority import (
+            InMemoryTechLeadAuthorityStore,
         )
 
         # Health review armed; batch disabled (threshold 0 -> no watch label);
         # empty op ledger. The only thing that ever triggers the anchor scan
         # here is health-review due-ness.
-        mock_config.triage_review_agent = "triage-agent"
-        mock_config.triage_review_threshold = 0
-        mock_config.triage.health_review.interval_minutes = 60
+        mock_config.tech_lead_review_agent = "tech-lead-agent"
+        mock_config.tech_lead_review_threshold = 0
+        mock_config.tech_lead.health_review.interval_minutes = 60
         mock_config.code_reviewed_label = "code-reviewed"
 
-        publisher = TriageBoardPublisher(
-            board_path=triage_board_path(tmp_path),
-            authority=InMemoryTriageAuthorityStore(),
+        publisher = TechLeadBoardPublisher(
+            board_path=tech_lead_board_path(tmp_path),
+            authority=InMemoryTechLeadAuthorityStore(),
         )
         gatherer = FactGatherer(
             config=mock_config,
             repository_host=mock_repository_host,
-            triage_authority=InMemoryTriageAuthorityStore(),
+            tech_lead_authority=InMemoryTechLeadAuthorityStore(),
             board_publisher=publisher,
         )
 
@@ -1570,12 +1570,12 @@ class TestCaseFileScanClassification:
             Issue(
                 number=800,
                 title="Pattern case file: db-timeout",
-                labels=["triage-agent", TRIAGE_OBSERVATION_LABEL, "area:db"],
+                labels=["tech-lead-agent", TECH_LEAD_OBSERVATION_LABEL, "area:db"],
             ),
         ]
         sample_state.last_health_review_at = 1_000.0
         sample_state.priority_queue = [42]  # non-empty board so tick 1 is due
-        scanned = gatherer.gather_triage_facts(sample_state, now=1_000.0 + 3600)
+        scanned = gatherer.gather_tech_lead_facts(sample_state, now=1_000.0 + 3600)
         assert scanned is not None
         assert scanned.case_files_scanned is True
         assert [cf.issue_number for cf in publisher.case_files()] == [800]
@@ -1586,7 +1586,7 @@ class TestCaseFileScanClassification:
         # Tick 2: not due, empty ledger, batch off -> NO scan this tick.
         mock_repository_host.list_issues.reset_mock()
         mock_repository_host.list_issues.return_value = []
-        not_scanned = gatherer.gather_triage_facts(
+        not_scanned = gatherer.gather_tech_lead_facts(
             sample_state, now=1_000.0 + 3600 + 60
         )
         assert not_scanned is not None
@@ -1613,8 +1613,8 @@ class TestClearDiscoveredFacts:
     @staticmethod
     def _config() -> Config:
         config = Config(repo="test/repo")
-        config.triage_review_agent = "agent:triage"
-        config.triage_review_on_failure = True
+        config.tech_lead_review_agent = "agent:tech-lead"
+        config.tech_lead_review_on_failure = True
         return config
 
     @staticmethod
@@ -1681,7 +1681,7 @@ class TestClearDiscoveredFacts:
 
         state = OrchestratorState()
         state.immediate_cleanups.append(
-            ImmediateCleanup(5980, "issue-5980", "/tmp/repo-triage-5980", "completed",
+            ImmediateCleanup(5980, "issue-5980", "/tmp/repo-tech-lead-5980", "completed",
                              scratch_worktree=True)
         )
         state.immediate_cleanups.append(

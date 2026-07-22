@@ -182,17 +182,17 @@ class TestIdleStateCalculation:
 
         assert snapshot["orchestrator"]["idle"] is False
 
-    def test_not_idle_when_pending_triage_reviews_exist(self, builder, mock_repository_host):
-        """Having pending triage reviews means not idle."""
-        from issue_orchestrator.domain.models import PendingTriageReview
-        from issue_orchestrator.domain.triage_session import TriageSessionFlavor
+    def test_not_idle_when_pending_tech_lead_reviews_exist(self, builder, mock_repository_host):
+        """Having pending tech_lead reviews means not idle."""
+        from issue_orchestrator.domain.models import PendingTechLeadReview
+        from issue_orchestrator.domain.tech_lead_session import TechLeadSessionFlavor
 
-        triage = PendingTriageReview(
+        tech_lead = PendingTechLeadReview(
             issue_number=999,
-            title="Triage review",
-            flavor=TriageSessionFlavor.BATCH_REVIEW,
+            title="Tech Lead review",
+            flavor=TechLeadSessionFlavor.BATCH_REVIEW,
         )
-        state = OrchestratorState(pending_triage_reviews=[triage])
+        state = OrchestratorState(pending_tech_lead_reviews=[tech_lead])
 
         snapshot = builder.build_snapshot(state=state, snapshot_id=1, last_tick_id=None)
 

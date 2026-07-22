@@ -14,7 +14,7 @@ Issue-Orchestrator turns GitHub issues into bounded, reviewable execution runs:
 
 - Claims eligible GitHub issues and routes them to configured agent types.
 - Creates an isolated git worktree per issue so agents can work concurrently.
-- Runs coding, review, rework, and triage sessions through configured agent providers.
+- Runs coding, review, rework, and tech lead sessions through configured agent providers.
 - Treats agent completion as untrusted input, then validates the exact commit produced.
 - Enforces validation, review, bounded rework, reconciliation, and publish gates before work is ready for human merge.
 - Uses GitHub labels and observed worktree state as crash-safe external truth.

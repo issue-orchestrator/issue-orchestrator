@@ -17,8 +17,8 @@ if TYPE_CHECKING:
     from ..domain.state_machines.issue_machine import IssueStateMachine
     from ..domain.state_machines.session_machine import SessionStateMachine
     from ..domain.state_machines.review_machine import ReviewStateMachine
-    from ..domain.models import PendingReview, PendingRework, PendingTriageReview
-    from ..ports.triage_authority import TriageAuthorityStore
+    from ..domain.models import PendingReview, PendingRework, PendingTechLeadReview
+    from ..ports.tech_lead_authority import TechLeadAuthorityStore
     from .state_machine_manager import StateMachineManager
     from .label_manager import LabelManager
 
@@ -47,7 +47,7 @@ from .completion_action_planner import (
     critical_processing_errors,
     has_review_exchange_errors,
 )
-from .triage_completion import discard_triage_authority_after_completion
+from .tech_lead_completion import discard_tech_lead_authority_after_completion
 from .invalid_record_actions import (
     failure_event_reason,
     invalid_record_event_fields,
@@ -135,7 +135,7 @@ class CompletionHandler:
         get_session_machine_fn: Callable[[str], Optional["SessionStateMachine"]],
         get_review_machine_fn: Callable[[int], Optional["ReviewStateMachine"]],
         session_output: SessionOutput,
-        triage_authority: "TriageAuthorityStore",
+        tech_lead_authority: "TechLeadAuthorityStore",
         active_session_run_id: Callable[[int], str | None],
         remove_session_machine_fn: Callable[[str], None] | None = None,
         label_manager: "LabelManager | None" = None,
@@ -147,14 +147,14 @@ class CompletionHandler:
         self._get_session_machine = get_session_machine_fn
         self._get_review_machine = get_review_machine_fn
         self._session_output = session_output
-        self._triage_authority = triage_authority
+        self._tech_lead_authority = tech_lead_authority
         self._remove_session_machine = remove_session_machine_fn
         if label_manager is None:
             from .label_manager import LabelManager
             label_manager = LabelManager(config)
         self._lm = label_manager
         self._action_planner = CompletionActionPlanner(
-            config, repository_host, label_manager, triage_authority,
+            config, repository_host, label_manager, tech_lead_authority,
             active_session_run_id,
         )
 
@@ -345,8 +345,8 @@ class CompletionHandler:
 
         # Retention (#6769 F3): completion finalization is this run's terminal
         # seam; publish-stage failures keep the row for Retry Publish.
-        discard_triage_authority_after_completion(
-            self.config, self._triage_authority, session,
+        discard_tech_lead_authority_after_completion(
+            self.config, self._tech_lead_authority, session,
             processing_errors=processing_errors,
         )
 
@@ -1056,14 +1056,14 @@ class CompletionHandler:
 
         if status == SessionStatus.COMPLETED and is_work_session and pr_url and pr_number:
             # Check if we should defer cleanup based on review workflow
-            if self.config.triage_review_agent:
-                # Triage workflow: defer until triage review passes
-                should_defer = self.config.cleanup.with_triage.close_ai_session_tabs
+            if self.config.tech_lead_review_agent:
+                # Tech Lead workflow: defer until tech_lead review passes
+                should_defer = self.config.cleanup.with_tech_lead.close_ai_session_tabs
             elif self.config.code_review_agent:
                 # Code review only: defer if configured to wait
                 should_defer = (
-                    self.config.cleanup.without_triage.wait_for_code_review
-                    and self.config.cleanup.without_triage.close_ai_session_tabs
+                    self.config.cleanup.without_tech_lead.wait_for_code_review
+                    and self.config.cleanup.without_tech_lead.close_ai_session_tabs
                 )
 
         if should_defer:
@@ -1220,14 +1220,14 @@ def get_review_machine(pr: int, issue: int, state_machines: "StateMachineManager
     return state_machines.get_review_machine(pr, issue)
 
 
-def launch_triage_by_number(
-    n: int, pending_triage_reviews: list["PendingTriageReview"],
-    launch_triage_session_fn: Callable[["PendingTriageReview"], Optional["Session"]],
+def launch_tech_lead_by_number(
+    n: int, pending_tech_lead_reviews: list["PendingTechLeadReview"],
+    launch_tech_lead_session_fn: Callable[["PendingTechLeadReview"], Optional["Session"]],
 ) -> Optional["Session"]:
-    """Launch triage session by number - moved per method table.
+    """Launch tech_lead session by number - moved per method table.
 
     Queue lifecycle (removal vs retention) is owned by the launch wrapper
-    (``orchestrator_launch_triage_session``), like the review/rework lookups.
+    (``orchestrator_launch_tech_lead_session``), like the review/rework lookups.
     """
-    t = next((t for t in pending_triage_reviews if t.issue_number == n), None)
-    return launch_triage_session_fn(t) if t else None
+    t = next((t for t in pending_tech_lead_reviews if t.issue_number == n), None)
+    return launch_tech_lead_session_fn(t) if t else None

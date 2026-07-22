@@ -14,11 +14,11 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Sequence
 
-from ..domain.triage_session import (
-    PROPOSED_TRIAGE_LABEL,
-    TRIAGE_AREA_LABEL_PREFIX,
-    TRIAGE_OBSERVATION_LABEL,
-    is_proposed_triage_gate,
+from ..domain.tech_lead_session import (
+    PROPOSED_TECH_LEAD_LABEL,
+    TECH_LEAD_AREA_LABEL_PREFIX,
+    TECH_LEAD_OBSERVATION_LABEL,
+    is_proposed_tech_lead_gate,
 )
 
 if TYPE_CHECKING:
@@ -41,43 +41,43 @@ class LabelEntry:
     category: LabelCategory
     description: str  # Human-readable: "failed run"
     pattern: bool = False  # True for rework-cycle-{N}
-    raw: bool = False  # True for triage-subsystem labels that never take a prefix
+    raw: bool = False  # True for tech-lead-subsystem labels that never take a prefix
 
 
 # Legacy labels that predated the blocked-* convention
 _LEGACY_BLOCKING = frozenset({"needs-human", "failed", "publish-failed"})
 
-# Provenance marker for needs-human escalations owned by the triage launcher.
+# Provenance marker for needs-human escalations owned by the tech_lead launcher.
 # It is intentionally informational: the paired needs-human label carries the
 # blocking semantics, while this label answers only "who owns the transition?".
-TRIAGE_NEEDS_HUMAN_LABEL = "triage-needs-human"
+TECH_LEAD_NEEDS_HUMAN_LABEL = "tech-lead-needs-human"
 
 _REWORK_CYCLE_RE = re.compile(r"^rework-cycle-(\d+)$")
 _PUBLISH_FAIL_COUNT_RE = re.compile(r"^publish-fail-count-(\d+)$")
 
-_TRIAGE_ISSUE_LABEL_METADATA = {
-    TRIAGE_OBSERVATION_LABEL.casefold(): (
+_TECH_LEAD_ISSUE_LABEL_METADATA = {
+    TECH_LEAD_OBSERVATION_LABEL.casefold(): (
         "B60205",
-        "Pattern case file (triage observation ledger)",
+        "Pattern case file (tech_lead observation ledger)",
     ),
 }
 
 
-def triage_issue_label_metadata(name: str) -> tuple[str, str]:
-    """Return creation metadata for a trusted triage issue label.
+def tech_lead_issue_label_metadata(name: str) -> tuple[str, str]:
+    """Return creation metadata for a trusted tech_lead issue label.
 
     Dynamic ``area:*`` names cannot be provisioned during setup. The shared
-    triage issue-creation owner uses this registry metadata before creating an
+    tech_lead issue-creation owner uses this registry metadata before creating an
     issue; configured repository labels receive neutral metadata only when an
     upgraded repository has not provisioned them yet.
     """
-    metadata = _TRIAGE_ISSUE_LABEL_METADATA.get(name.casefold())
+    metadata = _TECH_LEAD_ISSUE_LABEL_METADATA.get(name.casefold())
     if metadata is not None:
         return metadata
-    area_prefix = TRIAGE_AREA_LABEL_PREFIX.casefold()
+    area_prefix = TECH_LEAD_AREA_LABEL_PREFIX.casefold()
     if name.casefold().startswith(area_prefix):
-        return "1D76DB", "Triage pattern area"
-    return "EDEDED", "Required by an orchestrator-created triage issue"
+        return "1D76DB", "Tech Lead pattern area"
+    return "EDEDED", "Required by an orchestrator-created tech_lead issue"
 
 
 class LabelManager:
@@ -96,13 +96,13 @@ class LabelManager:
             config.provider_resilience.circuit_breaker.label
         )
 
-        # Triage-reviewed is managed WITHOUT the orchestrator prefix throughout
-        # the triage subsystem (triage_manifest_builder, completion_action_planner,
+        # Tech-Lead-reviewed is managed WITHOUT the orchestrator prefix throughout
+        # the tech_lead subsystem (tech_lead_manifest_builder, completion_action_planner,
         # cleanup_manager, fact_gatherer all use the raw configured value), so we
         # keep the raw form here for callers that must match the label actually
-        # written to PRs. See the `triage_reviewed` property.
-        self._triage_reviewed_base: str = (
-            config.triage_reviewed_label or "triage-reviewed"
+        # written to PRs. See the `tech_lead_reviewed` property.
+        self._tech_lead_reviewed_base: str = (
+            config.tech_lead_reviewed_label or "tech-lead-reviewed"
         )
 
         # Registry keyed by internal key
@@ -163,10 +163,10 @@ class LabelManager:
             LabelEntry("publish_failed", "publish-failed", LabelCategory.BLOCKING, "Publishing failed"),
             LabelEntry("blocked_needs_human", config.label_needs_human, LabelCategory.BLOCKING, "Needs human"),
             LabelEntry(
-                "triage_needs_human",
-                TRIAGE_NEEDS_HUMAN_LABEL,
+                "tech_lead_needs_human",
+                TECH_LEAD_NEEDS_HUMAN_LABEL,
                 LabelCategory.INFORMATIONAL,
-                "Triage needs-human provenance",
+                "Tech Lead needs-human provenance",
             ),
             LabelEntry("blocked_cross_milestone", "blocked-cross-milestone", LabelCategory.BLOCKING, "Cross-milestone dep"),
             LabelEntry("needs_rework", config.label_needs_rework, LabelCategory.LIFECYCLE, "Needs rework"),
@@ -184,13 +184,13 @@ class LabelManager:
             LabelEntry("review_keep_approach", config.review_keep_current_approach_label, LabelCategory.INFORMATIONAL, "Keep current approach"),
             LabelEntry("code_review", config.code_review_label or "needs-code-review", LabelCategory.LIFECYCLE, "Needs code review"),
             LabelEntry("code_reviewed", config.code_reviewed_label or "code-reviewed", LabelCategory.LIFECYCLE, "Code reviewed"),
-            # Gated triage proposal issues (#6778): blocking-class so the
+            # Gated tech_lead proposal issues (#6778): blocking-class so the
             # scheduler never picks one up; raw (never prefixed) like the
-            # rest of the triage subsystem's labels.
-            LabelEntry("proposed_triage", PROPOSED_TRIAGE_LABEL, LabelCategory.BLOCKING, "Triage proposal awaiting operator approval", raw=True),
+            # rest of the tech_lead subsystem's labels.
+            LabelEntry("proposed_tech_lead", PROPOSED_TECH_LEAD_LABEL, LabelCategory.BLOCKING, "Tech Lead proposal awaiting operator approval", raw=True),
             # Pattern case-file issues (#6781): same treatment as the gate
             # label — blocking-class (never picked up), raw (never prefixed).
-            LabelEntry("triage_observation", TRIAGE_OBSERVATION_LABEL, LabelCategory.BLOCKING, "Pattern case file (triage observation ledger)", raw=True),
+            LabelEntry("tech_lead_observation", TECH_LEAD_OBSERVATION_LABEL, LabelCategory.BLOCKING, "Pattern case file (tech_lead observation ledger)", raw=True),
         ]
         for e in entries:
             self._entries[e.key] = e
@@ -259,8 +259,8 @@ class LabelManager:
         return self._resolved["blocked_needs_human"]
 
     @property
-    def triage_needs_human(self) -> str:
-        return self._resolved["triage_needs_human"]
+    def tech_lead_needs_human(self) -> str:
+        return self._resolved["tech_lead_needs_human"]
 
     @property
     def blocked_cross_milestone(self) -> str:
@@ -307,26 +307,26 @@ class LabelManager:
         return self._resolved["code_reviewed"]
 
     @property
-    def triage_reviewed(self) -> str:
-        """The triage-reviewed label as it is actually applied to PRs.
+    def tech_lead_reviewed(self) -> str:
+        """The tech-lead-reviewed label as it is actually applied to PRs.
 
-        Unlike most labels, this one is NOT prefixed: the triage subsystem
-        writes and reads ``config.triage_reviewed_label`` (default
-        ``triage-reviewed``) in raw form. Callers that gate on the label
-        present on a PR — e.g. the merge-queue triage gate — must match that
+        Unlike most labels, this one is NOT prefixed: the tech_lead subsystem
+        writes and reads ``config.tech_lead_reviewed_label`` (default
+        ``tech-lead-reviewed``) in raw form. Callers that gate on the label
+        present on a PR — e.g. the merge-queue tech_lead gate — must match that
         raw value, so this property deliberately skips prefix resolution.
         """
-        return self._triage_reviewed_base
+        return self._tech_lead_reviewed_base
 
     @property
-    def proposed_triage(self) -> str:
+    def proposed_tech_lead(self) -> str:
         """The gated-proposal label (#6778). Raw — never prefixed."""
-        return self._resolved["proposed_triage"]
+        return self._resolved["proposed_tech_lead"]
 
     @property
-    def triage_observation(self) -> str:
+    def tech_lead_observation(self) -> str:
         """The pattern case-file label (#6781). Raw — never prefixed."""
-        return self._resolved["triage_observation"]
+        return self._resolved["tech_lead_observation"]
 
     @property
     def review_keep_approach(self) -> str:
@@ -395,14 +395,14 @@ class LabelManager:
     def is_blocking(self, label: str) -> bool:
         """Return True if *label* blocks processing (prefix-aware).
 
-        ``proposed-triage`` is blocking-class (#6778): gated triage proposal
+        ``proposed-tech-lead`` is blocking-class (#6778): gated tech_lead proposal
         issues are excluded from pickup until an operator removes the gate
         label (per-instance approval, ADR-0031 §2 amendment). The gate match is
         case-insensitive via the shared owner (#6779 R15) — GitHub folds label
-        names, so a canonical ``Proposed-Triage`` still blocks and can never be
+        names, so a canonical ``Proposed-Tech-Lead`` still blocks and can never be
         classified as approved by reconciliation while blocking treats it as
         absent.
-        ``triage-observation`` is blocking-class the same way (#6781):
+        ``tech-lead-observation`` is blocking-class the same way (#6781):
         pattern case files are evidence ledgers, never agent work items.
         """
         base = self._strip_prefix(label)
@@ -410,8 +410,8 @@ class LabelManager:
             base == "blocked"
             or base.startswith("blocked-")
             or base.startswith("blocked:")
-            or is_proposed_triage_gate(base)
-            or base.casefold() == self._resolved["triage_observation"].casefold()
+            or is_proposed_tech_lead_gate(base)
+            or base.casefold() == self._resolved["tech_lead_observation"].casefold()
         ):
             return True
         if base in _LEGACY_BLOCKING:
@@ -444,7 +444,7 @@ class LabelManager:
             self.in_progress,
             self.blocked,
             self.needs_human,
-            self.triage_needs_human,
+            self.tech_lead_needs_human,
             "priority:high",
             "priority:medium",
             "priority:low",
@@ -467,7 +467,7 @@ class LabelManager:
         """
         return (
             label == self.pr_pending
-            or label == self.triage_needs_human
+            or label == self.tech_lead_needs_human
             or self.is_blocking(label)
             or self.is_publish_fail_count(label)
         )

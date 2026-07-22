@@ -47,7 +47,7 @@ class SnapshotBuilder:
             len(state.active_sessions) == 0
             and len(state.pending_reviews) == 0
             and len(state.pending_reworks) == 0
-            and len(state.pending_triage_reviews) == 0
+            and len(state.pending_tech_lead_reviews) == 0
         )
 
         return {

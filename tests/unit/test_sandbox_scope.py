@@ -138,24 +138,24 @@ def test_opted_in_reviewer_scope(task_kind: str) -> None:
     assert scope.egress == "model-only"
 
 
-def test_opted_in_triage_without_evidence_stays_worktree_bounded() -> None:
+def test_opted_in_tech_lead_without_evidence_stays_worktree_bounded() -> None:
     # No evidence roots (e.g. a health review with none staged): still bounded to
     # the worktree, never left unsandboxed.
     worktree = Path("/wt/issue-3")
-    scope = compute_session_scope(_agent(sandbox=True), _ctx("triage", worktree))
+    scope = compute_session_scope(_agent(sandbox=True), _ctx("tech_lead", worktree))
     assert scope is not None
     assert scope.read_roots == (worktree,)
     assert scope.write_roots == (worktree,)
 
 
-def test_opted_in_triage_reads_evidence_god_view_but_writes_only_worktree() -> None:
+def test_opted_in_tech_lead_reads_evidence_god_view_but_writes_only_worktree() -> None:
     # R5 (#6824): a tech-lead failure investigation READS the evidence-map god-view
     # roots (main repo, registered worktrees, state dbs, run-dirs) while WRITES
     # stay confined to the scratch worktree.
-    worktree = Path("/wt/repo-triage-42-abc")
+    worktree = Path("/wt/repo-tech-lead-42-abc")
     god_view = (Path("/repo"), Path("/repo/.issue-orchestrator/state"), Path("/wt/repo-7"))
     scope = compute_session_scope(
-        _agent(sandbox=True), _ctx("triage", worktree, evidence_read_roots=god_view)
+        _agent(sandbox=True), _ctx("tech_lead", worktree, evidence_read_roots=god_view)
     )
     assert scope is not None
     assert scope.read_roots == (worktree, *god_view)  # worktree first, then god-view

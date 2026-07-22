@@ -1,6 +1,6 @@
 """Code review checks for doctor.
 
-Basic agent-reference validation (default_reviewer, triage_agent must exist
+Basic agent-reference validation (default_reviewer, tech_lead_agent must exist
 in config.agents) is now schema-driven via doctor_check annotations.
 This module handles:
 - Status summary (Enabled/Disabled with per-agent reviewer detail)

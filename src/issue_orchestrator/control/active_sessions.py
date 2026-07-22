@@ -45,7 +45,7 @@ def active_session_run_id(
 
     ``terminal_id`` is deterministic per issue (``issue-<n>``) so it cannot
     tell one generation from its replacement; ``run_assets.run_id`` is the
-    per-launch identity that can. The triage kill lifecycle binds approval to
+    per-launch identity that can. The tech_lead kill lifecycle binds approval to
     this id at proposal time and re-checks it at execution: the single owner
     both the capture (completion planning) and execution (kill executor)
     sides read through.

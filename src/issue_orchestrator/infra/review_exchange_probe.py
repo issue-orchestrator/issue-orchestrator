@@ -83,7 +83,7 @@ def _resolve_ai_system(config, label: str) -> str:
 def _exchange_pairs(config) -> list[tuple[str, str]]:
     pairs: list[tuple[str, str]] = []
     for label, agent in config.agents.items():
-        if config.triage_review_agent and label == config.triage_review_agent:
+        if config.tech_lead_review_agent and label == config.tech_lead_review_agent:
             continue
         if agent.skip_review:
             continue

@@ -1,7 +1,7 @@
-"""Port: board-snapshot provision for triage session launches (ADR-0031 §3).
+"""Port: board-snapshot provision for tech_lead session launches (ADR-0031 §3).
 
-The session launcher writes a board snapshot into every triage session's
-``triage-data/`` directory, but it never holds ``OrchestratorState`` itself.
+The session launcher writes a board snapshot into every tech_lead session's
+``tech-lead-data/`` directory, but it never holds ``OrchestratorState`` itself.
 This Protocol is that seam: the composition root wires an implementation
 (``control.board_snapshot_builder.StateBoardSnapshotProvider``) that reads
 the live state — launches run inside the tick under the state lock, so the
@@ -44,7 +44,7 @@ class BoardSnapshotProvider(Protocol):
 class NullBoardSnapshotProvider:
     """Null object for tests: an empty but valid board snapshot.
 
-    The provider is a REQUIRED SessionLauncher dependency (triage prompts
+    The provider is a REQUIRED SessionLauncher dependency (tech_lead prompts
     treat board-snapshot.json as authoritative input), so bare test
     constructions inject this instead of ``None`` — the launch still writes
     a well-formed snapshot file, and there is no silent skip path to mask

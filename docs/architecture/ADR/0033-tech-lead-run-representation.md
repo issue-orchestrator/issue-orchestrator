@@ -3,11 +3,11 @@
 **Status:** Proposed
 **Date:** 2026-07-19
 **Tracking issue:** #6858
-**Related:** ADR-0031 (triage tech lead / graduated authority), ADR-0013 (health-review marker + labels-as-truth)
+**Related:** ADR-0031 (tech lead / graduated authority), ADR-0013 (health-review marker + labels-as-truth)
 
 ## Context
 
-The tech-lead (ADR-0031; the agent currently named "triage") has become a
+The tech-lead (ADR-0031; the agent currently named "tech lead") has become a
 first-class actor: its own reserved concurrency slot, graduated authority, and a
 whole-system health remit (failure investigations, periodic health reviews,
 batch reviews). But how a tech-lead *run* is represented is unresolved, and it
@@ -59,7 +59,7 @@ coordination requires a *shared* (i.e. GitHub) point.
   without *being* the subject.
 - **Two surfaces, two owners.** The dashboard is *our* surface — the run's
   existence and detail live there. GitHub is the *client's* surface — only the
-  run's **output** (proposals, `proposed-triage` issues) belongs there, by
+  run's **output** (proposals, `proposed-tech-lead` issues) belongs there, by
   design. Any GitHub footprint for the run beyond the thin claim is
   **config-opt-in** (e.g. a client who wants the health-review report posted as
   an issue).

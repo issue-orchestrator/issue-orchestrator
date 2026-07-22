@@ -42,7 +42,7 @@ from ..ports.background_job import BackgroundJobRunner, CompletedJob
 from ..ports.fresh_issue_reader import FreshIssueReader
 from ..ports.publish_retry_locator_store import PublishRetryLocatorStore
 from ..ports.pull_request_tracker import PRInfo
-from ..ports.triage_authority import TriageAuthorityStore
+from ..ports.tech_lead_authority import TechLeadAuthorityStore
 from .completion_types import (
     ERROR_PREFIX_CREATE_PR,
     ERROR_PREFIX_PUBLISH_BLOCKED,
@@ -155,12 +155,12 @@ class PublishRecoveryService:
         fresh_issue_reader: FreshIssueReader,
         action_applier: _ActionApplier,
         code_review_agent_configured: bool,
-        triage_authority: TriageAuthorityStore,
+        tech_lead_authority: TechLeadAuthorityStore,
     ) -> None:
         self._repository_host = repository_host
         self._completion_processor = completion_processor
         self._locator_store = locator_store
-        self._triage_authority = triage_authority
+        self._tech_lead_authority = tech_lead_authority
         self._runner = runner
         self._lm = label_manager
         self._fresh_issue_reader = fresh_issue_reader
@@ -374,7 +374,7 @@ class PublishRecoveryService:
         self._clear_retry_terminal_state(issue_number)
 
     def _clear_retry_terminal_state(self, issue_number: int) -> None:
-        """Drop the locators AND both of the run's triage ledger rows.
+        """Drop the locators AND both of the run's tech_lead ledger rows.
 
         A publish-retryable failure keeps the authority row alive so the
         retry's re-entry into ``CompletionProcessor.process`` can re-validate
@@ -382,18 +382,18 @@ class PublishRecoveryService:
         finalization, existing-PR recovery, or abandonment) the run is truly
         over and the rows must not outlive it (#6769 F3). This is the
         publish-failure counterpart of
-        :func:`discard_triage_authority_after_completion` — skipped on exactly
+        :func:`discard_tech_lead_authority_after_completion` — skipped on exactly
         this path, so it owes the same PAIR of releases: dropping only the
         run-keyed row orphans a storm anchor's cohort row (#6780). Both
-        ``discard`` calls are no-ops for non-triage runs.
+        ``discard`` calls are no-ops for non-tech-lead runs.
         """
         locators = self._locator_store.get(issue_number)
         if locators is not None:
-            self._triage_authority.discard(
+            self._tech_lead_authority.discard(
                 run_id=locators.run_assets.run_id,
                 session_name=locators.run_assets.session_name,
             )
-        self._triage_authority.discard_storm_cohort(anchor_issue_number=issue_number)
+        self._tech_lead_authority.discard_storm_cohort(anchor_issue_number=issue_number)
         self._locator_store.clear(issue_number)
 
     # ------------------------------------------------------------------

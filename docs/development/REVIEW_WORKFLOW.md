@@ -79,12 +79,12 @@ After the review loop approves code, additional stages can run.
 ```mermaid
 flowchart TD
   LOOP["Review loop approves code"] --> CR["Code-reviewed"]
-  CR --> TRIAGE{"Triage batch review configured?"}
-  TRIAGE -->|yes, threshold met| TR["Triage agent reviews patterns across PRs"]
-  TR --> DONE["Triage-reviewed — ready for human merge"]
-  TRIAGE -->|no| DONE2["Ready for human merge"]
+  CR --> TECH_LEAD{"Tech Lead batch review configured?"}
+  TECH_LEAD -->|yes, threshold met| TR["Tech Lead agent reviews patterns across PRs"]
+  TR --> DONE["Tech-Lead-reviewed — ready for human merge"]
+  TECH_LEAD -->|no| DONE2["Ready for human merge"]
 
-  FAIL["Session failed / blocked / timeout"] --> TFAIL{"triage_review_on_failure?"}
+  FAIL["Session failed / blocked / timeout"] --> TFAIL{"tech_lead_review_on_failure?"}
   TFAIL -->|yes| CLASSIFY{"Explained dependency block?"}
   CLASSIFY -->|yes| WAIT["Healthy wait — no reaction"]
   CLASSIFY -->|no| STORM{"Problem-storm threshold met?"}
@@ -105,7 +105,7 @@ stateDiagram-v2
   state "needs-code-review" as NCR
   state "code-reviewed" as CR
   state "needs-rework" as NR
-  state "triage-reviewed" as TR
+  state "tech-lead-reviewed" as TR
   state "blocked-needs-human" as BNH
 
   [*] --> IP : session launched
@@ -115,10 +115,10 @@ stateDiagram-v2
   NCR --> NR : reviewer requests changes
   NR --> IP : rework session launched
   IP --> PR : rework completes
-  CR --> TR : triage batch review passes
+  CR --> TR : tech lead batch review passes
   NR --> BNH : max rework cycles exceeded
   TR --> [*] : human merges
-  CR --> [*] : human merges (no triage configured)
+  CR --> [*] : human merges (no tech lead configured)
 ```
 
 ## Configuration
@@ -143,12 +143,12 @@ review:
     default_policy: "surface"         # ignore, surface, address
     by_agent: {}                      # e.g. agent:frontend: address
 
-  # Triage batch review
-  triage_review_agent: "agent:triage"
-  triage_review_threshold: 5           # Trigger after N code-reviewed PRs
-  triage_review_on_failure: true       # React to failed/timed-out/unexplained blocked sessions
+  # Tech Lead batch review
+  tech_lead_review_agent: "agent:tech-lead"
+  tech_lead_review_threshold: 5           # Trigger after N code-reviewed PRs
+  tech_lead_review_on_failure: true       # React to failed/timed-out/unexplained blocked sessions
 
-triage:
+tech_lead:
   health_review:
     interval_minutes: 240              # Periodic floor; 0 disables interval
     storm_threshold: 3                 # K recent problems -> one health review; 0 disables
@@ -179,7 +179,7 @@ Use that section for nit vs non-nit examples and strict approve/request-changes 
 | `process_pending_reviews()` | Process queued reviews (each loop) |
 | `scan_needs_rework_prs()` | Scan for PRs needing rework |
 | `launch_rework_session()` | Launch work agent to fix issues |
-| `check_triage_review_trigger()` | Check if triage should trigger |
+| `check_tech_lead_review_trigger()` | Check if tech lead should trigger |
 
 ## Cleanup Configuration
 
@@ -187,11 +187,11 @@ Control when AI session tabs close and worktrees are removed:
 
 ```yaml
 cleanup:
-  with_triage:                    # When triage review is enabled
-    close_ai_session_tabs: true   # Close tabs after triage review
+  with_tech_lead:                    # When tech lead review is enabled
+    close_ai_session_tabs: true   # Close tabs after tech lead review
     remove_worktrees: false       # Keep worktrees for reference
 
-  without_triage:                 # When triage review is NOT enabled
+  without_tech_lead:                 # When tech lead review is NOT enabled
     wait_for_code_review: true    # true = after code review, false = on completion
     close_ai_session_tabs: true
     remove_worktrees: false

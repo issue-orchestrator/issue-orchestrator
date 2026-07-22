@@ -27,10 +27,10 @@ from issue_orchestrator.domain.board_snapshot import (
     SessionActivityFacts,
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey
-from issue_orchestrator.domain.triage_session import (
-    TriageCaseFileSummary,
-    TriageSessionFlavor,
-    TriageShippedFixSummary,
+from issue_orchestrator.domain.tech_lead_session import (
+    TechLeadCaseFileSummary,
+    TechLeadSessionFlavor,
+    TechLeadShippedFixSummary,
 )
 from issue_orchestrator.control.session_routing import PendingSessionQueues
 from issue_orchestrator.domain.models import (
@@ -42,7 +42,7 @@ from issue_orchestrator.domain.models import (
     PendingReview,
     PendingRetrospectiveReview,
     PendingRework,
-    PendingTriageReview,
+    PendingTechLeadReview,
     PendingValidationRetry,
     Session,
     SessionKey,
@@ -92,8 +92,8 @@ def _make_builder(
     *,
     timeline_reader: FakeTimelineReader | None = None,
     log_tail: FakeLogTail | None = None,
-    case_files: tuple[TriageCaseFileSummary, ...] = (),
-    shipped_fixes: tuple[TriageShippedFixSummary, ...] = (),
+    case_files: tuple[TechLeadCaseFileSummary, ...] = (),
+    shipped_fixes: tuple[TechLeadShippedFixSummary, ...] = (),
     e2e_health_reader: Callable[[datetime], BoardE2EHealth | None] | None = None,
     session_activity_reader: (
         Callable[[Session], SessionActivityFacts | None] | None
@@ -203,17 +203,17 @@ class TestSessions:
 class TestPatternCaseFiles:
     def test_projects_open_case_files_and_durable_shipped_fix_facts(self) -> None:
         case_files = (
-            TriageCaseFileSummary(
+            TechLeadCaseFileSummary(
                 issue_number=700, title="Pattern case file: db-timeout",
                 comment_count=4, updated_at="2026-07-10T11:00:00+00:00", area="db",
             ),
-            TriageCaseFileSummary(
+            TechLeadCaseFileSummary(
                 issue_number=701, title="Pattern case file: pool-starvation",
                 comment_count=2, updated_at="2026-07-10T10:00:00+00:00", area="db",
             ),
         )
         shipped_fixes = (
-            TriageShippedFixSummary(
+            TechLeadShippedFixSummary(
                 issue_number=600,
                 title="Repair DB seam",
                 pr_url="https://github.com/o/r/pull/600",
@@ -239,7 +239,7 @@ class TestPatternCaseFiles:
 
     def test_recent_shipped_fixes_are_bounded_when_reader_overdelivers(self) -> None:
         fixes = tuple(
-            TriageShippedFixSummary(
+            TechLeadShippedFixSummary(
                 issue_number=600 + index,
                 title=f"Fix {index}",
                 pr_url=f"https://github.com/o/r/pull/{700 + index}",
@@ -297,8 +297,8 @@ class TestQueuesBlockedAndFailures:
                     feedback="Missing tests",
                 ),
             ],
-            pending_triage_reviews=[
-                PendingTriageReview(issue_number=203, title="Triage batch review", flavor=TriageSessionFlavor.BATCH_REVIEW),
+            pending_tech_lead_reviews=[
+                PendingTechLeadReview(issue_number=203, title="Tech Lead batch review", flavor=TechLeadSessionFlavor.BATCH_REVIEW),
             ],
             pending_validation_retries=[
                 PendingValidationRetry(
@@ -360,8 +360,8 @@ class TestQueuesBlockedAndFailures:
         assert by_queue["pending_reworks"].issue_number == 202
         assert "rework cycle 2" in by_queue["pending_reworks"].detail
         assert "Missing tests" in by_queue["pending_reworks"].detail
-        assert by_queue["pending_triage"].issue_number == 203
-        assert by_queue["pending_triage"].detail == "Triage batch review"
+        assert by_queue["pending_tech_lead"].issue_number == 203
+        assert by_queue["pending_tech_lead"].detail == "Tech Lead batch review"
         assert by_queue["pending_validation_retries"].issue_number == 204
         assert "pytest exploded" in by_queue["pending_validation_retries"].detail
         assert by_queue["priority_queue"].issue_number == 42
@@ -451,8 +451,8 @@ class TestQueuesBlockedAndFailures:
 
     def test_long_queue_detail_is_truncated(self) -> None:
         state = OrchestratorState(
-            pending_triage_reviews=[
-                PendingTriageReview(issue_number=203, title="x" * (MAX_LINE_CHARS + 100), flavor=TriageSessionFlavor.BATCH_REVIEW),
+            pending_tech_lead_reviews=[
+                PendingTechLeadReview(issue_number=203, title="x" * (MAX_LINE_CHARS + 100), flavor=TechLeadSessionFlavor.BATCH_REVIEW),
             ],
         )
 
@@ -862,7 +862,7 @@ class TestStateBoardSnapshotProvider:
     def test_batch_review_queue_items_add_no_failures(self) -> None:
         """Batch reviews carry no failure context and must not fabricate any."""
         state = OrchestratorState()
-        PendingSessionQueues(state).queue_batch_review(7, "Triage Batch")
+        PendingSessionQueues(state).queue_batch_review(7, "Tech Lead Batch")
         provider = StateBoardSnapshotProvider(_make_builder(), lambda: state)
 
         snapshot = provider.snapshot(None)

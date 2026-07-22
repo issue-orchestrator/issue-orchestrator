@@ -2166,7 +2166,7 @@ class TestCreateWorktreeReuse:
     def test_reuse_preserve_branch_skips_rebase_and_reset(self, tmp_path):
         """preserve_branch=True must NOT rebase or hard-reset a diverged branch.
 
-        Models a triage investigation reusing a stranded worktree whose branch
+        Models a tech_lead investigation reusing a stranded worktree whose branch
         is ahead of origin/main: the branch (and its unpushed commits) must
         survive untouched — no ``rebase`` and no ``reset --hard origin/main``.
         """

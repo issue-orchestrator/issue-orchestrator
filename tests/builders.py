@@ -120,7 +120,7 @@ class SessionBuilder:
         return self
 
     def with_task(self, task: TaskKind) -> "SessionBuilder":
-        """Set the task type (CODE, REVIEW, REWORK, TRIAGE)."""
+        """Set the task type (CODE, REVIEW, REWORK, TECH_LEAD)."""
         self._task = task
         return self
 

@@ -9,7 +9,7 @@ making it a pure read-only component that:
 The FactGatherer makes NO decisions and plans no mutations - all state
 transitions happen in the orchestrator based on Plan execution. Its only
 outputs besides the snapshot are fire-and-forget observation sinks: trace
-events (EventSink) and the triage board projection (TriageBoardPublisher,
+events (EventSink) and the tech_lead board projection (TechLeadBoardPublisher,
 #6781), both projections of what was observed, never policy.
 
 Usage:
@@ -32,30 +32,30 @@ from ..events import EventName
 from ..ports.repository_host import RepositoryHost, RepositoryHostError
 from ..ports import EventSink,  make_trace_event
 from .health_review_trigger import (
-    classify_triage_anchor_issues,
-    discover_open_triage_anchor_issues,
+    classify_tech_lead_anchor_issues,
+    discover_open_tech_lead_anchor_issues,
     health_review_decision,
     health_review_interval_minutes,
 )
-from .triage_reaction import storm_possible
+from .tech_lead_reaction import storm_possible
 
 if TYPE_CHECKING:
     from ..ports.issue import Issue
     from ..ports.queue_cache_store import QueueCacheStore
-    from ..ports.triage_authority import TriageAuthorityStore
+    from ..ports.tech_lead_authority import TechLeadAuthorityStore
     from ..domain.models import (
         OrchestratorState,
-        TriageFacts,
+        TechLeadFacts,
         CleanupFacts,
     )
-    from ..domain.triage_session import (
-        ApprovedTriageOp,
-        StoredTriageOp,
-        TriageCaseFileSummary,
+    from ..domain.tech_lead_session import (
+        ApprovedTechLeadOp,
+        StoredTechLeadOp,
+        TechLeadCaseFileSummary,
     )
     from .planner_types import E2ESlotSignals
     from .planner_types import OrchestratorSnapshot
-    from .triage_board import TriageBoardPublisher
+    from .tech_lead_board import TechLeadBoardPublisher
 
 logger = logging.getLogger(__name__)
 
@@ -81,12 +81,12 @@ class FactGatherer:
     # Orchestrator-owned gated-proposal ledger (#6778). Optional so unrelated
     # tests need not wire it; without it the anchor scan classifies no
     # approved ops (gate-labeled proposals are still excluded from anchors).
-    triage_authority: Optional["TriageAuthorityStore"] = None
-    # Fire-and-forget projection sink for triage facts (#6781): like the
+    tech_lead_authority: Optional["TechLeadAuthorityStore"] = None
+    # Fire-and-forget projection sink for tech_lead facts (#6781): like the
     # event sink, it observes gathered facts (retaining the latest case-file
-    # projection + refreshing the triage board file) and makes no decisions.
+    # projection + refreshing the tech_lead board file) and makes no decisions.
     # Optional so unrelated tests need not wire it.
-    board_publisher: Optional["TriageBoardPublisher"] = None
+    board_publisher: Optional["TechLeadBoardPublisher"] = None
     # Durable store for the tech-lead stuck sweep's timer + recovery counters
     # (#6823). Optional so unrelated tests need not wire it; without it the
     # sweep still runs but its counters do not survive a restart.
@@ -187,13 +187,13 @@ class FactGatherer:
         """
         from .planner_types import OrchestratorSnapshot
 
-        # Gather triage facts FIRST: gather_triage_facts runs the tech-lead
+        # Gather tech_lead facts FIRST: gather_tech_lead_facts runs the tech-lead
         # stuck sweep (#6823), which injects recovered failures into
         # state.discovered_failures. That mutation must land before this tick's
         # discovered_failures is captured below, so the reaction model sees the
         # recovered failures this tick (a next-tick capture would be dropped by
         # the end-of-tick discovered-fact clear).
-        triage_facts = self.gather_triage_facts(state)
+        tech_lead_facts = self.gather_tech_lead_facts(state)
         cleanup_facts = self.gather_cleanup_facts(state)
         e2e_occupies_slot, e2e_due = self._read_e2e_slot_facts()
 
@@ -203,7 +203,7 @@ class FactGatherer:
             pending_reviews=tuple(state.pending_reviews),
             pending_retrospective_reviews=tuple(state.pending_retrospective_reviews),
             pending_reworks=tuple(state.pending_reworks),
-            pending_triage=tuple(state.pending_triage_reviews),
+            pending_tech_lead=tuple(state.pending_tech_lead_reviews),
             pending_validation_retries=tuple(state.pending_validation_retries),
             paused=state.paused,
             priority_queue=tuple(state.priority_queue),
@@ -229,7 +229,7 @@ class FactGatherer:
             ),
             discovered_failures=tuple(state.discovered_failures),
             stuck_sweep_escalations=tuple(state.stuck_sweep_escalations),
-            triage_facts=triage_facts,
+            tech_lead_facts=tech_lead_facts,
             cleanup_facts=cleanup_facts,
             stale_in_progress_issues=tuple(stale_in_progress_issues or []),
             stale_claim_issues=tuple(stale_claim_issues or []),
@@ -252,25 +252,25 @@ class FactGatherer:
         signals = self.e2e_slot_reader()
         return signals.occupies_slot, signals.due
 
-    def gather_triage_facts(
+    def gather_tech_lead_facts(
         self,
         state: "OrchestratorState",
         now: float | None = None,
-    ) -> Optional["TriageFacts"]:
-        """Gather facts for the triage batch and health-review triggers.
+    ) -> Optional["TechLeadFacts"]:
+        """Gather facts for the tech_lead batch and health-review triggers.
 
         Three independent triggers can each produce facts (only the case where
         none is active yields None):
-          * BATCH fields, gated by ``triage_review_threshold`` (via the watch
+          * BATCH fields, gated by ``tech_lead_review_threshold`` (via the watch
             label);
           * HEALTH-REVIEW fields, gated by
-            ``triage.health_review.interval_minutes`` when the periodic review
+            ``tech_lead.health_review.interval_minutes`` when the periodic review
             is due, and independently by :func:`storm_possible` so an
             unscheduled storm escalation can dedup its anchor on a tick the
             interval is not due (including ``interval_minutes=0``, which
             disables only the periodic trigger);
           * PROPOSAL fields (approved-op execution + terminal-op cleanup
-            candidates), armed by the triage agent's local op ledger and
+            candidates), armed by the tech lead agent's local op ledger and
             reconciled whenever it holds an op — INDEPENDENT of the batch
             review threshold (#6779 R12), so a manual-approval / default
             (threshold=0) proposal still advances and self-heals.
@@ -279,7 +279,7 @@ class FactGatherer:
         possibility are pure state/config math computed FIRST, so a health-only
         configuration that is neither due nor holding enough problems to storm
         makes ZERO GitHub calls (no anchor fact can affect planning until one
-        of the two can fire); the exhaustive triage-agent scan runs only when
+        of the two can fire); the exhaustive tech-lead-agent scan runs only when
         the batch trigger is armed OR the local op ledger has proposals to
         reconcile (an empty ledger has nothing to approve or clean up, so no
         scan is worth making). A due health review also uses that exhaustive scan
@@ -290,19 +290,19 @@ class FactGatherer:
         planning and the create-issue applier boundary (#6769 round 3) — no
         milestone API reads happen here.
         """
-        from ..domain.models import TriageFacts
+        from ..domain.models import TechLeadFacts
 
         now_ts = time.time() if now is None else now
         # Tech-lead attention sweep (#6823): an independent, timer-gated trigger
-        # that re-injects terminally-stuck issues into the reactive-triage
+        # that re-injects terminally-stuck issues into the reactive-tech-lead
         # pipeline. Runs regardless of the batch/health/storm arming below (it
-        # feeds discovered_failures, not TriageFacts). stuck_sweep_due is pure
+        # feeds discovered_failures, not TechLeadFacts). stuck_sweep_due is pure
         # state/config math, so a disabled/not-due sweep makes ZERO GitHub calls.
         self._run_stuck_sweep_if_due(state, now_ts)
 
-        watch_label = self._get_triage_watch_label()
+        watch_label = self._get_tech_lead_watch_label()
         batch_armed = bool(watch_label)
-        triage_agent_configured = bool(self.config.triage_review_agent)
+        tech_lead_agent_configured = bool(self.config.tech_lead_review_agent)
         health_armed = health_review_interval_minutes(self.config) > 0
         # A storm can fire an anchor on a tick the interval is NOT due — and a
         # storm-only configuration (interval_minutes=0) is never due at all.
@@ -312,15 +312,15 @@ class FactGatherer:
         # duplicate anchor. Pure state/config math, so it costs no API call.
         storm_armed = storm_possible(state, self.config)
 
-        # The act-level PROPOSAL machinery is armed by having a triage agent, so
+        # The act-level PROPOSAL machinery is armed by having a tech lead agent, so
         # it reconciles INDEPENDENT of the batch review threshold (#6779 R12):
         # approved gated proposals must execute and terminal/absent proposals
         # must be surfaced for cleanup even when threshold=0 (batch disabled).
         # The local op ledger (no GitHub call) says whether there is anything to
         # reconcile — an empty ledger produces no facts and no scan.
         ops = (
-            dict(self.triage_authority.list_ops())
-            if triage_agent_configured and self.triage_authority is not None
+            dict(self.tech_lead_authority.list_ops())
+            if tech_lead_agent_configured and self.tech_lead_authority is not None
             else {}
         )
         if not batch_armed and not health_armed and not ops and not storm_armed:
@@ -332,11 +332,11 @@ class FactGatherer:
         health_decision = health_review_decision(self.config, state, now_ts)
         due = health_decision.due
 
-        existing_triage_issue: Optional[int] = None
+        existing_tech_lead_issue: Optional[int] = None
         existing_health_review_issue: Optional[int] = None
-        approved_ops: tuple["ApprovedTriageOp", ...] = ()
+        approved_ops: tuple["ApprovedTechLeadOp", ...] = ()
         absent_op_candidates: tuple[int, ...] = ()
-        case_files: tuple["TriageCaseFileSummary", ...] = ()
+        case_files: tuple["TechLeadCaseFileSummary", ...] = ()
         # Distinguishes "scan ran and observed no case files" from "scan was
         # skipped this tick" so the board projection is only replaced when the
         # anchor scan actually observed the ledger (#6781 R2). A frugal tick
@@ -344,7 +344,7 @@ class FactGatherer:
         # and its empty ``case_files`` must NOT wipe the retained projection.
         case_files_scanned = False
         if batch_armed or ops or due or storm_armed:
-            # The ONE exhaustive open triage-agent scan classifies batch +
+            # The ONE exhaustive open tech-lead-agent scan classifies batch +
             # health anchors, open proposals, approved ops, and absent-ledger
             # cleanup candidates in a single reconcile (#6778/#6779).
             # It runs when the batch trigger is armed OR the ledger has ops to
@@ -358,19 +358,19 @@ class FactGatherer:
                 approved_ops,
                 absent_op_candidates,
                 case_files,
-            ) = self._classify_triage_anchor_scan(ops)
+            ) = self._classify_tech_lead_anchor_scan(ops)
             case_files_scanned = True
             # Batch anchor classification stays gated on batch_armed: a batch
             # anchor is meaningless while the batch trigger is off.
             if batch_armed:
-                existing_triage_issue = batch_anchor
-        prs = self._fetch_triage_prs(watch_label) if batch_armed else []
+                existing_tech_lead_issue = batch_anchor
+        prs = self._fetch_tech_lead_prs(watch_label) if batch_armed else []
         all_labels, source_milestones = self._collect_pr_metadata(prs)
 
-        facts = TriageFacts(
+        facts = TechLeadFacts(
             pr_count=len(prs),
-            threshold=self.config.triage_review_threshold,
-            existing_triage_issue=existing_triage_issue,
+            threshold=self.config.tech_lead_review_threshold,
+            existing_tech_lead_issue=existing_tech_lead_issue,
             watch_label=watch_label or "",
             prs=tuple((pr.number, pr.title) for pr in prs),
             source_labels=frozenset(all_labels),
@@ -378,7 +378,7 @@ class FactGatherer:
             health_review_due=due,
             health_review_fingerprint=health_decision.fingerprint,
             existing_health_review_issue=existing_health_review_issue,
-            approved_triage_ops=approved_ops,
+            approved_tech_lead_ops=approved_ops,
             absent_proposal_op_candidates=absent_op_candidates,
             open_case_files=case_files,
             case_files_scanned=case_files_scanned,
@@ -434,10 +434,10 @@ class FactGatherer:
 
     def _open_proposal_targets(self) -> frozenset[int]:
         """Target issue numbers with an OPEN gated proposal in the ledger (#6824)."""
-        if self.triage_authority is None:
+        if self.tech_lead_authority is None:
             return frozenset()
         return frozenset(
-            op.target_issue_number for _, op in self.triage_authority.list_ops()
+            op.target_issue_number for _, op in self.tech_lead_authority.list_ops()
         )
 
     def _emit_stuck_sweep(self, result: object) -> None:
@@ -450,47 +450,47 @@ class FactGatherer:
             return
         self.events.publish(
             make_trace_event(
-                EventName.TRIAGE_STUCK_SWEEP,
+                EventName.TECH_LEAD_STUCK_SWEEP,
                 {"recovered": recovered, "exhausted": exhausted},
             )
         )
 
-    def _get_triage_watch_label(self) -> str | None:
-        """Get the label to watch for triage review (None = trigger disabled)."""
-        if not self.config.triage_review_agent or self.config.triage_review_threshold <= 0:
+    def _get_tech_lead_watch_label(self) -> str | None:
+        """Get the label to watch for tech_lead review (None = trigger disabled)."""
+        if not self.config.tech_lead_review_agent or self.config.tech_lead_review_threshold <= 0:
             return None
-        return self.config.triage_watch_label
+        return self.config.tech_lead_watch_label
 
-    def _fetch_triage_prs(self, watch_label: str) -> list[Any]:
-        """Fetch PRs that are current triage batch candidates.
+    def _fetch_tech_lead_prs(self, watch_label: str) -> list[Any]:
+        """Fetch PRs that are current tech_lead batch candidates.
 
-        Eligibility comes from the shared :class:`TriageCandidatePolicy` — the
+        Eligibility comes from the shared :class:`TechLeadCandidatePolicy` — the
         same predicate the manifest builder applies — so terminally-triaged
         PRs never count toward the threshold that the manifest then filters
         out (#6768 round 5: that divergence created empty-batch loops).
         """
-        from .triage_manifest_builder import TriageCandidatePolicy
+        from .tech_lead_manifest_builder import TechLeadCandidatePolicy
 
-        policy = TriageCandidatePolicy.from_config(self.config)
+        policy = TechLeadCandidatePolicy.from_config(self.config)
         prs = self.repository_host.get_prs_with_label(watch_label, state="all")
         return [pr for pr in prs if policy.is_candidate(_pr_labels(pr))]
 
-    def _classify_triage_anchor_scan(
+    def _classify_tech_lead_anchor_scan(
         self,
-        ops: Mapping[int, "StoredTriageOp"],
+        ops: Mapping[int, "StoredTechLeadOp"],
     ) -> tuple[
         int | None,
         int | None,
-        tuple["ApprovedTriageOp", ...],
+        tuple["ApprovedTechLeadOp", ...],
         tuple[int, ...],
-        tuple["TriageCaseFileSummary", ...],
+        tuple["TechLeadCaseFileSummary", ...],
     ]:
-        """Classify the ONE shared, exhaustive open triage-agent scan.
+        """Classify the ONE shared, exhaustive open tech-lead-agent scan.
 
         The scoped/exhaustive anchor-discovery owner backs both this path and
         startup recovery, so both apply ONE eligibility rule (#6763 finding 7)
         over the COMPLETE open set (#6779 R4). Gated proposal issues carry the
-        triage agent label, so the SAME scan that finds batch/health anchors
+        tech lead agent label, so the SAME scan that finds batch/health anchors
         classifies them (#6778): gate-labeled issues are open proposals
         (excluded from anchor classification), and op-backed issues WITHOUT
         the gate label were approved by the operator. A backlog of proposals
@@ -507,19 +507,19 @@ class FactGatherer:
         Observation-labeled issues are pattern case files (#6781), summarized
         for the board snapshot and excluded before anchor classification.
         """
-        from .triage_case_files import split_triage_case_file_issues
-        from .triage_proposals import reconcile_triage_proposals
+        from .tech_lead_case_files import split_tech_lead_case_file_issues
+        from .tech_lead_proposals import reconcile_tech_lead_proposals
 
-        if not self.config.triage_review_agent:
+        if not self.config.tech_lead_review_agent:
             return None, None, (), (), ()
-        existing = discover_open_triage_anchor_issues(
+        existing = discover_open_tech_lead_anchor_issues(
             self.repository_host, self.config
         )
-        reconciled = reconcile_triage_proposals(existing, ops=ops)
-        remaining, case_files = split_triage_case_file_issues(
+        reconciled = reconcile_tech_lead_proposals(existing, ops=ops)
+        remaining, case_files = split_tech_lead_case_file_issues(
             reconciled.anchor_candidate_issues
         )
-        batch, health = classify_triage_anchor_issues(
+        batch, health = classify_tech_lead_anchor_issues(
             remaining, self.config.filtering.label
         )
         return (
@@ -589,19 +589,19 @@ class FactGatherer:
             return None
 
         # Determine cleanup settings based on workflow
-        if self.config.triage_review_agent:
-            cleanup_label = self.config.triage_reviewed_label
-            close_tabs = self.config.cleanup.with_triage.close_ai_session_tabs
-            remove_wt = self.config.cleanup.with_triage.remove_worktrees
+        if self.config.tech_lead_review_agent:
+            cleanup_label = self.config.tech_lead_reviewed_label
+            close_tabs = self.config.cleanup.with_tech_lead.close_ai_session_tabs
+            remove_wt = self.config.cleanup.with_tech_lead.remove_worktrees
         elif self.config.code_review_agent:
             cleanup_label = self.config.code_reviewed_label
-            close_tabs = self.config.cleanup.without_triage.close_ai_session_tabs
-            remove_wt = self.config.cleanup.without_triage.remove_worktrees
+            close_tabs = self.config.cleanup.without_tech_lead.close_ai_session_tabs
+            remove_wt = self.config.cleanup.without_tech_lead.remove_worktrees
         else:
             # No review workflow - use defaults for immediate cleanups
             cleanup_label = None
-            close_tabs = self.config.cleanup.without_triage.close_ai_session_tabs
-            remove_wt = self.config.cleanup.without_triage.remove_worktrees
+            close_tabs = self.config.cleanup.without_tech_lead.close_ai_session_tabs
+            remove_wt = self.config.cleanup.without_tech_lead.remove_worktrees
 
         # Get reviewed PRs for deferred cleanups (only if we have pending cleanups)
         reviewed_pr_numbers: frozenset[int] = frozenset()
@@ -629,23 +629,23 @@ class FactGatherer:
             close_tabs=close_tabs,
             remove_worktrees=remove_wt,
             immediate_cleanups=immediate_tuples,
-            held_issue_numbers=triage_problem_artifact_hold_issue_numbers(
-                state, self.config, self.triage_authority
+            held_issue_numbers=tech_lead_problem_artifact_hold_issue_numbers(
+                state, self.config, self.tech_lead_authority
             ),
         )
 
 
-def triage_problem_artifact_hold_issue_numbers(
+def tech_lead_problem_artifact_hold_issue_numbers(
     state: "OrchestratorState",
     config: Config,
-    triage_authority: "Optional[TriageAuthorityStore]" = None,
+    tech_lead_authority: "Optional[TechLeadAuthorityStore]" = None,
 ) -> frozenset[int]:
     """Issues whose failed-session run assets must be held from cleanup.
 
-    Owner of the single lifecycle rule for "triage problem artifacts currently
-    referenced by pending or active triage work". A failed session records its
+    Owner of the single lifecycle rule for "tech_lead problem artifacts currently
+    referenced by pending or active tech_lead work". A failed session records its
     ``ImmediateCleanup`` in the same pass that records the
-    ``DiscoveredFailure``, but the triage work that reads those artifacts
+    ``DiscoveredFailure``, but the tech_lead work that reads those artifacts
     launches on a LATER tick — removing the worktree first deletes every
     artifact hint the work was queued to read (#6771 round 3). The rule is
     evaluated fresh from state at both consuming seams (``gather_cleanup_facts``
@@ -654,14 +654,14 @@ def triage_problem_artifact_hold_issue_numbers(
 
     A problem's artifacts are referenced while ANY of these hold:
 
-    - it was discovered this tick (triage-on-failure will queue it);
+    - it was discovered this tick (tech-lead-on-failure will queue it);
     - a queued failure investigation targets it;
     - a queued health review carries it in its ``problem_cohort`` — a storm
       collapses the per-issue investigations into ONE anchor, so after that
       collapse the cohort is the only thing still naming those artifacts
       (#6780: holding only failure investigations let the collapsed
       members' worktrees be cleaned up before the review could read them);
-    - an active triage session is investigating it; or
+    - an active tech_lead session is investigating it; or
     - an active health review OWNS it via the durable storm-cohort ledger.
       A launched review's queue item is gone, so the ledger is what proves
       its run still references the members' artifacts.
@@ -669,19 +669,19 @@ def triage_problem_artifact_hold_issue_numbers(
     Ledger rows are intersected with anchors that are actually pending or
     active, which is what keeps this owner's release semantics intact: the
     hold releases by re-evaluation, with no dedicated release seam. Once the
-    triage work completes — or is dropped on exhaustion, or its queue action
+    tech_lead work completes — or is dropped on exhaustion, or its queue action
     fails — nothing matches and the retained cleanup is planned normally on
     the next tick, even if a row outlived its anchor.
     """
-    from ..domain.triage_session import TriageSessionFlavor
-    from .triage_session_policy import is_triage_session
+    from ..domain.tech_lead_session import TechLeadSessionFlavor
+    from .tech_lead_session_policy import is_tech_lead_session
 
-    if not (config.triage_review_on_failure and config.triage_review_agent):
+    if not (config.tech_lead_review_on_failure and config.tech_lead_review_agent):
         return frozenset()
     held = {failure.issue_number for failure in state.discovered_failures}
     referenced_anchors: set[int] = set()
-    for item in state.pending_triage_reviews:
-        if item.flavor is TriageSessionFlavor.FAILURE_INVESTIGATION:
+    for item in state.pending_tech_lead_reviews:
+        if item.flavor is TechLeadSessionFlavor.FAILURE_INVESTIGATION:
             held.add(item.issue_number)
         # The item's in-memory ``problem_cohort`` is deliberately NOT read
         # here. It is non-empty only when the ledger write succeeded (intake
@@ -691,11 +691,11 @@ def triage_problem_artifact_hold_issue_numbers(
         # invite them to drift.
         referenced_anchors.add(item.issue_number)
     for session in state.active_sessions:
-        if is_triage_session(config.triage_review_agent, session.issue.agent_type):
+        if is_tech_lead_session(config.tech_lead_review_agent, session.issue.agent_type):
             held.add(session.issue.number)
             referenced_anchors.add(session.issue.number)
-    if triage_authority is not None:
-        for anchor, cohort in triage_authority.list_storm_cohorts():
+    if tech_lead_authority is not None:
+        for anchor, cohort in tech_lead_authority.list_storm_cohorts():
             if anchor in referenced_anchors:
                 held.update(problem.issue_number for problem in cohort)
     return frozenset(held)
@@ -721,17 +721,17 @@ _DISCOVERED_FACT_ATTRS: tuple[str, ...] = (
 def clear_discovered_facts(
     state: "OrchestratorState",
     config: Config,
-    triage_authority: "Optional[TriageAuthorityStore]" = None,
+    tech_lead_authority: "Optional[TechLeadAuthorityStore]" = None,
     *,
     tick_paused: bool,
 ) -> None:
     """Clear tick-scoped fact buffers, retaining held immediate cleanups.
 
-    Immediate cleanups referenced by pending/active triage work are retained
+    Immediate cleanups referenced by pending/active tech_lead work are retained
     across the clear (#6771 round 3): the Planner skipped them this tick via
     ``CleanupFacts.held_issue_numbers``, and dropping them here would leak the
     worktree forever once the hold releases. Both seams read the SAME owner
-    (:func:`triage_problem_artifact_hold_issue_numbers`), so the plan-time
+    (:func:`tech_lead_problem_artifact_hold_issue_numbers`), so the plan-time
     skip and the end-of-tick retention can never disagree about which
     artifacts are still referenced.
 
@@ -755,8 +755,8 @@ def clear_discovered_facts(
     """
     if tick_paused:
         return
-    held = triage_problem_artifact_hold_issue_numbers(state, config, triage_authority)
-    # Retain (a) cleanups still referenced by triage work — the Planner skipped
+    held = tech_lead_problem_artifact_hold_issue_numbers(state, config, tech_lead_authority)
+    # Retain (a) cleanups still referenced by tech_lead work — the Planner skipped
     # them this tick — and (b) DISPOSABLE scratch-worktree cleanups (#6824 F8):
     # a disposable cleanup is pruned on SUCCESS by ``_handle_cleanup_session``,
     # so any that survive to here had their removal FAIL and must be re-planned

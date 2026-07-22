@@ -56,8 +56,8 @@ agents:
       approval_mode: "full-auto"
       sandbox: "workspace-write"
       reasoning_effort: "xhigh"
-  agent:triage:
-    prompt: repo-specific/prompts/triage.md
+  agent:tech-lead:
+    prompt: repo-specific/prompts/tech-lead.md
     provider: "claude-code"
     ai_system: "claude-code"
     model: "opus"
@@ -66,7 +66,7 @@ agents:
     provider_args:
       effort: "xhigh"
       permission_mode: "bypassPermissions"
-    initial_prompt: "Triage review for issue #{issue_number}: {issue_title}. Follow the instructions in {prompt}. When done, use coding-done to report completion."
+    initial_prompt: "Tech Lead review for issue #{issue_number}: {issue_title}. Follow the instructions in {prompt}. When done, use coding-done to report completion."
   agent:goal-pilot:
     prompt: repo-specific/prompts/goal-pilot.md
     provider: codex
@@ -95,14 +95,14 @@ review:
     # Persistent coder<->reviewer exchange (code default; explicit for clarity,
     # matching tixmeup's config).
     mode: "via-local-loop"
-  # Triage tech lead (ADR-0031): agent:triage investigates failed/timed-out
+  # Tech lead (ADR-0031): agent:tech-lead investigates failed/timed-out
   # sessions and files/updates its findings. Act-level actions stay in shadow
-  # (propose) by default — see the `triage.authority` dials below.
-  triage_review_agent: agent:triage
-  # Required companion: the worker a triage `create_issue` follow-up routes to.
-  triage_follow_up_agent: agent:backend
-  triage_review_on_failure: true
-  # triage_review_threshold: 5   # (optional) batch-review after N code-reviewed PRs (0 = manual only)
+  # (propose) by default — see the `tech_lead.authority` dials below.
+  tech_lead_review_agent: agent:tech-lead
+  # Required companion: the worker a tech lead `create_issue` follow-up routes to.
+  tech_lead_follow_up_agent: agent:backend
+  tech_lead_review_on_failure: true
+  # tech_lead_review_threshold: 5   # (optional) batch-review after N code-reviewed PRs (0 = manual only)
 
 # Route approved PRs through GitHub's native merge queue instead of reworking
 # them merely for being behind base. Requires the repo's branch protection to
@@ -140,10 +140,10 @@ filtering:
   exclude_labels: ["io-e2e-test-data", "test-data"]
   exclude_label_prefixes: ["io:e2e:"]
 
-triage:
+tech_lead:
   inherit_labels: ["io-e2e-test-data", "test-data"]
-  # Reserved concurrency for the triage tech lead. With max_concurrent_sessions: 1,
-  # a single long coding session would otherwise starve triage entirely. A separate
+  # Reserved concurrency for the tech lead. With max_concurrent_sessions: 1,
+  # a single long coding session would otherwise starve tech lead entirely. A separate
   # additive budget of 1 slot lets the tech lead (health reviews, failure
   # investigations, batch reviews) run even when the worker budget is saturated;
   # total live agents are then bounded at max_concurrent_sessions + 1.
@@ -159,7 +159,7 @@ triage:
     interval_minutes: 60
   # Tech-lead attention sweep (#6823): a bounded, timer-gated backstop that finds
   # open issues stuck in a terminal blocking state the normal loop cannot
-  # re-discover and re-injects each into reactive triage. Bounded per issue: after
+  # re-discover and re-injects each into reactive tech_lead. Bounded per issue: after
   # max_recovery_attempts it stops re-injecting and flags the issue as exhausted.
   stuck_sweep:
     enabled: true
@@ -174,7 +174,7 @@ e2e:
   enabled: true
   auto_run_interval_minutes: 240
   # occupies_session_slot: true  # Make E2E a first-class worker workload: it
-  # counts against max_concurrent_sessions (not the reserved triage slot),
+  # counts against max_concurrent_sessions (not the reserved tech lead slot),
   # starts only with a free worker slot, and occupies one while running so the
   # planner launches one fewer agent. Left off (default) = today's parallel
   # behavior. Turn on only if a second orchestrator-sized workload is starving

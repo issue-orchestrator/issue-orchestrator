@@ -16,7 +16,10 @@ from typing import Any, Literal, Optional, TYPE_CHECKING
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from .config_models import MERGE_QUEUE_PROVIDERS, TRIAGE_AUTHORITY_MODES
+from ..domain.tech_lead_naming import TECH_LEAD_DISPLAY_NAME
+from .config_models import MERGE_QUEUE_PROVIDERS, TECH_LEAD_AUTHORITY_MODES
+
+_TECH_LEAD_SECTION = f"{TECH_LEAD_DISPLAY_NAME} Review"
 
 from .settings_schema_support import (
     CONFIG_VALUE_TYPE_PATH,
@@ -301,11 +304,11 @@ class E2ESettings(BaseModel):
             "doc_notes": (
                 "Off (default) keeps today's parallel behavior: E2E runs "
                 "alongside agents. On, an E2E run counts against "
-                "max_concurrent_sessions (not the reserved triage slot): it "
+                "max_concurrent_sessions (not the reserved tech lead slot): it "
                 "starts only when a worker slot is free, occupies one slot "
                 "while running so the planner launches one fewer agent, and a "
                 "due suite claims a slot ahead of new issues but behind "
-                "in-flight reviews/reworks/validation-retries/triage. Enable on "
+                "in-flight reviews/reworks/validation-retries/tech_lead. Enable on "
                 "resource-constrained machines where a second orchestrator "
                 "workload would starve live agents."
             ),
@@ -466,7 +469,7 @@ class E2ESettings(BaseModel):
         title="Failure issue agent label",
         description="Agent label assigned to auto-created failure issues",
         json_schema_extra={
-            "doc_examples": ["agent:backend", "agent:triage"],
+            "doc_examples": ["agent:backend", "agent:tech-lead"],
             "doc_notes": "Must refer to an agent defined in the config.",
             "config_attr": "e2e.issue_agent_label",
             "yaml_path": "e2e.issue_agent_label",
@@ -990,149 +993,149 @@ class ReviewSettings(BaseModel):
             "yaml_path": "review.post_publish.checks_pending_timeout_seconds",
         },
     )
-    triage_agent: Optional[str] = Field(
+    tech_lead_agent: Optional[str] = Field(
         None,
-        title="Triage Review Agent",
+        title=f"{TECH_LEAD_DISPLAY_NAME} Review Agent",
         description="Agent for batch reviews (optional)",
         json_schema_extra={
-            "doc_examples": ["agent:triage"],
+            "doc_examples": ["agent:tech-lead"],
             "doc_notes": "Must match a label defined under agents.",
-            "section": "Triage Review",
-            "config_attr": "triage_review_agent",
-            "yaml_path": "review.triage_review_agent",
+            "section": _TECH_LEAD_SECTION,
+            "config_attr": "tech_lead_review_agent",
+            "yaml_path": "review.tech_lead_review_agent",
             "doctor_check": DOCTOR_CHECK_REFERENCES_AGENT,
             "doctor_check_condition": "review_enabled",
             "doctor_severity": DOCTOR_SEVERITY_ERROR,
         },
     )
-    triage_follow_up_agent: Optional[str] = Field(
+    tech_lead_follow_up_agent: Optional[str] = Field(
         None,
-        title="Triage Follow-Up Agent",
-        description="Worker agent that triage-proposed follow-up issues route to",
+        title=f"{TECH_LEAD_DISPLAY_NAME} Follow-Up Agent",
+        description="Worker agent that tech-lead-proposed follow-up issues route to",
         json_schema_extra={
             "doc_examples": ["agent:developer"],
             "doc_notes": (
-                "When a triage decision proposes a new follow-up issue, the "
+                "When a tech lead decision proposes a new follow-up issue, the "
                 "orchestrator attaches this worker's agent label so normal "
                 "discovery picks it up. Must match a worker label under agents. "
-                "REQUIRED whenever review.triage_review_agent is set: a "
-                "configured triage agent makes create_issue proposals reachable, "
+                "REQUIRED whenever review.tech_lead_review_agent is set: a "
+                "configured tech lead agent makes create_issue proposals reachable, "
                 "so leaving this unset fails startup validation instead of "
                 "guessing by config order later."
             ),
-            "section": "Triage Review",
-            "config_attr": "triage_follow_up_agent",
-            "yaml_path": "review.triage_follow_up_agent",
+            "section": _TECH_LEAD_SECTION,
+            "config_attr": "tech_lead_follow_up_agent",
+            "yaml_path": "review.tech_lead_follow_up_agent",
         },
     )
-    triage_threshold: int = Field(
+    tech_lead_threshold: int = Field(
         0,
-        title="Triage Threshold",
-        description="Trigger triage after N PRs (0 = manual only)",
+        title=f"{TECH_LEAD_DISPLAY_NAME} Threshold",
+        description="Trigger tech lead after N PRs (0 = manual only)",
         ge=0,
         le=50,
         json_schema_extra={
             "doc_examples": ["0", "5", "10"],
-            "doc_notes": "Set to 0 to only trigger triage manually.",
-            "section": "Triage Review",
-            "config_attr": "triage_review_threshold",
-            "yaml_path": "review.triage_review_threshold",
+            "doc_notes": "Set to 0 to only trigger tech lead manually.",
+            "section": _TECH_LEAD_SECTION,
+            "config_attr": "tech_lead_review_threshold",
+            "yaml_path": "review.tech_lead_review_threshold",
         },
     )
-    triage_review_label: Optional[str] = Field(
+    tech_lead_review_label: Optional[str] = Field(
         None,
-        title="Triage Review Label",
-        description="Label marking PRs that await triage review (optional)",
+        title=f"{TECH_LEAD_DISPLAY_NAME} Review Label",
+        description="Label marking PRs that await tech lead review (optional)",
         json_schema_extra={
-            "doc_examples": ["needs-triage-review"],
+            "doc_examples": ["needs-tech-lead-review"],
             "doc_notes": "Falls back to code_reviewed_label when not set.",
-            "section": "Triage Review",
-            "config_attr": "triage_review_label",
-            "yaml_path": "review.triage_review_label",
+            "section": _TECH_LEAD_SECTION,
+            "config_attr": "tech_lead_review_label",
+            "yaml_path": "review.tech_lead_review_label",
         },
     )
-    triage_reviewed_label: str = Field(
-        "triage-reviewed",
-        title="Triage Reviewed Label",
-        description="Label added to manifest PRs after triage completes",
+    tech_lead_reviewed_label: str = Field(
+        "tech-lead-reviewed",
+        title=f"{TECH_LEAD_DISPLAY_NAME} Reviewed Label",
+        description="Label added to manifest PRs after tech lead completes",
         json_schema_extra={
-            "doc_examples": ["triage-reviewed"],
-            "doc_notes": "Added to every PR in the triage manifest on success.",
-            "section": "Triage Review",
-            "config_attr": "triage_reviewed_label",
-            "yaml_path": "review.triage_reviewed_label",
+            "doc_examples": ["tech-lead-reviewed"],
+            "doc_notes": "Added to every PR in the tech lead manifest on success.",
+            "section": _TECH_LEAD_SECTION,
+            "config_attr": "tech_lead_reviewed_label",
+            "yaml_path": "review.tech_lead_reviewed_label",
         },
     )
-    triage_failed_label: str = Field(
-        "triage-failed",
-        title="Triage Failed Label",
-        description="Label added to manifest PRs when a triage session fails",
+    tech_lead_failed_label: str = Field(
+        "tech-lead-failed",
+        title=f"{TECH_LEAD_DISPLAY_NAME} Failed Label",
+        description="Label added to manifest PRs when a tech lead session fails",
         json_schema_extra={
-            "doc_examples": ["triage-failed"],
-            "doc_notes": "Added to every PR in the triage manifest on failure.",
-            "section": "Triage Review",
-            "config_attr": "triage_failed_label",
-            "yaml_path": "review.triage_failed_label",
+            "doc_examples": ["tech-lead-failed"],
+            "doc_notes": "Added to every PR in the tech lead manifest on failure.",
+            "section": _TECH_LEAD_SECTION,
+            "config_attr": "tech_lead_failed_label",
+            "yaml_path": "review.tech_lead_failed_label",
         },
     )
-    triage_review_on_failure: bool = Field(
+    tech_lead_review_on_failure: bool = Field(
         True,
-        title="Triage on Session Failure",
-        description="Queue a triage investigation when sessions fail",
+        title=f"{TECH_LEAD_DISPLAY_NAME} on Session Failure",
+        description="Queue a tech lead investigation when sessions fail",
         json_schema_extra={
             "doc_examples": ["true", "false"],
-            "doc_notes": "Disable to only triage PR batches, not failures.",
-            "section": "Triage Review",
-            "config_attr": "triage_review_on_failure",
-            "yaml_path": "review.triage_review_on_failure",
+            "doc_notes": "Disable to only tech lead PR batches, not failures.",
+            "section": _TECH_LEAD_SECTION,
+            "config_attr": "tech_lead_review_on_failure",
+            "yaml_path": "review.tech_lead_review_on_failure",
         },
     )
-    # Graduated triage authority (ADR-0031). Each key is constrained to
-    # TRIAGE_AUTHORITY_MODES — the same set YAML loading validates against —
+    # Graduated tech lead authority (ADR-0031). Each key is constrained to
+    # TECH_LEAD_AUTHORITY_MODES — the same set YAML loading validates against —
     # exposed as an `enum` select plus a POST-time validator (a Literal type
     # is deliberately avoided; see merge_queue.provider for the rationale).
     # escalate_to_human is intentionally absent: it is the non-configurable
     # floor and always executes.
-    triage_authority_post_comment: str = Field(
+    tech_lead_authority_post_comment: str = Field(
         "execute",
-        title="Triage Authority: Post Comment",
-        description="Execute or surface triage-proposed diagnosis comments",
+        title=f"{TECH_LEAD_DISPLAY_NAME} Authority: Post Comment",
+        description="Execute or surface tech-lead-proposed diagnosis comments",
         json_schema_extra={
-            "enum": list(TRIAGE_AUTHORITY_MODES),
+            "enum": list(TECH_LEAD_AUTHORITY_MODES),
             "doc_examples": ["execute", "propose"],
             "doc_notes": (
                 "execute posts the proposed comment; propose (shadow mode) "
                 "surfaces it as would-have-done. Allowed values: execute, propose."
             ),
-            "section": "Triage Review",
-            "config_attr": "triage.authority.post_comment",
-            "yaml_path": "triage.authority.post_comment",
+            "section": _TECH_LEAD_SECTION,
+            "config_attr": "tech_lead.authority.post_comment",
+            "yaml_path": "tech_lead.authority.post_comment",
         },
     )
-    triage_authority_create_issue: str = Field(
+    tech_lead_authority_create_issue: str = Field(
         "execute",
-        title="Triage Authority: Create Issue",
-        description="Execute or gate triage-proposed follow-up issues",
+        title=f"{TECH_LEAD_DISPLAY_NAME} Authority: Create Issue",
+        description="Execute or gate tech-lead-proposed follow-up issues",
         json_schema_extra={
-            "enum": list(TRIAGE_AUTHORITY_MODES),
+            "enum": list(TECH_LEAD_AUTHORITY_MODES),
             "doc_examples": ["execute", "propose"],
             "doc_notes": (
                 "execute files the proposed follow-up issue directly; propose "
-                "files it as a gated proposal issue carrying the proposed-triage "
+                "files it as a gated proposal issue carrying the proposed-tech-lead "
                 "label, inert until an operator removes that label (per-instance "
                 "approval, #6778). Allowed values: execute, propose."
             ),
-            "section": "Triage Review",
-            "config_attr": "triage.authority.create_issue",
-            "yaml_path": "triage.authority.create_issue",
+            "section": _TECH_LEAD_SECTION,
+            "config_attr": "tech_lead.authority.create_issue",
+            "yaml_path": "tech_lead.authority.create_issue",
         },
     )
-    triage_authority_flag_pattern: str = Field(
+    tech_lead_authority_flag_pattern: str = Field(
         "execute",
-        title="Triage Authority: Flag Pattern",
+        title=f"{TECH_LEAD_DISPLAY_NAME} Authority: Flag Pattern",
         description="Open/append durable pattern case-file issues for recurring cross-job patterns",
         json_schema_extra={
-            "enum": list(TRIAGE_AUTHORITY_MODES),
+            "enum": list(TECH_LEAD_AUTHORITY_MODES),
             "doc_examples": ["execute", "propose"],
             "doc_notes": (
                 "execute opens a durable pattern case-file issue the first time "
@@ -1143,56 +1146,56 @@ class ReviewSettings(BaseModel):
                 "pattern trace event. propose (shadow mode) records only a "
                 "would-have-done proposal and opens no case file. Every "
                 "flag_pattern action MUST carry a pattern_signature (the "
-                "case-file ledger key) or the triage decision is rejected. "
+                "case-file ledger key) or the tech lead decision is rejected. "
                 "Allowed values: execute, propose."
             ),
-            "section": "Triage Review",
-            "config_attr": "triage.authority.flag_pattern",
-            "yaml_path": "triage.authority.flag_pattern",
+            "section": _TECH_LEAD_SECTION,
+            "config_attr": "tech_lead.authority.flag_pattern",
+            "yaml_path": "tech_lead.authority.flag_pattern",
         },
     )
-    triage_authority_reset_retry: str = Field(
+    tech_lead_authority_reset_retry: str = Field(
         "propose",
-        title="Triage Authority: Reset & Retry",
+        title=f"{TECH_LEAD_DISPLAY_NAME} Authority: Reset & Retry",
         description="Act-level: reset-and-retry an issue from scratch",
         json_schema_extra={
-            "enum": list(TRIAGE_AUTHORITY_MODES),
+            "enum": list(TECH_LEAD_AUTHORITY_MODES),
             "doc_examples": ["propose", "execute"],
             "doc_notes": (
                 "execute runs the reset+retry-from-scratch owner after "
                 "re-validating the proposal's preconditions at execution time; "
                 "stale proposals downgrade to a surfaced record (#6764). "
                 "propose (default) files each proposal as a gated GitHub issue "
-                "carrying the proposed-triage label; removing the label is "
+                "carrying the proposed-tech-lead label; removing the label is "
                 "per-instance approval and triggers the same re-validated "
                 "execution (#6778). Allowed values: execute, propose."
             ),
-            "section": "Triage Review",
-            "config_attr": "triage.authority.reset_retry",
-            "yaml_path": "triage.authority.reset_retry",
+            "section": _TECH_LEAD_SECTION,
+            "config_attr": "tech_lead.authority.reset_retry",
+            "yaml_path": "tech_lead.authority.reset_retry",
         },
     )
-    triage_authority_kill_hung_session: str = Field(
+    tech_lead_authority_kill_hung_session: str = Field(
         "propose",
-        title="Triage Authority: Kill Hung Session",
+        title=f"{TECH_LEAD_DISPLAY_NAME} Authority: Kill Hung Session",
         description="Act-level: terminate a stuck session",
         json_schema_extra={
-            "enum": list(TRIAGE_AUTHORITY_MODES),
+            "enum": list(TECH_LEAD_AUTHORITY_MODES),
             "doc_examples": ["propose"],
             "doc_notes": (
                 "propose (default) files each proposal as a gated GitHub issue "
-                "carrying the proposed-triage label; removing the label is "
+                "carrying the proposed-tech-lead label; removing the label is "
                 "per-instance approval and executes the stored op after "
                 "re-validating the target session is still active (#6778). "
                 "Direct execute is not wired yet (#6764) and remains a startup "
                 "configuration error. Allowed values: execute, propose."
             ),
-            "section": "Triage Review",
-            "config_attr": "triage.authority.kill_hung_session",
-            "yaml_path": "triage.authority.kill_hung_session",
+            "section": _TECH_LEAD_SECTION,
+            "config_attr": "tech_lead.authority.kill_hung_session",
+            "yaml_path": "tech_lead.authority.kill_hung_session",
         },
     )
-    triage_health_review_interval_minutes: int = Field(
+    tech_lead_health_review_interval_minutes: int = Field(
         0,
         title="Health Review Interval (minutes)",
         description="Create a periodic health-review issue every N minutes (0 = disabled)",
@@ -1201,15 +1204,15 @@ class ReviewSettings(BaseModel):
             "doc_examples": ["0", "240"],
             "doc_notes": (
                 "ADR-0031 §4: when the interval elapses the orchestrator files "
-                "a health-review anchor issue for the triage agent to walk the "
-                "board snapshot. Requires a configured triage agent. 0 disables."
+                "a health-review anchor issue for the tech lead agent to walk the "
+                "board snapshot. Requires a configured tech lead agent. 0 disables."
             ),
-            "section": "Triage Review",
-            "config_attr": "triage.health_review.interval_minutes",
-            "yaml_path": "triage.health_review.interval_minutes",
+            "section": _TECH_LEAD_SECTION,
+            "config_attr": "tech_lead.health_review.interval_minutes",
+            "yaml_path": "tech_lead.health_review.interval_minutes",
         },
     )
-    triage_health_review_storm_threshold: int = Field(
+    tech_lead_health_review_storm_threshold: int = Field(
         3,
         title="Health Review Storm Threshold",
         description=(
@@ -1226,12 +1229,12 @@ class ReviewSettings(BaseModel):
                 "health review and suppresses individual investigations for "
                 "the cohort. The periodic interval remains independent."
             ),
-            "section": "Triage Review",
-            "config_attr": "triage.health_review.storm_threshold",
-            "yaml_path": "triage.health_review.storm_threshold",
+            "section": _TECH_LEAD_SECTION,
+            "config_attr": "tech_lead.health_review.storm_threshold",
+            "yaml_path": "tech_lead.health_review.storm_threshold",
         },
     )
-    triage_health_review_storm_window_minutes: int = Field(
+    tech_lead_health_review_storm_window_minutes: int = Field(
         5,
         title="Health Review Storm Window (minutes)",
         description="Time window used to group blocked/failed problem issues",
@@ -1244,31 +1247,31 @@ class ReviewSettings(BaseModel):
                 "threshold. This window groups reactions; it does not delay "
                 "ordinary failure investigations."
             ),
-            "section": "Triage Review",
-            "config_attr": "triage.health_review.storm_window_minutes",
-            "yaml_path": "triage.health_review.storm_window_minutes",
+            "section": _TECH_LEAD_SECTION,
+            "config_attr": "tech_lead.health_review.storm_window_minutes",
+            "yaml_path": "tech_lead.health_review.storm_window_minutes",
         },
     )
 
-    triage_stuck_sweep_enabled: bool = Field(
+    tech_lead_stuck_sweep_enabled: bool = Field(
         False,
         title="Enable Tech-Lead Stuck Sweep",
-        description="Re-inject terminally-stuck issues into reactive triage (0 = disabled)",
+        description="Re-inject terminally-stuck issues into reactive tech lead (0 = disabled)",
         json_schema_extra={
             "doc_examples": ["true", "false"],
             "doc_notes": (
                 "ADR-0031 (#6823): a bounded, timer-gated backstop that finds "
                 "open issues stuck in a terminal blocking state the normal loop "
-                "cannot re-discover and re-injects each into the reactive-triage "
-                "pipeline as a recovered failure. Requires a configured triage "
-                "agent and triage_review_on_failure. Off by default."
+                "cannot re-discover and re-injects each into the reactive-tech-lead "
+                "pipeline as a recovered failure. Requires a configured tech lead "
+                "agent and tech_lead_review_on_failure. Off by default."
             ),
-            "section": "Triage Review",
-            "config_attr": "triage.stuck_sweep.enabled",
-            "yaml_path": "triage.stuck_sweep.enabled",
+            "section": _TECH_LEAD_SECTION,
+            "config_attr": "tech_lead.stuck_sweep.enabled",
+            "yaml_path": "tech_lead.stuck_sweep.enabled",
         },
     )
-    triage_stuck_sweep_interval_minutes: int = Field(
+    tech_lead_stuck_sweep_interval_minutes: int = Field(
         15,
         title="Stuck Sweep Interval (minutes)",
         description="Scan for stuck issues every N minutes (>= 1; disable via 'enabled')",
@@ -1280,12 +1283,12 @@ class ReviewSettings(BaseModel):
                 "stuck state. Only runs when the sweep is enabled; each scan is "
                 "a single bounded query."
             ),
-            "section": "Triage Review",
-            "config_attr": "triage.stuck_sweep.interval_minutes",
-            "yaml_path": "triage.stuck_sweep.interval_minutes",
+            "section": _TECH_LEAD_SECTION,
+            "config_attr": "tech_lead.stuck_sweep.interval_minutes",
+            "yaml_path": "tech_lead.stuck_sweep.interval_minutes",
         },
     )
-    triage_stuck_sweep_max_recovery_attempts: int = Field(
+    tech_lead_stuck_sweep_max_recovery_attempts: int = Field(
         3,
         title="Stuck Sweep Max Recovery Attempts",
         description="Re-inject a stuck issue at most this many times before escalating",
@@ -1298,16 +1301,16 @@ class ReviewSettings(BaseModel):
                 "re-injected (no infinite loop); it is surfaced as exhausted and "
                 "needs human attention. The counter is durable across restarts."
             ),
-            "section": "Triage Review",
-            "config_attr": "triage.stuck_sweep.max_recovery_attempts",
-            "yaml_path": "triage.stuck_sweep.max_recovery_attempts",
+            "section": _TECH_LEAD_SECTION,
+            "config_attr": "tech_lead.stuck_sweep.max_recovery_attempts",
+            "yaml_path": "tech_lead.stuck_sweep.max_recovery_attempts",
         },
     )
-    triage_max_concurrent: Optional[int] = Field(
+    tech_lead_max_concurrent: Optional[int] = Field(
         None,
-        title="Reserved Triage Concurrency",
+        title="Reserved Tech Lead Concurrency",
         description=(
-            "Reserved concurrency slots for triage sessions (empty = share the "
+            "Reserved concurrency slots for tech lead sessions (empty = share the "
             "worker budget)"
         ),
         ge=1,
@@ -1316,61 +1319,61 @@ class ReviewSettings(BaseModel):
             "doc_examples": ["1", "2"],
             "doc_notes": (
                 "Empty (the default) shares the worker budget "
-                "(execution.concurrency.max_concurrent_sessions): triage counts "
+                "(execution.concurrency.max_concurrent_sessions): tech lead counts "
                 "against it and is planned from the shared capacity, exactly as "
-                "before. A positive value is a SEPARATE additive triage budget: "
-                "triage sessions run from their own slots and are NOT subtracted "
+                "before. A positive value is a SEPARATE additive tech lead budget: "
+                "tech lead sessions run from their own slots and are NOT subtracted "
                 "from the worker budget, so the tech lead can run even when "
                 "workers are saturated. Total live agents are then bounded at "
-                "max_concurrent_sessions + triage.max_concurrent."
+                "max_concurrent_sessions + tech_lead.max_concurrent."
             ),
-            "section": "Triage Review",
-            "config_attr": "triage.max_concurrent",
-            "yaml_path": "triage.max_concurrent",
+            "section": _TECH_LEAD_SECTION,
+            "config_attr": "tech_lead.max_concurrent",
+            "yaml_path": "tech_lead.max_concurrent",
         },
     )
 
     @field_validator(
-        "triage_authority_post_comment",
-        "triage_authority_create_issue",
-        "triage_authority_flag_pattern",
-        "triage_authority_reset_retry",
-        "triage_authority_kill_hung_session",
+        "tech_lead_authority_post_comment",
+        "tech_lead_authority_create_issue",
+        "tech_lead_authority_flag_pattern",
+        "tech_lead_authority_reset_retry",
+        "tech_lead_authority_kill_hung_session",
     )
     @classmethod
-    def _validate_triage_authority_mode(cls, value: str) -> str:
-        if value not in TRIAGE_AUTHORITY_MODES:
+    def _validate_tech_lead_authority_mode(cls, value: str) -> str:
+        if value not in TECH_LEAD_AUTHORITY_MODES:
             raise ValueError(
-                f"triage authority mode must be one of"
-                f" {list(TRIAGE_AUTHORITY_MODES)}, got {value!r}"
+                f"tech lead authority mode must be one of"
+                f" {list(TECH_LEAD_AUTHORITY_MODES)}, got {value!r}"
             )
         return value
 
     @model_validator(mode="after")
-    def _health_review_interval_requires_triage_agent(self) -> "ReviewSettings":
+    def _health_review_interval_requires_tech_lead_agent(self) -> "ReviewSettings":
         # Cross-field invariant (#6763/#6776): a positive health-review
-        # interval without a configured triage agent would be silently
+        # interval without a configured tech lead agent would be silently
         # disabled at runtime. Reject the pair so the misconfiguration is
         # loud instead of degrading (0 disables; a positive interval needs
         # an agent to walk the board).
-        if self.triage_health_review_interval_minutes > 0 and not self.triage_agent:
+        if self.tech_lead_health_review_interval_minutes > 0 and not self.tech_lead_agent:
             raise ValueError(
-                "triage.health_review.interval_minutes is "
-                f"{self.triage_health_review_interval_minutes} but no triage "
-                "agent is configured; set review.triage_review_agent, or use 0 "
+                "tech_lead.health_review.interval_minutes is "
+                f"{self.tech_lead_health_review_interval_minutes} but no tech lead "
+                "agent is configured; set review.tech_lead_review_agent, or use 0 "
                 "to disable the periodic health review."
             )
         return self
 
     @model_validator(mode="after")
-    def _stuck_sweep_requires_triage_agent(self) -> "ReviewSettings":
+    def _stuck_sweep_requires_tech_lead_agent(self) -> "ReviewSettings":
         # Cross-field invariant (#6823): the sweep re-injects stuck issues into
-        # the reactive-triage pipeline, so an enabled sweep with no triage agent
+        # the reactive-tech-lead pipeline, so an enabled sweep with no tech lead agent
         # is silently inert at runtime. Reject the pair so it fails loudly.
-        if self.triage_stuck_sweep_enabled and not self.triage_agent:
+        if self.tech_lead_stuck_sweep_enabled and not self.tech_lead_agent:
             raise ValueError(
-                "triage.stuck_sweep.enabled is true but no triage agent is "
-                "configured; set review.triage_review_agent, or disable the "
+                "tech_lead.stuck_sweep.enabled is true but no tech lead agent is "
+                "configured; set review.tech_lead_review_agent, or disable the "
                 "stuck sweep."
             )
         return self
@@ -1501,12 +1504,12 @@ class MergeQueueSettings(BaseModel):
             "yaml_path": "merge_queue.provider",
         },
     )
-    enqueue_after: Literal["code-reviewed", "triage-reviewed"] = Field(
+    enqueue_after: Literal["code-reviewed", "tech-lead-reviewed"] = Field(
         "code-reviewed",
         title="Enqueue After Gate",
         description="Orchestrator gate that must pass before a PR is enqueued",
         json_schema_extra={
-            "doc_examples": ["code-reviewed", "triage-reviewed"],
+            "doc_examples": ["code-reviewed", "tech-lead-reviewed"],
             "doc_notes": (
                 "Names the approval gate the PR must clear before enqueue. "
                 "code-reviewed is the reviewer-approval gate."

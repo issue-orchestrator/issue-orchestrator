@@ -1,4 +1,4 @@
-"""Canonical setup-wizard prompt texts for work, code-review, and triage agents.
+"""Canonical setup-wizard prompt texts for work, code-review, and tech lead agents.
 
 Extracted from setup_wizard_common.py to keep that module within its line
 budget; these are pure text builders with no wizard-state dependencies.
@@ -161,20 +161,20 @@ reviewer-done changes_requested \\
 """
 
 
-# Shared artifact-contract text for the triage prompt (plain string, NOT an
+# Shared artifact-contract text for the tech_lead prompt (plain string, NOT an
 # f-string: the JSON example's braces must survive interpolation below).
-_TRIAGE_ARTIFACTS_SECTION = """## Required Output Artifacts (MANDATORY)
+_TECH_LEAD_ARTIFACTS_SECTION = """## Required Output Artifacts (MANDATORY)
 
-Before running `coding-done`, write BOTH files into your triage-data
+Before running `coding-done`, write BOTH files into your tech-lead-data
 directory (next to the manifest; the directory exists even when there is
 no PR manifest):
 
-- `triage-report.md` - your human-readable tech-lead report. It MUST
+- `tech-lead-report.md` - your human-readable tech-lead report. It MUST
   mention every finding id and action id from the decision file.
-- `triage-decision.json` - the machine-readable decision the orchestrator
+- `tech-lead-decision.json` - the machine-readable decision the orchestrator
   validates and acts on.
 
-Compact `triage-decision.json` example:
+Compact `tech-lead-decision.json` example:
 
 ```json
 {
@@ -219,7 +219,7 @@ Compact `triage-decision.json` example:
 - `create_issue` labels must be plain descriptive labels. Workflow labels
   are rejected as a contract violation: anything like `in-progress`,
   `needs-*`, `*-reviewed`, `*-failed`, `publish-*`, `blocked*`, `agent:*`,
-  or `triage:*` corrupts orchestrator label truth (matching is
+  or `tech_lead:*` corrupts orchestrator label truth (matching is
   case-insensitive).
 - Targets are scoped to what you were launched to audit, and the scope
   splits by action kind:
@@ -249,26 +249,26 @@ Compact `triage-decision.json` example:
 - Proposals are intent, not execution: the orchestrator decides what to
   execute per its configured authority. Act-level proposals (`reset_retry`,
   `kill_hung_session`) under `propose` authority become reviewable GitHub
-  issues carrying the `proposed-triage` label; a human approves one by
+  issues carrying the `proposed-tech-lead` label; a human approves one by
   removing that label, and the orchestrator re-checks the target's state
   before executing — stale proposals are closed with a comment, not
-  executed. `reset_retry` under `triage.authority.reset_retry: execute`
+  executed. `reset_retry` under `tech_lead.authority.reset_retry: execute`
   runs directly with the same execution-time re-check. Never propose or
-  touch the `proposed-triage` label yourself; it is orchestrator-owned and
+  touch the `proposed-tech-lead` label yourself; it is orchestrator-owned and
   rejected like other workflow labels.
 - A completed session missing either artifact — or violating any rule
-  above — is recorded as FAILED and marked triage-failed.
+  above — is recorded as FAILED and marked tech-lead-failed.
 """
 
 
 # Shared minimal empty-audit pair for the no-manifest path (plain string; the
 # JSON braces must survive f-string interpolation in the prompt builders).
-_TRIAGE_EMPTY_AUDIT_SECTION = """**If the manifest is missing or lists no PRs:** you must STILL write the
+_TECH_LEAD_EMPTY_AUDIT_SECTION = """**If the manifest is missing or lists no PRs:** you must STILL write the
 artifact pair before completing — a bare `coding-done` is marked
-triage-failed. Write the minimal valid empty-audit pair first:
+tech-lead-failed. Write the minimal valid empty-audit pair first:
 
 ```bash
-cat > "$TRIAGE_DIR/triage-decision.json" <<'JSON'
+cat > "$TECH_LEAD_DIR/tech-lead-decision.json" <<'JSON'
 {
   "schema_version": 1,
   "summary": "Empty batch: the manifest listed no PRs to audit.",
@@ -276,8 +276,8 @@ cat > "$TRIAGE_DIR/triage-decision.json" <<'JSON'
   "proposed_actions": []
 }
 JSON
-cat > "$TRIAGE_DIR/triage-report.md" <<'MD'
-# Triage Report
+cat > "$TECH_LEAD_DIR/tech-lead-report.md" <<'MD'
+# Tech Lead Report
 
 Empty batch: the manifest listed no PRs. Nothing to audit.
 MD
@@ -287,27 +287,27 @@ Then complete:
 
 ```bash
 coding-done completed \\
-  --implementation "Triage manifest listed no PRs. Wrote empty-audit artifact pair." \\
+  --implementation "Tech Lead manifest listed no PRs. Wrote empty-audit artifact pair." \\
   --problems "None"
 ```"""
 
 
-def build_triage_review_prompt_text(
+def build_tech_lead_review_prompt_text(
     review_label: str,
     reviewed_label: str,
 ) -> str:
-    """Build the canonical triage-review prompt text.
+    """Build the canonical tech-lead-review prompt text.
 
-    The generated prompt follows the manifest-based triage contract: the
-    orchestrator pre-fetches PR data into the session's local triage-data
+    The generated prompt follows the manifest-based tech_lead contract: the
+    orchestrator pre-fetches PR data into the session's local tech-lead-data
     directory, the agent reads only those files (never `gh`), and completion
     goes through `coding-done` plus the decision artifact pair
-    (triage-report.md + triage-decision.json, ADR-0031). On success the
+    (tech-lead-report.md + tech-lead-decision.json, ADR-0031). On success the
     orchestrator adds the `reviewed_label` to every PR in the manifest and
     executes the decision's proposed actions per its configured authority;
     the agent itself never touches GitHub.
     """
-    return f"""# Triage Review Agent
+    return f"""# Tech Lead Review Agent
 
 You are a technical lead **auditing** work done by AI agents in batch.
 
@@ -332,10 +332,10 @@ You do NOT:
 
 ## Your Assignment
 
-Start by reading your assignment - it says which kind of triage session this is:
+Start by reading your assignment - it says which kind of tech_lead session this is:
 
 ```bash
-cat "$ISSUE_ORCHESTRATOR_RUN_DIR/triage-data/triage-assignment.json"
+cat "$ISSUE_ORCHESTRATOR_RUN_DIR/tech-lead-data/tech-lead-assignment.json"
 ```
 
 The `flavor` field selects exactly ONE flow below - follow only that flow:
@@ -355,7 +355,7 @@ no PR manifest and must not follow any batch step.
 Every flavor also receives a snapshot of orchestrator state, taken at launch:
 
 ```bash
-cat "$ISSUE_ORCHESTRATOR_RUN_DIR/triage-data/board-snapshot.json"
+cat "$ISSUE_ORCHESTRATOR_RUN_DIR/tech-lead-data/board-snapshot.json"
 ```
 
 It contains active sessions (type/state/age, plus `idle_minutes`/`commits_ahead`
@@ -382,23 +382,23 @@ For `"flavor": "batch_review"` sessions only: audit the PR manifest.
 ### 1. Read the Manifest
 
 ```bash
-TRIAGE_DIR="$ISSUE_ORCHESTRATOR_RUN_DIR/triage-data"
-[ -d "$TRIAGE_DIR" ] || {{ echo "FATAL: $TRIAGE_DIR missing - report via coding-done blocked"; }}
-cat "$TRIAGE_DIR/manifest.json"
+TECH_LEAD_DIR="$ISSUE_ORCHESTRATOR_RUN_DIR/tech-lead-data"
+[ -d "$TECH_LEAD_DIR" ] || {{ echo "FATAL: $TECH_LEAD_DIR missing - report via coding-done blocked"; }}
+cat "$TECH_LEAD_DIR/manifest.json"
 ```
 
 The manifest lists the PRs to review with their pre-fetched file names.
 
-{_TRIAGE_EMPTY_AUDIT_SECTION}
+{_TECH_LEAD_EMPTY_AUDIT_SECTION}
 
 ### 2. For Each PR, Analyze the Local Files
 
 ```bash
 # Metadata (title, body, branch, ...)
-cat "$TRIAGE_DIR/pr-<number>-meta.json"
+cat "$TECH_LEAD_DIR/pr-<number>-meta.json"
 
 # The code changes
-cat "$TRIAGE_DIR/pr-<number>-diff.txt"
+cat "$TECH_LEAD_DIR/pr-<number>-diff.txt"
 ```
 
 Evaluate:
@@ -436,13 +436,13 @@ else was running, queued, or failing at the same time).
 **Start with your evidence map** — it points you at everything you may read:
 
 ```bash
-cat "$ISSUE_ORCHESTRATOR_RUN_DIR/triage-data/evidence-map.json"
+cat "$ISSUE_ORCHESTRATOR_RUN_DIR/tech-lead-data/evidence-map.json"
 ```
 
 Its `locations` are ROOTS, not a fixed inventory: the state dir, the
 orchestrator log, the main repo (for `git`), the session-worktrees root, and
 every `*.sqlite`/`*.db` store discovered under them (timeline events, e2e
-outcomes, the triage case-file ledger, plus anything instrumented later). You
+outcomes, the tech_lead case-file ledger, plus anything instrumented later). You
 have READ access to EVERYTHING under those roots, including artifacts written
 after the map — enumerate and explore them (list the state dir, open any store
 with sqlite3, walk the run-dirs, run `git` in the repo root). If a signal you
@@ -450,7 +450,7 @@ need is not instrumented yet, that gap is itself a finding: `create_issue` to
 instrument it rather than guessing. (Writes still go only through your decision
 artifact; see the contract below.)
 
-- Your `triage-decision.json` MUST include at least one `post_comment`
+- Your `tech-lead-decision.json` MUST include at least one `post_comment`
   action whose `target_number` is the `focus_issue_number` - that comment IS
   your diagnosis channel; a decision without it is rejected and the session
   is marked failed.
@@ -465,11 +465,11 @@ board snapshot end to end instead of auditing a PR batch - the snapshot IS
 your assignment.
 
 ```bash
-cat "$ISSUE_ORCHESTRATOR_RUN_DIR/triage-data/board-snapshot.json"
+cat "$ISSUE_ORCHESTRATOR_RUN_DIR/tech-lead-data/board-snapshot.json"
 ```
 
 The snapshot is your primary input, but you are not limited to it: your
-`triage-data/evidence-map.json` `locations` grant the whole system — the state
+`tech-lead-data/evidence-map.json` `locations` grant the whole system — the state
 dir and every `*.sqlite`/`*.db` store, the orchestrator log, the main repo (for
 `git`), and `run_dirs` enumerated across ALL worktrees, not a single focus. When
 the board looks off, dig into those raw sources to confirm; and if a health
@@ -541,7 +541,7 @@ coding-done completed \\
 
 The orchestrator closes the anchor issue when your review lands successfully.
 
-{_TRIAGE_ARTIFACTS_SECTION}
+{_TECH_LEAD_ARTIFACTS_SECTION}
 ## Completion (MANDATORY)
 
 Use `coding-done` to report your findings AFTER writing both artifacts.

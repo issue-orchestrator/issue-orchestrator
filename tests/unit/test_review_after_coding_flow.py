@@ -69,8 +69,8 @@ def make_repository_host(prs):
 def make_completion_handler(config: Config, repository_host) -> CompletionHandler:
     session_output = MagicMock(spec=SessionOutput)
     session_output.find_run_dir.return_value = None
-    from issue_orchestrator.ports.triage_authority import (
-        InMemoryTriageAuthorityStore,
+    from issue_orchestrator.ports.tech_lead_authority import (
+        InMemoryTechLeadAuthorityStore,
     )
 
     return CompletionHandler(
@@ -81,7 +81,7 @@ def make_completion_handler(config: Config, repository_host) -> CompletionHandle
         get_session_machine_fn=lambda _terminal_id: None,
         get_review_machine_fn=lambda _pr_number: None,
         session_output=session_output,
-        triage_authority=InMemoryTriageAuthorityStore(),
+        tech_lead_authority=InMemoryTechLeadAuthorityStore(),
         active_session_run_id=lambda _n: None,
     )
 
@@ -138,7 +138,7 @@ class TestReviewAfterCodingFlow:
         """
         config = MagicMock()
         config.code_review_agent = "agent:reviewer"
-        config.cleanup.without_triage.close_ai_session_tabs = True
+        config.cleanup.without_tech_lead.close_ai_session_tabs = True
 
         state = OrchestratorState()
         state.active_sessions = [sample_session]
@@ -216,7 +216,7 @@ class TestReviewAfterCodingFlow:
             active_sessions=(),
             pending_reviews=(),
             pending_reworks=(),
-            pending_triage=(),
+            pending_tech_lead=(),
             paused=False,
             discovered_reviews=tuple(state.discovered_reviews),
         )
@@ -275,7 +275,7 @@ class TestReviewAfterCodingFlow:
             active_sessions=(),
             pending_reviews=(),
             pending_reworks=(),
-            pending_triage=(),
+            pending_tech_lead=(),
             paused=False,
             discovered_reviews=(discovered,),
         )
@@ -334,7 +334,7 @@ class TestReviewAfterCodingFlow:
             active_sessions=(),  # No active sessions (capacity available)
             pending_reviews=(pending,),
             pending_reworks=(),
-            pending_triage=(),
+            pending_tech_lead=(),
             paused=False,
         )
 
@@ -358,7 +358,7 @@ class TestReviewNotQueuedWhenConditionsNotMet:
         """Reviews not queued when session completes without PR."""
         config = MagicMock()
         config.code_review_agent = "agent:reviewer"
-        config.cleanup.without_triage.close_ai_session_tabs = True
+        config.cleanup.without_tech_lead.close_ai_session_tabs = True
 
         state = OrchestratorState()
         state.active_sessions = [sample_session]
@@ -406,7 +406,7 @@ class TestReviewNotQueuedWhenConditionsNotMet:
         """
         config = MagicMock()
         config.code_review_agent = "agent:reviewer"
-        config.cleanup.without_triage.close_ai_session_tabs = True
+        config.cleanup.without_tech_lead.close_ai_session_tabs = True
 
         state = OrchestratorState()
         state.active_sessions = [sample_session]
@@ -450,7 +450,7 @@ class TestReviewNotQueuedWhenConditionsNotMet:
         """Reviews not queued when code_review_agent is not configured."""
         config = MagicMock()
         config.code_review_agent = None  # Not configured!
-        config.cleanup.without_triage.close_ai_session_tabs = True
+        config.cleanup.without_tech_lead.close_ai_session_tabs = True
 
         state = OrchestratorState()
         state.active_sessions = [sample_session]

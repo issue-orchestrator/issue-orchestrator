@@ -89,7 +89,7 @@ _JOURNEY_NARRATIVE_MAP: dict[str, str] = {
     "review.escalated": "Escalated to human review",
     "rework.started": "Rework session started",
     "rework.launching": "Rework session launching",
-    "triage.launching": "Triage review launching",
+    "tech_lead.launching": "Tech Lead review launching",
     "validation.started": "Validation started",
     "validation.completed": "Validation passed",
     "session.validation_retry_needed": "Validation failed — retrying{_summary}",

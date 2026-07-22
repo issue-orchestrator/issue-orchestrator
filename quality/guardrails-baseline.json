@@ -376,11 +376,11 @@
       "rule_id": "control_policy_branch_sites",
       "value": 4
     },
-    "control_policy_branch_sites:src/issue_orchestrator/control/triage_issue_policy.py": {
+    "control_policy_branch_sites:src/issue_orchestrator/control/tech_lead_issue_policy.py": {
       "detail": "5 branch site(s) mention lifecycle/control terms",
       "kind": "control_policy_branch_sites",
-      "metric_id": "src/issue_orchestrator/control/triage_issue_policy.py",
-      "path": "src/issue_orchestrator/control/triage_issue_policy.py",
+      "metric_id": "src/issue_orchestrator/control/tech_lead_issue_policy.py",
+      "path": "src/issue_orchestrator/control/tech_lead_issue_policy.py",
       "rule_id": "control_policy_branch_sites",
       "value": 5
     },
@@ -1896,19 +1896,19 @@
       "rule_id": "ruff_noqa_suppressions",
       "value": 1
     },
-    "ruff_noqa_suppressions:src/issue_orchestrator/control/triage_evidence.py:39d5c1d941ad": {
+    "ruff_noqa_suppressions:src/issue_orchestrator/control/tech_lead_evidence.py:39d5c1d941ad": {
       "detail": "line 281: # noqa: BLE001 - best-effort warm-cache, never fatal",
       "kind": "ruff_noqa_suppression",
-      "metric_id": "src/issue_orchestrator/control/triage_evidence.py:39d5c1d941ad",
-      "path": "src/issue_orchestrator/control/triage_evidence.py",
+      "metric_id": "src/issue_orchestrator/control/tech_lead_evidence.py:39d5c1d941ad",
+      "path": "src/issue_orchestrator/control/tech_lead_evidence.py",
       "rule_id": "ruff_noqa_suppressions",
       "value": 1
     },
-    "ruff_noqa_suppressions:src/issue_orchestrator/control/triage_session_policy.py:8862c7ccdc5f": {
+    "ruff_noqa_suppressions:src/issue_orchestrator/control/tech_lead_session_policy.py:8862c7ccdc5f": {
       "detail": "line 347: # noqa: BLE001 - evidence map is best-effort, never fatal",
       "kind": "ruff_noqa_suppression",
-      "metric_id": "src/issue_orchestrator/control/triage_session_policy.py:8862c7ccdc5f",
-      "path": "src/issue_orchestrator/control/triage_session_policy.py",
+      "metric_id": "src/issue_orchestrator/control/tech_lead_session_policy.py:8862c7ccdc5f",
+      "path": "src/issue_orchestrator/control/tech_lead_session_policy.py",
       "rule_id": "ruff_noqa_suppressions",
       "value": 1
     },
@@ -2616,18 +2616,18 @@
       "rule_id": "semgrep_owner_boundaries",
       "value": 1
     },
-    "semgrep_owner_boundaries:src/issue_orchestrator/control/retry_history_state.py:issue-orchestrator.direct-runtime-state-mutation:205625c007c6": {
-      "detail": "issue-orchestrator.direct-runtime-state-mutation line 188: Route orchestrator runtime state collection mutations through an owner abstraction.",
-      "kind": "semgrep_finding",
-      "metric_id": "src/issue_orchestrator/control/retry_history_state.py:issue-orchestrator.direct-runtime-state-mutation:205625c007c6",
-      "path": "src/issue_orchestrator/control/retry_history_state.py",
-      "rule_id": "semgrep_owner_boundaries",
-      "value": 1
-    },
     "semgrep_owner_boundaries:src/issue_orchestrator/control/retry_history_state.py:issue-orchestrator.direct-runtime-state-mutation:b1245d294bb3": {
       "detail": "issue-orchestrator.direct-runtime-state-mutation line 205: Route orchestrator runtime state collection mutations through an owner abstraction.",
       "kind": "semgrep_finding",
       "metric_id": "src/issue_orchestrator/control/retry_history_state.py:issue-orchestrator.direct-runtime-state-mutation:b1245d294bb3",
+      "path": "src/issue_orchestrator/control/retry_history_state.py",
+      "rule_id": "semgrep_owner_boundaries",
+      "value": 1
+    },
+    "semgrep_owner_boundaries:src/issue_orchestrator/control/retry_history_state.py:issue-orchestrator.direct-runtime-state-mutation:b8534fd7e13b": {
+      "detail": "issue-orchestrator.direct-runtime-state-mutation line 190: Route orchestrator runtime state collection mutations through an owner abstraction.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/control/retry_history_state.py:issue-orchestrator.direct-runtime-state-mutation:b8534fd7e13b",
       "path": "src/issue_orchestrator/control/retry_history_state.py",
       "rule_id": "semgrep_owner_boundaries",
       "value": 1
@@ -2776,10 +2776,10 @@
       "rule_id": "semgrep_owner_boundaries",
       "value": 1
     },
-    "semgrep_owner_boundaries:src/issue_orchestrator/entrypoints/web_operator_routes.py:issue-orchestrator.direct-runtime-state-mutation:da530dab3744": {
+    "semgrep_owner_boundaries:src/issue_orchestrator/entrypoints/web_operator_routes.py:issue-orchestrator.direct-runtime-state-mutation:cf9ef58805e5": {
       "detail": "issue-orchestrator.direct-runtime-state-mutation line 172: Route orchestrator runtime state collection mutations through an owner abstraction.",
       "kind": "semgrep_finding",
-      "metric_id": "src/issue_orchestrator/entrypoints/web_operator_routes.py:issue-orchestrator.direct-runtime-state-mutation:da530dab3744",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_operator_routes.py:issue-orchestrator.direct-runtime-state-mutation:cf9ef58805e5",
       "path": "src/issue_orchestrator/entrypoints/web_operator_routes.py",
       "rule_id": "semgrep_owner_boundaries",
       "value": 1

@@ -20,11 +20,11 @@ from .sandbox_scope import (
     compute_session_scope,
 )
 from .session_run import SessionRunAssets
-from .triage_session import (
-    ApprovedTriageOp,
-    TriageCaseFileSummary,
-    TriageLaunchScope,
-    TriageSessionFlavor,
+from .tech_lead_session import (
+    ApprovedTechLeadOp,
+    TechLeadCaseFileSummary,
+    TechLeadLaunchScope,
+    TechLeadSessionFlavor,
 )
 
 if TYPE_CHECKING:
@@ -982,7 +982,7 @@ class AgentConfig:
                        uses {pr_number} but this is not provided, a KeyError is raised.
             existing_work: Optional context about existing commits in the worktree.
                           If provided, prepended to prompt so agent knows to complete vs restart.
-            task_kind: The task kind value (e.g., "code", "rework", "review", "triage").
+            task_kind: The task kind value (e.g., "code", "rework", "review", "tech_lead").
                       Determines which completion instructions are injected.
         """
         prompt_for_command = self.prompt_relative if self.prompt_relative else str(self.prompt_path)
@@ -1115,7 +1115,7 @@ class AgentConfig:
         Args:
             prompt: The fully rendered prompt to send to the agent
             prompt_file: Path to the prompt/instructions file (for system prompt)
-            task_kind: The task kind value (e.g., "code", "rework", "review", "triage").
+            task_kind: The task kind value (e.g., "code", "rework", "review", "tech_lead").
             extra_provider_args: Per-issue overrides (e.g., from labels) merged on top
                 of the agent's ``provider_args``.
             sandbox_scope: The per-session sandbox scope (ADR-0034), or ``None``
@@ -1225,7 +1225,7 @@ class Session:
     lease_acquired_at: datetime | None = None  # When the claim was acquired
     lease_expires_at: datetime | None = None  # When the claim expires if not renewed
     last_claim_verified_at: datetime | None = None  # Last time we verified we're still the winner
-    # True for a triage failure investigation running in a disposable, run-scoped
+    # True for a tech_lead failure investigation running in a disposable, run-scoped
     # scratch worktree (#6823). The worktree is a throwaway that reads its focus
     # issue as evidence, so completion must remove it regardless of the cleanup
     # config (a "keep worktrees for inspection" preference is for PR-producing
@@ -1296,7 +1296,7 @@ class PendingCleanup:
     """A session awaiting cleanup after review completes.
 
     Tracks sessions that completed successfully but need to wait for
-    code review or triage review before closing tabs/removing worktrees.
+    code review or tech_lead review before closing tabs/removing worktrees.
     """
     issue: "IssueProtocol"  # The issue this cleanup is for
     pr_number: int
@@ -1416,14 +1416,14 @@ class DiscoveredAwaitingMergeDrift:
 
 
 @dataclass(frozen=True)
-class TriageFacts:
-    """Facts about triage review trigger conditions.
+class TechLeadFacts:
+    """Facts about tech_lead review trigger conditions.
 
-    Immutable snapshot of conditions for Planner to decide on triage.
+    Immutable snapshot of conditions for Planner to decide on tech_lead.
     """
     pr_count: int = 0  # PRs with watch label
     threshold: int = 0  # Configured threshold (<= 0: batch trigger disabled)
-    existing_triage_issue: Optional[int] = None  # Existing open triage issue number
+    existing_tech_lead_issue: Optional[int] = None  # Existing open tech_lead issue number
     watch_label: str = ""  # Label being watched ("": batch trigger disabled)
     prs: tuple[Any, ...] = field(default_factory=tuple)  # PR info for body generation
     # Labels from source issues/PRs (for label inheritance)
@@ -1431,30 +1431,30 @@ class TriageFacts:
     # Milestones from source issues: tuple of (number, title) for milestone inheritance
     source_milestones: tuple[tuple[int, str], ...] = field(default_factory=tuple)
     # Periodic health review (ADR-0031 §4). Independent of the batch fields
-    # above: triage.health_review.interval_minutes gates these while
-    # triage_review_threshold gates only the batch fields.
+    # above: tech_lead.health_review.interval_minutes gates these while
+    # tech_lead_review_threshold gates only the batch fields.
     health_review_due: bool = False  # Interval elapsed since the last health review
     # The board fingerprint ``health_review_due`` was decided against. Travels
     # with the verdict so anchor creation records the board it fired on rather
     # than recomputing against a board that has since changed (#6793).
     health_review_fingerprint: str = ""
     existing_health_review_issue: Optional[int] = None  # Open marker-labeled anchor issue
-    # Approved gated triage proposals (#6778): open issues that carry a
-    # StoredTriageOp but no longer carry the proposed-triage gate label,
+    # Approved gated tech_lead proposals (#6778): open issues that carry a
+    # StoredTechLeadOp but no longer carry the proposed-tech-lead gate label,
     # classified from the SAME anchor scan. The planner turns each into the
     # stored op's execution action.
-    approved_triage_ops: tuple["ApprovedTriageOp", ...] = field(default_factory=tuple)
+    approved_tech_lead_ops: tuple["ApprovedTechLeadOp", ...] = field(default_factory=tuple)
     # Ledger rows whose proposal issue was ABSENT from the exhaustive scan
     # (#6779 R7). Absence is only a candidate for terminal cleanup — the scan
     # can be truncated — so the planner emits a
-    # DiscardTerminalTriageProposalOpsAction and the applier confirms each with
+    # DiscardTerminalTechLeadProposalOpsAction and the applier confirms each with
     # a fresh targeted read before discarding. Surfacing these as a fact keeps
     # fact gathering read-only (#6779 R10).
     absent_proposal_op_candidates: tuple[int, ...] = field(default_factory=tuple)
     # Open pattern case files (#6781): observation-labeled issues classified
     # from the SAME anchor scan. Projected into the board snapshot so health
-    # reviews mine accumulated evidence, and into the triage board file.
-    open_case_files: tuple["TriageCaseFileSummary", ...] = field(default_factory=tuple)
+    # reviews mine accumulated evidence, and into the tech_lead board file.
+    open_case_files: tuple["TechLeadCaseFileSummary", ...] = field(default_factory=tuple)
     # Whether THIS tick actually ran the exhaustive anchor scan that observes
     # open case files (#6781 R2). API-frugal ticks (health armed but not due,
     # no batch, empty op ledger) skip the scan and therefore carry
@@ -1557,9 +1557,9 @@ class DiscoveredMergeQueueEnqueue:
 
 @dataclass(frozen=True)
 class DiscoveredFailure:
-    """A session problem discovered, pending Planner decision on triage.
+    """A session problem discovered, pending Planner decision on tech_lead.
 
-    This is a "fact" - the Planner will decide whether to queue a triage review.
+    This is a "fact" - the Planner will decide whether to queue a tech_lead review.
     Immutable to be safely included in OrchestratorSnapshot.
 
     ``failure_reason`` covers terminal failures (``failed`` / ``timed_out``)
@@ -1640,13 +1640,13 @@ class ImmediateCleanup:
     """A session that needs immediate cleanup (no deferred review).
 
     Created when a session completes/times out and cleanup should happen
-    immediately (not deferred until triage review).
+    immediately (not deferred until tech_lead review).
     """
     issue_number: int
     terminal_id: str  # e.g., "issue-123", "review-456"
     worktree_path: str
     reason: str  # e.g., "completed", "timed_out"
-    # True when ``worktree_path`` is a disposable triage-investigation scratch
+    # True when ``worktree_path`` is a disposable tech-lead-investigation scratch
     # worktree (#6823): the Planner forces its removal even when the cleanup
     # config would otherwise keep worktrees, so scratch workspaces never
     # accumulate.
@@ -1698,13 +1698,13 @@ class PendingRework:
 
 
 @dataclass
-class PendingTriageReview:
-    """A triage session queued for processing (ADR-0031).
+class PendingTechLeadReview:
+    """A tech_lead session queued for processing (ADR-0031).
 
-    Triage reviews are treated as reviews (not work items) so they get
+    Tech Lead reviews are treated as reviews (not work items) so they get
     processed with priority, alongside pending_reviews and pending_reworks.
 
-    The queue holds BOTH triage variants: threshold-created batch tracking
+    The queue holds BOTH tech_lead variants: threshold-created batch tracking
     issues (audit the PR manifest) and failure investigations (diagnose one
     failed issue). ``flavor`` is required so every producer boundary declares
     which variant it is queueing; the launch path forwards it verbatim
@@ -1720,9 +1720,9 @@ class PendingTriageReview:
     BATCH_REVIEW and HEALTH_REVIEW. A storm-triggered HEALTH_REVIEW instead
     carries all triggering problems in ``problem_cohort``.
     """
-    issue_number: int  # The triage review GitHub issue number
+    issue_number: int  # The tech_lead review GitHub issue number
     title: str  # Issue title (for display)
-    flavor: TriageSessionFlavor  # Which triage variant this queue entry launches as
+    flavor: TechLeadSessionFlavor  # Which tech_lead variant this queue entry launches as
     failure: DiscoveredFailure | None = None  # Triggering failure (FAILURE_INVESTIGATION only)
     # Problem-storm context preserved for an unscheduled HEALTH_REVIEW. The
     # per-tick discovery buffer is cleared before the anchor launches, so the
@@ -1730,13 +1730,13 @@ class PendingTriageReview:
     # snapshot. Interval/batch reviews keep this empty.
     problem_cohort: tuple[DiscoveredFailure, ...] = ()
     # Retryable launch failures consumed so far (owner-tracked by
-    # PendingSessionQueues.retain_triage_for_retry; bounded — see
-    # TRIAGE_LAUNCH_RETRY_LIMIT). For failure investigations this queue item
+    # PendingSessionQueues.retain_tech_lead_for_retry; bounded — see
+    # TECH_LEAD_LAUNCH_RETRY_LIMIT). For failure investigations this queue item
     # is the ONLY durable record of the investigation, so transient prep
     # failures retain it instead of dropping it.
     retryable_launch_failures: int = 0
 
-    def launch_scope(self) -> TriageLaunchScope:
+    def launch_scope(self) -> TechLeadLaunchScope:
         """The typed grant this queued item hands the launch boundary (#6780).
 
         The queue item is the producer that knows both the variant and, for a
@@ -1745,7 +1745,7 @@ class PendingTriageReview:
         inferred from the board snapshot, whose failure list also contains
         unrelated pending investigations.
         """
-        return TriageLaunchScope(
+        return TechLeadLaunchScope(
             flavor=self.flavor,
             problem_issue_numbers=tuple(
                 sorted({problem.issue_number for problem in self.problem_cohort})
@@ -1753,26 +1753,26 @@ class PendingTriageReview:
         )
 
     def __post_init__(self) -> None:
-        if self.flavor is TriageSessionFlavor.FAILURE_INVESTIGATION and self.failure is None:
+        if self.flavor is TechLeadSessionFlavor.FAILURE_INVESTIGATION and self.failure is None:
             raise ValueError(
-                f"PendingTriageReview for issue #{self.issue_number} is a failure "
+                f"PendingTechLeadReview for issue #{self.issue_number} is a failure "
                 "investigation but carries no DiscoveredFailure context; the "
                 "launch-time board snapshot would be missing its own triggering "
                 "failure (the discovered_failures buffer is cleared after planning)."
             )
         if (
-            self.flavor is not TriageSessionFlavor.FAILURE_INVESTIGATION
+            self.flavor is not TechLeadSessionFlavor.FAILURE_INVESTIGATION
             and self.failure is not None
         ):
             raise ValueError(
-                f"PendingTriageReview for issue #{self.issue_number} is a "
+                f"PendingTechLeadReview for issue #{self.issue_number} is a "
                 f"{self.flavor.value} but carries failure context; batch and "
                 "health reviews are threshold-/interval-created and have no "
                 "triggering failure."
             )
-        if self.problem_cohort and self.flavor is not TriageSessionFlavor.HEALTH_REVIEW:
+        if self.problem_cohort and self.flavor is not TechLeadSessionFlavor.HEALTH_REVIEW:
             raise ValueError(
-                f"PendingTriageReview for issue #{self.issue_number} carries a "
+                f"PendingTechLeadReview for issue #{self.issue_number} carries a "
                 "problem cohort but is not a health review"
             )
 
@@ -1815,7 +1815,7 @@ class PendingValidationRetry:
 
 
 # Backwards compatibility alias
-PendingCTOReview = PendingTriageReview
+PendingCTOReview = PendingTechLeadReview
 
 
 @dataclass
@@ -1840,7 +1840,7 @@ class OrchestratorState:
     pending_reviews: list[PendingReview] = field(default_factory=list)  # PRs waiting for code review
     pending_retrospective_reviews: list[PendingRetrospectiveReview] = field(default_factory=list)  # Existing implementations waiting for review
     pending_reworks: list[PendingRework] = field(default_factory=list)  # PRs needing rework after review
-    pending_triage_reviews: list["PendingTriageReview"] = field(default_factory=list)  # Triage batch reviews waiting
+    pending_tech_lead_reviews: list["PendingTechLeadReview"] = field(default_factory=list)  # Tech Lead batch reviews waiting
     pending_cleanups: list[PendingCleanup] = field(default_factory=list)  # Sessions awaiting cleanup after review
     pending_validation_retries: list["PendingValidationRetry"] = field(default_factory=list)  # Sessions needing validation retry
     startup_status: str = "pending"  # "pending", "running", "complete"
@@ -1867,7 +1867,7 @@ class OrchestratorState:
     discovered_escalations: list[DiscoveredEscalation] = field(default_factory=list)  # Escalations from scans
     discovered_awaiting_merge_escalations: list[DiscoveredAwaitingMergeEscalation] = field(default_factory=list)  # Post-publish stuck-or-blocked escalations
     discovered_merge_queue_enqueues: list[DiscoveredMergeQueueEnqueue] = field(default_factory=list)  # Approved PRs eligible for the merge queue
-    discovered_failures: list["DiscoveredFailure"] = field(default_factory=list)  # Failures for triage
+    discovered_failures: list["DiscoveredFailure"] = field(default_factory=list)  # Failures for tech_lead
     # Immediate cleanups - sessions that need cleanup now (not deferred until review)
     immediate_cleanups: list["ImmediateCleanup"] = field(default_factory=list)
     # Stale in-progress tracking: issue_number -> consecutive ticks with stale in-progress
@@ -2003,7 +2003,7 @@ class CommentHeadings:
     """Configurable headings for worker comments on issues.
 
     These headings structure the comments workers post, allowing
-    correlation with triage investigation comments and other tooling.
+    correlation with tech_lead investigation comments and other tooling.
     """
     implementation: str = "## Implementation"
     problems: str = "## Problems Encountered"

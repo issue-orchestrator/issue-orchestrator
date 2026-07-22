@@ -10,8 +10,8 @@ from .config_models import (
     AiGateConfig,
     ClaimsConfig,
     CleanupConfig,
-    CleanupWithTriage,
-    CleanupWithoutTriage,
+    CleanupWithTechLead,
+    CleanupWithoutTechLead,
     CoverageGuardrailConfig,
     DangerousConfig,
     DefaultAgentConfig,
@@ -35,9 +35,9 @@ from .config_models import (
     SqliteBackupConfig,
     StuckSweepConfig,
     TimelineConfig,
-    TriageAuthorityConfig,
-    TriageConfig,
-    TriageHealthReviewConfig,
+    TechLeadAuthorityConfig,
+    TechLeadConfig,
+    TechLeadHealthReviewConfig,
     PublishValidationConfig,
     ValidationCommandConfig,
     ValidationConfig,
@@ -61,7 +61,7 @@ ALLOWED_AGENT_FIELDS = {
 _TOP_LEVEL_SECTION_KEYS = (
     "agents", "labels", "review", "cleanup", "worktrees", "execution",
     "validation", "provider_resilience", "ui", "observability", "timeline", "security", "filtering",
-    "triage", "scheduling", "e2e", "goal_pilot", "milestones", "state", "claims", "hooks",
+    "tech_lead", "scheduling", "e2e", "goal_pilot", "milestones", "state", "claims", "hooks",
     "ai_systems", "retry",
     "sqlite_backup",
     "merge_queue",
@@ -228,8 +228,8 @@ def parse_hooks_config(data: dict) -> HooksConfig:
     return HooksConfig(ai_gate=ai_gate)
 
 
-def parse_triage_config(data: dict) -> TriageConfig:
-    """Parse triage section from YAML data."""
+def parse_tech_lead_config(data: dict) -> TechLeadConfig:
+    """Parse tech_lead section from YAML data."""
     # Parse lists (support comma-separated strings)
     inherit_labels = data.get("inherit_labels") or []
     if isinstance(inherit_labels, str):
@@ -248,14 +248,14 @@ def parse_triage_config(data: dict) -> TriageConfig:
 
     max_concurrent = int(mc) if (mc := data.get("max_concurrent")) is not None else None
 
-    return TriageConfig(
+    return TechLeadConfig(
         inherit_labels=list(inherit_labels),
         explicit_labels=list(explicit_labels),
         milestone_strategy=milestone_strategy,
         priority=data.get("priority"),
         max_concurrent=max_concurrent,
-        authority=TriageAuthorityConfig.from_mapping(data.get("authority", {}) or {}),
-        health_review=TriageHealthReviewConfig.from_mapping(
+        authority=TechLeadAuthorityConfig.from_mapping(data.get("authority", {}) or {}),
+        health_review=TechLeadHealthReviewConfig.from_mapping(
             data.get("health_review", {}) or {}
         ),
         stuck_sweep=StuckSweepConfig.from_mapping(data.get("stuck_sweep", {}) or {}),
@@ -351,7 +351,7 @@ def parse_milestone_order(value: object) -> list[str]:
 # these from a table keeps the apply step flat as sections are added, instead of
 # growing one more ``if`` branch each time.
 _OPTIONAL_SECTION_PARSERS: dict[str, Callable[[dict], object]] = {
-    "triage": parse_triage_config,
+    "tech_lead": parse_tech_lead_config,
     "scheduling": parse_scheduling_config,
     "e2e": parse_e2e_config,
     "timeline": parse_timeline_config,
@@ -419,13 +419,13 @@ def load_review_section(config: "Config", review_section: dict) -> None:
     config.code_review_agent = review_section.get("default")
     config.code_review_label = review_section.get("code_review_label", "needs-code-review")
     config.code_reviewed_label = review_section.get("code_reviewed_label", "code-reviewed")
-    config.triage_review_agent = review_section.get("triage_review_agent")
-    config.triage_follow_up_agent = review_section.get("triage_follow_up_agent")
-    config.triage_review_label = review_section.get("triage_review_label")
-    config.triage_reviewed_label = review_section.get("triage_reviewed_label", "triage-reviewed")
-    config.triage_failed_label = review_section.get("triage_failed_label", "triage-failed")
-    config.triage_review_threshold = review_section.get("triage_review_threshold", 0)
-    config.triage_review_on_failure = review_section.get("triage_review_on_failure", True)
+    config.tech_lead_review_agent = review_section.get("tech_lead_review_agent")
+    config.tech_lead_follow_up_agent = review_section.get("tech_lead_follow_up_agent")
+    config.tech_lead_review_label = review_section.get("tech_lead_review_label")
+    config.tech_lead_reviewed_label = review_section.get("tech_lead_reviewed_label", "tech-lead-reviewed")
+    config.tech_lead_failed_label = review_section.get("tech_lead_failed_label", "tech-lead-failed")
+    config.tech_lead_review_threshold = review_section.get("tech_lead_review_threshold", 0)
+    config.tech_lead_review_on_failure = review_section.get("tech_lead_review_on_failure", True)
     config.max_rework_cycles = review_section.get("max_rework_cycles", 5)
     config.max_consecutive_publish_failures = review_section.get(
         "max_consecutive_publish_failures", 3
@@ -496,18 +496,18 @@ def load_review_section(config: "Config", review_section: dict) -> None:
 def load_cleanup_section(config: "Config", cleanup_section: dict) -> None:
     """Load cleanup configuration."""
     if cleanup_section:
-        with_triage_data = cleanup_section.get("with_triage", {})
-        without_triage_data = cleanup_section.get("without_triage", {})
+        with_tech_lead_data = cleanup_section.get("with_tech_lead", {})
+        without_tech_lead_data = cleanup_section.get("without_tech_lead", {})
 
         config.cleanup = CleanupConfig(
-            with_triage=CleanupWithTriage(
-                close_ai_session_tabs=with_triage_data.get("close_ai_session_tabs", True),
-                remove_worktrees=with_triage_data.get("remove_worktrees", False),
+            with_tech_lead=CleanupWithTechLead(
+                close_ai_session_tabs=with_tech_lead_data.get("close_ai_session_tabs", True),
+                remove_worktrees=with_tech_lead_data.get("remove_worktrees", False),
             ),
-            without_triage=CleanupWithoutTriage(
-                wait_for_code_review=without_triage_data.get("wait_for_code_review", True),
-                close_ai_session_tabs=without_triage_data.get("close_ai_session_tabs", True),
-                remove_worktrees=without_triage_data.get("remove_worktrees", False),
+            without_tech_lead=CleanupWithoutTechLead(
+                wait_for_code_review=without_tech_lead_data.get("wait_for_code_review", True),
+                close_ai_session_tabs=without_tech_lead_data.get("close_ai_session_tabs", True),
+                remove_worktrees=without_tech_lead_data.get("remove_worktrees", False),
             ),
         )
 

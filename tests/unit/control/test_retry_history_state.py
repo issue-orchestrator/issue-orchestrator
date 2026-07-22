@@ -22,12 +22,12 @@ from issue_orchestrator.domain.models import (
     PendingCleanup,
     PendingReview,
     PendingRework,
-    PendingTriageReview,
+    PendingTechLeadReview,
     PendingValidationRetry,
     SessionHistoryEntry,
     TaskKind,
 )
-from issue_orchestrator.domain.triage_session import TriageSessionFlavor
+from issue_orchestrator.domain.tech_lead_session import TechLeadSessionFlavor
 
 
 def _history_entry(issue_number: int) -> SessionHistoryEntry:
@@ -294,21 +294,21 @@ def _seeded_state_for_contract(target: int, other: int) -> OrchestratorState:
                 worktree_path=Path(f"/tmp/issue-{other}"),
             ),
         ],
-        pending_triage_reviews=[
-            PendingTriageReview(
+        pending_tech_lead_reviews=[
+            PendingTechLeadReview(
                 issue_number=target,
-                title=f"Triage {target}",
-                flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+                title=f"Tech Lead {target}",
+                flavor=TechLeadSessionFlavor.FAILURE_INVESTIGATION,
                 failure=DiscoveredFailure(
                     issue_number=target,
                     issue_title=f"Issue {target}",
                     failure_reason="failed",
                 ),
             ),
-            PendingTriageReview(
+            PendingTechLeadReview(
                 issue_number=other,
-                title=f"Triage {other}",
-                flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+                title=f"Tech Lead {other}",
+                flavor=TechLeadSessionFlavor.FAILURE_INVESTIGATION,
                 failure=DiscoveredFailure(
                     issue_number=other,
                     issue_title=f"Issue {other}",
@@ -532,7 +532,7 @@ def test_clear_scratch_retry_state_contract_no_leaks_for_target() -> None:
     assert all(r.issue_number != target for r in state.pending_reviews)
     assert all(r.issue_number != target for r in state.pending_reworks)
     assert all(c.issue.number != target for c in state.pending_cleanups)
-    assert all(t.issue_number != target for t in state.pending_triage_reviews)
+    assert all(t.issue_number != target for t in state.pending_tech_lead_reviews)
     assert all(v.issue_number != target for v in state.pending_validation_retries)
     assert all(d.issue_number != target for d in state.discovered_reviews)
     assert all(d.issue_number != target for d in state.discovered_reworks)
@@ -560,7 +560,7 @@ def test_clear_scratch_retry_state_contract_no_leaks_for_target() -> None:
     assert any(r.issue_number == other for r in state.pending_reviews)
     assert any(r.issue_number == other for r in state.pending_reworks)
     assert any(c.issue.number == other for c in state.pending_cleanups)
-    assert any(t.issue_number == other for t in state.pending_triage_reviews)
+    assert any(t.issue_number == other for t in state.pending_tech_lead_reviews)
     assert any(v.issue_number == other for v in state.pending_validation_retries)
     assert any(d.issue_number == other for d in state.discovered_reviews)
     assert any(d.issue_number == other for d in state.discovered_reworks)
