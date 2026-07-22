@@ -1341,7 +1341,8 @@ class ReviewSettings(BaseModel):
         title="Max Expedited Tech Lead Issues",
         description=(
             "Cap on outstanding tech-lead-expedited issues at the front of the "
-            "worker queue (0 disables the expedite lane)"
+            f"worker queue (valid range 0-{TECH_LEAD_MAX_EXPEDITED_LIMIT}; 0 "
+            "disables the expedite lane)"
         ),
         ge=0,
         le=TECH_LEAD_MAX_EXPEDITED_LIMIT,
@@ -1352,10 +1353,13 @@ class ReviewSettings(BaseModel):
                 "(expedite=true), the orchestrator jumps it to the front of the "
                 "worker lane via the same priority queue operators use. This caps "
                 "how many such issues can be outstanding at once so a noisy tech "
-                "lead cannot starve normal work; further expedite requests are "
-                "logged and fall back to normal priority. 0 disables expediting "
-                "entirely. Under 'propose' authority an expedited follow-up jumps "
-                "the lane only after its proposed-tech-lead gate is removed."
+                f"lead cannot starve normal work. Valid range is 0-"
+                f"{TECH_LEAD_MAX_EXPEDITED_LIMIT} (values outside it fail "
+                "validation at both startup and in the settings form); further "
+                "expedite requests past the cap are logged and fall back to "
+                "normal priority. 0 disables expediting entirely. Under "
+                "'propose' authority an expedited follow-up jumps the lane only "
+                "after its proposed-tech-lead gate is removed."
             ),
             "section": _TECH_LEAD_SECTION,
             "config_attr": "tech_lead.max_expedited",

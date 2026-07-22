@@ -380,7 +380,8 @@ tech_lead:
   # follow-up (expedite=true), it jumps to the front of the worker queue via the
   # same priority queue operators use. This caps how many expedited issues can be
   # outstanding at once so a noisy tech lead cannot starve normal work; further
-  # requests are logged and fall back to normal priority. 0 disables the lane.
+  # requests are logged and fall back to normal priority.
+  # Valid range 0-20; 0 disables the lane.
   max_expedited: 3
   # Graduated authority for tech lead decision proposals (ADR-0031).
   # execute = orchestrator performs the proposed action;
