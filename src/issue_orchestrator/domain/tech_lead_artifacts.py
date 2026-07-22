@@ -76,6 +76,12 @@ TECH_LEAD_ACTION_ID_FORM = "A<n>"
 _FINDING_ID_RE = re.compile(r"T[1-9][0-9]*\Z")
 _ACTION_ID_RE = re.compile(r"A[1-9][0-9]*\Z")
 
+# Sentinel distinguishing an ABSENT mapping key (valid default) from an
+# explicitly present ``null`` (a contract violation). ``dict.get(key)`` collapses
+# both to ``None``; callers pass ``dict.get(key, _MISSING)`` so a present ``null``
+# reaches the strict parser and is rejected. See ``_required_bool``.
+_MISSING: Any = object()
+
 # Untrusted-input bounds. The decision file is agent-authored; violating any
 # bound is a contract violation, not something to silently truncate.
 MAX_TECH_LEAD_FINDINGS = 50
@@ -240,7 +246,8 @@ class ProposedTechLeadAction:
             pattern_signature=signature,
             area=area,
             expedite=_required_bool(
-                data.get("expedite"), f"proposed action {action_id} expedite"
+                data.get("expedite", _MISSING),
+                f"proposed action {action_id} expedite",
             ),
         )
         action.validate()
@@ -577,17 +584,19 @@ def _optional_bounded_str(value: Any, limit: int, context: str) -> str | None:
 def _required_bool(value: Any, context: str) -> bool:
     """Strictly parse an optional agent-authored JSON boolean.
 
-    Absent/``None`` defaults to False. Any PRESENT non-boolean is a contract
-    violation — the decision file is untrusted input, so ``"false"``, ``1``,
-    ``[]`` and ``{}`` must fail loudly rather than be coerced (``bool("false")``
-    is True). ``bool`` is a subclass of ``int``; ``isinstance(1, bool)`` is
-    False, so integers are correctly rejected.
+    An ABSENT key defaults to False; callers signal absence by passing
+    ``_MISSING`` (via ``dict.get(key, _MISSING)``). Any PRESENT value that is not
+    a boolean — including an explicit JSON ``null`` — is a contract violation:
+    the decision file is untrusted input, so ``null``, ``"false"``, ``1``, ``[]``
+    and ``{}`` must fail loudly rather than be coerced (``bool("false")`` is
+    True). ``bool`` is a subclass of ``int``; ``isinstance(1, bool)`` is False,
+    so integers are correctly rejected.
     """
-    if value is None:
+    if value is _MISSING:
         return False
     if not isinstance(value, bool):
+        rendered = "null" if value is None else type(value).__name__
         raise ValueError(
-            f"{context} must be a JSON boolean when present,"
-            f" got {type(value).__name__}"
+            f"{context} must be a JSON boolean when present, got {rendered}"
         )
     return value

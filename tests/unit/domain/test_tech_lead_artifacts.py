@@ -494,20 +494,23 @@ class TestProposedActionExpedite:
         )
         assert action.expedite is False
 
-    @pytest.mark.parametrize("bad", ["false", "true", 1, 0, [], {}, [True]])
+    @pytest.mark.parametrize("bad", ["false", "true", 1, 0, [], {}, [True], None])
     def test_expedite_rejects_non_boolean_untrusted_input(self, bad):
         # The decision file is untrusted; a non-JSON-boolean must fail loudly
-        # rather than be coerced (bool("false") is True, bool(1) is True).
+        # rather than be coerced (bool("false") is True, bool(1) is True). An
+        # explicitly PRESENT null is a contract violation too — distinct from an
+        # absent key (see test_expedite_absent_is_default_false_not_rejected).
         with pytest.raises(ValueError, match="must be a JSON boolean"):
             ProposedTechLeadAction.from_mapping(
                 self._create_issue(expedite=bad), index=1
             )
 
     def test_expedite_absent_is_default_false_not_rejected(self):
-        # Missing key (None) is the documented default, not a type error.
-        assert ProposedTechLeadAction.from_mapping(
-            self._create_issue(), index=1
-        ).expedite is False
+        # A truly ABSENT key (not present at all) is the documented default,
+        # not a type error — unlike an explicit null, which is rejected above.
+        payload = self._create_issue()
+        assert "expedite" not in payload
+        assert ProposedTechLeadAction.from_mapping(payload, index=1).expedite is False
 
     @pytest.mark.parametrize(
         "action_type,extra",
