@@ -20,7 +20,7 @@ class AgentValidator(ConfigValidator):
     - Default agent provider is valid
     """
 
-    KNOWN_CLAUDE_MODELS = {"haiku", "sonnet", "opus"}
+    KNOWN_CLAUDE_MODELS = {"haiku", "sonnet", "opus", "fable"}
 
     def validate(self, config: "Config") -> list[str]:
         from issue_orchestrator.agent_runner import is_valid_provider, list_providers
