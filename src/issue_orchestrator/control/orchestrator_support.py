@@ -37,7 +37,7 @@ from .queue_cache import (
     queue_shrink_confirmation_pending,
     record_issue_refreshes,
 )
-from .blocked_front_queue import front_queue_newly_unblocked
+from .blocked_front_queue import front_queue_newly_unblocked, release_blocked_front_on_launch
 from .dependency_gate_snapshot import build_refresh_snapshot
 from .fact_gatherer import clear_discovered_facts
 from .issue_fetch_resilience import IssueFetchResilience, TransientIssueFetchError
@@ -373,6 +373,7 @@ class OrchestratorSupport:
         from .actions import LaunchSessionAction
         a = cast(LaunchSessionAction, action)
         logger.info("[PLAN] Launched %s session for #%d", a.session_type, a.number)
+        release_blocked_front_on_launch(self.state, a.number, launched=result.success)
 
     def _handle_launch_validation_retry(self, action: "Action", result: "ActionResult") -> None:
         from .actions import LaunchValidationRetryAction

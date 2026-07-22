@@ -98,16 +98,8 @@ class ExpediteLane:
         self.owner_factory().record_expedite_pending(issue_number)
 
     def release(self, issue_number: int) -> bool:
-        """Lifecycle hook: free a policy-owned front-queue slot once worked.
-
-        Releases BOTH the tech-lead expedite lane (#6870) and the blocked->front
-        restore lane (#6873); operator/retry priorities are left untouched (both
-        lanes are disjoint from operator entries by construction).
-        """
-        owner = self.owner_factory()
-        released_tech_lead = owner.release_expedited(issue_number)
-        released_blocked_front = owner.release_blocked_front(issue_number)
-        return released_tech_lead or released_blocked_front
+        """Lifecycle hook: free an expedited issue's slot once it is worked."""
+        return self.owner_factory().release_expedited(issue_number)
 
     def promote_ungated(self) -> list[ExpediteOutcome]:
         """Per-tick: promote every pending follow-up whose gate has been removed.
@@ -209,12 +201,12 @@ class RetryHistoryState:
         self._state.priority_queue.insert(0, issue_number)
         return True
 
-    def expedite_blocked_front(self, issue_number: int) -> bool:
+    def prioritize_blocked_front(self, issue_number: int) -> bool:
         """Front-queue an issue restored from a blocked state, ledgered (#6873).
 
         The blocked->front restore lane: unbounded (restoring known work is not
         gated or capped), but ledgered like the tech-lead lane so its entries
-        have a lifecycle. Records the issue in ``blocked_front_expedited`` so
+        have a lifecycle. Records the issue in ``blocked_front_prioritized`` so
         :meth:`release_blocked_front` can later free it on launch/re-block. Skips
         an already-queued issue (returns False) so the ledger stays DISJOINT from
         operator/retry and tech-lead priorities — we only ever own, and later
@@ -223,22 +215,24 @@ class RetryHistoryState:
         if issue_number in self._state.priority_queue:
             return False
         self._state.priority_queue.insert(0, issue_number)
-        self._state.blocked_front_expedited.append(issue_number)
+        self._state.blocked_front_prioritized.append(issue_number)
         return True
 
     def release_blocked_front(self, issue_number: int) -> bool:
         """Drop a blocked->front entry from the queue AND its ledger (#6873).
 
-        The lifecycle counterpart to :meth:`expedite_blocked_front`, called both
-        on successful launch (via :meth:`ExpediteLane.release`) and on re-block /
-        out-of-band unavailability (by the policy). Removes the issue from BOTH
-        ``blocked_front_expedited`` and ``priority_queue``. No-op — and never
+        The lifecycle counterpart to :meth:`prioritize_blocked_front`, called both
+        on successful launch (via the always-run launch handler
+        ``OrchestratorSupport._handle_launch_session``, not the tech-lead-specific
+        ``ExpediteLane``) and on re-block / out-of-band unavailability (by the
+        policy). Removes the issue from BOTH
+        ``blocked_front_prioritized`` and ``priority_queue``. No-op — and never
         touches an operator/tech-lead entry — for an issue this lane doesn't own.
         """
-        if issue_number not in self._state.blocked_front_expedited:
+        if issue_number not in self._state.blocked_front_prioritized:
             return False
-        self._state.blocked_front_expedited = [
-            n for n in self._state.blocked_front_expedited if n != issue_number
+        self._state.blocked_front_prioritized = [
+            n for n in self._state.blocked_front_prioritized if n != issue_number
         ]
         self._state.priority_queue = [
             n for n in self._state.priority_queue if n != issue_number
@@ -375,8 +369,8 @@ class RetryHistoryState:
 
     def _prune_blocked_front_ledger(self) -> None:
         """Drop blocked->front ledger entries no longer in ``priority_queue`` (#6873)."""
-        self._state.blocked_front_expedited = [
-            n for n in self._state.blocked_front_expedited
+        self._state.blocked_front_prioritized = [
+            n for n in self._state.blocked_front_prioritized
             if n in self._state.priority_queue
         ]
 
@@ -541,8 +535,8 @@ class RetryHistoryState:
             n for n in self._state.tech_lead_expedite_pending if n != issue_number
         ]
         # Blocked->front restore ledger is issue-scoped queue state too (#6873).
-        self._state.blocked_front_expedited = [
-            n for n in self._state.blocked_front_expedited if n != issue_number
+        self._state.blocked_front_prioritized = [
+            n for n in self._state.blocked_front_prioritized if n != issue_number
         ]
         self._state.queue_pending_shrink_missing_issue_numbers = [
             n for n in self._state.queue_pending_shrink_missing_issue_numbers
