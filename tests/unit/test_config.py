@@ -3035,6 +3035,121 @@ tech_lead: {}
         assert config.tech_lead.milestone_strategy.inherit_from_issues == "latest"
         assert config.tech_lead.priority is None
 
+    def test_tech_lead_config_max_expedited_default(self):
+        """Expedite lane cap (#6870) defaults to a small positive value."""
+        assert Config().tech_lead.max_expedited == 3
+
+    def test_tech_lead_config_max_expedited_from_yaml(self, tmp_path):
+        config_content = """
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+
+tech_lead:
+  max_expedited: 5
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+        assert Config.load(config_file).tech_lead.max_expedited == 5
+
+    def test_tech_lead_config_max_expedited_zero_parses_and_validates(self, tmp_path):
+        # 0 disables the lane and is a valid configuration.
+        prompt_file = tmp_path / "prompt.md"
+        prompt_file.write_text("# Test prompt")
+        worktree_dir = tmp_path / "worktrees"
+        worktree_dir.mkdir()
+        config_content = f"""
+worktrees:
+  base: {worktree_dir}
+default_agent:
+  provider: claude-code
+agents:
+  agent:test:
+    prompt: {prompt_file}
+    model: haiku
+    ai_system: claude-code
+tech_lead:
+  max_expedited: 0
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+        config = Config.load(config_file)
+        assert config.tech_lead.max_expedited == 0
+        assert config.validate() == []
+
+    def test_tech_lead_config_max_expedited_negative_fails_validation(self, tmp_path):
+        prompt_file = tmp_path / "prompt.md"
+        prompt_file.write_text("# Test prompt")
+        worktree_dir = tmp_path / "worktrees"
+        worktree_dir.mkdir()
+        config_content = f"""
+worktrees:
+  base: {worktree_dir}
+default_agent:
+  provider: claude-code
+agents:
+  agent:test:
+    prompt: {prompt_file}
+    model: haiku
+    ai_system: claude-code
+tech_lead:
+  max_expedited: -1
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+        errors = Config.load(config_file).validate()
+        assert any("max_expedited must be between 0 and 20" in e for e in errors), errors
+
+    def test_tech_lead_startup_errors_unit(self):
+        cls = Config().tech_lead.__class__
+        assert cls().startup_errors() == []
+        assert cls(max_expedited=-2).startup_errors()
+        assert "between 0 and" in cls(max_expedited=-2).startup_errors()[0]
+
+    def test_tech_lead_config_max_expedited_bound_parity_with_settings(self):
+        # B3: the runtime config bound and the settings-form bound are the SAME
+        # ceiling (both driven by TECH_LEAD_MAX_EXPEDITED_LIMIT), so a value that
+        # startup accepts can never blow up from_config() in the settings surface.
+        from issue_orchestrator.infra.config_models import (
+            TECH_LEAD_MAX_EXPEDITED_LIMIT,
+            TechLeadConfig,
+        )
+
+        limit = TECH_LEAD_MAX_EXPEDITED_LIMIT
+        assert TechLeadConfig(max_expedited=limit).startup_errors() == []
+        over = TechLeadConfig(max_expedited=limit + 1).startup_errors()
+        assert over and f"between 0 and {limit}" in over[0]
+
+        from issue_orchestrator.infra.settings_schema import ReviewSettings
+        from pydantic import ValidationError
+
+        assert ReviewSettings(tech_lead_max_expedited=limit).tech_lead_max_expedited == limit
+        with pytest.raises(ValidationError):
+            ReviewSettings(tech_lead_max_expedited=limit + 1)
+
+    def test_tech_lead_config_max_expedited_over_limit_fails_validation(self, tmp_path):
+        prompt_file = tmp_path / "prompt.md"
+        prompt_file.write_text("# Test prompt")
+        worktree_dir = tmp_path / "worktrees"
+        worktree_dir.mkdir()
+        config_content = f"""
+worktrees:
+  base: {worktree_dir}
+default_agent:
+  provider: claude-code
+agents:
+  agent:test:
+    prompt: {prompt_file}
+    model: haiku
+    ai_system: claude-code
+tech_lead:
+  max_expedited: 21
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+        errors = Config.load(config_file).validate()
+        assert any("max_expedited must be between 0 and 20" in e for e in errors), errors
+
     def test_tech_lead_config_included_in_to_event_dict(self):
         """tech_lead config should be included in to_event_dict output."""
         config = Config()
@@ -3047,6 +3162,7 @@ tech_lead: {}
         assert "tech_lead" in result
         assert result["tech_lead"]["inherit_labels"] == ["test-label"]
         assert result["tech_lead"]["explicit_labels"] == ["explicit-label"]
+        assert result["tech_lead"]["max_expedited"] == 3
         assert result["tech_lead"]["milestone_strategy"]["inherit_from_issues"] == "latest"
         # All five graduated-authority modes are operator-visible (#6761 F7).
         assert result["tech_lead"]["authority"] == {

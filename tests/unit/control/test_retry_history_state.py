@@ -494,6 +494,10 @@ def _seeded_state_for_contract(target: int, other: int) -> OrchestratorState:
         # _enqueue_reset_retry_issue's prioritize_issue_front; clearing first ensures
         # idempotent re-add and prevents stale duplicate entries.
         priority_queue=[target, other],
+        # expedite lane bookkeeping (#6870) — issue-scoped queue state that must
+        # not pin a target across a from-scratch reset.
+        tech_lead_expedited=[target, other],
+        tech_lead_expedite_pending=[target, other],
         # candidate queue removals — should not pin a target across a reset
         queue_pending_shrink_missing_issue_numbers=[target, other],
     )
@@ -552,6 +556,8 @@ def test_clear_scratch_retry_state_contract_no_leaks_for_target() -> None:
     assert target not in state.awaiting_merge_drift_scan_timestamps
     assert 100 not in state.awaiting_merge_rollup_scan_timestamps
     assert target not in state.priority_queue
+    assert target not in state.tech_lead_expedited
+    assert target not in state.tech_lead_expedite_pending
     assert target not in state.queue_pending_shrink_missing_issue_numbers
 
     # `other` survives every collection
@@ -580,4 +586,6 @@ def test_clear_scratch_retry_state_contract_no_leaks_for_target() -> None:
     assert other in state.awaiting_merge_drift_scan_timestamps
     assert state.awaiting_merge_rollup_scan_timestamps[200] == 2.0
     assert other in state.priority_queue
+    assert other in state.tech_lead_expedited
+    assert other in state.tech_lead_expedite_pending
     assert other in state.queue_pending_shrink_missing_issue_numbers

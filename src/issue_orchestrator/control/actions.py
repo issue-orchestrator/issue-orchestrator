@@ -29,6 +29,11 @@ from ..domain.models import (
     AwaitingMergeTerminalStatus,
     DiscoveredFailure,
 )
+# TechLeadMilestoneIntent is a pure domain value object (moved to
+# domain/tech_lead_milestone.py); imported here for the CreateTechLeadIssueAction
+# field default and re-exported so existing `from ...control.actions import
+# TechLeadMilestoneIntent` importers keep working.
+from ..domain.tech_lead_milestone import TechLeadMilestoneIntent
 from ..domain.tech_lead_session import TechLeadSessionFlavor
 from .session_manager import SessionType
 
@@ -309,36 +314,6 @@ class QueueTechLeadAction(Action):
 
 
 @dataclass(frozen=True)
-class TechLeadMilestoneIntent:
-    """Configured milestone intent for an orchestrator-created tech_lead issue.
-
-    Carried on :class:`CreateTechLeadIssueAction` so the explicit-strategy
-    name -> number resolution happens ONCE, at the create-issue execution
-    boundary (``action_applier._apply_create_tech_lead_issue``), never at
-    planning or completion time (#6769 finding 4): a shadow-mode
-    ``create_issue`` proposal plans zero GitHub reads, and an unresolvable
-    configured name fails the creation loudly instead of the completion.
-
-    Exactly one shape at a time:
-    - ``explicit_name`` — ``tech_lead.milestone_strategy.explicit``; the applier
-      resolves it against the repository's milestones and fails loudly when
-      it matches none.
-    - ``inherited_number`` — a number already known at planning time
-      (``inherit_from_issues``); no API read needed.
-    - neither — no milestone.
-    """
-
-    explicit_name: str | None = None
-    inherited_number: int | None = None
-
-    def __post_init__(self) -> None:
-        if self.explicit_name is not None and self.inherited_number is not None:
-            raise ValueError(
-                "TechLeadMilestoneIntent carries a name OR a number, never both"
-            )
-
-
-@dataclass(frozen=True)
 class CreateTechLeadIssueAction(Action):
     """Create a tech_lead review issue when PR threshold is met.
 
@@ -370,6 +345,10 @@ class CreateTechLeadIssueAction(Action):
     # recompute against a board that by then holds this anchor. "" (batch, or no
     # facts) means never-reviewed: fails toward reviewing (ADR-0031 §4, #6793).
     health_review_fingerprint: str = ""
+    # Expedite-lane intent (#6870): set for a decision-driven create_issue the
+    # tech lead marked urgent. The applier's create boundary reads it (with the
+    # gate presence) to front-queue the new issue via the expedite owner.
+    expedite: bool = False
     action_type: ActionType = field(default=ActionType.CREATE_TECH_LEAD_ISSUE, init=False)
 
 

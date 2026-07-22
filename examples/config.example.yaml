@@ -376,6 +376,13 @@ tech_lead:
     inherit_from_issues: true
     explicit: null
   priority: null
+  # Expedite lane (#6870): when the tech lead files an urgent create_issue
+  # follow-up (expedite=true), it jumps to the front of the worker queue via the
+  # same priority queue operators use. This caps how many expedited issues can be
+  # outstanding at once so a noisy tech lead cannot starve normal work; further
+  # requests are logged and fall back to normal priority.
+  # Valid range 0-20; 0 disables the lane.
+  max_expedited: 3
   # Graduated authority for tech lead decision proposals (ADR-0031).
   # execute = orchestrator performs the proposed action;
   # propose = shadow mode - recorded as would-have-done, nothing executed

@@ -189,6 +189,11 @@ def _concrete_actions(
                 ),
                 pr_count=0,
                 milestone=tech_lead_issue_milestone_intent(config, anchor_milestones),
+                # Expedite intent (#6870) rides the action so the applier's
+                # create boundary can front-queue the new issue. It composes
+                # with the gate: gated (propose) creations defer expediting to
+                # gate removal, ungated (execute) creations expedite at once.
+                expedite=action.expedite,
                 reason=(
                     f"tech_lead decision action {action.id}: create follow-up"
                     f" issue{gate_note}"

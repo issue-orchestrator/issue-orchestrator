@@ -50,6 +50,7 @@ if TYPE_CHECKING:
         PersistentExchangePairRegistry,
     )
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
+    from .retry_history_state import ExpediteLane
     from .session_history import SessionHistoryOwner
     from .tech_lead_kill_session import TechLeadKillSessionExecutor
     from .tech_lead_reset_retry import TechLeadResetRetryExecutor
@@ -219,6 +220,8 @@ class ActionApplier:
     tech_lead_reset_retry: Optional["TechLeadResetRetryExecutor"] = None
     tech_lead_kill_session: Optional["TechLeadKillSessionExecutor"] = None
     tech_lead_ops: Optional["TechLeadAuthorityStore"] = None
+    # Expedite-lane owner seam (#6870), wired post-construction; unwired = no-op.
+    expedite_lane: Optional["ExpediteLane"] = None
     _active_label_mutation_stats: _LabelMutationStats | None = field(
         default=None, init=False, repr=False
     )
@@ -960,6 +963,12 @@ class ActionApplier:
         if self.session_launcher is not None:
             session = self.session_launcher(action.session_type, action.number)
             if session:
+                # An expedited issue that is now an active session has jumped
+                # the lane: free its cap slot (via the queue owner, never a
+                # direct priority_queue mutation) so the next urgent tech-lead
+                # finding can be expedited (#6870). No-op for non-expedited work.
+                if self.expedite_lane is not None:
+                    self.expedite_lane.release(session.issue.number)
                 return ActionResult.ok(
                     action,
                     session_name=session.terminal_id,
@@ -1437,6 +1446,7 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
             ops=self.tech_lead_ops,
             add_comment=self.repository_host.add_comment,
             emit_labels_changed=self._emit_issue_labels_changed,
+            expedite_lane=self.expedite_lane,
         )
 
     def _apply_surface_tech_lead_proposal(self, action: Action) -> ActionResult:

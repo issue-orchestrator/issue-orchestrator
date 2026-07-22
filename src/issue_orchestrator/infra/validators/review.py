@@ -39,6 +39,11 @@ class ReviewWorkflowValidator(ConfigValidator):
         # the cross-field "enabled requires a tech lead agent" check.
         errors.extend(config.tech_lead.stuck_sweep.startup_errors())
         self._validate_stuck_sweep_requires_agent(config, errors)
+        # Expedite lane (#6870): the cap must be in range
+        # 0..TECH_LEAD_MAX_EXPEDITED_LIMIT (0 disables); any out-of-range value
+        # is a startup error, enforced by TechLeadConfig.startup_errors so the
+        # settings-form bound (le=...) and startup agree.
+        errors.extend(config.tech_lead.startup_errors())
 
         exchange_mode = config.review_exchange_mode
         self._validate_exchange_mode(exchange_mode, config, errors)

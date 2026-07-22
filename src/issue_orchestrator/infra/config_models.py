@@ -435,6 +435,13 @@ class StuckSweepConfig:
         return errors
 
 
+# Upper bound on the expedite-lane cap (#6870). The single source of truth for
+# BOTH the runtime config validation (TechLeadConfig.startup_errors) and the
+# settings-form schema (settings_schema le=...), so the two layers can never
+# accept/reject a value inconsistently.
+TECH_LEAD_MAX_EXPEDITED_LIMIT = 20
+
+
 @dataclass
 class TechLeadConfig:
     """Tech Lead issue configuration.
@@ -467,6 +474,12 @@ class TechLeadConfig:
     # at ``max_concurrent_sessions + tech_lead.max_concurrent``.
     max_concurrent: Optional[int] = None
 
+    # Expedite lane cap (#6870). Bounds how many OUTSTANDING tech-lead-expedited
+    # issues can sit at the front of the worker queue at once, so a noisy tech
+    # lead cannot starve normal work. The default is small; 0 disables the lane
+    # entirely (an expedite request then falls back to normal priority).
+    max_expedited: int = 3
+
     # Per-action-type graduated authority for tech_lead decision proposals
     authority: TechLeadAuthorityConfig = field(default_factory=TechLeadAuthorityConfig)
 
@@ -487,6 +500,7 @@ class TechLeadConfig:
             },
             "priority": self.priority,
             "max_concurrent": self.max_concurrent,
+            "max_expedited": self.max_expedited,
             "authority": self.authority.to_event_dict(),
             "health_review": {
                 "interval_minutes": self.health_review.interval_minutes,
@@ -499,6 +513,24 @@ class TechLeadConfig:
                 "max_recovery_attempts": self.stuck_sweep.max_recovery_attempts,
             },
         }
+
+    def startup_errors(self) -> list[str]:
+        """Own-block invariants for the ``tech_lead`` section (#6870).
+
+        The documented disable value is exactly 0; a value outside
+        ``0..TECH_LEAD_MAX_EXPEDITED_LIMIT`` is a misconfiguration that must fail
+        startup loudly, never be silently treated as disabled (mirrors the
+        health-review/stuck-sweep blocks). The upper bound is shared verbatim
+        with the settings-form schema so both layers agree on the ceiling.
+        """
+        errors: list[str] = []
+        if not 0 <= self.max_expedited <= TECH_LEAD_MAX_EXPEDITED_LIMIT:
+            errors.append(
+                "tech_lead.max_expedited must be between 0 and "
+                f"{TECH_LEAD_MAX_EXPEDITED_LIMIT} (0 disables the expedite lane), "
+                f"got {self.max_expedited}"
+            )
+        return errors
 
 
 @dataclass

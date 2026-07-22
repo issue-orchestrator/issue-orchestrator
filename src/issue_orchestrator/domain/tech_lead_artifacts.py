@@ -76,6 +76,12 @@ TECH_LEAD_ACTION_ID_FORM = "A<n>"
 _FINDING_ID_RE = re.compile(r"T[1-9][0-9]*\Z")
 _ACTION_ID_RE = re.compile(r"A[1-9][0-9]*\Z")
 
+# Sentinel distinguishing an ABSENT mapping key (valid default) from an
+# explicitly present ``null`` (a contract violation). ``dict.get(key)`` collapses
+# both to ``None``; callers pass ``dict.get(key, _MISSING)`` so a present ``null``
+# reaches the strict parser and is rejected. See ``_required_bool``.
+_MISSING: Any = object()
+
 # Untrusted-input bounds. The decision file is agent-authored; violating any
 # bound is a contract violation, not something to silently truncate.
 MAX_TECH_LEAD_FINDINGS = 50
@@ -172,6 +178,14 @@ class ProposedTechLeadAction:
     finding_ids: tuple[str, ...] = ()
     pattern_signature: str | None = None
     area: str | None = None
+    # Urgency signal for the expedite lane (#6870): when the tech lead wants a
+    # follow-up worked SOONER, it sets ``expedite: true`` on a ``create_issue``
+    # action. Only meaningful for ``create_issue`` — ``validate()`` rejects it
+    # on any other action type. It composes with the ADR-0031 authority gate:
+    # under ``execute`` the created issue jumps the worker lane immediately;
+    # under ``propose`` it jumps only once the ``proposed-tech-lead`` gate is
+    # removed. The orchestrator (never the agent) performs the queue write.
+    expedite: bool = False
 
     @classmethod
     def from_mapping(cls, data: Any, *, index: int) -> "ProposedTechLeadAction":
@@ -231,6 +245,10 @@ class ProposedTechLeadAction:
             finding_ids=_string_tuple(data.get("finding_ids")),
             pattern_signature=signature,
             area=area,
+            expedite=_required_bool(
+                data.get("expedite", _MISSING),
+                f"proposed action {action_id} expedite",
+            ),
         )
         action.validate()
         return action
@@ -242,6 +260,16 @@ class ProposedTechLeadAction:
     def validate(self) -> None:
         context = f"proposed action {self.id} ({self.action_type})"
         _validate_action_id(self.id)
+        # Expedite is a create_issue-only urgency signal (#6870): urgency for a
+        # comment, escalation, pattern flag or act-level op is meaningless, so a
+        # decision that sets it elsewhere is a contract violation, never silently
+        # honored. Mirrors the per-action-type field discipline below.
+        if self.expedite and self.action_type != "create_issue":
+            _require(
+                False,
+                f"{context} sets expedite=true, which is only valid on"
+                " create_issue actions (#6870)",
+            )
         # pattern_signature/area must be meaningful whenever present —
         # direct construction bypasses from_mapping's normalization, and the
         # area lands in an `area:*` label, so it obeys label constraints.
@@ -303,6 +331,8 @@ class ProposedTechLeadAction:
             payload["pattern_signature"] = self.pattern_signature
         if self.area:
             payload["area"] = self.area
+        if self.expedite:
+            payload["expedite"] = True
         return payload
 
 
@@ -549,3 +579,24 @@ def _optional_bounded_str(value: Any, limit: int, context: str) -> str | None:
     """Normalize an optional agent-authored string, enforcing its bound."""
     normalized = _optional_str(value)
     return _bounded(normalized, limit, context) if normalized is not None else None
+
+
+def _required_bool(value: Any, context: str) -> bool:
+    """Strictly parse an optional agent-authored JSON boolean.
+
+    An ABSENT key defaults to False; callers signal absence by passing
+    ``_MISSING`` (via ``dict.get(key, _MISSING)``). Any PRESENT value that is not
+    a boolean — including an explicit JSON ``null`` — is a contract violation:
+    the decision file is untrusted input, so ``null``, ``"false"``, ``1``, ``[]``
+    and ``{}`` must fail loudly rather than be coerced (``bool("false")`` is
+    True). ``bool`` is a subclass of ``int``; ``isinstance(1, bool)`` is False,
+    so integers are correctly rejected.
+    """
+    if value is _MISSING:
+        return False
+    if not isinstance(value, bool):
+        rendered = "null" if value is None else type(value).__name__
+        raise ValueError(
+            f"{context} must be a JSON boolean when present, got {rendered}"
+        )
+    return value
