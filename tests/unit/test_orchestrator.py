@@ -202,7 +202,7 @@ def test_terminate_issue_runtime_for_issue_delegates_to_canonical_services(sampl
     ]
 
 
-def test_terminate_triage_session_is_behavior_complete(sample_config, tmp_path):
+def test_terminate_tech_lead_session_is_behavior_complete(sample_config, tmp_path):
     # R7 (#6824): the REAL facade terminate is behavior-complete — unlike bare
     # kill_session (which only stops the terminal), it removes the state machine,
     # reconciles active_sessions, releases the claim, AND force-removes the
@@ -216,25 +216,25 @@ def test_terminate_triage_session_is_behavior_complete(sample_config, tmp_path):
     object.__setattr__(orchestrator.deps, "claim_manager", claim_manager)
     object.__setattr__(orchestrator.deps, "state_machine_manager", smm)
     object.__setattr__(orchestrator.deps, "worktree_manager", worktree_manager)
-    scratch = tmp_path / "repo-triage-77-abc"
-    triage = SimpleNamespace(
-        terminal_id="triage-77", issue=SimpleNamespace(number=77), lease_id="lease-1",
+    scratch = tmp_path / "repo-tech-lead-77-abc"
+    tech_lead = SimpleNamespace(
+        terminal_id="tech-lead-77", issue=SimpleNamespace(number=77), lease_id="lease-1",
         scratch_worktree=True, worktree_path=scratch,
     )
     other = SimpleNamespace(
         terminal_id="issue-88", issue=SimpleNamespace(number=88), lease_id=None,
         scratch_worktree=False, worktree_path=None,
     )
-    orchestrator.state.active_sessions = [triage, other]
+    orchestrator.state.active_sessions = [tech_lead, other]
 
-    outcome = orchestrator.terminate_triage_session(triage)
+    outcome = orchestrator.terminate_tech_lead_session(tech_lead)
 
     assert outcome.clean is True  # every effect succeeded
     # State machine terminalized (removed)...
-    smm.remove_session_machine.assert_called_once_with("triage-77")
+    smm.remove_session_machine.assert_called_once_with("tech-lead-77")
     # ...terminal stopped through the real session-routing boundary...
     assert session_manager.stop.call_count == 1
-    assert session_manager.stop.call_args.args[0].name == "triage-77"
+    assert session_manager.stop.call_args.args[0].name == "tech-lead-77"
     # ...session reconciled out of active_sessions...
     assert [s.terminal_id for s in orchestrator.state.active_sessions] == ["issue-88"]
     # ...claim released...
@@ -253,25 +253,25 @@ def _terminate_fixture(sample_config, tmp_path):
     object.__setattr__(orchestrator.deps, "claim_manager", claim_manager)
     object.__setattr__(orchestrator.deps, "state_machine_manager", smm)
     object.__setattr__(orchestrator.deps, "worktree_manager", worktree_manager)
-    scratch = tmp_path / "repo-triage-77-abc"
-    triage = SimpleNamespace(
-        terminal_id="triage-77", issue=SimpleNamespace(number=77), lease_id="lease-1",
+    scratch = tmp_path / "repo-tech-lead-77-abc"
+    tech_lead = SimpleNamespace(
+        terminal_id="tech-lead-77", issue=SimpleNamespace(number=77), lease_id="lease-1",
         scratch_worktree=True, worktree_path=scratch,
     )
-    orchestrator.state.active_sessions = [triage]
-    return orchestrator, triage, session_manager, claim_manager, worktree_manager, scratch
+    orchestrator.state.active_sessions = [tech_lead]
+    return orchestrator, tech_lead, session_manager, claim_manager, worktree_manager, scratch
 
 
-def test_terminate_triage_worktree_failure_reports_unclean_with_leaked_path(
+def test_terminate_tech_lead_worktree_failure_reports_unclean_with_leaked_path(
     sample_config, tmp_path
 ):
     # R7 (#6824): if scratch-worktree removal FAILS, the outcome is NOT clean and
     # names the EXACT leaked path (the sole cleanup-failure owner — no dead
     # engine-tick ImmediateCleanup retry). Never a silent leak reported as success.
-    orchestrator, triage, sm, cm, wtm, scratch = _terminate_fixture(sample_config, tmp_path)
+    orchestrator, tech_lead, sm, cm, wtm, scratch = _terminate_fixture(sample_config, tmp_path)
     wtm.remove.side_effect = RuntimeError("git worktree remove failed")
 
-    outcome = orchestrator.terminate_triage_session(triage)
+    outcome = orchestrator.terminate_tech_lead_session(tech_lead)
 
     assert outcome.worktree_removed is False and outcome.clean is False
     assert outcome.leaked_worktree == str(scratch)
@@ -283,15 +283,15 @@ def test_terminate_triage_worktree_failure_reports_unclean_with_leaked_path(
     assert orchestrator.state.immediate_cleanups == []
 
 
-def test_terminate_triage_terminal_failure_does_not_abort_other_effects(
+def test_terminate_tech_lead_terminal_failure_does_not_abort_other_effects(
     sample_config, tmp_path
 ):
     # R7 (#6824): a terminal-stop failure must not abort claim release or worktree
     # removal — every effect is attempted independently.
-    orchestrator, triage, sm, cm, wtm, scratch = _terminate_fixture(sample_config, tmp_path)
+    orchestrator, tech_lead, sm, cm, wtm, scratch = _terminate_fixture(sample_config, tmp_path)
     sm.stop.side_effect = RuntimeError("terminal already gone")
 
-    outcome = orchestrator.terminate_triage_session(triage)
+    outcome = orchestrator.terminate_tech_lead_session(tech_lead)
 
     assert outcome.terminal_stopped is False
     # ...yet claim + worktree still handled, and the session reconciled.
@@ -307,7 +307,7 @@ def test_composed_one_shot_timeout_terminates_via_real_driver_and_facade(
     timeout; the facade terminate leaves NO leaked state machine, claim, active-
     session record, or disposable scratch worktree — the cross-boundary outcome
     that separate unit tests with a fake host could not catch. No live GitHub."""
-    from issue_orchestrator.control.triage_trigger import run_targeted_investigations
+    from issue_orchestrator.control.tech_lead_trigger import run_targeted_investigations
 
     orchestrator = create_test_orchestrator(sample_config)
     session_manager = MagicMock()
@@ -324,22 +324,22 @@ def test_composed_one_shot_timeout_terminates_via_real_driver_and_facade(
     object.__setattr__(orchestrator.deps, "worktree_manager", worktree_manager)
     object.__setattr__(orchestrator.deps, "repository_host", repository_host)
 
-    scratch = tmp_path / "repo-triage-77-abc"
+    scratch = tmp_path / "repo-tech-lead-77-abc"
     session = SimpleNamespace(
-        terminal_id="triage-77",
-        key=SimpleNamespace(stable_id=lambda: "triage:77"),
+        terminal_id="tech-lead-77",
+        key=SimpleNamespace(stable_id=lambda: "tech_lead:77"),
         issue=SimpleNamespace(number=77),
         lease_id="lease-1",
         scratch_worktree=True,
         worktree_path=scratch,
     )
 
-    def _launch(_triage):
+    def _launch(_tech_lead):
         # Inject the launched session; the REAL driver then drives + times out.
         orchestrator.state.active_sessions = [session]
         return session
 
-    orchestrator.launch_triage_session = _launch
+    orchestrator.launch_tech_lead_session = _launch
     orchestrator.tick = lambda: True  # never drains the session -> forces timeout
     orchestrator.pause = lambda: None
 
@@ -351,7 +351,7 @@ def test_composed_one_shot_timeout_terminates_via_real_driver_and_facade(
     assert results[0].launched is True and results[0].completed is False
     assert "terminated" in results[0].detail
     # Behavior-complete cleanup applied by the REAL facade terminate:
-    smm.remove_session_machine.assert_called_once_with("triage-77")
+    smm.remove_session_machine.assert_called_once_with("tech-lead-77")
     claim_manager.release_claim.assert_called_once_with(77, "lease-1")
     worktree_manager.remove.assert_called_once_with(scratch, force=True)
     assert orchestrator.state.active_sessions == []
@@ -1171,7 +1171,7 @@ class TestHandleSessionCompletion:
         sample_config,
         mock_worktree_manager,
     ):
-        """A disposable triage-investigation scratch session records its
+        """A disposable tech-lead-investigation scratch session records its
         ImmediateCleanup as scratch (#6823), so the Planner force-removes the
         throwaway worktree on completion regardless of the cleanup config."""
         import dataclasses
@@ -1350,7 +1350,7 @@ class TestRunLoop:
         job_supervisor.wait_until_idle.assert_called_once_with(timeout=60.0)
 
     @pytest.mark.asyncio
-    async def test_tick_reconciles_triage_needs_human_against_active_sessions(
+    async def test_tick_reconciles_tech_lead_needs_human_against_active_sessions(
         self,
         sample_config,
         mock_repository_host,
@@ -1362,7 +1362,7 @@ class TestRunLoop:
 
         with patch.object(
             orchestrator._session_launcher,  # noqa: SLF001
-            "reconcile_stale_triage_needs_human",
+            "reconcile_stale_tech_lead_needs_human",
             reconcile,
         ):
             await run_loop_one_tick(orchestrator)
@@ -2138,40 +2138,40 @@ class TestRunOrchestrator:
         assert signal.SIGTERM in call_args_list
 
 
-class TestGatherTriageFacts:
-    """Test the fact_gatherer.gather_triage_facts method for triage review workflow.
+class TestGatherTechLeadFacts:
+    """Test the fact_gatherer.gather_tech_lead_facts method for tech_lead review workflow.
 
-    Triage issue creation is now handled by the Planner via:
-    - fact_gatherer.gather_triage_facts() gathers TriageFacts snapshot
-    - fact_gatherer.create_snapshot() includes triage_facts
-    - Planner._plan_triage_issue_creation() decides whether to create
+    Tech Lead issue creation is now handled by the Planner via:
+    - fact_gatherer.gather_tech_lead_facts() gathers TechLeadFacts snapshot
+    - fact_gatherer.create_snapshot() includes tech_lead_facts
+    - Planner._plan_tech_lead_issue_creation() decides whether to create
     """
 
-    def test_gather_triage_facts_returns_none_without_agent(self, sample_config, mock_repository_host):
-        """Test that gather_triage_facts returns None without triage_review_agent."""
-        sample_config.triage_review_agent = None
+    def test_gather_tech_lead_facts_returns_none_without_agent(self, sample_config, mock_repository_host):
+        """Test that gather_tech_lead_facts returns None without tech_lead_review_agent."""
+        sample_config.tech_lead_review_agent = None
         sample_config.code_reviewed_label = "code-reviewed"
-        sample_config.triage_review_threshold = 5
+        sample_config.tech_lead_review_threshold = 5
 
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
-        facts = orchestrator.deps.fact_gatherer.gather_triage_facts(orchestrator.state)
+        facts = orchestrator.deps.fact_gatherer.gather_tech_lead_facts(orchestrator.state)
         assert facts is None
 
-    def test_gather_triage_facts_returns_none_with_zero_threshold(self, sample_config, mock_repository_host):
-        """Test that gather_triage_facts returns None with threshold=0."""
-        sample_config.triage_review_agent = "agent:triage"
+    def test_gather_tech_lead_facts_returns_none_with_zero_threshold(self, sample_config, mock_repository_host):
+        """Test that gather_tech_lead_facts returns None with threshold=0."""
+        sample_config.tech_lead_review_agent = "agent:tech-lead"
         sample_config.code_reviewed_label = "code-reviewed"
-        sample_config.triage_review_threshold = 0
+        sample_config.tech_lead_review_threshold = 0
 
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
-        facts = orchestrator.deps.fact_gatherer.gather_triage_facts(orchestrator.state)
+        facts = orchestrator.deps.fact_gatherer.gather_tech_lead_facts(orchestrator.state)
         assert facts is None
 
-    def test_gather_triage_facts_returns_facts_below_threshold(self, sample_config, mock_repository_host):
-        """Test that gather_triage_facts returns facts even when below threshold."""
-        sample_config.triage_review_agent = "agent:triage"
+    def test_gather_tech_lead_facts_returns_facts_below_threshold(self, sample_config, mock_repository_host):
+        """Test that gather_tech_lead_facts returns facts even when below threshold."""
+        sample_config.tech_lead_review_agent = "agent:tech-lead"
         sample_config.code_reviewed_label = "code-reviewed"
-        sample_config.triage_review_threshold = 5
+        sample_config.tech_lead_review_threshold = 5
 
         # Set up PRs with the code-reviewed label (only 2, below threshold of 5)
         mock_repository_host.prs["branch-1"] = [
@@ -2180,7 +2180,7 @@ class TestGatherTriageFacts:
         ]
 
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
-        facts = orchestrator.deps.fact_gatherer.gather_triage_facts(orchestrator.state)
+        facts = orchestrator.deps.fact_gatherer.gather_tech_lead_facts(orchestrator.state)
 
         # Facts should be returned (Planner decides whether to act)
         assert facts is not None
@@ -2188,11 +2188,11 @@ class TestGatherTriageFacts:
         assert facts.threshold == 5
         assert facts.watch_label == "code-reviewed"
 
-    def test_gather_triage_facts_returns_facts_at_threshold(self, sample_config, mock_repository_host):
-        """Test that gather_triage_facts returns facts when at threshold."""
-        sample_config.triage_review_agent = "agent:triage"
+    def test_gather_tech_lead_facts_returns_facts_at_threshold(self, sample_config, mock_repository_host):
+        """Test that gather_tech_lead_facts returns facts when at threshold."""
+        sample_config.tech_lead_review_agent = "agent:tech-lead"
         sample_config.code_reviewed_label = "code-reviewed"
-        sample_config.triage_review_threshold = 3
+        sample_config.tech_lead_review_threshold = 3
 
         # Set up 3 PRs with code-reviewed label (meets threshold)
         mock_repository_host.prs["branch-1"] = [
@@ -2203,19 +2203,19 @@ class TestGatherTriageFacts:
         mock_repository_host.issues = []
 
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
-        facts = orchestrator.deps.fact_gatherer.gather_triage_facts(orchestrator.state)
+        facts = orchestrator.deps.fact_gatherer.gather_tech_lead_facts(orchestrator.state)
 
         assert facts is not None
         assert facts.pr_count == 3
         assert facts.threshold == 3
-        assert facts.existing_triage_issue is None
+        assert facts.existing_tech_lead_issue is None
         assert len(facts.prs) == 3
 
-    def test_gather_triage_facts_finds_existing_triage_issue(self, sample_config, mock_repository_host):
-        """Test that gather_triage_facts detects existing triage issue."""
-        sample_config.triage_review_agent = "agent:triage"
+    def test_gather_tech_lead_facts_finds_existing_tech_lead_issue(self, sample_config, mock_repository_host):
+        """Test that gather_tech_lead_facts detects existing tech_lead issue."""
+        sample_config.tech_lead_review_agent = "agent:tech-lead"
         sample_config.code_reviewed_label = "code-reviewed"
-        sample_config.triage_review_threshold = 3
+        sample_config.tech_lead_review_threshold = 3
 
         # Set up 3 PRs with code-reviewed label
         mock_repository_host.prs["branch-1"] = [
@@ -2225,21 +2225,21 @@ class TestGatherTriageFacts:
         ]
 
         # Existing review issue
-        existing_issue = create_issue(100, title="Triage Batch Review: 3 PRs pending", labels=["agent:triage"])
+        existing_issue = create_issue(100, title="Tech Lead Batch Review: 3 PRs pending", labels=["agent:tech-lead"])
         mock_repository_host.issues = [existing_issue]
 
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
-        facts = orchestrator.deps.fact_gatherer.gather_triage_facts(orchestrator.state)
+        facts = orchestrator.deps.fact_gatherer.gather_tech_lead_facts(orchestrator.state)
 
         assert facts is not None
-        assert facts.existing_triage_issue == 100
+        assert facts.existing_tech_lead_issue == 100
 
-    def test_gather_triage_facts_includes_pr_info(self, sample_config, mock_repository_host):
-        """Test that gather_triage_facts includes PR number and title tuples."""
-        sample_config.triage_review_agent = "agent:triage"
+    def test_gather_tech_lead_facts_includes_pr_info(self, sample_config, mock_repository_host):
+        """Test that gather_tech_lead_facts includes PR number and title tuples."""
+        sample_config.tech_lead_review_agent = "agent:tech-lead"
         sample_config.code_reviewed_label = "code-reviewed"
-        sample_config.triage_reviewed_label = "triage-reviewed"
-        sample_config.triage_review_threshold = 2
+        sample_config.tech_lead_reviewed_label = "tech-lead-reviewed"
+        sample_config.tech_lead_review_threshold = 2
 
         # Set up 2 PRs with code-reviewed label
         mock_repository_host.prs["branch-1"] = [
@@ -2249,7 +2249,7 @@ class TestGatherTriageFacts:
         mock_repository_host.issues = []
 
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
-        facts = orchestrator.deps.fact_gatherer.gather_triage_facts(orchestrator.state)
+        facts = orchestrator.deps.fact_gatherer.gather_tech_lead_facts(orchestrator.state)
 
         assert facts is not None
         assert len(facts.prs) == 2
@@ -2725,10 +2725,10 @@ class TestPauseBehavior:
     # because process_pending_reviews() was deleted. The paused behavior is now
     # tested in test_workflows.py::TestReviewWorkflow::test_should_launch_skips_when_paused
     #
-    # NOTE: test_check_triage_review_trigger_does_nothing_when_paused was removed
-    # because check_triage_review_trigger() was refactored. The pause behavior is now
+    # NOTE: test_check_tech_lead_review_trigger_does_nothing_when_paused was removed
+    # because check_tech_lead_review_trigger() was refactored. The pause behavior is now
     # handled by the Planner via the paused flag in OrchestratorSnapshot. The
-    # _gather_triage_facts() method just gathers facts regardless of pause state;
+    # _gather_tech_lead_facts() method just gathers facts regardless of pause state;
     # the Planner decides whether to act on them.
 
     @pytest.fixture(autouse=True)
@@ -3231,18 +3231,18 @@ class TestDeferredCleanup:
         manager.remove = MagicMock()
         return manager
 
-    def test_handle_completion_defers_cleanup_with_triage(
+    def test_handle_completion_defers_cleanup_with_tech_lead(
         self,
         sample_config,
         mock_repository_host,
         mock_worktree_manager,
     ):
-        """Test that cleanup is deferred when triage review is enabled."""
+        """Test that cleanup is deferred when tech_lead review is enabled."""
         from issue_orchestrator.ports.pull_request_tracker import PRInfo
 
-        # Enable triage review
-        sample_config.triage_review_agent = "agent:triage"
-        sample_config.triage_reviewed_label = "triage-reviewed"
+        # Enable tech_lead review
+        sample_config.tech_lead_review_agent = "agent:tech-lead"
+        sample_config.tech_lead_reviewed_label = "tech-lead-reviewed"
 
         # Mock PR response
         mock_repository_host.prs["feature/test"] = [
@@ -3286,7 +3286,7 @@ class TestDeferredCleanup:
         # Enable code review only (no CTO)
         sample_config.code_review_agent = "agent:reviewer"
         sample_config.code_reviewed_label = "code-reviewed"
-        sample_config.cleanup.without_triage.wait_for_code_review = True
+        sample_config.cleanup.without_tech_lead.wait_for_code_review = True
 
         # Mock PR response
         mock_repository_host.prs["feature/test"] = [
@@ -3325,7 +3325,7 @@ class TestDeferredCleanup:
         from issue_orchestrator.ports.pull_request_tracker import PRInfo
 
         # No review workflow
-        sample_config.triage_review_agent = None
+        sample_config.tech_lead_review_agent = None
         sample_config.code_review_agent = None
 
         # Mock PR response
@@ -3365,8 +3365,8 @@ class TestDeferredCleanup:
         mock_worktree_manager,
     ):
         """Test that failed sessions get immediate cleanup (not deferred)."""
-        # Enable triage review
-        sample_config.triage_review_agent = "agent:triage"
+        # Enable tech_lead review
+        sample_config.tech_lead_review_agent = "agent:tech-lead"
 
         issue = create_issue(1)
         session = create_session(issue)
@@ -3396,14 +3396,14 @@ class TestProcessDeferredCleanups:
         """Test that cleanups are processed when PR has reviewed label."""
         from issue_orchestrator.domain.models import PendingCleanup
 
-        # Enable triage review
-        sample_config.triage_review_agent = "agent:triage"
-        sample_config.triage_reviewed_label = "triage-reviewed"
-        sample_config.cleanup.with_triage.remove_worktrees = True
+        # Enable tech_lead review
+        sample_config.tech_lead_review_agent = "agent:tech-lead"
+        sample_config.tech_lead_reviewed_label = "tech-lead-reviewed"
+        sample_config.cleanup.with_tech_lead.remove_worktrees = True
 
         # Set up PR with reviewed label
         mock_repository_host.prs["issue-1-test"] = [
-            create_pr_info(100, "PR 100", labels=["triage-reviewed"], branch="issue-1-test"),
+            create_pr_info(100, "PR 100", labels=["tech-lead-reviewed"], branch="issue-1-test"),
         ]
 
         mock_worktree_manager = MockWorktreeManager()
@@ -3438,9 +3438,9 @@ class TestProcessDeferredCleanups:
         """Test that cleanups are not processed if PR doesn't have reviewed label."""
         from issue_orchestrator.domain.models import PendingCleanup
 
-        # Enable triage review
-        sample_config.triage_review_agent = "agent:triage"
-        sample_config.triage_reviewed_label = "triage-reviewed"
+        # Enable tech_lead review
+        sample_config.tech_lead_review_agent = "agent:tech-lead"
+        sample_config.tech_lead_reviewed_label = "tech-lead-reviewed"
 
         # No PRs with reviewed label (empty prs dict)
         mock_repository_host.prs = {}
@@ -3469,7 +3469,7 @@ class TestProcessDeferredCleanups:
 
     def test_process_cleanups_noop_when_empty(self, sample_config):
         """Test that process_deferred_cleanups does nothing when queue is empty."""
-        sample_config.triage_review_agent = "agent:triage"
+        sample_config.tech_lead_review_agent = "agent:tech-lead"
 
         orchestrator = create_test_orchestrator(sample_config)
         # No pending cleanups
@@ -3482,7 +3482,7 @@ class TestProcessDeferredCleanups:
         from issue_orchestrator.domain.models import PendingCleanup
 
         # No review workflow
-        sample_config.triage_review_agent = None
+        sample_config.tech_lead_review_agent = None
         sample_config.code_review_agent = None
 
         orchestrator = create_test_orchestrator(sample_config)
@@ -3516,9 +3516,9 @@ class TestRecoverOrphanedCleanups:
         repo_root = tmp_path / "my-repo"
         repo_root.mkdir()
         sample_config.repo_root = repo_root
-        sample_config.triage_review_agent = "agent:triage"
-        sample_config.triage_reviewed_label = "triage-reviewed"
-        sample_config.cleanup.with_triage.remove_worktrees = True
+        sample_config.tech_lead_review_agent = "agent:tech-lead"
+        sample_config.tech_lead_reviewed_label = "tech-lead-reviewed"
+        sample_config.cleanup.with_tech_lead.remove_worktrees = True
 
         # Create worktree base (now on config, not agent)
         worktree_base = tmp_path / "worktrees"
@@ -3532,7 +3532,7 @@ class TestRecoverOrphanedCleanups:
         # Set up PR with reviewed label - includes our orphan
         # Branch naming convention is {issue_number}-{slug}, not issue-{number}
         mock_repository_host.prs["123-test-feature"] = [
-            create_pr_info(100, "PR 100", labels=["triage-reviewed"], branch="123-test-feature"),
+            create_pr_info(100, "PR 100", labels=["tech-lead-reviewed"], branch="123-test-feature"),
         ]
 
         mock_worktree_manager = MockWorktreeManager()
@@ -3560,8 +3560,8 @@ class TestRecoverOrphanedCleanups:
         repo_root = tmp_path / "my-repo"
         repo_root.mkdir()
         sample_config.repo_root = repo_root
-        sample_config.triage_review_agent = "agent:triage"
-        sample_config.triage_reviewed_label = "triage-reviewed"
+        sample_config.tech_lead_review_agent = "agent:tech-lead"
+        sample_config.tech_lead_reviewed_label = "tech-lead-reviewed"
 
         # Create worktree base (now on config, not agent)
         worktree_base = tmp_path / "worktrees"
@@ -3574,7 +3574,7 @@ class TestRecoverOrphanedCleanups:
 
         # Set up PR with reviewed label
         mock_repository_host.prs["issue-123-test-feature"] = [
-            create_pr_info(100, "PR 100", labels=["triage-reviewed"], branch="issue-123-test-feature"),
+            create_pr_info(100, "PR 100", labels=["tech-lead-reviewed"], branch="issue-123-test-feature"),
         ]
 
         mock_worktree_manager = MockWorktreeManager()
@@ -3595,7 +3595,7 @@ class TestRecoverOrphanedCleanups:
     ):
         """Test that recovery does nothing without review workflow."""
         # No review workflow
-        sample_config.triage_review_agent = None
+        sample_config.tech_lead_review_agent = None
         sample_config.code_review_agent = None
 
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
@@ -3609,8 +3609,8 @@ class TestRecoverOrphanedCleanups:
         mock_repository_host,
     ):
         """Test that recovery handles case with no reviewed PRs."""
-        sample_config.triage_review_agent = "agent:triage"
-        sample_config.triage_reviewed_label = "triage-reviewed"
+        sample_config.tech_lead_review_agent = "agent:tech-lead"
+        sample_config.tech_lead_reviewed_label = "tech-lead-reviewed"
 
         # No reviewed PRs
         mock_repository_host.prs = {}

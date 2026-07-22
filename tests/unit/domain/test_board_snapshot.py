@@ -1,7 +1,7 @@
 """Round-trip and fail-fast tests for the BoardSnapshot domain type.
 
 The snapshot crosses a JSON file boundary between the orchestrator and a
-triage/tech-lead agent session, so these tests exercise both directions
+tech_lead/tech-lead agent session, so these tests exercise both directions
 (``to_dict``/``write`` for the producer, ``from_dict``/``read`` for the
 consumer) and assert the reader rejects payloads it does not understand.
 """

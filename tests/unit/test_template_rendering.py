@@ -245,7 +245,7 @@ def test_kanban_blocked_column_is_expandable(jinja_env):
     assert blocked_col is not None
     assert "expandable" in blocked_col.get("class", [])
     assert blocked_col.select_one(".column-expand-btn") is not None
-    # Blocked column has triage filter bar
+    # Blocked column has tech_lead filter bar
     assert blocked_col.select_one(".column-filter-bar") is not None
     filter_btns = blocked_col.select(".filter-btn")
     assert len(filter_btns) == 3

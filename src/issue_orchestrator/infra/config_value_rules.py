@@ -14,17 +14,17 @@ from typing import Any
 VALID_NIT_POLICIES = frozenset({"ignore", "surface", "address"})
 
 
-def resolve_triage_watch_label(
-    triage_review_label: str | None, code_reviewed_label: str | None
+def resolve_tech_lead_watch_label(
+    tech_lead_review_label: str | None, code_reviewed_label: str | None
 ) -> str:
-    """Single owner for the label that selects PRs for triage batch review.
+    """Single owner for the label that selects PRs for tech_lead batch review.
 
-    Every consumer of the triage watch set (threshold fact gathering,
+    Every consumer of the tech_lead watch set (threshold fact gathering,
     manifest building, setup-wizard prompt generation) must derive the label
     through this function; deriving it locally is how the threshold trigger
     and the audited PR set drift apart.
     """
-    return triage_review_label or code_reviewed_label or "code-reviewed"
+    return tech_lead_review_label or code_reviewed_label or "code-reviewed"
 
 
 def normalize_optional_mapping(value: Any) -> Any:

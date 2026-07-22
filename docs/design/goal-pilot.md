@@ -10,7 +10,7 @@ This is intentionally **not** a new UI. The Pilot is an AI control capability th
 ## Goals
 - Provide a goal-oriented control loop: "finish milestones X and Y" or "make the UI clear and easy to navigate."
 - Remain UI-agnostic; CLI is just one adapter.
-- Reuse existing orchestrator workflows (triage/review/rework) and labels as source of truth.
+- Reuse existing orchestrator workflows (tech lead/review/rework) and labels as source of truth.
 - Be deterministic and idempotent, with explicit stop conditions.
 
 ## Non-Goals
@@ -67,7 +67,7 @@ Emit trace events so UIs and sidecars stay decoupled from logs:
 
 ## Control Loop
 1. **Observe**: current state of milestone issues, sessions, PRs, validations.
-2. **Decide**: choose the next action (triage, dispatch, review, merge, retry).
+2. **Decide**: choose the next action (tech lead, dispatch, review, merge, retry).
 3. **Act**: execute one action (idempotent, small scope).
 4. **Verify**: confirm state transition; update pilot state.
 5. **Repeat**: until done or blocked.
@@ -199,7 +199,7 @@ The store remains source-of-truth; the YAML files are a full projection for acti
 - Avoid recomputing full milestone state when a cached snapshot is fresh and validated.
 
 ## Action Policy (Examples)
-- If issues are untriaged -> run triage workflow.
+- If issues are untriaged -> run tech lead workflow.
 - If capacity is available -> dispatch new sessions.
 - If sessions completed -> start review workflow.
 - If reviews approved -> merge per policy.
@@ -217,7 +217,7 @@ These are explicit, auditable commands the AI agent can propose:
 - `dispatch`
 - `review`
 - `merge`
-- `triage`
+- `tech lead`
 - `noop`
 
 ## Goal Pilot Autonomy (Required Capabilities)
@@ -239,8 +239,8 @@ Goal Pilot must be allowed to change course without a full restart. These are fi
    - Example: "Original plan won't work, pivoting."
    - Effect: update goal strategy and replan issue set/sequence.
 
-## Overlap with Triage Agent
-The triage agent remains a specialized workflow. Goal Pilot uses it as a subroutine. The Pilot is a higher-level controller; triage is one action among many.
+## Overlap with Tech Lead Agent
+The tech lead agent remains a specialized workflow. Goal Pilot uses it as a subroutine. The Pilot is a higher-level controller; tech lead is one action among many.
 
 ## pilotCLI Surface (Adapter Only)
 pilotCLI is optional. It should map 1:1 to the port API:
@@ -294,7 +294,7 @@ goal_pilot_actions (
   action_id TEXT PRIMARY KEY,
   run_id TEXT NOT NULL,
   created_at TEXT NOT NULL,
-  action_type TEXT NOT NULL,     -- triage | dispatch | review | merge | retry | block | finish
+  action_type TEXT NOT NULL,     -- tech lead | dispatch | review | merge | retry | block | finish
   input_json TEXT NOT NULL,      -- parameters used for the action
   result_json TEXT NOT NULL,     -- outcome + artifacts
   status TEXT NOT NULL,          -- proposed | executed | failed | skipped

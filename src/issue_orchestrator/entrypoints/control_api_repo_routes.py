@@ -227,8 +227,8 @@ async def validate_repo_config(
         warnings: list[str] = []
         if not config.code_review_agent:
             warnings.append("No code review agent configured - PRs won't be auto-reviewed")
-        if not config.triage_review_agent:
-            warnings.append("No triage review agent configured - no batch reviews")
+        if not config.tech_lead_review_agent:
+            warnings.append("No tech_lead review agent configured - no batch reviews")
 
         return JSONResponse({
             "valid": len(errors) == 0,

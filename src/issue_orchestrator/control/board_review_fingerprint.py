@@ -90,7 +90,7 @@ def board_review_fingerprint(state: "OrchestratorState", now: float) -> str:
     queue_depths = [
         len(state.pending_reviews),
         len(state.pending_reworks),
-        len(state.pending_triage_reviews),
+        len(state.pending_tech_lead_reviews),
         len(state.pending_validation_retries),
         len(state.pending_cleanups),
         len(state.priority_queue),

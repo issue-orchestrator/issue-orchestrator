@@ -930,15 +930,15 @@ class TestSchedulerDependencyGating:
             "publish-failed (Publishing failed)"
         )
 
-    def test_gated_triage_proposal_issue_is_never_picked_up(self, sample_config):
-        """proposed-triage joins the blocking classification (#6778): a gated
+    def test_gated_tech_lead_proposal_issue_is_never_picked_up(self, sample_config):
+        """proposed-tech-lead joins the blocking classification (#6778): a gated
         issue is excluded with a reason detail until an operator removes the
         gate label (per-instance approval)."""
         scheduler = Scheduler(config=sample_config)
         issue = Issue(
             number=3,
             title="Fix flaky CI runner",
-            labels=["proposed-triage", "agent:backend"],
+            labels=["proposed-tech-lead", "agent:backend"],
             body="",
         )
 
@@ -947,8 +947,8 @@ class TestSchedulerDependencyGating:
         assert decision.available is False
         assert decision.reason == "blocked_label"
         assert decision.detail == (
-            "blocking labels: proposed-triage"
-            " (Triage proposal awaiting operator approval)"
+            "blocking labels: proposed-tech-lead"
+            " (Tech Lead proposal awaiting operator approval)"
         )
 
         # Approval = removing the gate label: the issue flows into normal

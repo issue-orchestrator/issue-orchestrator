@@ -1,0 +1,72 @@
+# E2E Test Config: Tech Lead Review Trigger
+#
+# Runs code reviews and batch tech lead reviews in isolation from shared suite.
+#
+# Note: tmux session is set via ORCHESTRATOR_TMUX_SESSION env var for test isolation.
+# Control API port is dynamically assigned if not specified.
+
+repo:
+  name: BruceBGordon/issue-orchestrator
+  github:
+    audit:
+      enabled: true
+      events: true
+      file: /tmp/e2e-orchestrator-logs/gh-audit-{pid}.json
+
+worktrees:
+  base: "/tmp/e2e-worktrees"
+
+filtering:
+  label: test-data
+
+ui:
+  queue_refresh_seconds: 600
+
+e2e:
+  pr_labels: ["io-e2e-test-data"]
+
+agents:
+  "agent:e2e-test":
+    prompt: "tests/e2e/fixtures/scripts/complete-immediately.sh"
+    model: sonnet
+    timeout_minutes: 3
+    command: "bash {prompt}"
+    meta_agent: "claude-code"
+    ai_system: "claude-code"
+    provider_args:
+      permission_mode: bypassPermissions
+  "agent:script-review":
+    prompt: "tests/e2e/fixtures/scripts/review-decider.sh"
+    model: sonnet
+    timeout_minutes: 3
+    command: "PR_NUMBER={pr_number} bash {prompt}"
+    meta_agent: "claude-code"
+    ai_system: "claude-code"
+    provider_args:
+      permission_mode: bypassPermissions
+  "agent:tech-lead-investigator":
+    prompt: "tests/e2e/fixtures/scripts/complete-immediately.sh"
+    model: sonnet
+    timeout_minutes: 3
+    command: "bash {prompt}"
+    meta_agent: "claude-code"
+    ai_system: "claude-code"
+    provider_args:
+      permission_mode: bypassPermissions
+
+execution:
+  concurrency:
+    max_concurrent_sessions: 4
+    session_timeout_minutes: 3
+
+review:
+  enabled: true
+  default: "agent:script-review"
+  code_review_label: "needs-code-review"
+  code_reviewed_label: "code-reviewed"
+  tech_lead_review_agent: "agent:tech-lead-investigator"
+  tech_lead_review_label: "needs-tech-lead-review"
+  tech_lead_reviewed_label: "tech-lead-reviewed"
+  tech_lead_review_threshold: 2
+  tech_lead_review_on_failure: false
+  max_rework_cycles: 2

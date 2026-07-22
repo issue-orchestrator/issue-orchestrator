@@ -262,12 +262,12 @@ def flow_steps_for(stage: str) -> list[dict[str, str]]:
             {"key": "rework", "label": "Rework"},
             {"key": "done", "label": "Done"},
         ]
-    if stage == "triage":
+    if stage == "tech_lead":
         return [
             {"key": "queued", "label": "Queued"},
             {"key": "in_progress", "label": "In Progress"},
             {"key": "review", "label": "Review"},
-            {"key": "triage", "label": "Triage"},
+            {"key": "tech_lead", "label": "Tech Lead"},
             {"key": "done", "label": "Done"},
         ]
     return [
@@ -494,12 +494,12 @@ def _pending_issue_numbers(state) -> dict[str, set[int]]:
     pending_rework_numbers = {r.issue_number for r in state.pending_reworks} | {
         r.issue_number for r in state.discovered_reworks
     }
-    pending_triage_numbers = {r.issue_number for r in state.pending_triage_reviews}
+    pending_tech_lead_numbers = {r.issue_number for r in state.pending_tech_lead_reviews}
     return {
         "review": pending_review_numbers,
         "retrospective_review": pending_retrospective_numbers,
         "rework": pending_rework_numbers,
-        "triage": pending_triage_numbers,
+        "tech_lead": pending_tech_lead_numbers,
     }
 
 
@@ -554,8 +554,8 @@ def _build_active_items(state, config, queue_page: int, seen_issues: set[int], *
             status_reason = f"Reviewing existing implementation for {runtime} min"
         elif session.key.task == TaskKind.REWORK:
             flow_stage = "rework"
-        elif session.key.task == TaskKind.TRIAGE:
-            flow_stage = "triage"
+        elif session.key.task == TaskKind.TECH_LEAD:
+            flow_stage = "tech_lead"
         else:
             flow_stage = "in_progress"
         flow_steps = flow_steps_for(flow_stage)
@@ -715,8 +715,8 @@ def _build_queue_items(  # noqa: C901, PLR0912 — aggregates queue from multipl
         elif issue.number in pending_numbers["rework"]:
             flow_stage = "rework"
             rework_status = resolve_queued_rework(state, issue.number)
-        elif issue.number in pending_numbers["triage"]:
-            flow_stage = "triage"
+        elif issue.number in pending_numbers["tech_lead"]:
+            flow_stage = "tech_lead"
         elif issue.number in pending_numbers["retrospective_review"]:
             flow_stage = "review"
             detail_label = "Retro review queued"

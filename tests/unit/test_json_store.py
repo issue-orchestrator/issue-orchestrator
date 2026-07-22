@@ -111,7 +111,7 @@ class TestJsonSessionStore:
 
     def test_save_review_state(self, store):
         """Test saving review state machine state."""
-        metadata = {"reviewer": "triage"}
+        metadata = {"reviewer": "tech_lead"}
 
         store.save_review_state(
             pr_number=123,
@@ -124,7 +124,7 @@ class TestJsonSessionStore:
         assert state is not None
         assert state["state"] == "pending"
         assert state["rework_count"] == 2
-        assert state["metadata"] == {"reviewer": "triage"}
+        assert state["metadata"] == {"reviewer": "tech_lead"}
         assert "updated_at" in state
 
     def test_get_review_state_not_found(self, store):

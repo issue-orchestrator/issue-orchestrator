@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from types import FrameType
     from ..domain.models import OrchestratorState, Session, SessionStatus
     from ..ports.queue_cache_store import QueueCacheStore
-    from ..ports.triage_authority import TriageAuthorityStore
+    from ..ports.tech_lead_authority import TechLeadAuthorityStore
     from ..infra.config import Config
     from ..infra.orchestrator import Orchestrator
     from .planner import Planner
@@ -132,12 +132,12 @@ class OrchestratorSupport:
     get_review_machine: Callable[[int, int], object]
     kill_session: Callable[[str], None]
     queue_cache_store: "QueueCacheStore | None" = None
-    # Durable triage ledgers (#6780). Anchor intake records a storm cohort
+    # Durable tech_lead ledgers (#6780). Anchor intake records a storm cohort
     # here, and the end-of-tick fact clear reads it to hold the cohort's run
     # artifacts. Optional so unrelated tests need not wire it; without it a
     # storm anchor cannot prove its cohort, so intake declines to collapse the
     # individual investigations rather than losing the problems.
-    triage_authority: "TriageAuthorityStore | None" = None
+    tech_lead_authority: "TechLeadAuthorityStore | None" = None
 
     _last_ui_update: float = field(default=0.0, init=False)
     _ui_update_interval: int = field(default=30, init=False)
@@ -177,7 +177,7 @@ class OrchestratorSupport:
     def _immediate_cleanup(self, session: "Session", status: "SessionStatus") -> None:
         from ..domain.models import SessionStatus
         if status == SessionStatus.COMPLETED and (
-            self.config.cleanup.without_triage.close_ai_session_tabs or not self.config.code_review_agent
+            self.config.cleanup.without_tech_lead.close_ai_session_tabs or not self.config.code_review_agent
         ):
             try:
                 self.worktree_manager.remove(session.worktree_path) if self.worktree_manager else None
@@ -197,7 +197,7 @@ class OrchestratorSupport:
 
     def clear_discovered_facts(self, tick: "OrchestratorSnapshot") -> None:
         clear_discovered_facts(
-            self.state, self.config, self.triage_authority, tick_paused=tick.paused
+            self.state, self.config, self.tech_lead_authority, tick_paused=tick.paused
         )
 
     def emit_heartbeat_if_needed(self) -> None:
@@ -256,11 +256,11 @@ class OrchestratorSupport:
         """Apply a single action and return the result."""
         from .actions import ActionType
 
-        # Check triage cooldown
-        if action.action_type == ActionType.CREATE_TRIAGE_ISSUE and self._cleanup_manager:
-            if not self._cleanup_manager.should_retry_triage_issue():
-                logger.warning("[PLAN] Skipping triage issue creation due to cooldown")
-                self._emit_apply_failed(action, "triage_issue_creation_cooldown")
+        # Check tech_lead cooldown
+        if action.action_type == ActionType.CREATE_TECH_LEAD_ISSUE and self._cleanup_manager:
+            if not self._cleanup_manager.should_retry_tech_lead_issue():
+                logger.warning("[PLAN] Skipping tech_lead issue creation due to cooldown")
+                self._emit_apply_failed(action, "tech_lead_issue_creation_cooldown")
                 return self._ActionApplyResult(success=False)
 
         try:
@@ -304,10 +304,10 @@ class OrchestratorSupport:
                 self.state.failed_this_cycle.add(issue_number)
                 logger.info("[PLAN] Marked issue #%d failed_this_cycle due to %s failure", issue_number, action.action_type.value)
 
-        # Handle triage issue failure cooldown
-        if action.action_type.value == "create_triage_issue" and self._cleanup_manager:
+        # Handle tech_lead issue failure cooldown
+        if action.action_type.value == "create_tech_lead_issue" and self._cleanup_manager:
             try:
-                self._cleanup_manager.mark_triage_issue_failure()
+                self._cleanup_manager.mark_tech_lead_issue_failure()
             except Exception:
                 pass
 
@@ -356,12 +356,12 @@ class OrchestratorSupport:
             ActionType.LAUNCH_SESSION: self._handle_launch_session,
             ActionType.LAUNCH_VALIDATION_RETRY: self._handle_launch_validation_retry,
             ActionType.ESCALATE_TO_HUMAN: self._handle_escalate_to_human,
-            ActionType.CREATE_TRIAGE_ISSUE: self._handle_create_triage_issue,
+            ActionType.CREATE_TECH_LEAD_ISSUE: self._handle_create_tech_lead_issue,
             ActionType.CLEANUP_SESSION: self._handle_cleanup_session,
             ActionType.QUEUE_REVIEW: self._handle_queue_review,
             ActionType.QUEUE_RETROSPECTIVE_REVIEW: self._handle_queue_retrospective_review,
             ActionType.QUEUE_REWORK: self._handle_queue_rework,
-            ActionType.QUEUE_TRIAGE: self._handle_queue_triage,
+            ActionType.QUEUE_TECH_LEAD: self._handle_queue_tech_lead,
         }
 
         handler = handlers.get(action.action_type)
@@ -387,13 +387,13 @@ class OrchestratorSupport:
         a = cast(EscalateToHumanAction, action)
         logger.info("[PLAN] Escalated PR #%d (cycle %d)", a.pr_number, a.rework_cycles)
 
-    def _handle_create_triage_issue(self, action: "Action", result: "ActionResult") -> None:
-        from .actions import CreateTriageIssueAction
-        from .health_review_trigger import intake_created_triage_anchor
+    def _handle_create_tech_lead_issue(self, action: "Action", result: "ActionResult") -> None:
+        from .actions import CreateTechLeadIssueAction
+        from .health_review_trigger import intake_created_tech_lead_anchor
         num = result.details.get("issue_number")
         if num:
-            intake_created_triage_anchor(cast(CreateTriageIssueAction, action), num, self.state, self.queue_cache_store, self.triage_authority)
-            logger.info("Created triage #%d", num)
+            intake_created_tech_lead_anchor(cast(CreateTechLeadIssueAction, action), num, self.state, self.queue_cache_store, self.tech_lead_authority)
+            logger.info("Created tech_lead #%d", num)
 
     def _handle_cleanup_session(self, action: "Action", result: "ActionResult") -> None:
         from .actions import CleanupSessionAction
@@ -466,9 +466,9 @@ class OrchestratorSupport:
         )
         log_transition("rework", a.issue_number, "CREATED", "QUEUED", f"cycle {a.rework_cycle}")
 
-    def _handle_queue_triage(self, action: "Action", result: "ActionResult") -> None:
-        from .actions import QueueTriageAction
-        a = cast(QueueTriageAction, action)
+    def _handle_queue_tech_lead(self, action: "Action", result: "ActionResult") -> None:
+        from .actions import QueueTechLeadAction
+        a = cast(QueueTechLeadAction, action)
         PendingSessionQueues(self.state).queue_failure_investigation(a.issue_number, a.title, failure=a.failure)
 
     def update_queue_cache(self) -> None:
@@ -1393,13 +1393,13 @@ def run_tick(
         logger.debug("[INFLIGHT] Pruned %d expired IDs: %s", len(expired), expired)
 
     logger.info(
-        "[LOOP] Iteration %d - active=%d paused=%s pending_reviews=%d pending_reworks=%d pending_triage=%d inflight=%d",
+        "[LOOP] Iteration %d - active=%d paused=%s pending_reviews=%d pending_reworks=%d pending_tech_lead=%d inflight=%d",
         loop_iteration,
         len(state.active_sessions),
         state.paused,
         len(state.pending_reviews),
         len(state.pending_reworks),
-        len(state.pending_triage_reviews),
+        len(state.pending_tech_lead_reviews),
         len(inflight_stable_ids),
     )
 

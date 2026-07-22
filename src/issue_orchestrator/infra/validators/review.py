@@ -14,30 +14,30 @@ class ReviewWorkflowValidator(ConfigValidator):
     Checks:
     - If reviews enabled, default reviewer must be set
     - Default reviewer must exist in agents
-    - Triage review agent must exist in agents (if set)
-    - A configured triage agent requires triage_follow_up_agent (#6779 R14)
-    - triage_follow_up_agent, when set, must name a real agent (#6779 R9)
-    - Triage authority modes are valid; act-level 'execute' rejected (#6764)
-    - Triage health-review interval is non-negative (0 = disabled, #6763)
-    - A positive health-review interval requires a triage agent (#6776)
+    - Tech Lead review agent must exist in agents (if set)
+    - A configured tech lead agent requires tech_lead_follow_up_agent (#6779 R14)
+    - tech_lead_follow_up_agent, when set, must name a real agent (#6779 R9)
+    - Tech Lead authority modes are valid; act-level 'execute' rejected (#6764)
+    - Tech Lead health-review interval is non-negative (0 = disabled, #6763)
+    - A positive health-review interval requires a tech lead agent (#6776)
     """
 
     def validate(self, config: "Config") -> list[str]:
         errors: list[str] = []
 
         self._validate_review_defaults(config, errors)
-        self._validate_triage_agent(config, errors)
-        self._validate_triage_follow_up_agent(config, errors)
-        # Graduated triage authority (ADR-0031): act-level 'execute' is a
+        self._validate_tech_lead_agent(config, errors)
+        self._validate_tech_lead_follow_up_agent(config, errors)
+        # Graduated tech_lead authority (ADR-0031): act-level 'execute' is a
         # startup configuration error until its executor is wired (#6764).
-        errors.extend(config.triage.authority.startup_errors())
+        errors.extend(config.tech_lead.authority.startup_errors())
         # Periodic health review (ADR-0031 §4): a negative interval is a
         # startup configuration error, never silently treated as disabled.
-        errors.extend(config.triage.health_review.startup_errors())
+        errors.extend(config.tech_lead.health_review.startup_errors())
         self._validate_health_review_requires_agent(config, errors)
         # Tech-lead attention sweep (ADR-0031, #6823): own-block invariants plus
-        # the cross-field "enabled requires a triage agent" check.
-        errors.extend(config.triage.stuck_sweep.startup_errors())
+        # the cross-field "enabled requires a tech lead agent" check.
+        errors.extend(config.tech_lead.stuck_sweep.startup_errors())
         self._validate_stuck_sweep_requires_agent(config, errors)
 
         exchange_mode = config.review_exchange_mode
@@ -62,42 +62,42 @@ class ReviewWorkflowValidator(ConfigValidator):
                 f"Available: {list(config.agents.keys())}"
             )
 
-    def _validate_triage_agent(self, config: "Config", errors: list[str]) -> None:
-        if not config.triage_review_agent:
+    def _validate_tech_lead_agent(self, config: "Config", errors: list[str]) -> None:
+        if not config.tech_lead_review_agent:
             return
-        if config.triage_review_agent not in config.agents:
+        if config.tech_lead_review_agent not in config.agents:
             errors.append(
-                f"triage_review_agent '{config.triage_review_agent}' not found in agents. "
+                f"tech_lead_review_agent '{config.tech_lead_review_agent}' not found in agents. "
                 f"Available: {list(config.agents.keys())}"
             )
 
-    def _validate_triage_follow_up_agent(
+    def _validate_tech_lead_follow_up_agent(
         self, config: "Config", errors: list[str]
     ) -> None:
-        # Typed destination for triage create_issue proposals (#6779 R9/R14).
+        # Typed destination for tech_lead create_issue proposals (#6779 R9/R14).
         #
-        # A configured triage agent makes create_issue proposals REACHABLE:
+        # A configured tech lead agent makes create_issue proposals REACHABLE:
         # both execute-authority (direct create) and propose-authority (a gated
         # proposal issue that creates on approval) route the new issue to
-        # review.triage_follow_up_agent (see triage_follow_up_agent_label). Left
+        # review.tech_lead_follow_up_agent (see tech_lead_follow_up_agent_label). Left
         # unset, that routing RAISES at post-session planning time — a latent
-        # failure. So it is REQUIRED whenever a triage agent is configured
+        # failure. So it is REQUIRED whenever a tech lead agent is configured
         # (#6779 R14), and when set it MUST name a real agent so routing can
         # never fall back to dict order and hand new work to a
-        # reviewer/triage/goal-pilot agent (#6779 R9).
-        if not config.triage_follow_up_agent:
-            if config.triage_review_agent:
+        # reviewer/tech_lead/goal-pilot agent (#6779 R9).
+        if not config.tech_lead_follow_up_agent:
+            if config.tech_lead_review_agent:
                 errors.append(
-                    "review.triage_follow_up_agent is required when a triage"
-                    " agent is configured: a triage create_issue proposal routes"
+                    "review.tech_lead_follow_up_agent is required when a tech_lead"
+                    " agent is configured: a tech_lead create_issue proposal routes"
                     " the new issue to it, and leaving it unset fails at"
                     " post-session planning. Set it to a worker agent in `agents`"
                     f" (available: {list(config.agents.keys())}) (#6779 R14)"
                 )
             return
-        if config.triage_follow_up_agent not in config.agents:
+        if config.tech_lead_follow_up_agent not in config.agents:
             errors.append(
-                f"review.triage_follow_up_agent '{config.triage_follow_up_agent}' "
+                f"review.tech_lead_follow_up_agent '{config.tech_lead_follow_up_agent}' "
                 f"not found in agents. Available: {list(config.agents.keys())}"
             )
 
@@ -105,15 +105,15 @@ class ReviewWorkflowValidator(ConfigValidator):
         self, config: "Config", errors: list[str]
     ) -> None:
         # Cross-field invariant (#6776): a positive health-review interval with
-        # no triage agent is silently disabled at runtime
+        # no tech lead agent is silently disabled at runtime
         # (health_review_interval_minutes() returns 0). Reject the pair so the
         # misconfiguration fails loudly rather than degrading; 0/absent is the
         # documented disable value and a positive interval needs an agent.
-        interval = config.triage.health_review.interval_minutes
-        if interval > 0 and not config.triage_review_agent:
+        interval = config.tech_lead.health_review.interval_minutes
+        if interval > 0 and not config.tech_lead_review_agent:
             errors.append(
-                f"triage.health_review.interval_minutes is {interval} but no "
-                "triage agent is configured. Set review.triage_review_agent, or "
+                f"tech_lead.health_review.interval_minutes is {interval} but no "
+                "tech lead agent is configured. Set review.tech_lead_review_agent, or "
                 "use 0 to disable the periodic health review."
             )
 
@@ -121,23 +121,23 @@ class ReviewWorkflowValidator(ConfigValidator):
         self, config: "Config", errors: list[str]
     ) -> None:
         # Cross-field invariant (#6823): the sweep re-injects stuck issues into
-        # the reactive-triage pipeline, so an enabled sweep with no triage agent
-        # (or triage-on-failure off) is silently inert at runtime. Reject the
+        # the reactive-tech-lead pipeline, so an enabled sweep with no tech lead agent
+        # (or tech-lead-on-failure off) is silently inert at runtime. Reject the
         # pair so the misconfiguration fails loudly instead of degrading.
-        if not config.triage.stuck_sweep.enabled:
+        if not config.tech_lead.stuck_sweep.enabled:
             return
-        if not config.triage_review_agent:
+        if not config.tech_lead_review_agent:
             errors.append(
-                "triage.stuck_sweep.enabled is true but no triage agent is "
-                "configured. Set review.triage_review_agent, or disable the "
+                "tech_lead.stuck_sweep.enabled is true but no tech lead agent is "
+                "configured. Set review.tech_lead_review_agent, or disable the "
                 "stuck sweep."
             )
-        if not config.triage_review_on_failure:
+        if not config.tech_lead_review_on_failure:
             errors.append(
-                "triage.stuck_sweep.enabled is true but "
-                "review.triage_review_on_failure is false; the sweep feeds the "
-                "reactive triage-on-failure pipeline and would be inert. Enable "
-                "triage_review_on_failure, or disable the stuck sweep."
+                "tech_lead.stuck_sweep.enabled is true but "
+                "review.tech_lead_review_on_failure is false; the sweep feeds the "
+                "reactive tech-lead-on-failure pipeline and would be inert. Enable "
+                "tech_lead_review_on_failure, or disable the stuck sweep."
             )
 
     def _validate_exchange_mode(
@@ -205,7 +205,7 @@ class ReviewWorkflowValidator(ConfigValidator):
     def _collect_exchange_pairs(config: "Config") -> list[tuple[str, str]]:
         pairs: list[tuple[str, str]] = []
         for label, agent in config.agents.items():
-            if config.triage_review_agent and label == config.triage_review_agent:
+            if config.tech_lead_review_agent and label == config.tech_lead_review_agent:
                 continue
             if agent.skip_review:
                 continue

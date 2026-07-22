@@ -1306,10 +1306,10 @@ class TestCmdInitAdvanced:
                 result = cmd_init(args)
 
                 assert result == 0
-                # Includes the triage provenance marker used for crash-safe clears.
+                # Includes the tech_lead provenance marker used for crash-safe clears.
                 assert mock_client.create_label.call_count >= 9
                 mock_client.create_label.assert_any_call(
-                    "triage-needs-human", force=True
+                    "tech-lead-needs-human", force=True
                 )
 
     def test_cmd_init_handles_failures(self):

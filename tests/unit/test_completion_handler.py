@@ -21,8 +21,8 @@ from unittest.mock import MagicMock, Mock
 from issue_orchestrator.infra.config import (
     Config,
     CleanupConfig,
-    CleanupWithTriage,
-    CleanupWithoutTriage,
+    CleanupWithTechLead,
+    CleanupWithoutTechLead,
 )
 from issue_orchestrator.control.completion_handler import CompletionHandler, CompletionResult
 from issue_orchestrator.control.actions import (
@@ -146,20 +146,20 @@ def make_handler(
     default_session_output = Mock(spec=SessionOutput)
     default_session_output.find_run_dir.return_value = None
     # Use explicit None check - InMemoryEventSink with 0 events is falsy
-    # Triage-configured tests rendezvous with recorded authority through the
+    # Tech-Lead-configured tests rendezvous with recorded authority through the
     # SQLite adapter at config.repo_root (a tmp_path); everything else gets
     # the in-memory port fake so no state files are written.
-    from issue_orchestrator.infra.triage_authority_store import (
-        SqliteTriageAuthorityStore,
+    from issue_orchestrator.infra.tech_lead_authority_store import (
+        SqliteTechLeadAuthorityStore,
     )
-    from issue_orchestrator.ports.triage_authority import (
-        InMemoryTriageAuthorityStore,
+    from issue_orchestrator.ports.tech_lead_authority import (
+        InMemoryTechLeadAuthorityStore,
     )
 
-    triage_authority = (
-        SqliteTriageAuthorityStore.for_repo(config.repo_root)
-        if config.triage_review_agent
-        else InMemoryTriageAuthorityStore()
+    tech_lead_authority = (
+        SqliteTechLeadAuthorityStore.for_repo(config.repo_root)
+        if config.tech_lead_review_agent
+        else InMemoryTechLeadAuthorityStore()
     )
     return CompletionHandler(
         config=config,
@@ -169,7 +169,7 @@ def make_handler(
         get_session_machine_fn=lambda _terminal_id: session_machine,
         get_review_machine_fn=lambda _pr_number: review_machine,
         session_output=session_output if session_output is not None else default_session_output,
-        triage_authority=triage_authority,
+        tech_lead_authority=tech_lead_authority,
         active_session_run_id=lambda _n: None,
     )
 
@@ -865,12 +865,12 @@ class TestPRDetection:
 class TestCleanupStrategy:
     """Tests for cleanup strategy determination."""
 
-    def test_completed_work_session_with_triage_defers_cleanup(
+    def test_completed_work_session_with_tech_lead_defers_cleanup(
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
     ) -> None:
-        """Work session with triage agent configured defers cleanup."""
-        config.triage_review_agent = "agent:triage"
-        config.cleanup.with_triage.close_ai_session_tabs = True
+        """Work session with tech lead agent configured defers cleanup."""
+        config.tech_lead_review_agent = "agent:tech-lead"
+        config.cleanup.with_tech_lead.close_ai_session_tabs = True
         issue = make_issue()
         session = create_test_session(issue, agent_config, tmp_worktree, terminal_id="issue-1")
 
@@ -885,14 +885,14 @@ class TestCleanupStrategy:
         assert result.pending_cleanup is not None
         assert result.pending_cleanup.pr_number == 42
 
-    def test_completed_work_session_without_triage_uses_code_review_config(
+    def test_completed_work_session_without_tech_lead_uses_code_review_config(
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
     ) -> None:
-        """Work session without triage uses code_review cleanup config."""
-        config.triage_review_agent = None
+        """Work session without tech_lead uses code_review cleanup config."""
+        config.tech_lead_review_agent = None
         config.code_review_agent = "agent:reviewer"
-        config.cleanup.without_triage.wait_for_code_review = True
-        config.cleanup.without_triage.close_ai_session_tabs = True
+        config.cleanup.without_tech_lead.wait_for_code_review = True
+        config.cleanup.without_tech_lead.close_ai_session_tabs = True
         issue = make_issue()
         session = create_test_session(issue, agent_config, tmp_worktree, terminal_id="issue-1")
 
@@ -909,7 +909,7 @@ class TestCleanupStrategy:
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
     ) -> None:
         """Review sessions don't create pending cleanups."""
-        config.triage_review_agent = "agent:triage"
+        config.tech_lead_review_agent = "agent:tech-lead"
         issue = make_issue()
         session = create_test_session(
             issue, agent_config, tmp_worktree,
@@ -931,7 +931,7 @@ class TestCleanupStrategy:
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
     ) -> None:
         """Rework sessions don't create pending cleanups."""
-        config.triage_review_agent = "agent:triage"
+        config.tech_lead_review_agent = "agent:tech-lead"
         issue = make_issue()
         session = create_test_session(
             issue, agent_config, tmp_worktree,
@@ -952,7 +952,7 @@ class TestCleanupStrategy:
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
     ) -> None:
         """Failed sessions don't create pending cleanups."""
-        config.triage_review_agent = "agent:triage"
+        config.tech_lead_review_agent = "agent:tech-lead"
         issue = make_issue()
         session = create_test_session(issue, agent_config, tmp_worktree, terminal_id="issue-1")
 
@@ -967,8 +967,8 @@ class TestCleanupStrategy:
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
     ) -> None:
         """PendingCleanup object contains all required information."""
-        config.triage_review_agent = "agent:triage"
-        config.cleanup.with_triage.close_ai_session_tabs = True
+        config.tech_lead_review_agent = "agent:tech-lead"
+        config.cleanup.with_tech_lead.close_ai_session_tabs = True
         issue = make_issue(number=123)
         session = create_test_session(
             issue, agent_config, tmp_worktree,
@@ -2660,8 +2660,8 @@ class TestIntegrationBehaviors:
     ) -> None:
         """Successful completion updates machines, emits events, and returns actions."""
         config.code_review_agent = "agent:reviewer"
-        config.triage_review_agent = "agent:triage"
-        config.cleanup.with_triage.close_ai_session_tabs = True
+        config.tech_lead_review_agent = "agent:tech-lead"
+        config.cleanup.with_tech_lead.close_ai_session_tabs = True
 
         events = InMemoryEventSink()
         issue = make_issue()
@@ -2987,36 +2987,36 @@ class TestReviewOutcomeEventEmission:
 
 
 # =============================================================================
-# Test: Triage decision failure transition (#6761 finding 3)
+# Test: Tech Lead decision failure transition (#6761 finding 3)
 # =============================================================================
 
 
-class TestTriageDecisionFailureTransition:
-    """A rejected/missing triage decision pair must fail the session for every
+class TestTechLeadDecisionFailureTransition:
+    """A rejected/missing tech_lead decision pair must fail the session for every
     flavor: FAILED history via the critical-error seam plus the blocked/failed
     labeling path for the session's own issue (ADR-0031 / #6761 finding 3)."""
 
-    TRIAGE_ERROR = (
-        "triage_decision: missing_decision: triage decision missing or empty"
+    TECH_LEAD_ERROR = (
+        "tech_lead_decision: missing_decision: tech_lead decision missing or empty"
     )
 
-    def _make_triage_session(
+    def _make_tech_lead_session(
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
     ) -> Session:
         config.repo_root = tmp_worktree  # authority store home
-        config.triage_review_agent = "agent:triage"
-        config.triage_reviewed_label = "triage-reviewed"
-        config.triage_failed_label = "triage-failed"
-        issue = make_issue(labels=["agent:triage"])
+        config.tech_lead_review_agent = "agent:tech-lead"
+        config.tech_lead_reviewed_label = "tech-lead-reviewed"
+        config.tech_lead_failed_label = "tech-lead-failed"
+        issue = make_issue(labels=["agent:tech-lead"])
         return create_test_session(issue, agent_config, tmp_worktree)
 
     @staticmethod
     def _record_authority(config: Config, session: Session, authority: Any) -> None:
-        from issue_orchestrator.infra.triage_authority_store import (
-            SqliteTriageAuthorityStore,
+        from issue_orchestrator.infra.tech_lead_authority_store import (
+            SqliteTechLeadAuthorityStore,
         )
 
-        SqliteTriageAuthorityStore.for_repo(config.repo_root).record(
+        SqliteTechLeadAuthorityStore.for_repo(config.repo_root).record(
             run_id=session.run_assets.run_id,
             session_name=session.run_assets.session_name,
             authority=authority,
@@ -3025,33 +3025,33 @@ class TestTriageDecisionFailureTransition:
     def _plant_assignment(self, session: Session, assignment: Any) -> None:
         import json as _json
 
-        from issue_orchestrator.domain.triage_session import (
-            TRIAGE_ASSIGNMENT_FILENAME,
+        from issue_orchestrator.domain.tech_lead_session import (
+            TECH_LEAD_ASSIGNMENT_FILENAME,
         )
 
-        path = session.run_dir / "triage-data" / TRIAGE_ASSIGNMENT_FILENAME
+        path = session.run_dir / "tech-lead-data" / TECH_LEAD_ASSIGNMENT_FILENAME
         assignment.write(path)
         run_manifest_path = session.run_dir / "manifest.json"
         run_manifest = _json.loads(run_manifest_path.read_text())
-        run_manifest["triage_assignment"] = str(path)
+        run_manifest["tech_lead_assignment"] = str(path)
         run_manifest_path.write_text(_json.dumps(run_manifest))
 
     def test_invalid_investigation_pair_records_failed_history_and_rejection(
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
     ) -> None:
-        from issue_orchestrator.control.actions import SurfaceTriageProposalAction
-        from issue_orchestrator.domain.triage_session import (
-            TriageAssignment,
-            TriageSessionFlavor,
+        from issue_orchestrator.control.actions import SurfaceTechLeadProposalAction
+        from issue_orchestrator.domain.tech_lead_session import (
+            TechLeadAssignment,
+            TechLeadSessionFlavor,
         )
 
-        from issue_orchestrator.domain.triage_session import TriageLaunchAuthority
+        from issue_orchestrator.domain.tech_lead_session import TechLeadLaunchAuthority
 
-        session = self._make_triage_session(config, agent_config, tmp_worktree)
+        session = self._make_tech_lead_session(config, agent_config, tmp_worktree)
         self._plant_assignment(
             session,
-            TriageAssignment(
-                flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+            TechLeadAssignment(
+                flavor=TechLeadSessionFlavor.FAILURE_INVESTIGATION,
                 focus_issue_number=1,
                 focus_reason="Investigate: timed out",
             ),
@@ -3059,8 +3059,8 @@ class TestTriageDecisionFailureTransition:
         self._record_authority(
             config,
             session,
-            TriageLaunchAuthority(
-                flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+            TechLeadLaunchAuthority(
+                flavor=TechLeadSessionFlavor.FAILURE_INVESTIGATION,
                 anchor_issue_number=session.issue.number,
                 focus_issue_number=1,
             ),
@@ -3070,14 +3070,14 @@ class TestTriageDecisionFailureTransition:
         result = handler.process_completion(
             session,
             SessionStatus.COMPLETED,
-            processing_errors=[self.TRIAGE_ERROR],
+            processing_errors=[self.TECH_LEAD_ERROR],
         )
 
         assert result.history_entry.status == "failed"
         rejections = [
             a
             for a in result.actions
-            if isinstance(a, SurfaceTriageProposalAction) and a.mode == "rejected"
+            if isinstance(a, SurfaceTechLeadProposalAction) and a.mode == "rejected"
         ]
         assert len(rejections) == 1
         assert rejections[0].issue_number == session.issue.number
@@ -3092,56 +3092,56 @@ class TestTriageDecisionFailureTransition:
     ) -> None:
         import json as _json
 
-        from issue_orchestrator.domain.triage_manifest import (
+        from issue_orchestrator.domain.tech_lead_manifest import (
             PRToReview,
-            TriageManifest,
+            TechLeadManifest,
         )
-        from issue_orchestrator.domain.triage_session import (
-            TriageAssignment,
-            TriageSessionFlavor,
+        from issue_orchestrator.domain.tech_lead_session import (
+            TechLeadAssignment,
+            TechLeadSessionFlavor,
         )
 
-        from issue_orchestrator.domain.triage_session import TriageLaunchAuthority
+        from issue_orchestrator.domain.tech_lead_session import TechLeadLaunchAuthority
 
-        session = self._make_triage_session(config, agent_config, tmp_worktree)
+        session = self._make_tech_lead_session(config, agent_config, tmp_worktree)
         self._plant_assignment(
-            session, TriageAssignment(flavor=TriageSessionFlavor.BATCH_REVIEW)
+            session, TechLeadAssignment(flavor=TechLeadSessionFlavor.BATCH_REVIEW)
         )
         self._record_authority(
             config,
             session,
-            TriageLaunchAuthority(
-                flavor=TriageSessionFlavor.BATCH_REVIEW,
+            TechLeadLaunchAuthority(
+                flavor=TechLeadSessionFlavor.BATCH_REVIEW,
                 anchor_issue_number=session.issue.number,
                 manifest_pr_numbers=(101,),
             ),
         )
-        manifest = TriageManifest(
+        manifest = TechLeadManifest(
             prs=[
                 PRToReview(
                     number=101, title="PR 101", url="https://x/pr/101", branch="b1"
                 )
             ]
         )
-        manifest_path = tmp_worktree / "triage-manifest.json"
+        manifest_path = tmp_worktree / "tech-lead-manifest.json"
         manifest.write(manifest_path)
         run_manifest_path = session.run_dir / "manifest.json"
         run_manifest = _json.loads(run_manifest_path.read_text())
-        run_manifest["triage_manifest"] = str(manifest_path)
+        run_manifest["tech_lead_manifest"] = str(manifest_path)
         run_manifest_path.write_text(_json.dumps(run_manifest))
         handler = make_handler(config)
 
         result = handler.process_completion(
             session,
             SessionStatus.COMPLETED,
-            processing_errors=[self.TRIAGE_ERROR],
+            processing_errors=[self.TECH_LEAD_ERROR],
         )
 
         assert result.history_entry.status == "failed"
         failed_labels = [
             a
             for a in result.actions
-            if isinstance(a, AddLabelAction) and a.label == "triage-failed"
+            if isinstance(a, AddLabelAction) and a.label == "tech-lead-failed"
         ]
         assert {a.issue_number for a in failed_labels} == {101}
         added = {a.label for a in result.actions if isinstance(a, AddLabelAction)}
@@ -3149,31 +3149,31 @@ class TestTriageDecisionFailureTransition:
 
 
 # =============================================================================
-# Test: Triage authority retention at the completion finalization seam
+# Test: Tech Lead authority retention at the completion finalization seam
 # =============================================================================
 
 
-class TestTriageAuthorityRetention:
+class TestTechLeadAuthorityRetention:
     """Completion finalization is a run's terminal seam: the recorded launch
     authority row must be discarded once the completion is processed, for
     success and failure alike (#6769 finding 3)."""
 
     # Reuse the arm/plant helpers without inheriting (and re-collecting)
     # the transition tests themselves.
-    _helpers = TestTriageDecisionFailureTransition()
-    _make_triage_session = _helpers._make_triage_session
+    _helpers = TestTechLeadDecisionFailureTransition()
+    _make_tech_lead_session = _helpers._make_tech_lead_session
     _plant_assignment = _helpers._plant_assignment
     _record_authority = staticmethod(
-        TestTriageDecisionFailureTransition._record_authority
+        TestTechLeadDecisionFailureTransition._record_authority
     )
-    TRIAGE_ERROR = TestTriageDecisionFailureTransition.TRIAGE_ERROR
+    TECH_LEAD_ERROR = TestTechLeadDecisionFailureTransition.TECH_LEAD_ERROR
 
     def _load_authority(self, config: Config, session: Session) -> Any:
-        from issue_orchestrator.infra.triage_authority_store import (
-            SqliteTriageAuthorityStore,
+        from issue_orchestrator.infra.tech_lead_authority_store import (
+            SqliteTechLeadAuthorityStore,
         )
 
-        return SqliteTriageAuthorityStore.for_repo(config.repo_root).load(
+        return SqliteTechLeadAuthorityStore.for_repo(config.repo_root).load(
             run_id=session.run_assets.run_id,
             session_name=session.run_assets.session_name,
         )
@@ -3181,17 +3181,17 @@ class TestTriageAuthorityRetention:
     def _armed_investigation(
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
     ) -> Session:
-        from issue_orchestrator.domain.triage_session import (
-            TriageAssignment,
-            TriageLaunchAuthority,
-            TriageSessionFlavor,
+        from issue_orchestrator.domain.tech_lead_session import (
+            TechLeadAssignment,
+            TechLeadLaunchAuthority,
+            TechLeadSessionFlavor,
         )
 
-        session = self._make_triage_session(config, agent_config, tmp_worktree)
+        session = self._make_tech_lead_session(config, agent_config, tmp_worktree)
         self._plant_assignment(
             session,
-            TriageAssignment(
-                flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+            TechLeadAssignment(
+                flavor=TechLeadSessionFlavor.FAILURE_INVESTIGATION,
                 focus_issue_number=1,
                 focus_reason="Investigate: timed out",
             ),
@@ -3199,8 +3199,8 @@ class TestTriageAuthorityRetention:
         self._record_authority(
             config,
             session,
-            TriageLaunchAuthority(
-                flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+            TechLeadLaunchAuthority(
+                flavor=TechLeadSessionFlavor.FAILURE_INVESTIGATION,
                 anchor_issue_number=session.issue.number,
                 focus_issue_number=1,
             ),
@@ -3217,7 +3217,7 @@ class TestTriageAuthorityRetention:
         handler.process_completion(
             session,
             SessionStatus.COMPLETED,
-            processing_errors=[self.TRIAGE_ERROR],
+            processing_errors=[self.TECH_LEAD_ERROR],
         )
 
         assert self._load_authority(config, session) is None

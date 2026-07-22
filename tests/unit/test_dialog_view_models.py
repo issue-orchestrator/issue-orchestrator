@@ -613,10 +613,10 @@ def test_build_phase_dialog_review_and_default():
 
 def test_build_phase_dialog_specific_match():
     dialog = build_phase_dialog(
-        {"phases": [{"name": "triage", "display_name": "Triage"}]},
+        {"phases": [{"name": "tech_lead", "display_name": "Tech Lead"}]},
         issue_number=1,
-        phase_key="triage",
+        phase_key="tech_lead",
     )
 
-    assert dialog["title"] == "Triage"
-    assert dialog["phase"]["name"] == "triage"
+    assert dialog["title"] == "Tech Lead"
+    assert dialog["phase"]["name"] == "tech_lead"

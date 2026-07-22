@@ -29,8 +29,8 @@ class ReviewState(Enum):
     CHANGES_REQUESTED = "changes_requested"
     REWORK_PENDING = "rework_pending"
     REWORK_IN_PROGRESS = "rework_in_progress"
-    TRIAGE_PENDING = "triage_pending"
-    TRIAGE_REVIEWED = "triage_reviewed"
+    TECH_LEAD_PENDING = "tech_lead_pending"
+    TECH_LEAD_REVIEWED = "tech_lead_reviewed"
     MERGED = "merged"
     CLOSED = "closed"
     ESCALATED = "escalated"  # Rework limit exceeded, needs human intervention
@@ -60,8 +60,8 @@ class ReviewStateMachine:
     - CHANGES_REQUESTED: Reviewer requested changes
     - REWORK_PENDING: Changes requested, rework not yet started
     - REWORK_IN_PROGRESS: Agent is addressing requested changes
-    - TRIAGE_PENDING: Awaiting triage review (for complex changes)
-    - TRIAGE_REVIEWED: triage has reviewed the changes
+    - TECH_LEAD_PENDING: Awaiting tech_lead review (for complex changes)
+    - TECH_LEAD_REVIEWED: tech_lead has reviewed the changes
     - MERGED: PR has been merged
     - CLOSED: PR closed without merging
     - ESCALATED: Rework limit exceeded, requires human intervention
@@ -160,24 +160,24 @@ class ReviewStateMachine:
                 'dest': ReviewState.IN_REVIEW.value,
                 'after': self._on_rework_completed
             },
-            # Send approved PR to triage review
+            # Send approved PR to tech_lead review
             {
-                'trigger': 'request_triage_review',
+                'trigger': 'request_tech_lead_review',
                 'source': ReviewState.APPROVED.value,
-                'dest': ReviewState.TRIAGE_PENDING.value,
-                'after': self._on_triage_review_started
+                'dest': ReviewState.TECH_LEAD_PENDING.value,
+                'after': self._on_tech_lead_review_started
             },
-            # triage review completed
+            # tech_lead review completed
             {
-                'trigger': 'triage_reviewed',
-                'source': ReviewState.TRIAGE_PENDING.value,
-                'dest': ReviewState.TRIAGE_REVIEWED.value,
-                'after': self._on_triage_reviewed
+                'trigger': 'tech_lead_reviewed',
+                'source': ReviewState.TECH_LEAD_PENDING.value,
+                'dest': ReviewState.TECH_LEAD_REVIEWED.value,
+                'after': self._on_tech_lead_reviewed
             },
-            # Merge from approved or triage_reviewed state
+            # Merge from approved or tech_lead_reviewed state
             {
                 'trigger': 'merge',
-                'source': [ReviewState.APPROVED.value, ReviewState.TRIAGE_REVIEWED.value],
+                'source': [ReviewState.APPROVED.value, ReviewState.TECH_LEAD_REVIEWED.value],
                 'dest': ReviewState.MERGED.value,
                 'after': self._on_merged
             },
@@ -191,16 +191,16 @@ class ReviewStateMachine:
                     ReviewState.CHANGES_REQUESTED.value,
                     ReviewState.REWORK_PENDING.value,
                     ReviewState.REWORK_IN_PROGRESS.value,
-                    ReviewState.TRIAGE_PENDING.value,
-                    ReviewState.TRIAGE_REVIEWED.value
+                    ReviewState.TECH_LEAD_PENDING.value,
+                    ReviewState.TECH_LEAD_REVIEWED.value
                 ],
                 'dest': ReviewState.CLOSED.value,
                 'after': self._on_closed
             },
-            # Reopen from in_review (if more changes requested after triage review)
+            # Reopen from in_review (if more changes requested after tech_lead review)
             {
-                'trigger': 'request_changes_after_triage',
-                'source': ReviewState.TRIAGE_REVIEWED.value,
+                'trigger': 'request_changes_after_tech_lead',
+                'source': ReviewState.TECH_LEAD_REVIEWED.value,
                 'dest': ReviewState.CHANGES_REQUESTED.value,
                 'after': self._on_changes_requested,
                 'before': self._increment_rework_count
@@ -307,31 +307,31 @@ class ReviewStateMachine:
         )
         logger.info(f"Rework completed for PR {self.pr_number}")
 
-    def _on_triage_review_started(self, event: EventData) -> None:
-        """Callback for request_triage_review transition."""
+    def _on_tech_lead_review_started(self, event: EventData) -> None:
+        """Callback for request_tech_lead_review transition."""
         data = event.kwargs.get('data', {})
         self.last_transition = TransitionResult(
             success=True,
             from_state=ReviewState.APPROVED.value,
-            to_state=ReviewState.TRIAGE_PENDING.value,
-            event_name="review.triage_started",
+            to_state=ReviewState.TECH_LEAD_PENDING.value,
+            event_name="review.tech_lead_started",
             entity_id=self.pr_number,
             data={**data, 'issue_number': self.issue_number},
         )
-        logger.info(f"triage review requested for PR {self.pr_number}")
+        logger.info(f"tech_lead review requested for PR {self.pr_number}")
 
-    def _on_triage_reviewed(self, event: EventData) -> None:
-        """Callback for triage_reviewed transition."""
+    def _on_tech_lead_reviewed(self, event: EventData) -> None:
+        """Callback for tech_lead_reviewed transition."""
         data = event.kwargs.get('data', {})
         self.last_transition = TransitionResult(
             success=True,
-            from_state=ReviewState.TRIAGE_PENDING.value,
-            to_state=ReviewState.TRIAGE_REVIEWED.value,
-            event_name="review.triage_approved",
+            from_state=ReviewState.TECH_LEAD_PENDING.value,
+            to_state=ReviewState.TECH_LEAD_REVIEWED.value,
+            event_name="review.tech_lead_approved",
             entity_id=self.pr_number,
             data={**data, 'issue_number': self.issue_number},
         )
-        logger.info(f"triage review completed for PR {self.pr_number}")
+        logger.info(f"tech_lead review completed for PR {self.pr_number}")
 
     def _on_merged(self, event: EventData) -> None:
         """Callback for merge transition."""
@@ -483,13 +483,13 @@ class ReviewStateMachine:
         """Complete rework on the review."""
         self._invoke('complete_rework', **kwargs)
 
-    def request_triage_review(self, **kwargs: Any) -> None:
-        """Request triage review."""
-        self._invoke('request_triage_review', **kwargs)
+    def request_tech_lead_review(self, **kwargs: Any) -> None:
+        """Request tech_lead review."""
+        self._invoke('request_tech_lead_review', **kwargs)
 
-    def triage_reviewed(self, **kwargs: Any) -> None:
-        """Mark triage review as completed."""
-        self._invoke('triage_reviewed', **kwargs)
+    def tech_lead_reviewed(self, **kwargs: Any) -> None:
+        """Mark tech_lead review as completed."""
+        self._invoke('tech_lead_reviewed', **kwargs)
 
     def merge(self, **kwargs: Any) -> None:
         """Merge the PR."""
@@ -499,6 +499,6 @@ class ReviewStateMachine:
         """Close the PR."""
         self._invoke('close', **kwargs)
 
-    def request_changes_after_triage(self, **kwargs: Any) -> None:
-        """Request changes after triage."""
-        self._invoke('request_changes_after_triage', **kwargs)
+    def request_changes_after_tech_lead(self, **kwargs: Any) -> None:
+        """Request changes after tech_lead."""
+        self._invoke('request_changes_after_tech_lead', **kwargs)

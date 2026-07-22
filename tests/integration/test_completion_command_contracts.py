@@ -28,16 +28,16 @@ from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 from issue_orchestrator.infra.config import Config
-from issue_orchestrator.ports.triage_authority import InMemoryTriageAuthorityStore
+from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthorityStore
 from issue_orchestrator.observation.observation import SessionObservation, SessionObservationResult
 from issue_orchestrator.entrypoints.cli_tools.setup_wizard import (
     create_starter_prompt,
-    create_triage_review_prompt,
+    create_tech_lead_review_prompt,
 )
 from issue_orchestrator.entrypoints.setup_wizard_prompts import (
     build_code_review_prompt_text,
     build_starter_prompt_text,
-    build_triage_review_prompt_text,
+    build_tech_lead_review_prompt_text,
 )
 from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.resources import get_coding_done_instructions, get_reviewer_done_instructions
@@ -248,12 +248,12 @@ class _NoopGitAdapter:
 
 def test_setup_wizard_generated_prompts_have_valid_completion_commands(tmp_path: Path) -> None:
     work_prompt = tmp_path / "work-agent.md"
-    triage_prompt = tmp_path / "triage-agent.md"
+    tech_lead_prompt = tmp_path / "tech-lead-agent.md"
 
     create_starter_prompt("agent:backend", work_prompt)
-    create_triage_review_prompt(triage_prompt, "needs-triage-review", "triage-reviewed")
+    create_tech_lead_review_prompt(tech_lead_prompt, "needs-tech-lead-review", "tech-lead-reviewed")
 
-    combined = work_prompt.read_text() + "\n" + triage_prompt.read_text()
+    combined = work_prompt.read_text() + "\n" + tech_lead_prompt.read_text()
     commands = _extract_completion_commands(combined)
     _assert_commands_are_valid(commands, cwd=tmp_path)
 
@@ -264,7 +264,7 @@ def test_control_api_prompt_templates_have_valid_completion_commands(
     prompts = [
         build_starter_prompt_text("backend"),
         build_code_review_prompt_text(lm.code_review, lm.code_reviewed),
-        build_triage_review_prompt_text("triage-review", "triage-reviewed"),
+        build_tech_lead_review_prompt_text("tech-lead-review", "tech-lead-reviewed"),
     ]
     commands = _extract_completion_commands("\n".join(prompts))
     _assert_commands_are_valid(commands, cwd=tmp_path)
@@ -331,26 +331,26 @@ def test_completion_record_schema_contract_for_all_statuses(tmp_path: Path) -> N
 def test_prompt_role_status_contracts(lm: LabelManager) -> None:
     work_prompt = build_starter_prompt_text("backend")
     review_prompt = build_code_review_prompt_text(lm.code_review, lm.code_reviewed)
-    triage_prompt = build_triage_review_prompt_text("triage-review", "triage-reviewed")
+    tech_lead_prompt = build_tech_lead_review_prompt_text("tech-lead-review", "tech-lead-reviewed")
 
     work_statuses = _extract_statuses(_extract_completion_commands(work_prompt))
     review_statuses = _extract_statuses(_extract_completion_commands(review_prompt))
-    triage_statuses = _extract_statuses(_extract_completion_commands(triage_prompt))
+    tech_lead_statuses = _extract_statuses(_extract_completion_commands(tech_lead_prompt))
 
     assert {"blocked", "needs_human"} <= work_statuses
     assert review_statuses == {"approved", "changes_requested"}
-    # Triage sessions run on the coding-done contract: the orchestrator labels
+    # Tech Lead sessions run on the coding-done contract: the orchestrator labels
     # manifest PRs on COMPLETED and publishes any committed worktree changes.
     # reviewer-done would skip push_branch/create_pr and mis-target review
-    # labels at the triage tracking issue.
-    assert triage_statuses == {"completed", "blocked"}
-    assert "reviewer-done" not in triage_prompt
-    assert "gh pr comment" not in triage_prompt
-    assert "gh issue create" not in triage_prompt
-    # ADR-0031: triage completion requires the decision artifact pair; the
+    # labels at the tech_lead tracking issue.
+    assert tech_lead_statuses == {"completed", "blocked"}
+    assert "reviewer-done" not in tech_lead_prompt
+    assert "gh pr comment" not in tech_lead_prompt
+    assert "gh issue create" not in tech_lead_prompt
+    # ADR-0031: tech_lead completion requires the decision artifact pair; the
     # prompt must name both files the orchestrator validates on completion.
-    assert "triage-decision.json" in triage_prompt
-    assert "triage-report.md" in triage_prompt
+    assert "tech-lead-decision.json" in tech_lead_prompt
+    assert "tech-lead-report.md" in tech_lead_prompt
 
 
 def test_completion_record_drives_expected_review_actions(
@@ -461,7 +461,7 @@ def test_publish_failure_multi_attempt_contract(tmp_path: Path, lm: LabelManager
         get_session_machine_fn=lambda _terminal: None,
         get_review_machine_fn=lambda _pr: None,
         session_output=FileSystemSessionOutput(),
-        triage_authority=InMemoryTriageAuthorityStore(),
+        tech_lead_authority=InMemoryTechLeadAuthorityStore(),
         active_session_run_id=lambda _n: None,
     )
 

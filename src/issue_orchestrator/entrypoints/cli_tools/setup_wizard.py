@@ -15,7 +15,7 @@ from ..setup_wizard_common import (
     PlannedWrite as _PlannedWrite,
     create_code_review_prompt,
     create_starter_prompt,
-    create_triage_review_prompt,
+    create_tech_lead_review_prompt,
     find_existing_config,
     find_prompt_candidates,
     get_repository_host as _get_repository_host,
@@ -519,37 +519,37 @@ def _print_claude_code_next_steps(
     )
 
 
-def _collect_stage2_triage(
+def _collect_stage2_tech_lead(
     prompter: Prompter, review: dict, code_reviewed_label: str, agent_labels: Iterable[str]
 ) -> None:
-    """Prompt for the optional Stage 2 triage batch review and write it into the
+    """Prompt for the optional Stage 2 tech_lead batch review and write it into the
     review block (shared by both wizard flows).
 
-    A configured triage agent can propose create_issue follow-ups, so it also
+    A configured tech lead agent can propose create_issue follow-ups, so it also
     REQUIRES a follow-up worker agent to route new issues to (#6779 R14) —
     collected here so the generated config passes startup validation.
     """
     prompter.print("")
-    if not prompter.yes_no("Enable Stage 2: Triage batch review?", default=False):
+    if not prompter.yes_no("Enable Stage 2: Tech Lead batch review?", default=False):
         return
-    prompter.print("\n  --- Stage 2: Triage Batch Review ---")
-    review_agent = prompter.input("  triage review agent label", "agent:triage")
-    reviewed_label = prompter.input("  Label after triage review", "triage-reviewed")
+    prompter.print("\n  --- Stage 2: Tech Lead Batch Review ---")
+    review_agent = prompter.input("  tech_lead review agent label", "agent:tech-lead")
+    reviewed_label = prompter.input("  Label after tech_lead review", "tech-lead-reviewed")
     threshold_raw = prompter.input("  Trigger after N code-reviewed PRs", "5")
     follow_up_default = next((a for a in agent_labels if a != review_agent), review_agent)
-    review["triage_review_agent"] = review_agent
-    review["triage_follow_up_agent"] = prompter.input(
-        "  Worker agent for triage-created follow-up issues", follow_up_default
+    review["tech_lead_review_agent"] = review_agent
+    review["tech_lead_follow_up_agent"] = prompter.input(
+        "  Worker agent for tech-lead-created follow-up issues", follow_up_default
     )
-    review["triage_reviewed_label"] = reviewed_label
+    review["tech_lead_reviewed_label"] = reviewed_label
     try:
         threshold = int(threshold_raw)
     except ValueError:
         threshold = 0
     if threshold > 0:
-        review["triage_review_threshold"] = threshold
+        review["tech_lead_review_threshold"] = threshold
         prompter.print(
-            f"  ✓ triage review triggers after {threshold} PRs with '{code_reviewed_label}'"
+            f"  ✓ tech_lead review triggers after {threshold} PRs with '{code_reviewed_label}'"
         )
     prompter.print(f"  ✓ Label flow: {code_reviewed_label} → {reviewed_label}")
 
@@ -821,9 +821,9 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:  # noqa: C901, PLR
         prompter.print(f"  ✓ PRs will be reviewed by {code_review_agent}")
         prompter.print(f"  ✓ Label flow: {code_review_label} → {code_reviewed_label}")
 
-        # Stage 2: Triage Batch Review (advanced only)
+        # Stage 2: Tech Lead Batch Review (advanced only)
         if advanced:
-            _collect_stage2_triage(
+            _collect_stage2_tech_lead(
                 prompter, config["review"], code_reviewed_label, config["agents"]
             )
 
@@ -1120,7 +1120,7 @@ def wizard_existing_project(  # noqa: C901, PLR0912 - interactive wizard with br
         prompter.print("Code review is RECOMMENDED to catch issues before merging:")
         prompter.print("  Stage 1: Per-PR code review (immediate, after each PR)")
         prompter.print(
-            "  Stage 2: Triage batch review (when N reviewed PRs accumulate)\n"
+            "  Stage 2: Tech Lead batch review (when N reviewed PRs accumulate)\n"
         )
 
         # Stage 1: Per-PR Code Review (default enabled)
@@ -1148,8 +1148,8 @@ def wizard_existing_project(  # noqa: C901, PLR0912 - interactive wizard with br
                 f"  ✓ Label flow: {code_review_label} → {code_reviewed_label}"
             )
 
-            # Stage 2: Triage Batch Review (only if Stage 1 enabled)
-            _collect_stage2_triage(
+            # Stage 2: Tech Lead Batch Review (only if Stage 1 enabled)
+            _collect_stage2_tech_lead(
                 prompter, config["review"], code_reviewed_label, config["agents"]
             )
 
@@ -1282,14 +1282,14 @@ def run_wizard(  # noqa: C901, PLR0912 - main wizard entry point with prerequisi
     # Add cleanup config with defaults (don't prompt - users can edit later)
     if "cleanup" not in config:
         review_cfg = config.get("review", {})
-        has_triage = review_cfg.get("triage_review_agent")
+        has_tech_lead = review_cfg.get("tech_lead_review_agent")
         has_code_review = review_cfg.get("enabled") or review_cfg.get("default")
 
         # Include section based on their review workflow
-        if has_triage:
-            # Triage workflow - cleanup happens after triage review
+        if has_tech_lead:
+            # Tech Lead workflow - cleanup happens after tech_lead review
             config["cleanup"] = {
-                "with_triage": {
+                "with_tech_lead": {
                     "close_ai_session_tabs": True,
                     "remove_worktrees": False,
                 }
@@ -1297,7 +1297,7 @@ def run_wizard(  # noqa: C901, PLR0912 - main wizard entry point with prerequisi
         elif has_code_review:
             # Code review only - cleanup after code review
             config["cleanup"] = {
-                "without_triage": {
+                "without_tech_lead": {
                     "wait_for_code_review": True,
                     "close_ai_session_tabs": True,
                     "remove_worktrees": False,
@@ -1306,7 +1306,7 @@ def run_wizard(  # noqa: C901, PLR0912 - main wizard entry point with prerequisi
         else:
             # No review workflow - cleanup on completion
             config["cleanup"] = {
-                "without_triage": {
+                "without_tech_lead": {
                     "wait_for_code_review": False,
                     "close_ai_session_tabs": True,
                     "remove_worktrees": False,
@@ -1352,9 +1352,9 @@ def run_wizard(  # noqa: C901, PLR0912 - main wizard entry point with prerequisi
     code_review_agent = review_config.get("default")
     code_review_label = review_config.get("code_review_label", "needs-code-review")
     code_reviewed_label = review_config.get("code_reviewed_label", "code-reviewed")
-    triage_review_agent = review_config.get("triage_review_agent")
-    triage_reviewed_label = review_config.get(
-        "triage_reviewed_label", "triage-reviewed"
+    tech_lead_review_agent = review_config.get("tech_lead_review_agent")
+    tech_lead_reviewed_label = review_config.get(
+        "tech_lead_reviewed_label", "tech-lead-reviewed"
     )
 
     # Track all prompt files for the next steps summary
@@ -1376,19 +1376,19 @@ def run_wizard(  # noqa: C901, PLR0912 - main wizard entry point with prerequisi
                 code_review_agent and agent_name == code_review_agent
             ) or (agent_name.lower() == "agent:reviewer")
 
-            is_triage_review_agent = (
-                triage_review_agent and agent_name == triage_review_agent
-            ) or "triage" in agent_name.lower()
+            is_tech_lead_review_agent = (
+                tech_lead_review_agent and agent_name == tech_lead_review_agent
+            ) or "tech_lead" in agent_name.lower()
 
             if is_code_review_agent and code_review_agent:
                 create_code_review_prompt(
                     prompt_path, code_review_label, code_reviewed_label, file_collector
                 )
-            elif is_triage_review_agent and triage_review_agent:
-                create_triage_review_prompt(
+            elif is_tech_lead_review_agent and tech_lead_review_agent:
+                create_tech_lead_review_prompt(
                     prompt_path,
                     code_reviewed_label,
-                    triage_reviewed_label,
+                    tech_lead_reviewed_label,
                     file_collector,
                 )
             else:
@@ -1554,7 +1554,7 @@ def run_wizard(  # noqa: C901, PLR0912 - main wizard entry point with prerequisi
     work_agent_labels = [
         label
         for label in agent_labels
-        if label != code_review_agent and label != triage_review_agent
+        if label != code_review_agent and label != tech_lead_review_agent
     ]
     prompter.print(f"\n  {step_number}. Add agent labels to your GitHub issues:")
     for label in work_agent_labels:

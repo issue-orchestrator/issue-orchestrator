@@ -832,7 +832,7 @@ class TestReviewStateMachine:
         assert machine.rework_count == 3
 
     def test_cto_review_flow(self):
-        """Test triage review flow."""
+        """Test tech_lead review flow."""
         machine = ReviewStateMachine(
             pr_number=123,
             issue_number=456
@@ -842,17 +842,17 @@ class TestReviewStateMachine:
         machine.approve()
         assert machine.get_state() == ReviewState.APPROVED
 
-        machine.request_triage_review()
-        assert machine.get_state() == ReviewState.TRIAGE_PENDING
+        machine.request_tech_lead_review()
+        assert machine.get_state() == ReviewState.TECH_LEAD_PENDING
 
-        machine.triage_reviewed()
-        assert machine.get_state() == ReviewState.TRIAGE_REVIEWED
+        machine.tech_lead_reviewed()
+        assert machine.get_state() == ReviewState.TECH_LEAD_REVIEWED
 
         machine.merge()
         assert machine.get_state() == ReviewState.MERGED
 
     def test_cto_review_followed_by_changes_requested(self):
-        """Test changes requested after triage review."""
+        """Test changes requested after tech_lead review."""
         machine = ReviewStateMachine(
             pr_number=123,
             issue_number=456
@@ -860,12 +860,12 @@ class TestReviewStateMachine:
 
         machine.start_review()
         machine.approve()
-        machine.request_triage_review()
-        machine.triage_reviewed()
-        assert machine.get_state() == ReviewState.TRIAGE_REVIEWED
+        machine.request_tech_lead_review()
+        machine.tech_lead_reviewed()
+        assert machine.get_state() == ReviewState.TECH_LEAD_REVIEWED
 
         # CTO can request changes
-        machine.request_changes_after_triage()
+        machine.request_changes_after_tech_lead()
         assert machine.get_state() == ReviewState.CHANGES_REQUESTED
         assert machine.rework_count == 1
 
@@ -1064,8 +1064,8 @@ class TestReviewStateMachine:
 
         assert machine.last_transition.event_name == "review.rework_completed"
 
-    def test_transition_result_on_triage_review_started(self):
-        """Test that TransitionResult is stored on triage review started."""
+    def test_transition_result_on_tech_lead_review_started(self):
+        """Test that TransitionResult is stored on tech_lead review started."""
         machine = ReviewStateMachine(
             pr_number=123,
             issue_number=456
@@ -1073,12 +1073,12 @@ class TestReviewStateMachine:
 
         machine.start_review()
         machine.approve()
-        machine.request_triage_review()
+        machine.request_tech_lead_review()
 
-        assert machine.last_transition.event_name == "review.triage_started"
+        assert machine.last_transition.event_name == "review.tech_lead_started"
 
-    def test_transition_result_on_triage_approved(self):
-        """Test that TransitionResult is stored on triage approved."""
+    def test_transition_result_on_tech_lead_approved(self):
+        """Test that TransitionResult is stored on tech_lead approved."""
         machine = ReviewStateMachine(
             pr_number=123,
             issue_number=456
@@ -1086,10 +1086,10 @@ class TestReviewStateMachine:
 
         machine.start_review()
         machine.approve()
-        machine.request_triage_review()
-        machine.triage_reviewed()
+        machine.request_tech_lead_review()
+        machine.tech_lead_reviewed()
 
-        assert machine.last_transition.event_name == "review.triage_approved"
+        assert machine.last_transition.event_name == "review.tech_lead_approved"
 
     def test_transition_result_on_merged(self):
         """Test that TransitionResult is stored on merged with rework count."""

@@ -626,7 +626,7 @@ def _try_reuse_worktree(
 
     When ``preserve_branch`` is True the branch is left exactly as-is: the
     rebase/hard-reset onto the base branch is skipped entirely. This is used
-    for triage investigations, which read the subject's branch as evidence and
+    for tech_lead investigations, which read the subject's branch as evidence and
     must never mutate it (rebasing/resetting a stranded branch would discard
     its unpushed work).
 
@@ -647,13 +647,13 @@ def _try_reuse_worktree(
         )
 
     # Rebase onto latest base branch (critical for reruns with stale branches).
-    # A triage investigation reads the subject's branch as evidence, so it must
+    # A tech_lead investigation reads the subject's branch as evidence, so it must
     # never rebase or hard-reset it — skip the update and leave it intact.
     if preserve_branch:
         logger.info(
             issue_log(
                 issue_number,
-                "[WORKTREE_PRESERVE] skipping rebase/reset for triage "
+                "[WORKTREE_PRESERVE] skipping rebase/reset for tech_lead "
                 "investigation, branch %s left intact",
             ),
             branch_name,

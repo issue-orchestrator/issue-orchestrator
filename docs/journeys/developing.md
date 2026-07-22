@@ -66,7 +66,7 @@ pytest tests/e2e/ -v               # E2E tests (requires gh auth)
 | Topic | Doc | When you need it |
 |-------|-----|------------------|
 | How agents complete work | `entrypoints/cli_tools/coding_done.py` / `entrypoints/cli_tools/reviewer_done.py` + AGENTS "Agent Intent, Orchestrator Authority" | Modifying completion processing |
-| Code review loop | [Review Workflow](../development/REVIEW_WORKFLOW.md) | Modifying review, rework, or triage |
+| Code review loop | [Review Workflow](../development/REVIEW_WORKFLOW.md) | Modifying review, rework, or tech lead |
 | Hook enforcement | [Hooks Architecture](../architecture/hooks.md) | Modifying safety guardrails |
 | State machines | `domain/state_machines/` | Changing issue or review lifecycle |
 | Events and observability | AGENTS "Events vs Logs" | Adding new observable behavior |

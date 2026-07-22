@@ -6,7 +6,7 @@ Tests that verify specific behaviors not covered by basic lifecycle tests:
 
 All tests use the shared session-scoped orchestrator.
 
-Note: Triage review tests are in test_triage_review.py because they
+Note: Tech Lead review tests are in test_tech_lead_review.py because they
 start their own orchestrator (which steals the repo-root lock from the
 shared orchestrator).
 """

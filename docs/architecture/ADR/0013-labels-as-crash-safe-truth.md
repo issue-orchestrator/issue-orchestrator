@@ -29,18 +29,18 @@ Options considered:
 |-------|---------|
 | `in-progress` | Agent session active |
 | `needs-code-review` | PR awaiting review |
-| `code-reviewed` | Review passed, awaiting triage |
+| `code-reviewed` | Review passed, awaiting tech lead |
 | `needs-rework` | Review requested changes |
 | `needs-human` | Escalated, human intervention required |
-| `triage-needs-human` | Provenance marker for a `needs-human` escalation owned by the triage launch workflow; informational, not independently blocking |
+| `tech-lead-needs-human` | Provenance marker for a `needs-human` escalation owned by the tech lead launch workflow; informational, not independently blocking |
 | `blocked` | Dependencies not met |
 
-The triage launch workflow writes `triage-needs-human` before `needs-human`.
+The tech lead launch workflow writes `tech-lead-needs-human` before `needs-human`.
 It only creates that ownership marker when both labels are absent, so it never
 adopts a pre-existing human/session-owned `needs-human` transition. A targeted
 marker-label read on every unpaused reconciliation tick recovers a marker-only
 crash by restoring the blocking `needs-human` label, even when the in-memory
-triage queue was lost.
+tech lead queue was lost.
 When a running or restored investigation supersedes that escalation, the
 orchestrator removes `needs-human` first and then its marker. A bare
 `needs-human` label has no orchestrator-owned provenance and is never removed by

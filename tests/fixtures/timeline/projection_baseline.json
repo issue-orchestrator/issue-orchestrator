@@ -635,17 +635,17 @@
     "status": "started",
     "step": "started"
   },
-  "review.triage_approved": {
+  "review.tech_lead_approved": {
     "level": "phase",
     "phase": "reviewing",
     "status": "completed",
-    "step": "triage_approved"
+    "step": "tech_lead_approved"
   },
-  "review.triage_started": {
+  "review.tech_lead_started": {
     "level": "phase",
     "phase": "reviewing",
     "status": "started",
-    "step": "triage_started"
+    "step": "tech_lead_started"
   },
   "review_exchange.chapter_recorded": {
     "level": "detail",
@@ -923,47 +923,47 @@
     "status": "completed",
     "step": "transition.rejected"
   },
-  "triage.action_executed": {
+  "tech_lead.action_executed": {
     "level": "detail",
     "phase": "system",
     "status": "completed",
-    "step": "triage.action_executed"
+    "step": "tech_lead.action_executed"
   },
-  "triage.action_proposed": {
+  "tech_lead.action_proposed": {
     "level": "detail",
     "phase": "system",
     "status": "completed",
-    "step": "triage.action_proposed"
+    "step": "tech_lead.action_proposed"
   },
-  "triage.decision_rejected": {
+  "tech_lead.decision_rejected": {
     "level": "detail",
     "phase": "system",
     "status": "completed",
-    "step": "triage.decision_rejected"
+    "step": "tech_lead.decision_rejected"
   },
-  "triage.issue_created": {
+  "tech_lead.issue_created": {
     "level": "detail",
     "phase": "system",
     "status": "started",
-    "step": "triage.issue_created"
+    "step": "tech_lead.issue_created"
   },
-  "triage.launching": {
+  "tech_lead.launching": {
     "level": "detail",
     "phase": "system",
     "status": "started",
-    "step": "triage.launching"
+    "step": "tech_lead.launching"
   },
-  "triage.skipped": {
+  "tech_lead.skipped": {
     "level": "detail",
     "phase": "system",
     "status": "completed",
-    "step": "triage.skipped"
+    "step": "tech_lead.skipped"
   },
-  "triage.stuck_sweep": {
+  "tech_lead.stuck_sweep": {
     "level": "detail",
     "phase": "system",
     "status": "completed",
-    "step": "triage.stuck_sweep"
+    "step": "tech_lead.stuck_sweep"
   },
   "validation.completed": {
     "level": "detail",

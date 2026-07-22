@@ -236,7 +236,7 @@ _REVIEWER_TASK_KINDS = frozenset(
         REVIEW_EXCHANGE_REVIEWER_TASK_KIND,
     }
 )
-_TECH_LEAD_TASK_KINDS = frozenset({TaskKind.TRIAGE.value})
+_TECH_LEAD_TASK_KINDS = frozenset({TaskKind.TECH_LEAD.value})
 
 
 def _role_for_task_kind(task_kind: str) -> SandboxRole:

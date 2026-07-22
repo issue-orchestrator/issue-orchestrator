@@ -30,7 +30,7 @@
             {% if issue.issue_url %}
             <a href="{{ issue.issue_url }}" target="_blank" onclick="event.stopPropagation()" aria-label="Open issue #{{ issue.issue_number }} on GitHub" title="Open issue #{{ issue.issue_number }} on GitHub">#{{ issue.issue_number }}</a>
             {% elif issue.is_e2e and not issue.e2e_progress %}
-            <span class="pseudo-issue" title="E2E run with failures - click Triage to review and possibly create GitHub issues to resolve">{{ issue.issue_number }}</span>
+            <span class="pseudo-issue" title="E2E run with failures - click TechLead to review and possibly create GitHub issues to resolve">{{ issue.issue_number }}</span>
             {% else %}
             #{{ issue.issue_number }}
             {% endif %}
@@ -111,7 +111,7 @@
             </button>
             {% elif issue.e2e_run_id %}
             {# Unified view button - clicking row also opens this #}
-            <button class="issue-action-btn view-btn" data-lifecycle-command="{{ issue.open_run_command | tojson | forceescape }}" onclick="runLifecycleCommandFromButton(this); event.stopPropagation();" aria-label="View run details" title="View run details and triage">
+            <button class="issue-action-btn view-btn" data-lifecycle-command="{{ issue.open_run_command | tojson | forceescape }}" onclick="runLifecycleCommandFromButton(this); event.stopPropagation();" aria-label="View run details" title="View run details and tech_lead">
                 <span aria-hidden="true">👁</span> View
             </button>
             <button class="issue-action-btn view-btn" onclick="openE2ERunTimeline({{ issue.e2e_run_id }}); event.stopPropagation();" aria-label="Open timeline for E2E run #{{ issue.e2e_run_id }}" title="Open run timeline">
@@ -127,7 +127,7 @@
             {% if issue.is_e2e %}
             {# E2E item - show View button if we have a run_id #}
             {% if issue.e2e_run_id %}
-            <button class="issue-action-btn view-btn" data-lifecycle-command="{{ issue.open_run_command | tojson | forceescape }}" onclick="runLifecycleCommandFromButton(this); event.stopPropagation();" aria-label="View run details" title="View run details and triage">
+            <button class="issue-action-btn view-btn" data-lifecycle-command="{{ issue.open_run_command | tojson | forceescape }}" onclick="runLifecycleCommandFromButton(this); event.stopPropagation();" aria-label="View run details" title="View run details and tech_lead">
                 <span aria-hidden="true">👁</span> View
             </button>
             {% endif %}

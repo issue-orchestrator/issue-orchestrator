@@ -15,8 +15,8 @@ from .config_models import (
     AiGateConfig as AiGateConfig,
     ClaimsConfig,
     CleanupConfig,
-    CleanupWithTriage as CleanupWithTriage,
-    CleanupWithoutTriage as CleanupWithoutTriage,
+    CleanupWithTechLead as CleanupWithTechLead,
+    CleanupWithoutTechLead as CleanupWithoutTechLead,
     CoverageGuardrailConfig,
     DangerousConfig,
     DefaultAgentConfig,
@@ -36,7 +36,7 @@ from .config_models import (
     SessionInteractionsConfig,
     SqliteBackupConfig,
     TimelineConfig,
-    TriageConfig,
+    TechLeadConfig,
     ValidationConfig,
 )
 from .config_paths import (
@@ -78,7 +78,7 @@ from .config_sections import (
     parse_filtering_config,
     parse_milestone_order,
 )
-from .config_value_rules import resolve_triage_watch_label, validate_review_nit_policy
+from .config_value_rules import resolve_tech_lead_watch_label, validate_review_nit_policy
 from .validation_config_loader import (
     load_validation_config as load_validation_config,
     load_validation_config_from_file as load_validation_config_from_file,
@@ -264,27 +264,27 @@ class Config:
     code_review_label: Optional[str] = None  # Label on PRs needing review (e.g., "needs-code-review")
     code_reviewed_label: Optional[str] = None  # Label after review passes (e.g., "code-reviewed")
 
-    # Triage/batch review workflow (optional) - pattern review across multiple PRs
-    triage_review_agent: Optional[str] = None  # Agent that does batch reviews (e.g., "agent:triage")
-    triage_review_label: Optional[str] = None  # Label for PRs awaiting triage review (uses code_reviewed_label if not set)
-    triage_reviewed_label: str = "triage-reviewed"  # Label after triage review (matches load_review_section default)
-    triage_failed_label: str = "triage-failed"  # Label when triage fails (matches load_review_section default)
-    triage_review_threshold: int = 0  # Trigger triage review after N PRs (0 = manual only)
-    triage_review_on_failure: bool = True  # Trigger triage to investigate when sessions fail
-    # Validated worker a triage create_issue follow-up routes to (#6779 R9).
-    triage_follow_up_agent: Optional[str] = None
+    # Tech Lead/batch review workflow (optional) - pattern review across multiple PRs
+    tech_lead_review_agent: Optional[str] = None  # Agent that does batch reviews (e.g., "agent:tech-lead")
+    tech_lead_review_label: Optional[str] = None  # Label for PRs awaiting tech_lead review (uses code_reviewed_label if not set)
+    tech_lead_reviewed_label: str = "tech-lead-reviewed"  # Label after tech_lead review (matches load_review_section default)
+    tech_lead_failed_label: str = "tech-lead-failed"  # Label when tech_lead fails (matches load_review_section default)
+    tech_lead_review_threshold: int = 0  # Trigger tech_lead review after N PRs (0 = manual only)
+    tech_lead_review_on_failure: bool = True  # Trigger tech_lead to investigate when sessions fail
+    # Validated worker a tech_lead create_issue follow-up routes to (#6779 R9).
+    tech_lead_follow_up_agent: Optional[str] = None
 
     @property
-    def triage_watch_label(self) -> str:
-        """The single owned label that selects PRs for triage batch review.
+    def tech_lead_watch_label(self) -> str:
+        """The single owned label that selects PRs for tech_lead batch review.
 
         Fact gathering (threshold trigger), manifest building (session
         inputs), and prompt generation must all use this one derivation so
-        the PR set that trips the threshold is exactly the set the triage
+        the PR set that trips the threshold is exactly the set the tech_lead
         session audits and labels.
         """
-        return resolve_triage_watch_label(
-            self.triage_review_label, self.code_reviewed_label
+        return resolve_tech_lead_watch_label(
+            self.tech_lead_review_label, self.code_reviewed_label
         )
 
     # Rework cycle limit (when reviewer requests changes)
@@ -345,8 +345,8 @@ class Config:
     # Isolation configuration - how agents are sandboxed
     isolation: IsolationConfig = field(default_factory=IsolationConfig)
 
-    # Triage issue configuration - label/milestone inheritance
-    triage: TriageConfig = field(default_factory=TriageConfig)
+    # Tech Lead issue configuration - label/milestone inheritance
+    tech_lead: TechLeadConfig = field(default_factory=TechLeadConfig)
 
     # Scheduling configuration
     scheduling: SchedulingConfig = field(default_factory=SchedulingConfig)
@@ -668,12 +668,12 @@ class Config:
                     "default_policy": self.review_nits_default_policy,
                     "by_agent": dict(self.review_nits_by_agent),
                 },
-                "triage_review": {
-                    "agent": self.triage_review_agent,
-                    "label": self.triage_review_label,
-                    "reviewed_label": self.triage_reviewed_label,
-                    "threshold": self.triage_review_threshold,
-                    "on_failure": self.triage_review_on_failure,
+                "tech_lead_review": {
+                    "agent": self.tech_lead_review_agent,
+                    "label": self.tech_lead_review_label,
+                    "reviewed_label": self.tech_lead_reviewed_label,
+                    "threshold": self.tech_lead_review_threshold,
+                    "on_failure": self.tech_lead_review_on_failure,
                 },
                 "max_rework_cycles": self.max_rework_cycles,
                 "max_consecutive_publish_failures": self.max_consecutive_publish_failures,
@@ -681,14 +681,14 @@ class Config:
                 "reviewer_feedback_cache_minutes": self.reviewer_feedback_cache_minutes,
             },
             "cleanup": {
-                "with_triage": {
-                    "close_ai_session_tabs": self.cleanup.with_triage.close_ai_session_tabs,
-                    "remove_worktrees": self.cleanup.with_triage.remove_worktrees,
+                "with_tech_lead": {
+                    "close_ai_session_tabs": self.cleanup.with_tech_lead.close_ai_session_tabs,
+                    "remove_worktrees": self.cleanup.with_tech_lead.remove_worktrees,
                 },
-                "without_triage": {
-                    "wait_for_code_review": self.cleanup.without_triage.wait_for_code_review,
-                    "close_ai_session_tabs": self.cleanup.without_triage.close_ai_session_tabs,
-                    "remove_worktrees": self.cleanup.without_triage.remove_worktrees,
+                "without_tech_lead": {
+                    "wait_for_code_review": self.cleanup.without_tech_lead.wait_for_code_review,
+                    "close_ai_session_tabs": self.cleanup.without_tech_lead.close_ai_session_tabs,
+                    "remove_worktrees": self.cleanup.without_tech_lead.remove_worktrees,
                 },
             },
             "milestones": {
@@ -707,7 +707,7 @@ class Config:
                 "fetch_limit": self.filtering.fetch_limit,
                 "max_to_start": self.filtering.max_to_start,
             },
-            "triage": self.triage.to_event_dict(),
+            "tech_lead": self.tech_lead.to_event_dict(),
             "scheduling": {
                 "default_priority_tier": self.scheduling.default_priority_tier,
             },
@@ -970,14 +970,14 @@ class Config:
             review_dict["code_review_label"] = self.code_review_label
         if self.code_reviewed_label:
             review_dict["code_reviewed_label"] = self.code_reviewed_label
-        _put_if_truthy(review_dict, "triage_review_agent", self.triage_review_agent)
-        _put_if_truthy(review_dict, "triage_follow_up_agent", self.triage_follow_up_agent)
-        if self.triage_review_label:
-            review_dict["triage_review_label"] = self.triage_review_label
-        if self.triage_reviewed_label and self.triage_reviewed_label != "triage-reviewed":
-            review_dict["triage_reviewed_label"] = self.triage_reviewed_label
-        if self.triage_review_threshold != 0:
-            review_dict["triage_review_threshold"] = self.triage_review_threshold
+        _put_if_truthy(review_dict, "tech_lead_review_agent", self.tech_lead_review_agent)
+        _put_if_truthy(review_dict, "tech_lead_follow_up_agent", self.tech_lead_follow_up_agent)
+        if self.tech_lead_review_label:
+            review_dict["tech_lead_review_label"] = self.tech_lead_review_label
+        if self.tech_lead_reviewed_label and self.tech_lead_reviewed_label != "tech-lead-reviewed":
+            review_dict["tech_lead_reviewed_label"] = self.tech_lead_reviewed_label
+        if self.tech_lead_review_threshold != 0:
+            review_dict["tech_lead_review_threshold"] = self.tech_lead_review_threshold
         if self.max_rework_cycles != 5:
             review_dict["max_rework_cycles"] = self.max_rework_cycles
         if self.max_consecutive_publish_failures != 3:
@@ -1318,13 +1318,13 @@ class Config:
         if not (0 <= self.scheduling.default_priority_tier <= 9):
             errors.append("scheduling.default_priority_tier must be between 0 and 9")
 
-        if self.triage.priority is not None and not re.fullmatch(r"P\d", self.triage.priority.strip()):
-            errors.append("triage.priority must be a tier like 'P0'..'P9'")
-        if self.triage.max_concurrent is not None and self.triage.max_concurrent < 1:
+        if self.tech_lead.priority is not None and not re.fullmatch(r"P\d", self.tech_lead.priority.strip()):
+            errors.append("tech_lead.priority must be a tier like 'P0'..'P9'")
+        if self.tech_lead.max_concurrent is not None and self.tech_lead.max_concurrent < 1:
             errors.append(
-                "triage.max_concurrent must be >= 1 when set (a reserved triage "
+                "tech_lead.max_concurrent must be >= 1 when set (a reserved tech_lead "
                 "budget of at least one slot); omit it to share the worker "
-                f"budget, got {self.triage.max_concurrent}"
+                f"budget, got {self.tech_lead.max_concurrent}"
             )
         if self.validation.publish.dirty_check not in {"tracked", "unstaged", "all", "off"}:
             errors.append(

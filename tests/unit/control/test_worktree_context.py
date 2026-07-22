@@ -319,17 +319,17 @@ class TestWorktreeContextCreate:
                 issue_number=5980,
                 issue_title="Investigate failure",
                 session_name="issue-5980",
-                agent_label="agent:triage",
+                agent_label="agent:tech-lead",
                 stack_base_branch="20-base",  # ignored for a scratch investigation
                 scratch=ScratchWorktreeIdentity(
-                    worktree_name="repo-triage-5980-tok",
-                    branch_name="triage-investigation-5980-tok",
+                    worktree_name="repo-tech-lead-5980-tok",
+                    branch_name="tech-lead-investigation-5980-tok",
                 ),
             )
 
             call_kwargs = mock_worktree_manager.create.call_args.kwargs
-            assert call_kwargs["worktree_name"] == "repo-triage-5980-tok"
-            assert call_kwargs["branch_name"] == "triage-investigation-5980-tok"
+            assert call_kwargs["worktree_name"] == "repo-tech-lead-5980-tok"
+            assert call_kwargs["branch_name"] == "tech-lead-investigation-5980-tok"
             assert call_kwargs["base_branch"] == "main"
             assert call_kwargs["seed_ref"] is None
 

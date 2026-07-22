@@ -83,14 +83,14 @@ def list_sqlite_databases(config: Config) -> list[SQLiteDatabase]:
             backup=True,
             enforce_pragmas=True,
         ),
-        # Orchestrator-owned triage launch authority (ADR-0031 / #6769 F3).
+        # Orchestrator-owned tech_lead launch authority (ADR-0031 / #6769 F3).
         # Backed up and pragma-enforced like the other state stores: losing
-        # it mid-run turns every in-flight triage completion into a
+        # it mid-run turns every in-flight tech_lead completion into a
         # missing-authority rejection.
         SQLiteDatabase(
-            key="triage_authority",
-            label="Triage Authority",
-            path_fn=lambda cfg: _state_db(cfg, "triage_authority.sqlite"),
+            key="tech_lead_authority",
+            label="Tech Lead Authority",
+            path_fn=lambda cfg: _state_db(cfg, "tech_lead_authority.sqlite"),
             enabled_fn=lambda cfg: True,
             backup=True,
             enforce_pragmas=True,

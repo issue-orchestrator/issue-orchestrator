@@ -671,7 +671,7 @@ def _find_last_phase_with_prefix(phases: list[dict[str, Any]], prefix: str) -> d
 def _select_phase(phases: list[dict[str, Any]], phase_key: str | None) -> dict[str, Any] | None:
     if phase_key in ("in_progress", "rework"):
         return _find_last_phase_with_prefix(phases, "coding-")
-    if phase_key in ("review", "triage"):
+    if phase_key in ("review", "tech_lead"):
         return _find_last_phase_with_prefix(phases, "review-")
     if phase_key:
         for phase in phases:

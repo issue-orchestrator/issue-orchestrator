@@ -190,7 +190,7 @@ class GoalPilot:
             "dispatch",
             "review",
             "merge",
-            "triage",
+            "tech_lead",
             "noop",
         ]
 
@@ -248,7 +248,7 @@ class GoalPilot:
                 "dispatch",
                 "review",
                 "merge",
-                "triage",
+                "tech_lead",
             }:
                 result = self._exec_label_update(action, repository_host)
             elif action_type == "change_approach":

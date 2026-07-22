@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from .dependency_evaluator import DependencyEvaluator
     from .action_applier import ActionApplier
     from ..ports.claim_manager import ClaimManager
-    from ..ports.triage_authority import TriageAuthorityStore
+    from ..ports.tech_lead_authority import TechLeadAuthorityStore
     from .provider_resilience import ProviderResilienceManager
     from .label_manager import LabelManager
 
@@ -54,11 +54,11 @@ from ..domain.dependency_gates import Gate
 from .worktree_context import WorktreeContext
 from .stack_base import StackBaseDecision
 from ..infra.validation_state import DEFAULT_RETRY_TEMPLATE
-from ..domain.triage_session import TriageLaunchScope
-from .triage_session_policy import (
+from ..domain.tech_lead_session import TechLeadLaunchScope
+from .tech_lead_session_policy import (
     failure_investigation_scratch_identity,
-    is_triage_session,
-    prepare_triage_session_data,
+    is_tech_lead_session,
+    prepare_tech_lead_session_data,
 )
 from ..ports import (
     ManifestDownloader,
@@ -75,7 +75,7 @@ from ..ports.event_sink import make_run_scoped_event, make_trace_event
 from .provider_availability import ProviderAvailabilityPolicy
 from .action_applier import ActionApplier
 from .actions import Action, AddLabelAction, RemoveLabelAction
-from .triage_needs_human_reconcile import TriageNeedsHumanLifecycle, discover_triage_needs_human_issue_numbers
+from .tech_lead_needs_human_reconcile import TechLeadNeedsHumanLifecycle, discover_tech_lead_needs_human_issue_numbers
 from .session_manager import SessionManager, SessionRef
 from .session_launch_types import ClaimAcquisitionResult, LaunchResult
 from .session_rework_launcher import (
@@ -172,7 +172,7 @@ class SessionLauncher:
     - repository_host: For GitHub reads during launch
     - action_applier: For applying label/comment mutations
     - session_manager: For terminal session operations
-    - manifest_downloader: For downloading PR data in triage sessions
+    - manifest_downloader: For downloading PR data in tech_lead sessions
     - get_issue_machine: Callback to get/create issue state machines
     - get_session_machine: Callback to get/create session state machines
     - get_review_machine: Callback to get/create review state machines
@@ -190,7 +190,7 @@ class SessionLauncher:
         command_runner: CommandRunner,
         session_output: SessionOutput,
         manifest_downloader: ManifestDownloader,
-        triage_authority: "TriageAuthorityStore",
+        tech_lead_authority: "TechLeadAuthorityStore",
         session_exists_fn: Callable[[str], bool],
         create_session_fn: Callable[[str, str, Path, str | None], bool],
         get_issue_machine: Callable[["IssueProtocol"], Optional["IssueStateMachine"]],
@@ -204,7 +204,7 @@ class SessionLauncher:
         label_manager: Optional["LabelManager"] = None,
         send_to_session_fn: Optional[Callable[[str, str], bool]] = None,
         *,
-        # Required (keyword-only): triage prompts treat board-snapshot.json as
+        # Required (keyword-only): tech_lead prompts treat board-snapshot.json as
         # authoritative required input, so the launcher must always be able to
         # produce one. Tests inject a null-object/fake provider, never None.
         board_snapshot_provider: "BoardSnapshotProvider",
@@ -219,7 +219,7 @@ class SessionLauncher:
         self._command_runner = command_runner
         self._session_output = session_output
         self._manifest_downloader = manifest_downloader
-        self._triage_authority = triage_authority
+        self._tech_lead_authority = tech_lead_authority
         self._board_snapshot_provider = board_snapshot_provider
         self._session_exists = session_exists_fn
         self._create_session = create_session_fn
@@ -238,11 +238,11 @@ class SessionLauncher:
             from .label_manager import LabelManager
             label_manager = LabelManager(config)
         self._lm = label_manager
-        self._triage_needs_human = TriageNeedsHumanLifecycle(
+        self._tech_lead_needs_human = TechLeadNeedsHumanLifecycle(
             labels=label_manager,
             events=events,
             read_labels=repository_host.get_issue_labels_fresh,
-            discover_marked_issue_numbers=lambda: discover_triage_needs_human_issue_numbers(repository_host, label_manager.triage_needs_human),
+            discover_marked_issue_numbers=lambda: discover_tech_lead_needs_human_issue_numbers(repository_host, label_manager.tech_lead_needs_human),
             apply_actions=lambda actions, context: self._apply_actions(
                 actions, context=context
             ),
@@ -318,7 +318,7 @@ class SessionLauncher:
         event_data: dict[str, object],
     ) -> bool:
         """Commit the marker-owned needs-human escalation."""
-        return self._triage_needs_human.escalate(
+        return self._tech_lead_needs_human.escalate(
             issue_number=issue_number,
             reason=reason,
             comment=comment,
@@ -326,9 +326,9 @@ class SessionLauncher:
             event_data=event_data,
         )
 
-    def reconcile_stale_triage_needs_human(self, active_sessions: Sequence[Session], *, discover_markers: bool = True) -> None:
+    def reconcile_stale_tech_lead_needs_human(self, active_sessions: Sequence[Session], *, discover_markers: bool = True) -> None:
         """Recover or clear marker-owned escalation state from GitHub."""
-        self._triage_needs_human.reconcile(active_sessions, discover_markers=discover_markers)
+        self._tech_lead_needs_human.reconcile(active_sessions, discover_markers=discover_markers)
 
     def _interrupted_retry_guard_label(self, mode: str) -> str:
         retry_cfg = self.config.retry.interrupted_sessions
@@ -717,9 +717,9 @@ class SessionLauncher:
             self._claim_manager.release_claim(issue_number, claim.lease_id)
             logger.info(issue_log(issue_number, "Released claim: lease_id=%s"), claim.lease_id)
 
-    def _is_triage_session(self, agent_type: str | None) -> bool:
-        """Check if this agent type is the triage review agent."""
-        return is_triage_session(self.config.triage_review_agent, agent_type)
+    def _is_tech_lead_session(self, agent_type: str | None) -> bool:
+        """Check if this agent type is the tech_lead review agent."""
+        return is_tech_lead_session(self.config.tech_lead_review_agent, agent_type)
 
     def _remove_scratch_worktree_if_disposable(
         self, issue_number: int, worktree_path: Path, is_scratch: bool
@@ -742,76 +742,76 @@ class SessionLauncher:
                 issue_log(issue_number, "Failed to remove scratch investigation worktree: %s"), e
             )
 
-    def _prepare_triage_session_data(
+    def _prepare_tech_lead_session_data(
         self,
         issue: "IssueProtocol",
         ctx: WorktreeContext,
-        triage_scope: "TriageLaunchScope | None",
+        tech_lead_scope: "TechLeadLaunchScope | None",
     ) -> tuple[Path, ...]:
-        """Delegate per-flavor triage launch preparation to the ADR-0031 owner.
+        """Delegate per-flavor tech_lead launch preparation to the ADR-0031 owner.
 
         Returns the evidence map's sandbox read-roots (empty for non-focus
-        flavors / non-triage / staging failure) for the tech-lead read grant.
+        flavors / non-tech-lead / staging failure) for the tech-lead read grant.
         """
-        return prepare_triage_session_data(
+        return prepare_tech_lead_session_data(
             config=self.config,
             repository_host=self.repository_host,
             manifest_downloader=self._manifest_downloader,
-            triage_authority=self._triage_authority,
+            tech_lead_authority=self._tech_lead_authority,
             board_snapshot_provider=self._board_snapshot_provider,
             issue=issue,
             ctx=ctx,
-            triage_scope=triage_scope,
+            tech_lead_scope=tech_lead_scope,
         )
 
-    def _discard_triage_authority_after_failed_launch(
+    def _discard_tech_lead_authority_after_failed_launch(
         self, issue: "IssueProtocol", ctx: WorktreeContext
     ) -> None:
         """Retention (#6769 F3): a launch that dies after recording its
-        triage launch authority must not leak the row — the run never starts,
+        tech_lead launch authority must not leak the row — the run never starts,
         so no completion seam will ever discard it."""
-        if not self._is_triage_session(issue.agent_type):
+        if not self._is_tech_lead_session(issue.agent_type):
             return
-        self._triage_authority.discard(
+        self._tech_lead_authority.discard(
             run_id=ctx.run.run_id, session_name=ctx.run.session_name
         )
 
-    def _fail_launch_for_triage_prep(
+    def _fail_launch_for_tech_lead_prep(
         self, issue: "IssueProtocol", ctx: WorktreeContext, session_name: str,
         worktree_path: Path, claim: ClaimAcquisitionResult, error: Exception,
     ) -> LaunchResult:
-        """Fail the launch when required triage inputs cannot be prepared; the
+        """Fail the launch when required tech_lead inputs cannot be prepared; the
         result is retry-queued (transient inputs; queue owner bounds retries) and
         prep's authority row is discarded (post-prep guard never runs here)."""
-        log_transition("issue", issue.number, "LAUNCHING", "FAILED", "triage session data preparation failed")
-        logger.error(issue_log(issue.number, "FAILED: triage session data preparation failed: %s"), error)
+        log_transition("issue", issue.number, "LAUNCHING", "FAILED", "tech_lead session data preparation failed")
+        logger.error(issue_log(issue.number, "FAILED: tech_lead session data preparation failed: %s"), error)
         self.events.publish(make_trace_event(
             EventName.SESSION_START_FAILED,
             {
                 "issue_number": issue.number,
                 "session_name": session_name,
-                "reason": "triage_session_data_failed",
+                "reason": "tech_lead_session_data_failed",
                 "error": str(error),
             },
         ))
         try:
             self._worktree_manager.remove(worktree_path)
-            logger.info(issue_log(issue.number, "Cleaned up worktree after triage data failure: %s"), worktree_path)
+            logger.info(issue_log(issue.number, "Cleaned up worktree after tech_lead data failure: %s"), worktree_path)
         except Exception as cleanup_error:
             logger.warning(
-                issue_log(issue.number, "Failed to remove worktree after triage data failure: %s"),
+                issue_log(issue.number, "Failed to remove worktree after tech_lead data failure: %s"),
                 cleanup_error,
             )
-        self._discard_triage_authority_after_failed_launch(issue, ctx)
+        self._discard_tech_lead_authority_after_failed_launch(issue, ctx)
         self._release_claim_if_held(issue.number, claim)
-        return LaunchResult(None, False, f"Triage session data preparation failed: {error}", retry_queued=True)
+        return LaunchResult(None, False, f"Tech Lead session data preparation failed: {error}", retry_queued=True)
 
     def launch_issue_session(  # noqa: C901, PLR0912 - coordinator with claim acquisition, worktree setup, and error handling phases
         self,
         issue: "IssueProtocol",
         active_sessions: list[Session],
         *,
-        triage_scope: "TriageLaunchScope | None" = None,
+        tech_lead_scope: "TechLeadLaunchScope | None" = None,
     ) -> LaunchResult:
         """Launch a session for an issue.
 
@@ -824,10 +824,10 @@ class SessionLauncher:
         Args:
             issue: The issue to work on
             active_sessions: Current active sessions (for conflict detection)
-            triage_scope: For triage-agent sessions, the producer's typed
-                grant: which triage variant this launch is, plus the problem
+            tech_lead_scope: For tech-lead-agent sessions, the producer's typed
+                grant: which tech_lead variant this launch is, plus the problem
                 cohort a health review owns (ADR-0031, #6780). Unset for
-                ordinary issues, and for a triage anchor picked up outside the
+                ordinary issues, and for a tech_lead anchor picked up outside the
                 pending queue — the flavor then comes from the marker label and
                 the cohort from the durable ledger.
 
@@ -892,14 +892,14 @@ class SessionLauncher:
                 scratch_branch_name,
             )
         phase_name = "coding-1"  # Initial coding session is always attempt 1
-        # A triage FAILURE INVESTIGATION reads its focus issue's worktree/branch
+        # A tech_lead FAILURE INVESTIGATION reads its focus issue's worktree/branch
         # as evidence and must never mutate them (#6823): it runs in a fresh,
         # disposable scratch worktree on a throwaway branch off the base, keyed
         # to this run — not the focus issue. Batch/health reviews keep the
         # existing behaviour (their own anchor worktree, preserve_branch=True so
         # a stranded branch's unpushed work is read rather than rebased away).
         investigation_scratch = failure_investigation_scratch_identity(
-            self.config, issue, triage_scope
+            self.config, issue, tech_lead_scope
         )
         is_scratch_investigation = investigation_scratch is not None
         ctx = WorktreeContext.create(
@@ -918,9 +918,9 @@ class SessionLauncher:
                 force_fresh=from_scratch_pending or is_scratch_investigation,
                 # The scratch investigation has no subject branch to preserve —
                 # it never reuses the focus worktree — so preserve_branch stays
-                # for batch/health triage that DOES reuse its anchor worktree.
+                # for batch/health tech_lead that DOES reuse its anchor worktree.
                 preserve_branch=(
-                    self._is_triage_session(issue.agent_type)
+                    self._is_tech_lead_session(issue.agent_type)
                     and not is_scratch_investigation
                 ),
             ),
@@ -975,17 +975,17 @@ class SessionLauncher:
                 "review_cache_boundary_started_at": run.started_at,
             })
 
-        # Triage inputs (manifest/assignment/board snapshot) are REQUIRED —
+        # Tech Lead inputs (manifest/assignment/board snapshot) are REQUIRED —
         # the prompt calls board-snapshot.json authoritative — so prep
         # failure fails the launch loudly (setup-command seam). The returned
         # evidence read-roots grant a sandboxed tech lead its god-view (#6824 R5).
         evidence_read_roots: tuple[Path, ...] = ()
         try:
-            evidence_read_roots = self._prepare_triage_session_data(
-                issue, ctx, triage_scope
+            evidence_read_roots = self._prepare_tech_lead_session_data(
+                issue, ctx, tech_lead_scope
             )
         except Exception as e:
-            return self._fail_launch_for_triage_prep(
+            return self._fail_launch_for_tech_lead_prep(
                 issue, ctx, session_name, worktree_path, claim, e
             )
         # Launch-authority guard (#6769 r4): discard on every pre-start exit; single owner.
@@ -1241,7 +1241,7 @@ class SessionLauncher:
             return LaunchResult(session, True)
         finally:
             if not launch_reached_active:
-                self._discard_triage_authority_after_failed_launch(issue, ctx)
+                self._discard_tech_lead_authority_after_failed_launch(issue, ctx)
 
     def launch_validation_retry_session(
         self,

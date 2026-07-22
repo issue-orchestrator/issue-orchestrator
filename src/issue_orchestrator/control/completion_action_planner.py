@@ -9,20 +9,20 @@ from typing import Any, Callable, Optional
 from ..domain.models import RETROSPECTIVE_REVIEW_TERMINAL_PREFIX, Session, SessionStatus
 from ..infra.config import Config
 from ..ports import RepositoryHost
-from ..ports.triage_authority import TriageAuthorityStore
+from ..ports.tech_lead_authority import TechLeadAuthorityStore
 from .actions import Action, AddCommentAction, AddLabelAction, RemoveLabelAction
-from .triage_completion import (
-    generate_triage_completion_actions,
-    generate_triage_decision_failure_actions,
-    generate_triage_failure_actions,
-    has_triage_decision_errors,
+from .tech_lead_completion import (
+    generate_tech_lead_completion_actions,
+    generate_tech_lead_decision_failure_actions,
+    generate_tech_lead_failure_actions,
+    has_tech_lead_decision_errors,
 )
 from .completion_types import (
     ERROR_PREFIX_CREATE_PR,
     ERROR_PREFIX_PUBLISH_BLOCKED,
     ERROR_PREFIX_PUSH,
-    ERROR_PREFIX_TRIAGE_AUTHORITY,
-    ERROR_PREFIX_TRIAGE_DECISION,
+    ERROR_PREFIX_TECH_LEAD_AUTHORITY,
+    ERROR_PREFIX_TECH_LEAD_DECISION,
     REVIEW_EXCHANGE_ERROR_PREFIX,
 )
 from .invalid_record_actions import (
@@ -31,7 +31,7 @@ from .invalid_record_actions import (
 )
 from .label_manager import LabelManager
 from .reconciliation import ExpectedState, build_expected_for_mutation
-from .triage_session_policy import is_triage_session
+from .tech_lead_session_policy import is_tech_lead_session
 
 logger = logging.getLogger(__name__)
 
@@ -60,8 +60,8 @@ def critical_processing_errors(
             (
                 ERROR_PREFIX_PUSH,
                 ERROR_PREFIX_PUBLISH_BLOCKED,
-                ERROR_PREFIX_TRIAGE_DECISION,
-                ERROR_PREFIX_TRIAGE_AUTHORITY,
+                ERROR_PREFIX_TECH_LEAD_DECISION,
+                ERROR_PREFIX_TECH_LEAD_AUTHORITY,
             )
         ):
             critical.append(error)
@@ -100,13 +100,13 @@ class CompletionActionPlanner:
         config: Config,
         repository_host: RepositoryHost,
         label_manager: LabelManager,
-        triage_authority: TriageAuthorityStore,
+        tech_lead_authority: TechLeadAuthorityStore,
         active_session_run_id: Callable[[int], str | None],
     ) -> None:
         self.config = config
         self.repository_host = repository_host
         self._lm = label_manager
-        self._triage_authority = triage_authority
+        self._tech_lead_authority = tech_lead_authority
         # Resolves the target issue's live session run id so a gated
         # kill_hung_session proposal binds approval to that generation (#6779 R1).
         self._active_session_run_id = active_session_run_id
@@ -208,37 +208,37 @@ class CompletionActionPlanner:
             )
         return actions
 
-    def _is_triage_session(self, session: Session) -> bool:
-        """Check if this session is a triage review session."""
-        return is_triage_session(
-            self.config.triage_review_agent, session.issue.agent_type
+    def _is_tech_lead_session(self, session: Session) -> bool:
+        """Check if this session is a tech_lead review session."""
+        return is_tech_lead_session(
+            self.config.tech_lead_review_agent, session.issue.agent_type
         )
 
-    def _generate_triage_actions(
+    def _generate_tech_lead_actions(
         self, session: Session, expected: ExpectedState
     ) -> list[Action]:
-        """Delegate batch-success triage effects to the ADR-0031 owner module.
+        """Delegate batch-success tech_lead effects to the ADR-0031 owner module.
 
         Called only from the COMPLETED-without-critical-errors branch, so
-        completed_ok is True by construction (triage decision rejections are
+        completed_ok is True by construction (tech_lead decision rejections are
         classified critical upstream and take the failure routing instead).
         """
-        return generate_triage_completion_actions(
+        return generate_tech_lead_completion_actions(
             self.config,
             session,
             expected,
             completed_ok=True,
             labels=self._lm,
-            triage_authority=self._triage_authority,
+            tech_lead_authority=self._tech_lead_authority,
             active_session_run_id=self._active_session_run_id,
         )
 
-    def _generate_triage_failure_actions(
+    def _generate_tech_lead_failure_actions(
         self, session: Session, expected: ExpectedState
     ) -> list[Action]:
         """Delegate batch failure/timeout terminal effects to the owner module."""
-        return generate_triage_failure_actions(
-            self.config, session, expected, triage_authority=self._triage_authority
+        return generate_tech_lead_failure_actions(
+            self.config, session, expected, tech_lead_authority=self._tech_lead_authority
         )
 
     def _generate_completed_with_critical_actions(
@@ -250,8 +250,8 @@ class CompletionActionPlanner:
     ) -> tuple[Action, ...]:
         """Route COMPLETED-with-critical-errors to the owning failure policy.
 
-        Rejected triage decision pairs (#6761 finding 3) go to the triage
-        owner (manifest triage-failed labels, rejection surfacing,
+        Rejected tech_lead decision pairs (#6761 finding 3) go to the tech_lead
+        owner (manifest tech-lead-failed labels, rejection surfacing,
         blocked-failed on the session's own issue) — publish-failure copy
         and publish-fail counters do not apply to them.
         """
@@ -260,17 +260,17 @@ class CompletionActionPlanner:
             session.issue.number,
             critical_errors,
         )
-        if self._is_triage_session(session) and has_triage_decision_errors(
+        if self._is_tech_lead_session(session) and has_tech_lead_decision_errors(
             critical_errors
         ):
             return tuple(
-                generate_triage_decision_failure_actions(
+                generate_tech_lead_decision_failure_actions(
                     self.config,
                     session,
                     expected,
                     processing_errors=critical_errors,
                     labels=self._lm,
-                    triage_authority=self._triage_authority,
+                    tech_lead_authority=self._tech_lead_authority,
                 )
             )
         return tuple(
@@ -322,7 +322,7 @@ class CompletionActionPlanner:
 
         if status == SessionStatus.TIMED_OUT:
             timeout_actions = self._generate_timeout_actions(session, expected)
-            timeout_actions.extend(self._generate_triage_failure_actions(session, expected))
+            timeout_actions.extend(self._generate_tech_lead_failure_actions(session, expected))
             return tuple(timeout_actions)
 
         if status == SessionStatus.FAILED:
@@ -343,11 +343,11 @@ class CompletionActionPlanner:
             if invalid_actions is not None:
                 return tuple(invalid_actions)
             # Interrupted auto-retry relaunches the session: not terminal, so
-            # no triage failure effects (the retry re-audits the same PRs).
+            # no tech_lead failure effects (the retry re-audits the same PRs).
             if retry_actions := self._generate_interrupted_retry_actions(session, expected):
                 return tuple(retry_actions)
             failure_actions = self._generate_failure_actions(session, expected)
-            failure_actions.extend(self._generate_triage_failure_actions(session, expected))
+            failure_actions.extend(self._generate_tech_lead_failure_actions(session, expected))
             return tuple(failure_actions)
 
         if status == SessionStatus.BLOCKED:
@@ -370,7 +370,7 @@ class CompletionActionPlanner:
                     expected=expected,
                 )
             ]
-            actions.extend(self._generate_triage_actions(session, expected))
+            actions.extend(self._generate_tech_lead_actions(session, expected))
             return tuple(actions)
 
         # NEEDS_HUMAN keeps in-progress to maintain the ownership claim.

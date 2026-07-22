@@ -19,10 +19,10 @@ from ..domain.models import (
     PendingReview,
     PendingRetrospectiveReview,
     PendingRework,
-    PendingTriageReview,
+    PendingTechLeadReview,
     PendingValidationRetry,
     Session,
-    TriageFacts,
+    TechLeadFacts,
 )
 from ..ports.issue import Issue
 from .actions import Action, ActionType
@@ -64,7 +64,7 @@ class OrchestratorSnapshot:
     active_sessions: tuple[Session, ...]
     pending_reviews: tuple[PendingReview, ...]
     pending_reworks: tuple[PendingRework, ...]
-    pending_triage: tuple[PendingTriageReview, ...]
+    pending_tech_lead: tuple[PendingTechLeadReview, ...]
     paused: bool
     pending_retrospective_reviews: tuple[PendingRetrospectiveReview, ...] = field(default_factory=tuple)
     pending_validation_retries: tuple[PendingValidationRetry, ...] = field(default_factory=tuple)
@@ -92,7 +92,7 @@ class OrchestratorSnapshot:
     # Unacknowledged stuck-sweep escalations to (re-)label needs-human; the
     # planner emits the idempotent label via the Applier (#6824 R1, label-only).
     stuck_sweep_escalations: tuple[int, ...] = field(default_factory=tuple)
-    triage_facts: Optional[TriageFacts] = None
+    tech_lead_facts: Optional[TechLeadFacts] = None
     cleanup_facts: Optional[CleanupFacts] = None
     # Issues with stale in-progress labels (label present but no active session)
     stale_in_progress_issues: tuple[Issue, ...] = field(default_factory=tuple)
@@ -146,7 +146,7 @@ class OrchestratorSnapshot:
             DiscoveredMergeQueueEnqueue
         ] = (),
         discovered_failures: Sequence[DiscoveredFailure] = (),
-        triage_facts: Optional[TriageFacts] = None,
+        tech_lead_facts: Optional[TechLeadFacts] = None,
         cleanup_facts: Optional[CleanupFacts] = None,
         stale_in_progress_issues: Sequence[Issue] = (),
         stale_claim_issues: Sequence[Issue] = (),
@@ -164,8 +164,8 @@ class OrchestratorSnapshot:
                 no longer matches PR state
             discovered_reworks: Reworks discovered from scans
             discovered_escalations: Escalations discovered from scans
-            discovered_failures: Failures discovered from session completions (for triage)
-            triage_facts: Facts about triage trigger conditions
+            discovered_failures: Failures discovered from session completions (for tech_lead)
+            tech_lead_facts: Facts about tech_lead trigger conditions
             cleanup_facts: Facts about pending cleanups and their review status
             stale_in_progress_issues: Issues with stale in-progress labels
             stale_claim_issues: Issues with stale/expired claims
@@ -176,7 +176,7 @@ class OrchestratorSnapshot:
             pending_reviews=tuple(state.pending_reviews),
             pending_retrospective_reviews=tuple(state.pending_retrospective_reviews),
             pending_reworks=tuple(state.pending_reworks),
-            pending_triage=tuple(state.pending_triage_reviews),
+            pending_tech_lead=tuple(state.pending_tech_lead_reviews),
             pending_validation_retries=tuple(state.pending_validation_retries),
             paused=state.paused,
             priority_queue=tuple(state.priority_queue),
@@ -199,7 +199,7 @@ class OrchestratorSnapshot:
                 discovered_merge_queue_enqueues
             ),
             discovered_failures=tuple(discovered_failures),
-            triage_facts=triage_facts,
+            tech_lead_facts=tech_lead_facts,
             cleanup_facts=cleanup_facts,
             stale_in_progress_issues=tuple(stale_in_progress_issues),
             stale_claim_issues=tuple(stale_claim_issues),
@@ -211,7 +211,7 @@ class OrchestratorSnapshot:
 class SkippedItem:
     """An item that was considered but not acted upon."""
 
-    item_type: str  # "issue", "review", "rework", "triage"
+    item_type: str  # "issue", "review", "rework", "tech_lead"
     number: int
     reason: str
 

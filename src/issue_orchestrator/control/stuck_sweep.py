@@ -2,18 +2,18 @@
 
 Single policy owner for the reactive backstop that the normal control loop
 cannot reach: an open issue that carries a terminal blocking label but is NOT
-in any active session, pending triage queue, or storm cohort has fallen out of
+in any active session, pending tech_lead queue, or storm cohort has fallen out of
 the loop entirely — no completion will ever re-discover it, so it sits stuck
 forever. This module finds those issues on a bounded, timer-gated cadence and
-re-injects each one into the EXISTING reactive-triage pipeline as a recovered
+re-injects each one into the EXISTING reactive-tech-lead pipeline as a recovered
 :class:`DiscoveredFailure`, so the tech-lead reaction model investigates it and
-the triage agent proposes/executes ``reset_retry`` (or closes it if the work is
+the tech lead agent proposes/executes ``reset_retry`` (or closes it if the work is
 actually done).
 
 Design boundaries (kept deliberately narrow, ADR-0031):
 
 * **All policy lives here.** The planner, ``fact_gatherer`` and
-  ``triage_reaction`` gain no new branchy control vocabulary — the fact
+  ``tech_lead_reaction`` gain no new branchy control vocabulary — the fact
   gatherer only arms this owner and records what it returns.
 * **Observation, not mutation.** :func:`run_stuck_sweep` reads GitHub and
   mutates only orchestrator STATE (the durable per-issue recovery counter, the
@@ -41,10 +41,10 @@ Design boundaries (kept deliberately narrow, ADR-0031):
   recoverable stuck label — including ``blocked:provider-unavailable`` and the
   needs-human labels, which #6823 wants re-examined, not permanently ignored. It
   is SKIPPED this sweep only while a dedicated owner is actively handling it: an
-  active session / pending triage work, an open gated proposal (the ledger), a
+  active session / pending tech_lead work, an open gated proposal (the ledger), a
   provider whose circuit is still open (the resilience manager will resume it),
-  or a ``triage-needs-human`` marker (the escalation reconciler owns it). Only
-  ``proposed-triage`` / ``triage-observation`` are true machinery labels never
+  or a ``tech-lead-needs-human`` marker (the escalation reconciler owns it). Only
+  ``proposed-tech-lead`` / ``tech-lead-observation`` are true machinery labels never
   treated as work items.
 """
 
@@ -55,7 +55,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from ..domain.models import DiscoveredFailure, SessionStatus
-from ..domain.triage_session import PROPOSED_TRIAGE_LABEL, TRIAGE_OBSERVATION_LABEL
+from ..domain.tech_lead_session import PROPOSED_TECH_LEAD_LABEL, TECH_LEAD_OBSERVATION_LABEL
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -119,14 +119,14 @@ def stuck_sweep_due(config: "Config", state: "OrchestratorState", now: float) ->
 
     Pure state/config math — ZERO GitHub calls — so an disabled or not-yet-due
     sweep never touches the network (mirrors ``health_review_due``). The sweep
-    requires a configured triage agent AND triage-on-failure, because the whole
-    point is to feed the reactive triage pipeline; without either there is
+    requires a configured tech lead agent AND tech-lead-on-failure, because the whole
+    point is to feed the reactive tech_lead pipeline; without either there is
     nothing to re-inject into.
     """
-    sweep = config.triage.stuck_sweep
+    sweep = config.tech_lead.stuck_sweep
     if not sweep.enabled:
         return False
-    if not (config.triage_review_agent and config.triage_review_on_failure):
+    if not (config.tech_lead_review_agent and config.tech_lead_review_on_failure):
         return False
     interval_seconds = sweep.interval_minutes * 60
     if interval_seconds <= 0:
@@ -161,7 +161,7 @@ def run_stuck_sweep(
     is still open (the resilience manager owns it); ``None`` conservatively treats
     every ``provider-unavailable`` issue as owned (the pre-#6824 behaviour).
     """
-    max_attempts = config.triage.stuck_sweep.max_recovery_attempts
+    max_attempts = config.tech_lead.stuck_sweep.max_recovery_attempts
     scan = _scan_stuck_issues(
         config,
         repository_host,
@@ -294,8 +294,8 @@ def _scan_stuck_issues(
     a recoverable stuck label AND is not currently owned by a dedicated
     reconciler (an active session / open proposal / open provider circuit /
     needs-human marker). Provider-unavailable and needs-human are recoverable
-    labels (#6824 F2), not blanket exclusions; only triage machinery
-    (proposed-triage / observation case files) is never a work item.
+    labels (#6824 F2), not blanket exclusions; only tech_lead machinery
+    (proposed-tech-lead / observation case files) is never a work item.
     """
     scope = [value for value in (config.filtering.label,) if value] or None
     issues = repository_host.list_issues(
@@ -366,7 +366,7 @@ def _stuck_blocking_label(
     Prefers the ``blocked-failed`` label (the canonical failed-session signal)
     when present, else the first remaining recoverable blocking label. Returns
     None when the issue carries no blocking label, or only machinery labels
-    (proposed-triage / observation) — the done guard. Ownership (provider
+    (proposed-tech-lead / observation) — the done guard. Ownership (provider
     circuit / needs-human marker / open proposal) is decided BEFORE this by the
     scan; here every non-machinery blocking label is eligible (#6824 F2).
     """
@@ -384,18 +384,18 @@ def _stuck_blocking_label(
 
 
 def _machinery_blocking_folded() -> frozenset[str]:
-    """Casefolded blocking labels that are triage MACHINERY, never work items.
+    """Casefolded blocking labels that are tech_lead MACHINERY, never work items.
 
-    ``proposed-triage`` gates an awaiting-approval proposal issue and
-    ``triage-observation`` marks an evidence case file — re-injecting either
-    would launch a triage session on triage's own bookkeeping. Unlike
+    ``proposed-tech-lead`` gates an awaiting-approval proposal issue and
+    ``tech-lead-observation`` marks an evidence case file — re-injecting either
+    would launch a tech_lead session on tech_lead's own bookkeeping. Unlike
     provider-unavailable and needs-human (which are recoverable stuck states
     gated by ownership, #6824 F2), these are ALWAYS excluded.
     """
     return frozenset(
         {
-            PROPOSED_TRIAGE_LABEL.casefold(),
-            TRIAGE_OBSERVATION_LABEL.casefold(),
+            PROPOSED_TECH_LEAD_LABEL.casefold(),
+            TECH_LEAD_OBSERVATION_LABEL.casefold(),
         }
     )
 
@@ -413,7 +413,7 @@ def _reconciler_owns(
       pre-#6824 skip. When the circuit is CLOSED the issue is orphaned (the
       planner only clears the label for issues still in active work) and the
       sweep re-examines it.
-    * ``triage-needs-human`` marker: the escalation reconciler owns a stranded
+    * ``tech-lead-needs-human`` marker: the escalation reconciler owns a stranded
       needs-human issue (it re-asserts the block on restart). A BARE needs-human
       (operator escalation, no marker) is left ELIGIBLE for re-examination —
       re-injecting it is exactly how a superseding investigation is created.
@@ -422,7 +422,7 @@ def _reconciler_owns(
     if label_manager.provider_unavailable.casefold() in folded:
         if provider_circuit_open is None or provider_circuit_open(issue):
             return True
-    if label_manager.triage_needs_human.casefold() in folded:
+    if label_manager.tech_lead_needs_human.casefold() in folded:
         return True
     return False
 
@@ -430,16 +430,16 @@ def _reconciler_owns(
 def _owned_issue_numbers(state: "OrchestratorState") -> set[int]:
     """Issue numbers the tech lead must NOT compete for (dedup + cooldown).
 
-    An issue already worked or queued — an active session, a pending triage
+    An issue already worked or queued — an active session, a pending tech_lead
     review, a pending storm cohort member, or discovered this very tick — is
     covered by the normal loop; re-injecting it would double-queue. The
-    pending-triage membership is also the cooldown: a recovered issue stays a
+    pending-tech-lead membership is also the cooldown: a recovered issue stays a
     pending failure investigation until it completes, so it is skipped on every
     intervening sweep.
     """
     owned = {session.issue.number for session in state.active_sessions}
-    owned.update(item.issue_number for item in state.pending_triage_reviews)
-    for item in state.pending_triage_reviews:
+    owned.update(item.issue_number for item in state.pending_tech_lead_reviews)
+    for item in state.pending_tech_lead_reviews:
         owned.update(problem.issue_number for problem in item.problem_cohort)
     owned.update(failure.issue_number for failure in state.discovered_failures)
     return owned
@@ -448,7 +448,7 @@ def _owned_issue_numbers(state: "OrchestratorState") -> set[int]:
 def _recovered_failure(
     issue: "Issue", blocking_label: str, now: float
 ) -> DiscoveredFailure:
-    """Build the recovered failure fact re-injected into reactive triage.
+    """Build the recovered failure fact re-injected into reactive tech_lead.
 
     ``failure_reason`` is ``timed_out`` (never ``blocked``) so the reaction
     model always INVESTIGATES: its no-dependents IGNORE gate only fires for a

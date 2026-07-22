@@ -92,12 +92,12 @@ deny_attr_calls:
       - src/issue_orchestrator/control/action_applier.py
       - src/issue_orchestrator/control/completion_processor.py
       - src/issue_orchestrator/control/label_sync.py
-      # triage_proposals hosts ActionApplier execution boundaries extracted
-      # for the applier line budget (#6778): apply_create_triage_issue and
-      # finalize_triage_op_execution run ONLY inside applier handlers, so
+      # tech_lead_proposals hosts ActionApplier execution boundaries extracted
+      # for the applier line budget (#6778): apply_create_tech_lead_issue and
+      # finalize_tech_lead_op_execution run ONLY inside applier handlers, so
       # their add_comment calls are the same applier IO boundary as
       # action_applier.py's own.
-      - src/issue_orchestrator/control/triage_proposals.py
+      - src/issue_orchestrator/control/tech_lead_proposals.py
   - name: entrypoints_no_direct_label_mutations
     description: "Entrypoint handlers must apply label/comment mutations via ActionApplier"
     deny_in:

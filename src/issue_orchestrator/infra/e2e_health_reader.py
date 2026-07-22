@@ -1,6 +1,6 @@
 """Read-only e2e-health fact reader for the board-snapshot projection.
 
-The triage tech lead's HEALTH REVIEW (ADR-0031) needs an AGGREGATE view of E2E
+The tech lead's HEALTH REVIEW (ADR-0031) needs an AGGREGATE view of E2E
 health — cadence, red streaks, chronic failures — on its primary input, the
 board snapshot. This module reads those facts from the E2E results db
 (``e2e_db.py`` / ``E2EDB``) over a STRICTLY READ-ONLY connection: it never runs

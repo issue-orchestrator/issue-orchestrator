@@ -74,7 +74,7 @@ If the orchestrator itself is an LLM, there is no trust boundary. You would need
 | Issue prioritization | Yes | Wrong choice = suboptimal, not broken |
 | Retry vs escalate | Yes | Heuristic judgment, recoverable |
 | PR description text | Yes | Cosmetic |
-| Triage batching | Yes | Timing optimization |
+| Tech Lead batching | Yes | Timing optimization |
 
 ## Consequences
 

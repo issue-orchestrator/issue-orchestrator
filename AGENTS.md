@@ -49,7 +49,7 @@ Reviewers must explicitly check accessibility for UI changes. If issues exist, l
 
 ## What This Is
 
-**issue-orchestrator** orchestrates multiple AI agents working on GitHub issues in parallel. It fetches issues, creates git worktrees, launches agent sessions, enforces structured completion via `coding-done`/`reviewer-done`, and manages the full lifecycle including code review and triage.
+**issue-orchestrator** orchestrates multiple AI agents working on GitHub issues in parallel. It fetches issues, creates git worktrees, launches agent sessions, enforces structured completion via `coding-done`/`reviewer-done`, and manages the full lifecycle including code review and tech_lead.
 
 ## Architecture Principles
 
@@ -121,7 +121,7 @@ reviewer-done changes_requested --issues "Missing tests" --risk medium
 | Topic | File | When to Read |
 |-------|------|--------------|
 | Architecture overview | [docs/architecture/README.md](docs/architecture/README.md) | System diagram, core principles |
-| Review workflow | [docs/development/REVIEW_WORKFLOW.md](docs/development/REVIEW_WORKFLOW.md) | Code review, triage, rework cycles |
+| Review workflow | [docs/development/REVIEW_WORKFLOW.md](docs/development/REVIEW_WORKFLOW.md) | Code review, tech lead, rework cycles |
 | Troubleshooting | [docs/development/TROUBLESHOOTING.md](docs/development/TROUBLESHOOTING.md) | Debugging, common problems |
 | Hook enforcement | [docs/architecture/hooks.md](docs/architecture/hooks.md) | Guardrails, agent restrictions |
 
@@ -133,7 +133,7 @@ Skills in `.claude/skills/` are automatically invoked when working on relevant a
 |-------|---------------|
 | `architecture` | Working on ports, adapters, DI, bootstrap |
 | `troubleshooting` | Debugging sessions, hooks, locks |
-| `review-workflow` | Code review pipeline, triage, rework |
+| `review-workflow` | Code review pipeline, tech lead, rework |
 | `session-replay` | Session artifact capture, replay endpoints, timeline/session correlation, and emulator-backed session viewing |
 | `schema-updates` | Updating UI contracts, SSE payloads, or config schemas |
 | `github-token-rotation` | Rotating expiring GitHub PATs or identifying the repo-scoped auth source issue-orchestrator uses |

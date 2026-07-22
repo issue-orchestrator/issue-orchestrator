@@ -30,7 +30,7 @@ class ReconciliationRequired(Exception):
     Valid responses to this exception:
     - pause issue/session
     - mark needs-reconciliation
-    - notify human or triage agent
+    - notify human or tech lead agent
 
     Invalid responses:
     - partially apply mutations

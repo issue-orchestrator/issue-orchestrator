@@ -519,7 +519,7 @@ def test_list_issues_paginates_when_limit_exceeds_one_page() -> None:
         return httpx.Response(200, json=page1 if page == 1 else page2)
 
     client = _client_with_transport(httpx.MockTransport(handler))
-    issues = client.list_issues(labels=["triage-agent"], limit=2000)
+    issues = client.list_issues(labels=["tech-lead-agent"], limit=2000)
 
     assert [i["number"] for i in issues] == list(range(1, 131))
     assert requested_pages == [1, 2]  # short page 2 stops the walk
@@ -553,7 +553,7 @@ def test_list_issues_exhaustive_happy_path_returns_full_set() -> None:
         return httpx.Response(200, json=page1 if page == 1 else page2)
 
     client = _client_with_transport(httpx.MockTransport(handler))
-    issues = client.list_issues(labels=["triage-agent"], limit=2000, exhaustive=True)
+    issues = client.list_issues(labels=["tech-lead-agent"], limit=2000, exhaustive=True)
 
     assert [i["number"] for i in issues] == list(range(1, 131))
     assert requested_pages == [1, 2]
@@ -574,7 +574,7 @@ def test_list_issues_exhaustive_later_page_non_200_fails_loud() -> None:
 
     client = _client_with_transport(httpx.MockTransport(handler))
     with pytest.raises(GitHubHttpError):
-        client.list_issues(labels=["triage-agent"], limit=2000, exhaustive=True)
+        client.list_issues(labels=["tech-lead-agent"], limit=2000, exhaustive=True)
 
 
 def test_list_issues_exhaustive_cap_exhaustion_fails_loud() -> None:
@@ -587,7 +587,7 @@ def test_list_issues_exhaustive_cap_exhaustion_fails_loud() -> None:
 
     client = _client_with_transport(httpx.MockTransport(handler))
     with pytest.raises(GitHubHttpError):
-        client.list_issues(labels=["triage-agent"], limit=2000, exhaustive=True)
+        client.list_issues(labels=["tech-lead-agent"], limit=2000, exhaustive=True)
 
 
 def test_list_issues_exhaustive_transport_failure_fails_loud() -> None:
@@ -603,7 +603,7 @@ def test_list_issues_exhaustive_transport_failure_fails_loud() -> None:
 
     client = _client_with_transport(httpx.MockTransport(handler))
     with pytest.raises(GitHubTransportError):
-        client.list_issues(labels=["triage-agent"], limit=2000, exhaustive=True)
+        client.list_issues(labels=["tech-lead-agent"], limit=2000, exhaustive=True)
 
 
 def test_list_issues_non_exhaustive_later_page_stays_lenient() -> None:
@@ -620,7 +620,7 @@ def test_list_issues_non_exhaustive_later_page_stays_lenient() -> None:
         return httpx.Response(500, text="server error")
 
     client = _client_with_transport(httpx.MockTransport(handler))
-    issues = client.list_issues(labels=["triage-agent"], limit=2000)  # not exhaustive
+    issues = client.list_issues(labels=["tech-lead-agent"], limit=2000)  # not exhaustive
 
     assert [i["number"] for i in issues] == list(range(1, 101))  # partial, no raise
 
@@ -1037,11 +1037,11 @@ def test_invalidate_labels_etag_clears_cache() -> None:
 
 def test_list_labels_paginates_beyond_the_first_full_page() -> None:
     """R8: list_labels() promises ALL labels, so a full first page continues
-    paging. A gate label sorted onto a later page (e.g. proposed-triage in a
+    paging. A gate label sorted onto a later page (e.g. proposed-tech-lead in a
     repo with 100+ labels) must be returned, else valid proposal creation is
     falsely refused."""
     page1 = [{"name": f"label-{n}"} for n in range(100)]  # full page -> keep paging
-    page2 = [{"name": "proposed-triage"}]  # gate label lives on page 2 (short page)
+    page2 = [{"name": "proposed-tech-lead"}]  # gate label lives on page 2 (short page)
 
     requested_pages: list[int] = []
 
@@ -1054,7 +1054,7 @@ def test_list_labels_paginates_beyond_the_first_full_page() -> None:
     labels = client.list_labels()
 
     names = {entry["name"] for entry in labels}
-    assert "proposed-triage" in names  # later-page gate label is not missed
+    assert "proposed-tech-lead" in names  # later-page gate label is not missed
     assert len(labels) == 101
     assert requested_pages == [1, 2]  # walked both pages, stopped on the short one
 
@@ -1065,19 +1065,19 @@ def test_list_labels_single_page_makes_no_extra_request() -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         requested_pages.append(int(request.url.params.get("page", "1")))
-        return httpx.Response(200, json=[{"name": "bug"}, {"name": "proposed-triage"}])
+        return httpx.Response(200, json=[{"name": "bug"}, {"name": "proposed-tech-lead"}])
 
     client = _client_with_transport(httpx.MockTransport(handler))
     labels = client.list_labels()
 
-    assert {e["name"] for e in labels} == {"bug", "proposed-triage"}
+    assert {e["name"] for e in labels} == {"bug", "proposed-tech-lead"}
     assert requested_pages == [1]
 
 
 def test_list_labels_later_page_non_200_fails_loud() -> None:
     """R8: a later-page non-200 must RAISE, not silently return the labels
-    gathered so far. control/triage_proposals.py makes a gate-ABSENT decision
-    from this list; a truncated scan that misses proposed-triage would falsely
+    gathered so far. control/tech_lead_proposals.py makes a gate-ABSENT decision
+    from this list; a truncated scan that misses proposed-tech-lead would falsely
     refuse valid proposals, so completeness cannot be assumed."""
     page1 = [{"name": f"label-{n}"} for n in range(100)]  # full page -> keep paging
 

@@ -396,8 +396,8 @@ def e2e_session_config(
     config.code_review_label = "needs-code-review"
     config.code_reviewed_label = "code-reviewed"
     config.max_rework_cycles = 2
-    config.triage_review_agent = None
-    config.triage_review_threshold = 2
+    config.tech_lead_review_agent = None
+    config.tech_lead_review_threshold = 2
     # Disable review exchange for e2e tests — running real claude review sessions
     # is too slow and causes test timeouts.  Tests that need review behavior should
     # use dedicated review-flow tests with script agents.
@@ -434,7 +434,7 @@ def e2e_session_config(
             ai_system="claude-code",
             provider_args={"permission_mode": "bypassPermissions"},
         ),
-        "agent:triage-investigator": AgentConfig(
+        "agent:tech-lead-investigator": AgentConfig(
             prompt_path=e2e_project_root / "tests" / "e2e" / "fixtures" / "scripts" / "complete-immediately.sh",
             timeout_minutes=3,
             model="sonnet",
@@ -454,10 +454,10 @@ def e2e_session_config(
     config.validation.publish.cmd = "true"
     config.validation.publish.timeout_seconds = 30
     if keep_artifacts():
-        config.cleanup.with_triage.close_ai_session_tabs = False
-        config.cleanup.with_triage.remove_worktrees = False
-        config.cleanup.without_triage.close_ai_session_tabs = False
-        config.cleanup.without_triage.remove_worktrees = False
+        config.cleanup.with_tech_lead.close_ai_session_tabs = False
+        config.cleanup.with_tech_lead.remove_worktrees = False
+        config.cleanup.without_tech_lead.close_ai_session_tabs = False
+        config.cleanup.without_tech_lead.remove_worktrees = False
     os.environ["E2E_CONTROL_API_PORT"] = str(config.control_api_port)
     os.environ["E2E_WEB_PORT"] = str(config.web_port)
 
@@ -736,10 +736,10 @@ def e2e_config(e2e_project_root: Path, tmp_path: Path, repo_name: str, e2e_ui_mo
     config.validation.publish.cmd = "true"
     config.validation.publish.timeout_seconds = 30
     if keep_artifacts():
-        config.cleanup.with_triage.close_ai_session_tabs = False
-        config.cleanup.with_triage.remove_worktrees = False
-        config.cleanup.without_triage.close_ai_session_tabs = False
-        config.cleanup.without_triage.remove_worktrees = False
+        config.cleanup.with_tech_lead.close_ai_session_tabs = False
+        config.cleanup.with_tech_lead.remove_worktrees = False
+        config.cleanup.without_tech_lead.close_ai_session_tabs = False
+        config.cleanup.without_tech_lead.remove_worktrees = False
 
     return config
 

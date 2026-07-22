@@ -1,0 +1,558 @@
+"""Map a validated tech_lead decision to orchestrator actions (ADR-0031).
+
+Pure policy: no IO, no events. The tech lead agent proposed actions as intent;
+this module applies the configured graduated authority per action type and
+emits the orchestrator's action vocabulary:
+
+- ``execute`` authority -> the concrete action (comment, issue, escalation).
+- ``propose`` authority -> a shadow :class:`SurfaceTechLeadProposalAction` for
+  ``post_comment``/``escalate_to_human``/``flag_pattern`` (the
+  immediate/report tier).
+- ``create_issue`` with ``propose`` authority -> the issue is CREATED, gated
+  with ``proposed-tech-lead`` (#6778): removing the label flows it into normal
+  scheduling. The gate label is orchestrator-attached by the
+  ``tech_lead_issue_policy`` owner and rejected by the agent-label allowlist.
+- ``flag_pattern`` with ``execute`` authority -> surfaced with
+  ``mode="pattern"`` PLUS the durable case-file ledger (#6781): a signature
+  absent from the pattern ledger plans a
+  :class:`~.actions.CreateTechLeadCaseFileIssueAction` (the applier records
+  the signature -> issue row create-once); a known signature plans an
+  evidence ``AddCommentAction`` on the existing case file. Under
+  ``propose`` authority it stays a shadow record like any other proposal.
+- ``reset_retry`` with ``execute`` authority -> a typed
+  :class:`ResetRetryIssueAction`; the applier's owner re-validates the
+  proposal's preconditions at execution time and downgrades stale proposals
+  to a surfaced record (#6764, ADR-0031 §2).
+- Act-level proposals otherwise (``reset_retry`` under ``propose``;
+  ``kill_hung_session`` always, until its direct execute tier ships) ->
+  GATED PROPOSAL ISSUES (#6778): a
+  :class:`~.actions.CreateTechLeadProposalIssueAction` whose applier creates
+  the issue AND records the executable :class:`StoredTechLeadOp` create-once.
+  Removing the gate label is per-instance approval; the fact gatherer's
+  label scan then triggers execution of the STORED op. Dedup is
+  ledger-based: one open proposal per (op, target) — a re-proposal plans an
+  ``AddCommentAction`` on the existing proposal issue instead. Never trust
+  config for ``kill_hung_session``: startup rejects ``execute`` for it, and
+  this planner treats ANY mode as propose.
+
+Shadow proposals additionally plan ONE durable would-have-done digest
+comment on the tech_lead session's anchor issue. The trace event alone is not
+an operator surface: ADR-0031 §2 requires shadow records to be visible "in
+the report, as a structured event, and on the escalation surface", and the
+escalation surface in this codebase is the crash-safe GitHub label/comment
+channel that the dashboard projects (#6761 finding 6). Gated proposals do
+NOT appear in the digest — their surface is the proposal issue itself,
+linked from the anchor by the creation applier.
+
+Decision-driven ``create_issue`` proposals are composed by the
+``tech_lead_issue_policy`` owner: configured tech_lead labels/priority/milestone
+strategy apply exactly as they do to the planner's batch tracking issue, and
+agent labels have already passed the protected-label contract check
+(``tech_lead_completion``).
+
+Escalation note: tech_lead escalation deliberately does NOT reuse
+``EscalateToHumanAction``. That action's applier terminates the target
+issue's runtime ("escalation kills issue automation, full stop"), which
+would let the always-execute ``escalate_to_human`` floor reach the same
+effect as ``kill_hung_session`` — an act-level intent that is
+shadow-mode-only until #6764. Tech Lead escalation is strictly a routing
+surface: needs-human label + explanatory comment on the target; nothing
+is stopped and no other labels are touched.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field, replace
+from typing import TYPE_CHECKING, Callable, Mapping
+
+from ..domain.tech_lead_artifacts import (
+    ProposedTechLeadAction,
+    TechLeadDecision,
+)
+from ..ports.issue import Issue
+from .actions import (
+    Action,
+    AddCommentAction,
+    AddLabelAction,
+    CreateTechLeadCaseFileIssueAction,
+    CreateTechLeadIssueAction,
+    ResetRetryIssueAction,
+    SurfaceTechLeadProposalAction,
+)
+from .label_manager import LabelManager
+from .tech_lead_case_files import (
+    build_case_file_evidence_comment,
+    build_case_file_issue_action,
+)
+from .tech_lead_issue_policy import (
+    apply_tech_lead_priority_prefix,
+    decision_issue_labels,
+    tech_lead_follow_up_agent_label,
+    tech_lead_issue_milestone_intent,
+)
+from .tech_lead_proposals import (
+    build_duplicate_proposal_comment,
+    build_tech_lead_proposal_issue_action,
+)
+
+if TYPE_CHECKING:
+    from ..domain.tech_lead_artifacts import TechLeadFinding
+    from ..infra.config import Config
+    from .reconciliation import ExpectedState
+
+# Cap applied to SurfaceTechLeadProposalAction.body_preview at construction.
+_BODY_PREVIEW_CHARS = 500
+
+
+def _provenance_footer(action: ProposedTechLeadAction) -> str:
+    finding_ids = ", ".join(action.finding_ids) or "none"
+    return (
+        f"\n\n---\n*Proposed by tech_lead session (action {action.id};"
+        f" findings: {finding_ids}) — ADR-0031.*"
+    )
+
+
+def _surface(
+    action: ProposedTechLeadAction,
+    *,
+    anchor_issue_number: int,
+    mode: str,
+) -> SurfaceTechLeadProposalAction:
+    return SurfaceTechLeadProposalAction(
+        issue_number=anchor_issue_number,
+        action_id=action.id,
+        proposal_type=action.action_type,
+        target_number=action.target_number or 0,
+        target_is_pr=action.target_is_pr,
+        title=action.title or "",
+        body_preview=(action.body or "")[:_BODY_PREVIEW_CHARS],
+        finding_ids=action.finding_ids,
+        mode=mode,
+        reason=f"tech_lead proposal {action.id} ({action.action_type}) surfaced as {mode}",
+    )
+
+
+def _concrete_actions(
+    action: ProposedTechLeadAction,
+    *,
+    config: "Config",
+    labels: LabelManager,
+    anchor_issue: Issue,
+    expected: "ExpectedState",
+    needs_human_label: str,
+    gate_issue: bool = False,
+) -> list[Action]:
+    body = (action.body or "") + _provenance_footer(action)
+    if action.action_type == "post_comment":
+        assert action.target_number is not None  # enforced by validate()
+        return [
+            AddCommentAction(
+                number=action.target_number,
+                comment=body,
+                is_pr=action.target_is_pr,
+                reason=f"tech_lead decision action {action.id}: post diagnosis comment",
+                expected=expected,
+            )
+        ]
+    if action.action_type == "create_issue":
+        # Config policy (tech_lead: labels/priority/milestone strategy) is the
+        # single tech_lead_issue_policy owner, shared with the planner's batch
+        # tracking issue; agent labels passed the protected-set contract
+        # check at decision validation time (#6761 finding 4). The milestone
+        # travels as INTENT — name resolution happens in the applier at
+        # creation time, so planning makes zero GitHub reads (#6769 F4).
+        anchor_milestones = (
+            [(anchor_issue.milestone_number, anchor_issue.milestone or "")]
+            if anchor_issue.milestone_number is not None
+            else []
+        )
+        gate_note = (
+            " (gated with proposed-tech-lead: propose authority, #6778)"
+            if gate_issue
+            else ""
+        )
+        return [
+            CreateTechLeadIssueAction(
+                title=apply_tech_lead_priority_prefix(config, action.title or ""),
+                body=body,
+                labels=decision_issue_labels(
+                    config,
+                    anchor_labels=anchor_issue.labels,
+                    agent_labels=action.labels,
+                    labels=labels,
+                    # Orchestrator-owned routing label so removing the gate
+                    # alone lands a schedulable issue (#6779 R5); attached for
+                    # execute-authority create_issue too — both need an agent.
+                    destination_agent=tech_lead_follow_up_agent_label(config),
+                    gate=gate_issue,
+                    area=action.area,
+                ),
+                pr_count=0,
+                milestone=tech_lead_issue_milestone_intent(config, anchor_milestones),
+                reason=(
+                    f"tech_lead decision action {action.id}: create follow-up"
+                    f" issue{gate_note}"
+                ),
+                expected=expected,
+            )
+        ]
+    if action.action_type == "escalate_to_human":
+        assert action.target_number is not None  # enforced by validate()
+        # Routing surface only — see the module docstring for why this must
+        # not reuse EscalateToHumanAction (runtime termination).
+        return [
+            AddLabelAction(
+                issue_number=action.target_number,
+                label=needs_human_label,
+                reason=f"tech_lead decision action {action.id}: escalate to human",
+                expected=expected,
+            ),
+            AddCommentAction(
+                number=action.target_number,
+                comment="## ⚠️ Tech Lead escalation — human attention needed\n\n" + body,
+                is_pr=action.target_is_pr,
+                reason=f"tech_lead decision action {action.id}: escalation comment",
+                expected=expected,
+            ),
+        ]
+    raise ValueError(
+        f"no concrete executor for tech_lead action type {action.action_type!r}"
+    )
+
+
+def plan_tech_lead_rejection_action(
+    *, anchor_issue_number: int, failure: str, detail: str
+) -> SurfaceTechLeadProposalAction:
+    """Surface a rejected decision artifact pair (``mode="rejected"``)."""
+    return SurfaceTechLeadProposalAction(
+        issue_number=anchor_issue_number,
+        proposal_type="decision",
+        body_preview=detail[:_BODY_PREVIEW_CHARS],
+        mode="rejected",
+        reason=f"tech_lead decision rejected ({failure})",
+    )
+
+
+def plan_tech_lead_decision_actions(
+    decision: TechLeadDecision,
+    config: "Config",
+    labels: LabelManager,
+    *,
+    anchor_issue: Issue,
+    expected: "ExpectedState",
+    op_ledger: Mapping[tuple[str, int], int],
+    pattern_ledger: Mapping[str, int],
+    source_run_id: str,
+    source_session_name: str,
+    observed_at: str,
+    active_session_run_id: Callable[[int], str | None],
+) -> list[Action]:
+    """Plan orchestrator actions for a validated tech_lead decision.
+
+    ``op_ledger`` maps (op_type, target_issue_number) of every currently
+    recorded gated-proposal op to its proposal issue number (the authority
+    store's rows, projected by ``tech_lead_proposals.build_op_ledger``): one
+    open proposal per (op, target) — re-proposals comment on the existing
+    issue. ``pattern_ledger`` maps every recorded flag_pattern signature to
+    its case-file issue number (``tech_lead_case_files.build_pattern_ledger``,
+    #6781): one case file per signature — repeat observations comment
+    evidence onto the existing issue. ``source_run_id``/
+    ``source_session_name`` are the proposing session's identity, recorded
+    on each :class:`StoredTechLeadOp` and in each case-file observation.
+    ``active_session_run_id`` resolves the target issue's live session run id
+    so a ``kill_hung_session`` proposal binds approval to that exact
+    generation (#6779 R1).
+    """
+    planner = _DecisionActionPlanner(
+        config=config,
+        labels=labels,
+        anchor_issue=anchor_issue,
+        expected=expected,
+        op_ledger=op_ledger,
+        pattern_ledger=pattern_ledger,
+        findings={finding.id: finding for finding in decision.findings},
+        source_run_id=source_run_id,
+        source_session_name=source_session_name,
+        observed_at=observed_at,
+        active_session_run_id=active_session_run_id,
+    )
+    for proposed in decision.proposed_actions:
+        planner.plan(proposed)
+    if planner.shadow:
+        planner.actions.append(
+            _shadow_digest_comment(
+                planner.shadow,
+                anchor_issue_number=anchor_issue.number,
+                expected=expected,
+            )
+        )
+    return planner.actions
+
+
+@dataclass
+class _DecisionActionPlanner:
+    """Per-decision planning state: one authority dispatch per proposal."""
+
+    config: "Config"
+    labels: LabelManager
+    anchor_issue: Issue
+    expected: "ExpectedState"
+    op_ledger: Mapping[tuple[str, int], int]
+    pattern_ledger: Mapping[str, int]
+    findings: Mapping[str, "TechLeadFinding"]
+    source_run_id: str
+    source_session_name: str
+    observed_at: str
+    active_session_run_id: Callable[[int], str | None]
+    actions: list[Action] = field(default_factory=list)
+    shadow: list[SurfaceTechLeadProposalAction] = field(default_factory=list)
+    _planned_ops: set[tuple[str, int]] = field(default_factory=set)
+    _planned_patterns: dict[str, int] = field(default_factory=dict)
+
+    @property
+    def _anchor_number(self) -> int:
+        return self.anchor_issue.number
+
+    def plan(self, proposed: ProposedTechLeadAction) -> None:
+        if proposed.action_type == "flag_pattern":
+            self._plan_flag_pattern(proposed)
+        elif proposed.is_act_level:
+            self._plan_act_level(proposed)
+        else:
+            self._plan_decision_tier(proposed)
+
+    def _surface_shadow(self, proposed: ProposedTechLeadAction) -> None:
+        surfaced = _surface(
+            proposed, anchor_issue_number=self._anchor_number, mode="shadow"
+        )
+        self.shadow.append(surfaced)
+        self.actions.append(surfaced)
+
+    def _plan_flag_pattern(self, proposed: ProposedTechLeadAction) -> None:
+        # Authority-aware (#6761 finding 5): execute records the pattern —
+        # the trace event (mode="pattern") plus the durable case-file
+        # ledger (#6781). Propose stays a shadow record (unchanged).
+        if self.config.tech_lead.authority.mode_for("flag_pattern") != "execute":
+            self._surface_shadow(proposed)
+            return
+        self.actions.append(
+            _surface(
+                proposed,
+                anchor_issue_number=self._anchor_number,
+                mode="pattern",
+            )
+        )
+        self._plan_pattern_case_file(proposed)
+
+    def _plan_pattern_case_file(self, proposed: ProposedTechLeadAction) -> None:
+        """Durable flag_pattern execution (#6781): create or append."""
+        signature = proposed.pattern_signature
+        assert signature is not None  # enforced by validate()
+        existing = self.pattern_ledger.get(signature)
+        if existing is not None:
+            self.actions.append(
+                AddCommentAction(
+                    number=existing,
+                    comment=build_case_file_evidence_comment(
+                        proposed,
+                        anchor_issue_number=self._anchor_number,
+                        findings=self.findings,
+                        source_run_id=self.source_run_id,
+                        source_session_name=self.source_session_name,
+                        observed_at=self.observed_at,
+                    ),
+                    is_pr=False,
+                    reason=(
+                        f"tech_lead decision action {proposed.id}: pattern"
+                        f" {signature!r} observed again; appending evidence"
+                        f" to case file #{existing} (#6781)"
+                    ),
+                    expected=self.expected,
+                )
+            )
+            return
+        comment = build_case_file_evidence_comment(
+            proposed,
+            anchor_issue_number=self._anchor_number,
+            findings=self.findings,
+            source_run_id=self.source_run_id,
+            source_session_name=self.source_session_name,
+            observed_at=self.observed_at,
+        )
+        planned_index = self._planned_patterns.get(signature)
+        if planned_index is not None:
+            creation = self.actions[planned_index]
+            assert isinstance(creation, CreateTechLeadCaseFileIssueAction)
+            self.actions[planned_index] = replace(
+                creation,
+                additional_observation_comments=(
+                    *creation.additional_observation_comments,
+                    comment,
+                ),
+            )
+            return
+        self._planned_patterns[signature] = len(self.actions)
+        self.actions.append(
+            build_case_file_issue_action(
+                proposed,
+                config=self.config,
+                anchor_issue_number=self._anchor_number,
+                findings=self.findings,
+                source_run_id=self.source_run_id,
+                source_session_name=self.source_session_name,
+                observed_at=self.observed_at,
+                expected=self.expected,
+            )
+        )
+
+    def _plan_gated_op(self, proposed: ProposedTechLeadAction) -> None:
+        """Gated proposal issue for an act-level intent (#6778)."""
+        assert proposed.target_number is not None  # enforced by validate()
+        key = (proposed.action_type, proposed.target_number)
+        existing = self.op_ledger.get(key)
+        if existing is not None:
+            self.actions.append(
+                AddCommentAction(
+                    number=existing,
+                    comment=build_duplicate_proposal_comment(
+                        proposed, anchor_issue_number=self._anchor_number
+                    ),
+                    is_pr=False,
+                    reason=(
+                        f"tech_lead decision action {proposed.id}: duplicate"
+                        f" {proposed.action_type} proposal for"
+                        f" #{proposed.target_number}; commenting on open"
+                        f" proposal #{existing} (#6778)"
+                    ),
+                    expected=self.expected,
+                )
+            )
+            return
+        if key in self._planned_ops:
+            # Two identical act-level proposals inside ONE decision: the
+            # first creation covers both; a second issue would break the
+            # one-open-proposal-per-(op, target) ledger invariant.
+            return
+        self._planned_ops.add(key)
+        # kill_hung_session binds approval to the target's live session
+        # generation (#6779 R1); reset_retry carries no generation binding.
+        target_session_id = (
+            self.active_session_run_id(proposed.target_number) or ""
+            if proposed.action_type == "kill_hung_session"
+            else ""
+        )
+        self.actions.append(
+            build_tech_lead_proposal_issue_action(
+                proposed,
+                config=self.config,
+                anchor_issue_number=self._anchor_number,
+                source_run_id=self.source_run_id,
+                source_session_name=self.source_session_name,
+                expected=self.expected,
+                target_session_id=target_session_id,
+            )
+        )
+
+    def _plan_act_level(self, proposed: ProposedTechLeadAction) -> None:
+        # reset_retry is wired (#6764, first slice): execute authority plans
+        # the typed action whose applier re-validates the preconditions at
+        # execution time. Everything else act-level becomes a GATED PROPOSAL
+        # ISSUE (#6778) — including kill_hung_session under any configured
+        # mode: startup rejects "execute" for it until its direct tier
+        # ships, but never trust config.
+        if (
+            proposed.action_type == "reset_retry"
+            and self.config.tech_lead.authority.mode_for("reset_retry") == "execute"
+        ):
+            assert proposed.target_number is not None  # enforced by validate()
+            self.actions.append(
+                ResetRetryIssueAction(
+                    issue_number=proposed.target_number,
+                    rationale=proposed.body or "",
+                    proposal_id=proposed.id,
+                    finding_ids=proposed.finding_ids,
+                    anchor_issue_number=self._anchor_number,
+                    reason=(
+                        f"tech_lead decision action {proposed.id}:"
+                        " reset and retry from scratch"
+                    ),
+                    expected=self.expected,
+                )
+            )
+            return
+        self._plan_gated_op(proposed)
+
+    def _plan_decision_tier(self, proposed: ProposedTechLeadAction) -> None:
+        # Execute authority -> the concrete action(s). Propose-authority
+        # create_issue -> the issue is CREATED, gated with proposed-tech-lead
+        # (#6778): per-instance approval is removing the label, after which
+        # the issue flows into normal scheduling. Everything else propose ->
+        # shadow record.
+        execute = (
+            self.config.tech_lead.authority.mode_for(proposed.action_type)
+            == "execute"
+        )
+        if not execute and proposed.action_type != "create_issue":
+            self._surface_shadow(proposed)
+            return
+        self.actions.extend(
+            _concrete_actions(
+                proposed,
+                config=self.config,
+                labels=self.labels,
+                anchor_issue=self.anchor_issue,
+                expected=self.expected,
+                needs_human_label=self.labels.needs_human,
+                gate_issue=not execute,
+            )
+        )
+
+
+def _shadow_digest_comment(
+    shadow: list[SurfaceTechLeadProposalAction],
+    *,
+    anchor_issue_number: int,
+    expected: "ExpectedState",
+) -> AddCommentAction:
+    """Durable would-have-done record for shadow proposals (#6761 finding 6).
+
+    Trace events are ephemeral; the operator-facing escalation surface is the
+    crash-safe GitHub comment/label channel. One digest comment per completion
+    keeps the record bounded while listing every proposal the configured
+    authority did not execute.
+    """
+    lines = [
+        "## 🔍 Tech Lead proposals recorded, not executed (shadow mode)",
+        "",
+        "The tech_lead decision proposed the following actions. Configured"
+        " authority is `propose` for them, so the orchestrator recorded"
+        " them as *would-have-done* instead of executing (ADR-0031):",
+        "",
+    ]
+    for item in shadow:
+        target = f"#{item.target_number}" if item.target_number else "n/a"
+        title = f" — {item.title}" if item.title else ""
+        lines.append(f"- **{item.action_id}** `{item.proposal_type}` (target: {target}){title}")
+        if item.body_preview:
+            lines.append(f"  > {item.body_preview}")
+        if item.finding_ids:
+            lines.append(f"  findings: {', '.join(item.finding_ids)}")
+    # Only immediate/report-tier types reach the shadow digest (#6778):
+    # create_issue proposals become gated issues, and act-level proposals
+    # become gated proposal issues — the anchor gets a per-proposal link
+    # comment from the creation applier instead of a digest entry. Every
+    # remaining shadow type is a real, flip-able authority knob.
+    knob_types = sorted({item.proposal_type for item in shadow})
+    lines.append("")
+    knobs = ", ".join(f"`tech_lead.authority.{name}`" for name in knob_types)
+    lines.append(
+        f"*Flip {knobs} to `execute` to let the orchestrator perform"
+        " these next time.*"
+    )
+    return AddCommentAction(
+        number=anchor_issue_number,
+        comment="\n".join(lines),
+        is_pr=False,
+        reason="tech_lead decision: durable shadow-proposal record (would-have-done)",
+        expected=expected,
+    )

@@ -24,7 +24,7 @@ class CLICommandHandlers:
     output: CommandHandler
     pause: CommandHandler
     resume: CommandHandler
-    triage: CommandHandler
+    tech_lead: CommandHandler
     health_review: CommandHandler
     refresh: CommandHandler
     restart: CommandHandler
@@ -170,13 +170,13 @@ def _register_runtime_commands(subparsers, handlers: CLICommandHandlers) -> None
         "--review-label",
         type=str,
         default=None,
-        help="Label to add to PRs for review (e.g., 'needs-triage-review')",
+        help="Label to add to PRs for review (e.g., 'needs-tech-lead-review')",
     )
     start_parser.add_argument(
         "--review-threshold",
         type=int,
         default=None,
-        help="Auto-trigger triage review after N PRs with review label (default: 0=manual only)",
+        help="Auto-trigger tech_lead review after N PRs with review label (default: 0=manual only)",
     )
     start_parser.set_defaults(func=handlers.start)
 
@@ -239,37 +239,37 @@ def _register_runtime_commands(subparsers, handlers: CLICommandHandlers) -> None
     )
     resume_parser.set_defaults(func=handlers.resume)
 
-    triage_parser = subparsers.add_parser(
-        "triage",
-        help="Dispatch the triage tech lead at specific issue(s) on demand",
+    tech_lead_parser = subparsers.add_parser(
+        "tech_lead",
+        help="Dispatch the tech lead at specific issue(s) on demand",
     )
-    triage_parser.add_argument(
+    tech_lead_parser.add_argument(
         "issues",
         nargs="+",
         type=int,
         help="Issue number(s) for the tech lead to investigate",
     )
-    triage_parser.add_argument(
+    tech_lead_parser.add_argument(
         "--advise-only",
         action="store_true",
-        help="Dial all triage authority to propose (nothing auto-executes)",
+        help="Dial all tech_lead authority to propose (nothing auto-executes)",
     )
-    triage_parser.add_argument(
+    tech_lead_parser.add_argument(
         "--timeout",
         type=float,
         default=1800.0,
         help="Per-issue seconds to wait for the investigation (default: 1800)",
     )
-    triage_parser.set_defaults(func=handlers.triage)
+    tech_lead_parser.set_defaults(func=handlers.tech_lead)
 
     health_review_parser = subparsers.add_parser(
         "health-review",
-        help="Run a whole-board triage health review on demand (walk the floor)",
+        help="Run a whole-board tech_lead health review on demand (walk the floor)",
     )
     health_review_parser.add_argument(
         "--advise-only",
         action="store_true",
-        help="Dial all triage authority to propose (nothing auto-executes)",
+        help="Dial all tech_lead authority to propose (nothing auto-executes)",
     )
     health_review_parser.add_argument(
         "--timeout",

@@ -43,7 +43,7 @@ class IssueStoryContext:
 
     flow_stage: str  # queued / in_progress / blocked / awaiting_merge / done
     active_runtime_minutes: int | None = None  # if a session is currently running
-    active_task_kind: str | None = None  # code / review / rework / triage
+    active_task_kind: str | None = None  # code / review / rework / tech_lead
     labels: tuple[str, ...] = ()
     dependency_summary: str | None = None
     current_rework_cycle: int = 0
@@ -511,7 +511,7 @@ def _build_status_explanation(  # noqa: C901 — maps flow stages to status expl
             "review": "Code review",
             "retrospective-review": "Retrospective review",
             "rework": "Rework session",
-            "triage": "Triage review",
+            "tech_lead": "Tech Lead review",
         }.get(ctx.active_task_kind or "", "Session")
         return f"{kind_label} in progress ({ctx.active_runtime_minutes} min)"
 
@@ -807,7 +807,7 @@ _NARRATIVE_MAP: dict[str, str] = {
     "review.escalated": "Escalated to human review",
     "rework.started": "Rework session started",
     "rework.launching": "Rework session launching",
-    "triage.launching": "Triage review launching",
+    "tech_lead.launching": "Tech Lead review launching",
     "validation.started": "Validation started",
     "validation.completed": "Validation passed",
     "session.validation_retry_needed": "Validation failed — retrying{_summary}",

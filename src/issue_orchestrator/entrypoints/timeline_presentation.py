@@ -162,8 +162,8 @@ def _build_timeline_cycles(events: list[dict[str, Any]]) -> list[dict[str, Any]]
     cycles: list[dict[str, Any]] = []
     current: dict[str, Any] | None = None
     cycle_number = 0
-    cycle_phases = {"in_progress", "reviewing", "rework", "triage", "orchestrator"}
-    cycle_start_events = {"session.started", "rework.started", "review.started", "triage.launching"}
+    cycle_phases = {"in_progress", "reviewing", "rework", "tech_lead", "orchestrator"}
+    cycle_start_events = {"session.started", "rework.started", "review.started", "tech_lead.launching"}
 
     for event in events:
         event_name = str(event.get("event") or "")

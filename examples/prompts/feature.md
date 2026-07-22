@@ -69,7 +69,7 @@ coding-done completed \
 
 **CRITICAL: Honest Problem Reporting**
 
-The `--problems` field is crucial for the triage review agent to identify technical debt and issues. Do NOT hide or minimize problems. Report:
+The `--problems` field is crucial for the tech lead review agent to identify technical debt and issues. Do NOT hide or minimize problems. Report:
 
 - Test failures you couldn't fix or tests you skipped
 - Code smells, hacks, or workarounds you introduced
@@ -81,7 +81,7 @@ The `--problems` field is crucial for the triage review agent to identify techni
 
 If genuinely no problems: `--problems "None - implementation was straightforward"`
 
-**Note**: The triage agent reviews your PR diff and will flag unreported issues. Hiding problems prolongs technical debt.
+**Note**: The tech lead agent reviews your PR diff and will flag unreported issues. Hiding problems prolongs technical debt.
 
 ### If blocked:
 ```bash

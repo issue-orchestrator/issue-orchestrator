@@ -732,7 +732,7 @@ class GitHubHttpClient:
     ) -> list[dict[str, Any]]:
         """Fail-loud remaining-page walk for the AUTHORITATIVE open-issue scan.
 
-        ``discover_open_triage_anchor_issues`` consumes this as EXHAUSTIVE: an
+        ``discover_open_tech_lead_anchor_issues`` consumes this as EXHAUSTIVE: an
         anchor or approved op hidden on a dropped/uncrawled page causes
         duplicate anchor creation, missed startup recovery, or an indefinitely
         delayed approved op. So this reuses the SAME fail-loud pager as the
@@ -895,7 +895,7 @@ class GitHubHttpClient:
         # The port promises ALL labels (#6779 R8): page 1 keeps its ETag cache
         # for the common (<=100 labels) case, but a FULL first page means more
         # may exist, so continue paging. Without this a gate label sorted onto a
-        # later page (e.g. proposed-triage in a repo with 100+ labels) is missed
+        # later page (e.g. proposed-tech-lead in a repo with 100+ labels) is missed
         # and valid proposal creation is falsely refused. Mirrors list_issues.
         if len(labels) >= 100:
             labels = list(labels) + self._paginate_all_labels(start_page=2)
@@ -971,9 +971,9 @@ class GitHubHttpClient:
         """Exhaustively page repo labels from ``start_page``, failing loud
         when completeness cannot be established (#6779 R8).
 
-        The port promises ALL labels, and control/triage_proposals.py makes a
+        The port promises ALL labels, and control/tech_lead_proposals.py makes a
         gate-ABSENT decision from this list — a truncated scan that misses the
-        ``proposed-triage`` gate would falsely refuse valid proposals. So this
+        ``proposed-tech-lead`` gate would falsely refuse valid proposals. So this
         never returns a silently partial result: it drains the shared fail-loud
         pager (:meth:`_paginate_fresh`), which raises on a transport failure, a
         later-page non-200, or a cap-exhausted scan. Uncached: later pages are

@@ -3,11 +3,11 @@
 This is the single owner both the planner's ``_launch_budgets`` and the
 orchestrator's E2E start-gate consult, so these tests pin the rule directly:
 the tech lead's reserved additive sessions are excluded from the worker budget
-when ``triage.max_concurrent`` is set, otherwise every active session counts.
+when ``tech_lead.max_concurrent`` is set, otherwise every active session counts.
 """
 
 from issue_orchestrator.control.worker_budget import (
-    active_triage_session_count,
+    active_tech_lead_session_count,
     active_worker_session_count,
     worker_slot_free,
 )
@@ -15,7 +15,7 @@ from issue_orchestrator.control.worker_budget import (
 from tests.unit.test_planner import make_config, make_issue, make_session
 
 
-def _triage_session(number: int, agent_label: str):
+def _tech_lead_session(number: int, agent_label: str):
     session = make_session(make_issue(number, labels=[agent_label]))
     session.agent_label = agent_label
     return session
@@ -23,25 +23,25 @@ def _triage_session(number: int, agent_label: str):
 
 class TestActiveWorkerSessionCount:
     def test_shared_budget_counts_every_session(self):
-        """Default (triage.max_concurrent unset): all active sessions count."""
-        config = make_config(triage_review_agent="agent:triage")
-        assert config.triage.max_concurrent is None
+        """Default (tech_lead.max_concurrent unset): all active sessions count."""
+        config = make_config(tech_lead_review_agent="agent:tech-lead")
+        assert config.tech_lead.max_concurrent is None
         sessions = [
             make_session(make_issue(1)),
-            _triage_session(2, "agent:triage"),
+            _tech_lead_session(2, "agent:tech-lead"),
         ]
         assert active_worker_session_count(config, sessions) == 2
 
-    def test_reserved_budget_excludes_triage_sessions(self):
-        """Reserved additive budget: triage sessions are NOT charged to the
+    def test_reserved_budget_excludes_tech_lead_sessions(self):
+        """Reserved additive budget: tech_lead sessions are NOT charged to the
         worker budget."""
-        config = make_config(triage_review_agent="agent:triage")
-        config.triage.max_concurrent = 1
+        config = make_config(tech_lead_review_agent="agent:tech-lead")
+        config.tech_lead.max_concurrent = 1
         sessions = [
             make_session(make_issue(1)),
-            _triage_session(2, "agent:triage"),
+            _tech_lead_session(2, "agent:tech-lead"),
         ]
-        assert active_triage_session_count(config, sessions) == 1
+        assert active_tech_lead_session_count(config, sessions) == 1
         assert active_worker_session_count(config, sessions) == 1
 
     def test_empty_is_zero(self):
@@ -58,19 +58,19 @@ class TestWorkerSlotFree:
         config = make_config(max_concurrent_sessions=1)
         assert worker_slot_free(config, [make_session(make_issue(1))]) is False
 
-    def test_reserved_triage_session_leaves_worker_slot_free(self):
+    def test_reserved_tech_lead_session_leaves_worker_slot_free(self):
         """A tech-lead session on the reserved budget does not consume the
         worker slot the E2E start-gate competes for."""
         config = make_config(
-            triage_review_agent="agent:triage", max_concurrent_sessions=1
+            tech_lead_review_agent="agent:tech-lead", max_concurrent_sessions=1
         )
-        config.triage.max_concurrent = 1
-        assert worker_slot_free(config, [_triage_session(9, "agent:triage")]) is True
+        config.tech_lead.max_concurrent = 1
+        assert worker_slot_free(config, [_tech_lead_session(9, "agent:tech-lead")]) is True
 
-    def test_shared_triage_session_consumes_worker_slot(self):
-        """Default: a triage session shares the worker budget, so it occupies
+    def test_shared_tech_lead_session_consumes_worker_slot(self):
+        """Default: a tech_lead session shares the worker budget, so it occupies
         the only worker slot - unchanged behavior."""
         config = make_config(
-            triage_review_agent="agent:triage", max_concurrent_sessions=1
+            tech_lead_review_agent="agent:tech-lead", max_concurrent_sessions=1
         )
-        assert worker_slot_free(config, [_triage_session(9, "agent:triage")]) is False
+        assert worker_slot_free(config, [_tech_lead_session(9, "agent:tech-lead")]) is False

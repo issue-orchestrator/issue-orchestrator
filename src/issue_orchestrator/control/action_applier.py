@@ -49,10 +49,10 @@ if TYPE_CHECKING:
     from ..ports.persistent_exchange_pair_registry import (
         PersistentExchangePairRegistry,
     )
-    from ..ports.triage_authority import TriageAuthorityStore
+    from ..ports.tech_lead_authority import TechLeadAuthorityStore
     from .session_history import SessionHistoryOwner
-    from .triage_kill_session import TriageKillSessionExecutor
-    from .triage_reset_retry import TriageResetRetryExecutor
+    from .tech_lead_kill_session import TechLeadKillSessionExecutor
+    from .tech_lead_reset_retry import TechLeadResetRetryExecutor
 from .reconciliation import (
     ExternalSnapshot,
     ReconciliationRequired,
@@ -67,7 +67,7 @@ from .actions import (
     Action,
     ActionResult,
     ActionType,
-    TRIAGE_ISSUE_CREATION_ACTION_TYPES,
+    TECH_LEAD_ISSUE_CREATION_ACTION_TYPES,
     AddLabelAction,
     RemoveLabelAction,
     SyncLabelsAction,
@@ -82,9 +82,9 @@ from .actions import (
     SupersedePullRequestAction,
     CloseIssueAction,
     SetIssueStateAction,
-    CreateTriageIssueAction,
+    CreateTechLeadIssueAction,
     KillHungSessionAction,
-    SurfaceTriageProposalAction,
+    SurfaceTechLeadProposalAction,
     CleanupSessionAction,
     RemoveWorktreeAction,
     ReconcileHistoryEntryAction,
@@ -92,10 +92,10 @@ from .actions import (
     ResetRetryIssueAction,
 )
 from .session_manager import SessionManager, SessionRef, SessionType, SessionContext
-from .triage_issue_creation import apply_create_triage_issue
+from .tech_lead_issue_creation import apply_create_tech_lead_issue
 from .history_reconciliation import apply_history_reconciliation
-from .triage_proposals import apply_discard_terminal_triage_proposal_ops, execute_approved_triage_op
-from .triage_reset_retry import apply_surface_triage_proposal
+from .tech_lead_proposals import apply_discard_terminal_tech_lead_proposal_ops, execute_approved_tech_lead_op
+from .tech_lead_reset_retry import apply_surface_tech_lead_proposal
 
 logger = logging.getLogger(__name__)
 
@@ -108,8 +108,8 @@ ValidationRetryLauncherCallback = Callable[[int], Optional[Session]]
 # Type alias for lease_id lookup callback
 # Takes issue_number and returns lease_id if active session exists
 LeaseIdLookup = Callable[[int], str | None]
-# Act-level triage op actions share one dispatch shape (#6764/#6778).
-_TriageOpAction = TypeVar("_TriageOpAction", ResetRetryIssueAction, KillHungSessionAction)
+# Act-level tech_lead op actions share one dispatch shape (#6764/#6778).
+_TechLeadOpAction = TypeVar("_TechLeadOpAction", ResetRetryIssueAction, KillHungSessionAction)
 LabelMutationStatField = Literal[
     "label_add_attempted",
     "label_add_applied",
@@ -212,13 +212,13 @@ class ActionApplier:
     on_worktree_removed: Optional[Callable[[str], int]] = None
     # Owner for controlled in-memory history mutations.
     history_owner: Optional["SessionHistoryOwner"] = None
-    # Execution-time owners for act-level triage ops (#6764/#6778), plus the
+    # Execution-time owners for act-level tech_lead ops (#6764/#6778), plus the
     # orchestrator-owned gated-proposal op store. Wired post-construction by
     # the composition root (production runners close over live orchestrator
     # state); unwired means the actions fail loudly instead of no-oping.
-    triage_reset_retry: Optional["TriageResetRetryExecutor"] = None
-    triage_kill_session: Optional["TriageKillSessionExecutor"] = None
-    triage_ops: Optional["TriageAuthorityStore"] = None
+    tech_lead_reset_retry: Optional["TechLeadResetRetryExecutor"] = None
+    tech_lead_kill_session: Optional["TechLeadKillSessionExecutor"] = None
+    tech_lead_ops: Optional["TechLeadAuthorityStore"] = None
     _active_label_mutation_stats: _LabelMutationStats | None = field(
         default=None, init=False, repr=False
     )
@@ -289,18 +289,18 @@ class ActionApplier:
             ActionType.QUEUE_REVIEW: self._apply_queue_review,
             ActionType.QUEUE_RETROSPECTIVE_REVIEW: self._apply_queue_operation,
             ActionType.QUEUE_REWORK: self._apply_queue_operation,
-            ActionType.QUEUE_TRIAGE: self._apply_queue_operation,
+            ActionType.QUEUE_TECH_LEAD: self._apply_queue_operation,
             ActionType.ESCALATE_TO_HUMAN: self._apply_escalate,
             ActionType.ENQUEUE_TO_MERGE_QUEUE: self._apply_enqueue_to_merge_queue,
-            # All triage-authored issues share one apply-time creation owner.
-            **dict.fromkeys(TRIAGE_ISSUE_CREATION_ACTION_TYPES, self._apply_create_triage_issue),
-            # Triage decision proposals - event-only, no GitHub calls (ADR-0031)
-            ActionType.SURFACE_TRIAGE_PROPOSAL: self._apply_surface_triage_proposal,
-            # Act-level triage execution via the reset owner (#6764)
+            # All tech-lead-authored issues share one apply-time creation owner.
+            **dict.fromkeys(TECH_LEAD_ISSUE_CREATION_ACTION_TYPES, self._apply_create_tech_lead_issue),
+            # Tech Lead decision proposals - event-only, no GitHub calls (ADR-0031)
+            ActionType.SURFACE_TECH_LEAD_PROPOSAL: self._apply_surface_tech_lead_proposal,
+            # Act-level tech_lead execution via the reset owner (#6764)
             ActionType.RESET_RETRY_ISSUE: self._apply_reset_retry_issue,
             # Approved kill_hung_session ops via the termination owner (#6778)
             ActionType.KILL_HUNG_SESSION: self._apply_kill_hung_session,
-            ActionType.DISCARD_TERMINAL_TRIAGE_PROPOSAL_OPS: lambda action: apply_discard_terminal_triage_proposal_ops(action, tracker=self.repository_host, authority=self.triage_ops),
+            ActionType.DISCARD_TERMINAL_TECH_LEAD_PROPOSAL_OPS: lambda action: apply_discard_terminal_tech_lead_proposal_ops(action, tracker=self.repository_host, authority=self.tech_lead_ops),
             # Cleanup operations
             ActionType.CLEANUP_SESSION: self._apply_cleanup_session,
             ActionType.REMOVE_WORKTREE: self._apply_remove_worktree,
@@ -1293,7 +1293,7 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
             action,
             history_owner=self.history_owner,
             events=self.events,
-            triage_authority=self.triage_ops,
+            tech_lead_authority=self.tech_lead_ops,
             terminate_issue_runtime=lambda issue_number, reason: (
                 self._terminate_issue_runtime_for_issue(issue_number, reason=reason)
             ),
@@ -1423,54 +1423,54 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
             issue_number=action.issue_number,
         )
 
-    def _apply_create_triage_issue(self, action: Action) -> ActionResult:
-        """Delegate triage-authored issue creation to its apply-time owner."""
-        assert isinstance(action, CreateTriageIssueAction)
+    def _apply_create_tech_lead_issue(self, action: Action) -> ActionResult:
+        """Delegate tech-lead-authored issue creation to its apply-time owner."""
+        assert isinstance(action, CreateTechLeadIssueAction)
         if not self.repository_host:
             return ActionResult.fail(
                 action, "No repository_host configured for issue creation"
             )
-        return apply_create_triage_issue(
+        return apply_create_tech_lead_issue(
             action,
             repository_host=self.repository_host,
             events=self.events,
-            ops=self.triage_ops,
+            ops=self.tech_lead_ops,
             add_comment=self.repository_host.add_comment,
             emit_labels_changed=self._emit_issue_labels_changed,
         )
 
-    def _apply_surface_triage_proposal(self, action: Action) -> ActionResult:
-        """Surface a triage decision proposal as a trace event (ADR-0031).
+    def _apply_surface_tech_lead_proposal(self, action: Action) -> ActionResult:
+        """Surface a tech_lead decision proposal as a trace event (ADR-0031).
 
-        Event choice and payload are owned by ``triage_reset_retry`` (shared
+        Event choice and payload are owned by ``tech_lead_reset_retry`` (shared
         with the stale-downgrade surface); NO GitHub calls are made.
         """
-        assert isinstance(action, SurfaceTriageProposalAction)
-        return apply_surface_triage_proposal(action, self.events)
+        assert isinstance(action, SurfaceTechLeadProposalAction)
+        return apply_surface_tech_lead_proposal(action, self.events)
 
     def _apply_reset_retry_issue(self, action: Action) -> ActionResult:
-        """Execute a triage reset_retry proposal via the injected owner (#6764).
+        """Execute a tech_lead reset_retry proposal via the injected owner (#6764).
 
         Precondition re-validation, stale downgrade, and the reset itself are
-        owned by TriageResetRetryExecutor; approved gated proposals (#6778)
-        are finalized by the triage_proposals owner.
+        owned by TechLeadResetRetryExecutor; approved gated proposals (#6778)
+        are finalized by the tech_lead_proposals owner.
         """
         assert isinstance(action, ResetRetryIssueAction)
-        executor = self.triage_reset_retry
-        return self._apply_triage_op(action, executor.apply if executor else None, "reset_retry")
+        executor = self.tech_lead_reset_retry
+        return self._apply_tech_lead_op(action, executor.apply if executor else None, "reset_retry")
 
     def _apply_kill_hung_session(self, action: Action) -> ActionResult:
         """Execute an APPROVED kill_hung_session op via the injected owner
         (#6778) — same pause gate / stale policy / finalization shape as
         reset_retry."""
         assert isinstance(action, KillHungSessionAction)
-        executor = self.triage_kill_session
-        return self._apply_triage_op(action, executor.apply if executor else None, "kill_hung_session")
+        executor = self.tech_lead_kill_session
+        return self._apply_tech_lead_op(action, executor.apply if executor else None, "kill_hung_session")
 
-    def _apply_triage_op(
+    def _apply_tech_lead_op(
         self,
-        action: "_TriageOpAction",
-        apply_fn: "Callable[[_TriageOpAction], ActionResult] | None",
+        action: "_TechLeadOpAction",
+        apply_fn: "Callable[[_TechLeadOpAction], ActionResult] | None",
         op_type: str,
     ) -> ActionResult:
         # Reconciliation pause gate first (raises ReconciliationRequired) — a
@@ -1479,14 +1479,14 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
         if apply_fn is None:
             return ActionResult.fail(
                 action,
-                f"triage {op_type} execution requested but no executor is"
+                f"tech_lead {op_type} execution requested but no executor is"
                 " wired into this applier",
             )
-        return execute_approved_triage_op(
+        return execute_approved_tech_lead_op(
             action,
             apply_fn,
             repository_host=self.repository_host,
-            ops=self.triage_ops,
+            ops=self.tech_lead_ops,
         )
 
     def _apply_cleanup_session(self, action: Action) -> ActionResult:
@@ -1564,8 +1564,8 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
             return SessionType.REVIEW
         if session_name.startswith("rework-"):
             return SessionType.REWORK
-        if session_name.startswith("triage-"):
-            return SessionType.TRIAGE
+        if session_name.startswith("tech-lead-"):
+            return SessionType.TECH_LEAD
         return SessionType.ISSUE
 
     def _cleanup_worktree(self, action: "CleanupSessionAction", errors: list[str]) -> None:

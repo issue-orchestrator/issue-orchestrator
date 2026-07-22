@@ -14,7 +14,7 @@ runtime initialization only:
 5. Restore + sync queue cache (warm: 1 delta call, cold: full scan)
 6. Check in-progress issues (filters from cache when available)
 7. Recover pending code reviews
-8. Recover pending triage reviews
+8. Recover pending tech_lead reviews
 9. Recover pending validation retries
 10. Recover orphaned cleanups
 11. Resume issues with partial work
@@ -34,7 +34,7 @@ from ..ports.issue import Issue
 if TYPE_CHECKING:
     from ..ports.label_store import LabelStore
     from ..ports.queue_cache_store import QueueCacheStore
-    from ..ports.triage_authority import TriageAuthorityStore
+    from ..ports.tech_lead_authority import TechLeadAuthorityStore
     from .label_manager import LabelManager
     from .label_store_reconciler import FreshLabelSnapshot
 from ..domain.models import (
@@ -50,7 +50,7 @@ from ..domain.pr_attempt_scope import scope_prs_to_active_issue_branch
 from .actions import AddLabelAction, RemoveLabelAction
 from .health_review_trigger import (
     hydrate_last_health_review_at,
-    recover_pending_triage_anchors,
+    recover_pending_tech_lead_anchors,
 )
 from .stuck_sweep import hydrate_stuck_sweep_state
 from .action_applier import ActionApplier
@@ -96,7 +96,7 @@ class StartupManager:
         queue_cache_store: "QueueCacheStore | None" = None,
         label_manager: "LabelManager | None" = None,
         label_store: "LabelStore | None" = None,
-        triage_authority: "TriageAuthorityStore | None" = None,
+        tech_lead_authority: "TechLeadAuthorityStore | None" = None,
     ):
         """Initialize the startup manager.
 
@@ -136,7 +136,7 @@ class StartupManager:
         self._lm = label_manager
         self._label_store = label_store
         # Gated-proposal ledger (#6778); None (tests) = no op-backed exclusions.
-        self._triage_authority = triage_authority
+        self._tech_lead_authority = tech_lead_authority
         self._review_scope = ReviewScopeChecker(
             config,
             repository_host,
@@ -273,10 +273,10 @@ class StartupManager:
         with self._phase("recover_pr_pending_history", timings):
             self._recover_pr_pending_history(state, issue_branches)
 
-        # Step 9: Recover pending triage reviews
-        if self.config.triage_review_agent:
-            with self._phase("recover_pending_triage", timings):
-                await self._recover_pending_triage(state)
+        # Step 9: Recover pending tech_lead reviews
+        if self.config.tech_lead_review_agent:
+            with self._phase("recover_pending_tech_lead", timings):
+                await self._recover_pending_tech_lead(state)
 
         # Step 10: Recover pending validation retries (crash recovery)
         with self._phase("recover_pending_validation_retries", timings):
@@ -691,24 +691,24 @@ class StartupManager:
             else:
                 print(f"  PR #{pr_number}: Review already in progress")
 
-    async def _recover_pending_triage(self, state: OrchestratorState) -> None:
-        """Recover pending triage review issues after crash/restart.
+    async def _recover_pending_tech_lead(self, state: OrchestratorState) -> None:
+        """Recover pending tech_lead review issues after crash/restart.
 
         Anchor requeue and gated-proposal exclusion (#6778) live with the
         trigger owner (``health_review_trigger``).
         """
-        state.startup_message = "Checking for pending triage review issues..."
-        print("\nChecking for pending triage review issues...")
+        state.startup_message = "Checking for pending tech_lead review issues..."
+        print("\nChecking for pending tech_lead review issues...")
         # The shared scoped/exhaustive anchor-discovery owner (#6763 finding 7)
         # and the gated-proposal reconciliation (#6778/#6779) both run inside
         # the trigger owner, so recovery applies the same eligibility rule as
         # fact gathering and never requeues a proposal issue as an anchor.
-        recover_pending_triage_anchors(
+        recover_pending_tech_lead_anchors(
             state,
             repository_host=self.repository_host,
             config=self.config,
             session_exists=self._session_exists,
-            triage_authority=self._triage_authority,
+            tech_lead_authority=self._tech_lead_authority,
         )
 
     def _recover_pending_retrospective_reviews(self, state: OrchestratorState) -> None:

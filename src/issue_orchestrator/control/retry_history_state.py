@@ -171,7 +171,7 @@ class RetryHistoryState:
         issue_number: int,
         superseded_pr_numbers: set[int],
     ) -> None:
-        """Workflow queues (review/rework/cleanup/triage) — attempt-scoped."""
+        """Workflow queues (review/rework/cleanup/tech_lead) — attempt-scoped."""
         self._state.pending_reviews = [
             r for r in self._state.pending_reviews
             if r.issue_number != issue_number
@@ -187,8 +187,8 @@ class RetryHistoryState:
             if c.issue_number != issue_number
             and c.pr_number not in superseded_pr_numbers
         ]
-        self._state.pending_triage_reviews = [
-            t for t in self._state.pending_triage_reviews
+        self._state.pending_tech_lead_reviews = [
+            t for t in self._state.pending_tech_lead_reviews
             if t.issue_number != issue_number
         ]
 

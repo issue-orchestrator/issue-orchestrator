@@ -174,9 +174,9 @@ VIEW_REGISTRY: dict[str, list[ViewEvent]] = {
         _user("publish.failed", "Publish failed", "orchestrator"),
     ],
 
-    # -- Triage --
-    "triage.launching": [
-        _ops("triage.launching", "Triage review launching"),
+    # -- Tech Lead --
+    "tech_lead.launching": [
+        _ops("tech_lead.launching", "Tech Lead review launching"),
     ],
 
     # -- Ops-level events --

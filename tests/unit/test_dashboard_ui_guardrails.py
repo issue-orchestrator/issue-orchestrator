@@ -2296,7 +2296,7 @@ def test_e2e_run_timeline_renders_run_level_issue_links() -> None:
 def test_e2e_run_modal_uses_canonical_viewer_body() -> None:
     """Phase C of #6310 follow-up: the E2E run modal body is the
     canonical validation viewer.  The legacy filter pills / bulk-action
-    bar / per-row triage actions are gone; per-test orchestrator
+    bar / per-row tech_lead actions are gone; per-test orchestrator
     affordances live in the ``io.agent-context`` plugin block
     rendered inside the canonical viewer.
     """
@@ -2448,7 +2448,7 @@ def test_e2e_run_artifacts_section_is_first_class_drilldown() -> None:
 # Playwright smoke ``test_e2e_canonical_view.py``.
 
 
-def test_e2e_legacy_triage_paths_are_absent_from_bundle() -> None:
+def test_e2e_legacy_tech_lead_paths_are_absent_from_bundle() -> None:
     """Round-3 reviewer ask on PR #6319: the legacy run-details and
     test-detail UI in ``e2e_triage.js`` (and the ``currentRunDetails``
     state) must not survive in the shipped dashboard bundle.  The

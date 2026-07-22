@@ -40,7 +40,7 @@ class TaskKind(Enum):
     REVIEW = "review"    # Reviewing a PR
     RETROSPECTIVE_REVIEW = "retrospective-review"  # Reviewing existing merged work
     REWORK = "rework"    # Fixing issues found in review
-    TRIAGE = "triage"    # Triaging failed reviews
+    TECH_LEAD = "tech-lead"    # Triaging failed reviews
 
     @property
     def is_review_only(self) -> bool:
@@ -73,7 +73,7 @@ class TaskKind(Enum):
             ("retrospective-review-", cls.RETROSPECTIVE_REVIEW),
             ("review-", cls.REVIEW),
             ("rework-", cls.REWORK),
-            ("triage-", cls.TRIAGE),
+            ("tech-lead-", cls.TECH_LEAD),
             ("coding-", cls.CODE),  # validation-retry phase label
             ("issue-", cls.CODE),   # issue/coding session name
         )

@@ -197,7 +197,7 @@ or anything the agent is expected to commit.
 ## Advanced Options (Teaser)
 
 You can configure much more than the minimal setup, including:
-- Automated code review and triage workflows
+- Automated code review and tech lead workflows
 - E2E test runner with flake tracking
 - Multi-orchestrator coordination (claims)
 - Provider resilience (retry + circuit breaker)

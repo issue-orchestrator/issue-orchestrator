@@ -46,15 +46,15 @@ agents:
     provider_args:
       permission_mode: bypassPermissions
     initial_prompt: "Review PR #{pr_number} for issue #{issue_number}: {issue_title}. Follow the instructions in {prompt}. When done, use reviewer-done to report your verdict."
-  agent:triage:
-    prompt: repo-specific/prompts/triage.md
+  agent:tech-lead:
+    prompt: repo-specific/prompts/tech-lead.md
     model: sonnet
     provider: claude-code
     ai_system: claude-code
     timeout_minutes: 60
     provider_args:
       permission_mode: bypassPermissions
-    initial_prompt: "Triage review for issue #{issue_number}: {issue_title}. Follow the instructions in {prompt}. When done, use coding-done to report completion."
+    initial_prompt: "Tech Lead review for issue #{issue_number}: {issue_title}. Follow the instructions in {prompt}. When done, use coding-done to report completion."
   agent:goal-pilot:
     prompt: repo-specific/prompts/goal-pilot.md
     provider: codex
@@ -110,7 +110,7 @@ filtering:
   exclude_labels: ["io-e2e-test-data", "test-data"]
   exclude_label_prefixes: ["io:e2e:"]
 
-triage:
+tech_lead:
   inherit_labels: ["io-e2e-test-data", "test-data"]
 
 goal_pilot:

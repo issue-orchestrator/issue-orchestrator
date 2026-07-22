@@ -111,10 +111,10 @@ agents:
     timeout_minutes: 10
     ai_system: "claude-code"
 
-  "agent:triage":
-    # Starter content: examples/prompts/triage-review.md (manifest-based;
-    # reads local triage-data files, completes via coding-done, never calls gh)
-    prompt: ".prompts/triage-review.md"
+  "agent:tech-lead":
+    # Starter content: examples/prompts/tech-lead-review.md (manifest-based;
+    # reads local tech-lead-data files, completes via coding-done, never calls gh)
+    prompt: ".prompts/tech-lead-review.md"
     model: "sonnet"
     timeout_minutes: 30
     ai_system: "claude-code"
@@ -164,18 +164,18 @@ review:
   code_review_label: "needs-code-review"
   code_reviewed_label: "code-reviewed"
   keep_current_approach_label: "reviewer-keep-current-approach"
-  triage_review_agent: "agent:triage"
-  # Worker agent a triage create_issue proposal routes its new issue to.
-  # REQUIRED whenever triage_review_agent is set: a configured triage agent
+  tech_lead_review_agent: "agent:tech-lead"
+  # Worker agent a tech lead create_issue proposal routes its new issue to.
+  # REQUIRED whenever tech_lead_review_agent is set: a configured tech lead agent
   # makes create_issue proposals reachable (executed directly or as a gated
   # proposal issue), and both route the follow-up here. Must name a worker
   # label in `agents` (#6779 R9/R14).
-  triage_follow_up_agent: "agent:backend"
-  triage_review_label: "needs-triage-review"
-  triage_reviewed_label: "triage-reviewed"
-  triage_failed_label: "triage-failed"
-  triage_review_threshold: 0
-  triage_review_on_failure: true
+  tech_lead_follow_up_agent: "agent:backend"
+  tech_lead_review_label: "needs-tech-lead-review"
+  tech_lead_reviewed_label: "tech-lead-reviewed"
+  tech_lead_failed_label: "tech-lead-failed"
+  tech_lead_review_threshold: 0
+  tech_lead_review_on_failure: true
   max_rework_cycles: 5
   reviewer_feedback_cache_minutes: 5
   nits:
@@ -214,14 +214,14 @@ goal_pilot:
 merge_queue:
   enabled: false
   # provider: "github"              # only github is supported today
-  # enqueue_after: "code-reviewed"  # gate that must pass first: code-reviewed | triage-reviewed
+  # enqueue_after: "code-reviewed"  # gate that must pass first: code-reviewed | tech-lead-reviewed
   # failure_action: "rework"        # how to route a failed queue entry: rework | needs_human
 
 cleanup:
-  with_triage:
+  with_tech_lead:
     close_ai_session_tabs: true
     remove_worktrees: false
-  without_triage:
+  without_tech_lead:
     wait_for_code_review: true
     close_ai_session_tabs: true
     remove_worktrees: false
@@ -369,27 +369,27 @@ milestones:
   # order: ["M1", "M2"]            # Explicit order; does not filter (unlisted milestones follow sort)
   foundation: "M0"
 
-triage:
+tech_lead:
   inherit_labels: []
   explicit_labels: []
   milestone_strategy:
     inherit_from_issues: true
     explicit: null
   priority: null
-  # Graduated authority for triage decision proposals (ADR-0031).
+  # Graduated authority for tech lead decision proposals (ADR-0031).
   # execute = orchestrator performs the proposed action;
   # propose = shadow mode - recorded as would-have-done, nothing executed
   #   (except create_issue, see below).
   # escalate_to_human is not configurable: it always executes (the floor).
   # create_issue "propose" is NOT shadow: it files a REAL gated proposal issue
-  # carrying the proposed-triage label, inert until an operator removes it
+  # carrying the proposed-tech-lead label, inert until an operator removes it
   # (per-instance approval, #6778). "execute" files the follow-up issue directly.
   # reset_retry "execute" runs the reset+retry-from-scratch owner with
   # execution-time re-validation (stale proposals are surfaced, not run).
   # Unwired act-level actions (kill_hung_session) must stay "propose"
   # until their executors land (#6764) - "execute" fails at startup.
-  # A create_issue follow-up routes its new issue to review.triage_follow_up_agent
-  # (set above; REQUIRED whenever review.triage_review_agent is configured, #6779).
+  # A create_issue follow-up routes its new issue to review.tech_lead_follow_up_agent
+  # (set above; REQUIRED whenever review.tech_lead_review_agent is configured, #6779).
   # authority:
   #   post_comment: "execute"       # execute | propose
   #   create_issue: "execute"       # execute | propose (propose = gated issue)
@@ -400,7 +400,7 @@ triage:
   # the periodic floor. A storm of K recent blocked/failed problem issues
   # creates one immediate health review instead of K investigations. The
   # anchor closes automatically when the review lands with a valid decision.
-  # Requires review.triage_review_agent. interval_minutes=0 disables only the
+  # Requires review.tech_lead_review_agent. interval_minutes=0 disables only the
   # periodic trigger; storm_threshold=0 disables only storm escalation.
   # health_review:
   #   interval_minutes: 240

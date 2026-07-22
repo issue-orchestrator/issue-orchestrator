@@ -1,7 +1,7 @@
 # E2E Test Config: Session Timeout Testing
 #
 # This config uses an agent that does nothing, triggering a timeout.
-# Tests the failure handling and triage review triggering.
+# Tests the failure handling and tech lead review triggering.
 #
 # Note: tmux session is set via ORCHESTRATOR_TMUX_SESSION env var for test isolation.
 # Control API port is dynamically assigned if not specified.
@@ -34,7 +34,7 @@ execution:
     max_concurrent_sessions: 1
     session_timeout_minutes: 2  # Fallback timeout
 
-# Triage review on failure (to verify it gets triggered)
+# Tech Lead review on failure (to verify it gets triggered)
 review:
-  triage_review_agent: "agent:triage-investigator"
-  triage_review_on_failure: true
+  tech_lead_review_agent: "agent:tech-lead-investigator"
+  tech_lead_review_on_failure: true

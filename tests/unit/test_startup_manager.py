@@ -7,7 +7,7 @@ import pytest
 from unittest.mock import MagicMock, call, patch
 
 from issue_orchestrator.control.session_launch_types import LaunchResult
-from issue_orchestrator.control.session_routing import orchestrator_launch_triage_session
+from issue_orchestrator.control.session_routing import orchestrator_launch_tech_lead_session
 from issue_orchestrator.control.startup_manager import StartupManager
 from issue_orchestrator.control.issue_fetch_resilience import IssueFetchResilience
 from issue_orchestrator.control.action_applier import ActionApplier
@@ -21,10 +21,10 @@ from issue_orchestrator.domain.models import (
     Session,
     AgentConfig,
     PendingReview,
-    PendingTriageReview,
+    PendingTechLeadReview,
     ORCHESTRATOR_PR_MARKER,
 )
-from issue_orchestrator.domain.triage_session import TriageSessionFlavor
+from issue_orchestrator.domain.tech_lead_session import TechLeadSessionFlavor
 
 
 class _FakeLabelSet:
@@ -62,7 +62,7 @@ def mock_config(tmp_path):
     config.max_concurrent_sessions = 3
     config.code_review_agent = None
     config.code_review_label = None
-    config.triage_review_agent = None
+    config.tech_lead_review_agent = None
     config.filtering.label = None
     config.filtering.milestone = None
     config.filtering.fetch_limit = 100
@@ -976,42 +976,42 @@ class TestStartupManagerAwaitingMergeRecovery:
         assert "Skipping pr-pending dashboard recovery without open PR: issue=4057" in caplog.text
 
 
-class TestStartupManagerTriageRecovery:
-    """Tests for triage review recovery."""
+class TestStartupManagerTechLeadRecovery:
+    """Tests for tech_lead review recovery."""
 
     @pytest.mark.asyncio
-    async def test_recovers_pending_triage(
+    async def test_recovers_pending_tech_lead(
         self,
         startup_manager,
         sample_state,
         mock_repository_host,
         mock_config,
     ):
-        """Test that pending triage reviews are recovered."""
+        """Test that pending tech_lead reviews are recovered."""
         mock_config.agents = {}
-        mock_config.triage_review_agent = "agent:triage"
+        mock_config.tech_lead_review_agent = "agent:tech-lead"
 
-        triage_issue = Issue(
+        tech_lead_issue = Issue(
             number=100,
             title="Batch Review: 5 PRs",
-            labels=["agent:triage"]
+            labels=["agent:tech-lead"]
         )
-        mock_repository_host.list_issues.return_value = [triage_issue]
+        mock_repository_host.list_issues.return_value = [tech_lead_issue]
 
         await startup_manager.run_startup(sample_state)
 
-        assert len(sample_state.pending_triage_reviews) == 1
-        assert sample_state.pending_triage_reviews[0].issue_number == 100
+        assert len(sample_state.pending_tech_lead_reviews) == 1
+        assert sample_state.pending_tech_lead_reviews[0].issue_number == 100
         # Recovery restores agent-labeled batch tracking issues; the queue
         # entry must say so or the launch runs it as a failure investigation
         # that skips manifest prep and audits nothing (#6768 B5).
         assert (
-            sample_state.pending_triage_reviews[0].flavor
-            is TriageSessionFlavor.BATCH_REVIEW
+            sample_state.pending_tech_lead_reviews[0].flavor
+            is TechLeadSessionFlavor.BATCH_REVIEW
         )
 
     @pytest.mark.asyncio
-    async def test_recovered_triage_launches_with_batch_flavor(
+    async def test_recovered_tech_lead_launches_with_batch_flavor(
         self,
         startup_manager,
         sample_state,
@@ -1019,32 +1019,32 @@ class TestStartupManagerTriageRecovery:
         mock_config,
     ):
         """Startup-recovery -> launch boundary keeps the batch flavor (#6768 B5)."""
-        mock_config.agents = {"agent:triage": MagicMock()}
-        mock_config.triage_review_agent = "agent:triage"
+        mock_config.agents = {"agent:tech-lead": MagicMock()}
+        mock_config.tech_lead_review_agent = "agent:tech-lead"
 
-        triage_issue = Issue(
+        tech_lead_issue = Issue(
             number=100,
             title="Batch Review: 5 PRs",
-            labels=["agent:triage"]
+            labels=["agent:tech-lead"]
         )
-        mock_repository_host.list_issues.return_value = [triage_issue]
+        mock_repository_host.list_issues.return_value = [tech_lead_issue]
 
         await startup_manager.run_startup(sample_state)
 
-        (recovered,) = sample_state.pending_triage_reviews
+        (recovered,) = sample_state.pending_tech_lead_reviews
         launcher = MagicMock()
         launcher.launch_issue_session.return_value = LaunchResult(
             session=None, success=False
         )
         launcher.session_manager.runner.discover_running_sessions.return_value = []
 
-        orchestrator_launch_triage_session(
+        orchestrator_launch_tech_lead_session(
             recovered, sample_state, mock_config, launcher, MagicMock()
         )
 
         launch_call = launcher.launch_issue_session.call_args
         assert launch_call.args[0].number == 100
-        assert launch_call.kwargs["triage_scope"].flavor is TriageSessionFlavor.BATCH_REVIEW
+        assert launch_call.kwargs["tech_lead_scope"].flavor is TechLeadSessionFlavor.BATCH_REVIEW
 
     @pytest.mark.asyncio
     async def test_recovers_marker_labeled_anchor_as_health_review(
@@ -1061,31 +1061,31 @@ class TestStartupManagerTriageRecovery:
         audit — manifest prep, batch authority, manifest labels on
         completion. The marker label is the crash-safe classifier.
         """
-        from issue_orchestrator.domain.triage_session import (
+        from issue_orchestrator.domain.tech_lead_session import (
             HEALTH_REVIEW_MARKER_LABEL,
         )
 
         mock_config.agents = {}
-        mock_config.triage_review_agent = "agent:triage"
+        mock_config.tech_lead_review_agent = "agent:tech-lead"
 
         mock_repository_host.list_issues.return_value = [
             Issue(
                 number=200,
                 title="Health Review — walk the floor",
-                labels=["agent:triage", HEALTH_REVIEW_MARKER_LABEL],
+                labels=["agent:tech-lead", HEALTH_REVIEW_MARKER_LABEL],
             ),
-            Issue(number=100, title="Batch Review: 5 PRs", labels=["agent:triage"]),
+            Issue(number=100, title="Batch Review: 5 PRs", labels=["agent:tech-lead"]),
         ]
 
         await startup_manager.run_startup(sample_state)
 
         by_number = {
-            item.issue_number: item for item in sample_state.pending_triage_reviews
+            item.issue_number: item for item in sample_state.pending_tech_lead_reviews
         }
         assert set(by_number) == {100, 200}
-        assert by_number[200].flavor is TriageSessionFlavor.HEALTH_REVIEW
+        assert by_number[200].flavor is TechLeadSessionFlavor.HEALTH_REVIEW
         assert by_number[200].failure is None
-        assert by_number[100].flavor is TriageSessionFlavor.BATCH_REVIEW
+        assert by_number[100].flavor is TechLeadSessionFlavor.BATCH_REVIEW
 
     @pytest.mark.asyncio
     async def test_recovery_ignores_closed_batch_tracking_issue(
@@ -1102,12 +1102,12 @@ class TestStartupManagerTriageRecovery:
         so the closed batch disappears from the recovery query.
         """
         mock_config.agents = {}
-        mock_config.triage_review_agent = "agent:triage"
+        mock_config.tech_lead_review_agent = "agent:tech-lead"
 
         closed_batch = Issue(
             number=100,
-            title="Triage Batch Review: 5 PRs pending",
-            labels=["agent:triage"],
+            title="Tech Lead Batch Review: 5 PRs pending",
+            labels=["agent:tech-lead"],
         )
 
         def list_issues(labels=None, state="open", limit=100, **kwargs):
@@ -1120,13 +1120,13 @@ class TestStartupManagerTriageRecovery:
 
         await startup_manager.run_startup(sample_state)
 
-        assert sample_state.pending_triage_reviews == []
+        assert sample_state.pending_tech_lead_reviews == []
         # The recovery query must not widen to closed issues.
         for query in mock_repository_host.list_issues.call_args_list:
             assert query.kwargs.get("state", "open") == "open"
 
     @pytest.mark.asyncio
-    async def test_recovery_skips_already_queued_triage(
+    async def test_recovery_skips_already_queued_tech_lead(
         self,
         startup_manager,
         sample_state,
@@ -1135,25 +1135,25 @@ class TestStartupManagerTriageRecovery:
     ):
         """Recovery routes through the queue owner and never double-queues."""
         mock_config.agents = {}
-        mock_config.triage_review_agent = "agent:triage"
+        mock_config.tech_lead_review_agent = "agent:tech-lead"
 
-        existing = PendingTriageReview(
+        existing = PendingTechLeadReview(
             issue_number=100,
             title="Batch Review: 5 PRs",
-            flavor=TriageSessionFlavor.BATCH_REVIEW,
+            flavor=TechLeadSessionFlavor.BATCH_REVIEW,
         )
-        sample_state.pending_triage_reviews.append(existing)
+        sample_state.pending_tech_lead_reviews.append(existing)
 
-        triage_issue = Issue(
+        tech_lead_issue = Issue(
             number=100,
             title="Batch Review: 5 PRs",
-            labels=["agent:triage"]
+            labels=["agent:tech-lead"]
         )
-        mock_repository_host.list_issues.return_value = [triage_issue]
+        mock_repository_host.list_issues.return_value = [tech_lead_issue]
 
         await startup_manager.run_startup(sample_state)
 
-        assert sample_state.pending_triage_reviews == [existing]
+        assert sample_state.pending_tech_lead_reviews == [existing]
 
     @pytest.mark.asyncio
     async def test_recovery_ignores_anchor_outside_filter_scope(
@@ -1166,28 +1166,28 @@ class TestStartupManagerTriageRecovery:
         """Startup and fact gathering share ONE eligibility rule: a run-scoped
         restart must NOT queue another run's anchor (#6763 finding 7).
 
-        The out-of-scope anchor carries the triage agent label but not the
+        The out-of-scope anchor carries the tech lead agent label but not the
         active ``filtering.label``; the shared scoped discovery owner drops it.
         """
-        from issue_orchestrator.domain.triage_session import (
+        from issue_orchestrator.domain.tech_lead_session import (
             HEALTH_REVIEW_MARKER_LABEL,
         )
 
         mock_config.agents = {}
-        mock_config.triage_review_agent = "agent:triage"
+        mock_config.tech_lead_review_agent = "agent:tech-lead"
         mock_config.filtering.label = "io:e2e:run-1"
 
         mock_repository_host.list_issues.return_value = [
             Issue(
                 number=200,
                 title="Health Review — walk the floor",
-                labels=["agent:triage", HEALTH_REVIEW_MARKER_LABEL],
+                labels=["agent:tech-lead", HEALTH_REVIEW_MARKER_LABEL],
             ),
         ]
 
         await startup_manager.run_startup(sample_state)
 
-        assert sample_state.pending_triage_reviews == []
+        assert sample_state.pending_tech_lead_reviews == []
 
     @pytest.mark.asyncio
     async def test_recovery_discovers_more_than_twenty_anchors(
@@ -1200,10 +1200,10 @@ class TestStartupManagerTriageRecovery:
         """The old startup scan capped at limit=20 and could strand an older
         anchor; the shared exhaustive owner recovers all of them (#6763 f7)."""
         mock_config.agents = {}
-        mock_config.triage_review_agent = "agent:triage"
+        mock_config.tech_lead_review_agent = "agent:tech-lead"
 
         anchors = [
-            Issue(number=n, title=f"Batch Review {n}", labels=["agent:triage"])
+            Issue(number=n, title=f"Batch Review {n}", labels=["agent:tech-lead"])
             for n in range(1, 26)
         ]
 
@@ -1217,7 +1217,7 @@ class TestStartupManagerTriageRecovery:
 
         await startup_manager.run_startup(sample_state)
 
-        assert {item.issue_number for item in sample_state.pending_triage_reviews} == {
+        assert {item.issue_number for item in sample_state.pending_tech_lead_reviews} == {
             n for n in range(1, 26)
         }
         # The discovery query asked for a page large enough to hold them all.

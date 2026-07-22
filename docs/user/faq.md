@@ -130,11 +130,11 @@ A: Check the Control Center's **Excluded** tab first. Issues can be excluded by 
 
 ## Advanced / Later-Stage Usage
 
-**Q18: How do I control triage issue labels and priority?**
-A: Use `triage.explicit_labels` to always apply labels, `triage.inherit_labels` to copy labels from linked issues/PRs, and `triage.priority` to add a specific priority label (for example, `priority:high`).
+**Q18: How do I control tech lead issue labels and priority?**
+A: Use `tech_lead.explicit_labels` to always apply labels, `tech_lead.inherit_labels` to copy labels from linked issues/PRs, and `tech_lead.priority` to add a specific priority label (for example, `priority:high`).
 
-**Q19: How is the triage milestone chosen, and can I override it?**
-A: `triage.milestone_strategy.inherit_from_issues` pulls from linked issues by default. Set `triage.milestone_strategy.explicit` to force a specific milestone.
+**Q19: How is the tech lead milestone chosen, and can I override it?**
+A: `tech_lead.milestone_strategy.inherit_from_issues` pulls from linked issues by default. Set `tech_lead.milestone_strategy.explicit` to force a specific milestone.
 
 **Q20: I run multiple orchestrators. How do I avoid collisions?**
 A: Think in three cases:
@@ -200,7 +200,7 @@ Rule of thumb: **Retry** resumes on the same branch (but uncommitted/conflicting
 **Q25: In what order does the orchestrator pick up issues?**
 A: There are two levels.
 
-**By work type** (highest priority first): Reviews → Retrospective reviews → Reworks → Validation retries → Triage → **New issues**. Completed work is reviewed/reworked before new coding starts, so a new issue only launches with whatever capacity is left after the higher tiers.
+**By work type** (highest priority first): Reviews → Retrospective reviews → Reworks → Validation retries → Tech Lead → **New issues**. Completed work is reviewed/reworked before new coding starts, so a new issue only launches with whatever capacity is left after the higher tiers.
 
 **Among ready new issues**, by this composite key (the first difference decides):
 
@@ -211,4 +211,4 @@ A: There are two levels.
 
 An issue is only *eligible* in the first place once its `Depends-on:` dependencies are closed (see Q22).
 
-**Gotcha:** the `priority:high` / `priority:medium` / `priority:low` **labels do not affect this order** — they exist for human/triage organization. Scheduling priority comes from the milestone and the `[P<n>-nnn]` title prefix, not the labels. So two issues in the same milestone with no `[P…]` prefix run in **issue-number order**, regardless of their priority labels — a newer issue (higher number) runs later even if it's labeled `priority:high`.
+**Gotcha:** the `priority:high` / `priority:medium` / `priority:low` **labels do not affect this order** — they exist for human/tech lead organization. Scheduling priority comes from the milestone and the `[P<n>-nnn]` title prefix, not the labels. So two issues in the same milestone with no `[P…]` prefix run in **issue-number order**, regardless of their priority labels — a newer issue (higher number) runs later even if it's labeled `priority:high`.

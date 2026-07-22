@@ -12,11 +12,11 @@ def labels_to_remove_for_retry(labels: Sequence[str], lm: LabelManager) -> list[
 
     Retry should clear:
     - all blocking labels
-    - triage needs-human provenance paired with a cleared needs-human label
+    - tech_lead needs-human provenance paired with a cleared needs-human label
     - pr-pending (scheduler-gating lifecycle label)
     """
     labels_to_remove = set(lm.get_blocking(labels)) | (
-        {lm.triage_needs_human} & set(labels)
+        {lm.tech_lead_needs_human} & set(labels)
     )
     if lm.is_pr_pending(labels):
         labels_to_remove.add(lm.pr_pending)

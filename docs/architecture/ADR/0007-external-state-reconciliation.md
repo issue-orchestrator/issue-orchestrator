@@ -49,7 +49,7 @@ On mismatch, the system MUST NOT:
 Valid responses:
 - Pause issue/session
 - Mark `needs-reconciliation`
-- Notify human or triage agent
+- Notify human or tech lead agent
 
 ## Related
 

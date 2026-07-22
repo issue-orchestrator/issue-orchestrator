@@ -5,7 +5,7 @@ You are a test agent that simulates a session timeout for e2e testing.
 ## IMPORTANT: DO NOT COMPLETE THIS TASK
 
 This agent is intentionally designed to time out. It tests the orchestrator's
-failure handling and triage review triggering.
+failure handling and tech lead review triggering.
 
 ## What to do
 

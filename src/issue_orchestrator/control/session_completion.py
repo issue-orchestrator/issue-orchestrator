@@ -35,7 +35,7 @@ from .completion_dispatcher import (
 from .session_completion_diagnostics import run_session_analysis, surface_failure_context
 from .session_run_resolution import resolve_session_run_dir
 from .transition_log import log_transition
-from .triage_reaction import record_completed_session_problem
+from .tech_lead_reaction import record_completed_session_problem
 
 if TYPE_CHECKING:
     from ..domain.models import OrchestratorState
@@ -47,7 +47,7 @@ if TYPE_CHECKING:
     from .provider_resilience import ProviderResilienceManager
     from .publish_recovery import PublishRecoveryService
     from .session_controller import SessionController, SessionDecision
-    from .triage_reset_retry import RequiredActLevelOutcome
+    from .tech_lead_reset_retry import RequiredActLevelOutcome
 
 logger = logging.getLogger(__name__)
 
@@ -214,7 +214,7 @@ def _surface_required_act_level_failure(
     (#6764 F2). The builder returns [] for a committed/genuine-failure outcome, so
     this applies nothing on those paths.
     """
-    from .triage_reset_retry import build_required_act_level_failure_actions
+    from .tech_lead_reset_retry import build_required_act_level_failure_actions
 
     actions = build_required_act_level_failure_actions(
         issue_number=session.issue.number,
@@ -353,7 +353,7 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
     # so terminal finalization still runs, then re-raised. Neither a failing
     # mandated reset nor an aborted apply may leave a success effect committed or
     # the cached machine RUNNING with the runtime dead.
-    from .triage_reset_retry import (
+    from .tech_lead_reset_retry import (
         apply_completion_actions_gated,
         effective_terminal_status,
         evaluate_required_act_level_outcome,
@@ -445,7 +445,7 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
             terminal_id=session.terminal_id,
             worktree_path=str(session.worktree_path),
             reason=effective_status.value,
-            # A disposable triage-investigation scratch worktree is removed on
+            # A disposable tech-lead-investigation scratch worktree is removed on
             # completion regardless of the cleanup config (#6823).
             scratch_worktree=session.scratch_worktree,
         ))
@@ -459,7 +459,7 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
     record_completed_session_problem(
         status=effective_status,
         session=session,
-        triage_agent=config.triage_review_agent,
+        tech_lead_agent=config.tech_lead_review_agent,
         blocking_label=blocked_label or "",
         artifact_hints=lambda: _failure_artifact_hints(
             session.worktree_path, run_dir, diagnostic_path, claude_log_path
@@ -492,7 +492,7 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
     # relaunch the reset exists to trigger. Re-clear the planner/queue gates last,
     # via their owner (empty on the raised-apply path, so a no-op). (#6764)
     from .retry_history_state import RetryHistoryState
-    from .triage_reset_retry import preserve_reset_retry_eligibility
+    from .tech_lead_reset_retry import preserve_reset_retry_eligibility
 
     cleared = preserve_reset_retry_eligibility(
         applied_results,

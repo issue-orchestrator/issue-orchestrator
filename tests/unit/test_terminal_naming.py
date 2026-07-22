@@ -24,7 +24,7 @@ class TestTerminalId:
         """Generate terminal_id from SessionType enum."""
         assert terminal_id(SessionType.ISSUE, 123) == "issue-123"
         assert terminal_id(SessionType.REVIEW, 456) == "review-456"
-        assert terminal_id(SessionType.TRIAGE, 101) == "triage-101"
+        assert terminal_id(SessionType.TECH_LEAD, 101) == "tech-lead-101"
 
 
 class TestParseTerminalId:

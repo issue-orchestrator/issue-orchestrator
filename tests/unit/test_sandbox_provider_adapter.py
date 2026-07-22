@@ -83,24 +83,24 @@ def test_claude_tech_lead_reads_god_view_but_writes_only_worktree() -> None:
     # R5 (#6824): a tech-lead read-broad/write-narrow scope maps directly to
     # Claude allowRead (worktree + god-view) vs allowWrite (worktree only).
     scope = SandboxScope(
-        working_directory=Path("/wt/repo-triage-42-abc"),
+        working_directory=Path("/wt/repo-tech-lead-42-abc"),
         read_roots=(
-            Path("/wt/repo-triage-42-abc"),
+            Path("/wt/repo-tech-lead-42-abc"),
             Path("/repo"),
             Path("/repo/.issue-orchestrator/state"),
         ),
-        write_roots=(Path("/wt/repo-triage-42-abc"),),
+        write_roots=(Path("/wt/repo-tech-lead-42-abc"),),
         egress="model-only",
         deny_env=("GITHUB_TOKEN",),
         deny_read_files=("~/.ssh",),
     )
     fs = build_claude_sandbox_settings(scope)["sandbox"]["filesystem"]
     assert fs["allowRead"] == [
-        "/wt/repo-triage-42-abc",
+        "/wt/repo-tech-lead-42-abc",
         "/repo",
         "/repo/.issue-orchestrator/state",
     ]
-    assert fs["allowWrite"] == ["/wt/repo-triage-42-abc"]  # writes never widen
+    assert fs["allowWrite"] == ["/wt/repo-tech-lead-42-abc"]  # writes never widen
 
 
 def test_claude_settings_deny_read_home_and_reallow_roots() -> None:

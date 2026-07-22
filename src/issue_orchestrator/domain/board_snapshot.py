@@ -1,8 +1,8 @@
-"""Board snapshot - typed orchestrator-state facts for triage/tech-lead sessions.
+"""Board snapshot - typed orchestrator-state facts for tech_lead/tech-lead sessions.
 
 A ``BoardSnapshot`` is a serializable bundle of orchestrator-state facts
 (active sessions, pending queues, blocked issues, recent failures, timeline
-extracts, log tail) written to a file that a triage or tech-lead agent
+extracts, log tail) written to a file that a tech_lead or tech-lead agent
 session reads to understand the state of the board.
 
 Flow:
@@ -80,8 +80,8 @@ _E2E_AGE_UNKNOWN = -1
 _E2E_PASSED_STATUSES = frozenset({"passed"})
 _E2E_INFLIGHT_STATUSES = frozenset({"running", "canceled", "interrupted"})
 
-# Canonical snapshot filename inside a session's triage-data directory,
-# next to TRIAGE_ASSIGNMENT_FILENAME (domain/triage_session.py).
+# Canonical snapshot filename inside a session's tech-lead-data directory,
+# next to TECH_LEAD_ASSIGNMENT_FILENAME (domain/tech_lead_session.py).
 BOARD_SNAPSHOT_FILENAME = "board-snapshot.json"
 
 
@@ -281,7 +281,7 @@ class BoardQueueEntry:
     """One entry in a pending queue.
 
     ``queue`` names the source queue on OrchestratorState (e.g.
-    "pending_reviews", "pending_reworks", "pending_triage",
+    "pending_reviews", "pending_reworks", "pending_tech_lead",
     "pending_validation_retries", "priority_queue"). ``detail`` is a short
     human-readable elaboration; may be "" (e.g. priority_queue entries).
     """
@@ -307,7 +307,7 @@ class BoardBlockedIssue:
 
 @dataclass
 class BoardFailure:
-    """A recently failed session, pending triage attention.
+    """A recently failed session, pending tech_lead attention.
 
     ``artifact_hints`` lists paths to session artifacts worth inspecting;
     may be empty when the failure source carries no artifact information.
@@ -670,7 +670,7 @@ class BoardSnapshot:
     """Point-in-time bundle of orchestrator-state facts for an agent session.
 
     Created by ``control.board_snapshot_builder.BoardSnapshotBuilder``,
-    written to a file, read by a triage/tech-lead agent. All list fields are
+    written to a file, read by a tech_lead/tech-lead agent. All list fields are
     bounded by the builder (the file is consumed by an agent with a finite
     context window); see the builder's docstrings for the exact caps.
     """

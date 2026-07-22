@@ -88,40 +88,40 @@ def test_sqlite_registry_includes_timeline_db(tmp_path):
     assert timeline.path_fn(config) == state_dir(tmp_path) / "timeline.sqlite"
 
 
-def test_sqlite_registry_includes_triage_authority_db(tmp_path):
-    """The triage launch-authority store is a first-class state DB (#6769 F3):
+def test_sqlite_registry_includes_tech_lead_authority_db(tmp_path):
+    """The tech_lead launch-authority store is a first-class state DB (#6769 F3):
     registered for doctor checks, backups, and pragma enforcement."""
     config = Config()
     config.repo_root = tmp_path
 
     databases = list_sqlite_databases(config)
-    entry = next((db for db in databases if db.key == "triage_authority"), None)
+    entry = next((db for db in databases if db.key == "tech_lead_authority"), None)
 
     assert entry is not None
-    assert entry.label == "Triage Authority"
-    assert entry.path_fn(config) == state_dir(tmp_path) / "triage_authority.sqlite"
+    assert entry.label == "Tech Lead Authority"
+    assert entry.path_fn(config) == state_dir(tmp_path) / "tech_lead_authority.sqlite"
     assert entry.enabled_fn(config) is True
     assert entry.backup is True
     assert entry.enforce_pragmas is True
 
 
-def test_triage_authority_db_is_backed_up_when_due(tmp_path):
+def test_tech_lead_authority_db_is_backed_up_when_due(tmp_path):
     """The registered policy actually drives a backup for the real file."""
     config = Config()
     config.repo_root = tmp_path
 
-    from issue_orchestrator.infra.triage_authority_store import (
-        SqliteTriageAuthorityStore,
+    from issue_orchestrator.infra.tech_lead_authority_store import (
+        SqliteTechLeadAuthorityStore,
     )
 
-    SqliteTriageAuthorityStore.for_repo(tmp_path)  # creates the DB file
+    SqliteTechLeadAuthorityStore.for_repo(tmp_path)  # creates the DB file
 
     results = run_backups_if_due(config)
 
-    assert any(r.db.key == "triage_authority" and r.performed for r in results)
+    assert any(r.db.key == "tech_lead_authority" and r.performed for r in results)
     date_str = datetime.now(timezone.utc).date().isoformat()
     backup = (
         tmp_path / ".issue-orchestrator" / "backups" / "sqlite"
-        / "triage_authority" / "daily" / f"{date_str}.db"
+        / "tech_lead_authority" / "daily" / f"{date_str}.db"
     )
     assert backup.exists()

@@ -50,7 +50,7 @@ The workflow I settled on is simple and opinionated:
 4. Run a structured code review agent.
 5. If review fails, cycle back a bounded number of times.
 6. Leave a draft PR for human approval.
-7. Periodically run a triage agent to examine failures and patterns.
+7. Periodically run a tech lead agent to examine failures and patterns.
 
 The important part is not the steps. It's that the steps are enforced.
 

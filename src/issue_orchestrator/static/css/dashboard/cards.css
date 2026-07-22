@@ -61,7 +61,7 @@ body.column-focus-mode .column-expanded {
     justify-content: flex-start;
 }
 
-/* Column filter bar (blocked triage) */
+/* Column filter bar (blocked tech_lead) */
 .column-filter-bar {
     display: flex;
     gap: 4px;
