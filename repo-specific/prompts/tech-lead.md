@@ -393,6 +393,13 @@ Compact `tech-lead-decision.json` example:
     bookkeeping, so resetting either would hit the wrong entity.
   Any other target is rejected at completion. `create_issue` and
   `flag_pattern` carry no target.
+- Do not file a duplicate. Before proposing a `create_issue`, check the open
+  issues you were given. If your follow-up already exists as an open issue, set
+  `duplicate_of` to that issue number — this is your (untrusted) dedup intent.
+  The orchestrator verifies it against trusted facts when available: a verified,
+  in-scope duplicate receives your observation; otherwise the proposal is gated
+  with the candidate preserved for a human to reconcile. Always still provide
+  `title` and `body`. `duplicate_of` is only valid on `create_issue`.
 - `flag_pattern` requires a stable `pattern_signature` (a short reusable slug
   naming the recurring pattern). Both `flag_pattern` and
   root-cause/design-review `create_issue` actions may carry an `area` naming

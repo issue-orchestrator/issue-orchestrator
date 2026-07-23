@@ -190,6 +190,14 @@ class ProposedTechLeadAction:
     # under ``propose`` it jumps only once the ``proposed-tech-lead`` gate is
     # removed. The orchestrator (never the agent) performs the queue write.
     expedite: bool = False
+    # Dedup intent (#6878): when the tech lead recognizes that its proposed
+    # ``create_issue`` follow-up already exists as an open issue, it sets
+    # ``duplicate_of`` to that issue number rather than filing a new one. This is
+    # INTENT only — the orchestrator (never the agent) decides what to do with it
+    # (route the observation onto the existing issue), and independently
+    # cross-checks it. Only meaningful for ``create_issue``; ``validate()``
+    # rejects it on any other action type.
+    duplicate_of: int | None = None
 
     @classmethod
     def from_mapping(cls, data: Any, *, index: int) -> "ProposedTechLeadAction":
@@ -238,6 +246,12 @@ class ProposedTechLeadAction:
         area = _optional_bounded_str(
             data.get("area"), MAX_AREA_CHARS, f"proposed action {action_id} area"
         )
+        duplicate_of = data.get("duplicate_of")
+        if duplicate_of is not None and not _is_valid_issue_number(duplicate_of):
+            raise ValueError(
+                f"proposed action {action_id} duplicate_of must be a positive"
+                f" integer, got {duplicate_of!r}"
+            )
         action = cls(
             id=action_id,
             action_type=action_type,
@@ -253,6 +267,7 @@ class ProposedTechLeadAction:
                 data.get("expedite", _MISSING),
                 f"proposed action {action_id} expedite",
             ),
+            duplicate_of=duplicate_of,
         )
         action.validate()
         return action
@@ -273,6 +288,20 @@ class ProposedTechLeadAction:
                 False,
                 f"{context} sets expedite=true, which is only valid on"
                 " create_issue actions (#6870)",
+            )
+        # duplicate_of is a create_issue-only dedup intent (#6878): "this
+        # proposal already exists as #N". Meaningless — and a contract
+        # violation — on any other action type. A positive-int bound is enforced
+        # at parse time; direct construction is re-checked here.
+        if self.duplicate_of is not None:
+            _require(
+                self.action_type == "create_issue",
+                f"{context} sets duplicate_of, which is only valid on"
+                " create_issue actions (#6878)",
+            )
+            _require(
+                _is_valid_issue_number(self.duplicate_of),
+                f"{context} duplicate_of must be a positive issue number",
             )
         # pattern_signature/area must be meaningful whenever present —
         # direct construction bypasses from_mapping's normalization, and the
@@ -319,24 +348,25 @@ class ProposedTechLeadAction:
             "id": self.id,
             "action_type": self.action_type,
         }
-        if self.target_number is not None:
-            payload["target_number"] = self.target_number
-        if self.target_is_pr:
-            payload["target_is_pr"] = True
-        if self.title:
-            payload["title"] = self.title
-        if self.body:
-            payload["body"] = self.body
-        if self.labels:
-            payload["labels"] = list(self.labels)
-        if self.finding_ids:
-            payload["finding_ids"] = list(self.finding_ids)
-        if self.pattern_signature:
-            payload["pattern_signature"] = self.pattern_signature
-        if self.area:
-            payload["area"] = self.area
-        if self.expedite:
-            payload["expedite"] = True
+        # Emit each optional field only when set — target_number/duplicate_of are
+        # None-or-positive and the flags/collections/strings are None/empty when
+        # unset, so a single truthiness pass matches the per-field ``if`` chain
+        # without its branch-per-field complexity.
+        optional: tuple[tuple[str, Any], ...] = (
+            ("target_number", self.target_number),
+            ("target_is_pr", self.target_is_pr),
+            ("title", self.title),
+            ("body", self.body),
+            ("labels", list(self.labels)),
+            ("finding_ids", list(self.finding_ids)),
+            ("pattern_signature", self.pattern_signature),
+            ("area", self.area),
+            ("expedite", self.expedite),
+            ("duplicate_of", self.duplicate_of),
+        )
+        for key, value in optional:
+            if value:
+                payload[key] = value
         return payload
 
 
@@ -547,6 +577,13 @@ def _duplicates(ids: list[str]) -> set[str]:
 def _require(condition: bool, message: str) -> None:
     if not condition:
         raise ValueError(message)
+
+
+def _is_valid_issue_number(value: object) -> bool:
+    """A positive int, excluding bool (an int subclass). Takes ``object`` so the
+    runtime type check is real at both the parse and the direct-construction
+    boundary (``validate``), not narrowed away by a declared ``int`` field."""
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
 
 def _required_str(data: dict[str, Any], key: str, context: str) -> str:

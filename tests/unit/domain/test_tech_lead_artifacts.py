@@ -1,5 +1,7 @@
 """Unit tests for the tech_lead artifact pair contract (domain/tech_lead_artifacts.py)."""
 
+from typing import cast
+
 import pytest
 
 from issue_orchestrator.domain.tech_lead_artifacts import (
@@ -558,3 +560,102 @@ class TestProposedActionExpedite:
         assert decision.proposed_actions[0].expedite is True
         again = TechLeadDecision.from_agent_payload(decision.to_dict())
         assert again.proposed_actions[0].expedite is True
+
+
+class TestProposedActionDuplicateOf:
+    """#6878: the create_issue-only ``duplicate_of`` dedup intent."""
+
+    def _create_issue(self, **overrides: object) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "id": "A1",
+            "action_type": "create_issue",
+            "title": "Fix the flaky merge race",
+            "body": "It corrupts state on every 3rd run.",
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_defaults_none_and_absent_from_payload(self):
+        action = ProposedTechLeadAction.from_mapping(self._create_issue(), index=1)
+        assert action.duplicate_of is None
+        assert "duplicate_of" not in action.to_dict()
+
+    def test_parses_and_round_trips(self):
+        action = ProposedTechLeadAction.from_mapping(
+            self._create_issue(duplicate_of=42), index=1
+        )
+        assert action.duplicate_of == 42
+        payload = action.to_dict()
+        assert payload["duplicate_of"] == 42
+        assert ProposedTechLeadAction.from_mapping(payload, index=1).duplicate_of == 42
+
+    @pytest.mark.parametrize("bad", [0, -1, True, False, "42", 42.0, [], {}])
+    def test_rejects_non_positive_int(self, bad):
+        # Untrusted decision file: a non-positive-int duplicate_of must fail loudly
+        # (bool is an int subclass, so True/False are rejected too).
+        with pytest.raises(ValueError, match="duplicate_of must be a positive"):
+            ProposedTechLeadAction.from_mapping(
+                self._create_issue(duplicate_of=bad), index=1
+            )
+
+    @pytest.mark.parametrize(
+        "action_type,extra",
+        [
+            ("post_comment", {"target_number": 7, "body": "b"}),
+            ("escalate_to_human", {"target_number": 7, "body": "b"}),
+            ("flag_pattern", {"body": "b", "pattern_signature": "sig"}),
+            ("reset_retry", {"target_number": 7, "body": "b"}),
+            ("kill_hung_session", {"target_number": 7, "body": "b"}),
+        ],
+    )
+    def test_rejected_on_non_create_issue(self, action_type, extra):
+        payload = {"id": "A1", "action_type": action_type, "duplicate_of": 9}
+        payload.update(extra)
+        with pytest.raises(ValueError, match="only valid on create_issue"):
+            ProposedTechLeadAction.from_mapping(payload, index=1)
+
+    def test_rejected_on_direct_construction_bypass(self):
+        # Direct construction bypasses from_mapping; validate() re-checks.
+        action = ProposedTechLeadAction(
+            id="A1",
+            action_type="post_comment",
+            target_number=7,
+            body="b",
+            duplicate_of=9,
+        )
+        with pytest.raises(ValueError, match="only valid on create_issue"):
+            action.validate()
+
+    @pytest.mark.parametrize("bad", [42.0, "42", True])
+    def test_validate_rechecks_int_type_on_direct_construction(self, bad: object):
+        # Direct construction bypasses from_mapping's parse check; validate() must
+        # still reject a non-int (float / str / bool) as a ValueError — not pass it
+        # (42.0) and not raise TypeError (a str comparison).
+        action = ProposedTechLeadAction(
+            id="A1",
+            action_type="create_issue",
+            title="t",
+            body="b",
+            duplicate_of=cast(int, bad),
+        )
+        with pytest.raises(ValueError, match="duplicate_of must be a positive"):
+            action.validate()
+
+    def test_decision_round_trips_through_payload(self):
+        payload = _payload(
+            findings=[_finding("T1")],
+            proposed_actions=[
+                _action(
+                    aid="A1",
+                    action_type="create_issue",
+                    title="Dup fix",
+                    body="body",
+                    target_number=None,
+                    duplicate_of=77,
+                )
+            ],
+        )
+        decision = TechLeadDecision.from_agent_payload(payload)
+        assert decision.proposed_actions[0].duplicate_of == 77
+        again = TechLeadDecision.from_agent_payload(decision.to_dict())
+        assert again.proposed_actions[0].duplicate_of == 77

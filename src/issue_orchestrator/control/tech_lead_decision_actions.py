@@ -81,6 +81,18 @@ from .actions import (
     SurfaceTechLeadProposalAction,
 )
 from .label_manager import LabelManager
+from .proposal_dedup_gate import (
+    CommentExisting,
+    DedupAuthority,
+    DuplicateTargetGrant,
+    GateDedupUnavailable,
+    GateSuspectedDuplicate,
+    GateUnverifiedDuplicate,
+    OpenIssueCorpus,
+    ProposalIntent,
+    RejectCandidate,
+    classify_proposal,
+)
 from .tech_lead_case_files import (
     build_case_file_evidence_comment,
     build_case_file_issue_action,
@@ -103,6 +115,63 @@ if TYPE_CHECKING:
 
 # Cap applied to SurfaceTechLeadProposalAction.body_preview at construction.
 _BODY_PREVIEW_CHARS = 500
+
+# Lexical similarity at/above which the dedup gate treats a create_issue proposal
+# as a SUSPECTED duplicate and gates it for human reconciliation. Deliberately
+# high — the scorer only catches shared-vocabulary near-duplicates, so a high bar
+# keeps false-positive gating rare. A config knob follows in #6878; the trusted
+# open-issue corpus that feeds the lexical path is DISABLED in increment 1 (the
+# production caller passes CorpusState.DISABLED explicitly), so the lexical
+# backstop is dormant until the SQL fingerprint cache lands (#6878 increment 2).
+_DEDUP_BACKSTOP_THRESHOLD = 0.72
+
+# Operator-facing gate reasons rendered into the gated issue body and its action
+# reason. The PRESENCE of a reason is what gates the create (never a bare
+# boolean), so every gated issue explains itself.
+_PROPOSE_AUTHORITY_NOTE = (
+    "Gated with the proposed-tech-lead label under `propose` authority (#6778):"
+    " remove the label to approve."
+)
+
+
+def _suspected_note(outcome: GateSuspectedDuplicate) -> str:
+    # A lexical match names its score (once); an agent-confirmed-but-uncommentable
+    # duplicate has no score and its reason names the blocking mode(s).
+    if outcome.score is not None:
+        headline = (
+            f"SUSPECTED DUPLICATE of #{outcome.issue_number}"
+            f" (lexical score {outcome.score:.2f})"
+        )
+    else:
+        headline = f"DUPLICATE of #{outcome.issue_number}"
+    return (
+        f"Gated as a {headline}: {outcome.reason}. Confirm and dedup onto that"
+        " issue, or remove the proposed-tech-lead label to file this as a new"
+        " issue."
+    )
+
+
+def _unavailable_note(outcome: GateDedupUnavailable) -> str:
+    return (
+        f"Gated for review: {outcome.reason}. Filed nothing automatically —"
+        " remove the proposed-tech-lead label once checked, or dedup by hand."
+    )
+
+
+def _unverified_note(outcome: GateUnverifiedDuplicate) -> str:
+    return (
+        f"Gated as a possible DUPLICATE of #{outcome.issue_number}:"
+        f" {outcome.reason}. Verify against #{outcome.issue_number}, then dedup"
+        " onto it, or remove the proposed-tech-lead label to file this as new."
+    )
+
+
+def _rejected_note(outcome: RejectCandidate) -> str:
+    return (
+        f"Gated for review: the agent cited #{outcome.issue_number} as a duplicate"
+        f" but {outcome.reason}. Filed as a new issue pending confirmation; remove"
+        " the proposed-tech-lead label to approve."
+    )
 
 
 def _provenance_footer(action: ProposedTechLeadAction) -> str:
@@ -141,7 +210,7 @@ def _concrete_actions(
     anchor_issue: Issue,
     expected: "ExpectedState",
     needs_human_label: str,
-    gate_issue: bool = False,
+    gate_reason: str | None = None,
 ) -> list[Action]:
     body = (action.body or "") + _provenance_footer(action)
     if action.action_type == "post_comment":
@@ -167,15 +236,14 @@ def _concrete_actions(
             if anchor_issue.milestone_number is not None
             else []
         )
-        gate_note = (
-            " (gated with proposed-tech-lead: propose authority, #6778)"
-            if gate_issue
-            else ""
-        )
+        # A gate reason both gates the issue and explains itself in the operator-
+        # facing body — never a bare boolean whose meaning callers must guess.
+        gated = gate_reason is not None
+        gated_body = f"{body}\n\n---\n> {gate_reason}" if gated else body
         return [
             CreateTechLeadIssueAction(
                 title=apply_tech_lead_priority_prefix(config, action.title or ""),
-                body=body,
+                body=gated_body,
                 labels=decision_issue_labels(
                     config,
                     anchor_labels=anchor_issue.labels,
@@ -185,7 +253,7 @@ def _concrete_actions(
                     # alone lands a schedulable issue (#6779 R5); attached for
                     # execute-authority create_issue too — both need an agent.
                     destination_agent=tech_lead_follow_up_agent_label(config),
-                    gate=gate_issue,
+                    gate=gated,
                     area=action.area,
                 ),
                 pr_count=0,
@@ -197,7 +265,7 @@ def _concrete_actions(
                 expedite=action.expedite,
                 reason=(
                     f"tech_lead decision action {action.id}: create follow-up"
-                    f" issue{gate_note}"
+                    f" issue{' (gated)' if gated else ''}"
                 ),
                 expected=expected,
             )
@@ -252,6 +320,8 @@ def plan_tech_lead_decision_actions(
     source_session_name: str,
     observed_at: str,
     active_session_run_id: Callable[[int], str | None],
+    dedup_corpus: OpenIssueCorpus,
+    dedup_grant: DuplicateTargetGrant,
 ) -> list[Action]:
     """Plan orchestrator actions for a validated tech_lead decision.
 
@@ -281,6 +351,8 @@ def plan_tech_lead_decision_actions(
         source_session_name=source_session_name,
         observed_at=observed_at,
         active_session_run_id=active_session_run_id,
+        dedup_corpus=dedup_corpus,
+        dedup_grant=dedup_grant,
     )
     for proposed in decision.proposed_actions:
         planner.plan(proposed)
@@ -310,6 +382,12 @@ class _DecisionActionPlanner:
     source_session_name: str
     observed_at: str
     active_session_run_id: Callable[[int], str | None]
+    # Trusted dedup facts (#6878), REQUIRED — never a silent empty default, which
+    # would disable the safety mechanism invisibly. The corpus carries an explicit
+    # Ready/Unavailable state; the grant is the launch-authority-derived set a
+    # dedup redirect may target. Increment 1 passes CorpusUnavailable explicitly.
+    dedup_corpus: OpenIssueCorpus
+    dedup_grant: DuplicateTargetGrant
     actions: list[Action] = field(default_factory=list)
     shadow: list[SurfaceTechLeadProposalAction] = field(default_factory=list)
     _planned_ops: set[tuple[str, int]] = field(default_factory=set)
@@ -488,12 +566,101 @@ class _DecisionActionPlanner:
             return
         self._plan_gated_op(proposed)
 
+    def _dedup_authority(self) -> DedupAuthority:
+        authority = self.config.tech_lead.authority
+        return DedupAuthority(
+            create_issue_execute=authority.mode_for("create_issue") == "execute",
+            post_comment_execute=authority.mode_for("post_comment") == "execute",
+        )
+
+    def _dedup_comment_action(
+        self, proposed: ProposedTechLeadAction, existing: int
+    ) -> Action:
+        """Route a confirmed duplicate's observation (its title AND body) onto the
+        existing issue instead of filing a new one."""
+        heading = f"**{proposed.title}**\n\n" if proposed.title else ""
+        note = heading + (proposed.body or "") + _provenance_footer(proposed)
+        return AddCommentAction(
+            number=existing,
+            comment=(
+                "## 🔁 Tech Lead: deduplicated follow-up\n\n"
+                "A proposed new issue was recognized as a duplicate of this one,"
+                " so its observation is routed here instead of filing a"
+                f" duplicate.\n\n{note}"
+            ),
+            is_pr=False,
+            reason=(
+                f"tech_lead decision action {proposed.id}: dedup onto #{existing}"
+            ),
+            expected=self.expected,
+        )
+
+    def _concrete_decision(
+        self, proposed: ProposedTechLeadAction, *, gate_reason: str | None
+    ) -> list[Action]:
+        return _concrete_actions(
+            proposed,
+            config=self.config,
+            labels=self.labels,
+            anchor_issue=self.anchor_issue,
+            expected=self.expected,
+            needs_human_label=self.labels.needs_human,
+            gate_reason=gate_reason,
+        )
+
+    def _plan_create_issue(
+        self, proposed: ProposedTechLeadAction, *, execute: bool
+    ) -> None:
+        # The dedup gate OWNS the decision; the planner only translates its typed
+        # outcome into actions. It never comments on an unverified/ungranted
+        # target, never bypasses post_comment authority, and never loses a gate's
+        # candidate/score/reason (#6878 B1-B3/A1).
+        outcome = classify_proposal(
+            ProposalIntent(
+                proposed.title or "", proposed.body or "", proposed.duplicate_of
+            ),
+            self.dedup_corpus,
+            self.dedup_grant,
+            self._dedup_authority(),
+            threshold=_DEDUP_BACKSTOP_THRESHOLD,
+        )
+        if isinstance(outcome, CommentExisting):
+            self.actions.append(
+                self._dedup_comment_action(proposed, outcome.issue_number)
+            )
+        elif isinstance(outcome, GateSuspectedDuplicate):
+            self.actions.extend(
+                self._concrete_decision(proposed, gate_reason=_suspected_note(outcome))
+            )
+        elif isinstance(outcome, GateDedupUnavailable):
+            # Fail closed: facts were expected but missing -> gate, never file.
+            self.actions.extend(
+                self._concrete_decision(proposed, gate_reason=_unavailable_note(outcome))
+            )
+        elif isinstance(outcome, GateUnverifiedDuplicate):
+            # Agent cited a duplicate we cannot yet verify -> gate with the
+            # candidate, never discard the evidence and never auto-comment.
+            self.actions.extend(
+                self._concrete_decision(proposed, gate_reason=_unverified_note(outcome))
+            )
+        elif isinstance(outcome, RejectCandidate):
+            # A provably-bad citation is filed gated for review — never commented.
+            self.actions.extend(
+                self._concrete_decision(proposed, gate_reason=_rejected_note(outcome))
+            )
+        else:  # FileNew — gated only when create_issue authority is propose.
+            self.actions.extend(
+                self._concrete_decision(
+                    proposed, gate_reason=None if execute else _PROPOSE_AUTHORITY_NOTE
+                )
+            )
+
     def _plan_decision_tier(self, proposed: ProposedTechLeadAction) -> None:
         # Execute authority -> the concrete action(s). Propose-authority
         # create_issue -> the issue is CREATED, gated with proposed-tech-lead
-        # (#6778): per-instance approval is removing the label, after which
-        # the issue flows into normal scheduling. Everything else propose ->
-        # shadow record.
+        # (#6778): per-instance approval is removing the label, after which the
+        # issue flows into normal scheduling. Everything else propose -> shadow
+        # record. create_issue additionally routes through the dedup gate.
         execute = (
             self.config.tech_lead.authority.mode_for(proposed.action_type)
             == "execute"
@@ -501,17 +668,10 @@ class _DecisionActionPlanner:
         if not execute and proposed.action_type != "create_issue":
             self._surface_shadow(proposed)
             return
-        self.actions.extend(
-            _concrete_actions(
-                proposed,
-                config=self.config,
-                labels=self.labels,
-                anchor_issue=self.anchor_issue,
-                expected=self.expected,
-                needs_human_label=self.labels.needs_human,
-                gate_issue=not execute,
-            )
-        )
+        if proposed.action_type == "create_issue":
+            self._plan_create_issue(proposed, execute=execute)
+            return
+        self.actions.extend(self._concrete_decision(proposed, gate_reason=None))
 
 
 def _shadow_digest_comment(

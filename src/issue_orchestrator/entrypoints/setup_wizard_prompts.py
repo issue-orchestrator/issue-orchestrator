@@ -244,6 +244,13 @@ Compact `tech-lead-decision.json` example:
   keep applying point patches. Propose a root-cause design review issue via
   `create_issue`; name the seam, carry the same `area`, cite the case files and
   accumulated shipped-fix/patch evidence, and recommend deep rework.
+- Do not file a duplicate. Before proposing a `create_issue`, check the open
+  issues you were given. If your follow-up already exists as an open issue, set
+  `duplicate_of` to that issue number — this is your (untrusted) dedup intent.
+  The orchestrator verifies it against trusted facts when available: a verified,
+  in-scope duplicate receives your observation; otherwise the proposal is gated
+  with the candidate preserved for a human to reconcile. Always still provide
+  `title` and `body`. `duplicate_of` is only valid on `create_issue`.
 - Valid `action_type` values: `post_comment`, `create_issue`,
   `escalate_to_human`, `flag_pattern`, `reset_retry`, `kill_hung_session`.
 - Proposals are intent, not execution: the orchestrator decides what to
