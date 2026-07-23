@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from ..domain.models import OrchestratorState
     from .scheduler import IssueAvailabilityDecision
+    from .session_manager import SessionType
 
 logger = logging.getLogger(__name__)
 
@@ -73,25 +74,41 @@ def front_queue_newly_unblocked(
 
 
 def release_blocked_front_on_launch(
-    state: "OrchestratorState", issue_number: int | None
+    state: "OrchestratorState",
+    session_type: "SessionType",
+    issue_number: int | None,
 ) -> None:
-    """Free a blocked->front entry once its issue launches (#6873 R4/R5).
+    """Free a blocked->front entry once its issue launches (#6873 R4/R5/N4).
 
     Hooked into the ALWAYS-RUN successful-launch state handler
     (``OrchestratorSupport._handle_launch_session``), not the tech-lead-specific
     ``ExpediteLane`` composition seam — so launch cleanup is an invariant of every
     composition root rather than accidentally coupled to tech-lead wiring.
+    Success-only by contract: the only caller runs solely on a successful launch.
 
-    Success-only by contract: the only caller runs solely on a successful launch,
-    so there is no ``launched`` flag. ``issue_number`` MUST be the launched
-    session's CANONICAL issue number (``ActionResult`` detail), never the
-    polymorphic ``LaunchSessionAction.number`` — which is a PR number for review
-    launches and would otherwise release an unrelated same-numbered issue (R5).
-    ``None`` (a launch that produced no issue-scoped session) is a no-op, as is an
-    entry this lane does not own.
+    Cleanup is scoped to ISSUE launches. A blocked->front entry is an issue
+    awaiting pickup, so only its own coding launch retires it here; a REVIEW
+    launch — whose ``LaunchSessionAction.number`` is a PR number — must never
+    touch the lane (that was the R5 collision), and any other pickup is caught by
+    the reconciliation backstop in ``front_queue_newly_unblocked`` on the next
+    scan. Non-issue launches are therefore an explicit no-op, not a missing-field
+    silent no-op.
+
+    For an ISSUE launch the CANONICAL ``issue_number`` (the ``ActionResult``
+    identity, never the polymorphic action number) is REQUIRED: the wired
+    ``ActionApplier`` always returns it, so its absence is a producer/contract
+    bug that would silently leak the priority entry — surfaced (fail-fast) rather
+    than swallowed. Releasing an entry this lane does not own is itself a no-op.
     """
-    if issue_number is None:
+    from .session_manager import SessionType
+
+    if session_type is not SessionType.ISSUE:
         return
+    if issue_number is None:
+        raise AssertionError(
+            "a successful ISSUE launch carried no canonical issue_number "
+            "(ActionApplier contract violation)"
+        )
     from .retry_history_state import RetryHistoryState
 
     RetryHistoryState(state).release_blocked_front(issue_number)

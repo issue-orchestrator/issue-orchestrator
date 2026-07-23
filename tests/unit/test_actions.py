@@ -231,6 +231,24 @@ class TestActionResult:
         assert result.result_type == ActionResultType.SKIPPED
         assert "Already exists" in result.details["skip_reason"]
 
+    def test_issue_number_returns_typed_value(self):
+        """#6873 N4: the typed accessor returns the stored int identity."""
+        action = AddLabelAction(issue_number=123, label="test")
+        assert ActionResult.ok(action, issue_number=42).issue_number == 42
+
+    def test_issue_number_is_none_when_absent(self):
+        """A result that carries no issue identity yields None, not a crash."""
+        action = AddLabelAction(issue_number=123, label="test")
+        assert ActionResult.ok(action, session_name="s").issue_number is None
+
+    @pytest.mark.parametrize("bad", ["42", 42.0, True, [42]])
+    def test_issue_number_fails_fast_on_non_int(self, bad):
+        """A present-but-non-int identity is a producer/contract bug (bool too,
+        since bool is an int subclass) — surfaced, not silently tolerated."""
+        action = AddLabelAction(issue_number=123, label="test")
+        with pytest.raises(TypeError, match="issue_number must be int"):
+            _ = ActionResult.ok(action, issue_number=bad).issue_number
+
 
 class TestActionApplier:
     """Test the ActionApplier class."""

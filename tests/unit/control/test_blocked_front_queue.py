@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from unittest.mock import Mock
 
+import pytest
+
 from issue_orchestrator.control.blocked_front_queue import (
     front_queue_newly_unblocked,
     release_blocked_front_on_launch,
@@ -20,6 +22,7 @@ from issue_orchestrator.control.scheduler import (
     IssueAvailabilityDecision,
     Scheduler,
 )
+from issue_orchestrator.control.session_manager import SessionType
 from issue_orchestrator.domain.models import Issue, OrchestratorState
 from issue_orchestrator.infra.config import Config
 
@@ -155,28 +158,38 @@ class TestFrontQueueNewlyUnblocked:
 
 
 class TestReleaseBlockedFrontOnLaunch:
-    """#6873 R4/R5: launch cleanup via the always-run, non-tech-lead seam, keyed
-    on the canonical issue number. The OrchestratorSupport boundary (issue vs PR
-    identity) is covered in test_orchestrator_support.py."""
+    """#6873 R4/R5/N4: launch cleanup via the always-run, non-tech-lead seam,
+    scoped to ISSUE launches and keyed on the canonical issue number. The
+    OrchestratorSupport boundary (issue vs PR identity, success vs failure) is
+    covered in test_orchestrator_support.py."""
 
-    def test_releases_owned_entry_by_canonical_issue_number(self):
+    def test_issue_launch_releases_owned_entry(self):
         state = OrchestratorState()
         state.previously_blocked_issue_numbers = {5}
         front_queue_newly_unblocked(state, [_dec(5, True, AvailabilityReason.AVAILABLE)])
         assert state.priority_queue == [5] and state.blocked_front_prioritized == [5]
-        release_blocked_front_on_launch(state, 5)  # no ExpediteLane involved
+        release_blocked_front_on_launch(state, SessionType.ISSUE, 5)  # no ExpediteLane
         assert state.priority_queue == []
         assert state.blocked_front_prioritized == []
 
-    def test_none_issue_number_is_a_noop(self):
-        # A launch producing no issue-scoped session leaves the lane untouched.
+    def test_review_launch_never_touches_the_lane(self):
+        # A REVIEW launch (LaunchSessionAction.number is a PR number) is scoped out
+        # entirely — even a same-numbered owned entry is left for reconciliation.
         state = OrchestratorState()
         state.previously_blocked_issue_numbers = {5}
         front_queue_newly_unblocked(state, [_dec(5, True, AvailabilityReason.AVAILABLE)])
-        release_blocked_front_on_launch(state, None)
+        release_blocked_front_on_launch(state, SessionType.REVIEW, 5)
         assert state.priority_queue == [5]
+        assert state.blocked_front_prioritized == [5]
+
+    def test_issue_launch_without_canonical_number_fails_fast(self):
+        # A successful ISSUE launch must carry its canonical issue_number; its
+        # absence is a producer/contract bug, surfaced rather than silently leaked.
+        state = OrchestratorState()
+        with pytest.raises(AssertionError, match="canonical issue_number"):
+            release_blocked_front_on_launch(state, SessionType.ISSUE, None)
 
     def test_noop_for_unowned_issue(self):
         state = OrchestratorState(priority_queue=[5])  # operator-owned
-        release_blocked_front_on_launch(state, 5)
+        release_blocked_front_on_launch(state, SessionType.ISSUE, 5)
         assert state.priority_queue == [5]  # operator priority untouched

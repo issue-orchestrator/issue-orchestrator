@@ -1361,38 +1361,66 @@ class TestOrchestratorSupportApplyPlan:
             kill_session=Mock(),
         )
 
-    def test_launch_session_releases_blocked_front_by_issue_identity(self, support):
-        """#6873 R5: _handle_launch_session keys blocked->front cleanup on the
-        session's CANONICAL issue_number (an ActionResult detail), never
-        LaunchSessionAction.number — which is a PR number for review launches. A
-        review of PR #9 must not release an unrelated blocked-front-owned issue #9.
+    def test_apply_plan_launch_releases_blocked_front_by_issue_identity(self, support):
+        """#6873 R5/N4/N5: blocked->front launch cleanup, driven through the PUBLIC
+        ``apply_plan`` success path (not the private handler), keys on the launched
+        session's CANONICAL issue identity and is scoped to ISSUE launches.
+
+        A successful ISSUE launch of #7 releases its owned entry; a REVIEW launch
+        for PR #9 (canonical reviewed issue #5) must NOT release the unrelated
+        blocked->front-owned issue #9 — the PR/issue number collision (R5) and the
+        issue-scoped invariant, proven at the OrchestratorSupport boundary.
         """
         from issue_orchestrator.control.actions import (
             ActionResult,
             LaunchSessionAction,
             SessionType,
         )
+        from issue_orchestrator.control.planner_types import Plan
         from issue_orchestrator.control.retry_history_state import RetryHistoryState
 
         RetryHistoryState(support.state).prioritize_blocked_front(7)
         RetryHistoryState(support.state).prioritize_blocked_front(9)
 
-        # (a) A successful ISSUE launch of #7 releases its owned entry.
         issue_launch = LaunchSessionAction(session_type=SessionType.ISSUE, number=7)
-        support._handle_launch_session(
-            issue_launch, ActionResult.ok(issue_launch, issue_number=7)
-        )
+        review_launch = LaunchSessionAction(session_type=SessionType.REVIEW, number=9)
+
+        def apply(action):
+            # The wired ActionApplier returns the launched session's canonical
+            # issue number; a REVIEW of PR #9 reviews issue #5 (identity != number).
+            number = 5 if action.session_type is SessionType.REVIEW else action.number
+            return ActionResult.ok(action, issue_number=number)
+
+        support.action_applier.apply.side_effect = apply
+        support.apply_plan(Plan(actions=(issue_launch, review_launch), skipped=()), MagicMock())
+
         assert 7 not in support.state.priority_queue
         assert 7 not in support.state.blocked_front_prioritized
-
-        # (b) A review launch for PR #9 (canonical issue #5) must NOT release the
-        #     unrelated owned issue #9 — cleanup keys on issue_number(5), not number(9).
-        review_launch = LaunchSessionAction(session_type=SessionType.REVIEW, number=9)
-        support._handle_launch_session(
-            review_launch, ActionResult.ok(review_launch, issue_number=5)
-        )
         assert 9 in support.state.priority_queue
         assert 9 in support.state.blocked_front_prioritized
+
+    def test_apply_plan_failed_launch_does_not_release_blocked_front(self, support):
+        """#6873 N5: a FAILED launch never runs the success path, so blocked->front
+        cleanup is not invoked — the owned entry survives. Proven through the real
+        ``apply_plan`` failure routing, not by reasoning about it in isolation."""
+        from issue_orchestrator.control.actions import (
+            ActionResult,
+            LaunchSessionAction,
+            SessionType,
+        )
+        from issue_orchestrator.control.planner_types import Plan
+        from issue_orchestrator.control.retry_history_state import RetryHistoryState
+
+        RetryHistoryState(support.state).prioritize_blocked_front(7)
+        issue_launch = LaunchSessionAction(session_type=SessionType.ISSUE, number=7)
+
+        support.action_applier.apply.side_effect = lambda action: ActionResult.fail(
+            action, "worktree create failed"
+        )
+        support.apply_plan(Plan(actions=(issue_launch,), skipped=()), MagicMock())
+
+        assert 7 in support.state.priority_queue
+        assert 7 in support.state.blocked_front_prioritized
 
     def test_empty_plan_does_nothing(self, support, mock_event_sink):
         """Empty plan (action_count=0) does not emit events or apply actions."""
