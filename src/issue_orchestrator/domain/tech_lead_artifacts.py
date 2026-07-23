@@ -165,7 +165,11 @@ class ProposedTechLeadAction:
       case-file issue. Optional ``area`` names the component/seam the
       pattern clusters on (it becomes the case file's ``area:*`` tag).
     * ``reset_retry`` / ``kill_hung_session`` — ``target_number`` + ``body``
-      (the rationale); act-level, shadow-mode only until #6764.
+      (the rationale); act-level, gated by ``tech_lead.authority``. Under
+      ``propose`` the op is filed as a gated proposal that runs on operator
+      approval (#6778); ``reset_retry`` is also wired for direct ``execute``
+      (#6764, first slice), while ``kill_hung_session``'s direct ``execute`` is
+      unwired and rejected at startup — it runs only via gated approval.
     """
 
     id: str

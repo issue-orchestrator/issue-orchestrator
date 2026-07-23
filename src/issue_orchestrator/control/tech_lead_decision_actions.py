@@ -54,8 +54,9 @@ Escalation note: tech_lead escalation deliberately does NOT reuse
 ``EscalateToHumanAction``. That action's applier terminates the target
 issue's runtime ("escalation kills issue automation, full stop"), which
 would let the always-execute ``escalate_to_human`` floor reach the same
-effect as ``kill_hung_session`` — an act-level intent that is
-shadow-mode-only until #6764. Tech Lead escalation is strictly a routing
+effect as ``kill_hung_session`` — an act-level intent whose direct
+``execute`` is unwired (#6764), so it runs only via gated per-instance
+approval (#6778). Tech Lead escalation is strictly a routing
 surface: needs-human label + explanatory comment on the target; nothing
 is stopped and no other labels are touched.
 """

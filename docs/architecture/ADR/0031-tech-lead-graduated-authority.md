@@ -1,8 +1,11 @@
 # ADR 0031: Tech Lead as a tech lead with graduated, config-scoped authority
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-07-10 (amended 2026-07-11: §2 gated-issue surfacing, #6778;
-2026-07-14: §4 reaction model, #6780)
+2026-07-14: §4 reaction model, #6780; accepted 2026-07-23: the model shipped —
+typed decision artifact, board-snapshot observation surface, periodic + storm
+health-review triggers, and per-action graduated authority are live, with the
+``reset_retry`` executor wired (#6764) and act-level ``execute`` startup-guarded)
 **Milestone:** P1
 **Tracks:** Issues #6760, #6761, #6762, #6763, #6764, #6778, #6780
 
