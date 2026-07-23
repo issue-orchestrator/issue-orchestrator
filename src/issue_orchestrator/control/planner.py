@@ -1172,7 +1172,7 @@ Flip labels from `{facts.watch_label}` to `{self.config.tech_lead_reviewed_label
         dependency_blocked = [
             (d.issue, d.detail or "dependency blocked")
             for d in scheduler_decisions
-            if d.reason == "dependency_blocked"
+            if d.is_dependency_blocked
         ]
         decision_reason_by_issue = {d.issue.number: d.reason for d in scheduler_decisions}
         decision_detail_by_issue = {
@@ -1180,7 +1180,7 @@ Flip labels from `{facts.watch_label}` to `{self.config.tech_lead_reviewed_label
         }
         scheduler_filtered = sum(
             1 for decision in scheduler_decisions
-            if not decision.available and decision.reason != "dependency_blocked"
+            if not decision.available and not decision.is_dependency_blocked
         )
 
         # Record dependency-blocked items and add cross-milestone labels

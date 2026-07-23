@@ -867,6 +867,44 @@ class TestQueueFetchPlanner:
 
         assert "[FETCH-COST]" in caplog.text
 
+    def test_dependency_scan_passes_active_sessions_to_evaluate(
+        self, mock_event_sink, mock_repository_host
+    ):
+        """#6873 R1 wiring: the dependency-scan availability pass MUST feed live
+        sessions to the scheduler — else an in-progress issue is mis-classified
+        available and the blocked->front policy front-queues actively-worked work.
+        Fails on the pre-fix wiring, which called evaluate_issues without them."""
+        config = self._make_config()
+        issue = make_issue(1, labels=["agent:web"])
+        session = make_session(issue)
+        state = OrchestratorState(
+            active_sessions=[session],
+            cached_queue_issues=[issue],
+            queue_last_full_scan_at=time.time(),
+        )
+        scheduler = Mock()
+        scheduler.evaluate_issues.return_value = []
+        github_workflow = Mock()
+        github_workflow.fetch_all_issues.return_value = [issue]
+
+        _fetch_and_update_queue(
+            config=config,
+            events=mock_event_sink,
+            state=state,
+            repository_host=mock_repository_host,
+            scheduler=scheduler,
+            github_workflow=github_workflow,
+            refresh_requested=True,
+            inflight_stable_ids={},
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
+        )
+
+        scheduler.evaluate_issues.assert_called_once()
+        assert (
+            scheduler.evaluate_issues.call_args.kwargs.get("active_sessions")
+            == state.active_sessions
+        )
+
     def test_blocked_history_issues_are_hot_refresh_candidates(self):
         state = OrchestratorState(
             cached_queue_issues=[make_issue(1, labels=["agent:web"])],
@@ -1322,6 +1360,67 @@ class TestOrchestratorSupportApplyPlan:
             get_review_machine=Mock(),
             kill_session=Mock(),
         )
+
+    def test_apply_plan_launch_releases_blocked_front_by_issue_identity(self, support):
+        """#6873 R5/N4/N5: blocked->front launch cleanup, driven through the PUBLIC
+        ``apply_plan`` success path (not the private handler), keys on the launched
+        session's CANONICAL issue identity and is scoped to ISSUE launches.
+
+        A successful ISSUE launch of #7 releases its owned entry; a REVIEW launch
+        for PR #9 (canonical reviewed issue #5) must NOT release the unrelated
+        blocked->front-owned issue #9 — the PR/issue number collision (R5) and the
+        issue-scoped invariant, proven at the OrchestratorSupport boundary.
+        """
+        from issue_orchestrator.control.actions import (
+            ActionResult,
+            LaunchSessionAction,
+            SessionType,
+        )
+        from issue_orchestrator.control.planner_types import Plan
+        from issue_orchestrator.control.retry_history_state import RetryHistoryState
+
+        RetryHistoryState(support.state).prioritize_blocked_front(7)
+        RetryHistoryState(support.state).prioritize_blocked_front(9)
+
+        issue_launch = LaunchSessionAction(session_type=SessionType.ISSUE, number=7)
+        review_launch = LaunchSessionAction(session_type=SessionType.REVIEW, number=9)
+
+        def apply(action):
+            # The wired ActionApplier returns the launched session's canonical
+            # issue number; a REVIEW of PR #9 reviews issue #5 (identity != number).
+            number = 5 if action.session_type is SessionType.REVIEW else action.number
+            return ActionResult.ok(action, issue_number=number)
+
+        support.action_applier.apply.side_effect = apply
+        support.apply_plan(Plan(actions=(issue_launch, review_launch), skipped=()), MagicMock())
+
+        assert 7 not in support.state.priority_queue
+        assert 7 not in support.state.blocked_front_prioritized
+        assert 9 in support.state.priority_queue
+        assert 9 in support.state.blocked_front_prioritized
+
+    def test_apply_plan_failed_launch_does_not_release_blocked_front(self, support):
+        """#6873 N5: a FAILED launch never runs the success path, so blocked->front
+        cleanup is not invoked — the owned entry survives. Proven through the real
+        ``apply_plan`` failure routing, not by reasoning about it in isolation."""
+        from issue_orchestrator.control.actions import (
+            ActionResult,
+            LaunchSessionAction,
+            SessionType,
+        )
+        from issue_orchestrator.control.planner_types import Plan
+        from issue_orchestrator.control.retry_history_state import RetryHistoryState
+
+        RetryHistoryState(support.state).prioritize_blocked_front(7)
+        issue_launch = LaunchSessionAction(session_type=SessionType.ISSUE, number=7)
+
+        support.action_applier.apply.side_effect = lambda action: ActionResult.fail(
+            action, "worktree create failed"
+        )
+        support.apply_plan(Plan(actions=(issue_launch,), skipped=()), MagicMock())
+
+        assert 7 in support.state.priority_queue
+        assert 7 in support.state.blocked_front_prioritized
 
     def test_empty_plan_does_nothing(self, support, mock_event_sink):
         """Empty plan (action_count=0) does not emit events or apply actions."""

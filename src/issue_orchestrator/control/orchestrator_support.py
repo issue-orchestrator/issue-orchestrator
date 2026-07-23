@@ -37,6 +37,7 @@ from .queue_cache import (
     queue_shrink_confirmation_pending,
     record_issue_refreshes,
 )
+from .blocked_front_queue import front_queue_newly_unblocked, release_blocked_front_on_launch
 from .dependency_gate_snapshot import build_refresh_snapshot
 from .fact_gatherer import clear_discovered_facts
 from .issue_fetch_resilience import IssueFetchResilience, TransientIssueFetchError
@@ -372,6 +373,7 @@ class OrchestratorSupport:
         from .actions import LaunchSessionAction
         a = cast(LaunchSessionAction, action)
         logger.info("[PLAN] Launched %s session for #%d", a.session_type, a.number)
+        release_blocked_front_on_launch(self.state, a.session_type, result.issue_number)
 
     def _handle_launch_validation_retry(self, action: "Action", result: "ActionResult") -> None:
         from .actions import LaunchValidationRetryAction
@@ -824,13 +826,14 @@ def _fetch_and_update_queue(
             # dep_blocked is the scheduler's *availability* verdict; the dashboard
             # snapshot is the four-gate state for every lane, evaluated through the
             # dependency-gate owner (not availability) with active-worktree ancestry.
-            decisions = scheduler.evaluate_issues(all_issues)
+            decisions = scheduler.evaluate_issues(all_issues, active_sessions=state.active_sessions)
             dep_blocked = [
                 (d.issue, d.detail or "dependency blocked")
                 for d in decisions
-                if d.reason == "dependency_blocked"
+                if d.is_dependency_blocked
             ]
             github_workflow.update_dependency_problems(state, dep_blocked)
+            front_queue_newly_unblocked(state, decisions)
             state.dependency_gate_snapshot = build_refresh_snapshot(
                 scheduler.dependency_evaluator, all_issues, state.active_sessions
             )

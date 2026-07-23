@@ -748,6 +748,26 @@ class ActionResult:
         """Check if the action succeeded."""
         return self.result_type == ActionResultType.SUCCESS
 
+    @property
+    def issue_number(self) -> int | None:
+        """Canonical issue number this result carries, or ``None`` if it carries
+        none (e.g. the session_launcher-less fallback launch, which has no
+        ``Session`` and thus no canonical issue identity).
+
+        A typed accessor over the untyped ``details`` bag: it fails fast on a
+        present-but-non-``int`` value (a producer/contract bug, ``bool`` included
+        since ``bool`` is an ``int`` subclass) rather than letting a malformed
+        identity flow silently downstream. Consumers that *require* the number
+        (e.g. blocked->front launch cleanup for an issue launch) enforce presence
+        themselves; see #6873 N4.
+        """
+        value = self.details.get("issue_number")
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError(f"ActionResult.issue_number must be int, got {value!r}")
+        return value
+
     @classmethod
     def ok(cls, action: Action, **details: str | int | bool | list[str] | None) -> "ActionResult":
         """Create a successful result."""
