@@ -1082,7 +1082,7 @@ def test_end_to_end_gated_reset_proposal_executes_once() -> None:
         source_session_name="issue-99",
         observed_at="2026-07-11T00:00:00+00:00",
         active_session_run_id=lambda _n: None,
-        dedup_corpus=OpenIssueCorpus.unavailable(),
+        dedup_corpus=OpenIssueCorpus.disabled(),
         dedup_grant=DuplicateTargetGrant.none(),
     )
     [creation] = [
@@ -1107,7 +1107,7 @@ def test_end_to_end_gated_reset_proposal_executes_once() -> None:
         source_session_name="issue-99",
         observed_at="2026-07-11T01:00:00+00:00",
         active_session_run_id=lambda _n: None,
-        dedup_corpus=OpenIssueCorpus.unavailable(),
+        dedup_corpus=OpenIssueCorpus.disabled(),
         dedup_grant=DuplicateTargetGrant.none(),
     )
     [dedup_comment] = [a for a in replanned if isinstance(a, AddCommentAction)]

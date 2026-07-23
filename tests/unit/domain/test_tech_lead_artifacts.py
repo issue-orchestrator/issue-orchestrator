@@ -1,5 +1,7 @@
 """Unit tests for the tech_lead artifact pair contract (domain/tech_lead_artifacts.py)."""
 
+from typing import cast
+
 import pytest
 
 from issue_orchestrator.domain.tech_lead_artifacts import (
@@ -622,6 +624,21 @@ class TestProposedActionDuplicateOf:
             duplicate_of=9,
         )
         with pytest.raises(ValueError, match="only valid on create_issue"):
+            action.validate()
+
+    @pytest.mark.parametrize("bad", [42.0, "42", True])
+    def test_validate_rechecks_int_type_on_direct_construction(self, bad: object):
+        # Direct construction bypasses from_mapping's parse check; validate() must
+        # still reject a non-int (float / str / bool) as a ValueError — not pass it
+        # (42.0) and not raise TypeError (a str comparison).
+        action = ProposedTechLeadAction(
+            id="A1",
+            action_type="create_issue",
+            title="t",
+            body="b",
+            duplicate_of=cast(int, bad),
+        )
+        with pytest.raises(ValueError, match="duplicate_of must be a positive"):
             action.validate()
 
     def test_decision_round_trips_through_payload(self):

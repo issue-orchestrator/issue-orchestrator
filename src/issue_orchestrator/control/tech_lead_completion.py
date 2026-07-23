@@ -613,10 +613,10 @@ def generate_tech_lead_completion_actions(
                 source_session_name=session.run_assets.session_name,
                 observed_at=session.run_assets.started_at,
                 active_session_run_id=active_session_run_id,
-                # Dedup facts (#6878): the trusted corpus is UNAVAILABLE until the
-                # SQL cache lands (incr 2), passed EXPLICITLY (never a silent default).
-                dedup_corpus=OpenIssueCorpus.unavailable(),
-                dedup_grant=DuplicateTargetGrant.for_flavor(authority.flavor),
+                # Dedup facts (#6878): DISABLED until the SQL cache lands (incr 2);
+                # grant = the session's existing comment scope (never board-wide).
+                dedup_corpus=OpenIssueCorpus.disabled(),
+                dedup_grant=DuplicateTargetGrant.of(authority.allowed_targets()),
             )
         )
     else:

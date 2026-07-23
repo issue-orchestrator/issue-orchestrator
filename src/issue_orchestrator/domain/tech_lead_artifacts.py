@@ -243,11 +243,7 @@ class ProposedTechLeadAction:
             data.get("area"), MAX_AREA_CHARS, f"proposed action {action_id} area"
         )
         duplicate_of = data.get("duplicate_of")
-        if duplicate_of is not None and (
-            not isinstance(duplicate_of, int)
-            or isinstance(duplicate_of, bool)
-            or duplicate_of <= 0
-        ):
+        if duplicate_of is not None and not _is_valid_issue_number(duplicate_of):
             raise ValueError(
                 f"proposed action {action_id} duplicate_of must be a positive"
                 f" integer, got {duplicate_of!r}"
@@ -300,7 +296,7 @@ class ProposedTechLeadAction:
                 " create_issue actions (#6878)",
             )
             _require(
-                not isinstance(self.duplicate_of, bool) and self.duplicate_of > 0,
+                _is_valid_issue_number(self.duplicate_of),
                 f"{context} duplicate_of must be a positive issue number",
             )
         # pattern_signature/area must be meaningful whenever present —
@@ -577,6 +573,13 @@ def _duplicates(ids: list[str]) -> set[str]:
 def _require(condition: bool, message: str) -> None:
     if not condition:
         raise ValueError(message)
+
+
+def _is_valid_issue_number(value: object) -> bool:
+    """A positive int, excluding bool (an int subclass). Takes ``object`` so the
+    runtime type check is real at both the parse and the direct-construction
+    boundary (``validate``), not narrowed away by a declared ``int`` field."""
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
 
 def _required_str(data: dict[str, Any], key: str, context: str) -> str:

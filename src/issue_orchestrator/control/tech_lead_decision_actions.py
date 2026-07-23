@@ -84,6 +84,7 @@ from .proposal_dedup_gate import (
     CommentExisting,
     DedupAuthority,
     DuplicateTargetGrant,
+    GateDedupUnavailable,
     GateSuspectedDuplicate,
     OpenIssueCorpus,
     ProposalIntent,
@@ -132,11 +133,26 @@ _PROPOSE_AUTHORITY_NOTE = (
 
 
 def _suspected_note(outcome: GateSuspectedDuplicate) -> str:
-    score = f" (lexical score {outcome.score:.2f})" if outcome.score is not None else ""
+    # A lexical match names its score (once); an agent-confirmed-but-uncommentable
+    # duplicate has no score and its reason names the blocking mode(s).
+    if outcome.score is not None:
+        headline = (
+            f"SUSPECTED DUPLICATE of #{outcome.issue_number}"
+            f" (lexical score {outcome.score:.2f})"
+        )
+    else:
+        headline = f"DUPLICATE of #{outcome.issue_number}"
     return (
-        f"Gated as a SUSPECTED DUPLICATE of #{outcome.issue_number}{score}:"
-        f" {outcome.reason}. Confirm and dedup onto that issue, or remove the"
-        " proposed-tech-lead label to file this as a new issue."
+        f"Gated as a {headline}: {outcome.reason}. Confirm and dedup onto that"
+        " issue, or remove the proposed-tech-lead label to file this as a new"
+        " issue."
+    )
+
+
+def _unavailable_note(outcome: GateDedupUnavailable) -> str:
+    return (
+        f"Gated for review: {outcome.reason}. Filed nothing automatically —"
+        " remove the proposed-tech-lead label once checked, or dedup by hand."
     )
 
 
@@ -605,6 +621,11 @@ class _DecisionActionPlanner:
         elif isinstance(outcome, GateSuspectedDuplicate):
             self.actions.extend(
                 self._concrete_decision(proposed, gate_reason=_suspected_note(outcome))
+            )
+        elif isinstance(outcome, GateDedupUnavailable):
+            # Fail closed: facts were expected but missing -> gate, never file.
+            self.actions.extend(
+                self._concrete_decision(proposed, gate_reason=_unavailable_note(outcome))
             )
         elif isinstance(outcome, RejectCandidate):
             # A provably-bad citation is filed gated for review — never commented.
