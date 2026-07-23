@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from ..domain.open_issue_corpus import (
     OpenIssueFingerprint,
@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 # repository exceeds this deliberately generous bounded walk. Delta reads use
 # the same cap so the adapter never returns a silently partial safety corpus.
 _OPEN_ISSUE_FETCH_LIMIT = 10_000
+_CURSOR_OVERLAP = timedelta(seconds=1)
 
 
 @dataclass(frozen=True)
@@ -49,37 +50,55 @@ class OpenIssueCorpusManager:
         self._store = store
         self._is_enabled = is_enabled
         self._clock = clock or (lambda: datetime.now(timezone.utc))
+        # A persisted generation is not trusted as current until this process
+        # completes an enabled refresh. Any known refresh failure clears it.
+        self._refresh_succeeded = False
 
     def sync(self) -> OpenIssueCorpusSyncResult | None:
         """Cold-rebuild once, then apply repo-wide issue deltas on each refresh."""
 
         if not self._is_enabled():
+            self._refresh_succeeded = False
             return None
-        if self._repository_host is None:
-            raise RuntimeError("open-issue corpus sync requires a repository host")
-        snapshot = self._store.load()
-        if snapshot is None:
-            return self._rebuild()
-        return self._apply_delta(snapshot.watermark)
+        try:
+            if self._repository_host is None:
+                raise RuntimeError("open-issue corpus sync requires a repository host")
+            snapshot = self._store.load()
+            result = (
+                self._rebuild()
+                if snapshot is None
+                else self._apply_delta(snapshot.watermark)
+            )
+        except Exception:
+            self._refresh_succeeded = False
+            raise
+        self._refresh_succeeded = True
+        return result
 
     def load(self) -> OpenIssueCorpus:
         """Project the last successful SQL generation into gate-ready facts."""
 
         if not self._is_enabled():
+            self._refresh_succeeded = False
             return OpenIssueCorpus.disabled()
+        if not self._refresh_succeeded:
+            return OpenIssueCorpus.unavailable()
         try:
             snapshot = self._store.load()
         except Exception:
+            self._refresh_succeeded = False
             logger.exception("[tech_lead] Failed to load the open-issue dedup corpus")
             return OpenIssueCorpus.unavailable()
         if snapshot is None:
+            self._refresh_succeeded = False
             return OpenIssueCorpus.unavailable()
         return OpenIssueCorpus.ready(snapshot.issues)
 
     def _rebuild(self) -> OpenIssueCorpusSyncResult:
-        # Capture before the scan.  An issue changed while pagination is in flight
-        # then has updated_at > this cursor and is picked up by the next delta.
-        watermark = self._clock().isoformat()
+        # Capture before the scan and overlap GitHub's whole-second, exclusive
+        # ``since`` boundary. A same-second change after its page was read is then
+        # guaranteed to appear in the next delta.
+        watermark = _overlapping_watermark(self._clock())
         issues = self._repository_host.list_issues(
             state="open",
             limit=_OPEN_ISSUE_FETCH_LIMIT,
@@ -95,7 +114,10 @@ class OpenIssueCorpusManager:
         )
 
     def _apply_delta(self, watermark: str) -> OpenIssueCorpusSyncResult:
-        issues, next_watermark = self._repository_host.list_issues_delta(
+        # A complete (< cap) response may advance to this read's start time. The
+        # one-second overlap makes both timestamp ties and pagination races safe.
+        cursor = _overlapping_watermark(self._clock())
+        issues, _next_watermark = self._repository_host.list_issues_delta(
             since=watermark,
             limit=_OPEN_ISSUE_FETCH_LIMIT,
         )
@@ -115,7 +137,6 @@ class OpenIssueCorpusManager:
                 raise ValueError(
                     f"issue #{issue.number} has unsupported state {issue.state!r}"
                 )
-        cursor = next_watermark or watermark
         self._store.apply_delta(
             upserts,
             evict_issue_numbers=evictions,
@@ -136,3 +157,16 @@ def _fingerprint(issue: Issue) -> OpenIssueFingerprint:
     title = issue.title
     body = issue.body
     return build_open_issue_fingerprint(number, title, body)
+
+
+def _overlapping_watermark(instant: datetime) -> str:
+    """Return a UTC whole-second cursor one second before ``instant``."""
+
+    if instant.tzinfo is None or instant.utcoffset() is None:
+        raise ValueError(
+            "open-issue corpus clock must return a timezone-aware datetime"
+        )
+    overlapped = (
+        instant.astimezone(timezone.utc).replace(microsecond=0) - _CURSOR_OVERLAP
+    )
+    return overlapped.isoformat().replace("+00:00", "Z")

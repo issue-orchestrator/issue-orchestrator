@@ -133,3 +133,37 @@ def test_sqlite_store_survives_reopen(tmp_path: Path) -> None:
     assert snapshot is not None
     assert snapshot.issues[0].number == 7
     assert (state_dir(tmp_path) / "open_issue_corpus.sqlite").exists()
+
+
+def test_sqlite_load_reads_metadata_and_rows_from_one_generation(
+    tmp_path: Path,
+) -> None:
+    reader = SqliteOpenIssueCorpusStore.for_repo(tmp_path)
+    writer = SqliteOpenIssueCorpusStore.for_repo(tmp_path)
+    old_entry = _entry(1, "Old generation")
+    new_entry = _entry(2, "New generation")
+    writer.replace_all((old_entry,), watermark="cursor-old")
+    reader_connection = reader._get_connection()  # noqa: SLF001
+    replacement_committed = False
+
+    def replace_generation_before_row_read(sql: str) -> None:
+        nonlocal replacement_committed
+        if replacement_committed or not sql.startswith("SELECT issue_number"):
+            return
+        writer.replace_all((new_entry,), watermark="cursor-new")
+        replacement_committed = True
+
+    reader_connection.set_trace_callback(replace_generation_before_row_read)
+    try:
+        snapshot = reader.load()
+    finally:
+        reader_connection.set_trace_callback(None)
+
+    assert replacement_committed
+    assert snapshot is not None
+    assert snapshot.watermark == "cursor-old"
+    assert snapshot.entries == (old_entry,)
+    latest = writer.load()
+    assert latest is not None
+    assert latest.watermark == "cursor-new"
+    assert latest.entries == (new_entry,)

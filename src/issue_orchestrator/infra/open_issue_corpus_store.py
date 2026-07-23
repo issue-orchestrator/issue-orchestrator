@@ -69,19 +69,32 @@ class SqliteOpenIssueCorpusStore:
                 conn.rollback()
                 raise
 
-    def load(self) -> OpenIssueCorpusSnapshot | None:
+    @contextmanager
+    def _read_snapshot(self) -> Iterator[sqlite3.Connection]:
+        """Hold one SQLite snapshot across metadata and corpus-row reads."""
+
         conn = self._get_connection()
-        meta = conn.execute(
-            "SELECT value FROM open_issue_corpus_meta WHERE key = ?",
-            (_WATERMARK_KEY,),
-        ).fetchone()
-        if meta is None:
-            return None
-        rows = conn.execute(
-            "SELECT issue_number, normalized_title, normalized_body, "
-            "content_fingerprint FROM open_issue_fingerprints "
-            "ORDER BY issue_number"
-        ).fetchall()
+        conn.execute("BEGIN")
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+    def load(self) -> OpenIssueCorpusSnapshot | None:
+        with self._read_snapshot() as conn:
+            meta = conn.execute(
+                "SELECT value FROM open_issue_corpus_meta WHERE key = ?",
+                (_WATERMARK_KEY,),
+            ).fetchone()
+            if meta is None:
+                return None
+            rows = conn.execute(
+                "SELECT issue_number, normalized_title, normalized_body, "
+                "content_fingerprint FROM open_issue_fingerprints "
+                "ORDER BY issue_number"
+            ).fetchall()
         return OpenIssueCorpusSnapshot(
             entries=tuple(
                 OpenIssueFingerprint(

@@ -48,7 +48,10 @@ from issue_orchestrator.infra.open_issue_corpus_store import (
     SqliteOpenIssueCorpusStore,
 )
 from issue_orchestrator.control.open_issue_corpus import OpenIssueCorpusManager
-from issue_orchestrator.ports.open_issue_corpus_store import OpenIssueCorpusStore
+from issue_orchestrator.ports.open_issue_corpus_store import (
+    InMemoryOpenIssueCorpusStore,
+    OpenIssueCorpusStore,
+)
 from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthorityStore
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.ports import RepositoryHost
@@ -111,16 +114,24 @@ def make_planner(
         else InMemoryTechLeadAuthorityStore()
     )
     if open_issue_corpus_store is None:
-        open_issue_corpus_store = SqliteOpenIssueCorpusStore.for_repo(config.repo_root)
-        if open_issue_corpus_store.load() is None:
-            open_issue_corpus_store.replace_all((), watermark="2026-07-23T00:00:00Z")
+        open_issue_corpus_store = InMemoryOpenIssueCorpusStore()
+    corpus_repository_host = cast(
+        RepositoryHost,
+        SimpleNamespace(
+            list_issues=lambda **_kwargs: [],
+            list_issues_delta=lambda **_kwargs: ([], None),
+        ),
+    )
     open_issue_corpus = OpenIssueCorpusManager(
-        repository_host,
+        corpus_repository_host,
         open_issue_corpus_store,
         is_enabled=lambda: bool(
             config.tech_lead_review_agent and config.tech_lead.dedup.enabled
         ),
     )
+    # Completion consumes only refreshed local facts. Keep this fixture at the
+    # same post-refresh boundary without making planning read GitHub.
+    open_issue_corpus.sync()
     return CompletionActionPlanner(
         config, repository_host, LabelManager(config), tech_lead_authority,
         open_issue_corpus,
