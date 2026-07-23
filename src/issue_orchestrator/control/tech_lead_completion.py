@@ -79,6 +79,7 @@ from .completion_types import (
 )
 from .label_manager import LabelManager
 from .publish_recovery import is_publish_failure
+from .proposal_dedup_gate import DuplicateTargetGrant, OpenIssueCorpus
 from .tech_lead_decision_actions import (
     plan_tech_lead_decision_actions,
     plan_tech_lead_rejection_action,
@@ -612,6 +613,10 @@ def generate_tech_lead_completion_actions(
                 source_session_name=session.run_assets.session_name,
                 observed_at=session.run_assets.started_at,
                 active_session_run_id=active_session_run_id,
+                # Dedup facts (#6878): the trusted corpus is UNAVAILABLE until the
+                # SQL cache lands (incr 2), passed EXPLICITLY (never a silent default).
+                dedup_corpus=OpenIssueCorpus.unavailable(),
+                dedup_grant=DuplicateTargetGrant.for_flavor(authority.flavor),
             )
         )
     else:

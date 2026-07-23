@@ -478,3 +478,12 @@ def test_prompt_cohort_rule_matches_the_snapshot_contract() -> None:
     )
     assert "problem_cohort" in snapshot.to_dict()
     assert snapshot.problem_issue_numbers() == frozenset({41})
+
+
+@pytest.mark.parametrize("variant", sorted(PROMPT_VARIANTS))
+def test_all_variants_teach_the_duplicate_of_dedup_field(variant: str) -> None:
+    """#6878 B4: every prompt variant must teach create_issue dedup, or onboarded
+    repositories never receive the new agent behavior."""
+    text = PROMPT_VARIANTS[variant]
+    assert "duplicate_of" in text, f"{variant} does not document duplicate_of"
+    assert "Do not file a duplicate" in text, f"{variant} missing the dedup instruction"

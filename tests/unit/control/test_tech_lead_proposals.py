@@ -15,6 +15,10 @@ from issue_orchestrator.control.actions import (
     ResetRetryIssueAction,
 )
 from issue_orchestrator.control.label_manager import LabelManager
+from issue_orchestrator.control.proposal_dedup_gate import (
+    DuplicateTargetGrant,
+    OpenIssueCorpus,
+)
 from issue_orchestrator.control.reconciliation import build_expected_for_mutation
 from issue_orchestrator.control.tech_lead_issue_creation import apply_create_tech_lead_issue
 from issue_orchestrator.control.tech_lead_kill_session import (
@@ -1078,6 +1082,8 @@ def test_end_to_end_gated_reset_proposal_executes_once() -> None:
         source_session_name="issue-99",
         observed_at="2026-07-11T00:00:00+00:00",
         active_session_run_id=lambda _n: None,
+        dedup_corpus=OpenIssueCorpus.unavailable(),
+        dedup_grant=DuplicateTargetGrant.none(),
     )
     [creation] = [
         a for a in planned if isinstance(a, CreateTechLeadProposalIssueAction)
@@ -1101,6 +1107,8 @@ def test_end_to_end_gated_reset_proposal_executes_once() -> None:
         source_session_name="issue-99",
         observed_at="2026-07-11T01:00:00+00:00",
         active_session_run_id=lambda _n: None,
+        dedup_corpus=OpenIssueCorpus.unavailable(),
+        dedup_grant=DuplicateTargetGrant.none(),
     )
     [dedup_comment] = [a for a in replanned if isinstance(a, AddCommentAction)]
     assert dedup_comment.number == 500

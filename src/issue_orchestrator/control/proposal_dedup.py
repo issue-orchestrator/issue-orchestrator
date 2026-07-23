@@ -12,7 +12,7 @@ decides).
 
 It is deliberately LEXICAL, not neural: at the tech lead's proposal cadence and a
 backlog of hundreds-to-low-thousands of open issues, token-overlap cosine is
-microseconds, deterministic (identical input → identical score, so it is trivally
+microseconds, deterministic (identical input → identical score, so it is trivially
 testable), needs no model/vendor/key, and sends nothing anywhere. It catches
 re-worded-but-same-vocabulary duplicates — the common accidental re-file — and is
 honestly weak on pure paraphrase, which is exactly why the AGENT (which reads the
@@ -26,6 +26,7 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 # Markdown/template scaffolding a tech-lead body almost always carries ("##
@@ -142,7 +143,7 @@ def similarity(title: str, body: str, other_title: str, other_body: str) -> floa
 def find_duplicate(
     title: str,
     body: str,
-    corpus: list[OpenIssueRef],
+    corpus: Sequence[OpenIssueRef],
     *,
     threshold: float,
 ) -> DuplicateMatch | None:

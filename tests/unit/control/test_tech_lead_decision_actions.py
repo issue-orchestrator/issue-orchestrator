@@ -15,6 +15,10 @@ from issue_orchestrator.control.actions import (
 from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.control.reconciliation import build_expected_for_mutation
 from issue_orchestrator.control.proposal_dedup import OpenIssueRef
+from issue_orchestrator.control.proposal_dedup_gate import (
+    DuplicateTargetGrant,
+    OpenIssueCorpus,
+)
 from issue_orchestrator.control.tech_lead_decision_actions import (
     plan_tech_lead_decision_actions,
 )
@@ -89,7 +93,8 @@ def _plan(
     op_ledger: dict[tuple[str, int], int] | None = None,
     active_session_run_id=lambda _n: None,
     pattern_ledger: dict[str, int] | None = None,
-    dedup_corpus: tuple = (),
+    dedup_corpus: OpenIssueCorpus | None = None,
+    dedup_grant: DuplicateTargetGrant | None = None,
 ):
     config = config or _config()
     return plan_tech_lead_decision_actions(
@@ -101,7 +106,8 @@ def _plan(
         op_ledger=op_ledger or {},
     active_session_run_id=active_session_run_id,
     pattern_ledger=pattern_ledger or {},
-        dedup_corpus=dedup_corpus,
+        dedup_corpus=dedup_corpus or OpenIssueCorpus.unavailable(),
+        dedup_grant=dedup_grant or DuplicateTargetGrant.none(),
         **SOURCE_RUN,
     )
 
@@ -162,8 +168,13 @@ def test_create_issue_execute_maps_to_create_tech_lead_issue() -> None:
 
 
 class TestCreateIssueDedup:
-    """#6878: create_issue dedup — agent duplicate_of suppresses + comments;
-    the orchestrator's lexical backstop gates a suspected duplicate for review."""
+    """#6878: the planner translates each ProposalDedupGate outcome into actions.
+    The gate's decision logic is covered in test_proposal_dedup_gate.py; here we
+    assert the ACTION each outcome produces at the planner boundary."""
+
+    _MATCH = OpenIssueRef(
+        1234, "Stabilize CI runner disconnects", "runner drops mid build"
+    )
 
     def _issue(self, **overrides) -> ProposedTechLeadAction:
         base = dict(
@@ -175,45 +186,116 @@ class TestCreateIssueDedup:
         base.update(overrides)
         return ProposedTechLeadAction(**base)
 
-    def test_duplicate_of_comments_on_existing_instead_of_filing(self) -> None:
-        planned = _plan(_decision(self._issue(duplicate_of=1234)))
-        # Suppressed: no new issue is filed; the observation is routed to #1234.
-        assert not any(isinstance(a, CreateTechLeadIssueAction) for a in planned)
-        [comment] = [a for a in planned if isinstance(a, AddCommentAction)]
-        assert comment.number == 1234
-        assert comment.is_pr is False
-        assert "The runner disconnects mid-build." in comment.comment
-        assert "deduplicated" in comment.comment.lower()
-        assert "A1" in comment.reason and "#1234" in comment.reason
+    def _ready(self, *issues: OpenIssueRef) -> OpenIssueCorpus:
+        return OpenIssueCorpus.ready(issues or (self._MATCH,))
 
-    def test_backstop_gates_lexical_duplicate_even_under_execute(self) -> None:
-        # Default (execute) authority would file directly; a strong lexical match
-        # to an open issue routes it through the gate for human reconciliation.
-        corpus = (
-            OpenIssueRef(1234, "Stabilize CI runner disconnects", "runner drops mid build"),
+    # --- CommentExisting: verified + granted + execute/execute authority ---
+
+    def test_confirmed_duplicate_comments_with_title_and_body(self) -> None:
+        planned = _plan(
+            _decision(self._issue(duplicate_of=1234)),
+            dedup_corpus=self._ready(),
+            dedup_grant=DuplicateTargetGrant.whole_board(),
         )
-        [planned] = _plan(_decision(self._issue()), dedup_corpus=corpus)
-        assert isinstance(planned, CreateTechLeadIssueAction)
-        assert PROPOSED_TECH_LEAD_LABEL in planned.labels  # gated, not auto-filed
-
-    def test_backstop_ignores_unrelated_corpus_and_files_normally(self) -> None:
-        corpus = (OpenIssueRef(1234, "Redesign the widget alignment gadget", ""),)
-        [planned] = _plan(_decision(self._issue()), dedup_corpus=corpus)
-        assert isinstance(planned, CreateTechLeadIssueAction)
-        assert PROPOSED_TECH_LEAD_LABEL not in planned.labels  # novel -> filed
-
-    def test_empty_corpus_files_normally(self) -> None:
-        [planned] = _plan(_decision(self._issue()))  # default empty corpus
-        assert isinstance(planned, CreateTechLeadIssueAction)
-        assert PROPOSED_TECH_LEAD_LABEL not in planned.labels
-
-    def test_duplicate_of_takes_precedence_over_backstop(self) -> None:
-        # Explicit agent intent suppresses (comments) even when a corpus is present.
-        corpus = (OpenIssueRef(555, "Stabilize CI runner disconnects", ""),)
-        planned = _plan(_decision(self._issue(duplicate_of=1234)), dedup_corpus=corpus)
-        [comment] = [a for a in planned if isinstance(a, AddCommentAction)]
-        assert comment.number == 1234  # the agent's cited issue, not the match
         assert not any(isinstance(a, CreateTechLeadIssueAction) for a in planned)
+        [comment] = [a for a in planned if isinstance(a, AddCommentAction)]
+        assert comment.number == 1234 and comment.is_pr is False
+        # B5: BOTH the proposal title and body are routed onto the existing issue.
+        assert "Stabilize CI runner disconnects" in comment.comment
+        assert "The runner disconnects mid-build." in comment.comment
+        assert "#1234" in comment.reason
+
+    # --- GateSuspectedDuplicate: authority-respecting, evidence-carrying ---
+
+    def test_confirmed_duplicate_gated_under_propose_authority(self) -> None:
+        [planned] = _plan(
+            _decision(self._issue(duplicate_of=1234)),
+            _config(create_issue="propose"),
+            dedup_corpus=self._ready(),
+            dedup_grant=DuplicateTargetGrant.whole_board(),
+        )
+        # No immediate comment under propose (B2); a gated create carries evidence.
+        assert isinstance(planned, CreateTechLeadIssueAction)
+        assert PROPOSED_TECH_LEAD_LABEL in planned.labels
+        assert "#1234" in planned.body
+
+    def test_confirmed_duplicate_gated_when_post_comment_is_propose(self) -> None:
+        # create_issue=execute but post_comment=propose -> still no immediate write.
+        [planned] = _plan(
+            _decision(self._issue(duplicate_of=1234)),
+            _config(post_comment="propose"),
+            dedup_corpus=self._ready(),
+            dedup_grant=DuplicateTargetGrant.whole_board(),
+        )
+        assert isinstance(planned, CreateTechLeadIssueAction)
+        assert PROPOSED_TECH_LEAD_LABEL in planned.labels
+
+    def test_unverified_citation_is_gated_not_commented(self) -> None:
+        # Corpus unavailable (increment-1 production): a citation cannot be
+        # verified, so it is gated for verification — never auto-commented.
+        planned = _plan(
+            _decision(self._issue(duplicate_of=1234)),
+            dedup_corpus=OpenIssueCorpus.unavailable(),
+        )
+        [gated] = planned
+        assert isinstance(gated, CreateTechLeadIssueAction)
+        assert PROPOSED_TECH_LEAD_LABEL in gated.labels
+        assert not any(isinstance(a, AddCommentAction) for a in planned)
+
+    def test_lexical_backstop_gates_with_candidate_and_score(self) -> None:
+        planned = _plan(
+            _decision(self._issue()),  # no duplicate_of
+            dedup_corpus=self._ready(),
+            dedup_grant=DuplicateTargetGrant.whole_board(),
+        )
+        [gated] = planned
+        assert isinstance(gated, CreateTechLeadIssueAction)
+        assert PROPOSED_TECH_LEAD_LABEL in gated.labels
+        assert "#1234" in gated.body and "score" in gated.body.lower()
+        assert not any(isinstance(a, AddCommentAction) for a in planned)
+
+    # --- RejectCandidate: never comments on the cited number ---
+
+    def test_out_of_grant_citation_is_rejected_and_gated(self) -> None:
+        # A known open issue, but the flavor has no board-wide grant.
+        planned = _plan(
+            _decision(self._issue(duplicate_of=1234)),
+            dedup_corpus=self._ready(),
+            dedup_grant=DuplicateTargetGrant.none(),
+        )
+        [gated] = planned
+        assert isinstance(gated, CreateTechLeadIssueAction)
+        assert PROPOSED_TECH_LEAD_LABEL in gated.labels
+        assert not any(isinstance(a, AddCommentAction) for a in planned)
+
+    def test_missing_citation_is_rejected_and_gated(self) -> None:
+        planned = _plan(
+            _decision(self._issue(duplicate_of=999)),  # not in the corpus
+            dedup_corpus=self._ready(),
+            dedup_grant=DuplicateTargetGrant.whole_board(),
+        )
+        [gated] = planned
+        assert isinstance(gated, CreateTechLeadIssueAction)
+        assert PROPOSED_TECH_LEAD_LABEL in gated.labels
+        assert not any(
+            isinstance(a, AddCommentAction) and a.number == 999 for a in planned
+        )
+
+    # --- FileNew: normal create ---
+
+    def test_novel_proposal_files_normally_under_execute(self) -> None:
+        [created] = _plan(
+            _decision(self._issue()),
+            dedup_corpus=self._ready(OpenIssueRef(42, "Unrelated widget gadget", "")),
+            dedup_grant=DuplicateTargetGrant.whole_board(),
+        )
+        assert isinstance(created, CreateTechLeadIssueAction)
+        assert PROPOSED_TECH_LEAD_LABEL not in created.labels
+
+    def test_corpus_unavailable_without_citation_files_normally(self) -> None:
+        [created] = _plan(_decision(self._issue()))  # default: unavailable, no citation
+        assert isinstance(created, CreateTechLeadIssueAction)
+        assert PROPOSED_TECH_LEAD_LABEL not in created.labels
 
 
 class TestDecisionIssuePolicy:
