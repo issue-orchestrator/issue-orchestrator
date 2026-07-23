@@ -79,7 +79,7 @@ from .completion_types import (
 )
 from .label_manager import LabelManager
 from .publish_recovery import is_publish_failure
-from .proposal_dedup_gate import DuplicateTargetGrant, OpenIssueCorpus
+from .proposal_dedup_gate import DuplicateTargetGrant
 from .tech_lead_decision_actions import (
     plan_tech_lead_decision_actions,
     plan_tech_lead_rejection_action,
@@ -98,6 +98,7 @@ if TYPE_CHECKING:
     from ..domain.tech_lead_artifacts import TechLeadDecision
     from ..infra.config import Config
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
+    from .open_issue_corpus import OpenIssueCorpusManager
     from .reconciliation import ExpectedState
 
 logger = logging.getLogger(__name__)
@@ -539,6 +540,7 @@ def generate_tech_lead_completion_actions(
     completed_ok: bool,
     labels: LabelManager,
     tech_lead_authority: "TechLeadAuthorityStore",
+    open_issue_corpus: "OpenIssueCorpusManager",
     active_session_run_id: "Callable[[int], str | None]",
 ) -> list[Action]:
     """Plan all completion effects for a tech_lead session (see module docstring).
@@ -613,9 +615,7 @@ def generate_tech_lead_completion_actions(
                 source_session_name=session.run_assets.session_name,
                 observed_at=session.run_assets.started_at,
                 active_session_run_id=active_session_run_id,
-                # Dedup facts (#6878): DISABLED until the SQL cache lands (incr 2);
-                # grant = the session's existing comment scope (never board-wide).
-                dedup_corpus=OpenIssueCorpus.disabled(),
+                dedup_corpus=open_issue_corpus.load(),
                 dedup_grant=DuplicateTargetGrant.of(authority.allowed_targets()),
             )
         )
@@ -666,7 +666,6 @@ def generate_tech_lead_completion_actions(
             )
         )
     return actions
-
 
 def generate_tech_lead_decision_failure_actions(
     config: "Config",

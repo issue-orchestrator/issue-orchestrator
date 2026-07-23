@@ -383,6 +383,12 @@ tech_lead:
   # requests are logged and fall back to normal priority.
   # Valid range 0-20; 0 disables the lane.
   max_expedited: 3
+  # Trusted full-backlog dedup for tech-lead create_issue proposals. GitHub is
+  # source of truth; the orchestrator delta-maintains a rebuildable local SQL
+  # fingerprint cache and gates lexical matches at or above the threshold.
+  dedup:
+    enabled: true
+    similarity_threshold: 0.72
   # Graduated authority for tech lead decision proposals (ADR-0031).
   # execute = orchestrator performs the proposed action;
   # propose = shadow mode - recorded as would-have-done, nothing executed

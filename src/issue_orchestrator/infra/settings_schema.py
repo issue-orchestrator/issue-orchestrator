@@ -1094,6 +1094,42 @@ class ReviewSettings(BaseModel):
             "yaml_path": "review.tech_lead_review_on_failure",
         },
     )
+    tech_lead_dedup_enabled: bool = Field(
+        True,
+        title=f"Enable {TECH_LEAD_DISPLAY_NAME} Follow-Up Dedup",
+        description="Check tech-lead follow-up proposals against all open issues",
+        json_schema_extra={
+            "doc_examples": ["true", "false"],
+            "doc_notes": (
+                "When enabled, the orchestrator maintains a rebuildable local "
+                "fingerprint cache of every open GitHub issue. Agent-cited "
+                "duplicates are verified against that corpus, and the lexical "
+                "backstop gates strong matches instead of filing unchecked "
+                "duplicates. Disable only to intentionally bypass this safety gate."
+            ),
+            "section": _TECH_LEAD_SECTION,
+            "config_attr": "tech_lead.dedup.enabled",
+            "yaml_path": "tech_lead.dedup.enabled",
+        },
+    )
+    tech_lead_dedup_similarity_threshold: float = Field(
+        0.72,
+        title=f"{TECH_LEAD_DISPLAY_NAME} Dedup Similarity Threshold",
+        description="Lexical similarity at or above which a follow-up is gated",
+        gt=0.0,
+        le=1.0,
+        json_schema_extra={
+            "doc_examples": ["0.72", "0.8", "0.9"],
+            "doc_notes": (
+                "Higher values reduce false-positive duplicate gates; lower "
+                "values catch looser shared-vocabulary matches. Must be greater "
+                "than 0.0 and at most 1.0."
+            ),
+            "section": _TECH_LEAD_SECTION,
+            "config_attr": "tech_lead.dedup.similarity_threshold",
+            "yaml_path": "tech_lead.dedup.similarity_threshold",
+        },
+    )
     # Graduated tech lead authority (ADR-0031). Each key is constrained to
     # TECH_LEAD_AUTHORITY_MODES — the same set YAML loading validates against —
     # exposed as an `enum` select plus a POST-time validator (a Literal type

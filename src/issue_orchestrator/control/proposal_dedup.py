@@ -24,63 +24,15 @@ touching callers (#6878).
 from __future__ import annotations
 
 import math
-import re
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-# Markdown/template scaffolding a tech-lead body almost always carries ("##
-# Problem", "## Summary", "Acceptance criteria", checkbox bullets). Stripped
-# before scoring so two UNRELATED proposals that share the boilerplate do not
-# read as similar — the signal is the substantive words, not the template.
-_BOILERPLATE_TOKENS = frozenset(
-    {
-        "problem",
-        "summary",
-        "context",
-        "scope",
-        "acceptance",
-        "criteria",
-        "related",
-        "background",
-        "proposed",
-        "approach",
-        "note",
-        "notes",
-        "issue",
-        "pr",
-        "tech",
-        "lead",
-    }
-)
-
-# Function words carry no topical signal; dropping them keeps cosine focused on
-# the substantive terms and stops long boilerplate-heavy bodies from dominating.
-_STOPWORDS = frozenset(
-    {
-        "the", "a", "an", "and", "or", "but", "if", "then", "else", "for", "of",
-        "to", "in", "on", "at", "by", "with", "as", "is", "are", "was", "were",
-        "be", "been", "being", "it", "its", "this", "that", "these", "those",
-        "we", "our", "you", "your", "they", "their", "not", "no", "do", "does",
-        "so", "from", "into", "when", "which", "should", "would", "could", "can",
-        "will", "has", "have", "had", "than", "there", "here",
-    }
-)
-
-_TOKEN_RE = re.compile(r"[a-z0-9]+")
+from ..domain.open_issue_corpus import OpenIssueRef, substantive_tokens
 
 # The title names the thing; the body elaborates. A duplicate is best signalled
 # by a matching title, so title tokens are weighted up relative to body tokens.
 _TITLE_WEIGHT = 3
-
-
-@dataclass(frozen=True)
-class OpenIssueRef:
-    """An open issue a proposal is scored against — the dedup corpus element."""
-
-    number: int
-    title: str
-    body: str = ""
 
 
 @dataclass(frozen=True)
@@ -94,11 +46,7 @@ class DuplicateMatch:
 def _tokens(text: str) -> list[str]:
     """Substantive lowercase word tokens: markdown/punct dropped, stop + template
     words removed. Empty input (or all-boilerplate) yields ``[]``."""
-    return [
-        tok
-        for tok in _TOKEN_RE.findall(text.lower())
-        if tok not in _STOPWORDS and tok not in _BOILERPLATE_TOKENS
-    ]
+    return list(substantive_tokens(text))
 
 
 def _weighted_terms(title: str, body: str) -> Counter[str]:

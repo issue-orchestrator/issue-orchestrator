@@ -95,4 +95,14 @@ def list_sqlite_databases(config: Config) -> list[SQLiteDatabase]:
             backup=True,
             enforce_pragmas=True,
         ),
+        # Rebuildable GitHub open-issue fingerprint cache used by the tech-lead
+        # create_issue dedup gate (#6881).
+        SQLiteDatabase(
+            key="open_issue_corpus",
+            label="Open Issue Corpus",
+            path_fn=lambda cfg: _state_db(cfg, "open_issue_corpus.sqlite"),
+            enabled_fn=lambda cfg: cfg.tech_lead.dedup.enabled,
+            backup=True,
+            enforce_pragmas=True,
+        ),
     ]

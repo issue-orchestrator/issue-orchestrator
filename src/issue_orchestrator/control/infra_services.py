@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from ..ports.timeline_store import TimelineStore
     from ..ports.timeline_writer import TimelineWriter
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
+    from .open_issue_corpus import OpenIssueCorpusManager
     from .background_job_supervisor import BackgroundJobSupervisor
     from .label_manager import LabelManager
     from .provider_resilience import ProviderResilienceManager
@@ -53,6 +54,8 @@ class InfraServices:
     attempt_store: "AttemptStore"
     # Orchestrator-owned tech_lead launch authority port (ADR-0031 / #6769 F2).
     tech_lead_authority: "TechLeadAuthorityStore"
+    # Rebuildable GitHub open-issue corpus owner (#6881).
+    open_issue_corpus: "OpenIssueCorpusManager"
     pair_registry: "PersistentExchangePairRegistry | None" = None
     turn_mailbox: "TurnMailbox | None" = None
     background_job_supervisor: "BackgroundJobSupervisor | None" = None

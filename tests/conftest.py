@@ -969,6 +969,18 @@ def build_test_orchestrator_deps(
         SqliteTechLeadAuthorityStore,
     )
     tech_lead_authority = SqliteTechLeadAuthorityStore.for_repo(config.repo_root)
+    from issue_orchestrator.infra.open_issue_corpus_store import (
+        SqliteOpenIssueCorpusStore,
+    )
+    open_issue_corpus_store = SqliteOpenIssueCorpusStore.for_repo(config.repo_root)
+    from issue_orchestrator.control.open_issue_corpus import OpenIssueCorpusManager
+    open_issue_corpus = OpenIssueCorpusManager(
+        repo_host,
+        open_issue_corpus_store,
+        is_enabled=lambda: bool(
+            config.tech_lead_review_agent and config.tech_lead.dedup.enabled
+        ),
+    )
 
     _action_applier.claim_gate = claim_gate
     # build_test_orchestrator_deps() returns deps without a live Orchestrator state.
@@ -987,6 +999,7 @@ def build_test_orchestrator_deps(
         goal_pilot_store=goal_pilot_store,
         attempt_store=attempt_store,
         tech_lead_authority=tech_lead_authority,
+        open_issue_corpus=open_issue_corpus,
     )
 
     from issue_orchestrator.execution.json_publish_retry_locator_store import (

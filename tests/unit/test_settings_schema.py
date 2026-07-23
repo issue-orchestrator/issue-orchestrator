@@ -136,6 +136,32 @@ class TestModelDefaults:
         prop = get_settings_json_schema()["review"]["properties"]["tech_lead_max_expedited"]
         assert prop["x_control"]["kind"] == FORM_CONTROL_INTEGER
 
+    def test_tech_lead_dedup_defaults_and_bounds(self):
+        settings = ReviewSettings()
+        assert settings.tech_lead_dedup_enabled is True
+        assert settings.tech_lead_dedup_similarity_threshold == 0.72
+        assert (
+            ReviewSettings(
+                tech_lead_dedup_similarity_threshold=1.0
+            ).tech_lead_dedup_similarity_threshold
+            == 1.0
+        )
+        with pytest.raises(ValidationError):
+            ReviewSettings(tech_lead_dedup_similarity_threshold=0.0)
+        with pytest.raises(ValidationError):
+            ReviewSettings(tech_lead_dedup_similarity_threshold=1.01)
+
+    def test_tech_lead_dedup_fields_have_owned_yaml_paths(self):
+        properties = get_settings_json_schema()["review"]["properties"]
+        assert (
+            properties["tech_lead_dedup_enabled"]["yaml_path"]
+            == "tech_lead.dedup.enabled"
+        )
+        assert (
+            properties["tech_lead_dedup_similarity_threshold"]["yaml_path"]
+            == "tech_lead.dedup.similarity_threshold"
+        )
+
     def test_goal_pilot_defaults(self):
         m = GoalPilotSettings()
         assert m.enabled is False

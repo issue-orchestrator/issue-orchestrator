@@ -2949,6 +2949,37 @@ class TestTechLeadConfig:
         assert config.tech_lead.milestone_strategy.inherit_from_issues == "latest"
         assert config.tech_lead.milestone_strategy.explicit is None
         assert config.tech_lead.priority is None
+        assert config.tech_lead.dedup.enabled is True
+        assert config.tech_lead.dedup.similarity_threshold == 0.72
+
+    def test_tech_lead_dedup_from_yaml(self, tmp_path):
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(
+            """
+tech_lead:
+  dedup:
+    enabled: false
+    similarity_threshold: 0.88
+"""
+        )
+
+        config = Config.load(config_file)
+
+        assert config.tech_lead.dedup.enabled is False
+        assert config.tech_lead.dedup.similarity_threshold == 0.88
+
+    @pytest.mark.parametrize("threshold", (0.0, -0.1, 1.01))
+    def test_tech_lead_dedup_invalid_threshold_fails_validation(
+        self, threshold: float
+    ):
+        config = Config()
+        config.tech_lead.dedup.similarity_threshold = threshold
+
+        errors = config.validate()
+
+        assert any(
+            "tech_lead.dedup.similarity_threshold" in error for error in errors
+        )
 
     def test_tech_lead_config_from_yaml(self, tmp_path):
         """Test loading tech_lead config from YAML."""
@@ -3163,6 +3194,10 @@ tech_lead:
         assert result["tech_lead"]["inherit_labels"] == ["test-label"]
         assert result["tech_lead"]["explicit_labels"] == ["explicit-label"]
         assert result["tech_lead"]["max_expedited"] == 3
+        assert result["tech_lead"]["dedup"] == {
+            "enabled": True,
+            "similarity_threshold": 0.72,
+        }
         assert result["tech_lead"]["milestone_strategy"]["inherit_from_issues"] == "latest"
         # All five graduated-authority modes are operator-visible (#6761 F7).
         assert result["tech_lead"]["authority"] == {

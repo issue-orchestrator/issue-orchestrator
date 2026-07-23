@@ -44,8 +44,8 @@ from .proposal_dedup import OpenIssueRef, find_duplicate
 
 
 class CorpusState(StrEnum):
-    READY = "ready"          # dedup was actually evaluated against trusted facts
-    DISABLED = "disabled"    # the feature is intentionally off (e.g. increment 1)
+    READY = "ready"  # dedup was actually evaluated against trusted facts
+    DISABLED = "disabled"  # the feature is intentionally off by configuration
     UNAVAILABLE = "unavailable"  # facts were expected but could not be produced
 
 
@@ -233,15 +233,14 @@ def classify_proposal(
     duplicate_of = intent.duplicate_of
 
     if corpus.state is CorpusState.DISABLED:
-        # The lexical backstop is intentionally dormant (increment 1). An agent
-        # citation cannot be verified without a trusted corpus, so it is NOT
+        # The lexical backstop is intentionally disabled by configuration. An
+        # agent citation cannot be verified without a trusted corpus, so it is NOT
         # auto-routed — but its evidence is kept and gated, never discarded into a
         # novel issue.
         if duplicate_of is not None:
             return GateUnverifiedDuplicate(
                 duplicate_of,
-                "agent-cited duplicate; not yet verifiable (dedup corpus not"
-                " enabled)",
+                "agent-cited duplicate; not yet verifiable (dedup corpus not enabled)",
             )
         return FileNew()
 
@@ -279,7 +278,9 @@ def classify_proposal(
 
     # No citation: the lexical backstop gates any strong match, for every flavor —
     # the grant governs writes (CommentExisting), not whether evidence may gate.
-    match = find_duplicate(intent.title, intent.body, corpus.issues, threshold=threshold)
+    match = find_duplicate(
+        intent.title, intent.body, corpus.issues, threshold=threshold
+    )
     if match is None:
         return FileNew()
     return GateSuspectedDuplicate(match.number, match.score, "lexical near-duplicate")

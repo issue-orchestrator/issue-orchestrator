@@ -72,6 +72,10 @@ def make_completion_handler(config: Config, repository_host) -> CompletionHandle
     from issue_orchestrator.ports.tech_lead_authority import (
         InMemoryTechLeadAuthorityStore,
     )
+    from issue_orchestrator.ports.open_issue_corpus_store import (
+        InMemoryOpenIssueCorpusStore,
+    )
+    from issue_orchestrator.control.open_issue_corpus import OpenIssueCorpusManager
 
     return CompletionHandler(
         config=config,
@@ -82,6 +86,11 @@ def make_completion_handler(config: Config, repository_host) -> CompletionHandle
         get_review_machine_fn=lambda _pr_number: None,
         session_output=session_output,
         tech_lead_authority=InMemoryTechLeadAuthorityStore(),
+        open_issue_corpus=OpenIssueCorpusManager(
+            repository_host,
+            InMemoryOpenIssueCorpusStore(),
+            is_enabled=lambda: config.tech_lead.dedup.enabled,
+        ),
         active_session_run_id=lambda _n: None,
     )
 

@@ -44,6 +44,11 @@ from issue_orchestrator.domain.tech_lead_session import (
 from issue_orchestrator.infra.tech_lead_authority_store import (
     SqliteTechLeadAuthorityStore,
 )
+from issue_orchestrator.infra.open_issue_corpus_store import (
+    SqliteOpenIssueCorpusStore,
+)
+from issue_orchestrator.control.open_issue_corpus import OpenIssueCorpusManager
+from issue_orchestrator.ports.open_issue_corpus_store import OpenIssueCorpusStore
 from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthorityStore
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.ports import RepositoryHost
@@ -88,6 +93,7 @@ def make_planner(
     *,
     issue_labels: list[str] | None = None,
     repository_host: RepositoryHost | None = None,
+    open_issue_corpus_store: OpenIssueCorpusStore | None = None,
 ) -> CompletionActionPlanner:
     """Create a planner with a repository host that can answer label reads.
 
@@ -104,8 +110,20 @@ def make_planner(
         if config.tech_lead_review_agent
         else InMemoryTechLeadAuthorityStore()
     )
+    if open_issue_corpus_store is None:
+        open_issue_corpus_store = SqliteOpenIssueCorpusStore.for_repo(config.repo_root)
+        if open_issue_corpus_store.load() is None:
+            open_issue_corpus_store.replace_all((), watermark="2026-07-23T00:00:00Z")
+    open_issue_corpus = OpenIssueCorpusManager(
+        repository_host,
+        open_issue_corpus_store,
+        is_enabled=lambda: bool(
+            config.tech_lead_review_agent and config.tech_lead.dedup.enabled
+        ),
+    )
     return CompletionActionPlanner(
         config, repository_host, LabelManager(config), tech_lead_authority,
+        open_issue_corpus,
         lambda _n: None,  # no live target session in these unit fixtures (#6779 R1)
     )
 
@@ -1862,6 +1880,116 @@ def test_create_pr_error_is_downgraded_when_pr_exists(caplog) -> None:
     assert critical == []
     assert downgraded == [f"{ERROR_PREFIX_CREATE_PR}: 422 already exists"]
     assert "Ignoring non-blocking create_pr processing errors" in caplog.text
+
+
+class TestProductionOpenIssueDedupCorpus:
+    """Completion reads the SQL-backed corpus; planning performs no GitHub read."""
+
+    @staticmethod
+    def _plant_duplicate_pair(session: Session) -> None:
+        _plant_decision_with_actions(
+            session,
+            [
+                {
+                    "id": "A1",
+                    "action_type": "post_comment",
+                    "target_number": 1,
+                    "body": "Diagnosis for the focus issue.",
+                    "finding_ids": ["T1"],
+                },
+                {
+                    "id": "A2",
+                    "action_type": "create_issue",
+                    "title": "Stabilize flaky CI runner",
+                    "body": "Runner disconnects mid-build.",
+                    "duplicate_of": 1,
+                    "finding_ids": ["T1"],
+                },
+            ],
+        )
+
+    def test_execute_routes_verified_open_issue_duplicate_to_comment(
+        self, tmp_path: Path
+    ) -> None:
+        from unittest.mock import MagicMock
+
+        from issue_orchestrator.domain.open_issue_corpus import (
+            build_open_issue_fingerprint,
+        )
+
+        config = make_tech_lead_config(tmp_path)
+        session = make_tech_lead_session(tmp_path)
+        arm_investigation_session(config, session)
+        self._plant_duplicate_pair(session)
+        store = SqliteOpenIssueCorpusStore.for_repo(tmp_path)
+        store.replace_all(
+            (
+                build_open_issue_fingerprint(
+                    1, "Stabilize flaky CI runner", "Runner disconnects mid-build."
+                ),
+            ),
+            watermark="2026-07-23T12:00:00Z",
+        )
+        repository_host = MagicMock(spec=RepositoryHost)
+
+        actions = make_planner(
+            config,
+            repository_host=repository_host,
+            open_issue_corpus_store=store,
+        ).generate_completion_actions(session, SessionStatus.COMPLETED)
+
+        repository_host.list_issues.assert_not_called()
+        repository_host.list_issues_delta.assert_not_called()
+        assert not any(
+            isinstance(action, CreateTechLeadIssueAction) for action in actions
+        )
+        assert any(
+            isinstance(action, AddCommentAction)
+            and action.number == 1
+            and "deduplicated follow-up" in action.comment
+            for action in actions
+        )
+
+    def test_propose_gates_verified_open_issue_duplicate(
+        self, tmp_path: Path
+    ) -> None:
+        from issue_orchestrator.domain.open_issue_corpus import (
+            build_open_issue_fingerprint,
+        )
+        from issue_orchestrator.domain.tech_lead_session import (
+            PROPOSED_TECH_LEAD_LABEL,
+        )
+
+        config = make_tech_lead_config(tmp_path)
+        config.tech_lead.authority.create_issue = "propose"
+        session = make_tech_lead_session(tmp_path)
+        arm_investigation_session(config, session)
+        self._plant_duplicate_pair(session)
+        store = SqliteOpenIssueCorpusStore.for_repo(tmp_path)
+        store.replace_all(
+            (
+                build_open_issue_fingerprint(
+                    1, "Stabilize flaky CI runner", "Runner disconnects mid-build."
+                ),
+            ),
+            watermark="2026-07-23T12:00:00Z",
+        )
+
+        actions = make_planner(
+            config,
+            open_issue_corpus_store=store,
+        ).generate_completion_actions(session, SessionStatus.COMPLETED)
+
+        [gated] = [
+            action for action in actions if isinstance(action, CreateTechLeadIssueAction)
+        ]
+        assert PROPOSED_TECH_LEAD_LABEL in gated.labels
+        assert "DUPLICATE of #1" in gated.body
+        assert not any(
+            isinstance(action, AddCommentAction)
+            and "deduplicated follow-up" in action.comment
+            for action in actions
+        )
 
 
 class TestMilestoneResolutionBoundary:

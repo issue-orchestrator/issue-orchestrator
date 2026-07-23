@@ -13,6 +13,7 @@ from .config_models import (
     StuckSweepConfig,
     TechLeadAuthorityConfig,
     TechLeadConfig,
+    TechLeadDedupConfig,
     TechLeadHealthReviewConfig,
 )
 
@@ -45,6 +46,7 @@ def parse_tech_lead_config(data: dict) -> TechLeadConfig:
         max_concurrent=max_concurrent,
         max_expedited=int(data.get("max_expedited", 3)),
         authority=TechLeadAuthorityConfig.from_mapping(data.get("authority", {}) or {}),
+        dedup=TechLeadDedupConfig.from_mapping(data.get("dedup", {}) or {}),
         health_review=TechLeadHealthReviewConfig.from_mapping(
             data.get("health_review", {}) or {}
         ),
