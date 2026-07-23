@@ -300,9 +300,7 @@ class ProposedTechLeadAction:
                 " create_issue actions (#6878)",
             )
             _require(
-                isinstance(self.duplicate_of, int)
-                and not isinstance(self.duplicate_of, bool)
-                and self.duplicate_of > 0,
+                not isinstance(self.duplicate_of, bool) and self.duplicate_of > 0,
                 f"{context} duplicate_of must be a positive issue number",
             )
         # pattern_signature/area must be meaningful whenever present —
@@ -350,26 +348,25 @@ class ProposedTechLeadAction:
             "id": self.id,
             "action_type": self.action_type,
         }
-        if self.target_number is not None:
-            payload["target_number"] = self.target_number
-        if self.target_is_pr:
-            payload["target_is_pr"] = True
-        if self.title:
-            payload["title"] = self.title
-        if self.body:
-            payload["body"] = self.body
-        if self.labels:
-            payload["labels"] = list(self.labels)
-        if self.finding_ids:
-            payload["finding_ids"] = list(self.finding_ids)
-        if self.pattern_signature:
-            payload["pattern_signature"] = self.pattern_signature
-        if self.area:
-            payload["area"] = self.area
-        if self.expedite:
-            payload["expedite"] = True
-        if self.duplicate_of is not None:
-            payload["duplicate_of"] = self.duplicate_of
+        # Emit each optional field only when set — target_number/duplicate_of are
+        # None-or-positive and the flags/collections/strings are None/empty when
+        # unset, so a single truthiness pass matches the per-field ``if`` chain
+        # without its branch-per-field complexity.
+        optional: tuple[tuple[str, Any], ...] = (
+            ("target_number", self.target_number),
+            ("target_is_pr", self.target_is_pr),
+            ("title", self.title),
+            ("body", self.body),
+            ("labels", list(self.labels)),
+            ("finding_ids", list(self.finding_ids)),
+            ("pattern_signature", self.pattern_signature),
+            ("area", self.area),
+            ("expedite", self.expedite),
+            ("duplicate_of", self.duplicate_of),
+        )
+        for key, value in optional:
+            if value:
+                payload[key] = value
         return payload
 
 

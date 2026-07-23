@@ -80,6 +80,7 @@ from .actions import (
     SurfaceTechLeadProposalAction,
 )
 from .label_manager import LabelManager
+from .proposal_dedup import OpenIssueRef, find_duplicate
 from .tech_lead_case_files import (
     build_case_file_evidence_comment,
     build_case_file_issue_action,
@@ -102,6 +103,18 @@ if TYPE_CHECKING:
 
 # Cap applied to SurfaceTechLeadProposalAction.body_preview at construction.
 _BODY_PREVIEW_CHARS = 500
+
+# Lexical similarity at/above which the orchestrator treats a create_issue
+# proposal as a SUSPECTED duplicate of an open issue and gates it for human
+# reconciliation — even under execute authority. This is the orchestrator's
+# cross-check of the agent's own ``duplicate_of`` call (#6878): it never silently
+# suppresses (a lexical guess can be wrong), it only routes the suspected
+# duplicate through the proposed-tech-lead gate so a human decides. Deliberately
+# high — the scorer only catches shared-vocabulary near-duplicates, so a high bar
+# keeps false-positive gating rare. A config knob and a full-backlog corpus (the
+# SQL fingerprint cache) follow in #6878; today the corpus is the in-flight board
+# snapshot the agent already reviewed.
+_DEDUP_BACKSTOP_THRESHOLD = 0.72
 
 
 def _provenance_footer(action: ProposedTechLeadAction) -> str:
@@ -251,6 +264,7 @@ def plan_tech_lead_decision_actions(
     source_session_name: str,
     observed_at: str,
     active_session_run_id: Callable[[int], str | None],
+    dedup_corpus: tuple[OpenIssueRef, ...] = (),
 ) -> list[Action]:
     """Plan orchestrator actions for a validated tech_lead decision.
 
@@ -280,6 +294,7 @@ def plan_tech_lead_decision_actions(
         source_session_name=source_session_name,
         observed_at=observed_at,
         active_session_run_id=active_session_run_id,
+        dedup_corpus=dedup_corpus,
     )
     for proposed in decision.proposed_actions:
         planner.plan(proposed)
@@ -309,6 +324,9 @@ class _DecisionActionPlanner:
     source_session_name: str
     observed_at: str
     active_session_run_id: Callable[[int], str | None]
+    # Open issues the tech lead reviewed this run (from the board snapshot),
+    # scored lexically to backstop the agent's own duplicate_of call (#6878).
+    dedup_corpus: tuple[OpenIssueRef, ...] = ()
     actions: list[Action] = field(default_factory=list)
     shadow: list[SurfaceTechLeadProposalAction] = field(default_factory=list)
     _planned_ops: set[tuple[str, int]] = field(default_factory=set)
@@ -487,6 +505,47 @@ class _DecisionActionPlanner:
             return
         self._plan_gated_op(proposed)
 
+    def _duplicate_of_existing(
+        self, proposed: ProposedTechLeadAction
+    ) -> tuple[int, bool] | None:
+        """``(existing_issue, agent_asserted)`` if this create_issue duplicates an
+        open issue, else ``None`` (novel).
+
+        ``agent_asserted`` is True for an explicit ``duplicate_of`` — the agent's
+        own semantic call — and False for a lexical backstop match over the
+        board-snapshot corpus (the orchestrator's independent cross-check, #6878).
+        """
+        if proposed.duplicate_of is not None:
+            return (proposed.duplicate_of, True)
+        match = find_duplicate(
+            proposed.title or "",
+            proposed.body or "",
+            list(self.dedup_corpus),
+            threshold=_DEDUP_BACKSTOP_THRESHOLD,
+        )
+        return (match.number, False) if match is not None else None
+
+    def _dedup_comment_action(
+        self, proposed: ProposedTechLeadAction, existing: int
+    ) -> Action:
+        """Route a duplicate proposal's observation onto the existing issue
+        instead of filing a new one."""
+        body = (proposed.body or "") + _provenance_footer(proposed)
+        return AddCommentAction(
+            number=existing,
+            comment=(
+                "## 🔁 Tech Lead: deduplicated follow-up\n\n"
+                "A proposed new issue was recognized as a duplicate of this one,"
+                " so its observation is routed here instead of filing a"
+                f" duplicate.\n\n{body}"
+            ),
+            is_pr=False,
+            reason=(
+                f"tech_lead decision action {proposed.id}: dedup onto #{existing}"
+            ),
+            expected=self.expected,
+        )
+
     def _plan_decision_tier(self, proposed: ProposedTechLeadAction) -> None:
         # Execute authority -> the concrete action(s). Propose-authority
         # create_issue -> the issue is CREATED, gated with proposed-tech-lead
@@ -500,6 +559,22 @@ class _DecisionActionPlanner:
         if not execute and proposed.action_type != "create_issue":
             self._surface_shadow(proposed)
             return
+        gate_issue = not execute
+        if proposed.action_type == "create_issue":
+            duplicate = self._duplicate_of_existing(proposed)
+            if duplicate is not None:
+                existing, agent_asserted = duplicate
+                if agent_asserted:
+                    # The agent's explicit call: suppress the new issue and route
+                    # its observation onto the existing one.
+                    self.actions.append(
+                        self._dedup_comment_action(proposed, existing)
+                    )
+                    return
+                # Backstop match: never silently suppress a lexical guess — gate
+                # the suspected duplicate for human reconciliation, even under
+                # execute authority (orchestrator-authoritative, #6878).
+                gate_issue = True
         self.actions.extend(
             _concrete_actions(
                 proposed,
@@ -508,7 +583,7 @@ class _DecisionActionPlanner:
                 anchor_issue=self.anchor_issue,
                 expected=self.expected,
                 needs_human_label=self.labels.needs_human,
-                gate_issue=not execute,
+                gate_issue=gate_issue,
             )
         )
 

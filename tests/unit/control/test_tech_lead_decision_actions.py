@@ -14,6 +14,7 @@ from issue_orchestrator.control.actions import (
 )
 from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.control.reconciliation import build_expected_for_mutation
+from issue_orchestrator.control.proposal_dedup import OpenIssueRef
 from issue_orchestrator.control.tech_lead_decision_actions import (
     plan_tech_lead_decision_actions,
 )
@@ -88,6 +89,7 @@ def _plan(
     op_ledger: dict[tuple[str, int], int] | None = None,
     active_session_run_id=lambda _n: None,
     pattern_ledger: dict[str, int] | None = None,
+    dedup_corpus: tuple = (),
 ):
     config = config or _config()
     return plan_tech_lead_decision_actions(
@@ -99,6 +101,7 @@ def _plan(
         op_ledger=op_ledger or {},
     active_session_run_id=active_session_run_id,
     pattern_ledger=pattern_ledger or {},
+        dedup_corpus=dedup_corpus,
         **SOURCE_RUN,
     )
 
@@ -156,6 +159,61 @@ def test_create_issue_execute_maps_to_create_tech_lead_issue() -> None:
     assert planned.milestone == TechLeadMilestoneIntent()
     assert "tech_lead" in planned.reason and "A2" in planned.reason
     assert planned.expected is EXPECTED
+
+
+class TestCreateIssueDedup:
+    """#6878: create_issue dedup — agent duplicate_of suppresses + comments;
+    the orchestrator's lexical backstop gates a suspected duplicate for review."""
+
+    def _issue(self, **overrides) -> ProposedTechLeadAction:
+        base = dict(
+            id="A1",
+            action_type="create_issue",
+            title="Stabilize CI runner disconnects",
+            body="The runner disconnects mid-build.",
+        )
+        base.update(overrides)
+        return ProposedTechLeadAction(**base)
+
+    def test_duplicate_of_comments_on_existing_instead_of_filing(self) -> None:
+        planned = _plan(_decision(self._issue(duplicate_of=1234)))
+        # Suppressed: no new issue is filed; the observation is routed to #1234.
+        assert not any(isinstance(a, CreateTechLeadIssueAction) for a in planned)
+        [comment] = [a for a in planned if isinstance(a, AddCommentAction)]
+        assert comment.number == 1234
+        assert comment.is_pr is False
+        assert "The runner disconnects mid-build." in comment.comment
+        assert "deduplicated" in comment.comment.lower()
+        assert "A1" in comment.reason and "#1234" in comment.reason
+
+    def test_backstop_gates_lexical_duplicate_even_under_execute(self) -> None:
+        # Default (execute) authority would file directly; a strong lexical match
+        # to an open issue routes it through the gate for human reconciliation.
+        corpus = (
+            OpenIssueRef(1234, "Stabilize CI runner disconnects", "runner drops mid build"),
+        )
+        [planned] = _plan(_decision(self._issue()), dedup_corpus=corpus)
+        assert isinstance(planned, CreateTechLeadIssueAction)
+        assert PROPOSED_TECH_LEAD_LABEL in planned.labels  # gated, not auto-filed
+
+    def test_backstop_ignores_unrelated_corpus_and_files_normally(self) -> None:
+        corpus = (OpenIssueRef(1234, "Redesign the widget alignment gadget", ""),)
+        [planned] = _plan(_decision(self._issue()), dedup_corpus=corpus)
+        assert isinstance(planned, CreateTechLeadIssueAction)
+        assert PROPOSED_TECH_LEAD_LABEL not in planned.labels  # novel -> filed
+
+    def test_empty_corpus_files_normally(self) -> None:
+        [planned] = _plan(_decision(self._issue()))  # default empty corpus
+        assert isinstance(planned, CreateTechLeadIssueAction)
+        assert PROPOSED_TECH_LEAD_LABEL not in planned.labels
+
+    def test_duplicate_of_takes_precedence_over_backstop(self) -> None:
+        # Explicit agent intent suppresses (comments) even when a corpus is present.
+        corpus = (OpenIssueRef(555, "Stabilize CI runner disconnects", ""),)
+        planned = _plan(_decision(self._issue(duplicate_of=1234)), dedup_corpus=corpus)
+        [comment] = [a for a in planned if isinstance(a, AddCommentAction)]
+        assert comment.number == 1234  # the agent's cited issue, not the match
+        assert not any(isinstance(a, CreateTechLeadIssueAction) for a in planned)
 
 
 class TestDecisionIssuePolicy:
