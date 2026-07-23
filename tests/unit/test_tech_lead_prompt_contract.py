@@ -480,19 +480,37 @@ def test_prompt_cohort_rule_matches_the_snapshot_contract() -> None:
     assert snapshot.problem_issue_numbers() == frozenset({41})
 
 
+def _dedup_clause(text: str) -> str:
+    """The bounded create_issue-dedup paragraph, lowercased.
+
+    Scoping the semantic assertions to this clause (not the whole multi-flow
+    prompt) is the point: words like "verif"/"gated" occur in unrelated sections
+    (setup-wizard "Trust but verify", act-level GATED-proposal text), so a
+    whole-text check would stay green even if the dedup clause lost its meaning.
+    """
+    start = text.index("Do not file a duplicate")
+    marker = "only valid on `create_issue`"
+    end = text.index(marker, start) + len(marker)
+    return text[start:end].lower()
+
+
 @pytest.mark.parametrize("variant", sorted(PROMPT_VARIANTS))
 def test_all_variants_teach_the_duplicate_of_dedup_field(variant: str) -> None:
     """#6878 B4: every prompt variant must teach create_issue dedup with the final
     verify-or-gate semantics — not the old unconditional comment-routing promise
-    (production withholds auto-routing until increment 2). Catches cross-variant
-    drift in both directions."""
-    text = PROMPT_VARIANTS[variant]
-    lower = text.lower()
-    assert "duplicate_of" in text, f"{variant} does not document duplicate_of"
-    # Must teach that the citation is verified and, absent verification, gated —
-    # not promised as an immediate external effect.
-    assert "verif" in lower, f"{variant} omits verification semantics"
-    assert "gated" in lower, f"{variant} omits gating semantics"
+    (production withholds auto-routing until increment 2). Asserted WITHIN the
+    bounded dedup clause so unrelated prose can't satisfy it, in both directions."""
+    clause = _dedup_clause(PROMPT_VARIANTS[variant])
+    assert "duplicate_of" in clause, f"{variant} dedup clause omits duplicate_of"
+    assert "untrusted" in clause, f"{variant} does not mark duplicate_of as untrusted intent"
+    assert "verif" in clause, f"{variant} dedup clause omits verification semantics"
+    assert "gated" in clause, f"{variant} dedup clause omits gating semantics"
+    assert "candidate" in clause and "preserv" in clause, (
+        f"{variant} dedup clause omits candidate preservation"
+    )
+    assert "title" in clause and "body" in clause, (
+        f"{variant} dedup clause drops the title/body requirement"
+    )
     assert (
-        "instead of filing a duplicate" not in text
-    ), f"{variant} still promises unconditional comment routing"
+        "instead of filing a duplicate" not in clause
+    ), f"{variant} dedup clause still promises unconditional comment routing"
