@@ -7,6 +7,8 @@ invariants that make the dangerous states unrepresentable.
 
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 
 from issue_orchestrator.control.proposal_dedup import OpenIssueRef
@@ -18,6 +20,7 @@ from issue_orchestrator.control.proposal_dedup_gate import (
     FileNew,
     GateDedupUnavailable,
     GateSuspectedDuplicate,
+    GateUnverifiedDuplicate,
     OpenIssueCorpus,
     ProposalIntent,
     RejectCandidate,
@@ -60,22 +63,35 @@ class TestCorpusStateContract:
         with pytest.raises(ValueError, match="must carry no issues"):
             OpenIssueCorpus(CorpusState.DISABLED, (_MATCH,))
 
+    def test_non_enum_state_is_rejected_loudly(self) -> None:
+        # A cast string bypasses identity checks; reject it at construction.
+        with pytest.raises(TypeError, match="must be a CorpusState"):
+            OpenIssueCorpus(cast(CorpusState, "unavailable"))
+
 
 class TestDisabled:
-    def test_files_new_ignoring_any_citation(self) -> None:
-        # The feature is intentionally off — no dedup attempted, citations ignored.
+    """Increment-1 posture: the lexical backstop is dormant, but agent dedup
+    intent is preserved (gated), never discarded into a novel issue."""
+
+    def test_no_citation_files_new(self) -> None:
         assert isinstance(_classify(_intent(), OpenIssueCorpus.disabled()), FileNew)
-        assert isinstance(
-            _classify(_intent(duplicate_of=1234), OpenIssueCorpus.disabled()), FileNew
-        )
+
+    def test_citation_is_gated_unverified_retaining_the_candidate(self) -> None:
+        out = _classify(_intent(duplicate_of=1234), OpenIssueCorpus.disabled())
+        assert isinstance(out, GateUnverifiedDuplicate)
+        assert out.issue_number == 1234 and out.reason
 
 
 class TestUnavailableFailsClosed:
-    def test_gates_dedup_unavailable_with_or_without_citation(self) -> None:
-        # Facts were expected but missing -> fail closed, never file unchecked.
-        for intent in (_intent(), _intent(duplicate_of=1234)):
-            out = _classify(intent, OpenIssueCorpus.unavailable())
-            assert isinstance(out, GateDedupUnavailable) and out.reason
+    def test_no_citation_gates_dedup_unavailable(self) -> None:
+        out = _classify(_intent(), OpenIssueCorpus.unavailable())
+        assert isinstance(out, GateDedupUnavailable) and out.reason
+
+    def test_citation_is_gated_unverified_retaining_the_candidate(self) -> None:
+        # Non-ready facts prevent mutation but must NOT erase the agent's candidate.
+        out = _classify(_intent(duplicate_of=1234), OpenIssueCorpus.unavailable())
+        assert isinstance(out, GateUnverifiedDuplicate)
+        assert out.issue_number == 1234
 
     def test_never_files_new_under_any_authority(self) -> None:
         for authority in _ALL_AUTHORITIES:
@@ -86,7 +102,7 @@ class TestUnavailableFailsClosed:
                 authority,
                 threshold=_THRESHOLD,
             )
-            assert isinstance(out, GateDedupUnavailable)
+            assert isinstance(out, GateUnverifiedDuplicate) and out.issue_number == 7
 
 
 class TestAgentCitation:
@@ -223,11 +239,20 @@ class TestInvariants:
                 if isinstance(out, GateSuspectedDuplicate):
                     assert out.score is not None and out.reason
 
-    def test_unavailable_corpus_is_always_dedup_unavailable(self) -> None:
+    def test_unavailable_corpus_never_files_new(self) -> None:
         for intent, corpus, grant, authority in self._matrix():
             out = classify_proposal(intent, corpus, grant, authority, threshold=_THRESHOLD)
             if corpus.state is CorpusState.UNAVAILABLE:
-                assert isinstance(out, GateDedupUnavailable)
+                assert not isinstance(out, FileNew)
+
+    def test_non_ready_citation_retains_the_candidate(self) -> None:
+        # A citation is never discarded (into FileNew) by a non-READY corpus — its
+        # candidate survives in the typed outcome for the operator to reconcile.
+        for corpus in (OpenIssueCorpus.disabled(), OpenIssueCorpus.unavailable()):
+            out = classify_proposal(
+                _intent(duplicate_of=1234), corpus, _GRANT, _EXECUTE, threshold=_THRESHOLD
+            )
+            assert isinstance(out, GateUnverifiedDuplicate) and out.issue_number == 1234
 
     def test_reject_never_becomes_a_comment(self) -> None:
         for intent, corpus, grant, authority in self._matrix():

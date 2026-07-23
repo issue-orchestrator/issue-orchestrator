@@ -46,6 +46,13 @@ class CorpusState(StrEnum):
     UNAVAILABLE = "unavailable"  # facts were expected but could not be produced
 
 
+def _is_corpus_state(value: object) -> bool:
+    # ``object`` param so the runtime check is real at the construction boundary
+    # (a ``cast(CorpusState, "unavailable")`` is a plain str, not a member) and
+    # not narrowed away by the declared field type.
+    return isinstance(value, CorpusState)
+
+
 @dataclass(frozen=True)
 class OpenIssueCorpus:
     """The trusted open-issue fact set the gate reasons against.
@@ -61,6 +68,8 @@ class OpenIssueCorpus:
     issues: tuple[OpenIssueRef, ...] = ()
 
     def __post_init__(self) -> None:
+        if not _is_corpus_state(self.state):
+            raise TypeError(f"corpus state must be a CorpusState, got {self.state!r}")
         if self.state is not CorpusState.READY and self.issues:
             raise ValueError(f"a {self.state} corpus must carry no issues")
 
@@ -156,10 +165,21 @@ class GateSuspectedDuplicate:
 
 @dataclass(frozen=True)
 class GateDedupUnavailable:
-    """Dedup could not be evaluated (facts expected but unavailable). Fail closed:
-    gate the new issue for human review rather than file it unchecked. No
-    candidate exists."""
+    """Dedup could not be evaluated (facts expected but unavailable) and there is
+    no candidate. Fail closed: gate the new issue for human review rather than
+    file it unchecked."""
 
+    reason: str
+
+
+@dataclass(frozen=True)
+class GateUnverifiedDuplicate:
+    """The agent cited a duplicate but no trusted corpus could verify it (the
+    lexical backstop is dormant, or the corpus is unavailable). Its evidence is
+    NOT discarded into a novel issue and NOT auto-routed as a comment: gate the
+    create, retaining the candidate the operator needs to reconcile."""
+
+    issue_number: int
     reason: str
 
 
@@ -177,6 +197,7 @@ DedupOutcome = (
     | CommentExisting
     | GateSuspectedDuplicate
     | GateDedupUnavailable
+    | GateUnverifiedDuplicate
     | RejectCandidate
 )
 
@@ -206,16 +227,34 @@ def classify_proposal(
     threshold: float,
 ) -> DedupOutcome:
     """Own the complete dedup decision for one ``create_issue`` proposal."""
+    duplicate_of = intent.duplicate_of
+
     if corpus.state is CorpusState.DISABLED:
-        # Feature intentionally off — no dedup is attempted.
+        # The lexical backstop is intentionally dormant (increment 1). An agent
+        # citation cannot be verified without a trusted corpus, so it is NOT
+        # auto-routed — but its evidence is kept and gated, never discarded into a
+        # novel issue.
+        if duplicate_of is not None:
+            return GateUnverifiedDuplicate(
+                duplicate_of,
+                "agent-cited duplicate; not yet verifiable (dedup corpus not"
+                " enabled)",
+            )
         return FileNew()
+
     if corpus.state is CorpusState.UNAVAILABLE:
-        # Facts expected but missing: fail closed, never file an unchecked issue.
+        # Facts expected but missing: fail closed, never file unchecked. A citation
+        # is retained so the operator keeps the exact candidate to reconcile.
+        if duplicate_of is not None:
+            return GateUnverifiedDuplicate(
+                duplicate_of,
+                "agent-cited duplicate; open-issue corpus unavailable — could not"
+                " verify",
+            )
         return GateDedupUnavailable(
             "open-issue corpus unavailable — duplicates could not be verified"
         )
 
-    duplicate_of = intent.duplicate_of
     if duplicate_of is not None:
         if duplicate_of not in corpus.numbers:
             # Missing, closed, or a PR number: not a known OPEN ISSUE.

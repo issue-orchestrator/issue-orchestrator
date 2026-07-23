@@ -86,6 +86,7 @@ from .proposal_dedup_gate import (
     DuplicateTargetGrant,
     GateDedupUnavailable,
     GateSuspectedDuplicate,
+    GateUnverifiedDuplicate,
     OpenIssueCorpus,
     ProposalIntent,
     RejectCandidate,
@@ -118,9 +119,9 @@ _BODY_PREVIEW_CHARS = 500
 # as a SUSPECTED duplicate and gates it for human reconciliation. Deliberately
 # high — the scorer only catches shared-vocabulary near-duplicates, so a high bar
 # keeps false-positive gating rare. A config knob follows in #6878; the trusted
-# open-issue corpus that feeds it is UNAVAILABLE in increment 1 (the production
-# caller passes CorpusUnavailable explicitly), so the lexical path is dormant
-# until the SQL fingerprint cache lands (#6878 increment 2).
+# open-issue corpus that feeds the lexical path is DISABLED in increment 1 (the
+# production caller passes CorpusState.DISABLED explicitly), so the lexical
+# backstop is dormant until the SQL fingerprint cache lands (#6878 increment 2).
 _DEDUP_BACKSTOP_THRESHOLD = 0.72
 
 # Operator-facing gate reasons rendered into the gated issue body and its action
@@ -153,6 +154,14 @@ def _unavailable_note(outcome: GateDedupUnavailable) -> str:
     return (
         f"Gated for review: {outcome.reason}. Filed nothing automatically —"
         " remove the proposed-tech-lead label once checked, or dedup by hand."
+    )
+
+
+def _unverified_note(outcome: GateUnverifiedDuplicate) -> str:
+    return (
+        f"Gated as a possible DUPLICATE of #{outcome.issue_number}:"
+        f" {outcome.reason}. Verify against #{outcome.issue_number}, then dedup"
+        " onto it, or remove the proposed-tech-lead label to file this as new."
     )
 
 
@@ -626,6 +635,12 @@ class _DecisionActionPlanner:
             # Fail closed: facts were expected but missing -> gate, never file.
             self.actions.extend(
                 self._concrete_decision(proposed, gate_reason=_unavailable_note(outcome))
+            )
+        elif isinstance(outcome, GateUnverifiedDuplicate):
+            # Agent cited a duplicate we cannot yet verify -> gate with the
+            # candidate, never discard the evidence and never auto-comment.
+            self.actions.extend(
+                self._concrete_decision(proposed, gate_reason=_unverified_note(outcome))
             )
         elif isinstance(outcome, RejectCandidate):
             # A provably-bad citation is filed gated for review — never commented.

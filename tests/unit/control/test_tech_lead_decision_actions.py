@@ -269,26 +269,47 @@ class TestCreateIssueDedup:
 
     # --- Corpus state: DISABLED files normally, UNAVAILABLE fails closed ---
 
-    def test_disabled_corpus_files_normally_ignoring_citation(self) -> None:
-        # Increment-1 production posture: the feature is off, so even a citation
-        # files normally (no gate, no comment).
+    def test_disabled_corpus_without_citation_files_normally(self) -> None:
+        # Increment-1 posture: the lexical backstop is off, so a proposal with no
+        # citation files normally.
         [created] = _plan(
-            _decision(self._issue(duplicate_of=1234)),
-            dedup_corpus=OpenIssueCorpus.disabled(),
+            _decision(self._issue()), dedup_corpus=OpenIssueCorpus.disabled()
         )
         assert isinstance(created, CreateTechLeadIssueAction)
         assert PROPOSED_TECH_LEAD_LABEL not in created.labels
 
-    def test_unavailable_corpus_fails_closed_to_a_gate(self) -> None:
+    def test_disabled_corpus_with_citation_is_gated_not_filed(self) -> None:
+        # The agent's dedup intent is preserved (gated with the candidate), never
+        # discarded into a novel issue — the live increment-1 behavior.
+        planned = _plan(
+            _decision(self._issue(duplicate_of=1234)),
+            dedup_corpus=OpenIssueCorpus.disabled(),
+        )
+        [gated] = planned
+        assert isinstance(gated, CreateTechLeadIssueAction)
+        assert PROPOSED_TECH_LEAD_LABEL in gated.labels
+        assert "#1234" in gated.body
+        assert not any(isinstance(a, AddCommentAction) for a in planned)
+
+    def test_unavailable_corpus_without_citation_fails_closed(self) -> None:
         # A fact-production failure must NEVER file unchecked — gate it.
         planned = _plan(
-            _decision(self._issue()),  # no citation
-            dedup_corpus=OpenIssueCorpus.unavailable(),
+            _decision(self._issue()), dedup_corpus=OpenIssueCorpus.unavailable()
         )
         [gated] = planned
         assert isinstance(gated, CreateTechLeadIssueAction)
         assert PROPOSED_TECH_LEAD_LABEL in gated.labels
         assert not any(isinstance(a, AddCommentAction) for a in planned)
+
+    def test_unavailable_corpus_with_citation_gates_with_candidate(self) -> None:
+        planned = _plan(
+            _decision(self._issue(duplicate_of=1234)),
+            dedup_corpus=OpenIssueCorpus.unavailable(),
+        )
+        [gated] = planned
+        assert isinstance(gated, CreateTechLeadIssueAction)
+        assert PROPOSED_TECH_LEAD_LABEL in gated.labels
+        assert "#1234" in gated.body
 
     def test_novel_proposal_files_normally_under_execute(self) -> None:
         [created] = _plan(
