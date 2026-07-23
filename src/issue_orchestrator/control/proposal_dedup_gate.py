@@ -19,9 +19,12 @@ flag) makes the dangerous states UNREPRESENTABLE:
   gates a NEW issue — it writes nothing to the candidate, so it needs no redirect
   grant. Gating is available to every session flavor.
 * The corpus is a three-state fact: ``READY`` (dedup evaluated), ``DISABLED`` (the
-  feature is intentionally off — normal ``FileNew``), and ``UNAVAILABLE`` (facts
-  were expected but could not be produced). ``UNAVAILABLE`` FAILS CLOSED — it can
-  never degrade to "no duplicate found" and file an unchecked proposal.
+  trusted corpus / lexical backstop is intentionally off — ``FileNew`` when there
+  is no citation, but a cited ``duplicate_of`` still GATES with its candidate),
+  and ``UNAVAILABLE`` (facts were expected but could not be produced).
+  ``UNAVAILABLE`` FAILS CLOSED — it can never degrade to "no duplicate found" and
+  file an unchecked proposal. A citation is never discarded by a non-``READY``
+  corpus.
 * Every gate carries its reason; a lexical gate also carries candidate + score.
 * Identical inputs always produce identical outcomes.
 

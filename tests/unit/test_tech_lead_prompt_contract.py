@@ -482,8 +482,17 @@ def test_prompt_cohort_rule_matches_the_snapshot_contract() -> None:
 
 @pytest.mark.parametrize("variant", sorted(PROMPT_VARIANTS))
 def test_all_variants_teach_the_duplicate_of_dedup_field(variant: str) -> None:
-    """#6878 B4: every prompt variant must teach create_issue dedup, or onboarded
-    repositories never receive the new agent behavior."""
+    """#6878 B4: every prompt variant must teach create_issue dedup with the final
+    verify-or-gate semantics — not the old unconditional comment-routing promise
+    (production withholds auto-routing until increment 2). Catches cross-variant
+    drift in both directions."""
     text = PROMPT_VARIANTS[variant]
+    lower = text.lower()
     assert "duplicate_of" in text, f"{variant} does not document duplicate_of"
-    assert "Do not file a duplicate" in text, f"{variant} missing the dedup instruction"
+    # Must teach that the citation is verified and, absent verification, gated —
+    # not promised as an immediate external effect.
+    assert "verif" in lower, f"{variant} omits verification semantics"
+    assert "gated" in lower, f"{variant} omits gating semantics"
+    assert (
+        "instead of filing a duplicate" not in text
+    ), f"{variant} still promises unconditional comment routing"
