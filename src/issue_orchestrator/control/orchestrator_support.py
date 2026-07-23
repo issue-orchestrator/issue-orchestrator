@@ -373,7 +373,7 @@ class OrchestratorSupport:
         from .actions import LaunchSessionAction
         a = cast(LaunchSessionAction, action)
         logger.info("[PLAN] Launched %s session for #%d", a.session_type, a.number)
-        release_blocked_front_on_launch(self.state, a.number, launched=result.success)
+        release_blocked_front_on_launch(self.state, result.details.get("issue_number"))
 
     def _handle_launch_validation_retry(self, action: "Action", result: "ActionResult") -> None:
         from .actions import LaunchValidationRetryAction

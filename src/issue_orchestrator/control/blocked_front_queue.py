@@ -73,17 +73,24 @@ def front_queue_newly_unblocked(
 
 
 def release_blocked_front_on_launch(
-    state: "OrchestratorState", issue_number: int, *, launched: bool
+    state: "OrchestratorState", issue_number: int | None
 ) -> None:
-    """Free a blocked->front entry once its issue launches (#6873 R4).
+    """Free a blocked->front entry once its issue launches (#6873 R4/R5).
 
     Hooked into the ALWAYS-RUN successful-launch state handler
     (``OrchestratorSupport._handle_launch_session``), not the tech-lead-specific
     ``ExpediteLane`` composition seam — so launch cleanup is an invariant of every
-    composition root rather than accidentally coupled to tech-lead wiring. No-op
-    on a failed launch, or for an entry this lane does not own.
+    composition root rather than accidentally coupled to tech-lead wiring.
+
+    Success-only by contract: the only caller runs solely on a successful launch,
+    so there is no ``launched`` flag. ``issue_number`` MUST be the launched
+    session's CANONICAL issue number (``ActionResult`` detail), never the
+    polymorphic ``LaunchSessionAction.number`` — which is a PR number for review
+    launches and would otherwise release an unrelated same-numbered issue (R5).
+    ``None`` (a launch that produced no issue-scoped session) is a no-op, as is an
+    entry this lane does not own.
     """
-    if not launched:
+    if issue_number is None:
         return
     from .retry_history_state import RetryHistoryState
 

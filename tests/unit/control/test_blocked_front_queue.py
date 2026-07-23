@@ -155,26 +155,28 @@ class TestFrontQueueNewlyUnblocked:
 
 
 class TestReleaseBlockedFrontOnLaunch:
-    """#6873 R4: launch cleanup runs through the always-run, non-tech-lead seam."""
+    """#6873 R4/R5: launch cleanup via the always-run, non-tech-lead seam, keyed
+    on the canonical issue number. The OrchestratorSupport boundary (issue vs PR
+    identity) is covered in test_orchestrator_support.py."""
 
-    def test_successful_launch_clears_owned_entry_without_expedite_lane(self):
+    def test_releases_owned_entry_by_canonical_issue_number(self):
         state = OrchestratorState()
         state.previously_blocked_issue_numbers = {5}
         front_queue_newly_unblocked(state, [_dec(5, True, AvailabilityReason.AVAILABLE)])
         assert state.priority_queue == [5] and state.blocked_front_prioritized == [5]
-        # No ExpediteLane involved — the launch seam frees it directly.
-        release_blocked_front_on_launch(state, 5, launched=True)
+        release_blocked_front_on_launch(state, 5)  # no ExpediteLane involved
         assert state.priority_queue == []
         assert state.blocked_front_prioritized == []
 
-    def test_failed_launch_retains_the_entry(self):
+    def test_none_issue_number_is_a_noop(self):
+        # A launch producing no issue-scoped session leaves the lane untouched.
         state = OrchestratorState()
         state.previously_blocked_issue_numbers = {5}
         front_queue_newly_unblocked(state, [_dec(5, True, AvailabilityReason.AVAILABLE)])
-        release_blocked_front_on_launch(state, 5, launched=False)
-        assert state.priority_queue == [5]  # issue never picked up -> stays
+        release_blocked_front_on_launch(state, None)
+        assert state.priority_queue == [5]
 
     def test_noop_for_unowned_issue(self):
         state = OrchestratorState(priority_queue=[5])  # operator-owned
-        release_blocked_front_on_launch(state, 5, launched=True)
+        release_blocked_front_on_launch(state, 5)
         assert state.priority_queue == [5]  # operator priority untouched
