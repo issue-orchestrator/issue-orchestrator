@@ -341,6 +341,40 @@ class TestCreateIssueDedup:
         assert isinstance(created, CreateTechLeadIssueAction)
         assert PROPOSED_TECH_LEAD_LABEL not in created.labels
 
+    # --- Intra-decision dedup (#6883 review): siblings within ONE decision ---
+
+    def test_identical_sibling_creates_only_the_first_is_filed(self) -> None:
+        # Two identical create_issue proposals in one decision, novel vs the
+        # backlog (empty READY corpus), under execute: the persisted-corpus gate
+        # classifies each as FileNew, so without intra-decision dedup BOTH would be
+        # filed. The first files directly; the identical sibling is GATED.
+        a = self._issue(id="A1")
+        b = self._issue(id="A2")  # identical title/body
+        planned = _plan(
+            _decision(a, b),
+            dedup_corpus=OpenIssueCorpus.ready(()),  # novel vs backlog
+            dedup_grant=DuplicateTargetGrant.none(),
+        )
+        creates = [x for x in planned if isinstance(x, CreateTechLeadIssueAction)]
+        ungated = [c for c in creates if PROPOSED_TECH_LEAD_LABEL not in c.labels]
+        gated = [c for c in creates if PROPOSED_TECH_LEAD_LABEL in c.labels]
+        assert len(ungated) == 1  # only the FIRST is filed directly under execute
+        assert len(gated) == 1  # the identical sibling is gated, not spam-filed
+        assert "intra-decision duplicate" in gated[0].body
+        assert "A1" in gated[0].body  # names the sibling it duplicates
+
+    def test_distinct_sibling_creates_both_file(self) -> None:
+        a = self._issue(id="A1", title="Stabilize CI runner disconnects", body="x")
+        b = self._issue(id="A2", title="Add retry cap to publish gate", body="y")
+        planned = _plan(
+            _decision(a, b),
+            dedup_corpus=OpenIssueCorpus.ready(()),
+            dedup_grant=DuplicateTargetGrant.none(),
+        )
+        creates = [x for x in planned if isinstance(x, CreateTechLeadIssueAction)]
+        assert len(creates) == 2
+        assert all(PROPOSED_TECH_LEAD_LABEL not in c.labels for c in creates)
+
 
 class TestDecisionIssuePolicy:
     """Decision-created issues route through the tech_lead: config owner (F4)."""
