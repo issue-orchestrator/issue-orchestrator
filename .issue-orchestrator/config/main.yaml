@@ -173,9 +173,12 @@ tech_lead:
   # open issues stuck in a terminal blocking state the normal loop cannot
   # re-discover and re-injects each into reactive tech_lead. Bounded per issue: after
   # max_recovery_attempts it stops re-injecting and flags the issue as exhausted.
+  # Its scan is a BROAD exhaustive open-issue read, so it runs on a slow
+  # reconcile-backstop cadence (4h) — stranded issues are quiescent, so a few
+  # hours of recovery latency is fine and keeps the broad scan off the hot path.
   stuck_sweep:
     enabled: true
-    interval_minutes: 15
+    interval_minutes: 240
     max_recovery_attempts: 3
 
 goal_pilot:
