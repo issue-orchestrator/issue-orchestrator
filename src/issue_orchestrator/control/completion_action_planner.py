@@ -11,6 +11,7 @@ from ..infra.config import Config
 from ..ports import RepositoryHost
 from ..ports.tech_lead_authority import TechLeadAuthorityStore
 from .actions import Action, AddCommentAction, AddLabelAction, RemoveLabelAction
+from .open_issue_corpus import OpenIssueCorpusManager
 from .tech_lead_completion import (
     generate_tech_lead_completion_actions,
     generate_tech_lead_decision_failure_actions,
@@ -101,12 +102,14 @@ class CompletionActionPlanner:
         repository_host: RepositoryHost,
         label_manager: LabelManager,
         tech_lead_authority: TechLeadAuthorityStore,
+        open_issue_corpus: OpenIssueCorpusManager,
         active_session_run_id: Callable[[int], str | None],
     ) -> None:
         self.config = config
         self.repository_host = repository_host
         self._lm = label_manager
         self._tech_lead_authority = tech_lead_authority
+        self._open_issue_corpus = open_issue_corpus
         # Resolves the target issue's live session run id so a gated
         # kill_hung_session proposal binds approval to that generation (#6779 R1).
         self._active_session_run_id = active_session_run_id
@@ -230,6 +233,7 @@ class CompletionActionPlanner:
             completed_ok=True,
             labels=self._lm,
             tech_lead_authority=self._tech_lead_authority,
+            open_issue_corpus=self._open_issue_corpus,
             active_session_run_id=self._active_session_run_id,
         )
 

@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from .fact_gatherer import FactGatherer
     from .state_machine_manager import StateMachineManager
     from .health_gate import HealthGate, HealthDecision
+    from .open_issue_corpus import OpenIssueCorpusManager
     from ..ports.worktree_manager import WorktreeManager
     from ..ports.issue import Issue
 
@@ -672,6 +673,7 @@ def run_planning_cycle(
     claim_manager: object | None = None,
     queue_cache_store: "QueueCacheStore | None" = None,
     io_claimed_label: str = "io:claimed",
+    open_issue_corpus: "OpenIssueCorpusManager | None" = None,
 ) -> tuple[float, bool]:
     """Run the planning cycle - extracted from Orchestrator per move map Step 2."""
     now = time.time()
@@ -686,6 +688,7 @@ def run_planning_cycle(
                 refresh_requested, inflight_stable_ids,
                 issue_fetch_resilience=issue_fetch_resilience,
                 queue_cache_store=queue_cache_store,
+                open_issue_corpus=open_issue_corpus,
             )
         except TransientIssueFetchError as exc:
             # Recoverable issue-list failure (transient 404/5xx/network): keep
@@ -771,11 +774,11 @@ def _fetch_and_update_queue(
     *,
     issue_fetch_resilience: IssueFetchResilience,
     queue_cache_store: "QueueCacheStore | None" = None,
+    open_issue_corpus: "OpenIssueCorpusManager | None" = None,
 ) -> tuple[float, bool]:
     """Fetch issues and update queue cache.
-
-    Only the issue-list fetch itself is run under ``issue_fetch_resilience``;
-    the downstream work (label cache, PR scan, dependency scan, closed-history
+    The GitHub issue-read phase is run under ``issue_fetch_resilience``; the
+    downstream work (label cache, PR scan, dependency scan, closed-history
     reconciliation, queue mutation, persistence) is *not* guarded. A
     ``RepositoryHostError`` from those downstream operations is a genuine
     failure of that operation, not an issue-list fetch failure, so it must not
@@ -801,18 +804,15 @@ def _fetch_and_update_queue(
         scope = gh_audit.AuditScope.MANUAL if manual_refresh else gh_audit.AuditScope.PERIODIC
         full_scan = _should_run_full_scan(config, state, manual_refresh, required_stable_ids, refresh_started_at)
         sync_plan = _build_selective_sync_plan(config, state, manual_refresh, full_scan)
-        # Guard *only* the issue-list fetch: a repository-host failure here is
-        # the issue-fetch failure the resilience policy owns (degrade vs.
-        # fail-fast). Everything after this block is downstream work whose
-        # failures must surface on their own, not be reclassified as a fetch
-        # failure. ``guard`` also records the success that resets the
-        # consecutive repo-not-found streak.
+        # Guard the GitHub issue reads; downstream queue mutation stays outside.
         with gh_audit.context(reason=reason, scope=scope):
             all_issues, refreshed_numbers, next_watermark = issue_fetch_resilience.guard(
                 lambda: _fetch_issue_list(
                     config, state, github_workflow, required_stable_ids, sync_plan, full_scan,
                 )
             )
+            if open_issue_corpus is not None:
+                issue_fetch_resilience.guard(open_issue_corpus.sync)
 
         refreshed_at = time.time()
         _process_inflight_ids(required_stable_ids, all_issues, inflight_stable_ids)

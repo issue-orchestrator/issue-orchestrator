@@ -22,6 +22,7 @@ from ..infra.logging_config import get_repo_log_path, read_log_tail
 if TYPE_CHECKING:
     from ..control.board_snapshot_builder import BoardSnapshotBuilder
     from ..control.fact_gatherer import FactGatherer
+    from ..control.open_issue_corpus import OpenIssueCorpusManager
     from ..control.provider_resilience import ProviderResilienceManager
     from ..control.retry_history_state import ExpediteEligibility, ExpediteLane
     from ..ports import Issue
@@ -34,6 +35,7 @@ if TYPE_CHECKING:
     from ..ports.queue_cache_store import QueueCacheStore
     from ..ports.timeline_store import TimelineStore
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
+    from ..ports.open_issue_corpus_store import OpenIssueCorpusStore
     from ..ports.working_copy import WorkingCopy
 
 logger = logging.getLogger(__name__)
@@ -44,6 +46,7 @@ class TechLeadComposition:
     """Dependencies that must share one authority and projection owner."""
 
     authority: "TechLeadAuthorityStore"
+    open_issue_corpus: "OpenIssueCorpusManager"
     board_publisher: "TechLeadBoardPublisher | None"
     fact_gatherer: "FactGatherer | None"
 
@@ -57,6 +60,14 @@ def create_tech_lead_authority_store(config: "Config") -> "TechLeadAuthorityStor
     from ..infra.tech_lead_authority_store import SqliteTechLeadAuthorityStore
 
     return SqliteTechLeadAuthorityStore.for_repo(config.repo_root)
+
+
+def create_open_issue_corpus_store(config: "Config") -> "OpenIssueCorpusStore":
+    """The rebuildable SQL cache of vetted GitHub open-issue fingerprints."""
+
+    from ..infra.open_issue_corpus_store import SqliteOpenIssueCorpusStore
+
+    return SqliteOpenIssueCorpusStore.for_repo(config.repo_root)
 
 
 def wire_tech_lead_act_executors(orchestrator: "Orchestrator") -> None:
@@ -210,6 +221,16 @@ def create_tech_lead_composition(
 ) -> TechLeadComposition:
     """Build the tech_lead store and ensure both projections share one publisher."""
     authority = create_tech_lead_authority_store(config)
+    open_issue_corpus = create_open_issue_corpus_store(config)
+    from ..control.open_issue_corpus import OpenIssueCorpusManager
+
+    open_issue_corpus_manager = OpenIssueCorpusManager(
+        repository_host,
+        open_issue_corpus,
+        is_enabled=lambda: bool(
+            config.tech_lead_review_agent and config.tech_lead.dedup.enabled
+        ),
+    )
     board_publisher = (
         fact_gatherer.board_publisher
         if fact_gatherer is not None
@@ -222,6 +243,7 @@ def create_tech_lead_composition(
         )
     return TechLeadComposition(
         authority=authority,
+        open_issue_corpus=open_issue_corpus_manager,
         board_publisher=board_publisher,
         fact_gatherer=fact_gatherer,
     )

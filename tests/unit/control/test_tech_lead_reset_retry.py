@@ -14,6 +14,7 @@ from issue_orchestrator.control.actions import (
 from issue_orchestrator.control.claim_gate import ClaimLostError
 from issue_orchestrator.control.completion_handler import CompletionHandler
 from issue_orchestrator.control.label_manager import LabelManager
+from issue_orchestrator.control.open_issue_corpus import OpenIssueCorpusManager
 from issue_orchestrator.control.reconciliation import (
     ExternalSnapshot,
     ReconciliationRequired,
@@ -45,6 +46,9 @@ from issue_orchestrator.events import EventName
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.ports import InMemoryEventSink
 from issue_orchestrator.ports.session_output import SessionOutput
+from issue_orchestrator.ports.open_issue_corpus_store import (
+    InMemoryOpenIssueCorpusStore,
+)
 from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthorityStore
 from tests.unit.session_run_helpers import make_session_run_assets
 
@@ -599,8 +603,9 @@ class TestEffectiveTerminalOutcomeEvents:
         session_output.find_run_dir.return_value = None
         session_output.attach_claude_log.return_value = None
         session_output.get_log_path_for_run_dir.return_value = None
+        config = Config()
         return _HandlerWithMandatedReset(
-            config=Config(),
+            config=config,
             events=events,
             repository_host=repository_host,
             get_issue_machine_fn=lambda _issue: None,
@@ -608,6 +613,11 @@ class TestEffectiveTerminalOutcomeEvents:
             get_review_machine_fn=lambda _pr_number: None,
             session_output=session_output,
             tech_lead_authority=InMemoryTechLeadAuthorityStore(),
+            open_issue_corpus=OpenIssueCorpusManager(
+                repository_host,
+                InMemoryOpenIssueCorpusStore(),
+                is_enabled=lambda: config.tech_lead.dedup.enabled,
+            ),
             active_session_run_id=lambda _issue_number: None,
             mandated_action=mandated_action,
         )

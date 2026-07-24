@@ -155,21 +155,32 @@ def make_handler(
     from issue_orchestrator.ports.tech_lead_authority import (
         InMemoryTechLeadAuthorityStore,
     )
+    from issue_orchestrator.ports.open_issue_corpus_store import (
+        InMemoryOpenIssueCorpusStore,
+    )
 
     tech_lead_authority = (
         SqliteTechLeadAuthorityStore.for_repo(config.repo_root)
         if config.tech_lead_review_agent
         else InMemoryTechLeadAuthorityStore()
     )
+    from issue_orchestrator.control.open_issue_corpus import OpenIssueCorpusManager
+
+    resolved_repository_host = repository_host or make_repository_host()
     return CompletionHandler(
         config=config,
         events=events if events is not None else NullEventSink(),
-        repository_host=repository_host if repository_host is not None else make_repository_host(),
+        repository_host=resolved_repository_host,
         get_issue_machine_fn=lambda _issue: issue_machine,
         get_session_machine_fn=lambda _terminal_id: session_machine,
         get_review_machine_fn=lambda _pr_number: review_machine,
         session_output=session_output if session_output is not None else default_session_output,
         tech_lead_authority=tech_lead_authority,
+        open_issue_corpus=OpenIssueCorpusManager(
+            resolved_repository_host,
+            InMemoryOpenIssueCorpusStore(),
+            is_enabled=lambda: config.tech_lead.dedup.enabled,
+        ),
         active_session_run_id=lambda _n: None,
     )
 

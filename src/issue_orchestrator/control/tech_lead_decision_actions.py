@@ -116,15 +116,6 @@ if TYPE_CHECKING:
 # Cap applied to SurfaceTechLeadProposalAction.body_preview at construction.
 _BODY_PREVIEW_CHARS = 500
 
-# Lexical similarity at/above which the dedup gate treats a create_issue proposal
-# as a SUSPECTED duplicate and gates it for human reconciliation. Deliberately
-# high — the scorer only catches shared-vocabulary near-duplicates, so a high bar
-# keeps false-positive gating rare. A config knob follows in #6878; the trusted
-# open-issue corpus that feeds the lexical path is DISABLED in increment 1 (the
-# production caller passes CorpusState.DISABLED explicitly), so the lexical
-# backstop is dormant until the SQL fingerprint cache lands (#6878 increment 2).
-_DEDUP_BACKSTOP_THRESHOLD = 0.72
-
 # Operator-facing gate reasons rendered into the gated issue body and its action
 # reason. The PRESENCE of a reason is what gates the create (never a bare
 # boolean), so every gated issue explains itself.
@@ -385,7 +376,7 @@ class _DecisionActionPlanner:
     # Trusted dedup facts (#6878), REQUIRED — never a silent empty default, which
     # would disable the safety mechanism invisibly. The corpus carries an explicit
     # Ready/Unavailable state; the grant is the launch-authority-derived set a
-    # dedup redirect may target. Increment 1 passes CorpusUnavailable explicitly.
+    # dedup redirect may target.
     dedup_corpus: OpenIssueCorpus
     dedup_grant: DuplicateTargetGrant
     actions: list[Action] = field(default_factory=list)
@@ -622,7 +613,7 @@ class _DecisionActionPlanner:
             self.dedup_corpus,
             self.dedup_grant,
             self._dedup_authority(),
-            threshold=_DEDUP_BACKSTOP_THRESHOLD,
+            threshold=self.config.tech_lead.dedup.similarity_threshold,
         )
         if isinstance(outcome, CommentExisting):
             self.actions.append(

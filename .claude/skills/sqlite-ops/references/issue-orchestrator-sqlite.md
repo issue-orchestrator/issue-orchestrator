@@ -29,6 +29,9 @@ Canonical source: `src/issue_orchestrator/infra/sqlite_registry.py`
 - **Timeline**: `.issue-orchestrator/state/timeline.sqlite`
   - Code: `src/issue_orchestrator/execution/timeline_writer.py`, `src/issue_orchestrator/execution/timeline_reader.py`
 
+- **Open Issue Corpus**: `.issue-orchestrator/state/open_issue_corpus.sqlite`
+  - Code: `src/issue_orchestrator/infra/open_issue_corpus_store.py`
+
 ## Registry and maintenance
 
 - Registry: `src/issue_orchestrator/infra/sqlite_registry.py`
@@ -60,7 +63,7 @@ Canonical source: `src/issue_orchestrator/infra/sqlite_registry.py`
   - Uses `open_sqlite(self._db_path)`
   - Applies shared pragmas (foreign keys, busy timeout, WAL, FULL)
 
-- Other runtime stores (`TimelineStore`, `GoalPilotStore`, `LabelStore`, `ProviderCircuitStore`, `QueueCacheStore`)
+- Other runtime stores (`TimelineStore`, `GoalPilotStore`, `LabelStore`, `ProviderCircuitStore`, `QueueCacheStore`, `SqliteOpenIssueCorpusStore`)
   - Use `open_sqlite()` and inherit the same shared pragmas.
 
 ## Existing corruption handling

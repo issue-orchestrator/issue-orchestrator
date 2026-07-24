@@ -21,6 +21,7 @@ import pytest
 from issue_orchestrator.control.actions import AddLabelAction, RemoveLabelAction
 from issue_orchestrator.control.completion_handler import CompletionHandler
 from issue_orchestrator.control.completion_processor import CompletionProcessor
+from issue_orchestrator.control.open_issue_corpus import OpenIssueCorpusManager
 from issue_orchestrator.control.session_controller import SessionController
 from issue_orchestrator.domain.models import AgentConfig, Issue, Session, SessionStatus
 from issue_orchestrator.domain.models import CompletionOutcome
@@ -29,6 +30,9 @@ from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthorityStore
+from issue_orchestrator.ports.open_issue_corpus_store import (
+    InMemoryOpenIssueCorpusStore,
+)
 from issue_orchestrator.observation.observation import SessionObservation, SessionObservationResult
 from issue_orchestrator.entrypoints.cli_tools.setup_wizard import (
     create_starter_prompt,
@@ -444,10 +448,7 @@ def test_publish_failure_multi_attempt_contract(tmp_path: Path, lm: LabelManager
     config.repo = "owner/repo"
 
     issue = Issue(number=1, title="Synthetic publish-fail issue", labels=["agent:coder"])
-    handler = CompletionHandler(
-        config=config,
-        events=type("Sink", (), {"publish": lambda self, event: None})(),
-        repository_host=type(
+    repository_host = type(
             "RepoHost",
             (),
             {
@@ -456,12 +457,21 @@ def test_publish_failure_multi_attempt_contract(tmp_path: Path, lm: LabelManager
                 "get_issue": lambda self, issue_number: None,
                 "set_pr_draft": lambda self, pr_number, draft: None,
             },
-        )(),
+        )()
+    handler = CompletionHandler(
+        config=config,
+        events=type("Sink", (), {"publish": lambda self, event: None})(),
+        repository_host=repository_host,
         get_issue_machine_fn=lambda _issue: None,
         get_session_machine_fn=lambda _terminal: None,
         get_review_machine_fn=lambda _pr: None,
         session_output=FileSystemSessionOutput(),
         tech_lead_authority=InMemoryTechLeadAuthorityStore(),
+        open_issue_corpus=OpenIssueCorpusManager(
+            repository_host,
+            InMemoryOpenIssueCorpusStore(),
+            is_enabled=lambda: config.tech_lead.dedup.enabled,
+        ),
         active_session_run_id=lambda _n: None,
     )
 

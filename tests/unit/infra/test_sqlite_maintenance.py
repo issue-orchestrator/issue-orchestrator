@@ -125,3 +125,34 @@ def test_tech_lead_authority_db_is_backed_up_when_due(tmp_path):
         / "tech_lead_authority" / "daily" / f"{date_str}.db"
     )
     assert backup.exists()
+
+
+def test_sqlite_registry_includes_open_issue_corpus_cache(tmp_path):
+    config = Config()
+    config.repo_root = tmp_path
+
+    entry = next(
+        db for db in list_sqlite_databases(config) if db.key == "open_issue_corpus"
+    )
+
+    assert entry.label == "Open Issue Corpus"
+    assert entry.path_fn(config) == state_dir(tmp_path) / "open_issue_corpus.sqlite"
+    assert entry.enabled_fn(config) is True
+    assert entry.backup is True
+    assert entry.enforce_pragmas is True
+
+
+def test_open_issue_corpus_db_is_backed_up_when_due(tmp_path):
+    config = Config()
+    config.repo_root = tmp_path
+    from issue_orchestrator.infra.open_issue_corpus_store import (
+        SqliteOpenIssueCorpusStore,
+    )
+
+    SqliteOpenIssueCorpusStore.for_repo(tmp_path).replace_all(
+        (), watermark="2026-07-23T12:00:00Z"
+    )
+
+    results = run_backups_if_due(config)
+
+    assert any(db.db.key == "open_issue_corpus" and db.performed for db in results)

@@ -104,8 +104,8 @@ def _plan(
         anchor_issue=anchor or _anchor(),
         expected=EXPECTED,
         op_ledger=op_ledger or {},
-    active_session_run_id=active_session_run_id,
-    pattern_ledger=pattern_ledger or {},
+        active_session_run_id=active_session_run_id,
+        pattern_ledger=pattern_ledger or {},
         dedup_corpus=dedup_corpus or OpenIssueCorpus.disabled(),
         dedup_grant=dedup_grant or DuplicateTargetGrant.none(),
         **SOURCE_RUN,
@@ -254,6 +254,28 @@ class TestCreateIssueDedup:
         assert PROPOSED_TECH_LEAD_LABEL in gated.labels
         assert "#1234" in gated.body and "score" in gated.body.lower()
 
+    def test_similarity_threshold_controls_lexical_backstop(self) -> None:
+        strict = _config()
+        strict.tech_lead.dedup.similarity_threshold = 0.99
+        [created] = _plan(
+            _decision(self._issue()),
+            strict,
+            dedup_corpus=self._ready(),
+        )
+        assert isinstance(created, CreateTechLeadIssueAction)
+        assert PROPOSED_TECH_LEAD_LABEL not in created.labels
+
+        permissive = _config()
+        permissive.tech_lead.dedup.similarity_threshold = 0.98
+        [gated] = _plan(
+            _decision(self._issue()),
+            permissive,
+            dedup_corpus=self._ready(),
+        )
+        assert isinstance(gated, CreateTechLeadIssueAction)
+        assert PROPOSED_TECH_LEAD_LABEL in gated.labels
+        assert "#1234" in gated.body
+
     def test_missing_citation_is_gated_never_comments_it(self) -> None:
         planned = _plan(
             _decision(self._issue(duplicate_of=999)),  # not in the corpus
@@ -270,8 +292,7 @@ class TestCreateIssueDedup:
     # --- Corpus state: DISABLED files normally, UNAVAILABLE fails closed ---
 
     def test_disabled_corpus_without_citation_files_normally(self) -> None:
-        # Increment-1 posture: the lexical backstop is off, so a proposal with no
-        # citation files normally.
+        # Configured-off posture: a proposal with no citation files normally.
         [created] = _plan(
             _decision(self._issue()), dedup_corpus=OpenIssueCorpus.disabled()
         )
@@ -280,7 +301,7 @@ class TestCreateIssueDedup:
 
     def test_disabled_corpus_with_citation_is_gated_not_filed(self) -> None:
         # The agent's dedup intent is preserved (gated with the candidate), never
-        # discarded into a novel issue — the live increment-1 behavior.
+        # discarded into a novel issue.
         planned = _plan(
             _decision(self._issue(duplicate_of=1234)),
             dedup_corpus=OpenIssueCorpus.disabled(),

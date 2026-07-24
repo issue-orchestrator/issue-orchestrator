@@ -338,6 +338,29 @@ class TechLeadAuthorityConfig:
 
 
 @dataclass
+class TechLeadDedupConfig:
+    """Trusted open-issue deduplication settings for ``create_issue`` proposals."""
+
+    enabled: bool = True
+    similarity_threshold: float = 0.72
+
+    @classmethod
+    def from_mapping(cls, data: dict) -> "TechLeadDedupConfig":
+        return cls(
+            enabled=bool(data.get("enabled", True)),
+            similarity_threshold=float(data.get("similarity_threshold", 0.72)),
+        )
+
+    def startup_errors(self) -> list[str]:
+        if not 0.0 < self.similarity_threshold <= 1.0:
+            return [
+                "tech_lead.dedup.similarity_threshold must be > 0.0 and <= 1.0, "
+                f"got {self.similarity_threshold}"
+            ]
+        return []
+
+
+@dataclass
 class TechLeadHealthReviewConfig:
     """Periodic and problem-storm health-review trigger settings (ADR-0031).
 
@@ -483,6 +506,9 @@ class TechLeadConfig:
     # Per-action-type graduated authority for tech_lead decision proposals
     authority: TechLeadAuthorityConfig = field(default_factory=TechLeadAuthorityConfig)
 
+    # Trusted open-issue corpus and lexical backstop for create_issue proposals
+    dedup: TechLeadDedupConfig = field(default_factory=TechLeadDedupConfig)
+
     # Periodic health-review trigger (ADR-0031 §4)
     health_review: TechLeadHealthReviewConfig = field(default_factory=TechLeadHealthReviewConfig)
 
@@ -502,6 +528,10 @@ class TechLeadConfig:
             "max_concurrent": self.max_concurrent,
             "max_expedited": self.max_expedited,
             "authority": self.authority.to_event_dict(),
+            "dedup": {
+                "enabled": self.dedup.enabled,
+                "similarity_threshold": self.dedup.similarity_threshold,
+            },
             "health_review": {
                 "interval_minutes": self.health_review.interval_minutes,
                 "storm_threshold": self.health_review.storm_threshold,
@@ -530,6 +560,7 @@ class TechLeadConfig:
                 f"{TECH_LEAD_MAX_EXPEDITED_LIMIT} (0 disables the expedite lane), "
                 f"got {self.max_expedited}"
             )
+        errors.extend(self.dedup.startup_errors())
         return errors
 
 

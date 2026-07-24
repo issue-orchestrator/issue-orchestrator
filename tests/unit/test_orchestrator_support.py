@@ -248,6 +248,37 @@ class TestQueueFetchPlanner:
         assert state.queue_refresh_count == 1
         assert state.queue_last_full_scan_at > 0
 
+    def test_network_refresh_syncs_open_issue_corpus_on_the_read_phase(
+        self, mock_event_sink, mock_repository_host
+    ):
+        config = self._make_config()
+        state = OrchestratorState(
+            cached_queue_issues=[make_issue(1, labels=["agent:web"])],
+            queue_last_full_scan_at=time.time(),
+        )
+        scheduler = Mock()
+        scheduler.evaluate_issues.return_value = []
+        github_workflow = Mock()
+        github_workflow.fetch_all_issues.return_value = [
+            make_issue(1, labels=["agent:web"])
+        ]
+        corpus_sync = Mock()
+
+        _fetch_and_update_queue(
+            config=config,
+            events=mock_event_sink,
+            state=state,
+            repository_host=mock_repository_host,
+            scheduler=scheduler,
+            github_workflow=github_workflow,
+            refresh_requested=True,
+            inflight_stable_ids={},
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
+            open_issue_corpus=corpus_sync,
+        )
+
+        corpus_sync.sync.assert_called_once_with()
+
     def test_scheduled_refresh_uses_incremental_when_full_scan_not_due(
         self, mock_event_sink, mock_repository_host
     ):
