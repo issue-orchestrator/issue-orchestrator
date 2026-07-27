@@ -51,13 +51,21 @@ def _make_api(base_url: str):
     return OrchestratorHttpApi(lambda: base_url), None
 
 
+def _priority_queue_for(issues) -> list[int]:
+    """``OrchestratorState.priority_queue`` holds issue *numbers*.
+
+    Every production writer (``RetryHistoryState``, ``startup_manager``) inserts
+    and removes bare ints, and ``dashboard.py`` filters it against a set of
+    numbers. ``/api/status`` is contracted as ``queue: integer[]`` (#6410), so
+    these fixtures use the real shape rather than issue-shaped dicts.
+    """
+    return [issue.number for issue in issues]
+
+
 def test_http_api_status_queue_and_history(sample_orchestrator, sample_issues, tmp_path):
     web.set_orchestrator(sample_orchestrator)
     try:
-        queue_items = [
-            {"number": issue.number, "title": issue.title, "labels": issue.labels}
-            for issue in sample_issues
-        ]
+        queue_items = _priority_queue_for(sample_issues)
         sample_orchestrator.state.priority_queue = queue_items
         history_entry = SessionHistoryEntry(
             issue_number=42,
@@ -93,10 +101,7 @@ def test_http_api_status_queue_and_history(sample_orchestrator, sample_issues, t
 async def test_mcp_snapshot_uses_api(sample_orchestrator, sample_issues):
     web.set_orchestrator(sample_orchestrator)
     try:
-        queue_items = [
-            {"number": issue.number, "title": issue.title, "labels": issue.labels}
-            for issue in sample_issues
-        ]
+        queue_items = _priority_queue_for(sample_issues)
         sample_orchestrator.state.priority_queue = queue_items
         port = _find_free_port()
         server = _start_server(port)
