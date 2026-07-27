@@ -25,6 +25,7 @@ The first rule set tracks:
 - Semgrep typed-seam findings for raw dict/list-of-dict public payload return and parameter surfaces
 - Semgrep semantic-vocabulary findings for raw lifecycle/status string literals
 - UI OpenAPI route drift: contracted browser endpoints must exist and use the generated response model, while legacy uncontracted dashboard routes are ratcheted so new browser JSON routes cannot bypass `docs/api/ui-openapi.json` silently
+- UI OpenAPI prefixed routers, which invalidate the route scan's literal-path assumption and are hard-gated rather than ratcheted
 - branch sites that mention lifecycle/control vocabulary
 
 These are proxies for the failure pattern captured in issue #6362: control policy spreading across multiple owners, projections, and execution paths.
@@ -45,6 +46,10 @@ UI OpenAPI route scanning reads `docs/api/ui-openapi.json` and FastAPI route dec
 
 Route metadata a decorator does not carry is named in prose rather than with a placeholder sentinel: a route with no `response_model` keyword reports `found (no response_model)`, and a decorator with neither a positional path nor a `path=` keyword reports `uses dynamic path (unknown route path expression)`. Concrete dynamic paths still render as quoted source (`uses dynamic path 'API_DYNAMIC'`). This wording is prose only: a pathless decorator keys on the explicit token `dynamic-path:<METHOD> <file>:<no-path-argument>`, never on the diagnostic text, so a message can be reworded without invalidating baseline entries.
 
+The scan compares decorator paths with schema path keys **as written**. It does not compose routes the way FastAPI does at runtime, so it assumes no router applies a prefix: `APIRouter(prefix="/api/foo")` with `@router.get("/bar")` serves `/api/foo/bar` while the scan only sees `/bar`, and `include_router(router, prefix="/api/foo")` shifts the same way. That would produce both false positives and false negatives instead of a visible failure, so the assumption is enforced mechanically: `ui_openapi_prefixed_router` findings report any `APIRouter(prefix=...)` or `include_router(..., prefix=...)` call in the scanned route files. `prefix` is keyword-only on both calls, so a `**kwargs` splat into them is reported too; an explicit `prefix=""` is a no-op and is not reported. The check resolves local aliases of `APIRouter` (`from fastapi import APIRouter as Router`), but it does not follow router factories defined outside the scanned files — those remain out of scope until the guardrail understands full route composition.
+
+Prefixed routers are hard-gated rather than ratcheted, because the finding does not describe debt; it means the rest of the rule's output can no longer be trusted. Either drop the prefix and keep literal decorator paths, or teach the guardrail full route composition before introducing one.
+
 ## Ratchet Model
 
 Existing violations are stored in the baseline. A PR fails when it:
@@ -53,6 +58,16 @@ Existing violations are stored in the baseline. A PR fails when it:
 - increases a tracked metric above its baseline value
 
 Rules may define `new_metric_min_value` so small new files can be reported without failing the ratchet immediately. For example, the lifecycle/control branch-site rule starts failing unbaselined files at three matching branch sites.
+
+### Hard-Gated Findings
+
+A collector can mark a finding hard-gated when the finding invalidates its own analysis rather than recording debt. Hard-gated findings are not baselineable at all:
+
+- they always fail the ratchet comparison, whatever the baseline says
+- `--update-baseline` never writes them and still exits non-zero
+- `--accept` refuses them
+
+The escape hatch is fixing the code or extending the checker, not accepting a key. `ui_openapi_prefixed_router` is the first finding in this class.
 
 Improvements do not fail. If a cleanup PR removes policy sites or shrinks a hotspot, regenerate the baseline and commit the lower value.
 
@@ -94,7 +109,7 @@ Add guardrails in small PRs:
 2. Baseline the current repository state.
 3. Fail only new or worsened findings.
 4. Create separate cleanup PRs to reduce the baseline.
-5. Promote mature checks to hard gates when the baseline reaches zero or a defensible threshold.
+5. Promote mature checks to hard gates when the baseline reaches zero or a defensible threshold. Checks that invalidate their own analysis, such as `ui_openapi_prefixed_router`, start hard-gated instead of being baselined.
 
 Good guardrail candidates:
 

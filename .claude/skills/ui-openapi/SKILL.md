@@ -30,6 +30,13 @@ Use this skill when:
    - `tests/unit/test_ui_openapi_generated.py`
    - `tests/unit/test_ui_openapi_payloads.py`
 
+## Route Path Constraints
+
+The `ui_openapi_routes` quality guardrail compares decorator paths with schema path keys as written, so routes under `src/issue_orchestrator/entrypoints/` must keep full literal paths:
+
+- Use a string literal in the decorator (`@router.get("/api/foo/bar")`), not a constant or f-string.
+- Do not use `APIRouter(prefix=...)` or `include_router(..., prefix=...)`. Both are reported as `ui_openapi_prefixed_router`, which is hard-gated and cannot be baselined. See `docs/development/QUALITY_GUARDRAILS.md`.
+
 Review artifact UI wiring uses `open_review_artifact` timeline commands and `CycleArtifactsPayload.review_report` / `review_decision`. Add or update those schemas before regenerating when changing review artifact buttons, menus, or E2E issue-detail payloads.
 
 ## Do Not Modify Directly

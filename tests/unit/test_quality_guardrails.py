@@ -965,6 +965,155 @@ def test_ui_openapi_routes_ignore_dynamic_non_browser_route_paths(tmp_path: Path
     assert baseline["metrics"] == {}
 
 
+def test_ui_openapi_routes_hard_gate_prefixed_api_router(tmp_path: Path) -> None:
+    _copy_runner(tmp_path)
+    _write_ui_openapi_config(tmp_path)
+    _write_ui_openapi_schema(tmp_path, {"/api/foo/typed": {"get": "TypedPayload"}})
+    target = tmp_path / "src" / "app" / "web_routes.py"
+    target.parent.mkdir(parents=True)
+    target.write_text(
+        "from fastapi import APIRouter\n"
+        "router = APIRouter(prefix='/api/foo')\n"
+        "@router.get('/typed', response_model=TypedPayload)\n"
+        "def typed():\n"
+        "    return {}\n",
+        encoding="utf-8",
+    )
+
+    result = _run(tmp_path, "--update-baseline")
+
+    assert result.returncode == 2, result.stdout
+    assert "hard-gated ui_openapi_prefixed_router" in result.stderr
+    assert "APIRouter at line 2 applies router prefix '/api/foo'" in result.stderr
+    baseline = json.loads((tmp_path / "quality" / "guardrails-baseline.json").read_text(encoding="utf-8"))
+    assert "ui_openapi_routes:prefixed-router:src/app/web_routes.py:2" not in baseline["metrics"]
+
+
+def test_ui_openapi_routes_hard_gate_aliased_prefixed_api_router(tmp_path: Path) -> None:
+    _copy_runner(tmp_path)
+    _write_ui_openapi_config(tmp_path)
+    _write_ui_openapi_schema(tmp_path, {})
+    target = tmp_path / "src" / "app" / "web_routes.py"
+    target.parent.mkdir(parents=True)
+    target.write_text(
+        "from fastapi import APIRouter as Router\n"
+        "PREFIX = '/api/foo'\n"
+        "router = Router(prefix=PREFIX)\n",
+        encoding="utf-8",
+    )
+
+    result = _run(tmp_path, "--update-baseline")
+
+    assert result.returncode == 2, result.stdout
+    assert "hard-gated ui_openapi_prefixed_router" in result.stderr
+    assert "Router at line 3 applies router prefix PREFIX" in result.stderr
+
+
+def test_ui_openapi_routes_hard_gate_prefixed_include_router(tmp_path: Path) -> None:
+    _copy_runner(tmp_path)
+    _write_ui_openapi_config(tmp_path)
+    _write_ui_openapi_schema(tmp_path, {"/api/typed": {"get": "TypedPayload"}})
+    target = tmp_path / "src" / "app" / "web_routes.py"
+    target.parent.mkdir(parents=True)
+    target.write_text(
+        "from fastapi import APIRouter, FastAPI\n"
+        "router = APIRouter()\n"
+        "app = FastAPI()\n"
+        "@router.get('/api/typed', response_model=TypedPayload)\n"
+        "def typed():\n"
+        "    return {}\n"
+        "app.include_router(router)\n",
+        encoding="utf-8",
+    )
+    assert _run(tmp_path, "--update-baseline").returncode == 0
+
+    target.write_text(
+        "from fastapi import APIRouter, FastAPI\n"
+        "router = APIRouter()\n"
+        "app = FastAPI()\n"
+        "@router.get('/api/typed', response_model=TypedPayload)\n"
+        "def typed():\n"
+        "    return {}\n"
+        "app.include_router(router, prefix='/api/foo')\n",
+        encoding="utf-8",
+    )
+
+    result = _run(tmp_path, "--fail-on-new")
+
+    assert result.returncode == 2
+    assert "hard-gated ui_openapi_prefixed_router" in result.stderr
+    assert "include_router at line 7 applies router prefix '/api/foo'" in result.stderr
+
+
+def test_ui_openapi_routes_hard_gate_dynamic_router_options(tmp_path: Path) -> None:
+    _copy_runner(tmp_path)
+    _write_ui_openapi_config(tmp_path)
+    _write_ui_openapi_schema(tmp_path, {})
+    target = tmp_path / "src" / "app" / "web_routes.py"
+    target.parent.mkdir(parents=True)
+    target.write_text(
+        "from fastapi import APIRouter\n"
+        "ROUTER_OPTIONS = {'prefix': '/api/foo'}\n"
+        "router = APIRouter(**ROUTER_OPTIONS)\n",
+        encoding="utf-8",
+    )
+
+    result = _run(tmp_path, "--update-baseline")
+
+    assert result.returncode == 2, result.stdout
+    assert "hard-gated ui_openapi_prefixed_router" in result.stderr
+    assert "applies router prefix **ROUTER_OPTIONS" in result.stderr
+
+
+def test_ui_openapi_routes_refuse_to_accept_prefixed_router(tmp_path: Path) -> None:
+    _copy_runner(tmp_path)
+    _write_ui_openapi_config(tmp_path)
+    _write_ui_openapi_schema(tmp_path, {})
+    target = tmp_path / "src" / "app" / "web_routes.py"
+    target.parent.mkdir(parents=True)
+    assert _run(tmp_path, "--update-baseline").returncode == 0
+    target.write_text(
+        "from fastapi import APIRouter\n"
+        "router = APIRouter(prefix='/api/foo')\n",
+        encoding="utf-8",
+    )
+    key = "ui_openapi_routes:prefixed-router:src/app/web_routes.py:2"
+
+    result = _run(tmp_path, "--accept", key)
+
+    assert result.returncode == 1
+    assert f"cannot accept hard-gated metric key(s): {key}" in result.stderr
+    baseline = json.loads((tmp_path / "quality" / "guardrails-baseline.json").read_text(encoding="utf-8"))
+    assert key not in baseline["metrics"]
+
+
+def test_ui_openapi_routes_allow_unprefixed_routers(tmp_path: Path) -> None:
+    _copy_runner(tmp_path)
+    _write_ui_openapi_config(tmp_path)
+    _write_ui_openapi_schema(tmp_path, {"/api/typed": {"get": "TypedPayload"}})
+    target = tmp_path / "src" / "app" / "web_routes.py"
+    target.parent.mkdir(parents=True)
+    target.write_text(
+        "from fastapi import APIRouter, FastAPI\n"
+        "router = APIRouter()\n"
+        "empty_prefix_router = APIRouter(prefix='')\n"
+        "app = FastAPI()\n"
+        "@router.get('/api/typed', response_model=TypedPayload)\n"
+        "def typed():\n"
+        "    return {}\n"
+        "app.include_router(router)\n"
+        "app.include_router(empty_prefix_router, prefix='')\n",
+        encoding="utf-8",
+    )
+
+    result = _run(tmp_path, "--update-baseline")
+
+    assert result.returncode == 0, result.stderr
+    assert "ui_openapi_prefixed_router" not in result.stderr
+    baseline = json.loads((tmp_path / "quality" / "guardrails-baseline.json").read_text(encoding="utf-8"))
+    assert baseline["metrics"] == {}
+
+
 def test_decrease_does_not_fail_and_stale_baseline_is_ignored(tmp_path: Path) -> None:
     _copy_runner(tmp_path)
     _write_config(tmp_path, max_lines=20)
