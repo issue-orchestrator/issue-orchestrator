@@ -7,19 +7,27 @@ import platform
 from collections.abc import Callable
 from dataclasses import dataclass
 from importlib.metadata import version as package_version
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated
 
 from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from ..contracts.ui_openapi_models import (
     BlockedIssuesDialogPayload,
+    BlockedIssuesPayload,
     ConfigDialogPayload,
     DebugDialogPayload,
+    DebugSnapshotPayload,
+    DependencyProblemsPayload,
     DoctorDialogPayload,
+    DoctorReportPayload,
     InfoDialogPayload,
+    OrchestratorInfoPayload,
     PhaseDialogPayload,
+    RawConfigPayload,
     SessionDiagnosticsDialogPayload,
+    SessionFailureDiagnosisPayload,
+    StaleIssuesPayload,
     ValidationFailureDialogPayload,
 )
 from ..control.worktree_manager import get_worktree_path
@@ -97,7 +105,7 @@ def _orchestrator_not_running() -> JSONResponse:
 def _info_payload(
     orchestrator: "Orchestrator",
     deps: WebDiagnosticsDependencies,
-) -> dict[str, Any]:
+) -> OrchestratorInfoPayload:
     state = orchestrator.state
     config = orchestrator.config
 
@@ -105,7 +113,7 @@ def _info_payload(
     commit_sha = repo_identity.commit_sha
     client_capabilities = deps.get_client_host().capabilities()
 
-    return {
+    return OrchestratorInfoPayload.model_validate({
         "version": package_version("issue-orchestrator"),
         "repo": config.repo,
         "repo_root": str(config.repo_root) if config.repo_root else None,
@@ -134,22 +142,22 @@ def _info_payload(
         # the ~10 s cold-start window shows a procession of SSE-driven
         # UI updates as the dashboard catches up to the engine state.
         "startup_status": state.startup_status,
-    }
+    })
 
 
-def _config_payload(orchestrator: "Orchestrator") -> dict[str, str]:
+def _config_payload(orchestrator: "Orchestrator") -> RawConfigPayload:
     config = orchestrator.config
 
     config_text = "Config file not found"
     if config.config_path and config.config_path.exists():
         config_text = config.config_path.read_text()
 
-    return {"config": config_text}
+    return RawConfigPayload(config=config_text)
 
 
 def _blocked_issues_payload(
     orchestrator: "Orchestrator",
-) -> dict[str, list[dict[str, Any]]]:
+) -> BlockedIssuesPayload:
     state = orchestrator.state
     config = orchestrator.config
     lm = orchestrator.deps.label_manager
@@ -206,10 +214,10 @@ def _blocked_issues_payload(
                 }
             )
 
-    return {"blocked_issues": blocked_issues}
+    return BlockedIssuesPayload.model_validate({"blocked_issues": blocked_issues})
 
 
-def _debug_payload(orchestrator: "Orchestrator") -> dict[str, Any]:
+def _debug_payload(orchestrator: "Orchestrator") -> DebugSnapshotPayload:
     state = orchestrator.state
     config = orchestrator.config
 
@@ -236,17 +244,17 @@ def _debug_payload(orchestrator: "Orchestrator") -> dict[str, Any]:
         "max_sessions": config.max_concurrent_sessions,
     }
 
-    return {
+    return DebugSnapshotPayload.model_validate({
         "paused": state.paused,
         "config_path": str(config.config_path) if config.config_path else "None",
         "repo_root": str(config.repo_root),
         "priority_queue": state.priority_queue,
         "agents": agents,
         "startup_options": startup_options,
-    }
+    })
 
 
-def _doctor_payload(orchestrator: "Orchestrator | None") -> dict[str, Any]:
+def _doctor_payload(orchestrator: "Orchestrator | None") -> DoctorReportPayload:
     # Doctor intentionally runs without a live orchestrator so startup failures
     # still have diagnostics.
     config = orchestrator.config if orchestrator is not None else None
@@ -272,7 +280,7 @@ def _doctor_payload(orchestrator: "Orchestrator | None") -> dict[str, Any]:
             ),
         )
 
-    return result.to_dict()
+    return DoctorReportPayload.model_validate(result.to_dict())
 
 
 @web_diagnostics_router.get(
@@ -288,7 +296,7 @@ async def get_info_dialog(
     if orchestrator is None:
         return _orchestrator_not_running()
     return InfoDialogPayload.model_validate(
-        build_info_dialog(_info_payload(orchestrator, deps))
+        build_info_dialog(_info_payload(orchestrator, deps).model_dump(mode="json"))
     )
 
 
@@ -302,9 +310,8 @@ async def get_config_dialog(
     """Get view model for the configuration dialog."""
     if orchestrator is None:
         return _orchestrator_not_running()
-    payload = _config_payload(orchestrator)
     return ConfigDialogPayload.model_validate(
-        build_config_dialog(payload.get("config", ""))
+        build_config_dialog(_config_payload(orchestrator).config)
     )
 
 
@@ -320,7 +327,7 @@ async def get_debug_dialog(
     if orchestrator is None:
         return _orchestrator_not_running()
     return DebugDialogPayload.model_validate(
-        build_debug_dialog(_debug_payload(orchestrator))
+        build_debug_dialog(_debug_payload(orchestrator).model_dump(mode="json"))
     )
 
 
@@ -333,7 +340,7 @@ async def get_doctor_dialog(
 ) -> DoctorDialogPayload | JSONResponse:
     """Get view model for the doctor dialog."""
     return DoctorDialogPayload.model_validate(
-        build_doctor_dialog(_doctor_payload(orchestrator))
+        build_doctor_dialog(_doctor_payload(orchestrator).model_dump(mode="json"))
     )
 
 
@@ -408,7 +415,9 @@ async def get_blocked_issues_dialog(
     if orchestrator is None:
         return _orchestrator_not_running()
     return BlockedIssuesDialogPayload.model_validate(
-        build_blocked_issues_dialog(_blocked_issues_payload(orchestrator))
+        build_blocked_issues_dialog(
+            _blocked_issues_payload(orchestrator).model_dump(mode="json")
+        )
     )
 
 
@@ -431,10 +440,13 @@ async def get_phase_dialog(
     )
 
 
-@web_diagnostics_router.get("/api/dependency-problems")
+@web_diagnostics_router.get(
+    "/api/dependency-problems",
+    response_model=DependencyProblemsPayload,
+)
 async def get_dependency_problems(
     orchestrator: WebOrchestratorDependency,
-) -> JSONResponse:
+) -> DependencyProblemsPayload | JSONResponse:
     """Get current dependency problems for issues."""
     if orchestrator is None:
         return _orchestrator_not_running()
@@ -447,20 +459,26 @@ async def get_dependency_problems(
             return ""
         return f"https://github.com/{config.repo}/issues/{issue_number}"
 
-    problems = {}
-    for issue_num, problem in state.dependency_problems.items():
-        problems[issue_num] = {
+    # Keys are stringified up front: the wire shape has always been a JSON
+    # object (JSON object keys are strings), so the typed contract states
+    # that rather than leaning on Pydantic to coerce int keys silently.
+    problems = {
+        str(issue_num): {
             "issue_number": problem.issue_number,
             "issue_title": problem.issue_title,
             "summary": problem.summary,
             "issue_url": make_issue_url(problem.issue_number),
         }
+        for issue_num, problem in state.dependency_problems.items()
+    }
 
-    return JSONResponse({"problems": problems})
+    return DependencyProblemsPayload.model_validate({"problems": problems})
 
 
-@web_diagnostics_router.get("/api/stale-issues")
-async def get_stale_issues(orchestrator: WebOrchestratorDependency) -> JSONResponse:
+@web_diagnostics_router.get("/api/stale-issues", response_model=StaleIssuesPayload)
+async def get_stale_issues(
+    orchestrator: WebOrchestratorDependency,
+) -> StaleIssuesPayload | JSONResponse:
     """Get issues with stale in-progress labels."""
     if orchestrator is None:
         return _orchestrator_not_running()
@@ -469,84 +487,101 @@ async def get_stale_issues(orchestrator: WebOrchestratorDependency) -> JSONRespo
     config = orchestrator.config
     threshold = config.stale_escalation_ticks
 
-    stale = {}
-    for issue_num, ticks in state.stale_issue_ticks.items():
-        stale[issue_num] = {
+    stale = {
+        str(issue_num): {
             "issue_number": issue_num,
             "consecutive_ticks": ticks,
             "persistent": threshold > 0 and ticks >= threshold,
             "threshold": threshold,
         }
+        for issue_num, ticks in state.stale_issue_ticks.items()
+    }
 
-    return JSONResponse({"stale": stale})
+    return StaleIssuesPayload.model_validate({"stale": stale})
 
 
-@web_diagnostics_router.get("/api/info")
+@web_diagnostics_router.get("/api/info", response_model=OrchestratorInfoPayload)
 async def get_info(
     orchestrator: WebOrchestratorDependency,
     deps: WebDiagnosticsDependency,
-) -> JSONResponse:
+) -> OrchestratorInfoPayload | JSONResponse:
     """Get orchestrator info for the About modal."""
     if orchestrator is None:
         return _orchestrator_not_running()
 
-    return JSONResponse(_info_payload(orchestrator, deps))
+    return _info_payload(orchestrator, deps)
 
 
-@web_diagnostics_router.get("/api/config")
-async def get_config(orchestrator: WebOrchestratorDependency) -> JSONResponse:
+@web_diagnostics_router.get("/api/config", response_model=RawConfigPayload)
+async def get_config(
+    orchestrator: WebOrchestratorDependency,
+) -> RawConfigPayload | JSONResponse:
     """Get the raw config file contents."""
     if orchestrator is None:
         return _orchestrator_not_running()
 
-    return JSONResponse(_config_payload(orchestrator))
+    return _config_payload(orchestrator)
 
 
-@web_diagnostics_router.get("/api/blocked-issues")
-async def get_blocked_issues(orchestrator: WebOrchestratorDependency) -> JSONResponse:
+@web_diagnostics_router.get("/api/blocked-issues", response_model=BlockedIssuesPayload)
+async def get_blocked_issues(
+    orchestrator: WebOrchestratorDependency,
+) -> BlockedIssuesPayload | JSONResponse:
     """Get all blocked issues with their blocking labels and context."""
     if orchestrator is None:
         return _orchestrator_not_running()
 
-    return JSONResponse(_blocked_issues_payload(orchestrator))
+    return _blocked_issues_payload(orchestrator)
 
 
-@web_diagnostics_router.get("/api/failure-diagnosis/{issue_number}")
+@web_diagnostics_router.get(
+    "/api/failure-diagnosis/{issue_number}",
+    response_model=SessionFailureDiagnosisPayload,
+)
 async def get_failure_diagnosis(
     issue_number: int,
     orchestrator: WebOrchestratorDependency,
-) -> JSONResponse:
+) -> SessionFailureDiagnosisPayload | JSONResponse:
     """Get detailed failure diagnosis for an issue."""
     if orchestrator is None:
         return _orchestrator_not_running()
 
-    diagnosis = orchestrator.get_failure_diagnosis(issue_number)
-    return JSONResponse(diagnosis)
+    return SessionFailureDiagnosisPayload.model_validate(
+        orchestrator.get_failure_diagnosis(issue_number)
+    )
 
 
-@web_diagnostics_router.post("/api/issues/{issue_number}/audit")
+@web_diagnostics_router.post(
+    "/api/issues/{issue_number}/audit",
+    response_model=SessionFailureDiagnosisPayload,
+)
 async def force_issue_audit(
     issue_number: int,
     orchestrator: WebOrchestratorDependency,
-) -> JSONResponse:
+) -> SessionFailureDiagnosisPayload | JSONResponse:
     """Force a fresh session-failure audit for an issue."""
     if orchestrator is None:
         return _orchestrator_not_running()
 
-    diagnosis = orchestrator.get_failure_diagnosis(issue_number)
-    return JSONResponse(diagnosis)
+    return SessionFailureDiagnosisPayload.model_validate(
+        orchestrator.get_failure_diagnosis(issue_number)
+    )
 
 
-@web_diagnostics_router.get("/api/debug")
-async def get_debug(orchestrator: WebOrchestratorDependency) -> JSONResponse:
+@web_diagnostics_router.get("/api/debug", response_model=DebugSnapshotPayload)
+async def get_debug(
+    orchestrator: WebOrchestratorDependency,
+) -> DebugSnapshotPayload | JSONResponse:
     """Get debug info for troubleshooting."""
     if orchestrator is None:
         return _orchestrator_not_running()
 
-    return JSONResponse(_debug_payload(orchestrator))
+    return _debug_payload(orchestrator)
 
 
-@web_diagnostics_router.get("/api/doctor")
-async def get_doctor(orchestrator: WebOrchestratorDependency) -> JSONResponse:
+@web_diagnostics_router.get("/api/doctor", response_model=DoctorReportPayload)
+async def get_doctor(
+    orchestrator: WebOrchestratorDependency,
+) -> DoctorReportPayload:
     """Run diagnostics and return health status."""
-    return JSONResponse(_doctor_payload(orchestrator))
+    return _doctor_payload(orchestrator)

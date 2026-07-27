@@ -17,6 +17,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 
+HealthStatus: TypeAlias = Literal['ok', 'warning', 'error', 'info']
+
+StartupStatus: TypeAlias = Literal['pending', 'running', 'complete']
+
 TimelineView: TypeAlias = Literal['user', 'ops', 'debug', 'raw']
 
 WorktreeAuditActivityEvidence: TypeAlias = Literal['known', 'unknown']
@@ -26,6 +30,16 @@ WorktreeAuditDisposition: TypeAlias = Literal['managed', 'cleanup_candidate', 'r
 WorktreeAuditKind: TypeAlias = Literal['issue', 'reviewer', 'tech_lead_scratch', 'external']
 
 WorktreeAuditScope: TypeAlias = Literal['configured', 'repo-parent-fallback']
+
+class ActiveSessionSummaryPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    agent_type: str | None
+    branch: str
+    issue_number: int
+    runtime_minutes: int
+    status: Literal['running', 'slow']
+    title: str
+    worktree_path: str
 
 class AgentIdentityPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -59,18 +73,40 @@ class BlockedCodingAttemptPayload(BaseModel):
     started_at: str | None = None
 
 class BlockedIssuePayload(BaseModel):
-    model_config = ConfigDict(extra="allow")
-    pass
+    model_config = ConfigDict(extra="forbid")
+    agent_type: str
+    all_blocking_labels: list[str]
+    blocking_label: str
+    failure_reason: str | None
+    has_completion: bool = Field(..., strict=True)
+    issue_number: int
+    issue_url: str
+    needs_human: bool = Field(..., strict=True)
+    run_dir: str | None
+    title: str
+    worktree_path: str | None
 
 class BlockedIssuesDialogPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     blocked_issues: list[BlockedIssuePayload]
     title: str
 
+class BlockedIssuesPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    blocked_issues: list[BlockedIssuePayload]
+
 class CapturedOutputAvailabilityPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     stderr_available: bool = Field(..., strict=True)
     stdout_available: bool = Field(..., strict=True)
+
+class ClientCapabilitiesPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    focus_session: bool = Field(..., strict=True)
+    host_platform: str
+    local_server_paths_only: bool = Field(..., strict=True)
+    open_path: bool = Field(..., strict=True)
+    reveal_worktree: bool = Field(..., strict=True)
 
 class CodingOutputsPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -241,10 +277,49 @@ class DashboardViewModelPayload(BaseModel):
     startup_message: str
     startup_status: str
 
+class DebugAgentPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    command: str
+    timeout: int
+
 class DebugDialogPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     sections: list[DialogSectionPayload]
     title: str
+
+class DebugFilteringPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    label: str | None
+    milestone: str | None
+    milestones: list[str]
+
+class DebugSnapshotPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    agents: dict[str, DebugAgentPayload]
+    config_path: str
+    paused: bool = Field(..., strict=True)
+    priority_queue: list[int]
+    repo_root: str
+    startup_options: DebugStartupOptionsPayload
+
+class DebugStartupOptionsPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    filtering: DebugFilteringPayload
+    max_sessions: int
+    test_mode: bool = Field(..., strict=True)
+    ui_mode: str
+    web_port: int
+
+class DependencyProblemPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    issue_number: int
+    issue_title: str
+    issue_url: str
+    summary: str
+
+class DependencyProblemsPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    problems: dict[str, DependencyProblemPayload]
 
 class DialogRowPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -268,6 +343,18 @@ class DoctorDialogPayload(BaseModel):
     checks: list[DoctorCheckPayload]
     overall: str
     title: str
+
+class DoctorReportCheckPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    detail: str
+    expandable: dict[str, Any] | None = None
+    name: str
+    status: HealthStatus
+
+class DoctorReportPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    checks: list[DoctorReportCheckPayload]
+    overall: HealthStatus
 
 class E2EArtifactDiagnosticPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -477,6 +564,21 @@ class E2ETimelinePhaseTocItemPayload(BaseModel):
     label: str
     phase: str
 
+class ExcludedIssuePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    agent_type: str
+    blocked_summary: str | None
+    excluded_reason: str
+    flow_stage: Literal['not_eligible']
+    flow_steps: list[FlowStepPayload]
+    issue_number: int
+    issue_url: str
+    title: str
+
+class ExcludedIssuesPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    excluded: list[ExcludedIssuePayload]
+
 class ExpandE2ERunCommandPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal['expand_e2e_run']
@@ -515,6 +617,11 @@ class FlowColumnPayload(BaseModel):
     items: list[IssueItemPayload]
     session_scoped: bool | None = Field(default=None, strict=True)
     title: str
+
+class FlowStepPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    key: str
+    label: str
 
 class GuardedRecoveryStopActionPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -873,6 +980,42 @@ class OpenValidationDetailsCommandPayload(BaseModel):
     label: str
     run_dir: str
 
+class OrchestratorInfoPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    active_sessions: int
+    client_capabilities: ClientCapabilitiesPayload
+    commit_sha: str | None
+    commit_short: str | None
+    completed_today: int
+    max_sessions: int
+    repo: str | None
+    repo_identity: RepoIdentityPayload
+    repo_root: str | None
+    startup_status: StartupStatus
+    terminal_backend: str
+    ui_mode: str
+    version: str
+
+class OrchestratorStatusPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    active_sessions: list[ActiveSessionSummaryPayload]
+    completed_today: list[int]
+    e2e_role: str | None
+    last_tick_time: int | float | None
+    max_sessions: int
+    pause_actor: str | None
+    pause_detail: str | None
+    pause_is_incident: bool = Field(..., strict=True)
+    pause_reason: str | None
+    paused: bool = Field(..., strict=True)
+    paused_held_seconds: float
+    paused_since: str | None
+    pending_reviews: list[PendingReviewSummaryPayload]
+    queue: list[int]
+    shutdown_requested: bool = Field(..., strict=True)
+    startup_status: StartupStatus
+    tick_id: int | float | None
+
 class OutcomeBadgePayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     label: str
@@ -894,6 +1037,13 @@ class PassedE2ETestExecutionPayload(BaseModel):
     linked_issues: list[LinkedIssueLifecyclePayload]
     nodeid: str
     started_at: str
+
+class PendingReviewSummaryPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    branch_name: str
+    issue_number: int
+    pr_number: int
+    pr_url: str
 
 class PhaseDialogPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -943,6 +1093,10 @@ class PublishFailedCodingAttemptPayload(BaseModel):
     session_recording: SessionRecordingEvidencePayload
     started_at: str
     validation: ValidationOutcomePayload
+
+class RawConfigPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    config: str
 
 class RecentE2ERunSummaryPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -1049,6 +1203,15 @@ class RecoveryUnavailablePayload(BaseModel):
     repo_key: str = Field(..., min_length=1)
     status: Literal['database_absent', 'unreadable', 'unsupported_schema']
     unowned_records: list[UnownedRecoveryRecordPayload] = Field(..., max_length=0)
+
+class RepoIdentityPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    branch: str | None
+    commit_sha: str | None
+    dirty_fingerprint: str | None
+    repo_root: str
+    source_root: str | None
+    working_tree_dirty: bool = Field(..., strict=True)
 
 class RepositorySetupCommandPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -1287,6 +1450,12 @@ class ReviewFailedPayload(BaseModel):
     session_recording: SessionRecordingEvidencePayload
     started_at: str | None = None
 
+class ReviewFeedbackEntryPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    content: str
+    cycle: int
+    path: str
+
 class ReviewNotReachedPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal['review_not_reached']
@@ -1383,6 +1552,24 @@ class SessionDiagnosticsFollowUpIssuePayload(BaseModel):
     suggested_labels: list[str] | None = None
     title: str
 
+class SessionFailureDiagnosisPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    ai_system: str
+    analysis_detail: str | None
+    analysis_headline: str | None
+    analysis_suggestions: list[str]
+    history_reason: str | None
+    history_status: str | None
+    issue_number: int
+    log_context: str | None
+    log_exists: bool = Field(..., strict=True)
+    log_path: str | None
+    permission_mode: str
+    review_feedback: list[ReviewFeedbackEntryPayload]
+    suggestions: list[str]
+    warnings: list[str]
+    worktree_path: str | None
+
 class SessionRecordingAvailablePayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     command: OpenSessionRecordingCommandPayload
@@ -1443,6 +1630,17 @@ class StackDependencySuccessorPayload(BaseModel):
     issue_number: int
     mode: str
     ref: str
+
+class StaleIssuePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    consecutive_ticks: int
+    issue_number: int
+    persistent: bool = Field(..., strict=True)
+    threshold: int
+
+class StaleIssuesPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    stale: dict[str, StaleIssuePayload]
 
 class StopOwnerAbsentOutcomePayload(BaseModel):
     model_config = ConfigDict(extra="forbid")

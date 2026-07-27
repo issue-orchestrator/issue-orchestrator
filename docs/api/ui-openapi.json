@@ -987,6 +987,187 @@
           }
         }
       }
+    },
+    "/api/status": {
+      "get": {
+        "summary": "Get orchestrator runtime status",
+        "responses": {
+          "200": {
+            "description": "Orchestrator status",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/OrchestratorStatusPayload"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/excluded-issues": {
+      "get": {
+        "summary": "Get issues known to the system but excluded from scheduling",
+        "responses": {
+          "200": {
+            "description": "Excluded issues",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/ExcludedIssuesPayload"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/info": {
+      "get": {
+        "summary": "Get orchestrator identity and capability info",
+        "responses": {
+          "200": {
+            "description": "Orchestrator info",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/OrchestratorInfoPayload"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/config": {
+      "get": {
+        "summary": "Get the raw config file contents",
+        "responses": {
+          "200": {
+            "description": "Raw config text",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/RawConfigPayload"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/debug": {
+      "get": {
+        "summary": "Get orchestrator debug snapshot",
+        "responses": {
+          "200": {
+            "description": "Debug snapshot",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/DebugSnapshotPayload"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/doctor": {
+      "get": {
+        "summary": "Run diagnostics and return health status",
+        "responses": {
+          "200": {
+            "description": "Doctor report",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/DoctorReportPayload"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/blocked-issues": {
+      "get": {
+        "summary": "Get blocked issues with their blocking labels and context",
+        "responses": {
+          "200": {
+            "description": "Blocked issues",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/BlockedIssuesPayload"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/dependency-problems": {
+      "get": {
+        "summary": "Get current dependency problems keyed by issue number",
+        "responses": {
+          "200": {
+            "description": "Dependency problems",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/DependencyProblemsPayload"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/stale-issues": {
+      "get": {
+        "summary": "Get issues with stale in-progress labels keyed by issue number",
+        "responses": {
+          "200": {
+            "description": "Stale issues",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/StaleIssuesPayload"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/failure-diagnosis/{issue_number}": {
+      "get": {
+        "summary": "Get detailed session failure diagnosis for an issue",
+        "parameters": [
+          {
+            "name": "issue_number",
+            "in": "path",
+            "required": true,
+            "schema": {"type": "integer"}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Session failure diagnosis",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/SessionFailureDiagnosisPayload"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/issues/{issue_number}/audit": {
+      "post": {
+        "summary": "Force a fresh session-failure audit for an issue",
+        "parameters": [
+          {
+            "name": "issue_number",
+            "in": "path",
+            "required": true,
+            "schema": {"type": "integer"}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Session failure diagnosis",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/SessionFailureDiagnosisPayload"}
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -2328,7 +2509,33 @@
       },
       "BlockedIssuePayload": {
         "type": "object",
-        "additionalProperties": true
+        "additionalProperties": false,
+        "required": [
+          "issue_number",
+          "title",
+          "agent_type",
+          "blocking_label",
+          "all_blocking_labels",
+          "needs_human",
+          "failure_reason",
+          "issue_url",
+          "worktree_path",
+          "run_dir",
+          "has_completion"
+        ],
+        "properties": {
+          "issue_number": {"type": "integer"},
+          "title": {"type": "string"},
+          "agent_type": {"type": "string"},
+          "blocking_label": {"type": "string"},
+          "all_blocking_labels": {"type": "array", "items": {"type": "string"}},
+          "needs_human": {"type": "boolean"},
+          "failure_reason": {"type": ["string", "null"]},
+          "issue_url": {"type": "string"},
+          "worktree_path": {"type": ["string", "null"]},
+          "run_dir": {"type": ["string", "null"]},
+          "has_completion": {"type": "boolean"}
+        }
       },
       "BlockedIssuesDialogPayload": {
         "type": "object",
@@ -4644,6 +4851,345 @@
           "issue_number": {"type": ["integer", "null"], "minimum": 1},
           "behind_global_barrier": {"type": "boolean"},
           "admitted": {"type": "boolean"}
+        }
+      },
+      "StartupStatus": {
+        "enum": ["pending", "running", "complete"]
+      },
+      "HealthStatus": {
+        "enum": ["ok", "warning", "error", "info"]
+      },
+      "ActiveSessionSummaryPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["issue_number", "title", "runtime_minutes", "agent_type", "status", "branch", "worktree_path"],
+        "properties": {
+          "issue_number": {"type": "integer"},
+          "title": {"type": "string"},
+          "runtime_minutes": {"type": "integer"},
+          "agent_type": {"type": ["string", "null"]},
+          "status": {"enum": ["running", "slow"]},
+          "branch": {"type": "string"},
+          "worktree_path": {"type": "string"}
+        }
+      },
+      "PendingReviewSummaryPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["issue_number", "pr_number", "pr_url", "branch_name"],
+        "properties": {
+          "issue_number": {"type": "integer"},
+          "pr_number": {"type": "integer"},
+          "pr_url": {"type": "string"},
+          "branch_name": {"type": "string"}
+        }
+      },
+      "OrchestratorStatusPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "paused",
+          "pause_reason",
+          "pause_actor",
+          "pause_detail",
+          "paused_since",
+          "paused_held_seconds",
+          "pause_is_incident",
+          "shutdown_requested",
+          "startup_status",
+          "active_sessions",
+          "max_sessions",
+          "completed_today",
+          "queue",
+          "pending_reviews",
+          "tick_id",
+          "last_tick_time",
+          "e2e_role"
+        ],
+        "properties": {
+          "paused": {"type": "boolean"},
+          "pause_reason": {"type": ["string", "null"]},
+          "pause_actor": {"type": ["string", "null"]},
+          "pause_detail": {"type": ["string", "null"]},
+          "paused_since": {"type": ["string", "null"]},
+          "paused_held_seconds": {"type": "number"},
+          "pause_is_incident": {"type": "boolean"},
+          "shutdown_requested": {"type": "boolean"},
+          "startup_status": {"$ref": "#/components/schemas/StartupStatus"},
+          "active_sessions": {"type": "array", "items": {"$ref": "#/components/schemas/ActiveSessionSummaryPayload"}},
+          "max_sessions": {"type": "integer"},
+          "completed_today": {"type": "array", "items": {"type": "integer"}},
+          "queue": {"type": "array", "items": {"type": "integer"}},
+          "pending_reviews": {"type": "array", "items": {"$ref": "#/components/schemas/PendingReviewSummaryPayload"}},
+          "tick_id": {"type": ["integer", "number", "null"]},
+          "last_tick_time": {"type": ["integer", "number", "null"]},
+          "e2e_role": {"type": ["string", "null"]}
+        }
+      },
+      "FlowStepPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["key", "label"],
+        "properties": {
+          "key": {"type": "string"},
+          "label": {"type": "string"}
+        }
+      },
+      "ExcludedIssuePayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "issue_number",
+          "title",
+          "agent_type",
+          "issue_url",
+          "excluded_reason",
+          "flow_stage",
+          "flow_steps",
+          "blocked_summary"
+        ],
+        "properties": {
+          "issue_number": {"type": "integer"},
+          "title": {"type": "string"},
+          "agent_type": {"type": "string"},
+          "issue_url": {"type": "string"},
+          "excluded_reason": {"type": "string"},
+          "flow_stage": {"enum": ["not_eligible"]},
+          "flow_steps": {"type": "array", "items": {"$ref": "#/components/schemas/FlowStepPayload"}},
+          "blocked_summary": {"type": ["string", "null"]}
+        }
+      },
+      "ExcludedIssuesPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["excluded"],
+        "properties": {
+          "excluded": {"type": "array", "items": {"$ref": "#/components/schemas/ExcludedIssuePayload"}}
+        }
+      },
+      "ClientCapabilitiesPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["focus_session", "open_path", "reveal_worktree", "local_server_paths_only", "host_platform"],
+        "properties": {
+          "focus_session": {"type": "boolean"},
+          "open_path": {"type": "boolean"},
+          "reveal_worktree": {"type": "boolean"},
+          "local_server_paths_only": {"type": "boolean"},
+          "host_platform": {"type": "string"}
+        }
+      },
+      "RepoIdentityPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["repo_root", "commit_sha", "branch", "working_tree_dirty", "dirty_fingerprint", "source_root"],
+        "properties": {
+          "repo_root": {"type": "string"},
+          "commit_sha": {"type": ["string", "null"]},
+          "branch": {"type": ["string", "null"]},
+          "working_tree_dirty": {"type": "boolean"},
+          "dirty_fingerprint": {"type": ["string", "null"]},
+          "source_root": {"type": ["string", "null"]}
+        }
+      },
+      "OrchestratorInfoPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "version",
+          "repo",
+          "repo_root",
+          "ui_mode",
+          "terminal_backend",
+          "client_capabilities",
+          "commit_sha",
+          "commit_short",
+          "repo_identity",
+          "max_sessions",
+          "active_sessions",
+          "completed_today",
+          "startup_status"
+        ],
+        "properties": {
+          "version": {"type": "string"},
+          "repo": {"type": ["string", "null"]},
+          "repo_root": {"type": ["string", "null"]},
+          "ui_mode": {"type": "string"},
+          "terminal_backend": {"type": "string"},
+          "client_capabilities": {"$ref": "#/components/schemas/ClientCapabilitiesPayload"},
+          "commit_sha": {"type": ["string", "null"]},
+          "commit_short": {"type": ["string", "null"]},
+          "repo_identity": {"$ref": "#/components/schemas/RepoIdentityPayload"},
+          "max_sessions": {"type": "integer"},
+          "active_sessions": {"type": "integer"},
+          "completed_today": {"type": "integer"},
+          "startup_status": {"$ref": "#/components/schemas/StartupStatus"}
+        }
+      },
+      "RawConfigPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["config"],
+        "properties": {
+          "config": {"type": "string"}
+        }
+      },
+      "DebugAgentPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["timeout", "command"],
+        "properties": {
+          "timeout": {"type": "integer"},
+          "command": {"type": "string"}
+        }
+      },
+      "DebugFilteringPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["label", "milestone", "milestones"],
+        "properties": {
+          "label": {"type": ["string", "null"]},
+          "milestone": {"type": ["string", "null"]},
+          "milestones": {"type": "array", "items": {"type": "string"}}
+        }
+      },
+      "DebugStartupOptionsPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["ui_mode", "web_port", "test_mode", "filtering", "max_sessions"],
+        "properties": {
+          "ui_mode": {"type": "string"},
+          "web_port": {"type": "integer"},
+          "test_mode": {"type": "boolean"},
+          "filtering": {"$ref": "#/components/schemas/DebugFilteringPayload"},
+          "max_sessions": {"type": "integer"}
+        }
+      },
+      "DebugSnapshotPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["paused", "config_path", "repo_root", "priority_queue", "agents", "startup_options"],
+        "properties": {
+          "paused": {"type": "boolean"},
+          "config_path": {"type": "string"},
+          "repo_root": {"type": "string"},
+          "priority_queue": {"type": "array", "items": {"type": "integer"}},
+          "agents": {"type": "object", "additionalProperties": {"$ref": "#/components/schemas/DebugAgentPayload"}},
+          "startup_options": {"$ref": "#/components/schemas/DebugStartupOptionsPayload"}
+        }
+      },
+      "DoctorReportCheckPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "status", "detail"],
+        "properties": {
+          "name": {"type": "string"},
+          "status": {"$ref": "#/components/schemas/HealthStatus"},
+          "detail": {"type": "string"},
+          "expandable": {"type": ["object", "null"], "additionalProperties": true}
+        }
+      },
+      "DoctorReportPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["overall", "checks"],
+        "properties": {
+          "overall": {"$ref": "#/components/schemas/HealthStatus"},
+          "checks": {"type": "array", "items": {"$ref": "#/components/schemas/DoctorReportCheckPayload"}}
+        }
+      },
+      "BlockedIssuesPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["blocked_issues"],
+        "properties": {
+          "blocked_issues": {"type": "array", "items": {"$ref": "#/components/schemas/BlockedIssuePayload"}}
+        }
+      },
+      "DependencyProblemPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["issue_number", "issue_title", "summary", "issue_url"],
+        "properties": {
+          "issue_number": {"type": "integer"},
+          "issue_title": {"type": "string"},
+          "summary": {"type": "string"},
+          "issue_url": {"type": "string"}
+        }
+      },
+      "DependencyProblemsPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["problems"],
+        "properties": {
+          "problems": {"type": "object", "additionalProperties": {"$ref": "#/components/schemas/DependencyProblemPayload"}}
+        }
+      },
+      "StaleIssuePayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["issue_number", "consecutive_ticks", "persistent", "threshold"],
+        "properties": {
+          "issue_number": {"type": "integer"},
+          "consecutive_ticks": {"type": "integer"},
+          "persistent": {"type": "boolean"},
+          "threshold": {"type": "integer"}
+        }
+      },
+      "StaleIssuesPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["stale"],
+        "properties": {
+          "stale": {"type": "object", "additionalProperties": {"$ref": "#/components/schemas/StaleIssuePayload"}}
+        }
+      },
+      "ReviewFeedbackEntryPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["cycle", "path", "content"],
+        "properties": {
+          "cycle": {"type": "integer"},
+          "path": {"type": "string"},
+          "content": {"type": "string"}
+        }
+      },
+      "SessionFailureDiagnosisPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "issue_number",
+          "ai_system",
+          "permission_mode",
+          "worktree_path",
+          "log_path",
+          "log_exists",
+          "log_context",
+          "history_status",
+          "history_reason",
+          "warnings",
+          "suggestions",
+          "review_feedback",
+          "analysis_headline",
+          "analysis_detail",
+          "analysis_suggestions"
+        ],
+        "properties": {
+          "issue_number": {"type": "integer"},
+          "ai_system": {"type": "string"},
+          "permission_mode": {"type": "string"},
+          "worktree_path": {"type": ["string", "null"]},
+          "log_path": {"type": ["string", "null"]},
+          "log_exists": {"type": "boolean"},
+          "log_context": {"type": ["string", "null"]},
+          "history_status": {"type": ["string", "null"]},
+          "history_reason": {"type": ["string", "null"]},
+          "warnings": {"type": "array", "items": {"type": "string"}},
+          "suggestions": {"type": "array", "items": {"type": "string"}},
+          "review_feedback": {"type": "array", "items": {"$ref": "#/components/schemas/ReviewFeedbackEntryPayload"}},
+          "analysis_headline": {"type": ["string", "null"]},
+          "analysis_detail": {"type": ["string", "null"]},
+          "analysis_suggestions": {"type": "array", "items": {"type": "string"}}
         }
       }
     }

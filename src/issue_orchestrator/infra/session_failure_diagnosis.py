@@ -41,8 +41,15 @@ class SessionFailureDiagnosis:
     analysis_suggestions: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
-        """Convert to dict for JSON serialization."""
-        result = {
+        """Convert to dict for JSON serialization.
+
+        Every key is always present. The analysis block used to appear only
+        when a headline existed, which made the wire shape vary per response —
+        untenable now that ``/api/failure-diagnosis/{n}`` and
+        ``/api/issues/{n}/audit`` are contracted in ``docs/api/ui-openapi.json``.
+        "No analysis recorded" is an explicit ``null``, not an absent key.
+        """
+        return {
             "issue_number": self.issue_number,
             "ai_system": self.ai_system,
             "permission_mode": self.permission_mode,
@@ -55,14 +62,10 @@ class SessionFailureDiagnosis:
             "warnings": self.warnings,
             "suggestions": self.suggestions,
             "review_feedback": self.review_feedback,
+            "analysis_headline": self.analysis_headline,
+            "analysis_detail": self.analysis_detail,
+            "analysis_suggestions": self.analysis_suggestions,
         }
-        if self.analysis_headline:
-            result["analysis_headline"] = self.analysis_headline
-            if self.analysis_detail:
-                result["analysis_detail"] = self.analysis_detail
-            if self.analysis_suggestions:
-                result["analysis_suggestions"] = self.analysis_suggestions
-        return result
 
 
 def _search_worktree_in_base(
