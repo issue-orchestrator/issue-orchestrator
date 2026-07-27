@@ -579,7 +579,14 @@ async def get_debug(
     return _debug_payload(orchestrator)
 
 
-@web_diagnostics_router.get("/api/doctor", response_model=DoctorReportPayload)
+@web_diagnostics_router.get(
+    "/api/doctor",
+    response_model=DoctorReportPayload,
+    # ``expandable`` is the only optional check field; ``DoctorResult.to_dict``
+    # omitted it unless populated, so excluding ``None`` keeps the wire shape
+    # the browser already consumes instead of adding ``"expandable": null``.
+    response_model_exclude_none=True,
+)
 async def get_doctor(
     orchestrator: WebOrchestratorDependency,
 ) -> DoctorReportPayload:

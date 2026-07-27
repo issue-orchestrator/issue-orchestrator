@@ -307,6 +307,43 @@ def test_doctor_route_payload_matches_ui_openapi() -> None:
     assert expandable["agents_tested"] == ["claude-code"]
 
 
+def test_doctor_route_omits_expandable_for_ordinary_checks() -> None:
+    """``DoctorResult.to_dict`` only emitted ``expandable`` when populated, and
+    contracting the route must not start sending ``"expandable": null`` on every
+    check. Asserted on the wire, because the model default is ``None`` and only
+    ``response_model_exclude_none`` keeps the key out of the response body."""
+    mock_orch = create_mock_orchestrator()
+
+    with patch(
+        "issue_orchestrator.entrypoints.web_diagnostics_routes.run_doctor",
+        return_value=DoctorResult([
+            Check(name="Config", status="ok", detail="loaded"),
+            Check(
+                name="AI Gate",
+                status="info",
+                detail="last probe ok",
+                expandable={"ran": True, "agents_tested": ["claude-code"]},
+            ),
+        ]),
+    ):
+        payload = _get("/api/doctor", mock_orch)
+
+    checks = {check["name"]: check for check in payload["checks"]}
+
+    # Plain checks carry exactly the three always-present keys.
+    assert "expandable" not in checks["Config"]
+    assert set(checks["Config"]) == {"name", "status", "detail"}
+    # The route-injected check is built without expandable data too.
+    assert "expandable" not in checks["Orchestrator"]
+
+    # Excluding None must not strip a populated expandable payload.
+    assert checks["AI Gate"]["expandable"] == {
+        "ran": True,
+        "agents_tested": ["claude-code"],
+    }
+    _assert_conforms(payload, "DoctorReportPayload", DoctorReportPayload)
+
+
 def test_doctor_route_runs_without_an_orchestrator() -> None:
     """Doctor stays available during startup failures, and the contract holds
     on that path too — the orchestrator check flips to ``error``."""
