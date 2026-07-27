@@ -2,11 +2,17 @@
 
 These tests verify that both the real Orchestrator and MockOrchestratorForWeb
 satisfy the OrchestratorForWeb protocol, catching drift between them.
+
+The structural protocol pins signatures; the route tests below also pin the
+shared mock's generated response payloads.
 """
 
 import pytest
 from fastapi.testclient import TestClient
 
+from issue_orchestrator.contracts.ui_openapi_models import (
+    SessionFailureDiagnosisPayload,
+)
 from issue_orchestrator.entrypoints import web as web_module
 from issue_orchestrator.ports.web_contract import OrchestratorForWeb
 from tests.fixtures.web_contract_mocks import MockOrchestratorForWeb
@@ -91,3 +97,33 @@ def test_dashboard_page_renders_against_the_shared_double(dashboard_client):
 
     assert response.status_code == 200, response.text
     assert "text/html" in response.headers["content-type"]
+
+
+def test_failure_diagnosis_payload_satisfies_the_ui_contract():
+    diagnosis = MockOrchestratorForWeb().get_failure_diagnosis(4057)
+
+    payload = SessionFailureDiagnosisPayload.model_validate(diagnosis)
+
+    assert payload.issue_number == 4057
+    assert payload.review_feedback == []
+    assert payload.analysis_headline is None
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("get", "/api/failure-diagnosis/4057"),
+        ("post", "/api/issues/4057/audit"),
+    ],
+)
+def test_contracted_diagnosis_routes_serve_the_shared_mock(
+    dashboard_client: TestClient,
+    method: str,
+    path: str,
+):
+    response = getattr(dashboard_client, method)(path)
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    SessionFailureDiagnosisPayload.model_validate(body)
+    assert body["issue_number"] == 4057
