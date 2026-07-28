@@ -989,6 +989,39 @@ def test_ui_openapi_routes_hard_gate_prefixed_api_router(tmp_path: Path) -> None
     assert "ui_openapi_routes:prefixed-router:src/app/web_routes.py:2" not in baseline["metrics"]
 
 
+def test_ui_openapi_routes_hard_gate_survives_matching_baseline_entry(tmp_path: Path) -> None:
+    _copy_runner(tmp_path)
+    _write_ui_openapi_config(tmp_path)
+    _write_ui_openapi_schema(tmp_path, {})
+    target = tmp_path / "src" / "app" / "web_routes.py"
+    target.parent.mkdir(parents=True)
+    target.write_text(
+        "from fastapi import APIRouter\n"
+        "router = APIRouter(prefix='/api/foo')\n",
+        encoding="utf-8",
+    )
+    key = "ui_openapi_routes:prefixed-router:src/app/web_routes.py:2"
+    # Seed the entry a plain ratchet would have written, taken from the tool's own
+    # current-metric report, so the baseline matches this run exactly.
+    reported = json.loads(_run(tmp_path, "--format", "json").stdout)["metrics"]
+    assert [f"{entry['rule_id']}:{entry['metric_id']}" for entry in reported] == [key]
+    baseline_path = tmp_path / "quality" / "guardrails-baseline.json"
+    baseline_path.parent.mkdir(parents=True)
+    baseline_path.write_text(
+        json.dumps({"version": 1, "metrics": {key: reported[0]}}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    result = _run(tmp_path, "--fail-on-new", "--check-stale")
+
+    assert result.returncode == 2, result.stdout
+    assert "hard-gated ui_openapi_prefixed_router" in result.stderr
+    assert "APIRouter at line 2 applies router prefix '/api/foo'" in result.stderr
+    assert "stale baseline entries" not in result.stderr
+    baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+    assert baseline["metrics"][key] == reported[0]
+
+
 def test_ui_openapi_routes_hard_gate_aliased_prefixed_api_router(tmp_path: Path) -> None:
     _copy_runner(tmp_path)
     _write_ui_openapi_config(tmp_path)
