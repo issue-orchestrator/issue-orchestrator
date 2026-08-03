@@ -239,7 +239,7 @@
     "test": "npm run compile && node ./dist/test/runTest.js"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "eventsource": "^4.1.0"
   },
   "devDependencies": {
