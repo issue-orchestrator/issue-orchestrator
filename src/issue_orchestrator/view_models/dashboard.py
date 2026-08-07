@@ -46,7 +46,10 @@ from .dashboard_flow import apply_lane_precedence
 from .dashboard_flow import build_awaiting_merge_items
 from .dashboard_flow import build_flow_columns
 from .dashboard_flow import exclude_flow_overlaps
-from .dashboard_flow import normalize_dashboard_tab, select_issues_for_tab
+from .dashboard_flow import merge_blocked_items
+from .dashboard_flow import non_executable_issue_numbers
+from .dashboard_flow import normalize_dashboard_tab
+from .dashboard_flow import select_issues_for_tab
 from .dashboard_flow import stamp_issue_item_stale_badge_visibility
 from .rework_status import queued_rework_issue_numbers, resolve_queued_rework
 from .timestamp_values import dashboard_timestamp_source
@@ -1012,22 +1015,6 @@ def _build_pending_retrospective_review_items(
     return items, seen_issues
 
 
-def _merge_blocked_items(
-    scope_blocked: list[dict[str, Any]],
-    history_blocked: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    merged_by_issue: dict[int, dict[str, Any]] = {}
-    for item in scope_blocked:
-        issue_number = _issue_number_value(item)
-        if issue_number is not None:
-            merged_by_issue[issue_number] = item
-    for item in history_blocked:
-        issue_number = _issue_number_value(item)
-        if issue_number is not None:
-            merged_by_issue[issue_number] = item
-    return list(merged_by_issue.values())
-
-
 def _normalize_status_reason(reason: str | None) -> str | None:
     if reason is None:
         return None
@@ -1165,6 +1152,9 @@ def build_dashboard_view_model(
 
     if state and config:
         lm = LabelManager(config)
+        non_executable_numbers = non_executable_issue_numbers(
+            _scope_issues_for_blocked_projection(state), lm,
+        )
         active_numbers = {s.issue.number for s in state.active_sessions}
         seen_issues.update(active_numbers)
 
@@ -1194,9 +1184,10 @@ def build_dashboard_view_model(
         history_blocked = history_projection.blocked_items
         pending_validation_blocked = _build_pending_validation_retry_items(state, config)
         blocked_items.extend(
-            _merge_blocked_items(
+            merge_blocked_items(
                 scope_blocked,
                 history_blocked + pending_validation_blocked,
+                excluded_issue_numbers=non_executable_numbers,
             )
         )
 

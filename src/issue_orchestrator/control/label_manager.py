@@ -434,6 +434,24 @@ class LabelManager:
     def is_blocking_any(self, labels: Sequence[str]) -> bool:
         return any(self.is_blocking(l) for l in labels)
 
+    def is_tech_lead_artifact_any(self, labels: Sequence[str]) -> bool:
+        """Return whether labels identify non-executable Tech Lead evidence.
+
+        Proposals awaiting approval and pattern case files block scheduler pickup,
+        but they are control-plane artifacts rather than failed coding/review work.
+        Keeping that distinction here lets scheduling and operator projections use
+        the same label owner without conflating their different meanings.
+        """
+        for label in labels:
+            base = self._strip_prefix(label)
+            if (
+                is_proposed_tech_lead_gate(base)
+                or base.casefold()
+                == self._resolved["tech_lead_observation"].casefold()
+            ):
+                return True
+        return False
+
     def get_blocking(self, labels: Sequence[str]) -> list[str]:
         return [l for l in labels if self.is_blocking(l)]
 
