@@ -27,6 +27,7 @@ from issue_orchestrator.control.actions import (
     DiscardTerminalTechLeadProposalOpsAction,
     KillHungSessionAction,
     PromoteTechLeadFindingAction,
+    RecordTechLeadDispositionAction,
     ReportPromotedFindingEvidenceAction,
     ResetRetryIssueAction,
     SettleTechLeadPromotionAction,
@@ -43,6 +44,7 @@ from issue_orchestrator.domain.tech_lead_session import (
     StoredTechLeadOp,
     TECH_LEAD_OBSERVATION_LABEL,
     TechLeadCreationOrigin,
+    TechLeadDisposition,
 )
 
 ANCHOR = 77
@@ -133,6 +135,21 @@ def _mutating_actions() -> dict[ActionType, tuple[Action, int]]:
                 expected=expected,
             ),
             CASE_FILE,
+        ),
+        ActionType.RECORD_TECH_LEAD_DISPOSITION: (
+            RecordTechLeadDispositionAction(
+                disposition=TechLeadDisposition(
+                    issue_number=TARGET,
+                    tracker_issue_number=900,
+                    rationale="recover, don't reset",
+                    source_run_id="r1",
+                    source_session_name="s",
+                    source_action_id="A1",
+                    recorded_at="2026-08-09T00:00:00Z",
+                ),
+                expected=expected,
+            ),
+            TARGET,
         ),
         ActionType.PROMOTE_TECH_LEAD_FINDING: (
             PromoteTechLeadFindingAction(

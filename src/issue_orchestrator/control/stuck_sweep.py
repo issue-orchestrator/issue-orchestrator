@@ -43,9 +43,17 @@ Design boundaries (kept deliberately narrow, ADR-0031):
   is SKIPPED this sweep only while a dedicated owner is actively handling it: an
   active session / pending tech_lead work, an open gated proposal (the ledger), a
   provider whose circuit is still open (the resilience manager will resume it),
-  or a ``tech-lead-needs-human`` marker (the escalation reconciler owns it). Only
-  ``proposed-tech-lead`` / ``tech-lead-observation`` are true machinery labels never
-  treated as work items.
+  a ``tech-lead-needs-human`` marker (the escalation reconciler owns it), or a
+  live failure-investigation DISPOSITION (#6971 — a completed investigation
+  bound the issue to an open recovery tracker). Only ``proposed-tech-lead`` /
+  ``tech-lead-observation`` are true machinery labels never treated as work items.
+* **A diagnosed issue is not a stuck issue (#6971).** Budget exists to find
+  issues whose diagnosis is MISSING. An issue whose completed investigation
+  already named an open recovery tracker has its answer, so re-injecting it buys
+  nothing and costs a full agent session — three identical passes over #6410
+  before the disposition ledger existed. The disposition owner
+  (``tech_lead_dispositions``) answers who is parked and releases anyone whose
+  tracker closed; this module keeps deciding what "stuck" and "recovered" mean.
 """
 
 from __future__ import annotations
@@ -61,6 +69,10 @@ from ..ports.repository_host import (
     RepositoryScanIncompleteError,
 )
 from .needs_human_block import NeedsHumanCause
+from .tech_lead_dispositions import (
+    NO_TECH_LEAD_DISPOSITIONS,
+    StuckSweepDispositions,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -174,6 +186,7 @@ def run_stuck_sweep(
     *,
     open_proposal_targets: frozenset[int] = frozenset(),
     provider_circuit_open: "Callable[[Issue], bool] | None" = None,
+    dispositions: StuckSweepDispositions = NO_TECH_LEAD_DISPOSITIONS,
 ) -> StuckSweepResult:
     """Find stuck issues and return recovered failures + exhausted numbers.
 
@@ -188,16 +201,26 @@ def run_stuck_sweep(
     ``provider_circuit_open(issue)`` reports whether the issue's provider circuit
     is still open (the resilience manager owns it); ``None`` conservatively treats
     every ``provider-unavailable`` issue as owned (the pre-#6824 behaviour).
+    ``dispositions`` is the failure-investigation disposition owner (#6971):
+    issues a completed investigation parked on an OPEN recovery tracker are owned
+    exactly like an open proposal, and the same owner is told who recovered so a
+    stale binding cannot park a later, unrelated incident on the same number.
     """
     max_attempts = config.tech_lead.stuck_sweep.max_recovery_attempts
+    # Resolved BEFORE the scan (it decides eligibility) and remembered, because
+    # the release below must know exactly who was parked this sweep.
+    disposition_owned = dispositions.owned_issue_numbers()
     scan = _scan_stuck_issues(
         config,
         repository_host,
         label_manager,
-        base_owned=_owned_issue_numbers(state) | open_proposal_targets,
+        base_owned=(
+            _owned_issue_numbers(state) | open_proposal_targets | disposition_owned
+        ),
         provider_circuit_open=provider_circuit_open,
     )
     _clear_recovered_counters(state, scan)
+    dispositions.release(disposition_owned - scan.blocked_numbers)
     _ack_landed_escalations(state, scan)
     recovered: list[DiscoveredFailure] = []
     exhausted: list[int] = []
@@ -255,6 +278,11 @@ def _clear_recovered_counters(state: "OrchestratorState", scan: "_StuckScan") ->
     mid-recovery has recovered; its lifetime budget must reset so a later
     unrelated incident on the same number starts fresh instead of inheriting a
     stale (possibly already-exhausted) count.
+
+    A disposition-parked issue counts as owned here (it is in ``base_owned``),
+    so its budget is preserved while it waits; ``run_stuck_sweep`` releases the
+    disposition itself on the same "no longer blocked" rule, after which the
+    next sweep clears the counter too.
     """
     for number in list(state.recovery_attempts):
         if number not in scan.blocked_numbers and number not in scan.owned_numbers:

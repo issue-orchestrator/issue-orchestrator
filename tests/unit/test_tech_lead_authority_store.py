@@ -14,6 +14,7 @@ from issue_orchestrator.domain.tech_lead_findings import (
 )
 from issue_orchestrator.domain.tech_lead_session import (
     StoredTechLeadOp,
+    TechLeadDisposition,
     TechLeadLaunchAuthority,
     TechLeadSessionGeneration,
     TechLeadSessionFlavor,
@@ -1141,6 +1142,113 @@ def test_shipped_fix_methods_satisfy_the_port() -> None:
     )
 
     for method in ("record_shipped_fix", "list_recent_shipped_fixes"):
+        assert callable(getattr(SqliteTechLeadAuthorityStore, method))
+        assert callable(getattr(InMemoryTechLeadAuthorityStore, method))
+        assert callable(getattr(TechLeadAuthorityStorePort, method))
+
+
+# ---------------------------------------------------------------------------
+# Failure-investigation dispositions (#6971)
+# ---------------------------------------------------------------------------
+
+
+def _disposition(
+    issue_number: int = 6410, tracker: int = 6914
+) -> TechLeadDisposition:
+    return TechLeadDisposition(
+        issue_number=issue_number,
+        tracker_issue_number=tracker,
+        rationale="recover, don't reset",
+        source_run_id="r1",
+        source_session_name=f"issue-{issue_number}",
+        source_action_id="A2",
+        recorded_at="2026-08-09T00:00:00+00:00",
+    )
+
+
+@pytest.mark.parametrize("make_store", OP_STORES)
+def test_disposition_round_trip(tmp_path: Path, make_store) -> None:
+    store = make_store(tmp_path)
+    store.record_disposition(disposition=_disposition())
+
+    assert store.load_disposition(issue_number=6410) == _disposition()
+    assert store.load_disposition(issue_number=6411) is None
+    assert store.list_dispositions() == (_disposition(),)
+
+
+@pytest.mark.parametrize("make_store", OP_STORES)
+def test_recording_a_new_tracker_supersedes_the_previous_row(
+    tmp_path: Path, make_store
+) -> None:
+    """Deliberately NOT create-once: the row is "the latest completed
+    investigation's conclusion", so a newer binding must replace the old one
+    rather than freezing the issue on a tracker that may already be closed."""
+    store = make_store(tmp_path)
+    store.record_disposition(disposition=_disposition(tracker=6914))
+
+    store.record_disposition(disposition=_disposition(tracker=6959))
+
+    loaded = store.load_disposition(issue_number=6410)
+    assert loaded is not None
+    assert loaded.tracker_issue_number == 6959
+    assert len(store.list_dispositions()) == 1
+
+
+@pytest.mark.parametrize("make_store", OP_STORES)
+def test_discard_disposition_releases_and_is_idempotent(
+    tmp_path: Path, make_store
+) -> None:
+    store = make_store(tmp_path)
+    store.record_disposition(disposition=_disposition())
+
+    store.discard_disposition(issue_number=6410)
+    store.discard_disposition(issue_number=6410)  # already gone: no-op
+    store.discard_disposition(issue_number=999)  # never recorded: no-op
+
+    assert store.load_disposition(issue_number=6410) is None
+    assert store.list_dispositions() == ()
+
+
+def test_dispositions_survive_a_restart(tmp_path: Path) -> None:
+    """The whole point is crash-safety: a restart that forgot the binding
+    would re-open the investigation the disposition exists to prevent."""
+    SqliteTechLeadAuthorityStore.for_repo(tmp_path).record_disposition(
+        disposition=_disposition()
+    )
+
+    reopened = SqliteTechLeadAuthorityStore.for_repo(tmp_path)
+
+    assert reopened.load_disposition(issue_number=6410) == _disposition()
+
+
+def test_an_older_database_gains_the_disposition_table(tmp_path: Path) -> None:
+    """A database written before #6971 must migrate, not crash."""
+    db_path = state_dir(tmp_path) / "tech_lead_authority.sqlite"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "CREATE TABLE tech_lead_proposal_ops ("
+            " issue_number INTEGER PRIMARY KEY, op TEXT NOT NULL,"
+            " recorded_at TEXT NOT NULL)"
+        )
+
+    store = SqliteTechLeadAuthorityStore.for_repo(tmp_path)
+    store.record_disposition(disposition=_disposition())
+
+    assert store.load_disposition(issue_number=6410) == _disposition()
+
+
+def test_disposition_methods_satisfy_the_port() -> None:
+    from issue_orchestrator.ports.tech_lead_authority import (
+        TechLeadAuthorityStore as TechLeadAuthorityStorePort,
+    )
+
+    for method in (
+        "record_disposition",
+        "load_disposition",
+        "discard_disposition",
+        "list_dispositions",
+    ):
         assert callable(getattr(SqliteTechLeadAuthorityStore, method))
         assert callable(getattr(InMemoryTechLeadAuthorityStore, method))
         assert callable(getattr(TechLeadAuthorityStorePort, method))

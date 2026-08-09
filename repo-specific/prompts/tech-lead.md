@@ -222,6 +222,15 @@ artifact; see the contract below.)
   whose `target_number` is the `focus_issue_number` - that comment IS your
   diagnosis channel; a decision without it is rejected and the session is marked
   failed.
+- **Leave a disposition, not just a diagnosis.** Check first whether this issue
+  was already investigated (its own comments, the orchestrator log, the case
+  files). If it was and nothing material has changed, say so and do not
+  re-derive the same verdict. Then close YOUR investigation out: when the remedy
+  is owned by another open issue, propose `defer_to_tracker`
+  (`target_number` = `focus_issue_number`, `tracker_number` = that issue) so the
+  orchestrator stops commissioning identical investigations while the tracker is
+  open. When it needs a person, use `escalate_to_human`. A diagnosis with no
+  disposition is how the same issue gets investigated three times.
 - There is no PR manifest for this session: do NOT audit or label PRs and do NOT
   follow any Batch Review Flow step.
 - Write both required artifacts (below), then complete with `coding-done`.
@@ -393,9 +402,12 @@ Compact `tech-lead-decision.json` example:
   case-insensitive).
 - Targets are scoped to what you were launched to audit, and the scope
   splits by action kind:
-  - `post_comment` and `escalate_to_human` may only target the manifest
-    PRs or your own tracking issue (batch review), the `focus_issue_number`
-    (failure investigation), or THIS tracking issue (health review).
+  - `post_comment`, `escalate_to_human` and `defer_to_tracker` may only target
+    the manifest PRs or your own tracking issue (batch review), the
+    `focus_issue_number` (failure investigation), or
+    THIS tracking issue (health review). A `defer_to_tracker` action's
+    `tracker_number` is exempt: the orchestrator only reads that issue's
+    open/closed state, never writes to it.
   - Act-level `reset_retry` and `kill_hung_session` may only target the
     `focus_issue_number` (failure investigation), or an issue number listed
     in the snapshot's `problem_cohort` (health review). A batch review owns
@@ -433,8 +445,22 @@ Compact `tech-lead-decision.json` example:
   keep applying point patches. Propose a root-cause design review issue via
   `create_issue`; name the seam, carry the same `area`, cite the case files and
   accumulated shipped-fix/patch evidence, and recommend deep rework.
+- `defer_to_tracker` is how a diagnosis ENDS. When your verdict is that the
+  issue is understood and its remedy belongs to some OTHER open issue — a
+  recovery mechanism, a salvage tracker, a design fix — propose
+  `defer_to_tracker` with `target_number` = the diagnosed issue and
+  `tracker_number` = that open issue, and put the verdict in `body`. The
+  orchestrator then stops re-opening failure investigations for the target
+  while the tracker is open, and resumes the moment the tracker closes with
+  the issue still blocked. Without it the stuck sweep re-discovers the issue,
+  spends recovery budget, and commissions another session to re-derive the
+  same conclusion. `tracker_number` must name a real OPEN issue other than the
+  target (a closed or missing tracker releases the disposition immediately),
+  and it is only valid on `defer_to_tracker`. Do NOT use it to park an issue
+  whose remedy nothing tracks — file the tracker first, or escalate.
 - Valid `action_type` values: `post_comment`, `create_issue`,
-  `escalate_to_human`, `flag_pattern`, `reset_retry`, `kill_hung_session`.
+  `escalate_to_human`, `defer_to_tracker`, `flag_pattern`, `reset_retry`,
+  `kill_hung_session`.
 - Proposals are intent, not execution: the orchestrator decides what to
   execute per its configured authority. Act-level proposals (`reset_retry`,
   `kill_hung_session`) under `propose` authority become reviewable GitHub

@@ -48,6 +48,18 @@ strategy apply exactly as they do to the planner's batch tracking issue, and
 agent labels have already passed the protected-label contract check
 (``tech_lead_completion``).
 
+Disposition note (#6971): ``defer_to_tracker`` is the second always-execute
+floor alongside ``escalate_to_human``, for the same reason — it is a routing
+surface, not an act. It records that a completed failure investigation reached
+a verdict whose remedy an OPEN tracker owns, which is what stops the stuck
+sweep re-diagnosing an already-diagnosed issue. Under ``propose`` it would
+surface a shadow record and the redundant investigations would continue, so
+there is nothing to gate. It never mutates runtime state, never touches a
+workflow label, and self-releases when its tracker closes
+(``tech_lead_dispositions``). It plans an ORDERED pair — the wait-state
+comment through the applier's claim-verified comment handler, then the
+ledger-only binding — so ownership never transfers unexplained.
+
 Escalation note: tech_lead escalation deliberately does NOT reuse
 ``EscalateToHumanAction``. That action's applier terminates the target
 issue's runtime ("escalation kills issue automation, full stop"), which
@@ -71,6 +83,7 @@ from ..domain.tech_lead_artifacts import (
 from ..domain.tech_lead_findings import PatternClassificationConflictError
 from ..domain.tech_lead_session import (
     TechLeadCreationOrigin,
+    TechLeadDisposition,
     TechLeadSessionGeneration,
 )
 from ..ports.issue import Issue
@@ -80,6 +93,7 @@ from .actions import (
     AddLabelAction,
     CreateTechLeadIssueAction,
     KillHungSessionAction,
+    RecordTechLeadDispositionAction,
     ResetRetryIssueAction,
     SurfaceTechLeadProposalAction,
 )
@@ -99,6 +113,7 @@ from .tech_lead_gate_notes import (
     outcome_gate_note,
 )
 from .tech_lead_case_files import PatternCaseFilePlanner
+from .tech_lead_dispositions import disposition_comment
 from .tech_lead_issue_policy import (
     apply_tech_lead_priority_prefix,
     decision_issue_labels,
@@ -160,6 +175,9 @@ def _concrete_actions(
     anchor_issue: Issue,
     expected: "ExpectedState",
     needs_human_label: str,
+    source_run_id: str,
+    source_session_name: str,
+    observed_at: str,
     gate_reason: str | None = None,
 ) -> list[Action]:
     body = (action.body or "") + _provenance_footer(action)
@@ -223,6 +241,44 @@ def _concrete_actions(
                 ),
                 expected=expected,
             )
+        ]
+    if action.action_type == "defer_to_tracker":
+        assert action.target_number is not None  # enforced by validate()
+        assert action.tracker_number is not None  # enforced by validate()
+        # Terminal disposition (#6971). Ordered explanation-then-ownership: the
+        # wait state is published through the applier's ordinary (claim-verified)
+        # comment handler BEFORE the durable binding that takes the issue out of
+        # the stuck sweep, so an issue is never parked with nothing on it saying
+        # why. Both halves render from the same disposition value.
+        disposition = TechLeadDisposition(
+            issue_number=action.target_number,
+            tracker_issue_number=action.tracker_number,
+            rationale=body,
+            source_run_id=source_run_id,
+            source_session_name=source_session_name,
+            source_action_id=action.id,
+            recorded_at=observed_at,
+            finding_ids=action.finding_ids,
+        )
+        return [
+            AddCommentAction(
+                number=action.target_number,
+                comment=disposition_comment(disposition),
+                is_pr=False,
+                reason=(
+                    f"tech_lead decision action {action.id}: publish the"
+                    f" awaiting-recovery disposition on #{action.target_number}"
+                ),
+                expected=expected,
+            ),
+            RecordTechLeadDispositionAction(
+                disposition=disposition,
+                reason=(
+                    f"tech_lead decision action {action.id}: park #{action.target_number}"
+                    f" on recovery tracker #{action.tracker_number}"
+                ),
+                expected=expected,
+            ),
         ]
     if action.action_type == "escalate_to_human":
         assert action.target_number is not None  # enforced by validate()
@@ -556,6 +612,9 @@ class _DecisionActionPlanner:
             anchor_issue=self.anchor_issue,
             expected=self.expected,
             needs_human_label=self.labels.needs_human,
+            source_run_id=self.source_run_id,
+            source_session_name=self.source_session_name,
+            observed_at=self.observed_at,
             gate_reason=gate_reason,
         )
 

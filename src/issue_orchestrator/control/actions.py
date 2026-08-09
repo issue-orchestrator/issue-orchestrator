@@ -60,6 +60,7 @@ from .tech_lead_actions import (
     DiscardTerminalTechLeadProposalOpsAction as DiscardTerminalTechLeadProposalOpsAction,
     KillHungSessionAction as KillHungSessionAction,
     PromoteTechLeadFindingAction as PromoteTechLeadFindingAction,
+    RecordTechLeadDispositionAction as RecordTechLeadDispositionAction,
     ReportPromotedFindingEvidenceAction as ReportPromotedFindingEvidenceAction,
     ResetRetryIssueAction as ResetRetryIssueAction,
     SettleTechLeadPromotionAction as SettleTechLeadPromotionAction,

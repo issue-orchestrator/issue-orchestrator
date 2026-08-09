@@ -50,6 +50,7 @@ from .tech_lead_actions import (
     reconciliation_subject_for,
 )
 from .tech_lead_case_files import apply_append_pattern_observation
+from .tech_lead_dispositions import apply_record_tech_lead_disposition
 from .tech_lead_finding_promotion import (
     apply_promote_tech_lead_finding,
     apply_report_promoted_finding_evidence,
@@ -78,6 +79,7 @@ TECH_LEAD_MUTATING_ACTION_TYPES: frozenset[ActionType] = (
             ActionType.KILL_HUNG_SESSION,
             ActionType.DISCARD_TERMINAL_TECH_LEAD_PROPOSAL_OPS,
             ActionType.APPEND_PATTERN_OBSERVATION,
+            ActionType.RECORD_TECH_LEAD_DISPOSITION,
             ActionType.PROMOTE_TECH_LEAD_FINDING,
             ActionType.REPORT_PROMOTED_FINDING_EVIDENCE,
             ActionType.SETTLE_TECH_LEAD_PROMOTION,
@@ -155,6 +157,12 @@ def tech_lead_action_handlers(
             apply_append_pattern_observation(
                 action, repository_host=repository_host, authority=authority
             )
+        ),
+        # Terminal disposition: bind the diagnosed issue to its tracker (#6971).
+        # Ledger-only — the wait-state comment rides the applier's own
+        # claim-verified comment handler, planned ahead of this command.
+        ActionType.RECORD_TECH_LEAD_DISPOSITION: lambda action: (
+            apply_record_tech_lead_disposition(action, authority=authority)
         ),
         # Finding promotion: file in the routed repo, then close the loop
         # (#6957). All three reconcile against the SOURCE repo's case file —

@@ -550,6 +550,7 @@ class FactGatherer:
         the collaborators it cannot reach and routes its two observations.
         """
         from .stuck_sweep import run_stuck_sweep_cycle
+        from .tech_lead_dispositions import build_disposition_ledger
 
         run_stuck_sweep_cycle(
             self.config,
@@ -565,6 +566,15 @@ class FactGatherer:
             queue_cache_store=self.queue_cache_store,
             on_result=self._emit_stuck_sweep,
             on_scan_incomplete=self._emit_stuck_sweep_incomplete,
+            # Issues a completed failure investigation parked on an open recovery
+            # tracker (#6971): already diagnosed, so re-injecting them buys a
+            # duplicate verdict and spends budget an undiagnosed issue needs. The
+            # ledger owner also releases bindings whose tracker closed. Built per
+            # sweep because it is only reachable behind the due gate — a not-due
+            # sweep makes zero calls of any kind.
+            dispositions=build_disposition_ledger(
+                self.tech_lead_authority, self.repository_host
+            ),
         )
 
     def _open_proposal_targets(self) -> frozenset[int]:

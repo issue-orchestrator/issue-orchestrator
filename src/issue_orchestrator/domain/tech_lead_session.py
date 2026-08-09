@@ -807,6 +807,132 @@ def _validate_stored_op_session_fields(op: StoredTechLeadOp) -> None:
 
 
 @dataclass(frozen=True)
+class TechLeadDisposition:
+    """The terminal disposition a completed failure investigation leaves (#6971).
+
+    A diagnosis that names an open recovery tracker is an OUTCOME, not an open
+    question — but before this record existed it left nothing machine-readable
+    behind. The blocking label stayed, so the next stuck sweep re-discovered the
+    issue "still stuck and NOT owned", spent a unit of recovery budget, and
+    queued another investigation that re-read the same evidence and reached the
+    same conclusion (three identical passes over #6410).
+
+    This row is that missing disposition. It binds the diagnosed issue to the
+    OPEN tracker that owns its remedy, and the binding is also the release
+    condition: while the tracker is open the sweep treats the issue as owned
+    (the way a ``tech-lead-needs-human`` marker does); when the tracker closes
+    with the issue still blocked, the wait state is over and the issue goes
+    back to the sweep for a fresh look.
+
+    Later dispositions SUPERSEDE earlier ones. Unlike a gated proposal op (a
+    consent binding that must never silently change), this is "the latest
+    completed investigation's conclusion" — a newer investigation binding the
+    issue to a different tracker is exactly what should be recorded.
+    """
+
+    issue_number: int
+    tracker_issue_number: int
+    rationale: str
+    source_run_id: str
+    source_session_name: str
+    source_action_id: str  # the decision artifact action id (A<n>)
+    recorded_at: str  # ISO-8601 UTC timestamp
+    finding_ids: tuple[str, ...] = ()
+    schema_version: int = _SCHEMA_VERSION
+
+    def __post_init__(self) -> None:
+        if self.schema_version != _SCHEMA_VERSION:
+            raise ValueError(
+                "Unsupported tech_lead disposition schema_version:"
+                f" {self.schema_version!r}"
+            )
+        # Runtime re-checks: from_dict feeds this dataclass persisted JSON,
+        # so the declared annotations carry no runtime guarantee here.
+        for field_name in ("issue_number", "tracker_issue_number"):
+            number = cast(object, getattr(self, field_name))
+            if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
+                raise ValueError(
+                    f"TechLeadDisposition {field_name} must be a positive int,"
+                    f" got {number!r}"
+                )
+        if self.issue_number == self.tracker_issue_number:
+            raise ValueError(
+                "TechLeadDisposition tracker_issue_number must differ from"
+                f" issue_number (#{self.issue_number}): an issue cannot track"
+                " its own recovery, so the disposition would never release"
+            )
+        for field_name in (
+            "source_run_id",
+            "source_session_name",
+            "source_action_id",
+            "recorded_at",
+        ):
+            value: object = getattr(self, field_name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(
+                    f"TechLeadDisposition {field_name} must be a non-empty"
+                    f" string, got {value!r}"
+                )
+        rationale = cast(object, self.rationale)
+        if not isinstance(rationale, str):
+            raise ValueError(
+                f"TechLeadDisposition rationale must be a string, got {rationale!r}"
+            )
+        findings = cast(object, self.finding_ids)
+        if not isinstance(findings, tuple) or any(
+            not isinstance(item, str) for item in findings
+        ):
+            raise ValueError(
+                "TechLeadDisposition finding_ids must be a tuple of strings,"
+                f" got {findings!r}"
+            )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version,
+            "issue_number": self.issue_number,
+            "tracker_issue_number": self.tracker_issue_number,
+            "rationale": self.rationale,
+            "source_run_id": self.source_run_id,
+            "source_session_name": self.source_session_name,
+            "source_action_id": self.source_action_id,
+            "recorded_at": self.recorded_at,
+            "finding_ids": list(self.finding_ids),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> "TechLeadDisposition":
+        """Parse from dict; malformed content fails loudly with ValueError.
+
+        The store is orchestrator-owned, so corruption is a bug, never agent
+        input to fail-safe around (mirrors :meth:`StoredTechLeadOp.from_dict`).
+        """
+        raw_schema = data.get("schema_version")
+        if isinstance(raw_schema, bool) or not isinstance(raw_schema, int):
+            raise ValueError(
+                "tech_lead disposition schema_version must be an int, got"
+                f" {raw_schema!r}"
+            )
+        raw_findings = data.get("finding_ids", [])
+        if not isinstance(raw_findings, list):
+            raise ValueError(
+                "tech_lead disposition finding_ids must be a list, got"
+                f" {raw_findings!r}"
+            )
+        return cls(
+            issue_number=data.get("issue_number"),  # type: ignore[arg-type]
+            tracker_issue_number=data.get("tracker_issue_number"),  # type: ignore[arg-type]
+            rationale=str(data.get("rationale", "")),
+            source_run_id=str(data.get("source_run_id", "")),
+            source_session_name=str(data.get("source_session_name", "")),
+            source_action_id=str(data.get("source_action_id", "")),
+            recorded_at=str(data.get("recorded_at", "")),
+            finding_ids=tuple(str(item) for item in raw_findings),
+            schema_version=raw_schema,
+        )
+
+
+@dataclass(frozen=True)
 class ApprovedTechLeadOp:
     """A stored op whose proposal issue no longer carries the gate label.
 

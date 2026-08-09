@@ -562,6 +562,110 @@ class TestProposedActionExpedite:
         assert again.proposed_actions[0].expedite is True
 
 
+class TestProposedActionDeferToTracker:
+    """#6971: the terminal disposition a completed investigation leaves.
+
+    The action exists to STOP redundant re-investigations, so everything the
+    release condition depends on is contract, not convention: a disposition
+    with no tracker never releases, and one bound to its own target releases
+    only when the issue it parks closes.
+    """
+
+    def _defer(self, **overrides: object) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "id": "A2",
+            "action_type": "defer_to_tracker",
+            "target_number": 6410,
+            "tracker_number": 6914,
+            "body": "Validated work is stranded; recovery is tracked by #6914.",
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_parses_and_round_trips(self):
+        action = ProposedTechLeadAction.from_mapping(self._defer(), index=1)
+        assert action.target_number == 6410
+        assert action.tracker_number == 6914
+        payload = action.to_dict()
+        assert payload["tracker_number"] == 6914
+        assert ProposedTechLeadAction.from_mapping(payload, index=1).tracker_number == 6914
+
+    def test_defer_to_tracker_is_a_valid_action_type(self):
+        assert "defer_to_tracker" in VALID_TECH_LEAD_ACTION_TYPES
+        # It is a decision-tier routing surface, never an act-level intent.
+        assert "defer_to_tracker" not in ACT_LEVEL_TECH_LEAD_ACTIONS
+
+    def test_requires_a_tracker(self):
+        payload = self._defer()
+        del payload["tracker_number"]
+        with pytest.raises(ValueError, match="requires tracker_number"):
+            ProposedTechLeadAction.from_mapping(payload, index=1)
+
+    def test_requires_a_target(self):
+        payload = self._defer()
+        del payload["target_number"]
+        with pytest.raises(ValueError, match="requires target_number"):
+            ProposedTechLeadAction.from_mapping(payload, index=1)
+
+    def test_requires_a_body(self):
+        payload = self._defer()
+        del payload["body"]
+        with pytest.raises(ValueError, match="requires body"):
+            ProposedTechLeadAction.from_mapping(payload, index=1)
+
+    def test_rejects_self_tracking(self):
+        with pytest.raises(ValueError, match="must differ from target_number"):
+            ProposedTechLeadAction.from_mapping(
+                self._defer(tracker_number=6410), index=1
+            )
+
+    @pytest.mark.parametrize("bad", [0, -1, True, False, "42", 42.0, [], {}])
+    def test_rejects_non_positive_tracker(self, bad):
+        with pytest.raises(ValueError, match="tracker_number must be a positive"):
+            ProposedTechLeadAction.from_mapping(
+                self._defer(tracker_number=bad), index=1
+            )
+
+    @pytest.mark.parametrize(
+        "action_type,extra",
+        [
+            ("post_comment", {"target_number": 5, "body": "b"}),
+            ("create_issue", {"title": "t", "body": "b"}),
+            ("escalate_to_human", {"target_number": 5, "body": "b"}),
+            ("flag_pattern", {"body": "b", "pattern_signature": "sig"}),
+            ("reset_retry", {"target_number": 5, "body": "b"}),
+        ],
+    )
+    def test_tracker_number_rejected_on_other_action_types(self, action_type, extra):
+        payload = {"id": "A1", "action_type": action_type, "tracker_number": 9, **extra}
+        with pytest.raises(ValueError, match="only valid on defer_to_tracker"):
+            ProposedTechLeadAction.from_mapping(payload, index=1)
+
+    def test_tracker_number_rejected_on_direct_construction_bypass(self):
+        action = ProposedTechLeadAction(
+            id="A1",
+            action_type="post_comment",
+            target_number=5,
+            body="b",
+            tracker_number=9,
+        )
+        with pytest.raises(ValueError, match="only valid on defer_to_tracker"):
+            action.validate()
+
+    def test_decision_round_trips_through_payload(self):
+        decision = TechLeadDecision.from_agent_payload(
+            {
+                "schema_version": 1,
+                "summary": "s",
+                "findings": [_finding("T1")],
+                "proposed_actions": [self._defer(finding_ids=["T1"])],
+            }
+        )
+        assert decision.proposed_actions[0].tracker_number == 6914
+        again = TechLeadDecision.from_agent_payload(decision.to_dict())
+        assert again.proposed_actions[0].tracker_number == 6914
+
+
 class TestProposedActionDuplicateOf:
     """#6878: the create_issue-only ``duplicate_of`` dedup intent."""
 

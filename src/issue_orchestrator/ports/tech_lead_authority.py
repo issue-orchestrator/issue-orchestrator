@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     )
     from ..domain.tech_lead_session import (
         StoredTechLeadOp,
+        TechLeadDisposition,
         TechLeadLaunchAuthority,
         TechLeadShippedFixSummary,
     )
@@ -128,6 +129,37 @@ class TechLeadAuthorityStore(Protocol):
 
     def list_ops(self) -> tuple[tuple[int, "StoredTechLeadOp"], ...]:
         """All (proposal_issue_number, op) rows — the open-proposal ledger."""
+        ...
+
+    # -- Failure-investigation dispositions (#6971) -------------------------
+    #
+    # The durable terminal disposition of a completed failure investigation,
+    # keyed by the DIAGNOSED issue number. While the row's bound tracker is
+    # open the stuck sweep treats the issue as owned instead of re-injecting a
+    # redundant investigation; the release owner discards the row when the
+    # tracker closes or the issue recovers.
+
+    def record_disposition(self, *, disposition: "TechLeadDisposition") -> None:
+        """Persist an issue's terminal disposition (last write wins).
+
+        Unlike :meth:`record_op` (a consent binding that must never silently
+        change), this row is "the latest completed investigation's
+        conclusion". A newer investigation binding the issue to a different
+        tracker SUPERSEDES the previous row rather than conflicting with it —
+        refusing the update would freeze an issue on a stale tracker forever.
+        """
+        ...
+
+    def load_disposition(self, *, issue_number: int) -> "TechLeadDisposition | None":
+        """Return an issue's recorded disposition, or None when absent."""
+        ...
+
+    def discard_disposition(self, *, issue_number: int) -> None:
+        """Release an issue's disposition. No-op if absent (release owner)."""
+        ...
+
+    def list_dispositions(self) -> tuple["TechLeadDisposition", ...]:
+        """Every recorded disposition — the sweep's ownership ledger read."""
         ...
 
     # -- Problem-storm cohorts (#6780) --------------------------------------
@@ -422,6 +454,7 @@ class InMemoryTechLeadAuthorityStore:
         self._pending_promotions: dict[str, "PendingPromotion"] = {}
         self._shipped_fixes: dict[int, "TechLeadShippedFixSummary"] = {}
         self._storm_cohorts: dict[int, tuple["DiscoveredFailure", ...]] = {}
+        self._dispositions: dict[int, "TechLeadDisposition"] = {}
 
     def record(
         self, *, run_id: str, session_name: str, authority: "TechLeadLaunchAuthority"
@@ -463,6 +496,18 @@ class InMemoryTechLeadAuthorityStore:
 
     def list_ops(self) -> tuple[tuple[int, "StoredTechLeadOp"], ...]:
         return tuple(sorted(self._ops.items()))
+
+    def record_disposition(self, *, disposition: "TechLeadDisposition") -> None:
+        self._dispositions[disposition.issue_number] = disposition
+
+    def load_disposition(self, *, issue_number: int) -> "TechLeadDisposition | None":
+        return self._dispositions.get(issue_number)
+
+    def discard_disposition(self, *, issue_number: int) -> None:
+        self._dispositions.pop(issue_number, None)
+
+    def list_dispositions(self) -> tuple["TechLeadDisposition", ...]:
+        return tuple(self._dispositions[key] for key in sorted(self._dispositions))
 
     def record_storm_cohort(
         self, *, anchor_issue_number: int, cohort: tuple["DiscoveredFailure", ...]

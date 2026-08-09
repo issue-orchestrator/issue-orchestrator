@@ -20,11 +20,18 @@ from issue_orchestrator.control.stuck_sweep import (
     run_stuck_sweep,
     stuck_sweep_due,
 )
+from issue_orchestrator.control.tech_lead_dispositions import (
+    TechLeadDispositionLedger,
+)
 from issue_orchestrator.control.tech_lead_reaction import TechLeadReactionPolicy
 from issue_orchestrator.domain.models import Issue, OrchestratorState
+from issue_orchestrator.domain.tech_lead_session import TechLeadDisposition
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.infra.config_sections import parse_tech_lead_config
 from issue_orchestrator.ports.event_sink import InMemoryEventSink
+from issue_orchestrator.ports.tech_lead_authority import (
+    InMemoryTechLeadAuthorityStore,
+)
 
 
 def _config(
@@ -300,6 +307,149 @@ def test_open_proposal_target_is_not_reinjected_or_charged():
     )
     assert result.recovered == ()
     assert state.recovery_attempts == {}
+
+
+# ---------------------------------------------------------------------------
+# Failure-investigation dispositions (#6971)
+#
+# The budget exists to find issues whose diagnosis is MISSING. An issue whose
+# completed investigation already bound it to an open recovery tracker has its
+# answer, so re-injecting it buys a duplicate verdict and costs a full agent
+# session — three identical passes over #6410 before this existed.
+# ---------------------------------------------------------------------------
+
+
+def _dispositions(store, states: dict[int, str | None]):
+    return TechLeadDispositionLedger(
+        authority=store, issue_state=lambda number: states.get(number)
+    )
+
+
+def _park(store, issue_number: int, tracker: int) -> None:
+    store.record_disposition(
+        disposition=TechLeadDisposition(
+            issue_number=issue_number,
+            tracker_issue_number=tracker,
+            rationale="recover, don't reset",
+            source_run_id="run-1",
+            source_session_name=f"issue-{issue_number}",
+            source_action_id="A2",
+            recorded_at="2026-08-09T00:00:00+00:00",
+        )
+    )
+
+
+def test_diagnosed_issue_parked_on_an_open_tracker_is_not_reinvestigated():
+    config = _config()
+    state = OrchestratorState()
+    store = InMemoryTechLeadAuthorityStore()
+    _park(store, 6410, tracker=6914)
+    host = _RecordingHost([_issue(6410, labels=["blocked-failed"])])
+
+    result = run_stuck_sweep(
+        config, state, host, LabelManager(config), now=1.0,
+        dispositions=_dispositions(store, {6914: "open"}),
+    )
+
+    assert result.recovered == ()
+    # And crucially: no budget was spent on the re-detection.
+    assert state.recovery_attempts == {}
+
+
+def test_a_parked_issue_keeps_the_budget_it_had_already_spent():
+    config = _config(max_recovery_attempts=3)
+    state = OrchestratorState()
+    state.recovery_attempts = {6410: 1}
+    store = InMemoryTechLeadAuthorityStore()
+    _park(store, 6410, tracker=6914)
+    host = _RecordingHost([_issue(6410, labels=["blocked-failed"])])
+
+    run_stuck_sweep(
+        config, state, host, LabelManager(config), now=1.0,
+        dispositions=_dispositions(store, {6914: "open"}),
+    )
+
+    assert state.recovery_attempts == {6410: 1}
+
+
+def test_closing_the_tracker_returns_a_still_blocked_issue_to_the_sweep():
+    """The wait state is over: the remedy's owner is gone and the issue is
+    still stuck, so it needs a fresh look."""
+    config = _config()
+    state = OrchestratorState()
+    store = InMemoryTechLeadAuthorityStore()
+    _park(store, 6410, tracker=6914)
+    host = _RecordingHost([_issue(6410, labels=["blocked-failed"])])
+
+    result = run_stuck_sweep(
+        config, state, host, LabelManager(config), now=1.0,
+        dispositions=_dispositions(store, {6914: "closed"}),
+    )
+
+    assert [failure.issue_number for failure in result.recovered] == [6410]
+    assert store.load_disposition(issue_number=6410) is None
+
+
+def test_a_recovered_issue_releases_its_disposition():
+    """A stale row must not park a LATER, unrelated incident on the number."""
+    config = _config()
+    state = OrchestratorState()
+    store = InMemoryTechLeadAuthorityStore()
+    _park(store, 6410, tracker=6914)
+    # The issue recovered: it no longer carries any blocking label.
+    host = _RecordingHost([_issue(6410, labels=["in-progress"])])
+
+    run_stuck_sweep(
+        config, state, host, LabelManager(config), now=1.0,
+        dispositions=_dispositions(store, {6914: "open"}),
+    )
+
+    assert store.load_disposition(issue_number=6410) is None
+
+
+def test_a_closed_issue_releases_its_disposition():
+    config = _config()
+    state = OrchestratorState()
+    store = InMemoryTechLeadAuthorityStore()
+    _park(store, 6410, tracker=6914)
+    host = _RecordingHost([_issue(6410, labels=["blocked-failed"], state="closed")])
+
+    run_stuck_sweep(
+        config, state, host, LabelManager(config), now=1.0,
+        dispositions=_dispositions(store, {6914: "open"}),
+    )
+
+    assert store.load_disposition(issue_number=6410) is None
+
+
+def test_a_disposition_parks_only_its_own_issue():
+    config = _config()
+    state = OrchestratorState()
+    store = InMemoryTechLeadAuthorityStore()
+    _park(store, 6410, tracker=6914)
+    host = _RecordingHost(
+        [
+            _issue(6410, labels=["blocked-failed"]),
+            _issue(6411, labels=["blocked-failed"]),
+        ]
+    )
+
+    result = run_stuck_sweep(
+        config, state, host, LabelManager(config), now=1.0,
+        dispositions=_dispositions(store, {6914: "open"}),
+    )
+
+    assert [failure.issue_number for failure in result.recovered] == [6411]
+
+
+def test_without_dispositions_the_sweep_behaves_exactly_as_before():
+    config = _config()
+    state = OrchestratorState()
+    host = _RecordingHost([_issue(6410, labels=["blocked-failed"])])
+
+    result = run_stuck_sweep(config, state, host, LabelManager(config), now=1.0)
+
+    assert [failure.issue_number for failure in result.recovered] == [6410]
 
 
 # ---------------------------------------------------------------------------

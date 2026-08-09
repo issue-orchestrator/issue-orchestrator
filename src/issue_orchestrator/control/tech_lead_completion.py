@@ -63,7 +63,6 @@ from typing import TYPE_CHECKING
 
 from ..domain.models import Session
 from ..domain.board_snapshot import BOARD_SNAPSHOT_FILENAME, BoardSnapshot
-from ..domain.tech_lead_artifacts import ACT_LEVEL_TECH_LEAD_ACTIONS
 from ..domain.tech_lead_manifest import TechLeadManifest
 from ..domain.tech_lead_session import TechLeadLaunchAuthority, TechLeadSessionFlavor
 from .actions import (
@@ -93,6 +92,7 @@ from .tech_lead_case_files import build_pattern_ledger
 from .tech_lead_issue_policy import protected_tech_lead_label_violations
 from .tech_lead_proposals import build_op_ledger
 from .tech_lead_session_policy import is_tech_lead_session, read_tech_lead_assignment
+from .tech_lead_target_scope import target_scope_violation
 
 if TYPE_CHECKING:
     from ..domain.tech_lead_artifacts import TechLeadDecision
@@ -102,13 +102,6 @@ if TYPE_CHECKING:
     from .reconciliation import ExpectedState
 
 logger = logging.getLogger(__name__)
-
-# Comment/routing proposals whose target_number must fall inside the general
-# launch scope (which, for a batch review, includes the audited manifest PRs).
-# create_issue / flag_pattern carry no target and are scope-free. Act-level
-# proposals (reset_retry / kill_hung_session) are validated separately against
-# the STRICTER issue-only scope — see ``allowed_act_level_targets`` (#6764 rr F1).
-_TARGET_SCOPED_ACTION_TYPES = frozenset(("post_comment", "escalate_to_human"))
 
 
 def read_tech_lead_manifest(run_dir: Path) -> TechLeadManifest | None:
@@ -276,7 +269,7 @@ def validate_decision_for_authority(
       (#6761 F4). Checked at mapping time so the domain contract stays
       config-free.
     """
-    target_violation = _target_scope_violation(decision, authority)
+    target_violation = target_scope_violation(decision, authority)
     if target_violation is not None:
         return target_violation
     if authority.flavor is TechLeadSessionFlavor.FAILURE_INVESTIGATION:

@@ -1246,8 +1246,9 @@ class ReviewSettings(BaseModel):
     # TECH_LEAD_AUTHORITY_MODES — the same set YAML loading validates against —
     # exposed as an `enum` select plus a POST-time validator (a Literal type
     # is deliberately avoided; see merge_queue.provider for the rationale).
-    # escalate_to_human is intentionally absent: it is the non-configurable
-    # floor and always executes.
+    # escalate_to_human and defer_to_tracker are intentionally absent: they are
+    # the non-configurable floor and always execute
+    # (TECH_LEAD_AUTHORITY_FLOOR_ACTIONS).
     tech_lead_authority_post_comment: str = Field(
         "execute",
         title=f"{TECH_LEAD_DISPLAY_NAME} Authority: Post Comment",

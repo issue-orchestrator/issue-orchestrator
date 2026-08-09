@@ -10,6 +10,7 @@ from issue_orchestrator.control.actions import (
     CreateTechLeadIssueAction,
     CreateTechLeadProposalIssueAction,
     KillHungSessionAction,
+    RecordTechLeadDispositionAction,
     ResetRetryIssueAction,
     SurfaceTechLeadProposalAction,
     TechLeadMilestoneIntent,
@@ -598,6 +599,65 @@ def test_escalate_to_human_executes_even_in_full_propose_config() -> None:
 
     assert isinstance(label, AddLabelAction)
     assert isinstance(comment, AddCommentAction)
+
+
+def test_defer_to_tracker_publishes_the_wait_state_then_binds_the_tracker() -> None:
+    """#6971: an ordered (comment, ledger row) pair, never a bare row.
+
+    The comment goes through the applier's ordinary claim-verified comment
+    handler and is planned FIRST, so an issue is never taken out of the stuck
+    sweep with nothing on it explaining why.
+    """
+    action = ProposedTechLeadAction(
+        id="A2",
+        action_type="defer_to_tracker",
+        target_number=6410,
+        tracker_number=6914,
+        body="Validated work is stranded; recover it, do NOT reset.",
+        finding_ids=("T1",),
+    )
+
+    [comment, record] = _plan(_decision(action))
+
+    assert isinstance(comment, AddCommentAction)
+    assert comment.number == 6410
+    assert comment.is_pr is False
+    assert "#6914" in comment.comment
+    assert "Validated work is stranded" in comment.comment
+    assert comment.expected is EXPECTED
+
+    assert isinstance(record, RecordTechLeadDispositionAction)
+    disposition = record.disposition
+    assert disposition is not None
+    assert disposition.issue_number == 6410
+    assert disposition.tracker_issue_number == 6914
+    assert disposition.source_action_id == "A2"
+    assert disposition.source_run_id == SOURCE_RUN["source_run_id"]
+    assert disposition.source_session_name == SOURCE_RUN["source_session_name"]
+    assert disposition.recorded_at == SOURCE_RUN["observed_at"]
+    assert disposition.finding_ids == ("T1",)
+    assert record.expected is EXPECTED
+
+
+def test_defer_to_tracker_executes_even_in_full_propose_config() -> None:
+    """The disposition is a floor: under propose it would surface a shadow
+    record while the redundant investigations it exists to stop continued."""
+    config = _config(
+        post_comment="propose", create_issue="propose", flag_pattern="propose"
+    )
+    action = ProposedTechLeadAction(
+        id="A1",
+        action_type="defer_to_tracker",
+        target_number=11,
+        tracker_number=12,
+        body="Owned by the recovery lane.",
+    )
+
+    [comment, record] = _plan(_decision(action), config)
+
+    assert isinstance(comment, AddCommentAction)
+    assert isinstance(record, RecordTechLeadDispositionAction)
+    assert _shadow_digests([comment, record]) == []
 
 
 def test_propose_authority_surfaces_shadow_proposal() -> None:
@@ -1223,6 +1283,37 @@ def test_authority_mode_for_escalate_is_always_execute() -> None:
 
     authority = TechLeadAuthorityConfig()
     assert authority.mode_for("escalate_to_human") == "execute"
+
+
+def test_authority_mode_for_defer_to_tracker_is_always_execute() -> None:
+    """#6971: under propose the disposition would be a shadow record while the
+    redundant investigations it exists to stop kept running."""
+    from issue_orchestrator.infra.config_models import TechLeadAuthorityConfig
+
+    authority = TechLeadAuthorityConfig()
+    assert authority.mode_for("defer_to_tracker") == "execute"
+
+
+def test_every_decision_action_type_has_a_declared_authority() -> None:
+    """The floor and configurable sets must PARTITION the action vocabulary.
+
+    A new action type that lands in neither raises from ``mode_for`` at
+    completion time — after the session did its work. This pins the split at
+    build time instead, and pins that no type is in both (which would make the
+    configured mode a lie).
+    """
+    from issue_orchestrator.infra.config_models_tech_lead import (
+        TECH_LEAD_AUTHORITY_CONFIGURABLE_ACTIONS,
+        TECH_LEAD_AUTHORITY_FLOOR_ACTIONS,
+    )
+    from issue_orchestrator.domain.tech_lead_artifacts import (
+        VALID_TECH_LEAD_ACTION_TYPES,
+    )
+
+    floor = set(TECH_LEAD_AUTHORITY_FLOOR_ACTIONS)
+    configurable = set(TECH_LEAD_AUTHORITY_CONFIGURABLE_ACTIONS)
+    assert floor | configurable == set(VALID_TECH_LEAD_ACTION_TYPES)
+    assert floor & configurable == set()
 
 
 class TestCreateIssueExpediteProducer:

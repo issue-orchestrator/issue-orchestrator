@@ -23,7 +23,7 @@ from .action_base import Action, ActionType
 
 if TYPE_CHECKING:
     from ..domain.tech_lead_findings import PatternObservation
-    from ..domain.tech_lead_session import StoredTechLeadOp
+    from ..domain.tech_lead_session import StoredTechLeadOp, TechLeadDisposition
 
 
 # These actions deliberately share one apply-time owner: all create a
@@ -496,6 +496,38 @@ class AppendPatternObservationAction(Action):
         """The evidence comment posted onto the case file."""
         assert self.observation is not None  # enforced by __post_init__
         return self.observation.comment
+
+
+@dataclass(frozen=True)
+class RecordTechLeadDispositionAction(Action):
+    """Park a diagnosed issue on the open tracker that owns its remedy (#6971).
+
+    The terminal disposition of a completed failure investigation. Both halves
+    belong to one owner: the diagnosed issue gets a comment saying WHY it is
+    parked and on WHAT, and the authority store gets the durable tracker
+    binding the stuck sweep consults instead of re-diagnosing.
+
+    Carries the whole :class:`~...domain.tech_lead_session.TechLeadDisposition`
+    rather than loose fields, so the row the applier records is the row the
+    planner decided — there is no second place that reassembles it.
+    """
+
+    disposition: "TechLeadDisposition | None" = None
+    action_type: ActionType = field(
+        default=ActionType.RECORD_TECH_LEAD_DISPOSITION, init=False
+    )
+
+    def __post_init__(self) -> None:
+        if self.disposition is None:
+            raise ValueError(
+                "RecordTechLeadDispositionAction requires the disposition it"
+                " records (the diagnosed issue and its open recovery tracker)"
+            )
+
+    def reconciliation_subject(self) -> int:
+        """The diagnosed issue this comments on and parks."""
+        assert self.disposition is not None  # enforced by __post_init__
+        return self.disposition.issue_number
 
 
 @dataclass(frozen=True)

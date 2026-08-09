@@ -114,6 +114,38 @@ flowchart TD
   TFAIL -->|no| SKIP["No investigation"]
 ```
 
+## How a Failure Investigation Ends (#6971)
+
+An investigation is only finished when it leaves a **disposition** — something
+machine-readable that says what happens next. Without one the blocking label
+stays, the stuck sweep re-discovers the issue as "still stuck and NOT owned",
+spends a unit of recovery budget, and commissions another session to re-derive
+the same verdict (issue #6410 was investigated three times for one conclusion).
+
+Two decision actions end an investigation:
+
+| Verdict | Action | What the orchestrator does |
+|---|---|---|
+| A person must decide | `escalate_to_human` | Applies `needs-human` + an explanatory comment |
+| Another OPEN issue owns the remedy | `defer_to_tracker` | Comments the wait state on the diagnosed issue and records a durable binding to that tracker |
+
+Both are **always-execute** floors: an authority mode that turned them into
+shadow records would leave the investigation with no way to end.
+
+A `defer_to_tracker` disposition transfers stuck-sweep ownership the way a
+`tech-lead-needs-human` marker does, and the binding is also the release
+condition. `TechLeadDispositionLedger` (`control/tech_lead_dispositions.py`)
+releases the issue back to the sweep as soon as any of these becomes true:
+
+- the bound tracker closes (or never existed — the agent-supplied number is
+  untrusted, so a bogus tracker parks nothing);
+- the diagnosed issue's blocking label clears, or the issue closes.
+
+The ledger lives in the tech-lead authority store because the tracker number is
+the load-bearing half and no label can carry it. Losing that store degrades to
+the old behaviour — one redundant investigation — never to a silently parked
+issue.
+
 ## Requesting a Tech-Lead Run from the Dashboard
 
 Every tech-lead run — whether a timer, a failure, a problem storm, the one-shot
