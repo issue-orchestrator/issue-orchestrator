@@ -13,9 +13,11 @@ from issue_orchestrator.control.proposal_dedup_gate import (
 from issue_orchestrator.control.tech_lead_observation_routing import (
     accrual_for,
     accrual_signature,
-    observation_of,
+    case_file_sighting,
 )
+from issue_orchestrator.control.tech_lead_case_files import CaseFileIntake
 from issue_orchestrator.domain.tech_lead_artifacts import ProposedTechLeadAction
+from issue_orchestrator.domain.tech_lead_findings import CaseFileClassification
 
 
 def _proposal(**overrides) -> ProposedTechLeadAction:
@@ -105,28 +107,28 @@ class TestRestatedObservation:
 
     def test_keeps_the_proposal_identity_and_gains_the_signature(self) -> None:
         proposal = _proposal(id="A7", finding_ids=("T3",))
-        observation = observation_of(proposal, self._accrual(proposal))
-        assert observation.id == "A7"
-        assert observation.finding_ids == ("T3",)
-        assert observation.pattern_signature == "duplicate-of-#6928"
+        intake = case_file_sighting(proposal, self._accrual(proposal))
+        assert intake.proposal.id == "A7"
+        assert intake.proposal.finding_ids == ("T3",)
+        assert intake.signature == "duplicate-of-#6928"
 
-    def test_classifies_nothing_but_records_what_was_claimed(self) -> None:
-        # area is the ledger's other IMMUTABLE field: reconciling it raises, and
-        # that raise rejects the whole decision. A sighting must not supply it —
-        # nor pick the repo a fix:code promotion routes to.
+    def test_records_what_was_claimed_without_claiming_it(self) -> None:
+        # area is one of the ledger's IMMUTABLE fields: reconciling it raises,
+        # and that raise rejects the whole decision. A sighting must not supply
+        # it — nor pick the repo a fix:code promotion routes to.
         proposal = _proposal(
             area="github-api", labels=("bug",), expedite=True
         )
-        observation = observation_of(proposal, self._accrual(proposal))
-        assert observation.area is None
-        body = observation.body or ""
+        intake = case_file_sighting(proposal, self._accrual(proposal))
+        assert intake.classification.area == ""
+        body = intake.proposal.body or ""
         assert "`github-api`" in body  # evidence kept for the human, not applied
         assert "`bug`" in body
         assert "expedited" in body
 
     def test_body_carries_the_proposal_and_its_reconciliation_evidence(self) -> None:
         proposal = _proposal()
-        body = observation_of(proposal, self._accrual(proposal)).body or ""
+        body = case_file_sighting(proposal, self._accrual(proposal)).proposal.body or ""
         assert "Search-API budget exhaustion re-verified" in body
         assert "1,824 403s in three hours." in body
         assert "#6928" in body
@@ -134,14 +136,34 @@ class TestRestatedObservation:
 
     def test_an_intra_decision_sibling_reason_is_not_lost(self) -> None:
         proposal = _proposal()
-        observation = observation_of(
+        intake = case_file_sighting(
             proposal, self._accrual(proposal), sibling_action_id="A1"
         )
-        assert "A1" in (observation.body or "")
+        assert "A1" in (intake.proposal.body or "")
 
-    def test_stays_unclassified_so_it_is_never_promoted(self) -> None:
-        # fix_class is valid only on flag_pattern, so an accrued sighting can
-        # never make a signature promotable on its own.
-        proposal = _proposal()
-        observation = observation_of(proposal, self._accrual(proposal))
-        assert observation.fix_class is None
+    def test_establishes_no_durable_fact_at_all(self) -> None:
+        # #6989 round-1 review F1: an accrued sighting classifies nothing AND
+        # diagnoses nothing. fix_class/area decide promotability and routing;
+        # the diagnosis is the mechanism a routed promotion is FILED ON, so a
+        # re-sighting that says "seen again" must never become it.
+        proposal = _proposal(area="github-api")
+        intake = case_file_sighting(proposal, self._accrual(proposal))
+        assert intake.classification == CaseFileClassification()
+
+    def test_a_diagnosing_intake_is_the_only_one_that_classifies(self) -> None:
+        # The contrast that makes the intake contract meaningful: the same lane,
+        # entered by a reviewed flag_pattern, carries all three durable facts.
+        flag = ProposedTechLeadAction(
+            id="A9",
+            action_type="flag_pattern",
+            body="The lease renewer stalls; renew off the tick thread.",
+            pattern_signature="lease-renewer-stall",
+            area="control",
+            fix_class="code",
+        )
+        intake = CaseFileIntake.diagnosing(flag)
+        assert intake.classification == CaseFileClassification(
+            fix_class="code",
+            area="control",
+            diagnosis="The lease renewer stalls; renew off the tick thread.",
+        )

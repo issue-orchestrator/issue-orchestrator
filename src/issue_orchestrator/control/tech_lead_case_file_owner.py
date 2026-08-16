@@ -49,8 +49,8 @@ from enum import Enum
 from typing import TYPE_CHECKING, Callable, Iterable
 
 from ..domain.tech_lead_findings import (
+    CaseFileClassification,
     PendingCaseFile,
-    reconcile_pattern_classification,
 )
 
 if TYPE_CHECKING:
@@ -260,6 +260,7 @@ class PatternCaseFileOwner:
             observations=action.additional_observations,
             fix_class=action.fix_class,
             area=action.area or "",
+            diagnosis=action.diagnosis,
         )
 
     def _commit(
@@ -301,6 +302,7 @@ class PatternCaseFileOwner:
             observations=action.observations,
             fix_class=action.fix_class,
             area=action.area or "",
+            diagnosis=action.diagnosis,
         )
 
     def append_observations(
@@ -311,22 +313,31 @@ class PatternCaseFileOwner:
         observations: Iterable["PatternObservation"],
         fix_class: str,
         area: str,
+        diagnosis: str,
     ) -> "ObservationAppendOutcome":
         """Post and count each observation, skipping ones already recorded.
 
         The ordering is deliberate and shared by every caller:
 
-        0. RECONCILE the incoming classification against the recorded row first.
-           A conflict raises before anything is published — the apply-time
-           mirror of the planner's preflight, and the one that matters on the
-           recovery path, where the durable row appears only moments earlier
-           and planning could not have seen it (#6957 round-3 review F10).
+        0. RECONCILE the incoming durable facts against the recorded row first.
+           A classification conflict raises before anything is published — the
+           apply-time mirror of the planner's preflight, and the one that
+           matters on the recovery path, where the durable row appears only
+           moments earlier and planning could not have seen it (#6957 round-3
+           review F10). The canonical ``diagnosis`` merges by the same
+           first-non-empty rule, which is what durably establishes it when a
+           reviewed ``flag_pattern`` lands on a case file an evidence-only
+           sighting opened (#6989 round-1 review F1).
         1. an identity ALREADY recorded means a previous attempt completed —
            do nothing (a purely local ledger read, no GitHub call);
         2. otherwise comment FIRST, then record create-once. A crash between
            the two repeats one comment on retry (cosmetic, and the comment
            carries the observation marker), but the durable count can never
            move twice for one observation.
+
+        The merged diagnosis rides the SAME create-once write as the
+        classification upgrade, so a signature can never end up promotable with
+        a diagnosis the ledger disagrees with, in either direction.
 
         Evidence is therefore never lost, never inflated, and never published
         under a classification the ledger disagrees with.
@@ -336,17 +347,16 @@ class PatternCaseFileOwner:
         """
         recorded_row = self._authority.load_pattern_evidence(signature=signature)
         if recorded_row is not None:
-            reconcile_pattern_classification(
-                field="fix_class",
+            # Preflight only — the result is deliberately discarded. Its job is
+            # to RAISE on a classification conflict before any comment is
+            # published; the authoritative merge runs inside the store's own
+            # transaction, beside the create-once count, so the row and its
+            # comment can never disagree.
+            recorded_row.classification.merged_with(
+                CaseFileClassification(
+                    fix_class=fix_class, area=area, diagnosis=diagnosis
+                ),
                 signature=signature,
-                existing=recorded_row.fix_class,
-                incoming=fix_class,
-            )
-            reconcile_pattern_classification(
-                field="area",
-                signature=signature,
-                existing=recorded_row.area,
-                incoming=area,
             )
         recorded = 0
         skipped = 0
@@ -362,6 +372,7 @@ class PatternCaseFileOwner:
                 observation_id=observation.observation_id,
                 fix_class=fix_class,
                 area=area,
+                diagnosis=diagnosis,
             )
             recorded += 1
         return ObservationAppendOutcome(recorded=recorded, skipped=skipped)

@@ -40,10 +40,13 @@ Bounded on purpose:
   observation ledgers — so it requires ``flag_pattern`` execute authority and
   grants no capability that authority does not already grant. The caller
   enforces that; see ``tech_lead_decision_actions``.
-* A sighting CLASSIFIES NOTHING. Neither immutable ledger field (``fix_class``,
-  ``area``) survives the restatement — see :func:`observation_of` for why
-  letting one through would both abort whole decisions and steer promotion
-  routing from evidence that diagnosed nothing.
+* A sighting CLASSIFIES NOTHING AND DIAGNOSES NOTHING. It enters the case-file
+  lane as an evidence-only
+  :class:`~.tech_lead_case_files.CaseFileIntake`, so no immutable ledger field
+  (``fix_class``, ``area``) and no canonical ``diagnosis`` can come from it —
+  see :func:`case_file_sighting` for why letting one through would abort whole
+  decisions, steer promotion routing, and let a promotion be filed on evidence
+  that diagnosed nothing.
 """
 
 from __future__ import annotations
@@ -61,6 +64,7 @@ from .proposal_dedup_gate import (
     GateUnverifiedDuplicate,
     RejectCandidate,
 )
+from .tech_lead_case_files import CaseFileIntake
 
 # Prefix of the DERIVED accrual signature, used when the tech lead did not name
 # the recurring class itself. Keyed by the cited issue so every sighting of the
@@ -144,46 +148,55 @@ def accrual_signature(proposed: ProposedTechLeadAction, candidate: int) -> str:
     return proposed.pattern_signature or f"{DEDUP_ACCRUAL_SIGNATURE_PREFIX}{candidate}"
 
 
-def observation_of(
+def case_file_sighting(
     proposed: ProposedTechLeadAction,
     accrual: LedgerAccrual,
     *,
     sibling_action_id: str | None = None,
-) -> ProposedTechLeadAction:
-    """Restate a ``create_issue`` proposal as the case-file observation it is.
+) -> CaseFileIntake:
+    """Restate a ``create_issue`` proposal as the case-file sighting it is.
 
     The case-file lane composes its issue body, evidence comment, and durable
-    observation identity from a proposal, so the accrual is expressed as the
-    same type rather than by teaching that lane a second input shape. The action
-    id (the observation's identity) and the linked findings stay the proposal's
-    own; the signature, the body, and the classification change.
+    observation identity from a proposal, so the accrual reuses that type for
+    the EVIDENCE half rather than teaching the lane a second rendering shape.
+    The action id (the observation's identity) and the linked findings stay the
+    proposal's own; the signature and the body change.
 
-    **An accrued sighting classifies nothing.** Both fields the durable ledger
-    treats as immutable are dropped:
+    The durable half is stated separately, and this is the point of returning a
+    :class:`~.tech_lead_case_files.CaseFileIntake`:
+    :meth:`~.tech_lead_case_files.CaseFileIntake.sighting` establishes NOTHING,
+    so one contract carries all three consequences instead of each builder
+    remembering them:
 
     * ``fix_class`` is already impossible here — it is valid only on
       ``flag_pattern`` actions — so an accrued observation can never make a
       signature promotable.
     * ``area`` IS carriable by ``create_issue`` (the prompt asks for it on
-      root-cause proposals), and it is the ledger's other immutable field:
+      root-cause proposals), and it is one of the ledger's immutable fields:
       ``reconcile_pattern_classification`` raises on any disagreement, and that
       raise unwinds into WHOLE-DECISION rejection. Letting an unreconciled
       duplicate sighting supply it would (1) turn a soft tag on one re-sighting
       into an abort of every other action in the decision — precisely the
       workload #6989 is about, several daily sightings of one problem described
       from different angles — and (2) let a sighting that diagnosed nothing pick
-      the repository a ``fix:code`` promotion is filed into. Classification is a
-      reviewed decision, so it stays with ``flag_pattern``.
+      the repository a ``fix:code`` promotion is filed into.
+    * the ``diagnosis`` — the actionable mechanism and suggested fix a routed
+      promotion is FILED ON — likewise stays with ``flag_pattern``. A sighting's
+      text says a known problem was seen again; treating it as the canonical
+      diagnosis would let a promotion's central claim come from evidence that
+      classified nothing (#6989 round-1 review F1).
 
-    The proposal's claimed ``area`` is not discarded: it is recorded in the
-    observation text (with ``labels``/``expedite``, which the ledger also has no
-    home for) so the evidence survives for the human reconciling the cluster.
+    Classification and diagnosis are reviewed decisions. The proposal's claimed
+    ``area`` is still not discarded: it is recorded in the observation text
+    (with ``labels``/``expedite``, which the ledger also has no home for) so the
+    evidence survives for the human reconciling the cluster.
     """
-    return replace(
-        proposed,
-        pattern_signature=accrual.signature,
-        area=None,
-        body=_observation_body(proposed, accrual, sibling_action_id),
+    return CaseFileIntake.sighting(
+        replace(
+            proposed,
+            pattern_signature=accrual.signature,
+            body=_observation_body(proposed, accrual, sibling_action_id),
+        )
     )
 
 

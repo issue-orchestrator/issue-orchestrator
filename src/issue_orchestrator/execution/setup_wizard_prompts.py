@@ -365,9 +365,13 @@ Compact `tech-lead-decision.json` example:
   The orchestrator verifies it against trusted facts when available: a verified,
   in-scope duplicate receives your observation directly; otherwise the
   observation accrues to the durable case file for that recurring class, with
-  the cited candidate preserved for a human to reconcile. A re-sighting of a
-  standing problem therefore keeps ONE durable ledger rather than adding an open
-  issue per review. Add a `pattern_signature` naming the recurring class when
+  the cited candidate preserved for a human to reconcile. That accrual writes an
+  orchestrator-owned ledger, so it depends on this deployment's `flag_pattern`
+  authority: under `flag_pattern: execute` the observation accrues, and under
+  `flag_pattern: propose` there is no durable ledger to accrue to, so it becomes
+  a gated new issue naming the candidate instead. A re-sighting of a standing
+  problem therefore keeps ONE durable ledger rather than adding an open issue
+  per review. Add a `pattern_signature` naming the recurring class when
   you want the sighting to join an existing case file (a lexical near-duplicate
   you did NOT cite is still gated as a fresh issue). Always still provide
   `title` and `body`. `duplicate_of` is only valid on `create_issue`.

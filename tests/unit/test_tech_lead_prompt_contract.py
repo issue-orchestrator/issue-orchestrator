@@ -575,6 +575,17 @@ def test_all_variants_teach_the_duplicate_of_dedup_field(variant: str) -> None:
     assert "pattern_signature" in clause, (
         f"{variant} dedup clause does not teach naming the recurring class"
     )
+    # #6989 round-1 review F2: accrual writes an orchestrator-owned ledger, so
+    # it happens only under `flag_pattern: execute`. Runtime DELIBERATELY falls
+    # back to a gated new issue under `flag_pattern: propose`, so promising
+    # accrual unconditionally is a contract a deployment may not honor.
+    assert "flag_pattern" in clause, (
+        f"{variant} dedup clause does not name the authority accrual depends on"
+    )
+    assert "propose" in clause, (
+        f"{variant} dedup clause omits the propose-authority fallback to a"
+        " gated issue"
+    )
 
 
 def _fix_class_clause(text: str) -> str:

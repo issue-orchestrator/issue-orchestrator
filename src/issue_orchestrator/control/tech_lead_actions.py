@@ -235,8 +235,11 @@ class CreateTechLeadCaseFileIssueAction(CreateTechLeadIssueAction):
     # "code", "human", or "" for unclassified. Recorded on the ledger row at
     # creation so promotion eligibility never has to parse the issue body.
     fix_class: str = ""
-    # Original flag_pattern diagnosis/recommended fix. This is persisted with
-    # the pattern facts so a later cross-repo promotion is self-contained.
+    # The flag_pattern diagnosis/recommended fix, persisted with the pattern
+    # facts so a later cross-repo promotion is self-contained. EMPTY when an
+    # evidence-only duplicate sighting opened this case file (#6989): a sighting
+    # diagnoses nothing, so the row waits for the first genuine flag_pattern to
+    # establish the diagnosis a promotion is filed on.
     diagnosis: str = ""
     action_type: ActionType = field(
         default=ActionType.CREATE_TECH_LEAD_CASE_FILE_ISSUE, init=False
@@ -460,6 +463,12 @@ class AppendPatternObservationAction(Action):
     non-empty value is rejected by the store rather than silently reclassifying
     the signature (#6957 review F3).
 
+    ``diagnosis`` is the canonical mechanism/suggested fix a routed promotion is
+    filed on. It follows the first-non-empty-wins rule, which is what lets the
+    first genuine ``flag_pattern`` establish it durably for a signature whose
+    case file an evidence-only duplicate sighting opened (#6989 round-1 review
+    F1); an evidence-only append carries ``""`` and can never displace it.
+
     ``observation`` carries the identity that makes the increment create-once:
     replaying a completed action after a crash re-posts at most a duplicate
     comment and can never advance the count twice (review F1).
@@ -470,6 +479,7 @@ class AppendPatternObservationAction(Action):
     observation: "PatternObservation | None" = None
     fix_class: str = ""
     area: str = ""
+    diagnosis: str = ""
     action_type: ActionType = field(
         default=ActionType.APPEND_PATTERN_OBSERVATION, init=False
     )

@@ -529,6 +529,7 @@ def _case_file_action(
     additional_comments: tuple[str, ...] = (),
     fix_class: str = "",
     observation_suffix: str = "",
+    diagnosis: str = "Pool exhaustion comes from a leaked connection.",
 ) -> CreateTechLeadCaseFileIssueAction:
     """A case-file creation action.
 
@@ -561,7 +562,7 @@ def _case_file_action(
         expected=build_expected_for_mutation(),
         area=area,
         fix_class=fix_class,
-        diagnosis="Pool exhaustion comes from a leaked connection.",
+        diagnosis=diagnosis,
         idempotency_marker=marker,
         observations=observations,
     )
@@ -980,6 +981,46 @@ def test_a_later_action_recovering_keeps_the_original_body_authoritative() -> No
     )
     assert evidence.observation_count == 2
     assert retry_host.add_comment.call_args_list == [call(600, "first observation")]
+
+
+def test_a_recovering_flag_pattern_establishes_a_missing_diagnosis() -> None:
+    """#6989 round-1 review F1, on the recovery path.
+
+    An evidence-only duplicate sighting can OPEN a case file, so the interrupted
+    creation this recovers may carry no canonical diagnosis at all. Recovery
+    finalizes from the original intent (it must not borrow the recovering
+    action's metadata for the body), and the recovering ``flag_pattern`` is then
+    an ordinary append — which is where its diagnosis has to land, or a later
+    promotion would be filed with nothing actionable in it.
+    """
+    sighting = _case_file_action("db-timeout", diagnosis="")
+    ops = InMemoryTechLeadAuthorityStore()
+    _crash_the_ledger_write(ops)
+    assert not _apply_case_file(sighting, ops=ops, host=_host(600)).success
+
+    diagnosing = _case_file_action(
+        "db-timeout",
+        fix_class="code",
+        observation_suffix="later",
+        additional_comments=(),
+        diagnosis="Mechanism: a leaked connection. Fix: close it on the error path.",
+    )
+    retry_host = _host(999)
+    retry_host.find_issue_by_marker.return_value = 600
+
+    recovered = _apply_case_file(diagnosing, ops=ops, host=retry_host)
+
+    assert recovered.success and recovered.details["recovered"] is True
+    retry_host.create_issue.assert_not_called()
+    [evidence] = ops.list_pattern_evidence()
+    assert evidence.case_file_issue_number == 600
+    # The row was committed from the sighting's intent (no diagnosis, no class)
+    # and then UPGRADED by the recovering flag_pattern's append.
+    assert evidence.diagnosis == (
+        "Mechanism: a leaked connection. Fix: close it on the error path."
+    )
+    assert evidence.fix_class == "code"
+    assert evidence.observation_count == 2
 
 
 def test_a_recovering_action_cannot_reclassify_the_recovered_body() -> None:

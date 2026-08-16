@@ -24,6 +24,14 @@ case-file lifecycle, mirroring ``tech_lead_proposals`` (#6778) piece for piece:
   the board snapshot and can never be mistaken for batch/health anchors.
   Startup recovery uses the same split so a case file is never requeued as
   an anchor.
+* **Intake contract** — :class:`CaseFileIntake` is the ONE way an observation
+  enters this lane. It carries the evidence (the proposal the lane renders and
+  whose action id is the observation's durable identity) apart from the
+  :class:`~..domain.tech_lead_findings.CaseFileClassification` the observation
+  is entitled to establish, so "a reviewed ``flag_pattern`` diagnoses; an
+  accrued duplicate sighting is evidence only" is stated once, at intake, and
+  every builder below reads it from the same place (#6989 round-1 review
+  F1/A1).
 * **Per-decision planning** — :class:`PatternCaseFilePlanner` owns the whole
   create-vs-append-vs-coalesce decision for ONE tech-lead decision, plus the
   classification preflight that must run before any of them. That state
@@ -42,12 +50,12 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Iterable, Mapping, Sequence
 
 from ..domain.tech_lead_findings import (
+    CaseFileClassification,
     PatternEvidence,
     PatternObservation,
     case_file_issue_marker,
     pattern_observation_id,
     pattern_observation_marker,
-    reconcile_pattern_classification,
 )
 from ..domain.tech_lead_session import (
     TECH_LEAD_OBSERVATION_LABEL,
@@ -76,6 +84,99 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 CASE_FILE_TITLE_PREFIX = "Pattern case file: "
+
+
+@dataclass(frozen=True)
+class CaseFileIntake:
+    """One observation entering the case-file lane: evidence + what it may claim.
+
+    The lane composes an issue body, an evidence comment, and a durable
+    observation identity from a :class:`ProposedTechLeadAction`, and it records
+    a :class:`CaseFileClassification` on the ledger row. Those are two DIFFERENT
+    provenances, and conflating them is what let an evidence-only sighting seed
+    the canonical diagnosis of a signature that a later ``flag_pattern`` then
+    made promotable (#6989 round-1 review F1).
+
+    So the intake states both explicitly, and there are exactly two ways to
+    build one:
+
+    * :meth:`diagnosing` — a reviewed ``flag_pattern``. It classifies the
+      signature and its body IS the canonical diagnosis a promotion is filed on.
+    * :meth:`sighting` — an accrued duplicate re-sighting (#6989). Evidence
+      only: it establishes nothing, so it can neither make a signature
+      promotable, nor pick the repo a promotion routes to, nor become the
+      diagnosis that promotion acts on. Its text still lands in the case file
+      verbatim, which is the whole point of accruing it.
+
+    Every builder and the planner take the intake, so a third caller cannot
+    appear without saying which of the two it is. ``classification`` has no
+    default for the same reason: an omitted one would silently drop a reviewed
+    diagnosis, which is the exact defect this contract exists to prevent.
+    """
+
+    proposal: "ProposedTechLeadAction"
+    classification: CaseFileClassification
+
+    @classmethod
+    def diagnosing(cls, proposed: "ProposedTechLeadAction") -> "CaseFileIntake":
+        """A reviewed ``flag_pattern``: classifies AND diagnoses the signature."""
+        return cls(
+            proposal=proposed,
+            classification=CaseFileClassification(
+                fix_class=proposed.fix_class or "",
+                area=proposed.area or "",
+                diagnosis=proposed.body or "",
+            ),
+        )
+
+    @classmethod
+    def sighting(cls, proposed: "ProposedTechLeadAction") -> "CaseFileIntake":
+        """An evidence-only observation: it establishes no durable fact."""
+        return cls(proposal=proposed, classification=CaseFileClassification())
+
+    @property
+    def signature(self) -> str:
+        """The ledger key this observation accrues under."""
+        assert self.proposal.pattern_signature is not None  # enforced by validate()
+        return self.proposal.pattern_signature
+
+
+@dataclass(frozen=True)
+class ResolvedCaseFileIntake:
+    """An intake paired with the durable facts its signature resolved to.
+
+    The lane needs BOTH values and they are deliberately different: the record
+    it renders documents what THIS observation claimed
+    (:attr:`claimed`), while the ledger row it writes carries the signature's
+    reconciled facts (:attr:`durable`) — which may already hold a diagnosis or a
+    classification this observation did not supply, because an earlier
+    observation of the same signature did.
+
+    Carrying them as one value is what makes the wrong pairing unrepresentable.
+    Passing an intake and a separately-chosen classification would let a caller
+    compose a creation from a diagnosing intake and an empty classification,
+    silently dropping a reviewed diagnosis — F1 again, one layer down. The only
+    producer is :meth:`PatternCaseFilePlanner.reconcile`, the preflight that
+    does the reconciling, so every builder below is reached through it.
+    """
+
+    intake: CaseFileIntake
+    durable: CaseFileClassification
+
+    @property
+    def proposal(self) -> "ProposedTechLeadAction":
+        """The observation's evidence and its durable identity."""
+        return self.intake.proposal
+
+    @property
+    def signature(self) -> str:
+        """The ledger key this observation accrues under."""
+        return self.intake.signature
+
+    @property
+    def claimed(self) -> CaseFileClassification:
+        """What THIS observation asserted — what the rendered record shows."""
+        return self.intake.classification
 
 
 def build_pattern_ledger(
@@ -114,7 +215,7 @@ def _evidence_lines(
 
 
 def _observation_body(
-    proposed: "ProposedTechLeadAction",
+    resolved: ResolvedCaseFileIntake,
     *,
     anchor_issue_number: int,
     findings: Mapping[str, "TechLeadFinding"],
@@ -122,32 +223,40 @@ def _observation_body(
     source_session_name: str,
     observed_at: str,
 ) -> str:
-    """One observation's record — shared by the issue body and comments."""
+    """One observation's record — shared by the issue body and comments.
+
+    The classification columns render THIS observation's own claim, not the
+    signature's merged row: the record documents what this sighting asserted,
+    so an evidence-only one reads ``unclassified`` however the ledger is
+    classified around it.
+    """
+    claimed = resolved.claimed
+    fix_class = f"`fix:{claimed.fix_class}`" if claimed.fix_class else "unclassified"
     lines = [
         "| | |",
         "|---|---|",
-        f"| Signature | `{proposed.pattern_signature}` |",
-        f"| Area | {proposed.area or 'unclassified'} |",
-        f"| Fix class | {f'`fix:{proposed.fix_class}`' if proposed.fix_class else 'unclassified'} |",
+        f"| Signature | `{resolved.signature}` |",
+        f"| Area | {claimed.area or 'unclassified'} |",
+        f"| Fix class | {fix_class} |",
         f"| Observed at | {observed_at} |",
         (
             f"| Observed by | session `{source_session_name}`"
-            f" (run `{source_run_id}`, action {proposed.id}) |"
+            f" (run `{source_run_id}`, action {resolved.proposal.id}) |"
         ),
         f"| Anchor issue | #{anchor_issue_number} |",
         "",
         "### Observation",
         "",
-        proposed.body or "",
+        resolved.proposal.body or "",
     ]
-    evidence = _evidence_lines(proposed, findings)
+    evidence = _evidence_lines(resolved.proposal, findings)
     if evidence:
         lines.extend(["", "### Evidence", "", *evidence])
     return "\n".join(lines)
 
 
 def build_case_file_issue_action(
-    proposed: "ProposedTechLeadAction",
+    resolved: ResolvedCaseFileIntake,
     *,
     config: "Config",
     anchor_issue_number: int,
@@ -157,14 +266,22 @@ def build_case_file_issue_action(
     observed_at: str,
     expected: "ExpectedState",
 ) -> CreateTechLeadCaseFileIssueAction:
-    """Compose the case-file creation for a signature's FIRST observation."""
-    assert proposed.pattern_signature is not None  # enforced by validate()
+    """Compose the case-file creation for a signature's FIRST observation.
+
+    The ledger fields come from ``resolved.durable`` — the signature's MERGED
+    row — never from the intake's raw claim: a second first-seen observation
+    coalesces into this same action, so the durable fields must be able to carry
+    a diagnosis or a class the creating observation did not itself supply
+    (#6989 round-1 review F1).
+    """
+    signature = resolved.signature
+    durable = resolved.durable
     # Deterministic remote provenance key. The case file is created on GitHub
     # BEFORE its ledger row is written, so a process that dies in between would
     # otherwise file a second case file for one signature on retry, splitting
     # the evidence promotion reads (#6957 round-2 review F10). The applier's
     # case-file owner recovers the existing issue by this marker instead.
-    marker = case_file_issue_marker(proposed.pattern_signature)
+    marker = case_file_issue_marker(signature)
     body = (
         f"## Pattern case file (#6781)\n\n"
         "A tech_lead session flagged a recurring cross-job pattern. This issue"
@@ -173,7 +290,7 @@ def build_case_file_issue_action(
         " the severity signal health reviews read from the board snapshot."
         "\n\n"
         + _observation_body(
-            proposed,
+            resolved,
             anchor_issue_number=anchor_issue_number,
             findings=findings,
             source_run_id=source_run_id,
@@ -189,23 +306,23 @@ def build_case_file_issue_action(
         f"\n\n{marker}"
     )
     return CreateTechLeadCaseFileIssueAction(
-        title=f"{CASE_FILE_TITLE_PREFIX}{proposed.pattern_signature}",
+        title=f"{CASE_FILE_TITLE_PREFIX}{signature}",
         body=body,
-        labels=case_file_issue_labels(config, area=proposed.area),
+        labels=case_file_issue_labels(config, area=durable.area or None),
         pr_count=0,
-        pattern_signature=proposed.pattern_signature,
+        pattern_signature=signature,
         # Retained, not just rendered into the body: the anchor is the issue
         # this creation's reconciliation gate reads before any write, and the
         # origin makes "derived, therefore guarded" a state the command can
         # actually represent (#6957 F3/A3, R2 F6/A6).
         origin=TechLeadCreationOrigin.derived_from_anchor(anchor_issue_number),
-        area=proposed.area,
-        fix_class=proposed.fix_class or "",
-        diagnosis=proposed.body or "",
+        area=durable.area or None,
+        fix_class=durable.fix_class,
+        diagnosis=durable.diagnosis,
         idempotency_marker=marker,
         observations=(
             build_pattern_observation(
-                proposed,
+                resolved,
                 anchor_issue_number=anchor_issue_number,
                 findings=findings,
                 source_run_id=source_run_id,
@@ -214,15 +331,15 @@ def build_case_file_issue_action(
             ),
         ),
         reason=(
-            f"tech_lead decision action {proposed.id}: open pattern case file"
-            f" for signature {proposed.pattern_signature!r} (#6781)"
+            f"tech_lead decision action {resolved.proposal.id}: open pattern case"
+            f" file for signature {signature!r} (#6781)"
         ),
         expected=expected,
     )
 
 
 def build_pattern_observation(
-    proposed: "ProposedTechLeadAction",
+    resolved: ResolvedCaseFileIntake,
     *,
     anchor_issue_number: int,
     findings: Mapping[str, "TechLeadFinding"],
@@ -239,12 +356,12 @@ def build_pattern_observation(
     observation_id = pattern_observation_id(
         source_run_id=source_run_id,
         source_session_name=source_session_name,
-        action_id=proposed.id,
+        action_id=resolved.proposal.id,
     )
     return PatternObservation(
         observation_id=observation_id,
         comment=build_case_file_evidence_comment(
-            proposed,
+            resolved,
             anchor_issue_number=anchor_issue_number,
             findings=findings,
             source_run_id=source_run_id,
@@ -256,7 +373,7 @@ def build_pattern_observation(
 
 
 def build_case_file_evidence_comment(
-    proposed: "ProposedTechLeadAction",
+    resolved: ResolvedCaseFileIntake,
     *,
     anchor_issue_number: int,
     findings: Mapping[str, "TechLeadFinding"],
@@ -269,7 +386,7 @@ def build_case_file_evidence_comment(
     return (
         "## 📌 Pattern observed again\n\n"
         + _observation_body(
-            proposed,
+            resolved,
             anchor_issue_number=anchor_issue_number,
             findings=findings,
             source_run_id=source_run_id,
@@ -281,7 +398,7 @@ def build_case_file_evidence_comment(
 
 
 def build_append_observation_action(
-    proposed: "ProposedTechLeadAction",
+    resolved: ResolvedCaseFileIntake,
     *,
     case_file_issue_number: int,
     anchor_issue_number: int,
@@ -290,8 +407,6 @@ def build_append_observation_action(
     source_session_name: str,
     observed_at: str,
     expected: "ExpectedState",
-    fix_class: str,
-    area: str,
 ) -> AppendPatternObservationAction:
     """Plan a REPEAT observation of a known signature (comment + count).
 
@@ -300,29 +415,32 @@ def build_append_observation_action(
     comment would leave the count derivable only from GitHub comment cadence,
     which humans also write to.
 
-    ``fix_class``/``area`` are the values the PLANNER already reconciled against
-    the durable row (and against earlier observations in the same decision), not
-    this proposal's raw claim: a conflict has to reject the decision before any
+    ``resolved.durable`` is what the PLANNER already reconciled against the
+    durable row (and against earlier observations in the same decision), not
+    this intake's raw claim: a conflict has to reject the decision before any
     action exists, so what reaches the store here can only be an upgrade or a
-    no-op (#6957 round-2 review F3).
+    no-op (#6957 round-2 review F3). Its ``diagnosis`` is what lets the first
+    genuine ``flag_pattern`` establish the canonical diagnosis of a signature
+    whose case file an evidence-only sighting opened (#6989 round-1 review F1).
     """
-    assert proposed.pattern_signature is not None  # enforced by validate()
+    signature = resolved.signature
     return AppendPatternObservationAction(
         issue_number=case_file_issue_number,
-        pattern_signature=proposed.pattern_signature,
+        pattern_signature=signature,
         observation=build_pattern_observation(
-            proposed,
+            resolved,
             anchor_issue_number=anchor_issue_number,
             findings=findings,
             source_run_id=source_run_id,
             source_session_name=source_session_name,
             observed_at=observed_at,
         ),
-        fix_class=fix_class,
-        area=area,
+        fix_class=resolved.durable.fix_class,
+        area=resolved.durable.area,
+        diagnosis=resolved.durable.diagnosis,
         reason=(
-            f"tech_lead decision action {proposed.id}: pattern"
-            f" {proposed.pattern_signature!r} observed again; appending evidence"
+            f"tech_lead decision action {resolved.proposal.id}: pattern"
+            f" {signature!r} observed again; appending evidence"
             f" to case file #{case_file_issue_number} (#6781)"
         ),
         expected=expected,
@@ -355,21 +473,22 @@ class PatternCaseFilePlanner:
     source_session_name: str
     observed_at: str
     expected: "ExpectedState"
-    # signature -> the (fix_class, area) every observation seen so far in THIS
+    # signature -> the durable facts every observation seen so far in THIS
     # decision reconciled to, seeded from the durable row. Two observations that
     # disagree conflict with each other, not just with what is recorded
     # (#6957 round-2 review F3).
-    _classification: dict[str, tuple[str, str]] = field(default_factory=dict)
+    _classification: dict[str, CaseFileClassification] = field(default_factory=dict)
     # signature -> index in ``actions`` of the creation this decision planned.
     _planned: dict[str, int] = field(default_factory=dict)
 
-    def plan(self, proposed: "ProposedTechLeadAction") -> None:
+    def plan(self, intake: CaseFileIntake) -> None:
         """Create, append to, or coalesce into this signature's case file."""
-        signature = proposed.pattern_signature
-        assert signature is not None  # enforced by validate()
+        signature = intake.signature
         # Preflight FIRST: a classification conflict must reject the decision
-        # before this produces any mutating action (#6957 R2 F3).
-        fix_class, area = self.classification_for(signature, proposed)
+        # before this produces any mutating action (#6957 R2 F3). Its result is
+        # also the only way to reach the builders below, so nothing can be
+        # composed from an unreconciled classification.
+        resolved = self.reconcile(intake)
         existing = self.pattern_ledger.get(signature)
         if existing is not None:
             # Comment AND durable count under one owner (#6957): the count is
@@ -379,7 +498,7 @@ class PatternCaseFilePlanner:
             # no-op — never a conflict discovered mid-write.
             self.actions.append(
                 build_append_observation_action(
-                    proposed,
+                    resolved,
                     case_file_issue_number=existing.case_file_issue_number,
                     anchor_issue_number=self.anchor_issue_number,
                     findings=self.findings,
@@ -387,19 +506,17 @@ class PatternCaseFilePlanner:
                     source_session_name=self.source_session_name,
                     observed_at=self.observed_at,
                     expected=self.expected,
-                    fix_class=fix_class,
-                    area=area,
                 )
             )
             return
         planned_index = self._planned.get(signature)
         if planned_index is not None:
-            self._coalesce(planned_index, proposed, fix_class=fix_class, area=area)
+            self._coalesce(planned_index, resolved)
             return
         self._planned[signature] = len(self.actions)
         self.actions.append(
             build_case_file_issue_action(
-                proposed,
+                resolved,
                 config=self.config,
                 anchor_issue_number=self.anchor_issue_number,
                 findings=self.findings,
@@ -410,10 +527,8 @@ class PatternCaseFilePlanner:
             )
         )
 
-    def classification_for(
-        self, signature: str, proposed: "ProposedTechLeadAction"
-    ) -> tuple[str, str]:
-        """The signature's merged ``(fix_class, area)``, or raise on conflict.
+    def reconcile(self, intake: CaseFileIntake) -> ResolvedCaseFileIntake:
+        """Pair the intake with its signature's merged facts, or raise on conflict.
 
         The classification PREFLIGHT (#6957 round-2 review F3). It reconciles
         this observation against everything already known about the signature —
@@ -426,53 +541,49 @@ class PatternCaseFilePlanner:
         comment, surface action, or sibling mutation is ever applied.
         Reconciling only at apply time published the conflicting comment first
         and left the durable row disagreeing with it.
+
+        The merge covers the canonical ``diagnosis`` too, so a ``flag_pattern``
+        establishes it for a signature whose case file an evidence-only sighting
+        opened earlier in the same decision (#6989 round-1 review F1).
         """
+        signature = intake.signature
         merged = self._classification.get(signature)
         if merged is None:
             recorded = self.pattern_ledger.get(signature)
             merged = (
-                (recorded.fix_class, recorded.area) if recorded is not None else ("", "")
+                recorded.classification
+                if recorded is not None
+                else CaseFileClassification()
             )
-        fix_class = reconcile_pattern_classification(
-            field="fix_class",
-            signature=signature,
-            existing=merged[0],
-            incoming=proposed.fix_class or "",
-        )
-        area = reconcile_pattern_classification(
-            field="area",
-            signature=signature,
-            existing=merged[1],
-            incoming=proposed.area or "",
-        )
-        self._classification[signature] = (fix_class, area)
-        return fix_class, area
+        merged = merged.merged_with(intake.classification, signature=signature)
+        self._classification[signature] = merged
+        return ResolvedCaseFileIntake(intake=intake, durable=merged)
 
     def _coalesce(
-        self,
-        planned_index: int,
-        proposed: "ProposedTechLeadAction",
-        *,
-        fix_class: str,
-        area: str,
+        self, planned_index: int, resolved: ResolvedCaseFileIntake
     ) -> None:
         """Fold a second first-seen observation into the pending creation.
 
         One case file per signature, so a second observation of a signature this
         decision is already creating rides the SAME action as an extra
-        identified observation, carrying the classification the preflight
-        already merged. Retaining only the first action's values silently lost
-        an ``unclassified -> code`` upgrade (and an area that decides routing)
-        whenever both observations arrived in one decision (#6957 review F3).
+        identified observation, carrying the durable facts the preflight already
+        merged. Retaining only the first action's values silently lost an
+        ``unclassified -> code`` upgrade (and an area that decides routing)
+        whenever both observations arrived in one decision (#6957 review F3) —
+        and, once evidence-only sightings could open a case file, left an
+        accrued sighting's text standing as the canonical diagnosis of a
+        signature a sibling ``flag_pattern`` actually diagnosed
+        (#6989 round-1 review F1).
         """
         creation = self.actions[planned_index]
         assert isinstance(creation, CreateTechLeadCaseFileIssueAction)
+        durable = resolved.durable
         self.actions[planned_index] = replace(
             creation,
             observations=(
                 *creation.observations,
                 build_pattern_observation(
-                    proposed,
+                    resolved,
                     anchor_issue_number=self.anchor_issue_number,
                     findings=self.findings,
                     source_run_id=self.source_run_id,
@@ -480,12 +591,13 @@ class PatternCaseFilePlanner:
                     observed_at=self.observed_at,
                 ),
             ),
-            fix_class=fix_class,
-            area=area or None,
+            fix_class=durable.fix_class,
+            area=durable.area or None,
+            diagnosis=durable.diagnosis,
             # An upgraded area changes the case file's ``area:*`` tag, so the
             # labels are recomposed by their policy owner rather than left
             # describing the first observation only.
-            labels=case_file_issue_labels(self.config, area=area or None),
+            labels=case_file_issue_labels(self.config, area=durable.area or None),
         )
 
 
@@ -530,6 +642,7 @@ def apply_append_pattern_observation(
             observations=(action.observation,),
             fix_class=action.fix_class,
             area=action.area,
+            diagnosis=action.diagnosis,
         )
     except Exception as exc:
         logger.exception(

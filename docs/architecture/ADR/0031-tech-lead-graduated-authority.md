@@ -190,15 +190,25 @@ Semantics:
   still gates a fresh issue, because burying a false-positive match in an
   evidence ledger would lose real work. A provably-bad citation and an
   unavailable corpus with no candidate name no accrual point and keep failing
-  closed into a gated create. **A sighting classifies nothing**: neither
-  immutable ledger field survives the restatement. `fix_class` is already
-  impossible (`create_issue` cannot carry it); `area` is dropped explicitly,
-  because it is reconciled by the same raise-on-disagreement rule and that raise
-  unwinds into whole-decision rejection — so a soft tag on one re-sighting would
-  otherwise abort every other action in the decision, and evidence that
-  diagnosed nothing could pick the repository a `fix:code` promotion is filed
-  into. The proposal's claimed `area`, `labels`, and `expedite` are recorded in
-  the observation text as evidence for whoever reconciles the cluster.
+  closed into a gated create. **A sighting classifies nothing and diagnoses
+  nothing.** It enters the case-file lane as an *evidence-only* `CaseFileIntake`
+  — the one contract that carries an observation's text apart from the durable
+  facts it may establish — so no immutable ledger field and no canonical
+  diagnosis can come from it. `fix_class` is already impossible (`create_issue`
+  cannot carry it); `area` is dropped explicitly, because it is reconciled by
+  the same raise-on-disagreement rule and that raise unwinds into whole-decision
+  rejection — so a soft tag on one re-sighting would otherwise abort every other
+  action in the decision, and evidence that diagnosed nothing could pick the
+  repository a `fix:code` promotion is filed into. The `diagnosis` — the
+  actionable mechanism and suggested fix a routed promotion is *filed on* — is
+  likewise reserved for `flag_pattern`: a sighting says a known problem was seen
+  again, so letting it seed the row would make a promotion's central claim come
+  from evidence that classified nothing. The first genuine `flag_pattern` for a
+  signature whose case file a sighting opened therefore establishes the
+  diagnosis durably, in the same write as the classification upgrade
+  (first-non-empty-wins, so promotion never depends on observation order). The
+  proposal's claimed `area`, `labels`, and `expedite` are recorded in the
+  observation text as evidence for whoever reconciles the cluster.
 - Per-action flags, not a level scale: trust is not linear. An operator may
   trust issue-filing for months before trusting session-killing.
 - Fail-safe: anything that mutates orchestrator runtime state defaults to

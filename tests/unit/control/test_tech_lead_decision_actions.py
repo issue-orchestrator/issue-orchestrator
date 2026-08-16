@@ -97,6 +97,7 @@ def _ledger(
     *,
     fix_class: str = "",
     area: str = "",
+    diagnosis: str = "",
     observations: int = 1,
 ) -> dict[str, PatternEvidence]:
     """A durable pattern ledger row, as planning now receives it (#6957 F3)."""
@@ -107,6 +108,7 @@ def _ledger(
             observation_count=observations,
             fix_class=fix_class,
             area=area,
+            diagnosis=diagnosis,
         )
     }
 
@@ -726,6 +728,99 @@ class TestDuplicateObservationAccrual:
         assert not any(
             isinstance(a, CreateTechLeadCaseFileIssueAction) for a in planned
         )
+
+    _DIAGNOSIS = (
+        "Mechanism: predecessor-fact scans burn the search-API budget."
+        " Suggested fix: cache the scan per tick."
+    )
+
+    def _flag(self, **overrides) -> ProposedTechLeadAction:
+        base = dict(
+            id="A2",
+            action_type="flag_pattern",
+            body=self._DIAGNOSIS,
+            pattern_signature="search-api-budget-exhaustion",
+            fix_class="code",
+            area="github-api",
+        )
+        base.update(overrides)
+        return ProposedTechLeadAction(**base)
+
+    def test_an_accrued_sighting_never_seeds_the_canonical_diagnosis(self) -> None:
+        # #6989 round-1 review F1: the diagnosis is the actionable mechanism a
+        # routed promotion is FILED ON. A sighting classifies nothing, so its
+        # text — "a known problem was seen again", plus this routing prose —
+        # must not become that claim.
+        _surfaced, case_file = _plan(
+            _decision(self._issue()),
+            dedup_corpus=self._ready(),
+            dedup_grant=DuplicateTargetGrant.none(),
+        )
+        assert isinstance(case_file, CreateTechLeadCaseFileIssueAction)
+        assert case_file.diagnosis == ""
+
+    def test_a_later_flag_pattern_establishes_the_diagnosis_it_left_empty(
+        self,
+    ) -> None:
+        # The case file exists because a sighting opened it on an earlier day,
+        # so its durable row carries no diagnosis. The first genuine
+        # flag_pattern for that signature must supply one, together with the
+        # classification that makes the signature promotable at all.
+        planned = _plan(
+            _decision(self._flag()),
+            dedup_corpus=self._ready(),
+            dedup_grant=DuplicateTargetGrant.none(),
+            pattern_ledger=_ledger("search-api-budget-exhaustion", 7000),
+        )
+        [appended] = [
+            a for a in planned if isinstance(a, AppendPatternObservationAction)
+        ]
+        assert appended.diagnosis == self._DIAGNOSIS
+        assert (appended.fix_class, appended.area) == ("code", "github-api")
+
+    def test_a_sighting_never_displaces_a_recorded_diagnosis(self) -> None:
+        planned = _plan(
+            _decision(self._issue(pattern_signature="search-api-budget-exhaustion")),
+            dedup_corpus=self._ready(),
+            dedup_grant=DuplicateTargetGrant.none(),
+            pattern_ledger=_ledger(
+                "search-api-budget-exhaustion", 7000, diagnosis=self._DIAGNOSIS
+            ),
+        )
+        [appended] = [
+            a for a in planned if isinstance(a, AppendPatternObservationAction)
+        ]
+        assert appended.diagnosis == self._DIAGNOSIS
+
+    @pytest.mark.parametrize("flag_first", [False, True], ids=["sighting-first", "flag-first"])
+    def test_a_sibling_flag_pattern_owns_the_diagnosis_in_either_order(
+        self, flag_first: bool
+    ) -> None:
+        # Both first-seen in ONE decision, so they coalesce into a single
+        # pending creation. Whichever the planner reaches first, the case file
+        # is created carrying the flag_pattern's diagnosis and classification —
+        # the sighting only adds evidence.
+        sighting = self._issue(
+            id="A1", pattern_signature="search-api-budget-exhaustion"
+        )
+        proposals = (
+            (self._flag(), sighting) if flag_first else (sighting, self._flag())
+        )
+
+        planned = _plan(
+            _decision(*proposals),
+            dedup_corpus=self._ready(),
+            dedup_grant=DuplicateTargetGrant.none(),
+        )
+
+        [case_file] = [
+            a for a in planned if isinstance(a, CreateTechLeadCaseFileIssueAction)
+        ]
+        assert case_file.diagnosis == self._DIAGNOSIS
+        assert case_file.fix_class == "code"
+        assert case_file.area == "github-api"
+        assert len(case_file.observations) == 2
+        assert not _follow_up_creates(planned)
 
     def test_without_flag_pattern_authority_the_gated_create_stands(self) -> None:
         # Accrual writes orchestrator-owned ledgers — a flag_pattern effect. With

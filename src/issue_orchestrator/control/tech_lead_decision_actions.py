@@ -105,8 +105,8 @@ from .tech_lead_gate_notes import (
     compose_gate_note,
     outcome_gate_note,
 )
-from .tech_lead_case_files import PatternCaseFilePlanner
-from .tech_lead_observation_routing import accrual_for, observation_of
+from .tech_lead_case_files import CaseFileIntake, PatternCaseFilePlanner
+from .tech_lead_observation_routing import accrual_for, case_file_sighting
 from .tech_lead_issue_policy import (
     apply_tech_lead_priority_prefix,
     decision_issue_labels,
@@ -433,7 +433,10 @@ class _DecisionActionPlanner:
                 mode="pattern",
             )
         )
-        self._case_files.plan(proposed)
+        # A reviewed flag_pattern is the ONLY intake that classifies a signature
+        # and supplies the canonical diagnosis a promotion is filed on (#6989
+        # round-1 review F1/A1).
+        self._case_files.plan(CaseFileIntake.diagnosing(proposed))
 
     def _plan_gated_op(self, proposed: ProposedTechLeadAction) -> None:
         """Gated proposal issue for an act-level intent (#6778)."""
@@ -650,22 +653,26 @@ class _DecisionActionPlanner:
         effect ``flag_pattern`` execute authority already grants — so it is
         gated on that mode and grants no new capability. Under ``propose``
         there is no durable accrual point at all, and the pre-#6989 gated
-        create remains the honest fallback.
+        create remains the honest fallback. Every prompt variant states that
+        authority-dependent fallback, so the agent is never promised accrual a
+        given deployment cannot perform (#6989 round-1 review F2).
         """
         if not self._executes("flag_pattern"):
             return False
         accrual = accrual_for(outcome, proposed)
         if accrual is None:
             return False
-        observation = observation_of(proposed, accrual, sibling_action_id=sibling)
+        # An EVIDENCE-ONLY intake: it can accrue observations but can never
+        # classify the signature or become its canonical diagnosis (F1/A1).
+        sighting = case_file_sighting(proposed, accrual, sibling_action_id=sibling)
         self.actions.append(
             _surface(
-                observation,
+                sighting.proposal,
                 anchor_issue_number=self._anchor_number,
                 mode="pattern",
             )
         )
-        self._case_files.plan(observation)
+        self._case_files.plan(sighting)
         return True
 
     def _batch_duplicate_of(self, proposed: ProposedTechLeadAction) -> str | None:
