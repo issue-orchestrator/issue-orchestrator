@@ -308,7 +308,10 @@ class SurfaceTechLeadProposalAction(Action):
 
     ``mode`` values:
     - ``"shadow"`` — propose-mode authority: recorded as would-have-done.
-    - ``"pattern"`` — a ``flag_pattern`` proposal (its execution IS the record).
+    - ``"pattern"`` — a case-file observation record (its execution IS the
+      record): a ``flag_pattern`` proposal, or a ``create_issue`` proposal whose
+      agent-cited duplicate routed it onto the durable ledger (#6989).
+      ``proposal_type`` distinguishes the two.
     - ``"rejected"`` — the decision artifact pair failed validation;
       ``proposal_type`` is ``"decision"`` and ``body_preview`` carries the
       failure detail.

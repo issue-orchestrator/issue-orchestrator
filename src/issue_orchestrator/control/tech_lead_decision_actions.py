@@ -12,6 +12,12 @@ emits the orchestrator's action vocabulary:
   with ``proposed-tech-lead`` (#6778): removing the label flows it into normal
   scheduling. The gate label is orchestrator-attached by the
   ``tech_lead_issue_policy`` owner and rejected by the agent-label allowlist.
+- ``create_issue`` that the agent itself CITED as a duplicate, where the dedup
+  gate cannot route the observation onto the candidate as a comment -> the
+  observation accrues to the durable case-file ledger instead of minting a new
+  open issue (#6989, routing owned by ``tech_lead_observation_routing``). This
+  is what stops one standing problem from growing one new open issue per
+  health review.
 - ``flag_pattern`` with ``execute`` authority -> surfaced with
   ``mode="pattern"`` PLUS the durable case-file ledger (#6781): a signature
   absent from the pattern ledger plans a
@@ -88,6 +94,7 @@ from .proposal_dedup import similarity
 from .proposal_dedup_gate import (
     CommentExisting,
     DedupAuthority,
+    DedupOutcome,
     DuplicateTargetGrant,
     OpenIssueCorpus,
     ProposalIntent,
@@ -99,6 +106,7 @@ from .tech_lead_gate_notes import (
     outcome_gate_note,
 )
 from .tech_lead_case_files import PatternCaseFilePlanner
+from .tech_lead_observation_routing import accrual_for, observation_of
 from .tech_lead_issue_policy import (
     apply_tech_lead_priority_prefix,
     decision_issue_labels,
@@ -407,11 +415,15 @@ class _DecisionActionPlanner:
         self.shadow.append(surfaced)
         self.actions.append(surfaced)
 
+    def _executes(self, action_type: str) -> bool:
+        """True when configured authority is ``execute`` for this action type."""
+        return self.config.tech_lead.authority.mode_for(action_type) == "execute"
+
     def _plan_flag_pattern(self, proposed: ProposedTechLeadAction) -> None:
         # Authority-aware (#6761 finding 5): execute records the pattern —
         # the trace event (mode="pattern") plus the durable case-file
         # ledger (#6781). Propose stays a shadow record (unchanged).
-        if self.config.tech_lead.authority.mode_for("flag_pattern") != "execute":
+        if not self._executes("flag_pattern"):
             self._surface_shadow(proposed)
             return
         self.actions.append(
@@ -475,7 +487,7 @@ class _DecisionActionPlanner:
         # Execute authority plans typed commands whose owners revalidate their
         # operation-specific preconditions at apply time. Propose authority
         # remains the per-instance gated issue path (#6778).
-        if self.config.tech_lead.authority.mode_for(proposed.action_type) != "execute":
+        if not self._executes(proposed.action_type):
             self._plan_gated_op(proposed)
             return
 
@@ -520,10 +532,9 @@ class _DecisionActionPlanner:
         )
 
     def _dedup_authority(self) -> DedupAuthority:
-        authority = self.config.tech_lead.authority
         return DedupAuthority(
-            create_issue_execute=authority.mode_for("create_issue") == "execute",
-            post_comment_execute=authority.mode_for("post_comment") == "execute",
+            create_issue_execute=self._executes("create_issue"),
+            post_comment_execute=self._executes("post_comment"),
         )
 
     def _dedup_comment_action(
@@ -587,6 +598,14 @@ class _DecisionActionPlanner:
         self._seen_create_intents.append(
             (proposed.id, proposed.title or "", proposed.body or "")
         )
+        # An AGENT-CITED duplicate the session cannot comment on accrues to the
+        # durable case-file ledger instead of minting a new open issue (#6989).
+        # It is checked before the sibling gate because the ledger is a better
+        # home for a repeated sighting than a second gated issue: the case-file
+        # planner coalesces same-decision siblings into one case file, and the
+        # sibling reason rides along in the observation so no evidence is lost.
+        if self._accrue_observation(proposed, outcome, sibling=sibling):
+            return
         if sibling is not None:
             self.actions.extend(
                 self._concrete_decision(
@@ -610,6 +629,44 @@ class _DecisionActionPlanner:
                 proposed, gate_reason=outcome_gate_note(outcome, execute=execute)
             )
         )
+
+    def _accrue_observation(
+        self,
+        proposed: ProposedTechLeadAction,
+        outcome: DedupOutcome,
+        *,
+        sibling: str | None,
+    ) -> bool:
+        """Land a duplicate-suspected observation on the ledger (#6989).
+
+        Returns True when this proposal took the accrual route, so the caller
+        skips every create/comment path. The routing owner
+        (``tech_lead_observation_routing``) decides WHICH outcomes earn an
+        accrual point; this method owns the authority rule and hands the
+        restated observation to the case-file planner, which applies the same
+        create/append/coalesce policy a ``flag_pattern`` observation gets.
+
+        Accrual writes ONLY orchestrator-owned observation ledgers — the exact
+        effect ``flag_pattern`` execute authority already grants — so it is
+        gated on that mode and grants no new capability. Under ``propose``
+        there is no durable accrual point at all, and the pre-#6989 gated
+        create remains the honest fallback.
+        """
+        if not self._executes("flag_pattern"):
+            return False
+        accrual = accrual_for(outcome, proposed)
+        if accrual is None:
+            return False
+        observation = observation_of(proposed, accrual, sibling_action_id=sibling)
+        self.actions.append(
+            _surface(
+                observation,
+                anchor_issue_number=self._anchor_number,
+                mode="pattern",
+            )
+        )
+        self._case_files.plan(observation)
+        return True
 
     def _batch_duplicate_of(self, proposed: ProposedTechLeadAction) -> str | None:
         """Action id of an earlier create_issue intent this decision already
@@ -635,9 +692,7 @@ class _DecisionActionPlanner:
         # (#6778): per-instance approval is removing the label, after which the
         # issue flows into normal scheduling. Everything else propose -> shadow
         # record. create_issue additionally routes through the dedup gate.
-        execute = (
-            self.config.tech_lead.authority.mode_for(proposed.action_type) == "execute"
-        )
+        execute = self._executes(proposed.action_type)
         if not execute and proposed.action_type != "create_issue":
             self._surface_shadow(proposed)
             return

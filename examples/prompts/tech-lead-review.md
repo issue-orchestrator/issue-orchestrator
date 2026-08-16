@@ -359,8 +359,13 @@ Compact `tech-lead-decision.json` example:
   issues you were given. If your follow-up already exists as an open issue, set
   `duplicate_of` to that issue number — this is your (untrusted) dedup intent.
   The orchestrator verifies it against trusted facts when available: a verified,
-  in-scope duplicate receives your observation; otherwise the proposal is gated
-  with the candidate preserved for a human to reconcile. Always still provide
+  in-scope duplicate receives your observation directly; otherwise the
+  observation accrues to the durable case file for that recurring class, with
+  the cited candidate preserved for a human to reconcile. A re-sighting of a
+  standing problem therefore keeps ONE durable ledger rather than adding an open
+  issue per review. Add a `pattern_signature` naming the recurring class when
+  you want the sighting to join an existing case file (a lexical near-duplicate
+  you did NOT cite is still gated as a fresh issue). Always still provide
   `title` and `body`. `duplicate_of` is only valid on `create_issue`.
 - Valid `action_type` values: `post_comment`, `create_issue`,
   `escalate_to_human`, `flag_pattern`, `reset_retry`, `kill_hung_session`.

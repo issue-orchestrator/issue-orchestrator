@@ -170,6 +170,35 @@ Semantics:
   accumulated cross-job evidence. The `mode="pattern"` trace event still fires.
   Under `propose`, `flag_pattern` stays a shadow *would-have-done* record and
   opens no case file.
+- **Duplicate observations accrue to the ledger (amended by #6989).** A
+  `create_issue` proposal carrying `duplicate_of` has exactly one non-filing
+  route in the dedup gate (#6878): commenting on the candidate, which requires
+  the candidate to be inside the session's launch comment grant. For a health
+  review that grant is `{anchor}`, so a re-sighting of a *standing* problem
+  could never take it and fell through to "create a gated issue naming the
+  candidate" — one new open issue per review per standing problem, turning the
+  open-issue list into an append-only log. Such a sighting now accrues to the
+  durable case-file ledger instead: keyed by the proposal's `pattern_signature`
+  when the tech lead names the recurring class, otherwise by the cited issue
+  (`duplicate-of-#<n>`). The first sighting opens one case file; later ones
+  append evidence comments carrying the candidate and the gate's reason, so the
+  case file is the human's reconciliation queue. Accrual writes only
+  orchestrator-owned ledgers — a `flag_pattern` effect — so it requires
+  `flag_pattern: execute` and grants no capability that mode does not already
+  grant; under `propose` the gated create stands. Deliberately bounded to
+  AGENT-CITED duplicates: a *lexical* near-duplicate the tech lead never claimed
+  still gates a fresh issue, because burying a false-positive match in an
+  evidence ledger would lose real work. A provably-bad citation and an
+  unavailable corpus with no candidate name no accrual point and keep failing
+  closed into a gated create. **A sighting classifies nothing**: neither
+  immutable ledger field survives the restatement. `fix_class` is already
+  impossible (`create_issue` cannot carry it); `area` is dropped explicitly,
+  because it is reconciled by the same raise-on-disagreement rule and that raise
+  unwinds into whole-decision rejection — so a soft tag on one re-sighting would
+  otherwise abort every other action in the decision, and evidence that
+  diagnosed nothing could pick the repository a `fix:code` promotion is filed
+  into. The proposal's claimed `area`, `labels`, and `expedite` are recorded in
+  the observation text as evidence for whoever reconciles the cluster.
 - Per-action flags, not a level scale: trust is not linear. An operator may
   trust issue-filing for months before trusting session-killing.
 - Fail-safe: anything that mutates orchestrator runtime state defaults to
