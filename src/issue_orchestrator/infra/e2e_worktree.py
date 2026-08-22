@@ -10,6 +10,9 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from ..ports.command_runner import CommandRunner, CommandResult
+from .venv_mutation import VenvMutationAuthority, VenvOperation
+
 logger = logging.getLogger(__name__)
 
 
@@ -86,24 +89,85 @@ def _update_worktree(repo_root: Path, worktree_path: Path) -> None:
     )
 
 
-def _sync_venv(worktree_path: Path) -> None:
-    """Ensure the worktree venv is up-to-date (fast when deps unchanged)."""
+class _SubprocessCommandRunner:
+    """Minimal ``CommandRunner`` for this module's own use.
+
+    This module manages external processes directly (it is a worktree/venv
+    provisioner), so it already owns subprocess calls. It depends on the
+    *port* rather than importing ``execution``'s adapter, because
+    ``infra.orchestrator`` reaches this module and the layering contract
+    forbids orchestrator -> execution. Callers and tests inject their own
+    runner; this is only the default when none is supplied.
+    """
+
+    def run(
+        self,
+        command,
+        *,
+        cwd=None,
+        env=None,
+        timeout_seconds=None,
+        shell=False,
+        newlines=None,
+    ) -> CommandResult:
+        completed = subprocess.run(
+            command,
+            cwd=cwd,
+            env=env,
+            timeout=timeout_seconds,
+            shell=shell,
+            capture_output=True,
+            text=True,
+        )
+        return CommandResult(
+            returncode=completed.returncode,
+            stdout=completed.stdout or "",
+            stderr=completed.stderr or "",
+            timed_out=False,
+        )
+
+
+def _sync_venv(worktree_path: Path, runner: CommandRunner | None = None) -> None:
+    """Ensure the worktree venv is up-to-date (fast when deps unchanged).
+
+    Authorization happens ONCE, above the branch. Both paths mutate
+    ``<worktree>/.venv`` -- the project sync below and the no-pyproject fallback
+    that runs ``uv venv`` -- and E2E worktrees are orchestrator worktrees whose
+    ``.venv`` is symlinked at the owning repo's venv. Guarding only the branch
+    that happens to contain a project left the other free to rebuild the shared
+    environment through that link.
+    """
     pyproject = worktree_path / "pyproject.toml"
     uv_lock = worktree_path / "uv.lock"
     venv_python = worktree_path / ".venv" / "bin" / "python"
 
+    authority = VenvMutationAuthority(runner or _SubprocessCommandRunner())
+
+    # The OPERATION is authorized, not merely the target. Authorizing the venv
+    # alone accepted `shared` and then let the no-project branch below run
+    # `uv venv`, rebuilding the owning checkout's environment through the
+    # symlink: a shared venv permits dependency work, never recreation.
+    operation = (
+        VenvOperation.SYNC_DEPENDENCIES if pyproject.exists() else VenvOperation.RECREATE
+    )
+    decision = authority.authorize(checkout=worktree_path, operation=operation)
+    uv_env = VenvMutationAuthority.pinned_env(decision)
+
     if pyproject.exists():
         logger.info("Syncing project venv in E2E worktree")
-        sync_cmd = ["uv", "sync", "--all-extras"]
-        if uv_lock.exists():
-            sync_cmd.insert(2, "--frozen")
-        else:
+        # The arguments come from the decision, so a shared environment can
+        # never receive this worktree's project install.
+        sync_cmd = ["uv", "sync", *decision.sync_args]
+        if not uv_lock.exists():
             logger.info(
                 "No uv.lock in E2E worktree; resolving dependencies without --frozen"
             )
+            sync_cmd = [arg for arg in sync_cmd if arg != "--frozen"]
+
         subprocess.run(
             sync_cmd,
             cwd=worktree_path,
+            env=uv_env,
             capture_output=True,
             text=True,
             timeout=300,
@@ -114,6 +178,7 @@ def _sync_venv(worktree_path: Path) -> None:
         pytest_check = subprocess.run(
             [str(venv_python), "-c", "import defusedxml, pytest"],
             cwd=worktree_path,
+            env=uv_env,
             capture_output=True,
             text=True,
             timeout=60,
@@ -134,6 +199,7 @@ def _sync_venv(worktree_path: Path) -> None:
                     "pytest>=8.0",
                 ],
                 cwd=worktree_path,
+            env=uv_env,
                 capture_output=True,
                 text=True,
                 timeout=300,
@@ -145,6 +211,7 @@ def _sync_venv(worktree_path: Path) -> None:
     subprocess.run(
         ["uv", "venv", ".venv"],
         cwd=worktree_path,
+        env=uv_env,
         capture_output=True,
         text=True,
         timeout=300,
@@ -161,6 +228,7 @@ def _sync_venv(worktree_path: Path) -> None:
             "pytest>=8.0",
         ],
         cwd=worktree_path,
+        env=uv_env,
         capture_output=True,
         text=True,
         timeout=300,
@@ -187,7 +255,9 @@ def _recover_worktree(repo_root: Path, worktree_path: Path) -> None:
     _create_worktree(repo_root, worktree_path)
 
 
-def ensure_e2e_worktree(repo_root: Path) -> Path:
+def ensure_e2e_worktree(
+    repo_root: Path, runner: CommandRunner | None = None
+) -> Path:
     """Return a ready-to-use E2E worktree, creating or updating as needed.
 
     The worktree is a sibling directory checked out at the orchestrator's
@@ -209,7 +279,7 @@ def ensure_e2e_worktree(repo_root: Path) -> Path:
         else:
             _create_worktree(repo_root, worktree_path)
 
-        _sync_venv(worktree_path)
+        _sync_venv(worktree_path, runner)
 
     except subprocess.CalledProcessError as exc:
         raise RuntimeError(

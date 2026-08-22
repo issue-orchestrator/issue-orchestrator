@@ -3,6 +3,7 @@
 import subprocess
 
 import pytest
+import shutil
 from pathlib import Path
 from unittest.mock import patch
 
@@ -52,6 +53,59 @@ def _make_mock_run(extra_side_effect=None):
     return side_effect
 
 
+
+def _install_venv_guard(worktree_path: Path) -> None:
+    """Give the fake worktree the real mutation-authorization owner.
+
+    ``_sync_venv`` fails closed without it, and a real worktree is a checkout of
+    this repo, so it always carries the guard. Refusal paths are covered in
+    tests/unit/test_venv_guard_callers.py.
+    """
+    repo_root = Path(__file__).resolve().parents[3]
+    guard = worktree_path / "scripts" / "venv_guard.sh"
+    guard.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(repo_root / "scripts" / "venv_guard.sh", guard)
+    guard.chmod(0o755)
+
+
+
+class _DecisionRunner:
+    """CommandRunner stub returning one complete authority decision.
+
+    The suite patches ``subprocess.run`` module-wide, so a real runner would be
+    intercepted. The record must satisfy the full contract -- outcome, target,
+    operation, permission, and an exit status that agrees with the outcome --
+    because a double that answers loosely would let a caller pass tests the
+    real authority would refuse.
+    """
+
+    _EXIT = {"owned": 0, "shared": 1, "broken": 2, "unclaimed": 3}
+
+    def __init__(self, outcome: str = "owned", sync_args: str = "--frozen --all-extras"):
+        self._outcome = outcome
+        self._sync_args = sync_args
+
+    def run(self, command, **kwargs):
+        from types import SimpleNamespace
+
+        venv = command[command.index("--venv") + 1] if "--venv" in command else ""
+        operation = (
+            command[command.index("--operation") + 1] if "--operation" in command else ""
+        )
+        allowed = "yes" if self._outcome == "owned" else "no"
+        stdout = (
+            f"outcome={self._outcome}\n"
+            f"sync_args={self._sync_args}\n"
+            f"venv={venv}\n"
+            f"operation={operation}\n"
+            f"allowed={allowed}\n"
+            "reason=test\n"
+        )
+        return SimpleNamespace(
+            returncode=self._EXIT[self._outcome], stdout=stdout, stderr="", timed_out=False
+        )
+
+
 class TestEnsureE2EWorktree:
     """Test worktree creation, update, and recovery."""
 
@@ -67,7 +121,7 @@ class TestEnsureE2EWorktree:
         mock_run.side_effect = _make_mock_run()
         expected_wt = get_e2e_worktree_path(repo_root)
 
-        result = ensure_e2e_worktree(repo_root)
+        result = ensure_e2e_worktree(repo_root, _DecisionRunner())
 
         assert result == expected_wt
 
@@ -92,7 +146,7 @@ class TestEnsureE2EWorktree:
         worktree_path = get_e2e_worktree_path(repo_root)
         worktree_path.mkdir()  # Simulate existing worktree
 
-        result = ensure_e2e_worktree(repo_root)
+        result = ensure_e2e_worktree(repo_root, _DecisionRunner())
 
         assert result == worktree_path
 
@@ -132,7 +186,7 @@ class TestEnsureE2EWorktree:
 
         mock_run.side_effect = _make_mock_run(extra_side_effect=extra)
 
-        result = ensure_e2e_worktree(repo_root)
+        result = ensure_e2e_worktree(repo_root, _DecisionRunner())
 
         assert result == worktree_path
 
@@ -163,7 +217,7 @@ class TestEnsureE2EWorktree:
 
         mock_run.side_effect = _make_mock_run(extra_side_effect=extra)
 
-        result = ensure_e2e_worktree(repo_root)
+        result = ensure_e2e_worktree(repo_root, _DecisionRunner())
 
         assert result == worktree_path
         # The stale directory should have been deleted before worktree add
@@ -181,7 +235,7 @@ class TestEnsureE2EWorktree:
         )
 
         with pytest.raises(RuntimeError, match="Failed to prepare E2E worktree"):
-            ensure_e2e_worktree(repo_root)
+            ensure_e2e_worktree(repo_root, _DecisionRunner())
 
     @patch("issue_orchestrator.infra.e2e_worktree.subprocess.run")
     def test_raises_on_missing_tool(self, mock_run, repo_root: Path):
@@ -189,7 +243,7 @@ class TestEnsureE2EWorktree:
         mock_run.side_effect = FileNotFoundError("git not found")
 
         with pytest.raises(RuntimeError, match="Required tool not found"):
-            ensure_e2e_worktree(repo_root)
+            ensure_e2e_worktree(repo_root, _DecisionRunner())
 
     @patch("issue_orchestrator.infra.e2e_worktree.subprocess.run")
     def test_uv_sync_uses_frozen_all_extras(self, mock_run, repo_root: Path):
@@ -198,9 +252,10 @@ class TestEnsureE2EWorktree:
         worktree_path = get_e2e_worktree_path(repo_root)
         worktree_path.mkdir()
         (worktree_path / "pyproject.toml").write_text("[project]\nname = \"example\"\n")
+        _install_venv_guard(worktree_path)
         (worktree_path / "uv.lock").write_text("version = 1\n")
 
-        ensure_e2e_worktree(repo_root)
+        ensure_e2e_worktree(repo_root, _DecisionRunner())
 
         # Find the uv sync call
         uv_calls = [c for c in mock_run.call_args_list if c[0][0][0] == "uv"]
@@ -217,8 +272,9 @@ class TestEnsureE2EWorktree:
         worktree_path = get_e2e_worktree_path(repo_root)
         worktree_path.mkdir()
         (worktree_path / "pyproject.toml").write_text("[project]\nname = \"example\"\n")
+        _install_venv_guard(worktree_path)
 
-        ensure_e2e_worktree(repo_root)
+        ensure_e2e_worktree(repo_root, _DecisionRunner())
 
         uv_calls = [c for c in mock_run.call_args_list if c[0][0][0] == "uv"]
         assert len(uv_calls) == 1
@@ -233,6 +289,7 @@ class TestEnsureE2EWorktree:
         worktree_path = get_e2e_worktree_path(repo_root)
         worktree_path.mkdir()
         (worktree_path / "pyproject.toml").write_text("[project]\nname = \"example\"\n")
+        _install_venv_guard(worktree_path)
 
         def side_effect(cmd, **kwargs):
             if cmd[:2] == ["git", "rev-parse"] and "HEAD" in cmd:
@@ -249,7 +306,7 @@ class TestEnsureE2EWorktree:
 
         mock_run.side_effect = side_effect
 
-        ensure_e2e_worktree(repo_root)
+        ensure_e2e_worktree(repo_root, _DecisionRunner())
 
         install_calls = [
             c for c in mock_run.call_args_list if c[0][0][:3] == ["uv", "pip", "install"]
@@ -264,7 +321,7 @@ class TestEnsureE2EWorktree:
         """Non-Python repos still get enough Python tooling to run E2E wrappers."""
         mock_run.return_value = subprocess.CompletedProcess(["uv"], 0)
 
-        _sync_venv(tmp_path)
+        _sync_venv(tmp_path, _DecisionRunner())
 
         commands = [c[0][0] for c in mock_run.call_args_list]
         assert commands[0] == ["uv", "venv", ".venv"]

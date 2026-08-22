@@ -266,11 +266,86 @@ install_mode() {
   fi
 }
 
+# Refuse to install this project into a venv another checkout owns.
+#
+# ensure_deps deliberately REPOINTS a stale editable install (#6912). That is
+# correct from the checkout that owns the venv and is exactly the contamination
+# this repo fixed when run from a worktree whose .venv is symlinked at the base
+# venv: it would "repair" the shared venv by aiming it at the worktree.
+#
+# Routed through scripts/venv_guard.sh -- the single mutation-authorization
+# owner -- which is pure shell precisely so it can be consulted here, before
+# the package is importable.
+VENV_DECISION=""
+
+venv_mutation_outcome() {
+  local guard="${ROOT_DIR}/scripts/venv_guard.sh"
+  # Fail CLOSED. A missing or non-executable guard is not evidence of
+  # ownership; treating it as such turned "guard absent" into "full project
+  # sync", the exact mutation this exists to prevent.
+  if [[ ! -x "${guard}" ]]; then
+    return 3
+  fi
+  # VENV_PATH honours CC_VENV_PATH and may differ from ${ROOT_DIR}/.venv.
+  # Guarding one path while mutating another guards nothing.
+  # Capture the whole decision: the remedy travels with it, and every caller
+  # passes --quiet, so a fix written only to the guard's stderr is unreachable.
+  VENV_DECISION="$(cd "${ROOT_DIR}" && "${guard}" decide --quiet --venv "${VENV_PATH}" --operation install-project 2>/dev/null)"
+  return $?
+}
+
+venv_decision_remedy() {
+  printf '%s\n' "${VENV_DECISION}" | sed -n 's/^remedy=//p'
+}
+
 sync_deps() {
   local uv_bin
   local mode
+  local guard_outcome=0
   uv_bin="$(uv_bin_path || true)"
   mode="$(install_mode)"
+
+  venv_mutation_outcome || guard_outcome=$?
+
+  # Exit 0 alone is not authorization. The record must exist and agree with the
+  # status, or the decision is not a decision.
+  local decided expected_exit
+  decided="$(printf '%s\n' "${VENV_DECISION}" | sed -n 's/^outcome=//p')"
+  case "${decided}" in
+    owned) expected_exit=0 ;;
+    shared) expected_exit=1 ;;
+    broken) expected_exit=2 ;;
+    unclaimed) expected_exit=3 ;;
+    *) expected_exit="" ;;
+  esac
+  if [[ -z "${expected_exit}" || "${guard_outcome}" -ne "${expected_exit}" ]]; then
+    echo "ERROR: the venv guard returned an inconsistent decision for ${VENV_PATH}" >&2
+    echo "  (outcome='${decided}' exit=${guard_outcome}); refusing to mutate it." >&2
+    return 1
+  fi
+
+  case "${guard_outcome}" in
+    0) ;;
+    1)
+      echo "ERROR: ${VENV_PATH} is shared from another checkout." >&2
+      echo "Refusing to install this checkout's project into it; that is what" >&2
+      echo "repoints the shared editable install." >&2
+      echo "  To fix: $(venv_decision_remedy)" >&2
+      return 1
+      ;;
+    2)
+      echo "ERROR: ${VENV_PATH} is a dangling symlink; cannot sync." >&2
+      echo "  To fix: $(venv_decision_remedy)" >&2
+      return 1
+      ;;
+    *)
+      echo "ERROR: venv guard unavailable or returned ${guard_outcome}." >&2
+      echo "Refusing to mutate ${VENV_PATH} without an authorization decision." >&2
+      remedy="$(venv_decision_remedy)"
+      [[ -n "${remedy}" ]] && echo "  To fix: ${remedy}" >&2
+      return 1
+      ;;
+  esac
 
   if [[ "${mode}" == "uv-frozen-extra-dev" ]]; then
     echo "Syncing Python dependencies from ${ROOT_DIR} with uv..."
