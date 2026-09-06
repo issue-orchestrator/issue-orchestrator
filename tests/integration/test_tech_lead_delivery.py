@@ -21,6 +21,8 @@ from issue_orchestrator.control.completion_processor import (
     PRAdapter,
 )
 from issue_orchestrator.control.label_manager import LabelManager
+from issue_orchestrator.control.issue_run_allocator import IssueRunAllocationService
+from issue_orchestrator.execution.issue_run_ledger import SqliteIssueRunLedger
 from issue_orchestrator.control.open_issue_corpus import OpenIssueCorpusManager
 from issue_orchestrator.control.session_completion import handle_session_completion
 from issue_orchestrator.control.tech_lead_reset_retry import (
@@ -74,7 +76,7 @@ from tests.unit.test_completion_action_planner import (
 NOW = datetime(2026, 9, 6, 12)
 
 
-def prepare_run(tmp_path, *, mandated_reset):
+def prepare_run(tmp_path):
     config = make_tech_lead_config(tmp_path)
     config.validation.publish.dirty_check = "off"
     config.tech_lead.authority.reset_retry = "execute"
@@ -87,22 +89,21 @@ def prepare_run(tmp_path, *, mandated_reset):
     )
     arm_investigation_session(config, session)
     plant_tech_lead_decision_pair(session, comment_targets=(1,))
-    if mandated_reset:
-        path = session.run_dir / "tech-lead-data" / "tech-lead-decision.json"
-        decision = json.loads(path.read_text())
-        decision["proposed_actions"].append(
-            {
-                "id": "A2",
-                "action_type": "reset_retry",
-                "target_number": 1,
-                "body": "Worktree recovery required",
-                "finding_ids": ["T1"],
-            }
-        )
-        path.write_text(json.dumps(decision))
-        (path.parent / "tech-lead-report.md").write_text(
-            "# Report\n\nT1 leads to A1 and A2.\n"
-        )
+    path = session.run_dir / "tech-lead-data" / "tech-lead-decision.json"
+    decision = json.loads(path.read_text())
+    decision["proposed_actions"].append(
+        {
+            "id": "A2",
+            "action_type": "reset_retry",
+            "target_number": 1,
+            "body": "Worktree recovery required",
+            "finding_ids": ["T1"],
+        }
+    )
+    path.write_text(json.dumps(decision))
+    (path.parent / "tech-lead-report.md").write_text(
+        "# Report\n\nT1 leads to A1 and A2.\n"
+    )
     completion = CompletionRecord(
         session_id=session.terminal_id,
         timestamp=NOW.isoformat(),
@@ -117,11 +118,11 @@ def prepare_run(tmp_path, *, mandated_reset):
     return config, session
 
 
-@pytest.mark.parametrize("mandated_reset", [False, True])
+@pytest.mark.parametrize("reset_fails", [False, True])
 def test_clean_decision_crosses_real_applier_and_failed_mandate_is_not_delivered(
-    tmp_path, mandated_reset
+    tmp_path, reset_fails
 ):
-    config, session = prepare_run(tmp_path, mandated_reset=mandated_reset)
+    config, session = prepare_run(tmp_path)
     authority = SqliteTechLeadAuthorityStore.for_repo(tmp_path)
     store_path = tmp_path / "runs.sqlite"
     store = SqliteTechLeadRunRecordStore(store_path)
@@ -149,6 +150,7 @@ def test_clean_decision_crosses_real_applier_and_failed_mandate_is_not_delivered
     pr.get_prs_for_branch.return_value = []
     pr.get_prs_for_issue.return_value = []
     processor = CompletionProcessor(
+        issue_run_allocator=IssueRunAllocationService(output, SqliteIssueRunLedger(tmp_path / "run-ledger.sqlite")),
         label_adapter=Mock(spec=LabelAdapter),
         pr_adapter=pr,
         git_adapter=git,
@@ -209,7 +211,7 @@ def test_clean_decision_crosses_real_applier_and_failed_mandate_is_not_delivered
     )
     reset = Mock(
         return_value=ResetRetryRunOutcome(
-            success=False, error="reset host write failed"
+            success=not reset_fails, error="reset host write failed" if reset_fails else ""
         )
     )
     applier.tech_lead_reset_retry = TechLeadResetRetryExecutor(
@@ -241,8 +243,8 @@ def test_clean_decision_crosses_real_applier_and_failed_mandate_is_not_delivered
     diagnoses = [
         (number, body) for number, body in written if "Diagnosis for #1" in body
     ]
-    if mandated_reset:
-        reset.assert_called_once()
+    reset.assert_called_once()
+    if reset_fails:
         assert diagnoses == []
         assert receipt.phase is TechLeadRunPhase.FAILED
         assert restarted.inspect_delivery_evidence().last_delivered_at is None
@@ -255,7 +257,7 @@ def test_clean_decision_crosses_real_applier_and_failed_mandate_is_not_delivered
         assert len(events.get_events(EventName.SESSION_COMPLETED.value)) == 1
     expected = (
         TechLeadDeliveryStatus.STALLED
-        if mandated_reset
+        if reset_fails
         else TechLeadDeliveryStatus.OBSERVING
     )
     assert read_tech_lead_activity(restarted, now=NOW).delivery.status is expected
