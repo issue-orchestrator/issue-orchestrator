@@ -353,9 +353,10 @@ class CompletionHandler:
 
         # Retention (#6769 F3): completion finalization is this run's terminal
         # seam; publish-stage failures keep the row for Retry Publish.
-        discard_tech_lead_authority_after_completion(
-            self.config, self._tech_lead_authority, session, processing_errors=processing_errors
-        )
+        if finalize_terminal:
+            discard_tech_lead_authority_after_completion(
+                self.config, self._tech_lead_authority, session, processing_errors=processing_errors
+            )
         # ADR-0033's run record is NOT closed here: the authoritative terminal
         # status does not exist until required tech-lead actions have applied, so
         # it closes in ``finalize_terminal_outcome`` beside the other post-apply
@@ -572,6 +573,13 @@ class CompletionHandler:
         self._update_state_machines(session, effective_status, pr_url)
         self._tech_lead_run_activity.note_concluded(
             session, effective_status, processing_errors=processing_errors,
+        )
+        # Required disposition commands revalidate immutable authority at apply
+        # time. Retention belongs after those effects, beside the terminal
+        # verdict, rather than while their command list is merely being built.
+        discard_tech_lead_authority_after_completion(
+            self.config, self._tech_lead_authority, session,
+            processing_errors=processing_errors,
         )
 
     def emit_trace_events(

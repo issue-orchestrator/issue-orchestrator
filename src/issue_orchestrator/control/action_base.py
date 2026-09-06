@@ -80,6 +80,12 @@ class ActionType(Enum):
     # Repeat pattern observation: evidence comment + durable count (#6781/#6957)
     APPEND_PATTERN_OBSERVATION = "append_pattern_observation"
 
+    # Terminal disposition of a completed failure investigation (#6971):
+    # publish the wait state on the diagnosed issue + record the durable
+    # tracker binding that transfers stuck-sweep ownership.
+    RECORD_TECH_LEAD_DISPOSITION = "record_tech_lead_disposition"
+    ESCALATE_TECH_LEAD_DISPOSITION = "escalate_tech_lead_disposition"
+
     # Finding promotion (#6957): file a case file's diagnosis as a gated
     # runnable issue in the routed repo, report later evidence onto that one
     # issue, and settle it when it goes terminal.

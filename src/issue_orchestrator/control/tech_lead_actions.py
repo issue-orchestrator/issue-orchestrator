@@ -23,7 +23,7 @@ from .action_base import Action, ActionType
 
 if TYPE_CHECKING:
     from ..domain.tech_lead_findings import PatternObservation
-    from ..domain.tech_lead_session import StoredTechLeadOp
+    from ..domain.tech_lead_session import StoredTechLeadOp, TechLeadDisposition
 
 
 # These actions deliberately share one apply-time owner: all create a
@@ -356,6 +356,7 @@ class ResetRetryIssueAction(Action):
     # stored op (#6778): the applier then finalizes the proposal issue
     # (outcome comment + close + discard_op). 0 = direct execute-authority.
     proposal_issue_number: int = 0
+    requires_effective_disposition: bool = False
     action_type: ActionType = field(default=ActionType.RESET_RETRY_ISSUE, init=False)
 
     def __post_init__(self) -> None:
@@ -395,6 +396,7 @@ class KillHungSessionAction(Action):
     target_session_id: str = ""
     target_terminal_id: str = ""
     target_session_type: str = ""
+    requires_effective_disposition: bool = False
     action_type: ActionType = field(default=ActionType.KILL_HUNG_SESSION, init=False)
 
     def __post_init__(self) -> None:
@@ -496,6 +498,54 @@ class AppendPatternObservationAction(Action):
         """The evidence comment posted onto the case file."""
         assert self.observation is not None  # enforced by __post_init__
         return self.observation.comment
+
+
+@dataclass(frozen=True)
+class EscalateTechLeadDispositionAction(Action):
+    """Transfer an investigation to the marker-owned human lifecycle."""
+
+    issue_number: int = 0
+    comment: str = ""
+    action_type: ActionType = field(default=ActionType.ESCALATE_TECH_LEAD_DISPOSITION, init=False)
+
+    def __post_init__(self) -> None:
+        if isinstance(self.issue_number, bool) or self.issue_number <= 0 or not self.comment.strip():
+            raise ValueError("tech-lead human disposition requires an issue and explanation")
+
+    def reconciliation_subject(self) -> int:
+        return self.issue_number
+
+
+@dataclass(frozen=True)
+class RecordTechLeadDispositionAction(Action):
+    """Park a diagnosed issue on the open tracker that owns its remedy (#6971).
+
+    The terminal disposition of a completed failure investigation. Both halves
+    belong to one owner: the diagnosed issue gets a comment saying WHY it is
+    parked and on WHAT, and the authority store gets the durable tracker
+    binding the stuck sweep consults instead of re-diagnosing.
+
+    Carries the whole :class:`~...domain.tech_lead_session.TechLeadDisposition`
+    rather than loose fields, so the row the applier records is the row the
+    planner decided — there is no second place that reassembles it.
+    """
+
+    disposition: "TechLeadDisposition | None" = None
+    action_type: ActionType = field(
+        default=ActionType.RECORD_TECH_LEAD_DISPOSITION, init=False
+    )
+
+    def __post_init__(self) -> None:
+        if self.disposition is None:
+            raise ValueError(
+                "RecordTechLeadDispositionAction requires the disposition it"
+                " records (the diagnosed issue and its open recovery tracker)"
+            )
+
+    def reconciliation_subject(self) -> int:
+        """The diagnosed issue this comments on and parks."""
+        assert self.disposition is not None  # enforced by __post_init__
+        return self.disposition.issue_number
 
 
 @dataclass(frozen=True)

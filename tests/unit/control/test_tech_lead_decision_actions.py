@@ -10,6 +10,8 @@ from issue_orchestrator.control.actions import (
     CreateTechLeadIssueAction,
     CreateTechLeadProposalIssueAction,
     KillHungSessionAction,
+    RecordTechLeadDispositionAction,
+    EscalateTechLeadDispositionAction,
     ResetRetryIssueAction,
     SurfaceTechLeadProposalAction,
     TechLeadMilestoneIntent,
@@ -553,12 +555,7 @@ class TestDecisionIssuePolicy:
 
 
 def test_escalate_to_human_maps_to_routing_surface_only() -> None:
-    """Escalation = needs-human label + comment; never EscalateToHumanAction.
-
-    EscalateToHumanAction's applier terminates the target issue's runtime,
-    which would give the always-execute escalation floor the same effect as
-    the shadow-only kill_hung_session intent (#6764 authority hole).
-    """
+    """Escalation uses a non-terminating owner command, never runtime kill."""
     action = ProposedTechLeadAction(
         id="A3",
         action_type="escalate_to_human",
@@ -567,19 +564,12 @@ def test_escalate_to_human_maps_to_routing_surface_only() -> None:
         finding_ids=("T1",),
     )
 
-    [label, comment] = _plan(_decision(action))
-
-    assert isinstance(label, AddLabelAction)
-    assert label.issue_number == 55
-    assert label.label == NEEDS_HUMAN
-    assert label.expected is EXPECTED
-    assert isinstance(comment, AddCommentAction)
-    assert comment.number == 55
-    assert comment.is_pr is False
-    assert comment.comment.startswith("## ⚠️ Tech Lead escalation")
-    assert "Session keeps looping." in comment.comment
-    assert "(action A3; findings: T1)" in comment.comment
-    assert comment.expected is EXPECTED
+    [command] = _plan(_decision(action))
+    assert isinstance(command, EscalateTechLeadDispositionAction)
+    assert command.issue_number == 55
+    assert "Session keeps looping." in command.comment
+    assert "(action A3; findings: T1)" in command.comment
+    assert command.expected is EXPECTED
 
 
 def test_escalate_to_human_executes_even_in_full_propose_config() -> None:
@@ -594,10 +584,53 @@ def test_escalate_to_human_executes_even_in_full_propose_config() -> None:
         body="Needs a human.",
     )
 
-    [label, comment] = _plan(_decision(action), config)
+    [command] = _plan(_decision(action), config)
+    assert isinstance(command, EscalateTechLeadDispositionAction)
 
-    assert isinstance(label, AddLabelAction)
-    assert isinstance(comment, AddCommentAction)
+
+def test_defer_to_tracker_publishes_the_wait_state_then_binds_the_tracker() -> None:
+    """#6971: one command owns publication and durable activation."""
+    action = ProposedTechLeadAction(
+        id="A2",
+        action_type="defer_to_tracker",
+        target_number=6410,
+        tracker_number=6914,
+        body="Validated work is stranded; recover it, do NOT reset.",
+        finding_ids=("T1",),
+    )
+
+    [record] = _plan(_decision(action))
+
+    assert isinstance(record, RecordTechLeadDispositionAction)
+    disposition = record.disposition
+    assert disposition is not None
+    assert disposition.issue_number == 6410
+    assert disposition.tracker_issue_number == 6914
+    assert disposition.source_action_id == "A2"
+    assert disposition.source_run_id == SOURCE_RUN["source_run_id"]
+    assert disposition.source_session_name == SOURCE_RUN["source_session_name"]
+    assert disposition.recorded_at == SOURCE_RUN["observed_at"]
+    assert disposition.finding_ids == ("T1",)
+    assert record.expected is EXPECTED
+
+
+def test_defer_to_tracker_executes_even_in_full_propose_config() -> None:
+    """The disposition is a floor: under propose it would surface a shadow
+    record while the redundant investigations it exists to stop continued."""
+    config = _config(
+        post_comment="propose", create_issue="propose", flag_pattern="propose"
+    )
+    action = ProposedTechLeadAction(
+        id="A1",
+        action_type="defer_to_tracker",
+        target_number=11,
+        tracker_number=12,
+        body="Owned by the recovery lane.",
+    )
+
+    [record] = _plan(_decision(action), config)
+    assert isinstance(record, RecordTechLeadDispositionAction)
+    assert _shadow_digests([record]) == []
 
 
 def test_propose_authority_surfaces_shadow_proposal() -> None:
@@ -1069,7 +1102,13 @@ def test_duplicate_open_proposal_comments_instead_of_second_issue(
 
     [planned] = _plan(_decision(action), op_ledger={(act_type, 13): 321})
 
-    assert isinstance(planned, AddCommentAction)
+    from issue_orchestrator.control.required_issue_comment import ReuseTechLeadProposalAction
+    from issue_orchestrator.control.tech_lead_completion_gate import evaluate_required_act_level_outcome
+    from issue_orchestrator.control.actions import ActionResult
+    assert isinstance(planned, ReuseTechLeadProposalAction)
+    assert planned.required_op.op_type == act_type
+    assert planned.required_op.target_issue_number == 13
+    assert evaluate_required_act_level_outcome([ActionResult.fail(planned, "failed")]).failed
     assert planned.number == 321
     assert planned.is_pr is False
     assert PROPOSED_TECH_LEAD_LABEL in planned.comment
@@ -1225,6 +1264,37 @@ def test_authority_mode_for_escalate_is_always_execute() -> None:
     assert authority.mode_for("escalate_to_human") == "execute"
 
 
+def test_authority_mode_for_defer_to_tracker_is_always_execute() -> None:
+    """#6971: under propose the disposition would be a shadow record while the
+    redundant investigations it exists to stop kept running."""
+    from issue_orchestrator.infra.config_models import TechLeadAuthorityConfig
+
+    authority = TechLeadAuthorityConfig()
+    assert authority.mode_for("defer_to_tracker") == "execute"
+
+
+def test_every_decision_action_type_has_a_declared_authority() -> None:
+    """The floor and configurable sets must PARTITION the action vocabulary.
+
+    A new action type that lands in neither raises from ``mode_for`` at
+    completion time — after the session did its work. This pins the split at
+    build time instead, and pins that no type is in both (which would make the
+    configured mode a lie).
+    """
+    from issue_orchestrator.infra.config_models_tech_lead import (
+        TECH_LEAD_AUTHORITY_CONFIGURABLE_ACTIONS,
+        TECH_LEAD_AUTHORITY_FLOOR_ACTIONS,
+    )
+    from issue_orchestrator.domain.tech_lead_artifacts import (
+        VALID_TECH_LEAD_ACTION_TYPES,
+    )
+
+    floor = set(TECH_LEAD_AUTHORITY_FLOOR_ACTIONS)
+    configurable = set(TECH_LEAD_AUTHORITY_CONFIGURABLE_ACTIONS)
+    assert floor | configurable == set(VALID_TECH_LEAD_ACTION_TYPES)
+    assert floor & configurable == set()
+
+
 class TestCreateIssueExpediteProducer:
     """Expedite intent (#6870) rides the create_issue action, gate-aware."""
 
@@ -1258,3 +1328,18 @@ class TestCreateIssueExpediteProducer:
         [planned] = _plan(_decision(self._expedite_action(expedite=False)))
         assert isinstance(planned, CreateTechLeadIssueAction)
         assert planned.expedite is False
+
+
+def test_reused_kill_proposal_carries_current_launch_generation_obligation():
+    from issue_orchestrator.control.required_issue_comment import ReuseTechLeadProposalAction
+    from issue_orchestrator.domain.tech_lead_session import TechLeadSessionGeneration
+    from issue_orchestrator.domain.session_key import TaskKind
+    observed = TechLeadSessionGeneration(issue_number=13, task_kind=TaskKind.CODE,
+        terminal_id="worker-13", run_id="new-run")
+    proposed = ProposedTechLeadAction(id="A5", action_type="kill_hung_session", target_number=13, body="Again")
+    [action] = _plan(_decision(proposed), op_ledger={("kill_hung_session", 13): 321},
+        observed_session_generation=lambda number: observed)
+    assert isinstance(action, ReuseTechLeadProposalAction)
+    assert action.required_op.target_session_id == "new-run"
+    assert action.required_op.target_terminal_id == "worker-13"
+    assert action.required_op.target_session_type == "code"

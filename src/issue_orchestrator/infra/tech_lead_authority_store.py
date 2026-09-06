@@ -37,7 +37,7 @@ import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator
+from typing import ContextManager, Iterator
 
 from ..domain.models import DiscoveredFailure
 from ..domain.tech_lead_findings import (
@@ -51,6 +51,7 @@ from ..domain.tech_lead_findings import (
 )
 from ..domain.tech_lead_session import (
     StoredTechLeadOp,
+    TechLeadDisposition,
     TechLeadLaunchAuthority,
     TechLeadShippedFixSummary,
 )
@@ -59,14 +60,16 @@ from ..ports.tech_lead_authority import (
     TechLeadOpConflictError,
     TechLeadPatternConflictError,
     TechLeadPromotionConflictError,
-    TechLeadShippedFixConflictError,
     TechLeadStormCohortConflictError,
     UnknownTechLeadPatternError,
 )
 from .repo_identity import state_dir
+from . import tech_lead_dispositions_sql as dispositions
 from . import tech_lead_pending_intents as pending_intents
+from . import tech_lead_shipped_fixes_sql as shipped_fixes
 from .sqlite_connection import open_sqlite
 from .tech_lead_authority_schema import initialize_tech_lead_authority_schema
+from .tech_lead_publication_lock import disposition_publication
 
 logger = logging.getLogger(__name__)
 
@@ -310,6 +313,26 @@ class SqliteTechLeadAuthorityStore:
             )
             for row in rows
         )
+
+    # -- Failure-investigation dispositions (#6971) -------------------------
+
+    def disposition_publication(self, *, issue_number: int) -> ContextManager[bool]:
+        return disposition_publication(self._db_path, issue_number)
+
+    def transition_disposition(
+        self, *, previous: TechLeadDisposition | None, disposition: TechLeadDisposition
+    ) -> bool:
+        """Compare and write under the store's immediate transaction."""
+        with self._transaction() as tx:
+            return dispositions.transition(tx, previous, disposition)
+
+    def load_disposition(self, *, issue_number: int) -> TechLeadDisposition | None:
+        """Load an issue's disposition, or None when it is not parked."""
+        return dispositions.select(self._get_connection(), issue_number)
+
+    def list_dispositions(self) -> tuple[TechLeadDisposition, ...]:
+        """Every recorded disposition — the sweep's ownership ledger read."""
+        return dispositions.select_all(self._get_connection())
 
     # -- Pattern case files (#6781) -----------------------------------------
 
@@ -720,60 +743,19 @@ class SqliteTechLeadAuthorityStore:
     ) -> None:
         """Persist an area-tagged merged fix (create-once by issue)."""
         with self._transaction() as tx:
-            row = tx.execute(
-                "SELECT pr_url, area FROM tech_lead_shipped_fixes "
-                "WHERE issue_number = ?",
-                (issue_number,),
-            ).fetchone()
-            if row is not None:
-                if str(row["pr_url"]) == pr_url and str(row["area"]) == area:
-                    return
-                raise TechLeadShippedFixConflictError(
-                    f"different shipped-fix evidence is already recorded for"
-                    f" issue #{issue_number}"
-                )
-            tx.execute(
-                "INSERT INTO tech_lead_shipped_fixes "
-                "(issue_number, title, pr_url, area, merged_at) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (
-                    issue_number,
-                    title,
-                    pr_url,
-                    area,
-                    datetime.now(timezone.utc).isoformat(),
-                ),
+            recorded = shipped_fixes.insert(
+                tx, issue_number=issue_number, title=title, pr_url=pr_url, area=area
             )
-        logger.info(
-            "[tech_lead] Recorded shipped fix: issue=#%d area=%r pr=%s",
-            issue_number,
-            area,
-            pr_url,
-        )
+        if recorded:
+            logger.info(
+                "[tech_lead] Recorded shipped fix: issue=#%d area=%r pr=%s",
+                issue_number,
+                area,
+                pr_url,
+            )
 
     def list_recent_shipped_fixes(
         self, *, limit: int
     ) -> tuple[TechLeadShippedFixSummary, ...]:
         """Return the newest durable shipped-fix facts."""
-        if limit <= 0:
-            raise ValueError("shipped-fix limit must be positive")
-        rows = (
-            self._get_connection()
-            .execute(
-                "SELECT issue_number, title, pr_url, area, merged_at "
-                "FROM tech_lead_shipped_fixes "
-                "ORDER BY merged_at DESC, issue_number DESC LIMIT ?",
-                (limit,),
-            )
-            .fetchall()
-        )
-        return tuple(
-            TechLeadShippedFixSummary(
-                issue_number=int(row["issue_number"]),
-                title=str(row["title"]),
-                pr_url=str(row["pr_url"]),
-                area=str(row["area"]),
-                merged_at=str(row["merged_at"]),
-            )
-            for row in rows
-        )
+        return shipped_fixes.select_recent(self._get_connection(), limit=limit)

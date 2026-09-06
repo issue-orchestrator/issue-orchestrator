@@ -326,9 +326,12 @@ Compact `tech-lead-decision.json` example:
   case-insensitive).
 - Targets are scoped to what you were launched to audit, and the scope
   splits by action kind:
-  - `post_comment` and `escalate_to_human` may only target the manifest
-    PRs or your own tracking issue (batch review), the `focus_issue_number`
-    (failure investigation), or THIS tracking issue (health review).
+  - `post_comment` and `escalate_to_human` may only target the manifest PRs or
+    your own tracking issue (batch review), `focus_issue_number` (failure
+    investigation), or THIS tracking issue (health review).
+  - `defer_to_tracker` may only target `focus_issue_number` in a failure
+    investigation, with `tracker_number` from `recovery_tracker_numbers` in
+    `tech-lead-data/recovery-context.json`. It is not a batch or health action.
   - Act-level `reset_retry` and `kill_hung_session` may only target the
     `focus_issue_number` (failure investigation), or an issue number listed
     in the snapshot's `problem_cohort` (health review). A batch review owns
@@ -366,8 +369,15 @@ Compact `tech-lead-decision.json` example:
   in-scope duplicate receives your observation; otherwise the proposal is gated
   with the candidate preserved for a human to reconcile. Always still provide
   `title` and `body`. `duplicate_of` is only valid on `create_issue`.
+- `defer_to_tracker` requires a `tracker_number` naming a real OPEN issue
+  other than the target, admitted by the immutable launch grant. Put the next
+  remedy and why that prerequisite owns it in `body`. Only `defer_to_tracker`
+  may carry `tracker_number`. Its explanation and durable binding commit as one
+  completion-mandatory command; failed publication/storage fails completion.
+  See the Failure Investigation Flow for the finite deadline and release rules.
 - Valid `action_type` values: `post_comment`, `create_issue`,
-  `escalate_to_human`, `flag_pattern`, `reset_retry`, `kill_hung_session`.
+  `escalate_to_human`, `defer_to_tracker`, `flag_pattern`, `reset_retry`,
+  `kill_hung_session`.
 - Proposals are intent, not execution: the orchestrator decides what to
   execute per its configured authority. Act-level proposals (`reset_retry`,
   `kill_hung_session`) under `propose` authority become reviewable GitHub
@@ -573,10 +583,48 @@ need is not instrumented yet, that gap is itself a finding: `create_issue` to
 instrument it rather than guessing. (Writes still go only through your decision
 artifact; see the contract below.)
 
+- **Use your focus-scoped act-level authority.** In a failure investigation,
+  `reset_retry` and `kill_hung_session` may target only `focus_issue_number`.
+  Propose `reset_retry` when the issue is blocked, no live session, persistent
+  pair, background job, or pending publish retry still owns its work, and the
+  evidence supports a fresh implementation. Inspect local commits, uncommitted
+  changes, validation records, and review artifacts first. A missing remote
+  branch proves nothing about local work. If valuable work remains or ownership
+  is uncertain, choose preservation/recovery or `escalate_to_human`.
+  The configured authority controls execution: `propose` creates a human-gated
+  proposal; `execute` invokes the owner directly. Its apply-time revalidation
+  does not replace these checks, and this prompt makes no claim that a scratch
+  reset preserves completed work. Use `kill_hung_session` only for the exact
+  launch-observed session generation with evidence that it is hung.
 - Your `tech-lead-decision.json` MUST include at least one `post_comment`
   action whose `target_number` is the `focus_issue_number` - that comment IS
   your diagnosis channel; a decision without it is rejected and the session
   is marked failed.
+- **Leave exactly one terminal disposition for the focus issue.** A diagnosis
+  alone, duplicate dispositions, or conflicting remedies are rejected. Choose
+  `reset_retry`, `kill_hung_session`, `escalate_to_human`, or `defer_to_tracker`.
+  Read `tech-lead-data/recovery-context.json` first: it contains
+  `recovery_tracker_numbers` and any `previous_disposition`. Do not repeat an
+  unchanged diagnosis; explain progress, the missed recovery deadline, or the
+  next concrete remedy.
+- `defer_to_tracker` is dependency-backed waiting, valid only for a failure
+  investigation. Set `target_number` = `focus_issue_number` and `tracker_number`
+  to an OPEN issue in `recovery_tracker_numbers`. The launch grant comes from
+  explicit same-repository prerequisites; an already-owned tracker is supplied
+  as reassessment context. The owner revalidates the dependency before committing. An arbitrary issue mention grants
+  nothing. A new tracker needs an authorized prerequisite relation first;
+  otherwise use `escalate_to_human`.
+- A tracker wait lasts at most 24 hours from the incident's first disposition.
+  The admitted command survives restart and resumes publication through the
+  durable ledger. Each incident gets one wait: new decisions or replacement
+  trackers cannot extend or renew it. Closed/missing trackers trigger earlier reassessment;
+  read failures preserve only an unexpired active wait. The next investigation
+  receives the previous outcome and must choose remediation or human escalation.
+  Positive target recovery releases the incident and its recovery budget.
+- `escalate_to_human` transfers responsibility through the tech-lead human
+  lifecycle: `tech-lead-needs-human`, the shared blocking label, and an
+  explanation. Preserve existing human requests. Release requires the explicit
+  lifecycle/operator recovery path; changing one label is not a reset recipe.
 - There is no PR manifest for this session: do NOT audit or label PRs and do
   NOT follow any Batch Review Flow step.
 - Write both required artifacts (below), then complete with `coding-done`.

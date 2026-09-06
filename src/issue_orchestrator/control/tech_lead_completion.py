@@ -63,7 +63,6 @@ from typing import TYPE_CHECKING
 
 from ..domain.models import Session
 from ..domain.board_snapshot import BOARD_SNAPSHOT_FILENAME, BoardSnapshot
-from ..domain.tech_lead_artifacts import ACT_LEVEL_TECH_LEAD_ACTIONS
 from ..domain.tech_lead_manifest import TechLeadManifest
 from ..domain.tech_lead_session import TechLeadLaunchAuthority, TechLeadSessionFlavor
 from .actions import (
@@ -93,6 +92,8 @@ from .tech_lead_case_files import build_pattern_ledger
 from .tech_lead_issue_policy import protected_tech_lead_label_violations
 from .tech_lead_proposals import build_op_ledger
 from .tech_lead_session_policy import is_tech_lead_session, read_tech_lead_assignment
+from .tech_lead_target_scope import target_scope_violation
+from .tech_lead_dispositions import investigation_disposition_violation
 
 if TYPE_CHECKING:
     from ..domain.tech_lead_artifacts import TechLeadDecision
@@ -102,13 +103,6 @@ if TYPE_CHECKING:
     from .reconciliation import ExpectedState
 
 logger = logging.getLogger(__name__)
-
-# Comment/routing proposals whose target_number must fall inside the general
-# launch scope (which, for a batch review, includes the audited manifest PRs).
-# create_issue / flag_pattern carry no target and are scope-free. Act-level
-# proposals (reset_retry / kill_hung_session) are validated separately against
-# the STRICTER issue-only scope — see ``allowed_act_level_targets`` (#6764 rr F1).
-_TARGET_SCOPED_ACTION_TYPES = frozenset(("post_comment", "escalate_to_human"))
 
 
 def read_tech_lead_manifest(run_dir: Path) -> TechLeadManifest | None:
@@ -207,47 +201,6 @@ def resolve_tech_lead_launch_authority(
     return authority, None
 
 
-def _launch_scope_description(authority: TechLeadLaunchAuthority, allowed: frozenset[int]) -> str:
-    """Human-readable launch scope for out-of-scope violation messages."""
-    if authority.flavor is TechLeadSessionFlavor.FAILURE_INVESTIGATION:
-        return f"the originating issue #{authority.focus_issue_number}"
-    if authority.flavor is TechLeadSessionFlavor.HEALTH_REVIEW:
-        return f"the health-review anchor issue #{authority.anchor_issue_number} (board-wide comments/escalations belong on the anchor; act-level proposals instead use the cohort this review owns, published as problem_cohort in board-snapshot.json)"
-    return f"the audited manifest PRs and the tracking issue ({', '.join(f'#{n}' for n in sorted(allowed))})"
-
-
-def _act_level_scope_description(authority: TechLeadLaunchAuthority) -> str:
-    """Human-readable ISSUE-only scope for an out-of-scope act-level violation."""
-    if authority.flavor is TechLeadSessionFlavor.FAILURE_INVESTIGATION:
-        return f"the originating work issue #{authority.focus_issue_number}"
-    if authority.flavor is TechLeadSessionFlavor.HEALTH_REVIEW:
-        cohort = ", ".join(f"#{n}" for n in authority.problem_issue_numbers)
-        return f"the health review's immutable problem cohort, published as problem_cohort in board-snapshot.json ({cohort or 'empty — a periodic review owns no act-level target'})"
-    return "no work issue is in scope for an act-level reset/kill from this session — that intent applies only to a failure investigation's focus issue; batch manifest entries are PRs and tech_lead anchors are bookkeeping issues, so route board findings through the scope-free create_issue/flag_pattern proposals instead"
-
-
-def _target_scope_violation(decision: "TechLeadDecision", authority: TechLeadLaunchAuthority) -> str | None:
-    """Out-of-scope target detail for any targeted proposal, or None.
-
-    Two scopes (#6764 re-review F1): comment/routing proposals may target the
-    general launch scope (manifest PRs included for a batch), while act-level
-    reset/kill proposals are held to the STRICTER issue-only scope so a
-    manifest PR number never reaches the issue reset owner as an ``issue_number``.
-    """
-    allowed = authority.allowed_targets()
-    act_allowed = authority.allowed_act_level_targets()
-    for action in decision.proposed_actions:
-        if action.action_type in ACT_LEVEL_TECH_LEAD_ACTIONS:
-            if action.target_number not in act_allowed:
-                return f"proposed action {action.id} ({action.action_type}) targets #{action.target_number}, outside this session's launch scope for an act-level reset/kill: {_act_level_scope_description(authority)}"
-            continue
-        if action.action_type not in _TARGET_SCOPED_ACTION_TYPES:
-            continue
-        if action.target_number not in allowed:
-            return f"proposed action {action.id} ({action.action_type}) targets #{action.target_number}, outside this session's launch scope: {_launch_scope_description(authority, allowed)}"
-    return None
-
-
 def validate_decision_for_authority(
     decision: "TechLeadDecision",
     authority: TechLeadLaunchAuthority,
@@ -276,7 +229,7 @@ def validate_decision_for_authority(
       (#6761 F4). Checked at mapping time so the domain contract stays
       config-free.
     """
-    target_violation = _target_scope_violation(decision, authority)
+    target_violation = target_scope_violation(decision, authority)
     if target_violation is not None:
         return target_violation
     if authority.flavor is TechLeadSessionFlavor.FAILURE_INVESTIGATION:
@@ -284,6 +237,8 @@ def validate_decision_for_authority(
         has_focus_comment = any(action.action_type == "post_comment" and action.target_number == focus for action in decision.proposed_actions)
         if not has_focus_comment:
             return f"failure investigation decision must propose at least one post_comment targeting the originating issue #{focus} (the diagnosis has no channel otherwise)"
+    if violation := investigation_disposition_violation(decision, authority):
+        return violation
     for action in decision.proposed_actions:
         if action.action_type != "create_issue":
             continue
@@ -393,8 +348,8 @@ def discard_tech_lead_authority_after_completion(
     Called from completion finalization for every terminal status. The row
     is keyed by run identity, so a relaunch (new run) records a fresh row at
     launch, and a completed/failed/rejected run leaves nothing behind. Runs
-    AFTER completion actions are planned — every authority read happens
-    during planning.
+    AFTER completion actions are applied: disposition owners revalidate the
+    immutable grant at their commit boundary.
 
     Exception: a publish-stage failure (push/create_pr/publish_blocked)
     records Retry-Publish locators, and the retry re-enters
@@ -515,8 +470,7 @@ def generate_tech_lead_completion_actions(
         # and the pattern ledger (one case file per signature, #6781) come
         # from the same injected authority store that owns launch scope:
         # both reads are local, so planning needs no GitHub call.
-        actions.extend(
-            plan_tech_lead_decision_actions(
+        decision_actions = plan_tech_lead_decision_actions(
                 load_result.decision,
                 config,
                 labels,
@@ -531,7 +485,11 @@ def generate_tech_lead_completion_actions(
                 dedup_corpus=open_issue_corpus.load(),
                 dedup_grant=DuplicateTargetGrant.of(authority.allowed_targets()),
             )
-        )
+        if authority.flavor is TechLeadSessionFlavor.FAILURE_INVESTIGATION:
+            from .tech_lead_reset_retry import require_investigation_terminal_effect
+            decision_actions = require_investigation_terminal_effect(decision_actions,
+                focus_issue_number=authority.focus_issue_number)
+        actions.extend(decision_actions)
     else:
         # Belt-and-braces: the processing path (finding 3) should already have
         # classified this session FAILED before the planner sees it; still

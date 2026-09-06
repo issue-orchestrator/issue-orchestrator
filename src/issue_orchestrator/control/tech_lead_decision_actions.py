@@ -48,6 +48,11 @@ strategy apply exactly as they do to the planner's batch tracking issue, and
 agent labels have already passed the protected-label contract check
 (``tech_lead_completion``).
 
+Disposition note (#6971): a dependency-backed wait becomes one mandatory
+command, owning both explanation and durable binding. Admission requires the
+failure investigation's immutable tracker grant. The owner enforces a finite,
+non-renewable incident deadline and makes replay safe at the comment/store seam.
+
 Escalation note: tech_lead escalation deliberately does NOT reuse
 ``EscalateToHumanAction``. That action's applier terminates the target
 issue's runtime ("escalation kills issue automation, full stop"), which
@@ -71,15 +76,17 @@ from ..domain.tech_lead_artifacts import (
 from ..domain.tech_lead_findings import PatternClassificationConflictError
 from ..domain.tech_lead_session import (
     TechLeadCreationOrigin,
+    TechLeadDisposition,
     TechLeadSessionGeneration,
 )
 from ..ports.issue import Issue
 from .actions import (
     Action,
     AddCommentAction,
-    AddLabelAction,
     CreateTechLeadIssueAction,
     KillHungSessionAction,
+    RecordTechLeadDispositionAction,
+    EscalateTechLeadDispositionAction,
     ResetRetryIssueAction,
     SurfaceTechLeadProposalAction,
 )
@@ -109,7 +116,6 @@ from .tech_lead_proposals import (
     build_duplicate_proposal_comment,
     build_tech_lead_proposal_issue_action,
 )
-from .needs_human_block import NeedsHumanCause
 
 if TYPE_CHECKING:
     from ..domain.tech_lead_artifacts import TechLeadFinding
@@ -159,7 +165,9 @@ def _concrete_actions(
     labels: LabelManager,
     anchor_issue: Issue,
     expected: "ExpectedState",
-    needs_human_label: str,
+    source_run_id: str,
+    source_session_name: str,
+    observed_at: str,
     gate_reason: str | None = None,
 ) -> list[Action]:
     body = (action.body or "") + _provenance_footer(action)
@@ -224,26 +232,39 @@ def _concrete_actions(
                 expected=expected,
             )
         ]
-    if action.action_type == "escalate_to_human":
+    if action.action_type == "defer_to_tracker":
         assert action.target_number is not None  # enforced by validate()
-        # Routing surface only — see the module docstring for why this must
-        # not reuse EscalateToHumanAction (runtime termination).
+        assert action.tracker_number is not None  # enforced by validate()
+        # One owned command publishes and commits this terminal outcome.
+        disposition = TechLeadDisposition(
+            issue_number=action.target_number,
+            tracker_issue_number=action.tracker_number,
+            rationale=body,
+            source_run_id=source_run_id,
+            source_session_name=source_session_name,
+            source_action_id=action.id,
+            recorded_at=observed_at,
+            finding_ids=action.finding_ids,
+        )
         return [
-            AddLabelAction(
-                issue_number=action.target_number,
-                label=needs_human_label,
-                reason=f"tech_lead decision action {action.id}: escalate to human",
-                needs_human_cause=NeedsHumanCause.SESSION_LIFECYCLE,
-                expected=expected,
-            ),
-            AddCommentAction(
-                number=action.target_number,
-                comment="## ⚠️ Tech Lead escalation — human attention needed\n\n" + body,
-                is_pr=action.target_is_pr,
-                reason=f"tech_lead decision action {action.id}: escalation comment",
+            RecordTechLeadDispositionAction(
+                disposition=disposition,
+                reason=(
+                    f"tech_lead decision action {action.id}: park #{action.target_number}"
+                    f" on recovery tracker #{action.tracker_number}"
+                ),
                 expected=expected,
             ),
         ]
+    if action.action_type == "escalate_to_human":
+        assert action.target_number is not None  # enforced by validate()
+        return [EscalateTechLeadDispositionAction(
+            issue_number=action.target_number,
+            comment="## Tech Lead escalation — human attention needed\n\n" + body,
+            reason=f"tech_lead decision action {action.id}: escalate to human",
+            expected=expected,
+        )]
+
     raise ValueError(
         f"no concrete executor for tech_lead action type {action.action_type!r}"
     )
@@ -429,8 +450,14 @@ class _DecisionActionPlanner:
         key = (proposed.action_type, proposed.target_number)
         existing = self.op_ledger.get(key)
         if existing is not None:
+            from .required_issue_comment import ReuseTechLeadProposalAction
+            from .tech_lead_proposals import build_stored_tech_lead_op
             self.actions.append(
-                AddCommentAction(
+                ReuseTechLeadProposalAction(
+                    required_op=build_stored_tech_lead_op(proposed,
+                        source_run_id=self.source_run_id, source_session_name=self.source_session_name,
+                        target_session=self.observed_session_generation(proposed.target_number)
+                            if proposed.action_type == "kill_hung_session" else None),
                     number=existing,
                     comment=build_duplicate_proposal_comment(
                         proposed, anchor_issue_number=self._anchor_number
@@ -555,7 +582,9 @@ class _DecisionActionPlanner:
             labels=self.labels,
             anchor_issue=self.anchor_issue,
             expected=self.expected,
-            needs_human_label=self.labels.needs_human,
+            source_run_id=self.source_run_id,
+            source_session_name=self.source_session_name,
+            observed_at=self.observed_at,
             gate_reason=gate_reason,
         )
 

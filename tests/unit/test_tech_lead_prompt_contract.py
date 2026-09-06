@@ -607,3 +607,23 @@ def test_fix_class_values_match_the_domain_contract(variant: str) -> None:
     clause = _fix_class_clause(PROMPT_VARIANTS[variant])
     for value in VALID_FINDING_FIX_CLASSES:
         assert f'`"{value}"`' in clause, f"{variant} omits fix_class value {value}"
+
+
+@pytest.mark.parametrize("variant", sorted(PROMPT_VARIANTS))
+def test_investigation_flow_teaches_focus_scoped_act_level_authority(variant):
+    section = _flow_section(PROMPT_VARIANTS[variant], "Failure Investigation Flow")
+    for term in ("reset_retry", "kill_hung_session", "focus_issue_number", "pending publish retry", "local commits", "validation records", "`propose`", "`execute`"):
+        assert term in section
+    assert "branch proves nothing about local work" in section
+    assert "git ls-remote" not in section
+
+
+@pytest.mark.parametrize("variant", sorted(PROMPT_VARIANTS))
+def test_investigation_disposition_contract_is_synchronized(variant):
+    section = _flow_section(PROMPT_VARIANTS[variant], "Failure Investigation Flow")
+    for term in ("exactly one terminal disposition", "recovery-context.json", "recovery_tracker_numbers", "previous_disposition", "tracker_number", "24 hours", "cannot extend", "read failures", "tech-lead-needs-human", "authorized prerequisite"):
+        assert term in section
+    text = PROMPT_VARIANTS[variant]
+    assert "Its explanation and durable binding commit as one" in text
+    assert "It is not a batch or health action" in text
+    assert "`tracker_number` is exempt" not in text

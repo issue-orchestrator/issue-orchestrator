@@ -38,6 +38,7 @@ writing unguarded.
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Callable
+from datetime import datetime, timezone
 
 from .actions import (
     TECH_LEAD_ISSUE_CREATION_ACTION_TYPES,
@@ -50,6 +51,8 @@ from .tech_lead_actions import (
     reconciliation_subject_for,
 )
 from .tech_lead_case_files import apply_append_pattern_observation
+from .tech_lead_dispositions import apply_record_tech_lead_disposition
+from .tech_lead_human_disposition import apply_human_disposition
 from .tech_lead_finding_promotion import (
     apply_promote_tech_lead_finding,
     apply_report_promoted_finding_evidence,
@@ -58,7 +61,9 @@ from .tech_lead_finding_promotion import (
 from .tech_lead_proposals import apply_discard_terminal_tech_lead_proposal_ops
 
 if TYPE_CHECKING:
-    from ..ports import RepositoryHost
+    from ..ports import RepositoryHost, EventSink
+    from .needs_human_block import SharedNeedsHumanBlock
+    from .label_manager import LabelManager
     from ..ports.promotion_target import PromotionTargetHost
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
 
@@ -78,6 +83,8 @@ TECH_LEAD_MUTATING_ACTION_TYPES: frozenset[ActionType] = (
             ActionType.KILL_HUNG_SESSION,
             ActionType.DISCARD_TERMINAL_TECH_LEAD_PROPOSAL_OPS,
             ActionType.APPEND_PATTERN_OBSERVATION,
+            ActionType.RECORD_TECH_LEAD_DISPOSITION,
+            ActionType.ESCALATE_TECH_LEAD_DISPOSITION,
             ActionType.PROMOTE_TECH_LEAD_FINDING,
             ActionType.REPORT_PROMOTED_FINDING_EVIDENCE,
             ActionType.SETTLE_TECH_LEAD_PROMOTION,
@@ -130,6 +137,11 @@ def tech_lead_action_handlers(
     surface_proposal: ActionHandler,
     reset_retry: ActionHandler,
     kill_hung_session: ActionHandler,
+    events: "EventSink",
+    label_manager: "LabelManager | None",
+    needs_human_block: "SharedNeedsHumanBlock",
+    apply_action: ActionHandler,
+    verify_claim: ExpectedStateGuard,
     require_expected: ExpectedStateGuard,
     repository_host: "RepositoryHost | None",
     authority: "TechLeadAuthorityStore | None",
@@ -144,6 +156,9 @@ def tech_lead_action_handlers(
         # Act-level execution via the reset (#6764) / termination (#6778) owners.
         ActionType.RESET_RETRY_ISSUE: reset_retry,
         ActionType.KILL_HUNG_SESSION: kill_hung_session,
+        ActionType.ESCALATE_TECH_LEAD_DISPOSITION: lambda action: apply_human_disposition(
+            action, host=repository_host, labels=label_manager, events=events,
+            apply_action=apply_action, needs_human_block=needs_human_block),
         # Confirm-and-discard terminal gated-proposal ledger rows (#6779 R7/R10).
         ActionType.DISCARD_TERMINAL_TECH_LEAD_PROPOSAL_OPS: (
             lambda action: apply_discard_terminal_tech_lead_proposal_ops(
@@ -155,6 +170,15 @@ def tech_lead_action_handlers(
             apply_append_pattern_observation(
                 action, repository_host=repository_host, authority=authority
             )
+        ),
+        # Terminal disposition: bind the diagnosed issue to its tracker (#6971).
+        # Its owner delegates the explanation through the claim-verified
+        # comment handler and revalidates before activating the binding.
+        ActionType.RECORD_TECH_LEAD_DISPOSITION: lambda action: (
+            apply_record_tech_lead_disposition(action, authority=authority,
+                repository_host=repository_host, apply_action=apply_action,
+                require_expected=require_expected, verify_claim=verify_claim,
+                clock=lambda: datetime.now(timezone.utc))
         ),
         # Finding promotion: file in the routed repo, then close the loop
         # (#6957). All three reconcile against the SOURCE repo's case file —

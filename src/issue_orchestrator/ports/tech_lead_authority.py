@@ -15,8 +15,10 @@ implementation lives in ``infra/tech_lead_authority_store.py``.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Protocol
+from threading import Lock
+from typing import TYPE_CHECKING, ContextManager, Generator, Protocol
 
 if TYPE_CHECKING:
     from ..domain.models import DiscoveredFailure
@@ -29,6 +31,7 @@ if TYPE_CHECKING:
     )
     from ..domain.tech_lead_session import (
         StoredTechLeadOp,
+        TechLeadDisposition,
         TechLeadLaunchAuthority,
         TechLeadShippedFixSummary,
     )
@@ -128,6 +131,36 @@ class TechLeadAuthorityStore(Protocol):
 
     def list_ops(self) -> tuple[tuple[int, "StoredTechLeadOp"], ...]:
         """All (proposal_issue_number, op) rows — the open-proposal ledger."""
+        ...
+
+    # -- Failure-investigation dispositions (#6971) -------------------------
+    #
+    # The durable terminal disposition of a completed failure investigation,
+    # keyed by the DIAGNOSED issue number. Prepared commands and unexpired
+    # waiting own recovery. Lapsed and recovered rows retain incident identity
+    # so neither a read outage nor a stale command can renew the deadline.
+
+    def disposition_publication(self, *, issue_number: int) -> ContextManager[bool]:
+        """Nonblocking, process-shared publication ownership; released on crash.
+
+        True grants exclusivity through remote marker lookup/write and local
+        commit. False permits no publication. Callers re-read their command
+        after acquiring; ordinary release must never replace the lock identity.
+        """
+        ...
+
+    def transition_disposition(
+        self, *, previous: "TechLeadDisposition | None", disposition: "TechLeadDisposition"
+    ) -> bool:
+        """Atomically write only if the current row equals previous."""
+        ...
+
+    def load_disposition(self, *, issue_number: int) -> "TechLeadDisposition | None":
+        """Return an issue's recorded disposition, or None when absent."""
+        ...
+
+    def list_dispositions(self) -> tuple["TechLeadDisposition", ...]:
+        """Every recorded disposition — the sweep's ownership ledger read."""
         ...
 
     # -- Problem-storm cohorts (#6780) --------------------------------------
@@ -422,6 +455,8 @@ class InMemoryTechLeadAuthorityStore:
         self._pending_promotions: dict[str, "PendingPromotion"] = {}
         self._shipped_fixes: dict[int, "TechLeadShippedFixSummary"] = {}
         self._storm_cohorts: dict[int, tuple["DiscoveredFailure", ...]] = {}
+        self._dispositions: dict[int, "TechLeadDisposition"] = {}
+        self._disposition_publication_locks: dict[int, Lock] = {}
 
     def record(
         self, *, run_id: str, session_name: str, authority: "TechLeadLaunchAuthority"
@@ -463,6 +498,30 @@ class InMemoryTechLeadAuthorityStore:
 
     def list_ops(self) -> tuple[tuple[int, "StoredTechLeadOp"], ...]:
         return tuple(sorted(self._ops.items()))
+
+    @contextmanager
+    def disposition_publication(self, *, issue_number: int) -> Generator[bool]:
+        lock = self._disposition_publication_locks.setdefault(issue_number, Lock())
+        acquired = lock.acquire(blocking=False)
+        try:
+            yield acquired
+        finally:
+            if acquired:
+                lock.release()
+
+    def transition_disposition(
+        self, *, previous: "TechLeadDisposition | None", disposition: "TechLeadDisposition"
+    ) -> bool:
+        if self._dispositions.get(disposition.issue_number) != previous:
+            return False
+        self._dispositions[disposition.issue_number] = disposition
+        return True
+
+    def load_disposition(self, *, issue_number: int) -> "TechLeadDisposition | None":
+        return self._dispositions.get(issue_number)
+
+    def list_dispositions(self) -> tuple["TechLeadDisposition", ...]:
+        return tuple(self._dispositions[key] for key in sorted(self._dispositions))
 
     def record_storm_cohort(
         self, *, anchor_issue_number: int, cohort: tuple["DiscoveredFailure", ...]
