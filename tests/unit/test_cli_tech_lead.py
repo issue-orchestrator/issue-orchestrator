@@ -285,4 +285,3 @@ def test_a_gate_rejection_is_reported_not_a_traceback(capsys, error):
 
     assert code == 1
     assert "Reconciliation halted" in capsys.readouterr().out
-

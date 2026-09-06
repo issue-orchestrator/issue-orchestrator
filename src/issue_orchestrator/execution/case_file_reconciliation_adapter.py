@@ -49,5 +49,3 @@ class CaseFileReconciliationAdapter:
         if not actions:
             return ()
         return self._apply_all(list(actions))
-
-

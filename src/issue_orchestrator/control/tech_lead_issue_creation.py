@@ -41,6 +41,7 @@ def _required_label_provisioning_error(
     action: CreateTechLeadProposalIssueAction | CreateTechLeadCaseFileIssueAction,
     *,
     repository_host: "RepositoryHost",
+    before_case_file_write: Callable[[], None],
 ) -> str | None:
     """Guarantee action labels before issue creation, or return the reason."""
     try:
@@ -80,11 +81,15 @@ def _required_label_provisioning_error(
             # RepositoryHost.create_label verifies the write. Doing this before
             # create_issue prevents GitHub from silently dropping an unknown
             # label and leaving an orphaned, schedulable issue.
+            if isinstance(action, CreateTechLeadCaseFileIssueAction):
+                before_case_file_write()
             repository_host.create_label(
                 label,
                 color=color,
                 description=description,
             )
+        except (ReconciliationRequired, ClaimLostError):
+            raise
         except Exception as exc:
             issue_kind = (
                 "tech_lead proposal"
@@ -117,6 +122,7 @@ def _creation_preflight(
     repository_host: "RepositoryHost",
     ops: "TechLeadAuthorityStore | None",
     case_files: "PatternCaseFileOwner | None",
+    before_case_file_write: Callable[[], None],
 ) -> ActionResult | None:
     """Validate ledger-backed creation and reconcile an inflight case file."""
     is_proposal = isinstance(action, CreateTechLeadProposalIssueAction)
@@ -163,6 +169,7 @@ def _creation_preflight(
         label_error = _required_label_provisioning_error(
             action,
             repository_host=repository_host,
+            before_case_file_write=before_case_file_write,
         )
         if label_error is not None:
             logger.error("[APPLIER] %s", label_error)
@@ -200,6 +207,7 @@ def apply_create_tech_lead_issue(
         repository_host=repository_host,
         ops=ops,
         case_files=case_files,
+        before_case_file_write=before_case_file_write,
     )
     if preflight is not None:
         return preflight
@@ -213,12 +221,15 @@ def apply_create_tech_lead_issue(
             # than to whichever later action recovers it (#6957 R3 F10).
             assert case_files is not None
             case_files.begin(action)
+            before_case_file_write()
         result = repository_host.create_issue(
             title=action.title,
             body=action.body,
             labels=list(action.labels),
             milestone=milestone,
         )
+    except (ReconciliationRequired, ClaimLostError):
+        raise
     except Exception as exc:
         logger.exception("Failed to create tech_lead issue")
         return ActionResult.fail(action, str(exc))

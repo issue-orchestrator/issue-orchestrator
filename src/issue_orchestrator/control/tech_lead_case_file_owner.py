@@ -161,9 +161,7 @@ class PatternCaseFileOwner:
         if committed is not None:
             # Belt and braces: an intent left behind by a crash between the
             # ledger write and its discard is inert, but it should not linger.
-            self._authority.discard_pending_case_file(
-                signature=action.pattern_signature
-            )
+            self._discard_pending(signature=action.pattern_signature)
             return CaseFileResolution(CaseFileState.COMMITTED, committed)
 
         pending = self._authority.load_pending_case_file(
@@ -199,9 +197,7 @@ class PatternCaseFileOwner:
                 " happened",
                 action.pattern_signature,
             )
-            self._authority.discard_pending_case_file(
-                signature=action.pattern_signature
-            )
+            self._discard_pending(signature=action.pattern_signature)
             return CaseFileResolution(CaseFileState.ABSENT)
 
         logger.warning(
@@ -227,6 +223,7 @@ class PatternCaseFileOwner:
         This is the whole point of the transaction: whatever happens next, the
         orchestrator can say which command wrote the issue and what it meant.
         """
+        self._before_write()
         self._authority.record_pending_case_file(
             pending=PendingCaseFile(
                 signature=action.pattern_signature,
@@ -278,6 +275,7 @@ class PatternCaseFileOwner:
         diagnosis: str,
     ) -> None:
         """Write the ledger row and retire the creation intent."""
+        self._before_write()
         self._authority.record_pattern(
             signature=signature,
             issue_number=issue_number,
@@ -286,6 +284,11 @@ class PatternCaseFileOwner:
             area=area,
             diagnosis=diagnosis,
         )
+        self._discard_pending(signature=signature)
+
+    def _discard_pending(self, *, signature: str) -> None:
+        """Retire intent only while still authorized; interrupted retirement is recoverable."""
+        self._before_write()
         self._authority.discard_pending_case_file(signature=signature)
 
     def adopt(

@@ -3804,3 +3804,117 @@ def test_case_file_evidence_rechecks_authority_before_publication_and_count(
     mock_repository_host.update_issue_state.assert_not_called()
     expected_subject = 10 if path == "append" else 30
     assert all(call.args[0] == expected_subject for call in mock_fresh_issue_reader.read_issue_labels.call_args_list)
+
+
+@pytest.mark.parametrize("loss", ["pause", "claim"])
+@pytest.mark.parametrize("arrives_at", [
+    "initial", "marker", "labels", "intent", "created", "recovery", "stale_intent", "recorded",
+])
+def test_single_observation_creation_guards_every_mutation_and_preserves_recovery(
+    applier, mock_repository_host, mock_fresh_issue_reader, mock_events, loss, arrives_at,
+):
+    from issue_orchestrator.control.actions import CreateTechLeadCaseFileIssueAction
+    from issue_orchestrator.control.reconciliation import ReconciliationRequired, build_expected_for_mutation, get_pause_label
+    from issue_orchestrator.domain.tech_lead_findings import PendingCaseFile, PatternObservation, case_file_issue_marker
+
+    authority = InMemoryTechLeadAuthorityStore()
+    applier.tech_lead_ops = authority
+    applier.reconcile = True
+    claims = MagicMock(spec=ClaimManager)
+    claims.check_winner.return_value = True
+    applier.claim_gate = ClaimGate(claims, mock_events)
+    applier.lease_id_lookup = lambda number: "lease"
+    marker = case_file_issue_marker("sig")
+    action = CreateTechLeadCaseFileIssueAction(
+        title="Pattern case file: sig", body=f"Only observation\n{marker}",
+        labels=("tech-lead-observation",), pattern_signature="sig", idempotency_marker=marker,
+        observations=(PatternObservation(observation_id="original", comment="Only observation"),),
+        origin=TechLeadCreationOrigin.derived_from_anchor(30), expected=build_expected_for_mutation(),
+    )
+    intent = PendingCaseFile(
+        signature="sig", title=action.title, idempotency_marker=marker,
+        body_observation_id="original", fix_class="", area="", diagnosis="",
+    )
+    if arrives_at in {"recovery", "stale_intent"}:
+        authority.record_pending_case_file(pending=intent)
+    remote_issue_exists = arrives_at == "recovery"
+
+    def lose_authority():
+        if loss == "pause":
+            mock_fresh_issue_reader.read_issue_labels.return_value = [get_pause_label()]
+        else:
+            claims.check_winner.return_value = False
+
+    def find_marker(**kwargs):
+        if arrives_at in {"marker", "recovery", "stale_intent"}:
+            lose_authority()
+        return 10 if remote_issue_exists else None
+
+    def list_labels():
+        if arrives_at == "labels":
+            lose_authority()
+            return []  # Missing label requires its own guarded remote write.
+        return [{"name": "tech-lead-observation"}]
+
+    def create_issue(**kwargs):
+        nonlocal remote_issue_exists
+        remote_issue_exists = True
+        if arrives_at == "created":
+            lose_authority()
+        return {"number": 10}
+
+    record_pending = authority.record_pending_case_file
+    record_pattern = authority.record_pattern
+
+    def write_intent(**kwargs):
+        record_pending(**kwargs)
+        if arrives_at == "intent":
+            lose_authority()
+
+    def write_pattern(**kwargs):
+        record_pattern(**kwargs)
+        if arrives_at == "recorded":
+            lose_authority()
+
+    mock_repository_host.find_issue_by_marker.side_effect = find_marker
+    mock_repository_host.list_labels.side_effect = list_labels
+    mock_repository_host.list_milestones.return_value = []
+    mock_repository_host.create_issue.side_effect = create_issue
+    if arrives_at == "initial":
+        lose_authority()
+    with patch.object(authority, "record_pending_case_file", side_effect=write_intent), \
+            patch.object(authority, "record_pattern", side_effect=write_pattern), \
+            pytest.raises(ReconciliationRequired if loss == "pause" else ClaimLostError):
+        applier.apply_all([action, CloseIssueAction(issue_number=21)])
+
+    mock_repository_host.add_comment.assert_not_called()  # No append can mask the initial transaction.
+    mock_repository_host.update_issue_state.assert_not_called()  # Batch stopped.
+    mock_repository_host.create_label.assert_not_called()
+    assert mock_repository_host.create_issue.call_count == (arrives_at in {"created", "recorded"})
+    row = authority.load_pattern_evidence(signature="sig")
+    if arrives_at == "recorded":
+        assert row is not None and row.observation_count == 1
+    else:
+        assert row is None
+    pending = authority.load_pending_case_file(signature="sig")
+    assert (pending is not None) == (arrives_at in {"intent", "created", "recovery", "stale_intent", "recorded"})
+    if pending is not None:
+        assert pending == intent
+    if loss == "claim":
+        assert claims.check_winner.called
+
+    # A later authorized run resolves exactly the persisted intent/remote issue,
+    # with no duplicate issue or observation, including a half-retired commit.
+    mock_fresh_issue_reader.read_issue_labels.return_value = []
+    claims.check_winner.return_value = True
+    mock_repository_host.find_issue_by_marker.side_effect = None
+    mock_repository_host.find_issue_by_marker.return_value = 10 if remote_issue_exists else None
+    mock_repository_host.list_labels.side_effect = None
+    mock_repository_host.list_labels.return_value = [{"name": "tech-lead-observation"}]
+    mock_repository_host.create_issue.side_effect = None
+    mock_repository_host.create_issue.return_value = {"number": 10}
+    mock_repository_host.create_issue.reset_mock()
+    assert applier.apply(action).success
+    assert mock_repository_host.create_issue.call_count == (not remote_issue_exists)
+    assert authority.load_pattern_evidence(signature="sig").observation_count == 1
+    assert authority.load_pending_case_file(signature="sig") is None
