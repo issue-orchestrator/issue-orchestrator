@@ -1,5 +1,10 @@
 """Review-exchange orchestration for completion processing."""
 
+from ..ports.issue_run_allocator import IssueRunAllocator
+from ..domain.issue_run_allocation import IssueExchangeRunAllocation
+from ..domain.models import Issue
+from ..domain.session_key import SessionKey, TaskKind
+
 import json
 import logging
 from collections.abc import Callable
@@ -202,9 +207,11 @@ class CompletionReviewExchange:
         job_supervisor: BackgroundJobSupervisor | None = None,
         review_exchange_canceller: ReviewExchangeCanceller | None = None,
         agent_callback_endpoint: "AgentCallbackEndpoint",
+        issue_run_allocator: IssueRunAllocator,
     ) -> None:
         self._config = config
         self._session_output = session_output
+        self._issue_run_allocator = issue_run_allocator
         self._review_exchange_runner = review_exchange_runner
         self._emit_review_started = emit_review_started
         self._emit_review_outcome = emit_review_outcome
@@ -502,6 +509,7 @@ class CompletionReviewExchange:
         review_run = self._start_review_exchange_run(
             worktree=worktree,
             issue_number=issue_number,
+            issue_title=issue_title,
             parent_session_name=session_name,
             agent_label=coder_label,
         )
@@ -1072,19 +1080,17 @@ class CompletionReviewExchange:
         )
 
     def _start_review_exchange_run(
-        self,
-        *,
-        worktree: Path,
-        issue_number: int,
-        parent_session_name: str,
-        agent_label: str,
+        self, *, worktree: Path, issue_number: int, issue_title: str,
+        parent_session_name: str, agent_label: str,
     ) -> ReviewExchangeRun:
-        return self._session_output.start_review_exchange_run(
-            worktree,
-            issue_number=issue_number,
-            parent_session_name=parent_session_name,
-            agent_label=agent_label,
-        )
+        if self._config is None or not self._config.repo:
+            raise ValueError("Review exchange allocation requires a configured repository")
+        subject = Issue(number=issue_number, title=issue_title, labels=[], repo=self._config.repo)
+        return self._issue_run_allocator.allocate_exchange(IssueExchangeRunAllocation(
+            worktree_path=worktree, issue_number=issue_number,
+            session_key=SessionKey(subject.key, TaskKind.CODE),
+            parent_session_name=parent_session_name, agent_label=agent_label,
+        ))
 
     @staticmethod
     def _require_matching_review_run(

@@ -8,6 +8,8 @@ threaded execution path that the earlier fake-runner tests did not.
 
 from __future__ import annotations
 
+from tests.run_allocation_helpers import make_completion_review_exchange
+
 import threading
 
 from issue_orchestrator.control.background_job_supervisor import (
@@ -338,7 +340,7 @@ def test_review_exchange_halts_when_supervisor_records_failure() -> None:
         def run(self, **_: object):  # type: ignore[no-untyped-def]
             raise AssertionError("runner must not be invoked on halt path")
 
-    review = CompletionReviewExchange(
+    review = make_completion_review_exchange(
         agent_callback_endpoint=ready_callback_endpoint(),
         config=cfg,
         session_output=_SessionOutput(Path("/tmp")),  # type: ignore[arg-type]

@@ -19,6 +19,8 @@ summary writes, chapter sidecars, reviewer-worktree lifecycle.
 
 from __future__ import annotations
 
+from tests.run_allocation_helpers import make_completion_review_exchange
+
 from collections.abc import Iterator
 from contextlib import contextmanager
 import json
@@ -409,7 +411,7 @@ def test_persistent_review_exchange_end_to_end_through_completion_owner(
             captured_events.append(event)
 
     pair_registry = InMemoryPersistentExchangePairRegistry()
-    cre = CompletionReviewExchange(
+    cre = make_completion_review_exchange(
         agent_callback_endpoint=ready_callback_endpoint(),
         config=config,
         session_output=session_output,
@@ -551,7 +553,7 @@ def test_persistent_review_exchange_multi_round_changes_then_ok(
             captured_events.append(event)
 
     _session_output_for_test = FileSystemSessionOutput()
-    cre = CompletionReviewExchange(
+    cre = make_completion_review_exchange(
         agent_callback_endpoint=ready_callback_endpoint(),
         config=config,
         session_output=_session_output_for_test,
@@ -641,7 +643,7 @@ def test_codex_shaped_interactive_agent_receives_argv_bootstrap_then_pty_rounds(
     config.review_exchange_max_rounds = 3
 
     session_output = FileSystemSessionOutput()
-    cre = CompletionReviewExchange(
+    cre = make_completion_review_exchange(
         agent_callback_endpoint=ready_callback_endpoint(),
         config=config,
         session_output=session_output,
@@ -789,7 +791,7 @@ def test_synthetic_raw_tui_review_exchange_suppresses_bootstrap_response(
             captured_events.append(event)
 
     session_output = FileSystemSessionOutput()
-    cre = CompletionReviewExchange(
+    cre = make_completion_review_exchange(
         agent_callback_endpoint=ready_callback_endpoint(),
         config=config,
         session_output=session_output,
@@ -952,7 +954,7 @@ def test_real_interactive_codex_reviewer_round_trips_through_exchange(
         _deliveries,
     ):
         config.control_api_port = port
-        cre = CompletionReviewExchange(
+        cre = make_completion_review_exchange(
             agent_callback_endpoint=published_callback_endpoint(port),
             config=config,
             session_output=session_output,
@@ -1052,7 +1054,7 @@ def test_one_shot_reviewer_respawns_after_addressable_nits(
 
     pair_registry = pair_registry_with_cleanup
     session_output = FileSystemSessionOutput()
-    cre = CompletionReviewExchange(
+    cre = make_completion_review_exchange(
         agent_callback_endpoint=ready_callback_endpoint(),
         config=config,
         session_output=session_output,
@@ -1155,7 +1157,7 @@ def test_one_shot_coder_respawns_for_later_rework_turn(
 
     pair_registry = pair_registry_with_cleanup
     session_output = FileSystemSessionOutput()
-    cre = CompletionReviewExchange(
+    cre = make_completion_review_exchange(
         agent_callback_endpoint=ready_callback_endpoint(),
         config=config,
         session_output=session_output,
@@ -1233,7 +1235,7 @@ def test_persistent_review_exchange_max_rounds_exhausted(
     config.review_exchange_max_no_progress = 5  # don't trip no-progress first
 
     _session_output_for_test = FileSystemSessionOutput()
-    cre = CompletionReviewExchange(
+    cre = make_completion_review_exchange(
         agent_callback_endpoint=ready_callback_endpoint(),
         config=config,
         session_output=_session_output_for_test,
@@ -1334,7 +1336,7 @@ def test_two_rework_rounds_render_distinguishably_in_projected_timeline(
     timeline_sink = TimelineEventSink(DefaultTimelineWriter(store))
 
     _session_output_for_test = FileSystemSessionOutput()
-    cre = CompletionReviewExchange(
+    cre = make_completion_review_exchange(
         agent_callback_endpoint=ready_callback_endpoint(),
         config=config,
         session_output=_session_output_for_test,
@@ -1441,7 +1443,7 @@ def test_persistent_pair_respawns_for_second_exchange_run(
 
     pair_registry = pair_registry_with_cleanup
     session_output = FileSystemSessionOutput()
-    cre = CompletionReviewExchange(
+    cre = make_completion_review_exchange(
         agent_callback_endpoint=ready_callback_endpoint(),
         config=config,
         session_output=session_output,
@@ -1610,7 +1612,7 @@ def test_persistent_pair_response_and_completion_paths_stable_across_exchanges(
 
     pair_registry = pair_registry_with_cleanup
     session_output = FileSystemSessionOutput()
-    cre = CompletionReviewExchange(
+    cre = make_completion_review_exchange(
         agent_callback_endpoint=ready_callback_endpoint(),
         config=config,
         session_output=session_output,
@@ -1791,7 +1793,7 @@ def test_persistent_review_exchange_end_to_end_through_mailbox(
             InMemoryPersistentExchangePairRegistry(),
             turn_mailbox=mailbox,
         )
-        cre = CompletionReviewExchange(
+        cre = make_completion_review_exchange(
             agent_callback_endpoint=published_callback_endpoint(port),
             config=config,
             session_output=session_output,

@@ -8,6 +8,8 @@ Test approach: Mock the adapters to simulate specific failure conditions
 and verify the system handles them appropriately.
 """
 
+from tests.run_allocation_helpers import make_completion_processor
+
 import pytest
 from datetime import datetime
 from pathlib import Path
@@ -130,7 +132,7 @@ class TestPRAlreadyExistsHandling:
         mock_pr_adapter.create_pr = Mock(return_value=new_pr)
 
         session_output = FileSystemSessionOutput()
-        processor = CompletionProcessor(
+        processor = make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,
@@ -173,7 +175,7 @@ class TestPRAlreadyExistsHandling:
         )
 
         session_output = FileSystemSessionOutput()
-        processor = CompletionProcessor(
+        processor = make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,
@@ -215,7 +217,7 @@ class TestPRAlreadyExistsHandling:
         )
 
         session_output = FileSystemSessionOutput()
-        processor = CompletionProcessor(
+        processor = make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,

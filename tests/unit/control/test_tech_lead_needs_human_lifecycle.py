@@ -12,6 +12,8 @@ complete against state that no longer holds.
 
 from __future__ import annotations
 
+from tests.run_allocation_helpers import make_completion_processor
+
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -1180,7 +1182,7 @@ class TestTheBlockOwnerIsNotBypassableInProduction:
         )
         git_adapter = MagicMock()
         git_adapter.get_current_branch.return_value = "branch"
-        processor = CompletionProcessor(
+        processor = make_completion_processor(
             # Wired exactly as the composition root wires it: the governed
             # label is refused at the capability, and the typed outcome routes
             # through the owner.

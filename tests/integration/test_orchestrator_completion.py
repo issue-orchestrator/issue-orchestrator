@@ -9,6 +9,8 @@ These tests verify that when a session exits:
 This is the critical integration that connects agents to the orchestrator.
 """
 
+from tests.run_allocation_helpers import make_completion_processor
+
 import json
 import pytest
 from datetime import datetime
@@ -128,7 +130,7 @@ def mock_event_sink():
 @pytest.fixture
 def completion_processor(mock_label_adapter, mock_pr_adapter, mock_git_adapter):
     """Create a CompletionProcessor with mocked adapters."""
-    return CompletionProcessor(
+    return make_completion_processor(
         agent_callback_endpoint=ready_callback_endpoint(),
         label_adapter=mock_label_adapter,
         pr_adapter=mock_pr_adapter,

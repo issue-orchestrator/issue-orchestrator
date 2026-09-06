@@ -12,6 +12,10 @@ from issue_orchestrator.control.actions import (
     ActionResult as PlanActionResult,
     CloseIssueAction,
 )
+from issue_orchestrator.control.issue_run_allocator import IssueRunAllocationService
+from issue_orchestrator.execution.issue_run_ledger import SqliteIssueRunLedger
+from issue_orchestrator.domain.issue_run_evidence import IssueRunEvidenceUnavailable
+from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.models import Issue
 from issue_orchestrator.domain.session_run import SessionRunAssets
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
@@ -455,8 +459,9 @@ class TestDebugSessionEndpoint:
         assert data["success"] is False
         assert "already exists" in data["error"].lower()
 
+    @pytest.mark.parametrize("registration_fails", [False, True])
     def test_debug_session_launches_successfully(
-        self, client_with_orchestrator, tmp_path
+        self, client_with_orchestrator, tmp_path, registration_fails
     ):
         """Successfully launches debug session when worktree and issue exist."""
         client, mock_orch = client_with_orchestrator
@@ -468,6 +473,7 @@ class TestDebugSessionEndpoint:
         # Issue with agent type
         mock_issue = MagicMock()
         mock_issue.number = 123
+        mock_issue.key = FakeIssueKey("123", "test/repo")
         mock_issue.title = "Test Issue"
         mock_issue.agent_type = "agent:claude"
         mock_orch.state.cached_queue_issues = [mock_issue]
@@ -485,6 +491,16 @@ class TestDebugSessionEndpoint:
         mock_orch.deps.runner.create_session.return_value = True
         session_output = FileSystemSessionOutput()
         mock_orch.deps.session_output = session_output
+        ledger = SqliteIssueRunLedger(tmp_path / "state" / "runs.sqlite")
+        if registration_fails:
+            ledger = MagicMock(record_run=MagicMock(side_effect=IssueRunEvidenceUnavailable("disk full")))
+        mock_orch.deps.issue_run_allocator = IssueRunAllocationService(session_output, ledger)
+
+        def spawn(**kwargs):
+            assert len(ledger.recorded_runs(123)) == 1
+            return True
+
+        mock_orch.deps.runner.create_session.side_effect = spawn
 
         with patch(
             "issue_orchestrator.entrypoints.control_api_issue_routes.get_worktree_path"
@@ -493,6 +509,11 @@ class TestDebugSessionEndpoint:
 
             response = client.post("/api/issues/123/debug-session")
 
+        if registration_fails:
+            assert response.status_code == 503
+            assert response.json()["error"] == "disk full"
+            mock_orch.deps.runner.create_session.assert_not_called()
+            return
         assert response.status_code == 200
         data = response.json()
         assert data["success"] is True
