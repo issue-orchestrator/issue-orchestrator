@@ -49,6 +49,20 @@ def _disposition(issue_number=BLOCKED, tracker=TRACKER, **kwargs):
     )
 
 
+def _diagnosis_action(body):
+    from issue_orchestrator.domain.tech_lead_comment import TechLeadCommentIntent
+    from issue_orchestrator.control.required_issue_comment import TechLeadDecisionCommentAction
+    intent = TechLeadCommentIntent("A1", body)
+    return TechLeadDecisionCommentAction(number=BLOCKED, intent=intent, comment=intent.comment)
+
+
+def _diagnosis_obligation(body):
+    from issue_orchestrator.domain.tech_lead_comment import TechLeadCommentIntent
+    from issue_orchestrator.control.tech_lead_actions import RequireTechLeadInvestigationAction
+    return RequireTechLeadInvestigationAction(focus_issue_number=BLOCKED,
+        diagnoses=(TechLeadCommentIntent("A1", body),))
+
+
 class _Host:
     def __init__(self):
         self.issue = Issue(
@@ -708,12 +722,12 @@ def test_successful_remedy_with_failed_required_diagnosis_withholds_success_effe
     harness = _Harness()
     actions = require_investigation_terminal_effect([
         RecordTechLeadDispositionAction(disposition=_disposition()),
-        AddCommentAction(number=BLOCKED, comment="required diagnosis"),
-    ], focus_issue_number=BLOCKED)
+        _diagnosis_action("required diagnosis"),
+     ], obligation=_diagnosis_obligation("required diagnosis"))
     actions.append(AddCommentAction(number=BLOCKED, comment="success-only"))
     original = harness.host.add_comment
     def write(number, body):
-        if body == "required diagnosis":
+        if body.startswith("required diagnosis"):
             raise RuntimeError("diagnosis write failed")
         return original(number, body)
     harness.host.add_comment = write
@@ -851,9 +865,9 @@ def test_trusted_obligation_honors_success_and_existing_pending_replay_owner(pen
         return original_post(number, body)
     harness.host.add_comment = post
     actions = require_investigation_terminal_effect([
-        AddCommentAction(number=BLOCKED, comment="verified diagnosis"),
+        _diagnosis_action("verified diagnosis"),
         RecordTechLeadDispositionAction(disposition=_disposition()),
-    ], focus_issue_number=BLOCKED)
+    ], obligation=_diagnosis_obligation("verified diagnosis"))
     results, error = apply_completion_actions_gated(harness, actions, issue_number=BLOCKED)
     assert error is None
     outcome = evaluate_required_act_level_outcome(results)
@@ -863,3 +877,70 @@ def test_trusted_obligation_honors_success_and_existing_pending_replay_owner(pen
         assert harness.store.load_disposition(issue_number=BLOCKED).phase == "prepared"
     assert build_required_act_level_failure_actions(issue_number=BLOCKED,
         needs_human_label="needs-human", outcome=outcome, session_id="session", runtime_minutes=1) == []
+
+
+@pytest.mark.parametrize("authority_mode", ["execute", "propose"])
+@pytest.mark.parametrize("substitute", ["none", "unrelated", "same-prefix", "exact-copy", "target-is-pr", "other-source", "same-identity"])
+def test_only_exact_executed_source_diagnosis_can_complete_investigation(authority_mode, substitute):
+    from issue_orchestrator.control.label_manager import LabelManager
+    from issue_orchestrator.control.tech_lead_completion import validate_decision_for_authority
+    from issue_orchestrator.control.tech_lead_completion_obligations import build_investigation_obligation
+    from issue_orchestrator.control.tech_lead_completion_gate import require_investigation_terminal_effect
+    from issue_orchestrator.control.tech_lead_decision_actions import plan_tech_lead_decision_actions
+    from issue_orchestrator.control.tech_lead_reset_retry import effective_terminal_status
+    from issue_orchestrator.control.reconciliation import build_expected_for_mutation
+    from issue_orchestrator.control.proposal_dedup_gate import DuplicateTargetGrant, OpenIssueCorpus
+    from issue_orchestrator.control.required_issue_comment import TechLeadDecisionCommentAction, RequiredTechLeadDiagnosisAction
+    from issue_orchestrator.domain.tech_lead_artifacts import ProposedTechLeadAction, TechLeadDecision
+    from issue_orchestrator.domain.models import SessionStatus
+    from issue_orchestrator.infra.config import Config
+    harness = _Harness()
+    body = ("Evidence context. " * 40) + "ROOT CAUSE: recover the exact validated stranded head."
+    diagnosis = ProposedTechLeadAction(id="A1", action_type="post_comment", target_number=BLOCKED,
+        body=body, target_is_pr=substitute == "target-is-pr")
+    decision = TechLeadDecision(summary="recovery", findings=(), proposed_actions=(diagnosis,
+        ProposedTechLeadAction(id="A2", action_type="defer_to_tracker", target_number=BLOCKED,
+            tracker_number=TRACKER, body="Recovery owns the remedy"),
+        *([ProposedTechLeadAction(id="A3", action_type="post_comment", target_number=BLOCKED,
+            body="Another source observation")] if substitute == "other-source" else [])))
+    decision.validate()
+    config = Config()
+    config.tech_lead.authority.post_comment = authority_mode
+    labels = LabelManager(config)
+    authority = harness.store.load(run_id="run-1", session_name="issue-6410")
+    violation = validate_decision_for_authority(decision, authority, config=config, labels=labels)
+    assert (violation is not None) is (substitute == "target-is-pr")
+    # Capture the source identity and complete text BEFORE any authority lowering.
+    obligation = build_investigation_obligation(decision, focus_issue_number=authority.focus_issue_number)
+    assert obligation.diagnoses[0].body == body
+    lowered = plan_tech_lead_decision_actions(decision, config, labels,
+        anchor_issue=harness.host.issue, expected=build_expected_for_mutation(), op_ledger={}, pattern_ledger={},
+        source_run_id="run-1", source_session_name="issue-6410", observed_at=_disposition().recorded_at,
+        observed_session_generation=lambda number: None, dedup_corpus=OpenIssueCorpus.disabled(),
+        dedup_grant=DuplicateTargetGrant.none())
+    if substitute in {"unrelated", "same-prefix", "exact-copy"}:
+        lowered = [action for action in lowered if not isinstance(action, TechLeadDecisionCommentAction)]
+        copy = {"unrelated": "An unrelated focus note", "same-prefix": body[:500] + " Different diagnosis",
+                "exact-copy": obligation.diagnoses[0].comment}[substitute]
+        lowered.append(AddCommentAction(number=BLOCKED, comment=copy))
+    if substitute == "other-source":
+        lowered = [action for action in lowered if not (
+            isinstance(action, TechLeadDecisionCommentAction) and action.intent.action_id == "A1")]
+    if substitute == "same-identity":
+        from issue_orchestrator.domain.tech_lead_comment import TechLeadCommentIntent
+        lowered = [action for action in lowered if not isinstance(action, TechLeadDecisionCommentAction)]
+        changed = TechLeadCommentIntent("A1", body[:500] + " A different conclusion")
+        lowered.append(TechLeadDecisionCommentAction(number=BLOCKED, intent=changed, comment=changed.comment))
+    planned = require_investigation_terminal_effect(lowered, obligation=obligation)
+    permitted = authority_mode == "execute" and substitute == "none"
+    assert any(isinstance(action, RequiredTechLeadDiagnosisAction) and action.intent.action_id == "A1"
+        for action in planned) is permitted
+    results, error = apply_completion_actions_gated(harness,
+        [*planned, AddCommentAction(number=BLOCKED, comment="success-only")], issue_number=BLOCKED)
+    assert error is None
+    outcome = evaluate_required_act_level_outcome(results)
+    assert outcome.committed is permitted
+    assert effective_terminal_status(SessionStatus.COMPLETED, outcome) is (
+        SessionStatus.COMPLETED if permitted else SessionStatus.FAILED)
+    assert ("success-only" in harness.host.comments) is permitted
+    assert any("ROOT CAUSE:" in comment for comment in harness.host.comments) is permitted

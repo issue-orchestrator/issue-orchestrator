@@ -75,22 +75,19 @@ from ..domain.tech_lead_artifacts import (
 )
 from ..domain.tech_lead_findings import PatternClassificationConflictError
 from ..domain.tech_lead_session import (
-    TechLeadCreationOrigin,
-    TechLeadDisposition,
     TechLeadSessionGeneration,
 )
 from ..ports.issue import Issue
 from .actions import (
     Action,
     AddCommentAction,
-    CreateTechLeadIssueAction,
     KillHungSessionAction,
-    RecordTechLeadDispositionAction,
-    EscalateTechLeadDispositionAction,
     ResetRetryIssueAction,
     SurfaceTechLeadProposalAction,
 )
 from .label_manager import LabelManager
+from .tech_lead_concrete_actions import concrete_tech_lead_actions
+from ..domain.tech_lead_comment import provenance_footer
 from .proposal_dedup import similarity
 from .proposal_dedup_gate import (
     CommentExisting,
@@ -106,12 +103,6 @@ from .tech_lead_gate_notes import (
     outcome_gate_note,
 )
 from .tech_lead_case_files import PatternCaseFilePlanner
-from .tech_lead_issue_policy import (
-    apply_tech_lead_priority_prefix,
-    decision_issue_labels,
-    tech_lead_follow_up_agent_label,
-    tech_lead_issue_milestone_intent,
-)
 from .tech_lead_proposals import (
     build_duplicate_proposal_comment,
     build_tech_lead_proposal_issue_action,
@@ -130,12 +121,6 @@ _BODY_PREVIEW_CHARS = 500
 # lives in tech_lead_gate_notes so the planner stays focused on action mapping.
 
 
-def _provenance_footer(action: ProposedTechLeadAction) -> str:
-    finding_ids = ", ".join(action.finding_ids) or "none"
-    return (
-        f"\n\n---\n*Proposed by tech_lead session (action {action.id};"
-        f" findings: {finding_ids}) — ADR-0031.*"
-    )
 
 
 def _surface(
@@ -158,116 +143,6 @@ def _surface(
     )
 
 
-def _concrete_actions(
-    action: ProposedTechLeadAction,
-    *,
-    config: "Config",
-    labels: LabelManager,
-    anchor_issue: Issue,
-    expected: "ExpectedState",
-    source_run_id: str,
-    source_session_name: str,
-    observed_at: str,
-    gate_reason: str | None = None,
-) -> list[Action]:
-    body = (action.body or "") + _provenance_footer(action)
-    if action.action_type == "post_comment":
-        assert action.target_number is not None  # enforced by validate()
-        return [
-            AddCommentAction(
-                number=action.target_number,
-                comment=body,
-                is_pr=action.target_is_pr,
-                reason=f"tech_lead decision action {action.id}: post diagnosis comment",
-                expected=expected,
-            )
-        ]
-    if action.action_type == "create_issue":
-        # Config policy (tech_lead: labels/priority/milestone strategy) is the
-        # single tech_lead_issue_policy owner, shared with the planner's batch
-        # tracking issue; agent labels passed the protected-set contract
-        # check at decision validation time (#6761 finding 4). The milestone
-        # travels as INTENT — name resolution happens in the applier at
-        # creation time, so planning makes zero GitHub reads (#6769 F4).
-        anchor_milestones = (
-            [(anchor_issue.milestone_number, anchor_issue.milestone or "")]
-            if anchor_issue.milestone_number is not None
-            else []
-        )
-        # A gate reason both gates the issue and explains itself in the operator-
-        # facing body — never a bare boolean whose meaning callers must guess.
-        gated = gate_reason is not None
-        gated_body = f"{body}\n\n---\n> {gate_reason}" if gated else body
-        return [
-            CreateTechLeadIssueAction(
-                title=apply_tech_lead_priority_prefix(config, action.title or ""),
-                body=gated_body,
-                labels=decision_issue_labels(
-                    config,
-                    anchor_labels=anchor_issue.labels,
-                    agent_labels=action.labels,
-                    labels=labels,
-                    # Orchestrator-owned routing label so removing the gate
-                    # alone lands a schedulable issue (#6779 R5); attached for
-                    # execute-authority create_issue too — both need an agent.
-                    destination_agent=tech_lead_follow_up_agent_label(config),
-                    gate=gated,
-                    area=action.area,
-                ),
-                pr_count=0,
-                # DECIDED by a session working this anchor — so the anchor's
-                # pause label gates the creation, and the ExpectedState below is
-                # what the gate checks (#6957 F3/A3, R2 F6/A6).
-                origin=TechLeadCreationOrigin.derived_from_anchor(anchor_issue.number),
-                milestone=tech_lead_issue_milestone_intent(config, anchor_milestones),
-                # Expedite intent (#6870) rides the action so the applier's
-                # create boundary can front-queue the new issue. It composes
-                # with the gate: gated (propose) creations defer expediting to
-                # gate removal, ungated (execute) creations expedite at once.
-                expedite=action.expedite,
-                reason=(
-                    f"tech_lead decision action {action.id}: create follow-up"
-                    f" issue{' (gated)' if gated else ''}"
-                ),
-                expected=expected,
-            )
-        ]
-    if action.action_type == "defer_to_tracker":
-        assert action.target_number is not None  # enforced by validate()
-        assert action.tracker_number is not None  # enforced by validate()
-        # One owned command publishes and commits this terminal outcome.
-        disposition = TechLeadDisposition(
-            issue_number=action.target_number,
-            tracker_issue_number=action.tracker_number,
-            rationale=body,
-            source_run_id=source_run_id,
-            source_session_name=source_session_name,
-            source_action_id=action.id,
-            recorded_at=observed_at,
-            finding_ids=action.finding_ids,
-        )
-        return [
-            RecordTechLeadDispositionAction(
-                disposition=disposition,
-                reason=(
-                    f"tech_lead decision action {action.id}: park #{action.target_number}"
-                    f" on recovery tracker #{action.tracker_number}"
-                ),
-                expected=expected,
-            ),
-        ]
-    if action.action_type == "escalate_to_human":
-        assert action.target_number is not None  # enforced by validate()
-        return [EscalateTechLeadDispositionAction(
-            issue_number=action.target_number,
-            comment="## Tech Lead escalation — human attention needed\n\n" + body,
-            reason=f"tech_lead decision action {action.id}: escalate to human",
-            expected=expected,
-        )]
-
-    raise ValueError(
-        f"no concrete executor for tech_lead action type {action.action_type!r}"
-    )
 
 
 def plan_tech_lead_rejection_action(
@@ -560,7 +435,7 @@ class _DecisionActionPlanner:
         """Route a confirmed duplicate's observation (its title AND body) onto the
         existing issue instead of filing a new one."""
         heading = f"**{proposed.title}**\n\n" if proposed.title else ""
-        note = heading + (proposed.body or "") + _provenance_footer(proposed)
+        note = heading + (proposed.body or "") + provenance_footer(proposed.id, proposed.finding_ids)
         return AddCommentAction(
             number=existing,
             comment=(
@@ -577,7 +452,7 @@ class _DecisionActionPlanner:
     def _concrete_decision(
         self, proposed: ProposedTechLeadAction, *, gate_reason: str | None
     ) -> list[Action]:
-        return _concrete_actions(
+        return concrete_tech_lead_actions(
             proposed,
             config=self.config,
             labels=self.labels,

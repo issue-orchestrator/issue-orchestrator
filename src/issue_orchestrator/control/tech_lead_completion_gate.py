@@ -7,11 +7,13 @@ an effective investigation remedy from a safe but ineffective stale skip.
 from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
-from typing import Sequence
+from typing import Sequence, TYPE_CHECKING
 from ..domain.models import SessionStatus
 from ..ports.provider_resilience import ProviderErrorType
 from ..domain.tech_lead_run_record import TechLeadDeliveryOutcome
 from .tech_lead_actions import EscalateTechLeadDispositionAction
+if TYPE_CHECKING:
+    from .tech_lead_actions import RequireTechLeadInvestigationAction
 from .actions import Action, ActionResult, ActionResultType, ResetRetryIssueAction, KillHungSessionAction
 
 
@@ -114,23 +116,19 @@ def partition_required_act_level_actions(
 
 
 def require_investigation_terminal_effect(actions: list[Action], *,
-        focus_issue_number: int | None = None) -> list[Action]:
-    """Require the focus diagnosis publication as well as an effective remedy."""
+        obligation: "RequireTechLeadInvestigationAction") -> list[Action]:
+    """Bind only executed exact source diagnoses to the pre-lowering contract."""
     from dataclasses import replace
-    from .actions import AddCommentAction
-    from .required_issue_comment import RequiredIssueCommentAction
-    from .tech_lead_actions import RequireTechLeadInvestigationAction
-    if focus_issue_number is None:
-        raise ValueError("failure investigation requires its immutable focus")
-    required: list[Action] = [RequireTechLeadInvestigationAction(focus_issue_number=focus_issue_number)]
+    from .required_issue_comment import TechLeadDecisionCommentAction, RequiredTechLeadDiagnosisAction
+    required: list[Action] = [obligation]
     for action in actions:
         if isinstance(action, (ResetRetryIssueAction, KillHungSessionAction)):
             action = replace(action, requires_effective_disposition=True)
-        elif (isinstance(action, AddCommentAction)
-                and not isinstance(action, RequiredIssueCommentAction)
-                and action.number == focus_issue_number):
-            action = RequiredIssueCommentAction(number=action.number, comment=action.comment,
-                reason=action.reason, expected=action.expected)
+        elif (isinstance(action, TechLeadDecisionCommentAction)
+                and action.number == obligation.focus_issue_number and not action.is_pr
+                and action.intent in obligation.diagnoses):
+            action = RequiredTechLeadDiagnosisAction(number=action.number, comment=action.comment,
+                intent=action.intent, reason=action.reason, expected=action.expected)
         required.append(action)
     return required
 
