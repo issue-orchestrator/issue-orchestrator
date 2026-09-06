@@ -126,4 +126,3 @@ def concrete_tech_lead_actions(
     raise ValueError(
         f"no concrete executor for tech_lead action type {action.action_type!r}"
     )
-
