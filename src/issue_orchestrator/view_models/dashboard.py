@@ -50,7 +50,7 @@ from .dashboard_flow import normalize_dashboard_tab, select_issues_for_tab
 from .dashboard_flow import stamp_issue_item_stale_badge_visibility
 from .rework_status import queued_rework_issue_numbers, resolve_queued_rework
 from .timestamp_values import dashboard_timestamp_source
-from .work_queue_projection import project_work_queue
+from .work_queue_projection import WorkQueueProjection, project_work_queue
 
 QUEUE_PAGE_SIZE = 20
 
@@ -610,6 +610,7 @@ def _build_queue_items(  # noqa: C901, PLR0912 — aggregates queue from multipl
     pending_numbers: dict[str, set[int]],
     *,
     lm: LabelManager,
+    work: WorkQueueProjection,
 ) -> tuple[list[dict[str, Any]], int, set[int]]:
     queue_items: list[dict[str, Any]] = []
     queue_total = 0
@@ -617,7 +618,7 @@ def _build_queue_items(  # noqa: C901, PLR0912 — aggregates queue from multipl
     if state.startup_status != "complete":
         return queue_items, queue_total, seen_issues
 
-    queue_issues = state.cached_queue_issues
+    queue_issues = work.work_items(state.cached_queue_issues, issue_number=lambda issue: issue.number)
     queue_total = len(queue_issues)
     dependency_info = get_issue_dependencies(queue_issues, config)
 
@@ -1169,12 +1170,17 @@ def build_dashboard_view_model(
         active_numbers = {s.issue.number for s in state.active_sessions}
         seen_issues.update(active_numbers)
 
+        work = project_work_queue(
+            queue_issues=state.cached_queue_issues, scope_issues=state.cached_scope_issues,
+            history=state.session_history, retained_classifications=state.issue_work_classifications,
+            active_issues=tuple(session.issue for session in state.active_sessions),
+        )
         pending_numbers = _pending_issue_numbers(state)
         active_items, seen_issues = _build_active_items(state, config, queue_page, seen_issues, lm=lm)
         _attach_running_timeline_snapshots(orchestrator, active_items)
         scope_blocked, seen_issues = _build_scope_blocked_items(state, config, seen_issues, lm=lm)
         queue_items, queue_total, seen_issues = _build_queue_items(
-            state, config, seen_issues, pending_numbers, lm=lm,
+            state, config, seen_issues, pending_numbers, lm=lm, work=work,
         )
         retrospective_queue_items, seen_issues = _build_pending_retrospective_review_items(
             state,
@@ -1201,16 +1207,10 @@ def build_dashboard_view_model(
             )
         )
 
-        work = project_work_queue(
-            queue_issues=state.cached_queue_issues, scope_issues=state.cached_scope_issues,
-            history=state.session_history, retained_classifications=state.issue_work_classifications,
-            active_issues=tuple(session.issue for session in state.active_sessions),
-        )
         active_items = work.work_items(active_items, issue_number=_issue_number_value)
         queue_items = work.work_items(queue_items, issue_number=_issue_number_value)
         blocked_items = work.work_items(blocked_items, issue_number=_issue_number_value)
         backlog_items = work.work_items(backlog_items, issue_number=_issue_number_value)
-        queue_total = work.work_total(queue_total)
 
         active_items = _sort_by_issue_number(active_items)
         queue_items = _sort_by_issue_number(queue_items)

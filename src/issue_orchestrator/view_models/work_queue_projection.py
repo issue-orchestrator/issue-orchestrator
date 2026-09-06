@@ -17,16 +17,11 @@ class WorkQueueProjection:
     """Evidence classification shared by historical cards and current work counts."""
 
     evidence_numbers: frozenset[int]
-    queued_evidence_count: int
 
     def work_items(
         self, items: Sequence[Item], *, issue_number: Callable[[Item], int | None],
     ) -> list[Item]:
         return [item for item in items if issue_number(item) not in self.evidence_numbers]
-
-    def work_total(self, queue_total: int) -> int:
-        # Startup deliberately reports zero before restored queue facts are ready.
-        return max(0, queue_total - self.queued_evidence_count)
 
 
 def project_work_queue(
@@ -51,7 +46,4 @@ def project_work_queue(
     classifications.update(retained_classifications or {})
     evidence = frozenset(number for number, kind in classifications.items()
                          if kind is IssueWorkClassification.EVIDENCE)
-    return WorkQueueProjection(
-        evidence_numbers=evidence,
-        queued_evidence_count=sum(issue.number in evidence for issue in queue_issues),
-    )
+    return WorkQueueProjection(evidence_numbers=evidence)

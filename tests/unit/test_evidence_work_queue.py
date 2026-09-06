@@ -459,3 +459,132 @@ process.stdout.write(expanded.getExpandedItemsFromViewModel(payload, 'running')
         assert bool(expanded_dom.select('[data-issue="49"]')) == bool(expected_count)
         assert state.active_sessions == [session]
         assert session.issue is restored_issue
+
+
+@pytest.mark.parametrize("mode", ["warm_delta", "degraded"])
+@pytest.mark.parametrize("retained", [None, "work", "evidence"])
+def test_upgrade_snapshot_identity_survives_scope_filter_and_reopen(tmp_path, mode, retained):
+    from dataclasses import replace
+
+    from issue_orchestrator.control.queue_cache import QueueCache
+    from issue_orchestrator.domain.issue_work_classification import IssueWorkClassification
+    from issue_orchestrator.execution.queue_cache_store import QueueCacheStore
+
+    config = Config(repo="porchpin/porchpin")
+    config.filtering.label = "tracked"
+    marked = case_file()
+    unmarked = replace(marked, labels=["agent:tech-lead"])
+    work = Issue(number=50, title="Real work", labels=["tracked", "agent:backend"])
+    path = tmp_path / "queue.sqlite"
+    store = QueueCacheStore(path)
+    # A pre-upgrade snapshot has no identity rows. A retained identity, when
+    # present, is newer than this snapshot and deliberately contradicts it.
+    store.save_snapshot([unmarked if retained == "evidence" else marked, work],
+                        "2026-09-06T00:00:00Z", repo=config.repo)
+    if retained is not None:
+        store.record_work_classifications(config.repo, {49: IssueWorkClassification(retained)})
+    history = [SessionHistoryEntry(issue_number=49, title=marked.title,
+                                  agent_type="agent:tech-lead", status="failed", runtime_minutes=1)]
+    state = OrchestratorState(startup_status="complete", session_history=history)
+    cache = QueueCache(config, state, QueueCacheStore(path))
+    cached, watermark = cache.restore_snapshot()
+    assert watermark == "2026-09-06T00:00:00Z"
+    if mode == "warm_delta":
+        cache.replace_from_delta(cached, [])
+    else:
+        cache.replace_from_cache(cached)
+    cache.save_snapshot()
+    assert [issue.number for issue in state.cached_scope_issues] == [50]
+    expected = IssueWorkClassification.WORK if retained == "work" else IssueWorkClassification.EVIDENCE
+    # The filtered snapshot no longer contains #49; its identity survives reopen.
+    for fresh in (None, unmarked, marked):
+        if fresh is not None:
+            cache.replace_from_delta(state.cached_scope_issues, [fresh])
+            cache.save_snapshot()
+            expected = IssueWorkClassification.WORK if fresh is unmarked else IssueWorkClassification.EVIDENCE
+        reopened = OrchestratorState(startup_status="complete", session_history=history)
+        restarted = QueueCache(config, reopened, QueueCacheStore(path))
+        restored, _ = restarted.restore_snapshot()
+        restarted.replace_from_cache(restored)
+        assert reopened.issue_work_classifications[49] == expected
+        model = build_dashboard_view_model(OrchestratorView(reopened, config),
+            provider_circuit=NO_PROVIDER_CIRCUIT_STATUS, tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+            active_tab="kanban", e2e_status_provider=lambda _: {"enabled": False, "running": False})
+        is_work = expected is IssueWorkClassification.WORK
+        assert model.blocked_count == int(is_work)
+        assert model.scope_summary["in_scope_total"] == 1 + int(is_work)
+        assert history[0].issue_labels == ()
+
+
+@pytest.mark.parametrize("at_capacity", [False, True])
+def test_stale_evidence_does_not_consume_runnable_position_in_either_renderer(tmp_path, at_capacity):
+    from dataclasses import replace
+    import json
+    from pathlib import Path
+    import subprocess
+
+    from issue_orchestrator.control.queue_cache import QueueCache
+    from issue_orchestrator.domain.issue_key import FakeIssueKey
+    from issue_orchestrator.domain.models import AgentConfig, Session
+    from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+    from tests.unit.session_run_helpers import make_session_run_assets
+
+    config = Config(repo="porchpin/porchpin")
+    config.max_concurrent_sessions = 1
+    state = OrchestratorState(startup_status="complete")
+    cache = QueueCache(config, state)
+    work = [Issue(number=number, title=f"Work {number}", labels=["agent:backend"])
+            for number in (50, 51)]
+    cache.replace_from_refresh([case_file(), *work])
+    stale = replace(case_file(), labels=["agent:tech-lead"])
+    cache.replace_from_cache([stale, *work])
+    if at_capacity:
+        agent = AgentConfig(prompt_path=tmp_path / "prompt.md", model="test", timeout_minutes=45)
+        config.agents = {"agent:tech-lead": agent}
+        state.active_sessions.append(Session(
+            key=SessionKey(issue=FakeIssueKey("48"), task=TaskKind.CODE), issue=case_file(48),
+            agent_config=agent, terminal_id="issue-48", worktree_path=tmp_path,
+            branch_name="issue-48", run_assets=make_session_run_assets(tmp_path, session_name="issue-48"),
+            started_at=datetime(2026, 9, 6),
+        ))
+    model = build_dashboard_view_model(OrchestratorView(state, config),
+        provider_circuit=NO_PROVIDER_CIRCUIT_STATUS, tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        active_tab="kanban", e2e_status_provider=lambda _: {"enabled": False, "running": False})
+    expected = (["Waiting: at capacity (1/1 running)"] * 2 if at_capacity else
+                ["Waiting: next scheduler tick", "Waiting: 1 runnable queued ahead"])
+    assert [item["issue_number"] for item in model.queue_items] == [50, 51]
+    assert [item["queue_wait_reason"] for item in model.queue_items] == expected
+    assert model.queue_total == 2
+    assert model.active_count == 0
+    assert model.active_session_count == int(at_capacity)
+    assert len(state.active_sessions) == int(at_capacity)
+    assert state.cached_queue_issues == [stale, *work]
+    compact = get_templates().get_template("dashboard.html").render(**model.template_context())
+    script = r"""
+const fs = require('node:fs');
+const vm = require('node:vm');
+const expanded = require('./src/issue_orchestrator/static/js/expanded_column_state.js');
+const payload = JSON.parse(fs.readFileSync(0, 'utf8'));
+const escape = value => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
+const context = {
+    escapeHtml: escape, escapeAttr: escape, cssEscape: String, document: {},
+    compactCardState: {computeCompactCardFingerprint: () => 'fingerprint'},
+    formatDashboardTimestamps: () => {},
+    localStorage: {getItem: () => null, setItem: () => {}},
+    window: {dashboardData: {queueRefreshSeconds: 0}, location: {href: 'http://example.test/'}}
+};
+vm.createContext(context);
+vm.runInContext(fs.readFileSync('./src/issue_orchestrator/static/js/dashboard/kanban_columns.js', 'utf8'), context);
+process.stdout.write(expanded.getExpandedItemsFromViewModel(payload, 'queued')
+    .map(item => context.renderExpandedCardHtml(item, 'queued', false)).join(''));
+"""
+    expanded = subprocess.run(["node", "-e", script], input=json.dumps(model.to_dict(), default=str),
+        text=True, capture_output=True, check=True, cwd=Path(__file__).resolve().parents[2])
+    for html in (compact, expanded.stdout):
+        dom = BeautifulSoup(html, "html.parser")
+        assert dom.select('[data-issue="49"]') == []
+        for number, reason in zip((50, 51), expected, strict=True):
+            card = dom.select_one(f'[data-issue="{number}"]')
+            assert card is not None
+            assert reason in card.get_text()

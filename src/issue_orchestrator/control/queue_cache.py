@@ -69,11 +69,12 @@ class QueueCache:
 
     def replace_from_observations(self, batch: IssueRefreshBatch) -> list["Issue"]:
         """Apply one freshness contract for full, warm-delta and runtime refresh."""
-        self._observe_work_classifications(list(batch.observed_issues))
+        self._observe_work_classifications(list(batch.observed_issues), cached_issues=batch.issues)
         return self._replace_scope(list(batch.issues))
 
     def replace_from_cache(self, issues: list["Issue"]) -> list["Issue"]:
         """Restore queue visibility without treating cached labels as a fresh observation."""
+        self._observe_work_classifications([], cached_issues=issues)
         return self._replace_scope(issues)
 
     def _replace_scope(self, issues: list["Issue"]) -> list["Issue"]:
@@ -231,7 +232,9 @@ class QueueCache:
         if self._store is None:
             raise RuntimeError("QueueCacheStore is required to restore queue cache snapshot")
         self.restore_work_classifications()
-        return list(self._store.load_issues(self._config.repo or "")), self._store.load_watermark()
+        issues = list(self._store.load_issues(self._config.repo or ""))
+        self._observe_work_classifications([], cached_issues=issues)
+        return issues, self._store.load_watermark()
 
     def restore_work_classifications(self) -> None:
         """Restore the identity index independently of the current queue scope."""
@@ -240,10 +243,14 @@ class QueueCache:
                 self._store.load_work_classifications(self._config.repo or "")
             )
 
-    def _observe_work_classifications(self, issues: list["Issue"]) -> None:
+    def _observe_work_classifications(
+        self, issues: list["Issue"], *, cached_issues: Sequence["Issue"] = (),
+    ) -> None:
         """Remember identities before eligibility filtering can discard them.
 
-        Historical labels seed only unknown identity; current observations can
+        Historical and restored snapshot labels seed only unknown identity before
+        scope filtering, including snapshots predating the identity index. Retained
+        classifications outrank these cached labels; current observations can
         explicitly remove a marker. Neither absence from a fetch nor closure is
         evidence that an existing case file became coding work.
         """
@@ -253,7 +260,7 @@ class QueueCache:
             for entry in self._state.session_history
             if entry.issue_labels and entry.issue_number not in known
         }
-        for issue in (*self._state.cached_queue_issues, *self._state.cached_scope_issues):
+        for issue in (*self._state.cached_queue_issues, *self._state.cached_scope_issues, *cached_issues):
             if issue.number not in known:
                 updates[issue.number] = classify_issue_work(issue.labels)
         updates.update({issue.number: classify_issue_work(issue.labels) for issue in issues})
