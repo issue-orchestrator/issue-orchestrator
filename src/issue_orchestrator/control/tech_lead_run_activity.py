@@ -42,6 +42,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Callable, Optional
 
 from ..domain.models import SessionStatus
+from ..domain.tech_lead_delivery import TechLeadDeliveryEvidence
 from ..domain.tech_lead_run_record import TechLeadRunPhase, TechLeadRunRecord
 from .publish_recovery import is_publish_failure
 from .tech_lead_run_admission import scope_of_session
@@ -216,6 +217,10 @@ class TechLeadRunActivity:
     # Reading
     # ------------------------------------------------------------------
 
+    def inspect_delivery_evidence(self) -> TechLeadDeliveryEvidence:
+        """Read aggregate receipts through the narrow inspection port."""
+        return self._store.inspect_delivery_evidence()
+
     def recent(self, *, limit: int) -> tuple[TechLeadRunRecord, ...]:
         """The newest runs this engine executed, most recently started first.
 
@@ -310,7 +315,7 @@ def in_memory_run_activity() -> TechLeadRunActivity:
     from ..ports.tech_lead_run_record_store import InMemoryTechLeadRunRecordStore
 
     return TechLeadRunActivity(
-        InMemoryTechLeadRunRecordStore(), DiscardedTechLeadRunArtifacts()
+        InMemoryTechLeadRunRecordStore(history_complete=False), DiscardedTechLeadRunArtifacts()
     )
 
 

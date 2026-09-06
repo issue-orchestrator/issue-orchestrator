@@ -12,8 +12,9 @@ nothing here can be load-bearing for coordination.
 Exception contract, mirroring the ledger's: implementations MUST NOT raise for
 an unreachable backing store. Visibility bookkeeping failing is never a reason
 to fail a tech-lead run — the run is the product, the record is the receipt —
-so writes are best-effort and reads degrade to "no history", both loudly logged
-by the implementation rather than silently swallowed by callers.
+so writes are best-effort and display reads degrade to "no history", loudly logged
+by the implementation rather than silently swallowed by callers. Delivery
+inspection instead returns explicit unknown evidence on errors.
 """
 
 from __future__ import annotations
@@ -24,11 +25,29 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Protocol, Sequence
 
+from ..domain.tech_lead_delivery import (
+    DELIVERED_TECH_LEAD_PHASES,
+    DeliveryHistoryState,
+    TechLeadDeliveryEvidence,
+    delivery_time,
+)
 from ..domain.tech_lead_run_artifacts import TechLeadRunArtifacts
 from ..domain.tech_lead_run_record import TechLeadRunPhase, TechLeadRunRecord
 
 
-class TechLeadRunHistoryReader(Protocol):
+class TechLeadDeliveryHistoryReader(Protocol):
+    """Aggregate inspection evidence, never a truncated display history.
+
+    Unavailable or incomplete history must be explicit; it is not evidence of
+    healthy delivery. Withdrawn runs do not contribute to launch pressure.
+    """
+
+    def inspect_delivery_evidence(self) -> TechLeadDeliveryEvidence:
+        """Read all receipt evidence, explicitly reporting errors or lost history."""
+        ...
+
+
+class TechLeadRunHistoryReader(TechLeadDeliveryHistoryReader, Protocol):
     """The read half, for surfaces that display history and never write it.
 
     Narrower than the store on purpose: the dashboard projection depends on
@@ -45,6 +64,9 @@ class TechLeadRunHistoryReader(Protocol):
 class _EmptyTechLeadRunHistory:
     """The history of an engine that is not there."""
 
+    def inspect_delivery_evidence(self) -> TechLeadDeliveryEvidence:
+        return TechLeadDeliveryEvidence()
+
     def recent(self, *, limit: int) -> tuple[TechLeadRunRecord, ...]:
         return ()
 
@@ -52,7 +74,7 @@ class _EmptyTechLeadRunHistory:
 NO_TECH_LEAD_RUN_HISTORY: TechLeadRunHistoryReader = _EmptyTechLeadRunHistory()
 
 
-class TechLeadRunRecordStore(Protocol):
+class TechLeadRunRecordStore(TechLeadDeliveryHistoryReader, Protocol):
     """Durable local history of this engine's tech-lead runs."""
 
     def open_run(self, record: TechLeadRunRecord) -> None:
@@ -114,11 +136,18 @@ class InMemoryTechLeadRunRecordStore:
     real, ordered, bounded history for the life of the process instead of a
     silently-dropping stub.
 
+    Inspection becomes permanently unknown after any eviction. Compositions
+    replacing an unavailable durable store select ``history_complete=False``;
+    a fresh isolated in-memory history can explicitly retain complete evidence.
+
     Locked for the same reason the single-instance ledger is: the tick thread
     writes while the dashboard thread reads.
     """
 
-    def __init__(self, *, capacity: int = 200) -> None:
+    def __init__(self, *, capacity: int = 200, history_complete: bool = True) -> None:
+        if capacity < 1:
+            raise ValueError("Run history capacity must be positive")
+        self._history_complete = history_complete
         self._capacity = capacity
         self._records: list[TechLeadRunRecord] = []
         self._lock = threading.Lock()
@@ -133,6 +162,7 @@ class InMemoryTechLeadRunRecordStore:
             self._records.append(record)
             overflow = len(self._records) - self._capacity
             if overflow > 0:
+                self._history_complete = False
                 # Oldest-first by start time, so the bound drops the least
                 # interesting rows rather than whichever arrived first.
                 self._records.sort(key=lambda item: item.started_at)
@@ -176,11 +206,40 @@ class InMemoryTechLeadRunRecordStore:
         with self._lock:
             self._records = [
                 replace(record, artifacts=None)
-                if record.artifacts is not None
-                and record.artifacts.location in retired
+                if record.artifacts is not None and record.artifacts.location in retired
                 else record
                 for record in self._records
             ]
+
+    def inspect_delivery_evidence(self) -> TechLeadDeliveryEvidence:
+        with self._lock:
+            records = tuple(self._records)
+            complete = self._history_complete
+        delivered = max(
+            (
+                delivery_time(row.ended_at)
+                for row in records
+                if row.phase in DELIVERED_TECH_LEAD_PHASES and row.ended_at is not None
+            ),
+            default=None,
+        )
+        starts = [
+            delivery_time(row.started_at)
+            for row in records
+            if row.phase is not TechLeadRunPhase.WITHDRAWN
+            and (delivered is None or delivery_time(row.started_at) > delivered)
+        ]
+        return TechLeadDeliveryEvidence(
+            history_state=(
+                DeliveryHistoryState.COMPLETE
+                if complete
+                else DeliveryHistoryState.INCOMPLETE
+            ),
+            last_delivered_at=delivered,
+            first_undelivered_at=min(starts, default=None),
+            latest_started_at=max(starts, default=None),
+            runs_without_delivery=len(starts),
+        )
 
     def recent(self, *, limit: int) -> tuple[TechLeadRunRecord, ...]:
         with self._lock:
@@ -197,6 +256,7 @@ def _is_run(record: TechLeadRunRecord, run_id: str, session_name: str) -> bool:
 __all__ = [
     "NO_TECH_LEAD_RUN_HISTORY",
     "InMemoryTechLeadRunRecordStore",
+    "TechLeadDeliveryHistoryReader",
     "TechLeadRunHistoryReader",
     "TechLeadRunRecordStore",
 ]

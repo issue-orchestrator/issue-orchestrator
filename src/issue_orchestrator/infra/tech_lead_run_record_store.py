@@ -23,6 +23,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterator, Optional, Sequence
 
+from ..domain.tech_lead_delivery import (
+    DELIVERED_TECH_LEAD_PHASES,
+    DeliveryHistoryState,
+    TechLeadDeliveryEvidence,
+)
 from ..domain.tech_lead_run import TechLeadRunScopeKind
 from ..domain.tech_lead_run_artifacts import TechLeadRunArtifacts, kinds_from_values
 from ..domain.tech_lead_run_record import TechLeadRunPhase, TechLeadRunRecord
@@ -68,6 +73,35 @@ _ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
 )
 
 
+# julianday compares offsets chronologically, unlike lexical ISO ordering.
+# Only scalar aggregates leave SQLite, even when years of receipts are retained.
+DELIVERY_EVIDENCE_SQL = """
+WITH receipts AS (
+    SELECT phase, julianday(started_at) AS start, julianday(ended_at) AS end
+    FROM tech_lead_run_records
+), delivery AS (
+    SELECT MAX(end) AS last_end FROM receipts WHERE phase IN (?, ?)
+), launches AS (
+    SELECT start FROM receipts, delivery
+    WHERE phase != ? AND (last_end IS NULL OR start > last_end)
+)
+SELECT
+    (SELECT COUNT(*) FROM receipts WHERE start IS NULL
+        OR (phase = 'running' AND end IS NOT NULL)
+        OR phase NOT IN ('running', 'completed', 'needs_human', 'failed', 'withdrawn')
+        OR (phase != 'running' AND (end IS NULL OR end < start))) AS invalid,
+    strftime('%Y-%m-%dT%H:%M:%f', (SELECT last_end FROM delivery)) AS delivered,
+    strftime('%Y-%m-%dT%H:%M:%f', MIN(start)) AS first_start,
+    strftime('%Y-%m-%dT%H:%M:%f', MAX(start)) AS latest_start,
+    COUNT(*) AS runs
+FROM launches
+"""
+
+
+def _evidence_time(value: str | None) -> datetime | None:
+    return datetime.fromisoformat(value) if value is not None else None
+
+
 class SqliteTechLeadRunRecordStore:
     """Durable, append-mostly history of this engine's tech-lead runs."""
 
@@ -75,6 +109,7 @@ class SqliteTechLeadRunRecordStore:
         self._db_path = db_path
         self._local = threading.local()
         self._write_lock = threading.Lock()
+        self._lost_receipt = threading.Event()
         self.initialize()
 
     @classmethod
@@ -208,15 +243,56 @@ class SqliteTechLeadRunRecordStore:
     # Reads
     # ------------------------------------------------------------------
 
+    def inspect_delivery_evidence(self) -> TechLeadDeliveryEvidence:
+        """One aggregate over durable receipts; no row hydration or UI limit.
+
+        Keep invalid timestamps/phases visible as unknown evidence instead of
+        dropping them as the best-effort display reader does. A failed receipt
+        write also makes this handle's evidence incomplete for its lifetime.
+        """
+        try:
+            row = (
+                self._get_connection()
+                .execute(
+                    DELIVERY_EVIDENCE_SQL,
+                    (
+                        *(phase.value for phase in DELIVERED_TECH_LEAD_PHASES),
+                        TechLeadRunPhase.WITHDRAWN.value,
+                    ),
+                )
+                .fetchone()
+            )
+            if row["invalid"] or self._lost_receipt.is_set():
+                return TechLeadDeliveryEvidence(
+                    history_state=DeliveryHistoryState.INCOMPLETE
+                )
+            return TechLeadDeliveryEvidence(
+                last_delivered_at=_evidence_time(row["delivered"]),
+                first_undelivered_at=_evidence_time(row["first_start"]),
+                latest_started_at=_evidence_time(row["latest_start"]),
+                runs_without_delivery=int(row["runs"]),
+            )
+        except (sqlite3.Error, OSError, ValueError, TypeError):
+            logger.warning(
+                "[TECH_LEAD_RUN] Delivery history evidence unavailable", exc_info=True
+            )
+            return TechLeadDeliveryEvidence(
+                history_state=DeliveryHistoryState.UNAVAILABLE
+            )
+
     def recent(self, *, limit: int) -> tuple[TechLeadRunRecord, ...]:
         """The newest ``limit`` runs, most recently started first."""
         try:
-            rows = self._get_connection().execute(
-                "SELECT * FROM tech_lead_run_records"
-                " ORDER BY started_at DESC LIMIT ?",
-                (max(0, limit),),
-            ).fetchall()
-        except sqlite3.Error:
+            rows = (
+                self._get_connection()
+                .execute(
+                    "SELECT * FROM tech_lead_run_records"
+                    " ORDER BY started_at DESC LIMIT ?",
+                    (max(0, limit),),
+                )
+                .fetchall()
+            )
+        except (sqlite3.Error, OSError):
             logger.warning(
                 "[TECH_LEAD_RUN] Could not read the local run history",
                 exc_info=True,
@@ -232,7 +308,8 @@ class SqliteTechLeadRunRecordStore:
         try:
             with self._transaction() as conn:
                 conn.execute(sql, params)
-        except sqlite3.Error:
+        except (sqlite3.Error, OSError):
+            self._lost_receipt.set()
             # Per the port contract: history is a receipt, so a store failure
             # is logged and dropped rather than propagated into the run.
             logger.warning(
