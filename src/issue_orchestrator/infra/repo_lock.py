@@ -11,13 +11,18 @@ Multi-instance mode:  .issue-orchestrator/locks/{instance_id}.json
 import fcntl
 import json
 import os
+import socket
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import RLock
 from typing import Any
 
+from ..domain.validated_work_claim import ProcessIdentity
+from ..ports.command_runner import CommandRunner
+from .repo_lock_capability import HeldStartupGate, _issue_gate
 from .repo_identity import lock_file, locks_dir, normalize_repo_root, state_dir
 
 # Process-local registry of held gate file descriptors, keyed by the metadata
@@ -25,6 +30,94 @@ from .repo_identity import lock_file, locks_dir, normalize_repo_root, state_dir
 # descriptor MUST stay open for the whole lock lifetime — closing it releases
 # the flock. release_lock (and the held_repo_lock finally) close them here.
 _HELD_GATE_FDS: dict[str, list[int]] = {}
+_STARTUP_MUTEX = RLock()
+_STARTUP_PROCESS = os.getpid()
+_STARTUPS: dict[str, tuple[int, object]] = {}
+
+
+def _in_startup_process() -> bool:
+    # Check before synchronization: a fork may inherit a mutex owned by a thread
+    # that does not exist in the child. New engines must exec, not reuse it.
+    return os.getpid() == _STARTUP_PROCESS
+
+
+def held_startup_gate(
+    repo_root: Path | str, runner: CommandRunner, instance_id: str | None = None
+) -> HeldStartupGate:
+    """Issue a capability only for this process's successful, still-held startup.
+
+    ps exposes process birth at second precision. Ambiguous identities sharing
+    our PID are never considered dead. Start time is not the advertisement's
+    acquisition timestamp and is never itself used as positive death evidence.
+    """
+    if not _in_startup_process():
+        raise RuntimeError("startup gate registry cannot cross a process boundary")
+    normalized = normalize_repo_root(repo_root)
+    key = str(lock_file(normalized, instance_id))
+    with _STARTUP_MUTEX:
+        startup = _STARTUPS.get(key)
+        if startup is None or startup[0] != os.getpid():
+            raise RuntimeError("successful local startup gate is required")
+        result = runner.run(
+            ["ps", "-o", "lstart=", "-p", str(os.getpid())],
+            env={**os.environ, "LC_ALL": "C"},
+            timeout_seconds=10,
+        )
+        if result.returncode != 0 or result.timed_out:
+            raise RuntimeError("cannot read current process start time")
+        started = datetime.strptime(result.stdout.strip(), "%a %b %d %H:%M:%S %Y")
+        identity = ProcessIdentity(
+            socket.gethostname(), startup[0], started.isoformat(), instance_id
+        )
+
+        def current() -> ProcessIdentity:
+            if not _in_startup_process():
+                raise RuntimeError("startup gate cannot cross a process boundary")
+            with _STARTUP_MUTEX:
+                if _STARTUPS.get(key) is not startup or os.getpid() != identity.pid:
+                    raise RuntimeError(
+                        "startup gate has been released or crossed a process boundary"
+                    )
+                return identity
+
+        def dead(owner: ProcessIdentity) -> bool:
+            if not _in_startup_process():
+                return False
+            with _STARTUP_MUTEX:
+                try:
+                    current()
+                except RuntimeError:
+                    return False
+                return _prove_other_owner_dead(normalized, identity, owner)
+
+        return _issue_gate(current, dead)
+
+
+def _prove_other_owner_dead(
+    repo_root: Path, current: ProcessIdentity, owner: ProcessIdentity
+) -> bool:
+    if owner.host != current.host or owner.pid == current.pid:
+        return False
+    if (
+        owner.instance_id == current.instance_id
+        or current.instance_id is None
+        or owner.instance_id is None
+    ):
+        return True
+    # An arbitrary persisted name must never escape the instance gate directory.
+    if Path(owner.instance_id).name != owner.instance_id or owner.instance_id in {
+        ".",
+        "..",
+    }:
+        return False
+    try:
+        fd = _acquire_gate(
+            _instance_gate_path(repo_root, owner.instance_id), exclusive=True
+        )
+    except OSError:
+        return False
+    _release_fds([fd])
+    return True
 
 
 class AlreadyRunning(Exception):
@@ -249,6 +342,34 @@ def acquire_lock(
     config_name: str = "default.yaml",
     config_fingerprint: str = "",
 ) -> LockInfo:
+    """Acquire startup ownership and publish its capability source atomically."""
+    if not _in_startup_process():
+        raise RuntimeError("startup gate registry cannot cross a process boundary")
+    with _STARTUP_MUTEX:
+        info = _acquire_lock(
+            repo_root,
+            port,
+            instance_id,
+            configuration_mode=configuration_mode,
+            config_name=config_name,
+            config_fingerprint=config_fingerprint,
+        )
+        _STARTUPS[str(lock_file(Path(info.repo_root), instance_id))] = (
+            os.getpid(),
+            object(),
+        )
+        return info
+
+
+def _acquire_lock(
+    repo_root: Path | str,
+    port: int | None = None,
+    instance_id: str | None = None,
+    *,
+    configuration_mode: str = "default",
+    config_name: str = "default.yaml",
+    config_fingerprint: str = "",
+) -> LockInfo:
     """Acquire the repository lock atomically (or instance-specific lock).
 
     Exclusion is a repo-wide ``flock`` gate (see :func:`_repo_gate_path`), NOT the
@@ -286,9 +407,7 @@ def acquire_lock(
     try:
         # 1. Repo-wide lifecycle gate.
         try:
-            held.append(
-                _acquire_gate(_repo_gate_path(repo_root), exclusive=exclusive)
-            )
+            held.append(_acquire_gate(_repo_gate_path(repo_root), exclusive=exclusive))
         except OSError as exc:
             raise _already_running(repo_root, lock_path, instance_id) from exc
 
@@ -476,6 +595,29 @@ def exclusive_repository_lifecycle(repo_root: Path | str) -> Iterator[None]:
 
 
 def release_lock(
+    repo_root: Path | str,
+    pid: int | None = None,
+    instance_id: str | None = None,
+) -> bool:
+    """Revoke startup capabilities together with the owning gate release."""
+    if not _in_startup_process():
+        return False
+    with _STARTUP_MUTEX:
+        normalized = normalize_repo_root(repo_root)
+        key = str(lock_file(normalized, instance_id))
+        startup = _STARTUPS.get(key)
+        if startup is not None and (
+            startup[0] != os.getpid() or startup[0] != (pid or os.getpid())
+        ):
+            return False
+        try:
+            return _release_lock(normalized, pid, instance_id)
+        finally:
+            if key not in _HELD_GATE_FDS:
+                _STARTUPS.pop(key, None)
+
+
+def _release_lock(
     repo_root: Path | str,
     pid: int | None = None,
     instance_id: str | None = None,
