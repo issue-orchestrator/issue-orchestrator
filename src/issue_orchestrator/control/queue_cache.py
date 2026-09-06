@@ -15,6 +15,7 @@ import traceback
 from typing import TYPE_CHECKING
 
 from .issue_scope import issue_scope_skip_detail
+from .issue_refresh_batch import IssueRefreshBatch
 from ..domain.issue_work_classification import classify_issue_work
 
 if TYPE_CHECKING:
@@ -64,8 +65,12 @@ class QueueCache:
 
     def replace_from_refresh(self, issues: list["Issue"]) -> list["Issue"]:
         """Replace queue from fetched issues using canonical eligibility policy."""
-        self._observe_work_classifications(issues)
-        return self._replace_scope(issues)
+        return self.replace_from_observations(IssueRefreshBatch(tuple(issues), tuple(issues), None))
+
+    def replace_from_observations(self, batch: IssueRefreshBatch) -> list["Issue"]:
+        """Apply one freshness contract for full, warm-delta and runtime refresh."""
+        self._observe_work_classifications(list(batch.observed_issues))
+        return self._replace_scope(list(batch.issues))
 
     def replace_from_cache(self, issues: list["Issue"]) -> list["Issue"]:
         """Restore queue visibility without treating cached labels as a fresh observation."""
@@ -132,8 +137,7 @@ class QueueCache:
         """Observe every delta, including closures, before applying scope policy."""
         merged = {issue.number: issue for issue in cached}
         merged.update({issue.number: issue for issue in delta})
-        self._observe_work_classifications(list(delta))
-        return self._replace_scope(list(merged.values()))
+        return self.replace_from_observations(IssueRefreshBatch(tuple(merged.values()), tuple(delta), None))
 
     def upsert_refreshed_issue(self, issue: "Issue") -> QueueMutationOutcome:
         """Upsert a refreshed issue while enforcing queue eligibility policy."""

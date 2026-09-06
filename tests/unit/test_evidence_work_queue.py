@@ -235,3 +235,76 @@ def test_warm_delta_retains_closed_identity_and_stale_cache_cannot_reclassify_it
     assert project_work_queue(queue_issues=restored.cached_queue_issues,
         scope_issues=restored.cached_scope_issues,
         retained_classifications=restored.issue_work_classifications).evidence_numbers == frozenset()
+
+
+@pytest.mark.parametrize("transition", ["stale_cache", "closed", "out_of_scope", "marker_removed"])
+def test_runtime_incremental_observations_own_evidence_identity(
+    tmp_path, mock_event_sink, mock_repository_host, monkeypatch, transition,
+):
+    from dataclasses import replace
+    from unittest.mock import Mock
+
+    from issue_orchestrator.control.issue_fetch_resilience import IssueFetchResilience
+    from issue_orchestrator.control.orchestrator_support import _fetch_and_update_queue
+    from issue_orchestrator.control.queue_cache import QueueCache
+    from issue_orchestrator.domain.issue_work_classification import IssueWorkClassification
+    from issue_orchestrator.execution.queue_cache_store import QueueCacheStore
+
+    monkeypatch.setattr("time.time", lambda: 1_788_700_000.0)
+    config = Config(repo="porchpin/porchpin")
+    config.fetch_layer_enabled = True
+    config.fetch_layer_full_scan_interval_seconds = 3600
+    config.fetch_layer_discovery_limit = 10
+    config.filtering.label = "tracked"
+    evidence = replace(case_file(), labels=["tracked", "agent:tech-lead", "tech-lead-observation"])
+    work = Issue(number=50, title="Real work", labels=["tracked", "agent:backend"])
+    history = [
+        SessionHistoryEntry(issue_number=item.number, title=item.title, agent_type="agent:backend",
+                            status="failed", runtime_minutes=1)
+        for item in (evidence, work)
+    ]
+    state = OrchestratorState(startup_status="complete")
+    store = QueueCacheStore(tmp_path / "queue.sqlite")
+    cache = QueueCache(config, state, store)
+    # Simulate an older unmarked queue snapshot surviving a newer identity write.
+    stale = replace(evidence, labels=["tracked", "agent:tech-lead"])
+    cache.replace_from_refresh([evidence if transition in {"stale_cache", "marker_removed"} else stale, work])
+    cache.replace_from_cache([stale, work])
+    state.session_history.extend(history)
+    state.queue_last_full_scan_at = 1_788_700_000.0
+    state.queue_delta_watermark = "2026-09-06T00:00:00Z"
+    changes = {
+        "stale_cache": [],
+        "closed": [replace(evidence, state="closed")],
+        "out_of_scope": [replace(evidence, labels=["tech-lead-observation"])],
+        "marker_removed": [stale],
+    }[transition]
+    workflow = Mock()
+    workflow.refresh_issues.return_value = []
+    workflow.fetch_delta_issues.return_value = (changes, "2026-09-06T01:00:00Z")
+    workflow.issue_in_scope.side_effect = lambda issue: "tracked" in issue.labels
+    scheduler = Mock()
+    scheduler.evaluate_issues.return_value = []
+    _fetch_and_update_queue(
+        config=config, events=mock_event_sink, state=state,
+        repository_host=mock_repository_host, scheduler=scheduler, github_workflow=workflow,
+        refresh_requested=False, inflight_stable_ids={},
+        issue_fetch_resilience=IssueFetchResilience(config.repo), queue_cache_store=store,
+    )
+    assert state.queue_last_refresh_mode == "incremental"
+    workflow.fetch_all_issues.assert_not_called()
+    expected = IssueWorkClassification.WORK if transition == "marker_removed" else IssueWorkClassification.EVIDENCE
+    assert state.issue_work_classifications[49] == expected
+    reopened_state = OrchestratorState(startup_status="complete", session_history=state.session_history)
+    QueueCache(config, reopened_state, QueueCacheStore(tmp_path / "queue.sqlite")).restore_snapshot()
+    assert reopened_state.issue_work_classifications[49] == expected
+    for current in (state, reopened_state):
+        model = build_dashboard_view_model(OrchestratorView(current, config),
+            provider_circuit=NO_PROVIDER_CIRCUIT_STATUS, tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+            active_tab="kanban", e2e_status_provider=lambda _: {"enabled": False, "running": False})
+        work_numbers = {item["issue_number"] for column in model.flow_columns for item in column["items"]}
+        assert work_numbers == ({49, 50} if transition == "marker_removed" else {50})
+        assert any(item.issue_number == 49 for item in current.session_history)
+        rendered = BeautifulSoup(get_templates().get_template("dashboard.html").render(
+            **model.template_context()), "html.parser")
+        assert bool(rendered.select('[data-issue="49"]')) == (transition == "marker_removed")
