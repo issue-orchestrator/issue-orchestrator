@@ -85,6 +85,14 @@ class ClaimAuthority:
         return dead
 
     def holds(self, conn: sqlite3.Connection, claim: ValidatedWorkClaim) -> bool:
+        # Authentication cannot dispatch to a caller-provided digest/equality
+        # implementation. Readable row facts are not a claim capability.
+        if (
+            type(claim) is not ValidatedWorkClaim
+            or type(claim.secret) is not ClaimSecret
+            or type(claim.owner) is not ProcessIdentity
+        ):
+            return False
         row = conn.execute(
             "SELECT * FROM validated_work_records WHERE record_id=?", (claim.record_id,)
         ).fetchone()

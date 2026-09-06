@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import replace
 
 from ..domain.validated_work import (
     LineageRole,
@@ -135,6 +136,7 @@ class PublishAttemptWriter:
             return False
         if (
             not self._claims.holds(conn, claim)
+            or type(attempt) is not PublishAttempt
             or attempt.record_id != claim.record_id
             or attempt.fence != claim.fence
         ):
@@ -151,12 +153,20 @@ class PublishAttemptWriter:
             return False
         if record_row(conn, claim.record_id)["state"] != "publishing":
             return False
+        # The same constructor that validates durable reads must admit the
+        # completed value before any write. Do not duplicate its shape rules.
+        completed = replace(
+            attempt,
+            outcome=outcome,
+            failure=failure,
+            finished_at=finished_at,
+        )
         conn.execute(
             "UPDATE validated_work_publish_attempts SET outcome=?,failure=?,finished_at=? WHERE record_id=? AND attempt_no=? AND outcome='' AND fence=?",
             (
                 outcome.value,
                 failure.value if failure else "",
-                finished_at,
+                completed.finished_at,
                 claim.record_id,
                 attempt.attempt_no,
                 claim.fence,

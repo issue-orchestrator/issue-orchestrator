@@ -20,7 +20,9 @@ def publication_eligible(
     expected: str,
     phase: DispositionPhase,
 ) -> bool:
-    if approved is not None and approved != current:
+    if approved is not None and (
+        type(approved) is not ValidatedWorkAuthoritySnapshot or approved != current
+    ):
         return False
     if target != current.validated_head_sha or expected != (
         current.expected_remote_head_sha or ""

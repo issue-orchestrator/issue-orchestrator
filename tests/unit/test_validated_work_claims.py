@@ -3,6 +3,7 @@
 from dataclasses import replace
 import sqlite3
 from contextlib import closing
+from types import SimpleNamespace
 
 import pytest
 
@@ -90,6 +91,32 @@ def test_reading_fence_owner_and_hash_does_not_construct_a_claim(tmp_path):
     assert not store.relinquish_claim(forged)
     assert begin(store, forged) is None
     assert store.holds_claim(token)
+
+
+def test_caller_supplied_digest_cannot_authenticate_readable_claim_facts(tmp_path):
+    rig = Rig(tmp_path / "work.sqlite")
+    store = rig.open()
+    a = capture()
+    store.admit(a)
+    token = claim(store, a)
+    with closing(sqlite3.connect(rig.path)) as conn, conn:
+        fence, stored_hash = conn.execute(
+            "SELECT owner_fence,owner_claim_hash FROM validated_work_records"
+        ).fetchone()
+    forged = SimpleNamespace(
+        record_id=token.record_id,
+        fence=fence,
+        owner=store.owner_of(token.record_id),
+        secret=SimpleNamespace(digest=lambda: stored_hash),
+    )
+    before = store.get(token.record_id)
+    assert not store.holds_claim(forged)
+    assert not store.relinquish_claim(forged)
+    assert begin(store, forged) is None
+    assert store.get(token.record_id) == before
+    assert store.publish_attempts(token.record_id) == ()
+    assert store.holds_claim(token)
+    assert begin(store, token) is not None
 
 
 def test_positive_death_proof_mints_new_secret_and_invalidates_every_old_write(
@@ -199,6 +226,41 @@ def test_attempt_cas_before_external_call_and_write_once_outcome(tmp_path):
         token, newer, outcome=Status.SUPERSEDED, failure=None, finished_at=LATER
     )
     assert store.publish_attempts(token.record_id)[1].outcome is None
+
+
+@pytest.mark.parametrize("finished_at", ["", "  ", None, 12])
+@pytest.mark.parametrize(
+    ("outcome", "failure"),
+    [
+        (Status.PUBLISHED, None),
+        (Status.TRANSIENT_FAILURE, Failure.REMOTE_UNREADABLE),
+        (Status.REJECTED, Failure.PUSH_FAILED),
+    ],
+)
+def test_invalid_outcome_timestamp_leaves_attempt_and_record_readable(
+    tmp_path, finished_at, outcome, failure
+):
+    rig = Rig(tmp_path / "work.sqlite")
+    store = rig.open()
+    a = capture()
+    store.admit(a)
+    token = claim(store, a)
+    attempt = begin(store, token)
+    before = store.get(token.record_id)
+    with pytest.raises(ValueError):
+        store.record_attempt_outcome(
+            token, attempt, outcome=outcome, failure=failure, finished_at=finished_at
+        )
+    reopened = rig.open()
+    assert reopened.get(token.record_id) == before
+    assert reopened.publish_attempts(token.record_id) == (attempt,)
+    assert reopened.holds_claim(token)
+    assert reopened.record_attempt_outcome(
+        token, attempt, outcome=outcome, failure=failure, finished_at=LATER
+    )
+    assert reopened.publish_attempts(token.record_id) == (
+        replace(attempt, outcome=outcome, failure=failure, finished_at=LATER),
+    )
 
 
 def test_attempt_budget_survives_restarts_and_exhaustion_is_unresolved(tmp_path):
@@ -337,6 +399,36 @@ def test_parked_publication_requires_exact_unchanged_authority(tmp_path, change)
         is None
     )
     assert store.get(token.record_id).state is State.PARKED
+    assert store.publish_attempts(token.record_id) == ()
+    assert begin(store, token, approved=True) is not None
+
+
+def test_caller_equality_cannot_supply_parked_publication_consent(tmp_path):
+    class FabricatedConsent:
+        def __eq__(self, other):
+            return True
+
+        def __ne__(self, other):
+            return False
+
+    store = Rig(tmp_path / "work.sqlite").open()
+    a = capture(state=State.PARKED, reason="approval needed")
+    store.admit(a)
+    token = claim(store, a)
+    before = store.get(token.record_id)
+    assert (
+        store.begin_publish_attempt(
+            token,
+            expected_attempt_no=0,
+            target_head_sha=V,
+            expected_remote_head=ROOT,
+            phase=DispositionPhase.PRE_SUBMISSION,
+            started_at=AT,
+            authority=FabricatedConsent(),
+        )
+        is None
+    )
+    assert store.get(token.record_id) == before
     assert store.publish_attempts(token.record_id) == ()
     assert begin(store, token, approved=True) is not None
 
