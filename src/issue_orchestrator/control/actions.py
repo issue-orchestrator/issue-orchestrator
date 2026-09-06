@@ -320,11 +320,20 @@ class SupersedePullRequestAction(Action):
 
 @dataclass(frozen=True)
 class CloseIssueAction(Action):
-    """Close an issue; a ``comment`` posts first (best-effort, never blocks)."""
+    """Close an issue; a ``comment`` posts afterward on a best-effort basis."""
 
     issue_number: int = 0
     comment: str = ""
     action_type: ActionType = field(default=ActionType.CLOSE_ISSUE, init=False)
+
+
+@dataclass(frozen=True)
+class FoldCaseFileIssueAction(CloseIssueAction):
+    """Close accumulated evidence only after its explanation is recorded."""
+
+    def __post_init__(self) -> None:
+        if self.issue_number <= 0 or not self.comment.strip() or self.expected is None:
+            raise ValueError("case-file fold requires an issue, explanation and mutation guard")
 
 
 @dataclass(frozen=True)

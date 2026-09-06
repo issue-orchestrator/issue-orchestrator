@@ -30,10 +30,12 @@ The command is **dry-run by default**. It plans in two phases:
 
 1. **Evidence.** Each cluster's signature gets (or joins) one pattern case file,
    and every accumulated duplicate lands there as an observation carrying that
-   issue's contents and why it was a re-sighting.
-2. **Closure.** Only after its evidence has landed is a duplicate closed, with a
-   comment naming both the tracker that owns the work and the case file that now
-   holds the evidence.
+   plan author's summary and a link to the original issue. Original titles,
+   bodies and comments remain on those issues; they are not copied.
+2. **Closure.** After evidence lands, the duplicate receives an explanation
+   naming its tracker and case file before it closes. A failed explanation
+   leaves it open; a failed close retries without repeating an already recorded
+   explanation.
 
 If phase 1 fails for any action, phase 2 does not run — the command refuses to
 close an issue whose evidence went nowhere.

@@ -16,6 +16,7 @@ from issue_orchestrator.control.actions import (
     ActionResult,
     AppendPatternObservationAction,
     CloseIssueAction,
+    FoldCaseFileIssueAction,
     CreateTechLeadCaseFileIssueAction,
 )
 from issue_orchestrator.control.tech_lead_case_file_reconciliation import (
@@ -318,7 +319,9 @@ def test_open_duplicates_are_closed_with_a_pointer_to_tracker_and_case_file():
 
     assert _closed_issue_numbers(actions) == [6966, 6977]
     closure = actions[0]
-    assert isinstance(closure, CloseIssueAction)
+    assert isinstance(closure, FoldCaseFileIssueAction)
+    assert "reproduced verbatim" not in closure.comment
+    assert "summary and a link" in closure.comment
     assert "#6928" in closure.comment
     assert "#7100" in closure.comment
     assert "Re-verified 2026-08-03." in closure.comment

@@ -3558,3 +3558,58 @@ class TestTechLeadIssueCreationCrossesTheReconciliationGate:
         ):
             with pytest.raises(TypeError, match="origin"):
                 command(title="t", body="b", labels=("agent:backend",))  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize("failure", ["comment_read", "comment_before", "comment_after", "close"])
+def test_case_file_fold_records_explanation_before_close_and_recovers_on_retry(
+    applier, mock_repository_host, failure,
+):
+    from issue_orchestrator.control.actions import FoldCaseFileIssueAction
+    from issue_orchestrator.control.reconciliation import build_expected_for_mutation
+
+    action = FoldCaseFileIssueAction(issue_number=6966, comment="Evidence summary on #7100; work on #6928",
+                                    expected=build_expected_for_mutation())
+    comments = []
+    effects = []
+    failed = False
+
+    def fail_once(phase):
+        nonlocal failed
+        if failure == phase and not failed:
+            failed = True
+            raise RuntimeError("interrupted " + phase)
+
+    def read_comments(number):
+        fail_once("comment_read")
+        return comments
+
+    def comment(number, body):
+        fail_once("comment_before")
+        comments.append({"body": body})
+        effects.append("explanation")
+        fail_once("comment_after")  # Remote write succeeded; response was lost.
+        return "comment-url"
+
+    def close(number, state):
+        assert comments == [{"body": action.comment}]
+        fail_once("close")
+        effects.append("closed")
+
+    mock_repository_host.get_issue_comments.side_effect = read_comments
+    mock_repository_host.add_comment.side_effect = comment
+    mock_repository_host.update_issue_state.side_effect = close
+    first = applier.apply(action)
+    assert not first.success
+    assert "closed" not in effects
+    second = applier.apply(action)
+    assert second.success
+    assert effects == ["explanation", "closed"]
+    assert comments == [{"body": action.comment}]
+
+
+def test_ordinary_close_retains_best_effort_comment_behavior(applier, mock_repository_host):
+    mock_repository_host.add_comment.side_effect = RuntimeError("comment unavailable")
+    result = applier.apply(CloseIssueAction(issue_number=559, comment="Closed after merge"))
+    assert result.success
+    mock_repository_host.update_issue_state.assert_called_once_with(559, "closed")
+    mock_repository_host.get_issue_comments.assert_not_called()

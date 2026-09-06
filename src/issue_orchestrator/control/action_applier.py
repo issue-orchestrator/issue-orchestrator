@@ -659,39 +659,14 @@ class ActionApplier:
         assert self.repository_host is not None, "repository_host required for close_issue"
 
         self._require_expected(action, action.issue_number)
-        self._verify_claim_before_write(action, action.issue_number)
+        from .issue_closure import apply_issue_closure
 
-        try:
-            self.repository_host.update_issue_state(action.issue_number, "closed")
-            logger.info(issue_log(action.issue_number, "Issue closed"))
-            if action.comment:
-                # Only after a successful close — a comment claiming "the
-                # orchestrator closed it" before the close would leave a false
-                # audit trail on failure and repeat on every retry. Best-effort:
-                # a failed comment must never fail an already-applied close.
-                try:
-                    self.repository_host.add_comment(
-                        action.issue_number, action.comment,
-                    )
-                except Exception as e:
-                    logger.warning(
-                        issue_log(
-                            action.issue_number,
-                            "Failed to post close comment: %s",
-                        ),
-                        e,
-                    )
-            return ActionResult.ok(
-                action,
-                issue_number=action.issue_number,
-                state="closed",
-            )
-        except Exception as e:
-            logger.error(
-                issue_log(action.issue_number, "Failed to close issue: %s"),
-                e,
-            )
-            return ActionResult.fail(action, str(e), issue_number=action.issue_number)
+        return apply_issue_closure(
+            action, read_comments=self.repository_host.get_issue_comments,
+            post_comment=self.repository_host.add_comment,
+            set_issue_state=self.repository_host.update_issue_state,
+            before_write=lambda: self._verify_claim_before_write(action, action.issue_number),
+        )
 
     def _apply_set_issue_state(self, action: Action) -> ActionResult:
         """Set an issue's open/closed state through the repository host."""

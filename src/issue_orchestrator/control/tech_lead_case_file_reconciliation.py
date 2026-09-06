@@ -56,7 +56,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Collection, Mapping, Protocol, Sequence
 
 from ..domain.tech_lead_artifacts import ProposedTechLeadAction
-from .actions import Action, CloseIssueAction
+from .actions import Action, FoldCaseFileIssueAction
 from .reconciliation import build_expected_for_mutation
 from .tech_lead_case_files import CaseFileIntake, PatternCaseFilePlanner
 
@@ -464,7 +464,7 @@ class CaseFileReconciler:
                 if duplicate.issue_number not in still_open:
                     continue
                 actions.append(
-                    CloseIssueAction(
+                    FoldCaseFileIssueAction(
                         issue_number=duplicate.issue_number,
                         comment=_closure_comment(
                             plan, cluster, duplicate, case_file
@@ -584,8 +584,9 @@ def _duplicate_body(
             "",
             f"It was an accumulated re-sighting of the class tracked by"
             f" #{cluster.tracker_issue_number}, filed as its own open issue"
-            " before cited duplicates routed to this ledger. The issue itself"
-            " is closed by this reconciliation; its evidence lives here.",
+            " before cited duplicates routed to this ledger. This observation"
+            " preserves the plan author's summary; the original title, body"
+            f" and comments remain available on #{duplicate.issue_number}.",
         ]
     )
 
@@ -611,7 +612,7 @@ def _closure_comment(
         f"- Work for this class is tracked by **#{cluster.tracker_issue_number}**.\n"
         f"- Its evidence now accrues to the pattern case file"
         f" **#{case_file_issue_number}** (signature `{cluster.signature}`),"
-        " where this issue's contents were reproduced verbatim.\n\n"
+        " with the plan author's summary and a link to this original issue.\n\n"
         f"Why this was a duplicate: {duplicate.note}\n\n"
         "**If this fold was wrong**, reopening is not enough on its own: remove"
         f" this issue from the reconciliation plan `{plan.plan_id}` as well, or"
