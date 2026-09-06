@@ -221,6 +221,8 @@ async def test_cancelled_awaiter_retains_execution_until_child_is_reaped(
     owner = LocalValidatedWorkExecutionOwner(Mock(spec=ValidatedWorkStore))
     ready, finish, completed = Event(), Event(), Event()
 
+    errors: list[BaseException] = []
+
     def worker() -> None:
         lease = owner.try_enter("record")
         assert not isinstance(lease, RecordExecutionBusy)
@@ -232,6 +234,8 @@ async def test_cancelled_awaiter_retains_execution_until_child_is_reaped(
                     wait_for_event(finish, 10)
                 # child_owner killed the group and reaped it before this effect.
                 owner.require_active(token, "record")
+        except BaseException as exc:
+            errors.append(exc)
         finally:
             completed.set()
 
@@ -245,6 +249,7 @@ async def test_cancelled_awaiter_retains_execution_until_child_is_reaped(
     finally:
         finish.set()
         await asyncio.to_thread(wait_for_event, completed, 10)
+    assert not errors
     lease = owner.try_enter("record")
     assert not isinstance(lease, RecordExecutionBusy)
     with lease as token:
