@@ -7,6 +7,7 @@ from typing import Any
 
 from ...ports.comment_receipt import IssueCommentReceipt
 from .errors import GitHubScanIncompleteError
+from .tokens import GitHubAppIdentity
 
 _MAX_PAGES = 100
 
@@ -16,7 +17,7 @@ def _positive_id(value: object) -> bool:
 
 
 def _author_key(comment: dict[str, Any], user_id: int | None,
-    app_identity: tuple[str | None, str | None] | None) -> str | None:
+    app_identity: GitHubAppIdentity | None) -> str | None:
     user = comment.get("user")
     if not isinstance(user, dict) or not _positive_id(user.get("id")):
         raise GitHubScanIncompleteError("Comment publication has malformed author identity")
@@ -25,10 +26,7 @@ def _author_key(comment: dict[str, Any], user_id: int | None,
     app = comment.get("performed_via_github_app")
     if not isinstance(app, dict) or user.get("type") != "Bot":
         return None
-    app_id, client_id = app_identity
-    if app_id is not None:
-        return f"github-app:{app_id}" if str(app.get("id")) == app_id else None
-    return f"github-app-client:{client_id}" if app.get("client_id") == client_id else None
+    return app_identity.author_key if app_identity.matches(app) else None
 
 
 def _receipt(comment: dict[str, Any], *, body: str, author: str) -> IssueCommentReceipt:
@@ -40,7 +38,7 @@ def _receipt(comment: dict[str, Any], *, body: str, author: str) -> IssueComment
 
 def find_comment_receipt(*, request: Callable[..., Any], repo: str,
     issue_number: int, body: str,
-    app_identity: tuple[str | None, str | None] | None) -> IssueCommentReceipt | None:
+    app_identity: GitHubAppIdentity | None) -> IssueCommentReceipt | None:
     user_id = None
     if app_identity is None:
         actor = request("GET", "/user", caller="comment_receipt_author", use_cache=False)

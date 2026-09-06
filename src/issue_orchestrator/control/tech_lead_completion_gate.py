@@ -85,7 +85,7 @@ def require_investigation_terminal_effect(actions: list[Action], *,
             action = replace(action, requires_effective_disposition=True)
         elif (isinstance(action, AddCommentAction)
                 and not isinstance(action, RequiredIssueCommentAction)
-                and action.number == focus_issue_number and not action.is_pr):
+                and action.number == focus_issue_number):
             action = RequiredIssueCommentAction(number=action.number, comment=action.comment,
                 reason=action.reason, expected=action.expected)
         required.append(action)

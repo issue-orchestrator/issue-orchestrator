@@ -140,3 +140,39 @@ def test_immediate_remedies_and_human_handoff_are_terminal(remedy):
 def test_kill_without_observed_generation_cannot_be_a_terminal_remedy():
     action = ProposedTechLeadAction(id="A2", action_type="kill_hung_session", target_number=FOCUS, body="remedy")
     assert "launch-observed worker generation" in _validate(_decision(_diagnosis(), action))
+
+
+@pytest.mark.parametrize("target_is_pr", [False, True])
+def test_focus_diagnosis_kind_cannot_escape_producer_to_terminal_requirement(target_is_pr):
+    from dataclasses import replace
+    from issue_orchestrator.control.actions import ActionResult, AddCommentAction, RecordTechLeadDispositionAction
+    from issue_orchestrator.control.required_issue_comment import RequiredIssueCommentAction
+    from issue_orchestrator.control.reconciliation import build_expected_for_mutation
+    from issue_orchestrator.control.tech_lead_completion_gate import (
+        require_investigation_terminal_effect, evaluate_required_act_level_outcome,
+    )
+    from issue_orchestrator.control.tech_lead_decision_actions import plan_tech_lead_decision_actions
+    from issue_orchestrator.control.proposal_dedup_gate import DuplicateTargetGrant, OpenIssueCorpus
+    from issue_orchestrator.domain.models import Issue
+    decision = _decision(replace(_diagnosis(), target_is_pr=target_is_pr), _defer())
+    violation = _validate(decision)
+    if target_is_pr:
+        assert "not a PR" in violation
+    else:
+        assert violation is None
+    # Even bypassing validation cannot make the agent's kind flag weaken the
+    # immutable focus obligation at the planner/completion boundary.
+    config = Config()
+    planned = plan_tech_lead_decision_actions(decision, config, LabelManager(config),
+        anchor_issue=Issue(number=ANCHOR, title="investigation", labels=[]),
+        expected=build_expected_for_mutation(), op_ledger={}, pattern_ledger={},
+        source_run_id="run", source_session_name="session", observed_at="2026-08-09T00:00:00+00:00",
+        observed_session_generation=lambda number: None,
+        dedup_corpus=OpenIssueCorpus.disabled(), dedup_grant=DuplicateTargetGrant.none())
+    actions = require_investigation_terminal_effect(planned, focus_issue_number=_authority().focus_issue_number)
+    [diagnosis] = [action for action in actions if isinstance(action, AddCommentAction)]
+    [remedy] = [action for action in actions if isinstance(action, RecordTechLeadDispositionAction)]
+    assert isinstance(diagnosis, RequiredIssueCommentAction) and not diagnosis.is_pr
+    assert evaluate_required_act_level_outcome([
+        ActionResult.fail(diagnosis, "diagnosis failed"), ActionResult.ok(remedy),
+    ]).failed

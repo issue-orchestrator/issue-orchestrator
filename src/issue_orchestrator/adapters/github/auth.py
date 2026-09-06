@@ -18,6 +18,7 @@ from ... import __version__
 from .errors import GitHubAuthError
 from .tokens import (
     GitHubAppAuthConfig,
+    GitHubAppIdentity,
     GitHubAuthSource,
     GitHubTokenProvider,
     StaticGitHubTokenProvider,
@@ -55,9 +56,9 @@ class GitHubAppInstallationTokenProvider:
         self._expires_at_epoch: float = 0.0
 
     @property
-    def comment_app_identity(self) -> tuple[str | None, str | None]:
+    def comment_app_identity(self) -> GitHubAppIdentity:
         """App identifiers whose server-authored comment provenance we accept."""
-        return self._config.app_id, self._config.client_id
+        return self._config.effective_identity
 
     @property
     def auth_kind(self) -> str:
@@ -140,7 +141,7 @@ class GitHubAuth:
     def auth_kind(self) -> str:
         return self.token_provider.auth_kind
 
-    def comment_app_identity(self) -> tuple[str | None, str | None] | None:
+    def comment_app_identity(self) -> GitHubAppIdentity | None:
         if isinstance(self.token_provider, GitHubAppInstallationTokenProvider):
             return self.token_provider.comment_app_identity
         if self.auth_kind == "github_app":
