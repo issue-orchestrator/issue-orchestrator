@@ -183,10 +183,7 @@ def resolve_tech_lead_completion_actions(
     a critical rejection; it must never turn an unknown diff into a clean audit.
     """
     has_changes = False
-    if any(
-        action in (RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR)
-        for action in record.requested_actions
-    ):
+    if record.requests_publication:
         base_ref = f"origin/{base_branch()}"
         diff = git_adapter.diff_against_base(worktree, base_ref)
         if not diff.success:
