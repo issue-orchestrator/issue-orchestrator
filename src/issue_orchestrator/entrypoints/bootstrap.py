@@ -39,9 +39,6 @@ from .bootstrap_pending_work import (
     build_pending_work_wiring,
     require_repository_host,
 )
-from .bootstrap_case_file_reconciliation import (
-    build_case_file_reconciliation_host as build_case_file_reconciliation_host,
-)
 from .bootstrap_session_launcher import build_session_launcher_factory
 from .bootstrap_operator_commands import build_operator_issue_command_factory
 from .bootstrap_completion import (

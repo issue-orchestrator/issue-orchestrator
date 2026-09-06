@@ -182,7 +182,7 @@ def cmd_reconcile_case_files(args: argparse.Namespace) -> int:
     by signature, each observation is create-once by an identity derived from
     the plan file, and a duplicate that is already closed is not closed again.
     """
-    from .bootstrap import build_case_file_reconciliation_host
+    from .bootstrap_case_file_reconciliation import build_case_file_reconciliation_host
     from ..infra.repo_lock import AlreadyRunning, held_repo_lock
 
     try:

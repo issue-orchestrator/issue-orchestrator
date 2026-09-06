@@ -29,7 +29,7 @@ from issue_orchestrator.control.tech_lead_case_file_reconciliation import (
 )
 from issue_orchestrator.domain.tech_lead_findings import PatternEvidence
 from issue_orchestrator.execution.case_file_reconciliation_adapter import CaseFileReconciliationAdapter
-from issue_orchestrator.entrypoints.bootstrap import build_case_file_reconciliation_host
+from issue_orchestrator.entrypoints.bootstrap_case_file_reconciliation import build_case_file_reconciliation_host
 from issue_orchestrator.entrypoints.cli_tech_lead import (
     load_reconciliation_plan,
     run_case_file_reconciliation,
