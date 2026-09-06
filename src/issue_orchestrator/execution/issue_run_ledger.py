@@ -3,7 +3,8 @@
 import json
 import os
 import sqlite3
-from contextlib import closing
+from collections.abc import Iterator
+from contextlib import closing, contextmanager
 from pathlib import Path
 from uuid import uuid4
 
@@ -69,10 +70,7 @@ class SqliteIssueRunLedger:
 
     def _validate_existing(self) -> None:
         try:
-            with closing(self._connect()) as conn:
-                identities = conn.execute("SELECT identity FROM issue_run_ledger_identity").fetchall()
-                if [row[0] for row in identities] != [self._identity]:
-                    raise IssueRunEvidenceUnavailable("Run ledger initialization identity changed")
+            with self._connect() as conn:
                 conn.execute(
                     "SELECT session_name, run_id, started_at, issue_number, issue_scope, "
                     "issue_key, task, assets_json, run_dir, recorded_at FROM issue_runs LIMIT 0"
@@ -80,10 +78,17 @@ class SqliteIssueRunLedger:
         except sqlite3.Error as exc:
             raise IssueRunEvidenceUnavailable("Established run ledger schema is unavailable") from exc
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self, *, write: bool = False) -> Iterator[sqlite3.Connection]:
+        """Bind every transaction to the established durable ledger identity."""
         if not self._path.is_file():
             raise IssueRunEvidenceUnavailable(f"Run ledger disappeared: {self._path}")
-        return open_sqlite(self._path, row_factory=sqlite3.Row)
+        with closing(open_sqlite(self._path, row_factory=sqlite3.Row)) as conn, conn:
+            conn.execute("BEGIN IMMEDIATE" if write else "BEGIN")
+            identities = conn.execute("SELECT identity FROM issue_run_ledger_identity").fetchall()
+            if [row[0] for row in identities] != [self._identity]:
+                raise IssueRunEvidenceUnavailable("Run ledger initialization identity changed")
+            yield conn
 
     def record_run(self, issue_number: int, record: IssueRunRecord) -> None:
         if type(issue_number) is not int or issue_number <= 0:
@@ -98,8 +103,7 @@ class SqliteIssueRunLedger:
         )
         key = (identity.session_name, identity.run_id, identity.started_at)
         try:
-            with closing(self._connect()) as conn, conn:
-                conn.execute("BEGIN IMMEDIATE")
+            with self._connect(write=True) as conn:
                 existing = conn.execute(
                     "SELECT issue_number, issue_scope, issue_key, task, assets_json "
                     "FROM issue_runs WHERE session_name=? AND run_id=? AND started_at=?", key,
@@ -112,14 +116,14 @@ class SqliteIssueRunLedger:
                     return
                 conn.execute(
                     "INSERT INTO issue_runs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (*key, *payload, str(record.run.run_dir.resolve()), record.recorded_at),
+                    (*key, *payload, self._run_key(record.run.run_dir), record.recorded_at),
                 )
         except sqlite3.Error as exc:
             raise IssueRunEvidenceUnavailable("Could not persist run ownership") from exc
 
     def recorded_runs(self, issue_number: int) -> tuple[IssueRunRecord, ...]:
         try:
-            with closing(self._connect()) as conn:
+            with self._connect() as conn:
                 rows = conn.execute(
                     "SELECT * FROM issue_runs WHERE issue_number=? "
                     "ORDER BY recorded_at, session_name, run_id, started_at", (issue_number,),
@@ -129,7 +133,13 @@ class SqliteIssueRunLedger:
             raise IssueRunEvidenceUnavailable("Could not read run ownership") from exc
 
     @staticmethod
-    def _decode(row: sqlite3.Row) -> IssueRunRecord:
+    def _run_key(run_dir: Path) -> str:
+        # Match pending-work claim keys: retain the allocated lexical path,
+        # including any worktree symlink, without following mutable targets.
+        return os.path.normpath(str(run_dir))
+
+    @classmethod
+    def _decode(cls, row: sqlite3.Row) -> IssueRunRecord:
         payload = json.loads(row["assets_json"])
         if not isinstance(payload, dict):
             raise ValueError("Run ledger assets must be an object")
@@ -138,7 +148,7 @@ class SqliteIssueRunLedger:
             row["session_name"], row["run_id"], row["started_at"],
         ):
             raise ValueError("Run ledger key and assets disagree")
-        if str(assets.run_dir.resolve()) != row["run_dir"]:
+        if cls._run_key(assets.run_dir) != row["run_dir"]:
             raise ValueError("Run ledger root and assets disagree")
         return IssueRunRecord(
             session_key=SessionKey(

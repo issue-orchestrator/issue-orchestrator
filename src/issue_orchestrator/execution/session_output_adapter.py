@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 from uuid import uuid4
 from dataclasses import asdict
@@ -784,14 +785,12 @@ Timestamp: {self._now_iso()}
     @staticmethod
     def _started_at_from_run_dir_name(name: str) -> str | None:
         run_id = name.split("__", 1)[0]
-        if len(run_id) != 16 or not run_id.endswith("Z"):
+        # Historical runs use the timestamp alone; exclusive allocations append
+        # a UUID hex suffix. Both retain the same durable chronology prefix.
+        match = re.fullmatch(r"([0-9]{8})[-T]([0-9]{6})Z(?:-[0-9a-f]{32})?", run_id)
+        if match is None:
             return None
-        if run_id[8] not in {"-", "T"}:
-            return None
-        date_part = run_id[:8]
-        time_part = run_id[9:15]
-        if not (date_part.isdigit() and time_part.isdigit()):
-            return None
+        date_part, time_part = match.groups()
         return (
             f"{date_part[:4]}-{date_part[4:6]}-{date_part[6:8]}"
             f"T{time_part[:2]}:{time_part[2:4]}:{time_part[4:6]}+00:00"

@@ -2,6 +2,7 @@
 
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import Mock
@@ -153,6 +154,70 @@ def test_unavailable_live_owner_is_not_ignored(tmp_path):
         service.evidence_for_issue(42)
 
 
+@pytest.mark.parametrize("operation", ["read", "write", "reconstruct"])
+@pytest.mark.parametrize("damage", ["replacement", "missing_identity", "extra_identity"])
+def test_every_connection_refuses_changed_ledger_identity(tmp_path, operation, damage):
+    path = tmp_path / "runs.sqlite"
+    ledger = SqliteIssueRunLedger(path)
+    record = run_record(tmp_path)
+    ledger.record_run(42, record)
+    if damage == "replacement":
+        replacement_path = tmp_path / "replacement.sqlite"
+        SqliteIssueRunLedger(replacement_path)
+        # Both databases have closed connections. Replace only the database,
+        # retaining the established handle and its durable identity marker.
+        replacement_path.replace(path)
+    else:
+        with closing(sqlite3.connect(path)) as conn, conn:
+            if damage == "missing_identity":
+                conn.execute("DELETE FROM issue_run_ledger_identity")
+            else:
+                conn.execute("INSERT INTO issue_run_ledger_identity VALUES ('unexpected')")
+
+    with pytest.raises(IssueRunEvidenceUnavailable):
+        if operation == "read":
+            source(ledger).evidence_for_issue(42)
+        elif operation == "write":
+            ledger.record_run(43, run_record(tmp_path, "run-2"))
+        else:
+            SqliteIssueRunLedger(path)
+    # Refusal must happen before a writer alters the replacement/damaged ledger.
+    with closing(sqlite3.connect(path)) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM issue_runs WHERE issue_number=43").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("symlink_location", ["run_dir", "worktree"])
+@pytest.mark.parametrize("reconstruct", [False, True])
+def test_symlink_retarget_cannot_rebind_lexical_run_root(tmp_path, symlink_location, reconstruct):
+    path = tmp_path / "runs.sqlite"
+    original = run_record(tmp_path)
+    link = original.run.run_dir if symlink_location == "run_dir" else original.run.worktree_path
+    link.parent.mkdir(parents=True, exist_ok=True)
+    targets = (link.parent / "target-one", link.parent / "target-two")
+    for target in targets:
+        target.mkdir()
+    link.symlink_to(targets[0], target_is_directory=True)
+    ledger = SqliteIssueRunLedger(path)
+    ledger.record_run(42, original)
+
+    link.unlink()
+    link.symlink_to(targets[1], target_is_directory=True)
+    if reconstruct:
+        ledger = SqliteIssueRunLedger(path)
+    # Rebuild the typed assets just as a new process would after retargeting.
+    reconstructed = replace(original, run=SessionRunAssets.from_dict(original.run.to_dict()))
+    assert source(ledger).evidence_for_issue(42).runs == (reconstructed,)
+    ledger.record_run(42, reconstructed)
+    impostor = replace(
+        reconstructed,
+        run=replace(reconstructed.run, identity=replace(original.run.identity, started_at="2026-09-07T00:00:00Z")),
+    )
+    with pytest.raises(IssueRunEvidenceUnavailable):
+        ledger.record_run(43, impostor)
+    assert ledger.recorded_runs(42) == (original,)
+    assert ledger.recorded_runs(43) == ()
+
+
 @pytest.mark.parametrize("damage", ["missing", "table", "identity", "marker"])
 def test_restart_refuses_lost_established_ownership(tmp_path, damage):
     path = tmp_path / "runs.sqlite"
@@ -212,3 +277,12 @@ def test_same_clock_allocations_have_exclusive_distinct_roots(tmp_path):
 def test_evidence_rejects_impossible_status_payloads(status, runs):
     with pytest.raises(ValueError, match="status must agree"):
         IssueRunEvidence(42, status, runs, IssueRunEvidenceOrigin.RUN_LEDGER, NOW)
+
+
+@pytest.mark.parametrize("field", ["status", "origin"])
+def test_evidence_rejects_untyped_enum_values(field):
+    evidence = IssueRunEvidence(
+        42, IssueRunEvidenceStatus.NO_RUNS_RECORDED, (), IssueRunEvidenceOrigin.RUN_LEDGER, NOW,
+    )
+    with pytest.raises(TypeError, match=f"{field} must be typed"):
+        replace(evidence, **{field: str(getattr(evidence, field))})

@@ -39,9 +39,9 @@ class IssueRunEvidence:
     def __post_init__(self) -> None:
         if type(self.issue_number) is not int or self.issue_number <= 0:
             raise ValueError("evidence requires a positive issue number")
-        if not isinstance(self.status, IssueRunEvidenceStatus):
+        if type(self.status) is not IssueRunEvidenceStatus:
             raise TypeError("evidence status must be typed")
-        if not isinstance(self.origin, IssueRunEvidenceOrigin):
+        if type(self.origin) is not IssueRunEvidenceOrigin:
             raise TypeError("evidence origin must be typed")
         if (self.status is IssueRunEvidenceStatus.RUNS_RECORDED) != bool(self.runs):
             raise ValueError("evidence status must agree with recorded runs")
