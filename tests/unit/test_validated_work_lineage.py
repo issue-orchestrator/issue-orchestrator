@@ -292,16 +292,27 @@ def test_publication_fact_cannot_move_backward_or_accept_unproven_containment(tm
     assert store.lineage_publication(before.lineage_key) == before
 
 
-def test_failed_predecessor_classifies_waiter_without_moving_baseline(tmp_path):
+@pytest.mark.parametrize(
+    "failure",
+    [
+        Failure.ANCESTOR_OF_PENDING_HEAD,
+        Failure.DIVERGENT_VALIDATED_HEADS,
+        Failure.AWAITING_LINEAGE_PREDECESSOR,
+        Failure.REMOTE_BASELINE_UNPROVEN,
+        Failure.PUSH_FAILED,
+        Failure.ARTIFACT_MISSING,
+    ],
+)
+def test_failed_predecessor_classifies_waiter_without_moving_baseline(
+    tmp_path, failure
+):
     store = Rig(tmp_path / "work.sqlite").open()
     a, b = capture(V), capture(L)
     store.admit(a)
     token = claim(store, a)
     begin(store, token)
     store.admit(b)
-    assert store.fail(
-        token, failure=Failure.PUSH_FAILED, reason="failed", failed_at=LATER
-    )
+    assert store.fail(token, failure=failure, reason="failed", failed_at=LATER)
     row = store.get(b.evidence.record_id)
     assert row.state is State.QUEUED and row.lineage_role is LineageRole.HEAD
     assert (
@@ -311,6 +322,39 @@ def test_failed_predecessor_classifies_waiter_without_moving_baseline(tmp_path):
         == ROOT
     )
     assert store.get(a.evidence.record_id).state is State.FAILED
+    assert store.get(a.evidence.record_id).failure is failure
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        Failure.ANCESTOR_OF_PENDING_HEAD,
+        Failure.DIVERGENT_VALIDATED_HEADS,
+        Failure.AWAITING_LINEAGE_PREDECESSOR,
+        Failure.REMOTE_BASELINE_UNPROVEN,
+        Failure.PUSH_FAILED,
+    ],
+)
+def test_failed_waiter_is_not_released_by_predecessor_publication(tmp_path, failure):
+    rig = Rig(tmp_path / "work.sqlite")
+    store = rig.open()
+    predecessor, waiter = capture(V), capture(L)
+    store.admit(predecessor)
+    owner = claim(store, predecessor)
+    attempt = begin(store, owner)
+    store.admit(waiter)
+    token = claim(store, waiter)
+    assert store.fail(token, failure=failure, reason="waiter failed", failed_at=LATER)
+    finalize(store, owner, attempt)
+    reopened = rig.open()
+    row = reopened.get(token.record_id)
+    assert (row.state, row.failure, row.reason) == (
+        State.FAILED,
+        failure,
+        "waiter failed",
+    )
+    assert row.lineage_role is LineageRole.HEAD
+    assert begin(reopened, token) is None
 
 
 def test_attached_promotion_cannot_erase_existing_lineage_restriction(tmp_path):

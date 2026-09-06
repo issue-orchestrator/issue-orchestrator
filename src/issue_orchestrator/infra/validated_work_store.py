@@ -132,14 +132,9 @@ class SqliteValidatedWorkStore:
             )
 
     def has_unresolved_work(self, issue_number: int) -> bool:
-        with self._db.transaction() as conn:
-            return (
-                conn.execute(
-                    "SELECT 1 FROM validated_work_records WHERE issue_number=? AND state IN ('queued','parked','publishing','failed') LIMIT 1",
-                    (issue_number,),
-                ).fetchone()
-                is not None
-            )
+        # Materialize the typed batch before answering: an invalid excluded row
+        # must never turn the teardown/reset safety probe into "no work".
+        return self.for_issue(issue_number).unresolved
 
     def evidence_for_id(self, evidence_id: str) -> EvidenceLookup | None:
         with self._db.transaction() as conn:

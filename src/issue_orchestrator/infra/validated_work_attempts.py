@@ -22,7 +22,12 @@ from ..domain.validated_work_store import (
     PublishAttempt,
     PublishValidatedHeadStatus as Status,
 )
-from ..domain.validated_work_publish_policy import publication_eligible, retry_permitted, recordable_outcome, attempt_requires_failure
+from ..domain.validated_work_publish_policy import (
+    publication_eligible,
+    retry_permitted,
+    recordable_outcome,
+    attempt_requires_failure,
+)
 from .validated_work_claims import ClaimAuthority
 from .validated_work_lineage import LineageClassifier
 from .validated_work_rows import attempt_row, current_evidence, record_row
@@ -72,7 +77,9 @@ class PublishAttemptWriter:
         ).fetchone()
         count = last["attempt_no"] if last is not None else 0
         if count != expected_attempt_no or not retry_permitted(
-            attempt_row(last) if last is not None else None, fence=claim.fence, evidence_id=evidence.evidence_id
+            attempt_row(last) if last is not None else None,
+            fence=claim.fence,
+            evidence_id=evidence.evidence_id,
         ):
             return None
         if count >= PUBLISH_ATTEMPT_LIMIT:
@@ -132,8 +139,6 @@ class PublishAttemptWriter:
         failure: Failure | None,
         finished_at: str,
     ) -> bool:
-        if not recordable_outcome(outcome):
-            return False
         if (
             not self._claims.holds(conn, claim)
             or type(attempt) is not PublishAttempt
@@ -152,6 +157,8 @@ class PublishAttemptWriter:
         ):
             return False
         if record_row(conn, claim.record_id)["state"] != "publishing":
+            return False
+        if not recordable_outcome(outcome):
             return False
         # The same constructor that validates durable reads must admit the
         # completed value before any write. Do not duplicate its shape rules.
@@ -172,7 +179,9 @@ class PublishAttemptWriter:
                 claim.fence,
             ),
         )
-        if attempt_requires_failure(outcome, attempt_no=attempt.attempt_no, limit=PUBLISH_ATTEMPT_LIMIT):
+        if attempt_requires_failure(
+            outcome, attempt_no=attempt.attempt_no, limit=PUBLISH_ATTEMPT_LIMIT
+        ):
             assert failure is not None
             self.fail(conn, claim, failure, failure.value, finished_at)
         return True
