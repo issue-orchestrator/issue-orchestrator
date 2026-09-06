@@ -2824,6 +2824,17 @@ class TestTechLeadCompletionEffects:
         session = make_tech_lead_session(worktree)
         arm_investigation_session(config, session)
         plant_tech_lead_decision_pair(session, comment_targets=(1,))
+        # A completed investigation owns a next step as well as a diagnosis.
+        data_dir = session.run_dir / "tech-lead-data"
+        decision_path = data_dir / "tech-lead-decision.json"
+        decision = json.loads(decision_path.read_text())
+        decision["proposed_actions"].append({
+            "id": "A2", "action_type": "escalate_to_human", "target_number": 1,
+            "body": "A human must approve the diagnosed remedy.", "finding_ids": ["T1"],
+        })
+        decision_path.write_text(json.dumps(decision))
+        report_path = data_dir / "tech-lead-report.md"
+        report_path.write_text(report_path.read_text() + "\nT1 leads to A2: human disposition.\n")
 
         result = processor.process(
             worktree, run_assets=session.run_assets, issue_number=1,
