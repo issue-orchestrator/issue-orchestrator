@@ -40,8 +40,7 @@ from .bootstrap_pending_work import (
     require_repository_host,
 )
 from .bootstrap_session_launcher import build_session_launcher_factory
-from ..execution.issue_run_ledger import SqliteIssueRunLedger
-from ..control.issue_run_allocator import IssueRunAllocationService
+from .bootstrap_run_services import create_io_adapters as _create_io_adapters, build_issue_run_services
 from .bootstrap_operator_commands import build_operator_issue_command_factory
 from .bootstrap_completion import (
     _validation_attempt_key_factory,
@@ -330,21 +329,6 @@ def _create_planner(
         label_manager=label_manager,
     )
     return planner, scheduler, dependency_evaluator, label_sync
-
-
-def _create_io_adapters(github_auth: GitHubAuth | None = None) -> tuple[
-    GitWorktreeManager,
-    GitWorkingCopy,
-    LocalCommandRunner,
-    FileSystemSessionOutput,
-]:
-    """Create IO adapter instances."""
-    return (
-        GitWorktreeManager(),
-        GitWorkingCopy(git_auth=github_auth),
-        LocalCommandRunner(),
-        FileSystemSessionOutput(),
-    )
 
 
 def create_attempt_store(config: Config) -> "AttemptStore":
@@ -699,10 +683,7 @@ def build_orchestrator(
         label_writer=repository_host,
         label_manager=label_manager, events=events)
 
-    issue_run_ledger = SqliteIssueRunLedger(
-        state_dir(config.repo_root) / "issue_run_ledger.sqlite"
-    )
-    issue_run_allocator = IssueRunAllocationService(session_output, issue_run_ledger)
+    issue_run_ledger, issue_run_allocator = build_issue_run_services(config.repo_root, session_output)
     completion_processor, session_controller_instance, completion_handler_factory = create_completion_components(
         config, github, events, working_copy, session_output, command_runner, provider_resilience,
         issue_run_allocator=issue_run_allocator,
@@ -980,10 +961,7 @@ def build_orchestrator_for_testing(
     working_copy = GitWorkingCopy()
     command_runner = LocalCommandRunner()
     session_output = FileSystemSessionOutput()
-    issue_run_ledger = SqliteIssueRunLedger(
-        state_dir(config.repo_root) / "issue_run_ledger.sqlite"
-    )
-    issue_run_allocator = IssueRunAllocationService(session_output, issue_run_ledger)
+    issue_run_ledger, issue_run_allocator = build_issue_run_services(config.repo_root, session_output)
     coder_prompt_addendum = build_coder_prompt_addendum_provider(config)
 
     # A test composition must never shell out to a real provider CLI: readiness
