@@ -1056,11 +1056,6 @@ class Orchestrator:
     def _apply_plan(self, plan: "Plan") -> None:
         self._plan_applier.apply_plan(plan, self._pause_issue_for_reconciliation)
 
-    def _fetch_all_issues(self, required_stable_ids: set[str] | None = None) -> list[Issue]:
-        return list(self._github_workflow.fetch_all_issues(
-            self._get_milestone_filter(), required_stable_ids,
-        ).issues)
-
     def update_queue_cache(self) -> None:
         self._plan_applier.update_queue_cache()
 
