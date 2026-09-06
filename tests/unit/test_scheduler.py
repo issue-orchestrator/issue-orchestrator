@@ -1413,7 +1413,7 @@ class TestLaunchSessionDependencyCAS:
         config.repo = "test/repo"
         config.repo_root = "/tmp"
         config.worktree_base = "/tmp"  # Top-level worktree_base
-        config.agents = {"agent:backend": MagicMock()}  # No per-agent worktree_base/repo_root
+        config.agents = {"agent:backend": AgentConfig(prompt_path="unused-prompt.md", provider="claude")}  # No per-agent worktree_base/repo_root
         config.setup_worktree = None
 
         # Create a mock repository host
@@ -1434,6 +1434,7 @@ class TestLaunchSessionDependencyCAS:
             orch.deps.runner.session_exists.return_value = False
             orch.deps.repository_host = mock_repository_host
             orch.deps.session_manager = MagicMock()
+            orch.deps.session_manager.exists.return_value = False
             orch.deps.worktree_manager = MagicMock()
             orch.deps.working_copy = MagicMock()
             orch.deps.command_runner = MagicMock()
@@ -1468,6 +1469,7 @@ class TestLaunchSessionDependencyCAS:
         issue = Issue(
             number=1,
             title="Test",
+            milestone="M1",
             labels=["agent:backend"],
             body="No deps originally",
         )
@@ -1476,16 +1478,22 @@ class TestLaunchSessionDependencyCAS:
         fresh_issue = Issue(
             number=1,
             title="Test",
+            milestone="M1",
             labels=["agent:backend"],
             body="Depends-on: #100",  # New dependency added!
         )
 
-        with patch.object(orch, '_refresh_issue', return_value=fresh_issue):
-            with patch.object(orch, '_session_exists', return_value=False):
-                result = orch.launch_session(issue)
+        with patch.object(orch, '_refresh_issue', return_value=fresh_issue) as refresh:
+            result = orch.launch_session(issue)
+        refresh.assert_called_once_with(1)
 
         # Should have skipped due to new unsatisfied dependency
         assert result is None
+        blocked = [event for event in events.events if event.name == "issue.dependency_blocked"]
+        assert len(blocked) == 1
+        assert blocked[0].data["issue_number"] == 1
+        orch.deps.worktree_manager.create.assert_not_called()
+        orch.deps.provider_readiness_probe.check_launch_readiness.assert_not_called()
 
     def test_launch_does_not_block_if_dependencies_satisfied(self, checker, events):
         """launch_session does not emit block event if dependencies are satisfied."""
@@ -1503,7 +1511,7 @@ class TestLaunchSessionDependencyCAS:
         config.repo = "test/repo"
         config.repo_root = "/tmp/repo"
         config.worktree_base = "/tmp"  # Top-level worktree_base
-        config.agents = {"agent:backend": MagicMock()}  # No per-agent worktree_base/repo_root
+        config.agents = {"agent:backend": AgentConfig(prompt_path="unused-prompt.md", provider="claude")}  # No per-agent worktree_base/repo_root
         config.setup_worktree = None
 
         # Create a mock repository host
@@ -1512,7 +1520,6 @@ class TestLaunchSessionDependencyCAS:
 
         # Create mock worktree manager
         mock_worktree_manager = MagicMock()
-        mock_worktree_manager.create.side_effect = Exception("Stop here - deps check passed")
 
         with patch.object(Orchestrator, '__init__', lambda self, *args, **kwargs: None):
             orch = Orchestrator.__new__(Orchestrator)
@@ -1528,6 +1535,7 @@ class TestLaunchSessionDependencyCAS:
             orch.deps.runner.session_exists.return_value = False
             orch.deps.repository_host = mock_repository_host
             orch.deps.session_manager = MagicMock()
+            orch.deps.session_manager.exists.return_value = False
             orch.deps.worktree_manager = mock_worktree_manager
             orch.deps.working_copy = MagicMock()
             orch.deps.command_runner = MagicMock()
@@ -1561,6 +1569,7 @@ class TestLaunchSessionDependencyCAS:
         issue = Issue(
             number=1,
             title="Test",
+            milestone="M1",
             labels=["agent:backend"],
             body="Depends-on: #100",
         )
@@ -1569,20 +1578,24 @@ class TestLaunchSessionDependencyCAS:
         fresh_issue = Issue(
             number=1,
             title="Test",
+            milestone="M1",
             labels=["agent:backend"],
             body="Depends-on: #100",
         )
 
-        # We only test up to the dependency check - if it passes, launch continues
-        # The rest of the launch will fail due to incomplete mocking, but that's OK
-        with patch.object(orch, '_refresh_issue', return_value=fresh_issue):
-            with patch.object(orch, '_session_exists', return_value=False):
-                # If we get to create_worktree, the dependency check passed
-                try:
-                    orch.launch_session(issue)
-                except Exception as e:
-                    if "Stop here" not in str(e):
-                        raise  # Re-raise unexpected errors
+        # Provider readiness is the next independent port after dependency CAS.
+        # A sentinel proves continuation reached that boundary; no worker is spawned.
+        class ReachedProviderAdmission(Exception):
+            pass
+
+        probe = orch.deps.provider_readiness_probe.check_launch_readiness
+        probe.side_effect = ReachedProviderAdmission
+        with patch.object(orch, '_refresh_issue', return_value=fresh_issue) as refresh:
+            with pytest.raises(ReachedProviderAdmission):
+                orch.launch_session(issue)
+        refresh.assert_called_once_with(1)
+        probe.assert_called_once_with("claude")
+        mock_worktree_manager.create.assert_not_called()
 
         # The key assertion: no dependency_blocked event was emitted
         dep_blocked_events = [e for e in events.events if e.name == "issue.dependency_blocked"]
