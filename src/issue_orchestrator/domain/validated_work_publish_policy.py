@@ -4,7 +4,6 @@ from .validated_work import (
     DispositionPhase,
     LineageRole,
     ValidatedWorkState,
-    ValidatedWorkFailure,
 )
 from .validated_work_store import PublishAttempt, PublishValidatedHeadStatus
 from .validated_work_commands import ValidatedWorkAuthoritySnapshot
@@ -58,25 +57,11 @@ def retry_permitted(
     return last.outcome is PublishValidatedHeadStatus.TRANSIENT_FAILURE
 
 
-def recordable_outcome(
-    outcome: PublishValidatedHeadStatus, failure: ValidatedWorkFailure | None
-) -> bool:
-    """Validate publisher intent before a store transaction may persist it."""
-    if type(outcome) is not PublishValidatedHeadStatus or (
-        failure is not None and type(failure) is not ValidatedWorkFailure
-    ):
-        raise ValueError("attempt outcome and failure must be typed")
-    if outcome is PublishValidatedHeadStatus.SUPERSEDED:
-        return False
-    successful = outcome in {
-        PublishValidatedHeadStatus.PUBLISHED,
-        PublishValidatedHeadStatus.ALREADY_AT_TARGET,
-    }
-    if not successful and failure is None:
-        raise ValueError("unsuccessful attempt requires enumerated failure")
-    if successful and failure is not None:
-        raise ValueError("successful attempt cannot carry failure")
-    return True
+def recordable_outcome(outcome: PublishValidatedHeadStatus) -> bool:
+    """Reject unsupported intent; authenticated attempt construction owns shape."""
+    if type(outcome) is not PublishValidatedHeadStatus:
+        raise ValueError("attempt outcome must be typed")
+    return outcome is not PublishValidatedHeadStatus.SUPERSEDED
 
 
 def attempt_requires_failure(
