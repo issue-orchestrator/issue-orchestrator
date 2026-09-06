@@ -498,3 +498,51 @@ def test_this_repositorys_checked_in_plan_is_valid():
         6983: (6959, 6970, 6973),
         6918: (6961, 6978),
     }
+
+
+# --- the pause gate --------------------------------------------------------
+
+
+def test_every_planned_mutation_is_fail_closed_on_the_pause_label():
+    """A paused issue is one a human is reconciling; this lane must not touch it."""
+    from issue_orchestrator.control.reconciliation import get_pause_label
+
+    evidence = _reconciler().plan_ledger_actions(
+        _plan(), pattern_ledger=_ledger(), observed_at=OBSERVED_AT
+    )
+    closures = _reconciler().plan_closure_actions(
+        _plan(),
+        case_file_numbers={"search-api-budget-exhaustion": 7100},
+        open_duplicates={6966, 6977},
+    )
+
+    assert evidence and closures
+    for action in [*evidence, *closures]:
+        assert action.expected is not None, action
+        assert get_pause_label() in action.expected.forbidden_labels, action
+
+
+def test_deferred_closures_name_the_duplicates_awaiting_a_case_file():
+    """A first dry run can still show the whole intended outcome."""
+    reconciler = _reconciler()
+
+    assert reconciler.deferred_closures(_plan(), case_file_numbers={}) == (6966, 6977)
+    assert (
+        reconciler.deferred_closures(
+            _plan(), case_file_numbers={"search-api-budget-exhaustion": 7100}
+        )
+        == ()
+    )
+
+
+def test_the_closure_comment_says_reopening_alone_does_not_stick():
+    """Reopening without editing the plan is folded again on the next run."""
+    closures = _reconciler().plan_closure_actions(
+        _plan(),
+        case_file_numbers={"search-api-budget-exhaustion": 7100},
+        open_duplicates={6966},
+    )
+
+    comment = closures[0].comment
+    assert "6989-plan" in comment
+    assert "remove" in comment.lower()

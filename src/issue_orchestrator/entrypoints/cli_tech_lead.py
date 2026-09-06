@@ -30,21 +30,19 @@ import dataclasses
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Mapping, Sequence
+from typing import TYPE_CHECKING
 
 from rich.console import Console
 
 from .cli_support import load_config
 
 if TYPE_CHECKING:
-    from ..control.action_results import ActionResult
-    from ..control.actions import Action
     from ..control.tech_lead_case_file_reconciliation import (
+        CaseFileReconciliationHost,
         CaseFileReconciliationPlan,
         ReconciliationPhase,
     )
     from ..control.tech_lead_trigger import TechLeadTerminationOutcome
-    from ..domain.tech_lead_findings import PatternEvidence
     from ..infra.config import Config
     from ..infra.orchestrator import Orchestrator
     from ..infra.repo_lock import AlreadyRunning
@@ -184,10 +182,11 @@ def cmd_reconcile_case_files(args: argparse.Namespace) -> int:
     by signature, each observation is create-once by an identity derived from
     the plan file, and a duplicate that is already closed is not closed again.
     """
+    from .bootstrap import build_case_file_reconciliation_host
     from ..infra.repo_lock import AlreadyRunning, held_repo_lock
 
     try:
-        plan = _load_reconciliation_plan(Path(args.plan))
+        plan = load_reconciliation_plan(Path(args.plan))
     except (OSError, ValueError) as exc:
         console.print(f"[red]Invalid reconciliation plan:[/red] {exc}")
         return 2
@@ -201,8 +200,11 @@ def cmd_reconcile_case_files(args: argparse.Namespace) -> int:
             _configure_one_shot_tech_lead_run(config, label="reconcile-case-files")
             orchestrator = _build_orchestrator(config)
             try:
-                return _run_case_file_reconciliation(
-                    orchestrator, plan, apply_writes=bool(args.apply)
+                return run_case_file_reconciliation(
+                    plan,
+                    build_case_file_reconciliation_host(orchestrator),
+                    config=orchestrator.config,
+                    apply_writes=bool(args.apply),
                 )
             finally:
                 _release(orchestrator)
@@ -211,11 +213,17 @@ def cmd_reconcile_case_files(args: argparse.Namespace) -> int:
         return 1
 
 
-def _load_reconciliation_plan(path: Path) -> "CaseFileReconciliationPlan":
-    """Read and validate the plan file; raises ``OSError``/``ValueError``.
+def load_reconciliation_plan(path: Path) -> "CaseFileReconciliationPlan":
+    """Read and validate the plan file.
+
+    Exactly TWO failure modes, so the command can report every bad plan the
+    same way instead of dying on a traceback: ``OSError`` for the file itself
+    and ``ValueError`` for its contents — including a YAML syntax error, which
+    is a malformed plan like any other and is translated here rather than
+    escaping as a ``yaml`` exception the caller does not handle.
 
     The entrypoint owns the file read and the YAML decode; the typed value
-    object and every rule about what a plan may say belong to its control-layer
+    object and every rule about what a plan may SAY belong to its control-layer
     owner, so both this command and its tests validate identically.
     """
     import yaml
@@ -224,58 +232,58 @@ def _load_reconciliation_plan(path: Path) -> "CaseFileReconciliationPlan":
         CaseFileReconciliationPlan,
     )
 
-    return CaseFileReconciliationPlan.from_mapping(
-        yaml.safe_load(path.read_text(encoding="utf-8"))
-    )
+    try:
+        document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        raise ValueError(f"{path} is not valid YAML: {exc}") from exc
+    return CaseFileReconciliationPlan.from_mapping(document)
 
 
-class OrchestratorReconciliationHost:
-    """Binds the reconciliation's execution boundary to a live orchestrator.
-
-    The three effects the run cannot perform itself: read the pattern ledger,
-    ask whether one named issue is still open, and apply actions through the
-    ordinary ``ActionApplier``. No policy lives here.
-    """
-
-    def __init__(self, orchestrator: "Orchestrator") -> None:
-        self._orchestrator = orchestrator
-
-    def pattern_ledger(self) -> Mapping[str, "PatternEvidence"]:
-        from ..control.tech_lead_case_files import build_pattern_ledger
-
-        authority = self._orchestrator.deps.services.tech_lead_authority
-        return build_pattern_ledger(authority.list_pattern_evidence())
-
-    def issue_is_open(self, issue_number: int) -> bool:
-        host = self._orchestrator.deps.repository_host
-        return host.get_issue_state(issue_number) == "open"
-
-    def apply(self, actions: Sequence["Action"]) -> Sequence["ActionResult"]:
-        if not actions:
-            return ()
-        return self._orchestrator.deps.action_applier.apply_all(list(actions))
-
-
-def _run_case_file_reconciliation(
-    orchestrator: "Orchestrator",
+def run_case_file_reconciliation(
     plan: "CaseFileReconciliationPlan",
+    host: "CaseFileReconciliationHost",
     *,
+    config: "Config",
     apply_writes: bool,
 ) -> int:
-    """Run both reconciliation phases and render the outcome."""
+    """Run both reconciliation phases and render the outcome.
+
+    Returns the command's exit code: ``0`` for a dry run or a fully applied
+    plan, ``1`` for any halt or failure.
+    """
+    from ..control.claim_gate import ClaimLostError
+    from ..control.reconciliation import ReconciliationRequired
     from ..control.tech_lead_case_file_reconciliation import CaseFileReconciler
 
-    run = CaseFileReconciler(config=orchestrator.config).run(
-        plan,
-        OrchestratorReconciliationHost(orchestrator),
-        observed_at=datetime.now(timezone.utc).isoformat(),
-        apply_writes=apply_writes,
-    )
     console.print(
         f"[bold]Reconciliation plan `{plan.plan_id}`[/bold]:"
         f" {len(plan.clusters)} cluster(s),"
         f" {len(plan.all_duplicate_issue_numbers)} accumulated duplicate(s)"
     )
+    try:
+        run = CaseFileReconciler(config=config).run(
+            plan,
+            host,
+            observed_at=datetime.now(timezone.utc).isoformat(),
+            apply_writes=apply_writes,
+        )
+    except (ReconciliationRequired, ClaimLostError) as exc:
+        # The applier re-raises these past apply_all rather than reporting them
+        # as failures. Left uncaught they surface as a traceback; an operator
+        # running a reconciliation needs to be told the board moved (or that an
+        # issue is paused for human reconciliation) in the same voice as every
+        # other outcome (#6989 internal review F1).
+        console.print(
+            f"[red]Reconciliation halted — the board did not match what this"
+            f" run expected:[/red] {exc}"
+        )
+        console.print(
+            "  Nothing further was attempted. Resolve the issue's state (a"
+            " paused issue must be reconciled by a human first) and re-run;"
+            " every write is create-once, so a re-run applies only what did"
+            " not land."
+        )
+        return 1
     _report_phase(run.evidence)
     if run.halted_before_closure:
         console.print(
@@ -286,11 +294,18 @@ def _run_case_file_reconciliation(
         )
         return 1
     _report_phase(run.closure)
+    if run.deferred_closures:
+        console.print(
+            "  [dim]deferred until their case file exists: "
+            + ", ".join(f"#{number}" for number in run.deferred_closures)
+            + "[/dim]"
+        )
     if run.dry_run:
         console.print(
             "[yellow]Dry run — nothing was written.[/yellow] Re-run with"
-            " --apply to execute. Closures for a case file that does not exist"
-            " yet are planned only once its evidence has landed."
+            " --apply to execute. A closure can only be planned once its case"
+            " file exists, so on a first run the deferred list above is what"
+            " --apply will close."
         )
         return 0
     if not run.ok:

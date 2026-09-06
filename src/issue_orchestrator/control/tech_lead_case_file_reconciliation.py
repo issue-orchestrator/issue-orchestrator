@@ -22,12 +22,18 @@ Three properties make it safe to run against a live board:
 * **Idempotent.** Every write is create-once at a durable identity that is a
   pure function of the plan: the case file by its signature (the ledger row,
   plus :func:`~..domain.tech_lead_findings.case_file_issue_marker` remote
-  recovery), each observation by
+  recovery), and each observation by
   :func:`~..domain.tech_lead_findings.pattern_observation_id` over
-  ``(plan_id, session, action_id)``, and each closure by only being planned
-  for a duplicate that is still open. Re-running a fully-applied plan plans
-  the appends the ledger already recorded — which the owner then skips — and
-  no closures at all.
+  ``(plan_id, session, action_id)``. Re-running a fully-applied plan re-plans
+  the appends the ledger already recorded — which the owner then skips without
+  commenting — and closes nothing, because every duplicate is already closed.
+
+  The one thing that is NOT create-once is a closure, which is gated on
+  "still open" rather than on a durable record of the fold. So an issue
+  REOPENED while it is still listed in the plan is folded and closed again on
+  the next run. That is why the plan is a checked-in, reviewed file and why
+  :func:`_closure_comment` says so on the issue itself: disagreeing with a fold
+  means editing the plan, not just reopening (#6989 internal review F2).
 * **Establishes nothing.** A reconciliation entry is an evidence-only
   :meth:`~.tech_lead_case_files.CaseFileIntake.sighting`, exactly like a live
   accrued duplicate: it carries no ``fix_class``, no ``area``, and no
@@ -51,7 +57,7 @@ from typing import TYPE_CHECKING, Any, Collection, Mapping, Protocol, Sequence
 
 from ..domain.tech_lead_artifacts import ProposedTechLeadAction
 from .actions import Action, CloseIssueAction
-from .reconciliation import ExpectedState
+from .reconciliation import build_expected_for_mutation
 from .tech_lead_case_files import CaseFileIntake, PatternCaseFilePlanner
 
 if TYPE_CHECKING:
@@ -292,6 +298,10 @@ class ReconciliationRun:
     #: True when phase 1 failed, so no issue was closed. The distinction the
     #: operator needs: nothing was lost, and the run is safe to repeat.
     halted_before_closure: bool = False
+    #: Duplicates whose case file does not exist yet, so no closure could be
+    #: planned this run. Non-empty on a first dry run by construction — see
+    #: :meth:`CaseFileReconciler.deferred_closures`.
+    deferred_closures: tuple[int, ...] = ()
 
     @property
     def ok(self) -> bool:
@@ -364,6 +374,9 @@ class CaseFileReconciler:
                 actions=tuple(closure_actions),
                 results=tuple(host.apply(closure_actions)) if apply_writes else (),
             ),
+            deferred_closures=self.deferred_closures(
+                plan, case_file_numbers=case_file_numbers
+            ),
         )
 
     def _open_duplicates(
@@ -413,7 +426,13 @@ class CaseFileReconciler:
                 source_run_id=plan.plan_id,
                 source_session_name=RECONCILIATION_SESSION_NAME,
                 observed_at=observed_at,
-                expected=ExpectedState(),
+                # The SAME fail-closed expectation every other planner builds:
+                # the pause label (``io:needs-reconcile``) must be absent. A
+                # bare ``ExpectedState()`` would still spend the gate's label
+                # read and then satisfy unconditionally — the exact state
+                # ``CreateTechLeadCaseFileIssueAction`` rejects at construction,
+                # reached by another door (#6989 internal review F1).
+                expected=build_expected_for_mutation(),
             )
             planner.plan(self._registration_intake(cluster))
             for duplicate in cluster.duplicates:
@@ -447,7 +466,14 @@ class CaseFileReconciler:
                 actions.append(
                     CloseIssueAction(
                         issue_number=duplicate.issue_number,
-                        comment=_closure_comment(cluster, duplicate, case_file),
+                        comment=_closure_comment(
+                            plan, cluster, duplicate, case_file
+                        ),
+                        # Fail-closed like every other mutating action: an issue
+                        # carrying the pause label means a human is reconciling
+                        # it, and this lane must not close it out from under
+                        # them (#6989 internal review F1).
+                        expected=build_expected_for_mutation(),
                         reason=(
                             f"#6989 reconciliation {plan.plan_id}: folded"
                             f" #{duplicate.issue_number} into case file"
@@ -458,6 +484,27 @@ class CaseFileReconciler:
                 )
         return actions
 
+    def deferred_closures(
+        self,
+        plan: CaseFileReconciliationPlan,
+        *,
+        case_file_numbers: Mapping[str, int],
+    ) -> tuple[int, ...]:
+        """Duplicates no closure can be planned for yet, because their case file
+        does not exist.
+
+        Rendered by the caller so a FIRST dry run still shows the whole intended
+        outcome. Without it the operator is told to "read every planned action"
+        while the closure list is necessarily empty — the case files being
+        registered are created by the very run they are previewing.
+        """
+        return tuple(
+            number
+            for cluster in plan.clusters
+            if cluster.signature not in case_file_numbers
+            for number in cluster.duplicate_issue_numbers
+        )
+
     def _registration_intake(self, cluster: StandingProblemCluster) -> CaseFileIntake:
         return CaseFileIntake.sighting(
             ProposedTechLeadAction(
@@ -466,7 +513,11 @@ class CaseFileReconciler:
                 # because that is the shape the case-file lane renders — the
                 # same reuse ``tech_lead_observation_routing.case_file_sighting``
                 # makes. It is not an agent proposal and is never executed as
-                # one; only its body, id, and signature are read.
+                # one; the lane reads only ``id``, ``body``, ``pattern_signature``
+                # and ``finding_ids``. The type is therefore inert here, and it
+                # names what this evidence IS (a pattern observation) rather
+                # than the ``create_issue`` the routing lane preserves because
+                # there an agent really did propose one.
                 action_type="flag_pattern",
                 pattern_signature=cluster.signature,
                 body=_registration_body(cluster),
@@ -540,10 +591,18 @@ def _duplicate_body(
 
 
 def _closure_comment(
+    plan: CaseFileReconciliationPlan,
     cluster: StandingProblemCluster,
     duplicate: AccumulatedDuplicate,
     case_file_issue_number: int,
 ) -> str:
+    """Why this issue is closed — and what to do if the fold was wrong.
+
+    The disagreement path is explicit because reopening ALONE does not stick: a
+    later run of the same plan sees an open, still-listed duplicate and folds it
+    again. Naming the plan file here is what makes that recoverable by whoever
+    reads the comment, rather than a surprise (#6989 internal review F2).
+    """
     return (
         "## 🗂️ Folded into a pattern case file (#6989)\n\n"
         "This issue was a re-sighting of a standing problem that already had an"
@@ -554,5 +613,7 @@ def _closure_comment(
         f" **#{case_file_issue_number}** (signature `{cluster.signature}`),"
         " where this issue's contents were reproduced verbatim.\n\n"
         f"Why this was a duplicate: {duplicate.note}\n\n"
-        "Reopen it if the cluster turns out to be a distinct problem."
+        "**If this fold was wrong**, reopening is not enough on its own: remove"
+        f" this issue from the reconciliation plan `{plan.plan_id}` as well, or"
+        " a later run of that plan will fold and close it again."
     )

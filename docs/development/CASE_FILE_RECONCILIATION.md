@@ -42,12 +42,20 @@ close an issue whose evidence went nowhere.
 
 - **Bounded.** It touches exactly the issue numbers written in the plan file. It
   discovers nothing, searches nothing, and closes nothing it was not told about
-  by name. A cluster's `tracker` is never closed.
-- **Idempotent.** Re-running an applied plan is a no-op. The case file is
-  create-once by signature (ledger row + remote marker recovery), each
-  observation is create-once at an identity derived from `plan_id` + the entry's
-  id, and a duplicate that is already closed is not closed again. A partial run
-  is safe to repeat: it applies only what did not land.
+  by name. A cluster's `tracker` is never closed. Every mutation it plans is
+  fail-closed on the pause label: an issue carrying `io:needs-reconcile` halts
+  the run instead of being written to.
+- **Idempotent, with one named exception.** The case file is create-once by
+  signature (ledger row + remote marker recovery) and each observation is
+  create-once at an identity derived from `plan_id` + the entry's id, so a
+  re-run re-plans the same appends and the store skips them without commenting.
+  A partial run is safe to repeat: it applies only what did not land.
+
+  The exception is closure, which is gated on "still open" rather than on a
+  durable record of the fold. **An issue reopened while it is still listed in
+  the plan will be folded and closed again on the next run.** Disagreeing with a
+  fold means editing the plan, not just reopening — which is what the closure
+  comment tells whoever reads it.
 - **Establishes nothing.** A reconciliation entry is an evidence-only sighting —
   no `fix_class`, no `area`, no `diagnosis`. A signature registered this way is
   a ledger plus an evidence trail and stays **unclassified**, so backfilled
@@ -97,7 +105,11 @@ plan file with its own id.
 
 1. Stop the engine. The command holds the repo lock for its whole lifecycle
    because it mutates the pattern ledger a running orchestrator also owns.
-2. Dry-run and read every planned action.
+2. Dry-run and read every planned action. On a **first** run the closure list is
+   necessarily empty — a closure can only be planned once its case file exists,
+   and this run is what creates it — so the command prints those duplicates
+   under `deferred until their case file exists`. That list is what `--apply`
+   will close.
 3. Re-run with `--apply`.
 4. Confirm: the duplicates are closed and each names its case file; the case
    files carry one observation per folded issue.
@@ -105,6 +117,21 @@ plan file with its own id.
 ```bash
 gh issue list --state open --search '"Pattern case file:" in:title'
 ```
+
+A run that reports `Reconciliation halted` did not match the board it expected —
+usually a paused (`io:needs-reconcile`) issue. Resolve that state and re-run;
+nothing partial is lost.
+
+### Keeping future sightings on the case file you just registered
+
+Registering a signature does not by itself route future sightings to it. When
+the tech lead cites a duplicate without naming a `pattern_signature`, the
+forward lane derives one from the cited issue (`duplicate-of-#<n>`), which would
+open a *second* ledger for the same class. The tech-lead prompt asks the agent
+to name the recurring class; the case files' titles carry the signature and
+appear in the board snapshot, which is how it learns the existing names. If you
+see a `duplicate-of-#<n>` case file for a class you registered here, that is the
+signal to fold it in with a follow-up plan.
 
 ## This repository's backlog
 
