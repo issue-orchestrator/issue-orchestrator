@@ -151,16 +151,20 @@ def failure_investigation_scratch_identity(
 
 def shape_requested_actions_for_tech_lead(
     requested: tuple[RequestedAction, ...],
+    *,
+    has_publishable_changes: bool,
 ) -> tuple[RequestedAction, ...]:
     """Drop POST_COMMENT from a tech_lead completion's requested actions.
 
     Tech Lead prompts promise the orchestrator posts no comments; the generic
     "## Implementation" template would land on the tracking issue otherwise.
-    PUSH_BRANCH/CREATE_PR stay: real prompt/doc improvements should publish.
+    Publication intent is resolved before review exchange preparation. A clean
+    audit has no code review or publication work; real changes retain both.
     """
-    return tuple(
-        action for action in requested if action is not RequestedAction.POST_COMMENT
-    )
+    excluded = {RequestedAction.POST_COMMENT}
+    if not has_publishable_changes:
+        excluded.update({RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR})
+    return tuple(action for action in requested if action not in excluded)
 
 
 def is_benign_tech_lead_no_commits(

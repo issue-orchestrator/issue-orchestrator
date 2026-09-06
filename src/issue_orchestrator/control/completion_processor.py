@@ -797,12 +797,6 @@ class CompletionProcessor:
                 return ProcessingResult(
                     success=False, message=agent_error, errors=[agent_error]
                 )
-        # Tech Lead prompts promise no orchestrator comments (ADR-0031); the
-        # record is untrusted intent, so shape it once at the door.
-        if self._is_tech_lead_session(agent_label):
-            record.requested_actions = list(
-                shape_requested_actions_for_tech_lead(tuple(record.requested_actions))
-            )
         requested_actions = tuple(record.requested_actions)
         running_query = ReviewExchangeRunningQuery(
             issue_number=issue_number,
@@ -925,6 +919,32 @@ class CompletionProcessor:
             cleanup_completion_record_fn=self._cleanup_completion_record,
         )
 
+    def _shape_tech_lead_completion_actions(
+        self, worktree: Path, record: CompletionRecord, agent_label: str | None
+    ) -> ProcessingResult | None:
+        """Resolve publication intent before any review/publish gate is armed."""
+        if not self._is_tech_lead_session(agent_label):
+            return None
+        has_changes = False
+        if any(
+            action in (RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR)
+            for action in record.requested_actions
+        ):
+            base_ref = f"origin/{self._base_branch()}"
+            diff = self.git_adapter.diff_against_base(worktree, base_ref)
+            if not diff.success:
+                error = (
+                    f"{ERROR_PREFIX_PUBLISH_BLOCKED}: Cannot determine tech-lead "
+                    f"publication intent against {base_ref}: "
+                    f"{diff.error or 'unknown git error'}"
+                )
+                return ProcessingResult(success=False, message=error, errors=[error])
+            has_changes = bool(diff.diff_text)
+        record.requested_actions = list(shape_requested_actions_for_tech_lead(
+            tuple(record.requested_actions), has_publishable_changes=has_changes
+        ))
+        return None
+
     def _reject_tech_lead_completion_if_invalid(
         self,
         *,
@@ -1021,6 +1041,12 @@ class CompletionProcessor:
                 worktree_state,
                 run_assets,
             )
+
+        shaping_failure = self._shape_tech_lead_completion_actions(
+            worktree, record, agent_label
+        )
+        if shaping_failure is not None:
+            return shaping_failure
 
         test_skip_error = self._check_test_skip_guard_if_required(
             worktree,
