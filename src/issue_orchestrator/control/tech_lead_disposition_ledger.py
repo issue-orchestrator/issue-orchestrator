@@ -45,10 +45,29 @@ class DispositionWaitLifecycle:
         if row.phase not in {"prepared", "waiting"}:
             return False
         if now >= row.reassess_at or tracker_state in {"closed", None}:
-            self._authority.transition_disposition(previous=row,
-                disposition=replace(row, phase="reassess"))
+            self._lapse_same_incident(row)
             return False
         return self._authority.load_disposition(issue_number=row.issue_number) == row
+
+
+    def _lapse_same_incident(self, observed: "TechLeadDisposition") -> None:
+        """Positive lapse evidence survives a concurrent prepared→waiting commit.
+
+        Retry only phase advancement of the identical immutable command. A
+        terminal row, recovered tombstone, or superseding incident ends the
+        retry without mutation. Active phases advance monotonically, so this
+        needs at most one retry under the supported publication lifecycle.
+        """
+        current = observed
+        while current.phase in {"prepared", "waiting"}:
+            if self._authority.transition_disposition(previous=current,
+                    disposition=replace(current, phase="reassess")):
+                return
+            latest = self._authority.load_disposition(issue_number=observed.issue_number)
+            if latest is None or replace(latest, phase=observed.phase,
+                    recovered_at=observed.recovered_at) != observed:
+                return
+            current = latest
 
 
 class TechLeadDispositionLedger:

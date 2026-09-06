@@ -755,3 +755,54 @@ def test_unknown_tracker_read_preserves_admission_without_publishing():
     assert not result.success and result.details["pending_disposition"] is True
     assert harness.store.load_disposition(issue_number=BLOCKED) == row
     assert harness.host.comments == []
+
+
+@pytest.mark.parametrize("tracker_state", ["closed", None])
+@pytest.mark.parametrize("reopened_state", ["open", "unknown"])
+def test_lapse_survives_same_incident_phase_race_across_store_handles(tmp_path, tracker_state, reopened_state):
+    from issue_orchestrator.control.tech_lead_disposition_ledger import DispositionWaitLifecycle
+    from issue_orchestrator.infra.tech_lead_authority_store import SqliteTechLeadAuthorityStore
+    path = tmp_path / "authority.sqlite"
+    publisher = SqliteTechLeadAuthorityStore(path)
+    observed = replace(_disposition(), phase="prepared")
+    assert publisher.transition_disposition(previous=None, disposition=observed)
+    interleavings = []
+
+    class SweepStore(SqliteTechLeadAuthorityStore):
+        def transition_disposition(self, *, previous, disposition):
+            if disposition.phase == "reassess" and not interleavings:
+                interleavings.append("publisher committed waiting after sweep read")
+                assert publisher.transition_disposition(previous=observed,
+                    disposition=replace(observed, phase="waiting"))
+            return super().transition_disposition(previous=previous, disposition=disposition)
+
+    sweep = SweepStore(path)
+    lifecycle = DispositionWaitLifecycle(sweep)
+    assert not lifecycle.retain(observed, now=NOW, tracker_state=tracker_state)
+    persisted = publisher.load_disposition(issue_number=BLOCKED)
+    assert persisted.phase == "reassess"
+    assert interleavings == ["publisher committed waiting after sweep read"]
+    restarted = DispositionWaitLifecycle(SqliteTechLeadAuthorityStore(path))
+    assert not restarted.retain(persisted, now=NOW, tracker_state=reopened_state)
+    assert publisher.load_disposition(issue_number=BLOCKED) == persisted
+
+
+@pytest.mark.parametrize("replacement", ["recovered", "new-incident", "reassess"])
+def test_lapse_never_clobbers_a_terminal_or_superseding_incident(tmp_path, replacement):
+    from issue_orchestrator.control.tech_lead_disposition_ledger import DispositionWaitLifecycle
+    from issue_orchestrator.infra.tech_lead_authority_store import SqliteTechLeadAuthorityStore
+    path = tmp_path / "authority.sqlite"
+    sweep, publisher = SqliteTechLeadAuthorityStore(path), SqliteTechLeadAuthorityStore(path)
+    observed = replace(_disposition(), phase="prepared")
+    assert sweep.transition_disposition(previous=None, disposition=observed)
+    if replacement == "new-incident":
+        recovered = replace(observed, phase="recovered", recovered_at=NOW.isoformat())
+        assert publisher.transition_disposition(previous=observed, disposition=recovered)
+        current = replace(observed, source_run_id="new-run", recorded_at=NOW.isoformat())
+        assert publisher.transition_disposition(previous=recovered, disposition=current)
+    else:
+        current = replace(observed, phase=replacement,
+            recovered_at=NOW.isoformat() if replacement == "recovered" else "")
+        assert publisher.transition_disposition(previous=observed, disposition=current)
+    assert not DispositionWaitLifecycle(sweep).retain(observed, now=NOW, tracker_state="closed")
+    assert publisher.load_disposition(issue_number=BLOCKED) == current

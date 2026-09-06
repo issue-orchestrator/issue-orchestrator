@@ -234,8 +234,11 @@ def validate_decision_for_authority(
         return target_violation
     if authority.flavor is TechLeadSessionFlavor.FAILURE_INVESTIGATION:
         focus = authority.focus_issue_number
-        has_focus_comment = any(action.action_type == "post_comment" and action.target_number == focus for action in decision.proposed_actions)
-        if not has_focus_comment:
+        focus_comments = [action for action in decision.proposed_actions
+            if action.action_type == "post_comment" and action.target_number == focus]
+        if any(action.target_is_pr for action in focus_comments):
+            return f"failure investigation diagnosis targets issue #{focus}, not a PR"
+        if not focus_comments:
             return f"failure investigation decision must propose at least one post_comment targeting the originating issue #{focus} (the diagnosis has no channel otherwise)"
     if violation := investigation_disposition_violation(decision, authority):
         return violation
