@@ -151,3 +151,38 @@ def test_incomplete_scan_is_unreadable(remote_factory):
     remote = remote_factory(lambda _: httpx.Response(200, json=[pr_payload()] * 100))
     with pytest.raises(PublicationRemoteError, match="incomplete"):
         remote.list_prs(COMMAND)
+
+
+@pytest.mark.parametrize("method", ["read_branch", "read_pr", "list_prs", "create_pr"])
+def test_invalid_json_is_a_typed_remote_error(remote_factory, method):
+    remote = remote_factory(lambda _: httpx.Response(200, content=b"{not-json"))
+    with pytest.raises(PublicationRemoteError):
+        getattr(remote, method)(COMMAND, *([2] if method == "read_pr" else []))
+
+
+@pytest.mark.parametrize(
+    "endpoint,accepted",
+    [
+        ("https://github.com/owner/repo.git", True),
+        ("git@github.com:owner/repo.git", True),
+        ("ssh://git@github.com/owner/repo", True),
+        ("https://wrong.example/owner/repo.git", False),
+        ("https://github.com/wrong/repo.git", False),
+        ("https://github.com/owner/repo.git?other", False),
+        ("https://token@github.com/owner/repo.git", False),
+        ("https://github.com:444/owner/repo.git", False),
+        ("file:///tmp/repo.git", False),
+    ],
+)
+def test_push_endpoint_is_bound_to_repository_and_host(
+    remote_factory, endpoint, accepted
+):
+    from issue_orchestrator.domain.exact_git import ExactPushDestination
+
+    remote = remote_factory(
+        lambda _: pytest.fail("endpoint check must not access HTTP")
+    )
+    assert (
+        remote.accepts_push_destination(COMMAND, ExactPushDestination(endpoint))
+        is accepted
+    )

@@ -35,6 +35,9 @@ class Remote:
         self.on_branch_read = None
         self.stale_pr_head = None
 
+    def accepts_push_destination(self, command, destination):
+        return destination.endpoint == str(self.rig.remote)
+
     def read_branch(self, command):
         if self.read_error:
             raise PublicationRemoteError("offline")
@@ -85,7 +88,7 @@ class Remote:
             command.pr_base_branch,
             self.read_branch(command) or command.target_head_sha,
             PublicationPrState.OPEN,
-            "",
+            publication_marker(command.issue_number, command.branch_name),
         )
         pr = replace(pr, **kwargs)
         self.prs.append(pr)
@@ -288,9 +291,13 @@ def test_lost_create_response_cannot_adopt_unattributable_racing_pr(setup):
     remote = UnrelatedCreate(rig)
     executor = GitValidatedHeadExecutor(rig.working, remote)
     outcome = executor.publish_or_reconcile(command)
-    assert outcome.status is PublishValidatedHeadStatus.TRANSIENT_FAILURE
-    assert outcome.pr_number is None
+    assert outcome.status is PublishValidatedHeadStatus.REJECTED
+    assert outcome.pr_number == 1
     assert outcome.observed_remote_head_sha == rig.target
+    assert (
+        executor.publish_or_reconcile(command).status
+        is PublishValidatedHeadStatus.REJECTED
+    )
 
 
 def test_duplicate_created_during_create_is_refused(setup):
@@ -305,3 +312,117 @@ def test_duplicate_created_during_create_is_refused(setup):
     outcome = executor.publish_or_reconcile(command)
     assert outcome.status is PublishValidatedHeadStatus.REJECTED
     assert outcome.failure is ValidatedWorkFailure.DUPLICATE_OPEN_PR
+
+
+@pytest.mark.parametrize("after_create", [False, True])
+def test_failed_read_keeps_already_observed_pr_facts(setup, after_create):
+    rig, _, _, command = setup
+
+    class FailAfterPr(Remote):
+        def list_prs(self, command):
+            result = super().list_prs(command)
+            if not after_create:
+                self.read_error = True
+            return result
+
+        def create_pr(self, command):
+            result = super().create_pr(command)
+            self.read_error = True
+            return result
+
+    remote = FailAfterPr(rig)
+    if not after_create:
+        remote.add_pr(command)
+    executor = GitValidatedHeadExecutor(rig.working, remote)
+    outcome = executor.publish_or_reconcile(command)
+    assert outcome.status is PublishValidatedHeadStatus.TRANSIENT_FAILURE
+    assert outcome.pr_number == 1
+    assert outcome.pr_url == "https://example/pull/1"
+    assert outcome.pr_head_sha == rig.target
+    assert outcome.observed_remote_head_sha == rig.target
+
+
+def test_wrong_issue_marker_is_refused_on_every_retry(setup):
+    _, remote, executor, command = setup
+    remote.add_pr(command, body=publication_marker(99, command.branch_name))
+    for _ in range(2):
+        outcome = executor.publish_or_reconcile(command)
+        assert outcome.status is PublishValidatedHeadStatus.REJECTED
+        assert outcome.failure is ValidatedWorkFailure.PR_BRANCH_MISMATCH
+    assert remote.created == 0
+
+
+def test_recorded_pr_has_explicit_authority_without_marker(setup):
+    _, remote, executor, command = setup
+    pr = remote.add_pr(command, body="Unmarked but explicitly recorded")
+    outcome = executor.publish_or_reconcile(replace(command, pr_number=pr.number))
+    assert outcome.status is PublishValidatedHeadStatus.PUBLISHED
+
+
+@pytest.mark.parametrize("already_target", [False, True])
+def test_wrong_push_destination_is_rejected_before_any_remote_effect(
+    setup, tmp_path, already_target
+):
+    rig, remote, executor, command = setup
+    if already_target:
+        rig.run("push", "origin", f"{rig.target}:refs/heads/feature")
+    other = tmp_path / "wrong.git"
+    other.mkdir()
+    rig.git.run(other, ["init", "--bare"])
+    rig.run("remote", "set-url", "--push", "origin", str(other))
+    outcome = executor.publish_or_reconcile(command)
+    assert outcome.status is PublishValidatedHeadStatus.REJECTED
+    assert remote.read_branch(command) == (rig.target if already_target else rig.base)
+    assert rig.git.run(other, ["show-ref"], check=False).stdout == ""
+    assert remote.created == 0
+
+
+def test_pushurl_change_after_capture_is_refused(setup, tmp_path):
+    rig, remote, executor, command = setup
+    other = tmp_path / "wrong.git"
+    other.mkdir()
+    rig.git.run(other, ["init", "--bare"])
+    remote.on_branch_read = lambda: rig.run(
+        "remote", "set-url", "--push", "origin", str(other)
+    )
+    outcome = executor.publish_or_reconcile(command)
+    assert outcome.status is PublishValidatedHeadStatus.REJECTED
+    assert remote.read_branch(command) == rig.base
+    assert rig.git.run(other, ["show-ref"], check=False).stdout == ""
+
+
+@pytest.mark.parametrize("rewrite", ["insteadOf", "pushInsteadOf"])
+@pytest.mark.parametrize("after_capture", [False, True])
+def test_url_rewriting_is_refused_without_remote_writes(
+    setup, tmp_path, rewrite, after_capture
+):
+    rig, remote, executor, command = setup
+    other = tmp_path / "wrong.git"
+    other.mkdir()
+    rig.git.run(other, ["init", "--bare"])
+
+    def configure():
+        rig.run("config", f"url.{other}.{rewrite}", str(rig.remote))
+
+    if after_capture:
+        remote.on_branch_read = configure
+    else:
+        configure()
+    outcome = executor.publish_or_reconcile(command)
+    assert outcome.status is PublishValidatedHeadStatus.REJECTED
+    assert remote.read_branch(command) == rig.base
+    assert rig.git.run(other, ["show-ref"], check=False).stdout == ""
+
+
+def test_bound_push_preserves_original_pre_push_hook(setup):
+    rig, remote, executor, command = setup
+    marker = rig.root / "hook-ran"
+    hook = rig.root / ".git" / "hooks" / "pre-push"
+    hook.write_text(f'#!/bin/sh\ntouch "{marker}"\nexit 0\n')
+    hook.chmod(0o755)
+    assert (
+        executor.publish_or_reconcile(command).status
+        is PublishValidatedHeadStatus.PUBLISHED
+    )
+    assert marker.exists()
+    assert remote.read_branch(command) == rig.target

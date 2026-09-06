@@ -36,6 +36,26 @@ class GitValidatedHeadExecutor:
         self, command: PublishValidatedHeadCommand
     ) -> BranchWriteOutcome:
         try:
+            destination = self._git.resolve_push_destination(
+                command.source_workspace, remote=self._remote_name
+            )
+            if self._remote.accepts_push_destination(command, destination) is not True:
+                return BranchWriteOutcome(
+                    BranchWriteStatus.REJECTED,
+                    None,
+                    None,
+                    ValidatedWorkFailure.WORKSPACE_INTEGRITY,
+                    "Push destination does not match repository authority",
+                )
+        except (ValueError, GitError, OSError, PublicationRemoteError) as exc:
+            return BranchWriteOutcome(
+                BranchWriteStatus.REJECTED,
+                None,
+                None,
+                ValidatedWorkFailure.WORKSPACE_INTEGRITY,
+                str(exc),
+            )
+        try:
             observed = self._remote.read_branch(command)
         except PublicationRemoteError as exc:
             return BranchWriteOutcome(
@@ -84,6 +104,7 @@ class GitValidatedHeadExecutor:
                 branch=command.branch_name,
                 target_sha=command.target_head_sha,
                 expected_sha=observed,
+                destination=destination,
             )
         except (GitError, OSError, TimeoutError) as exc:
             return BranchWriteOutcome(
@@ -181,7 +202,7 @@ class GitValidatedHeadExecutor:
                     )
                 return self._checked_pr(command, recorded, PrEnsureStatus.RECONCILED)
             if scoped:
-                return self._checked_pr(command, scoped[0], PrEnsureStatus.ADOPTED)
+                return self._adopt_candidate(command, scoped[0])
             return self._create_or_recover(command)
         except PublicationRemoteError as exc:
             return self._pr_failure(
@@ -204,30 +225,56 @@ class GitValidatedHeadExecutor:
                 return self._pr_failure(
                     ValidatedWorkFailure.DUPLICATE_OPEN_PR, "Multiple PRs after create"
                 )
-            if (
-                len(candidates) != 1
-                or publication_marker(command.issue_number, command.branch_name)
-                not in candidates[0].body
-            ):
+            if len(candidates) != 1:
                 raise
-            return self._checked_pr(command, candidates[0], PrEnsureStatus.ADOPTED)
-        candidates = tuple(
-            pr
-            for pr in self._remote.list_prs(command)
-            if pr.branch == command.branch_name
-        )
-        if len(candidates) > 1:
+            return self._adopt_candidate(command, candidates[0])
+        return self._confirm_created(command, created)
+
+    def _adopt_candidate(
+        self, command: PublishValidatedHeadCommand, pr: PublicationPullRequest
+    ) -> PrEnsureOutcome:
+        if (
+            publication_marker(command.issue_number, command.branch_name)
+            not in pr.body.splitlines()
+        ):
             return self._pr_failure(
-                ValidatedWorkFailure.DUPLICATE_OPEN_PR, "Multiple PRs after create"
+                ValidatedWorkFailure.PR_BRANCH_MISMATCH,
+                "Unrecorded PR lacks this operation's exact marker",
+                observed=pr,
             )
-        observed = self._remote.read_pr(command, created.number)
-        if observed is None:
+        return self._checked_pr(command, pr, PrEnsureStatus.ADOPTED)
+
+    def _confirm_created(
+        self, command: PublishValidatedHeadCommand, created: PublicationPullRequest
+    ) -> PrEnsureOutcome:
+        try:
+            candidates = tuple(
+                pr
+                for pr in self._remote.list_prs(command)
+                if pr.branch == command.branch_name
+            )
+            if len(candidates) > 1:
+                return self._pr_failure(
+                    ValidatedWorkFailure.DUPLICATE_OPEN_PR,
+                    "Multiple PRs after create",
+                    observed=created,
+                )
+            observed = self._remote.read_pr(command, created.number)
+            if observed is None:
+                return self._pr_failure(
+                    ValidatedWorkFailure.REMOTE_UNREADABLE,
+                    "Created PR cannot be observed",
+                    transient=True,
+                    observed=created,
+                )
+            return self._checked_pr(command, observed, PrEnsureStatus.CREATED)
+        except PublicationRemoteError as exc:
             return self._pr_failure(
                 ValidatedWorkFailure.REMOTE_UNREADABLE,
-                "Created PR cannot be observed",
+                str(exc),
                 transient=True,
+                observed=created,
             )
-        return self._checked_pr(command, observed, PrEnsureStatus.CREATED)
 
     def _checked_pr(
         self,
@@ -244,19 +291,26 @@ class GitValidatedHeadExecutor:
             command.pr_base_branch,
         ):
             failure = ValidatedWorkFailure.PR_BRANCH_MISMATCH
-        elif (
-            pr.head_sha != command.target_head_sha
-            or self._remote.read_branch(command) != command.target_head_sha
-        ):
-            return PrEnsureOutcome(
-                PrEnsureStatus.TRANSIENT_FAILURE,
-                pr.number,
-                pr.url,
-                pr.head_sha,
-                ValidatedWorkFailure.PUBLISH_TARGET_MISMATCH,
-                "PR and remote must both identify target",
-            )
         else:
+            try:
+                remote_head = self._remote.read_branch(command)
+            except PublicationRemoteError as exc:
+                return self._pr_failure(
+                    ValidatedWorkFailure.REMOTE_UNREADABLE,
+                    str(exc),
+                    transient=True,
+                    observed=pr,
+                )
+            if (
+                pr.head_sha != command.target_head_sha
+                or remote_head != command.target_head_sha
+            ):
+                return self._pr_failure(
+                    ValidatedWorkFailure.PUBLISH_TARGET_MISMATCH,
+                    "PR and remote must both identify target",
+                    transient=True,
+                    observed=pr,
+                )
             return PrEnsureOutcome(
                 status, pr.number, pr.url, pr.head_sha, None, "Exact target PR ensured"
             )
@@ -271,13 +325,17 @@ class GitValidatedHeadExecutor:
 
     @staticmethod
     def _pr_failure(
-        failure: ValidatedWorkFailure, message: str, *, transient: bool = False
+        failure: ValidatedWorkFailure,
+        message: str,
+        *,
+        transient: bool = False,
+        observed: PublicationPullRequest | None = None,
     ) -> PrEnsureOutcome:
         return PrEnsureOutcome(
             PrEnsureStatus.TRANSIENT_FAILURE if transient else PrEnsureStatus.REFUSED,
-            None,
-            None,
-            None,
+            observed.number if observed else None,
+            observed.url if observed else None,
+            observed.head_sha if observed else None,
             failure,
             message,
         )
