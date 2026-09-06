@@ -111,9 +111,9 @@ def load_tech_lead_artifact_pair(
             )
 
     try:
-        with open(decision_path) as f:
+        with open(decision_path, encoding="utf-8") as f:
             payload = json.load(f)
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         logger.error("Invalid JSON in tech_lead decision %s: %s", decision_path, exc)
         return TechLeadArtifactLoadResult(
             failure=TechLeadDecisionLoadFailure.INVALID_JSON,

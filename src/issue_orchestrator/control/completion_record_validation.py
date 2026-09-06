@@ -294,6 +294,7 @@ class CompletionRecordValidator:
                     f"Cannot push: on protected branch '{branch}'",
                 )
 
+        if record.requests_publication:
             # The dirty gate is a publish-intent policy, not a push mechanic:
             # it exists so an agent cannot believe uncommitted work was
             # published. An escalation says the opposite out loud and names the
@@ -309,7 +310,7 @@ class CompletionRecordValidator:
         return WorktreeValidationResult.pass_()
 
     def check_dirty_policy(self, worktree: Path) -> WorktreeValidationResult:
-        """Apply validation.publish.dirty_check policy before push actions."""
+        """Apply validation.publish.dirty_check before push or PR publication."""
         mode = (
             self._config.validation.publish.dirty_check
             if self._config is not None

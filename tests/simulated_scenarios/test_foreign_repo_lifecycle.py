@@ -28,6 +28,7 @@ from issue_orchestrator.adapters.worktree.api import sync_cli_tools
 from issue_orchestrator.domain.models import Issue
 from issue_orchestrator.events import EventName
 from issue_orchestrator.execution.terminal_subprocess import SubprocessPlugin
+from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 from issue_orchestrator.execution.worktree_adapter import GitWorktreeManager
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.infra.env import ENV_PREFIX
@@ -204,11 +205,17 @@ def _coder_session_contract(
     completion_rel: str = ".issue-orchestrator/completion.json",
 ) -> ForeignSessionContract:
     session_name = f"coder-{issue_number}"
+    # A managed CLI invocation receives the launcher-owned directory and its
+    # identity manifest, even when the target repo has no validation command.
+    run_assets = FileSystemSessionOutput().start_run(
+        worktree_path=worktree_path, session_name=session_name,
+        issue_number=issue_number, agent_label="agent:coder",
+    )
     return ForeignSessionContract(
         issue_number=issue_number,
         session_name=session_name,
         completion_rel=completion_rel,
-        run_dir=worktree_path / ".issue-orchestrator" / "sessions" / session_name,
+        run_dir=run_assets.run_dir,
         worktree_path=worktree_path,
     )
 

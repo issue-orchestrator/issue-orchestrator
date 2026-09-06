@@ -22,8 +22,9 @@ import logging
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING
+from collections.abc import Callable
 
-from ..domain.models import RequestedAction
+from ..domain.models import CompletionRecord, RequestedAction
 from ..domain.session_key import TaskKind
 from ..domain.tech_lead_manifest import TechLeadManifest
 from ..domain.board_snapshot import BOARD_SNAPSHOT_FILENAME, BoardSnapshot
@@ -37,10 +38,12 @@ from ..domain.tech_lead_session import (
     TechLeadSessionFlavor,
 )
 from .completion_pr_collision import NoCommitsBetweenError
+from .completion_types import ERROR_PREFIX_PUBLISH_BLOCKED, ProcessingResult
 from .tech_lead_evidence import build_evidence_map, write_evidence_map
 from .tech_lead_manifest_builder import TechLeadCandidatePolicy, TechLeadManifestBuilder
 
 if TYPE_CHECKING:
+    from .completion_ports import GitAdapter
     from ..ports.board_snapshot_provider import BoardSnapshotProvider
     from ..infra.config import Config
     from ..ports import ManifestDownloader, RepositoryHost
@@ -151,16 +154,50 @@ def failure_investigation_scratch_identity(
 
 def shape_requested_actions_for_tech_lead(
     requested: tuple[RequestedAction, ...],
+    *,
+    has_publishable_changes: bool,
 ) -> tuple[RequestedAction, ...]:
     """Drop POST_COMMENT from a tech_lead completion's requested actions.
 
     Tech Lead prompts promise the orchestrator posts no comments; the generic
     "## Implementation" template would land on the tracking issue otherwise.
-    PUSH_BRANCH/CREATE_PR stay: real prompt/doc improvements should publish.
+    Publication intent is resolved before review exchange preparation. A clean
+    audit has no code review or publication work; real changes retain both.
     """
-    return tuple(
-        action for action in requested if action is not RequestedAction.POST_COMMENT
-    )
+    excluded = {RequestedAction.POST_COMMENT}
+    if not has_publishable_changes:
+        excluded.update({RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR})
+    return tuple(action for action in requested if action not in excluded)
+
+
+def resolve_tech_lead_completion_actions(
+    *,
+    worktree: Path,
+    record: CompletionRecord,
+    git_adapter: "GitAdapter",
+    base_branch: Callable[[], str],
+) -> ProcessingResult | None:
+    """Resolve tech-lead publication intent before review/publish gates arm.
+
+    Read the raw change fact only for requested publication. A failed read is
+    a critical rejection; it must never turn an unknown diff into a clean audit.
+    """
+    has_changes = False
+    if record.requests_publication:
+        base_ref = f"origin/{base_branch()}"
+        diff = git_adapter.diff_against_base(worktree, base_ref)
+        if not diff.success:
+            error = (
+                f"{ERROR_PREFIX_PUBLISH_BLOCKED}: Cannot determine tech-lead "
+                f"publication intent against {base_ref}: "
+                f"{diff.error or 'unknown git error'}"
+            )
+            return ProcessingResult(success=False, message=error, errors=[error])
+        has_changes = bool(diff.diff_text)
+    record.requested_actions = list(shape_requested_actions_for_tech_lead(
+        tuple(record.requested_actions), has_publishable_changes=has_changes
+    ))
+    return None
 
 
 def is_benign_tech_lead_no_commits(

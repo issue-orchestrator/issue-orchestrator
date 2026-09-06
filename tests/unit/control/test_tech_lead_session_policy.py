@@ -51,7 +51,7 @@ class TestShapeRequestedActionsForTechLead:
             RequestedAction.POST_COMMENT,
         )
 
-        shaped = shape_requested_actions_for_tech_lead(requested)
+        shaped = shape_requested_actions_for_tech_lead(requested, has_publishable_changes=True)
 
         assert shaped == (RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR)
 
@@ -63,7 +63,7 @@ class TestShapeRequestedActionsForTechLead:
             RequestedAction.POST_COMMENT,
         )
 
-        shaped = shape_requested_actions_for_tech_lead(requested)
+        shaped = shape_requested_actions_for_tech_lead(requested, has_publishable_changes=True)
 
         assert shaped == (
             RequestedAction.PUSH_BRANCH,
@@ -73,7 +73,14 @@ class TestShapeRequestedActionsForTechLead:
     def test_no_post_comment_is_identity(self) -> None:
         requested = (RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR)
 
-        assert shape_requested_actions_for_tech_lead(requested) == requested
+        assert shape_requested_actions_for_tech_lead(requested, has_publishable_changes=True) == requested
+
+    def test_clean_audit_drops_publication_but_keeps_other_intent(self) -> None:
+        assert shape_requested_actions_for_tech_lead(
+            (RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR,
+             RequestedAction.POST_COMMENT, RequestedAction.ADD_BLOCKED_LABEL),
+            has_publishable_changes=False,
+        ) == (RequestedAction.ADD_BLOCKED_LABEL,)
 
 
 class TestIsBenignTechLeadNoCommits:
