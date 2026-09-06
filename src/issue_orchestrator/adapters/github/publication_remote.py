@@ -1,6 +1,9 @@
 """Strict uncached publication reads over the shared GitHub HTTP boundary."""
 
 from typing import Any
+from urllib.parse import urlsplit
+
+from ...domain.exact_git import ExactPushDestination
 
 from ...domain.publication_remote import (
     PublicationPullRequest,
@@ -49,6 +52,37 @@ class GitHubPublicationRemote:
                 "Publication repository does not match configured remote"
             )
 
+    def accepts_push_destination(
+        self, command: PublishValidatedHeadCommand, destination: ExactPushDestination
+    ) -> bool:
+        self._require_repository(command)
+        endpoint = destination.endpoint
+        if endpoint.startswith("git@") and ":" in endpoint and "://" not in endpoint:
+            authority, path = endpoint.split(":", 1)
+            endpoint = f"ssh://{authority}/{path}"
+        try:
+            parsed = urlsplit(endpoint)
+            api = urlsplit(self._client.config.base_url)
+            expected_host = (
+                "github.com" if api.hostname == "api.github.com" else api.hostname
+            )
+            expected_port = (api.port or 443) if parsed.scheme == "https" else 22
+            if (
+                parsed.scheme not in {"https", "ssh"}
+                or parsed.hostname != expected_host
+                or parsed.port not in {None, expected_port}
+                or parsed.query
+                or parsed.fragment
+                or parsed.password is not None
+                or (parsed.scheme == "ssh" and parsed.username != "git")
+                or (parsed.scheme == "https" and parsed.username is not None)
+            ):
+                return False
+            path = parsed.path.removeprefix("/").removesuffix(".git")
+            return path.casefold() == self._repo_slug.casefold()
+        except ValueError:
+            return False
+
     def read_branch(self, command: PublishValidatedHeadCommand) -> str | None:
         self._require_repository(command)
         try:
@@ -80,7 +114,7 @@ class GitHubPublicationRemote:
                     "PR response number does not match request"
                 )
             return pr
-        except RepositoryHostError as exc:
+        except (RepositoryHostError, ValueError, TypeError) as exc:
             raise PublicationRemoteError(str(exc)) from exc
 
     def list_prs(
@@ -92,7 +126,7 @@ class GitHubPublicationRemote:
                 _pull_request(raw)
                 for raw in self._client.read_publication_prs(command.branch_name)
             )
-        except RepositoryHostError as exc:
+        except (RepositoryHostError, ValueError, TypeError) as exc:
             raise PublicationRemoteError(str(exc)) from exc
 
     def create_pr(self, command: PublishValidatedHeadCommand) -> PublicationPullRequest:
@@ -107,5 +141,5 @@ class GitHubPublicationRemote:
             if raw is None:
                 raise PublicationRemoteError("PR create response was lost")
             return _pull_request(raw)
-        except RepositoryHostError as exc:
+        except (RepositoryHostError, ValueError, TypeError) as exc:
             raise PublicationRemoteError(str(exc)) from exc
