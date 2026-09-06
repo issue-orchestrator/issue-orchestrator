@@ -9,8 +9,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 
-from ..domain.dependencies import Dependency, DependencyState
-from ..domain.dependency_gates import DependencyGateReport
+from ..domain.dependencies import Dependency, DependencyState, DependencyTarget
+from ..domain.dependency_gates import DependencyGateReport, detect_cycles
 
 
 @dataclass(frozen=True)
@@ -42,13 +42,14 @@ def project_dependency_pressure(
             if dependency.issue_number in open_issue_numbers:
                 successors.setdefault(dependency.issue_number, set()).add(number)
 
+    invalid = _structurally_blocked_successors(reports, successors)
     counts: dict[int, int] = {}
     for root in successors:
         seen = {root}
-        pending = list(successors[root])
+        pending = list(successors[root]) if root not in invalid else []
         while pending:
             successor = pending.pop()
-            if successor in seen:
+            if successor in seen or successor in invalid:
                 continue
             seen.add(successor)
             pending.extend(successors.get(successor, ()))
@@ -76,3 +77,30 @@ def local_work_blockers(
         and dependency.state is DependencyState.UNSATISFIED
         and dependency.display_ref in blocking_refs
     )
+
+
+def _structurally_blocked_successors(
+    reports: Mapping[int, DependencyGateReport], successors: Mapping[int, set[int]]
+) -> set[int]:
+    """Exclude invalid chains even when per-issue reports lack cycle context.
+
+    Reversing edges preserves cycle membership. Use the domain graph policy,
+    then propagate through successors: completing an unrelated prerequisite
+    cannot release either a cyclic node or work still waiting behind that node.
+    """
+    graph = {
+        DependencyTarget(root): tuple(DependencyTarget(number) for number in children)
+        for root, children in successors.items()
+    }
+    invalid = {target.issue_number for target in detect_cycles(graph)}
+    invalid.update(
+        number for number, report in reports.items()
+        if any(dependency.problem is not None for dependency in report.dependencies)
+    )
+    pending = list(invalid)
+    while pending:
+        for successor in successors.get(pending.pop(), ()):
+            if successor not in invalid:
+                invalid.add(successor)
+                pending.append(successor)
+    return invalid

@@ -22,7 +22,7 @@ def scheduler_for(config, issues):
 
 def test_transitive_diamond_root_wins_equal_priority_but_only_available_issues_launch(sample_config):
     issues = [issue(1), issue(20), issue(21, "Depends-on: #20"),
-              issue(22, "Depends-on: #20"), issue(23, "Depends-on: #21, #22")]
+              issue(22, "Depends-on: #20"), issue(23, "Depends-on: #21\nDepends-on: #22")]
     scheduler = scheduler_for(sample_config, issues)
     pressure = scheduler.dependency_pressure(issues)
     available, _ = scheduler.get_available_issues(issues)
@@ -58,7 +58,7 @@ def test_cycles_terminate_without_counting_root_as_its_own_dependent(sample_conf
     issues = [issue(20, "Depends-on: #21"), issue(21, "Depends-on: #20")]
     scheduler = scheduler_for(sample_config, issues)
     pressure = scheduler.dependency_pressure(issues)
-    assert pressure.count_for(20) <= 1
+    assert pressure.count_for(20) == 0
     assert scheduler.get_available_issues(issues)[0] == []
 
 
@@ -167,3 +167,22 @@ def test_outside_scope_diagnostic_is_preserved_in_keyboard_accessible_issue_row(
     assert row["tabindex"] == "0"
     assert row["aria-label"]
     assert soup.select_one(".dep-icon")["aria-label"] == f"Has dependencies: {decision.detail}"
+
+
+def test_deadlocked_chain_gives_no_root_weight_while_acyclic_chain_still_does(sample_config):
+    issues = [issue(1), issue(20), issue(21, "Depends-on: #20\nDepends-on: #22"),
+              issue(22, "Depends-on: #21"), issue(23, "Depends-on: #20\nDepends-on: #21"),
+              issue(30), issue(31, "Depends-on: #30")]
+    scheduler = scheduler_for(sample_config, issues)
+    pressure = scheduler.dependency_pressure(issues)
+    assert pressure.count_for(20) == 0
+    assert pressure.count_for(21) == 0
+    assert pressure.count_for(30) == 1
+    available, _ = scheduler.get_available_issues(issues)
+    assert [item.number for item in scheduler.pick_next_batch(available, 0, pressure=pressure)] == [30]
+
+
+def test_malformed_dependent_cannot_inflate_an_otherwise_valid_roots_weight(sample_config):
+    issues = [issue(20), issue(21, "Depends-on: #20\nStack-after: ???")]
+    scheduler = scheduler_for(sample_config, issues)
+    assert scheduler.dependency_pressure(issues).count_for(20) == 0
