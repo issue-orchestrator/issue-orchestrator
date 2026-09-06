@@ -50,6 +50,7 @@ from .dashboard_flow import normalize_dashboard_tab, select_issues_for_tab
 from .dashboard_flow import stamp_issue_item_stale_badge_visibility
 from .rework_status import queued_rework_issue_numbers, resolve_queued_rework
 from .timestamp_values import dashboard_timestamp_source
+from .work_queue_projection import project_work_queue
 
 QUEUE_PAGE_SIZE = 20
 
@@ -1199,6 +1200,14 @@ def build_dashboard_view_model(
                 history_blocked + pending_validation_blocked,
             )
         )
+
+        work = project_work_queue(
+            queue_issues=state.cached_queue_issues, scope_issues=state.cached_scope_issues,
+        )
+        queue_items = work.work_items(queue_items, issue_number=_issue_number_value)
+        blocked_items = work.work_items(blocked_items, issue_number=_issue_number_value)
+        backlog_items = work.work_items(backlog_items, issue_number=_issue_number_value)
+        queue_total = work.work_total(queue_total)
 
         active_items = _sort_by_issue_number(active_items)
         queue_items = _sort_by_issue_number(queue_items)
