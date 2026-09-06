@@ -806,3 +806,60 @@ def test_lapse_never_clobbers_a_terminal_or_superseding_incident(tmp_path, repla
         assert publisher.transition_disposition(previous=observed, disposition=current)
     assert not DispositionWaitLifecycle(sweep).retain(observed, now=NOW, tracker_state="closed")
     assert publisher.load_disposition(issue_number=BLOCKED) == current
+
+
+@pytest.mark.parametrize("replay_phase", [None, "prepared", "waiting"])
+@pytest.mark.parametrize("latency", ["tracker", "expected", "claim"])
+def test_final_validation_latency_lapses_wait_before_commit(replay_phase, latency):
+    harness = _Harness()
+    row = _disposition()
+    if replay_phase is not None:
+        assert harness.store.transition_disposition(previous=None, disposition=replace(row, phase=replay_phase))
+        if replay_phase == "waiting":
+            harness.host.comments.append(disposition_comment(row))
+    reads, guards = [], []
+    original_read, original_guard = harness.host.get_issue_state, harness.guard
+    def read(number):
+        result = original_read(number)
+        reads.append(number)
+        if latency == "tracker" and len(reads) == (4 if replay_phase is None else 3):
+            harness.now = row.reassess_at + timedelta(seconds=1)
+        return result
+    def guard(action, number):
+        original_guard(action, number)
+        guards.append(number)
+        if (latency == "expected" and len(guards) == 7) or (latency == "claim" and len(guards) == 8):
+            harness.now = row.reassess_at + timedelta(seconds=1)
+    harness.host.get_issue_state, harness.guard = read, guard
+    results, error = harness.finish()
+    assert error is None
+    assert evaluate_required_act_level_outcome(results).failed
+    assert harness.store.load_disposition(issue_number=BLOCKED).phase == "reassess"
+    assert "success-only" not in harness.host.comments
+    assert len(harness.host.comments) == 1
+
+
+@pytest.mark.parametrize("pending", [False, True])
+def test_trusted_obligation_honors_success_and_existing_pending_replay_owner(pending):
+    from issue_orchestrator.control.tech_lead_completion_gate import require_investigation_terminal_effect
+    from issue_orchestrator.control.tech_lead_reset_retry import build_required_act_level_failure_actions
+    harness = _Harness()
+    original_post = harness.host.add_comment
+    def post(number, body):
+        if pending and body == disposition_comment(_disposition()):
+            raise RuntimeError("disposition publisher temporarily unavailable")
+        return original_post(number, body)
+    harness.host.add_comment = post
+    actions = require_investigation_terminal_effect([
+        AddCommentAction(number=BLOCKED, comment="verified diagnosis"),
+        RecordTechLeadDispositionAction(disposition=_disposition()),
+    ], focus_issue_number=BLOCKED)
+    results, error = apply_completion_actions_gated(harness, actions, issue_number=BLOCKED)
+    assert error is None
+    outcome = evaluate_required_act_level_outcome(results)
+    assert outcome.committed is not pending
+    if pending:
+        assert len(outcome.pending_dispositions) == 2  # remedy plus its unsatisfied obligation
+        assert harness.store.load_disposition(issue_number=BLOCKED).phase == "prepared"
+    assert build_required_act_level_failure_actions(issue_number=BLOCKED,
+        needs_human_label="needs-human", outcome=outcome, session_id="session", runtime_minutes=1) == []

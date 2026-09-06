@@ -195,12 +195,15 @@ class _DispositionPublisher:
         tracker_state = ("unknown" if now >= disposition.reassess_at else
             self.host.get_issue_state(disposition.tracker_issue_number))
         if not DispositionWaitLifecycle(self.authority).retain(disposition,
-                now=now, tracker_state=tracker_state):
+                now=self.clock(), tracker_state=tracker_state):
             raise ValueError("recovery wait lapsed; reassessment required")
         if tracker_state != "open":
             raise ValueError("recovery tracker state is unknown; publication deferred")
         self.require_expected(action, disposition.issue_number)
         self.verify_claim(action, disposition.issue_number)
+        if not DispositionWaitLifecycle(self.authority).retain(disposition,
+                now=self.clock(), tracker_state=tracker_state):
+            raise ValueError("recovery wait lapsed during validation; reassessment required")
 
     def publish(self, action: "Action", disposition: "TechLeadDisposition") -> None:
         from .actions import AddCommentAction

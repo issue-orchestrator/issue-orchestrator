@@ -65,6 +65,7 @@ class ActionType(Enum):
 
     # Tech Lead decision proposals (event-only surfacing, ADR-0031)
     SURFACE_TECH_LEAD_PROPOSAL = "surface_tech_lead_proposal"
+    REQUIRE_TECH_LEAD_INVESTIGATION = "require_tech_lead_investigation"
 
     # Act-level tech_lead execution: scratch reset via the reset owner (#6764)
     RESET_RETRY_ISSUE = "reset_retry_issue"

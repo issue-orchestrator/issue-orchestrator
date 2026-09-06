@@ -73,8 +73,8 @@ ExpectedStateGuard = Callable[[Action, int], None]
 
 #: Tech-lead action types that WRITE — to GitHub, to the authority ledger, or to
 #: a live session. Every one of them is dispatched through :func:`_guarded`.
-#: ``SURFACE_TECH_LEAD_PROPOSAL`` is the only tech-lead type deliberately absent:
-#: it publishes a trace event and makes no calls at all (ADR-0031).
+#: ``SURFACE_TECH_LEAD_PROPOSAL`` emits only events; the investigation obligation
+#: carries a trusted contract for the aggregate verdict. Neither mutates.
 TECH_LEAD_MUTATING_ACTION_TYPES: frozenset[ActionType] = (
     TECH_LEAD_ISSUE_CREATION_ACTION_TYPES
     | frozenset(
@@ -153,6 +153,8 @@ def tech_lead_action_handlers(
         **dict.fromkeys(TECH_LEAD_ISSUE_CREATION_ACTION_TYPES, create_tech_lead_issue),
         # Decision proposals: event-only surfacing, no GitHub calls (ADR-0031).
         ActionType.SURFACE_TECH_LEAD_PROPOSAL: surface_proposal,
+        # The aggregate verdict checks this trusted obligation against all effects.
+        ActionType.REQUIRE_TECH_LEAD_INVESTIGATION: ActionResult.ok,
         # Act-level execution via the reset (#6764) / termination (#6778) owners.
         ActionType.RESET_RETRY_ISSUE: reset_retry,
         ActionType.KILL_HUNG_SESSION: kill_hung_session,
