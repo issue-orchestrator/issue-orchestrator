@@ -112,3 +112,35 @@ def test_valid_proposal_reuse_proves_receipt_without_executing_or_reapproving(op
     assert applier.apply(action).success
     assert host.comments == [(7000, action.comment)]
     assert authority.load_op(issue_number=7000) == action.required_op
+
+
+@pytest.mark.parametrize("required", [False, True])
+@pytest.mark.parametrize("publication", ["receipt", "unverified", "failed"])
+def test_comment_owner_uses_injected_publisher_and_checks_required_receipt(required, publication):
+    from issue_orchestrator.control.required_issue_comment import RequiredIssueCommentAction, apply_issue_comment
+    host, calls = Host(), []
+    host.add_comment = lambda *args: pytest.fail("policy owner reached direct write port")
+    original_receipt = host.find_issue_comment_receipt
+    def receipt(number, *, body):
+        calls.append("receipt")
+        return original_receipt(number, body=body)
+    host.find_issue_comment_receipt = receipt
+    def publish(number, body):
+        calls.append("publish")
+        if publication == "failed":
+            raise RuntimeError("publisher failed")
+        if publication == "receipt":
+            host.comments.append((number, body))
+        return "https://example.test/comment"
+    action_type = RequiredIssueCommentAction if required else AddCommentAction
+    result = apply_issue_comment(action_type(number=6410, comment="diagnosis"),
+        host=host, post_comment=publish, events=MagicMock(), authority=None, reset=None, kill=None,
+        require_expected=lambda action, number: calls.append("expected"),
+        verify_claim=lambda action, number: calls.append("claim"))
+    assert result.success is (publication != "failed" and (not required or publication == "receipt"))
+    if required:
+        assert calls[:5] == ["expected", "claim", "receipt", "expected", "claim"]
+        if publication != "failed":
+            assert calls[5:] == ["publish", "receipt", "expected", "claim"]
+    else:
+        assert calls == ["expected", "claim", "publish"]

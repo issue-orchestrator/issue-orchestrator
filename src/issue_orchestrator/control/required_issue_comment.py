@@ -57,14 +57,15 @@ def validate_proposal_reuse(action: ReuseTechLeadProposalAction, *,
 
 
 def apply_required_issue_comment(action: RequiredIssueCommentAction, *,
-        host: RepositoryHost, guard: Callable[[], None]) -> ActionResult:
-    """Verify the publication before replay and again after a guarded write."""
+        host: RepositoryHost, guard: Callable[[], None],
+        post_comment: Callable[[int, str], str]) -> ActionResult:
+    """Verify receipts around the guarded, applier-owned publication capability."""
     try:
         guard()
         receipt = host.find_issue_comment_receipt(action.number, body=action.comment)
         guard()
         if receipt is None:
-            host.add_comment(action.number, action.comment)
+            post_comment(action.number, action.comment)
             receipt = host.find_issue_comment_receipt(action.number, body=action.comment)
         guard()
         if receipt is None:
@@ -76,6 +77,7 @@ def apply_required_issue_comment(action: RequiredIssueCommentAction, *,
 
 
 def apply_issue_comment(action: AddCommentAction, *, host: RepositoryHost,
+        post_comment: Callable[[int, str], str],
         require_expected: Callable[[Action, int], None],
         verify_claim: Callable[[Action, int], None], events: EventSink,
         authority: TechLeadAuthorityStore | None,
@@ -90,11 +92,11 @@ def apply_issue_comment(action: AddCommentAction, *, host: RepositoryHost,
             verify_claim(action, action.required_op.target_issue_number)
             validate_proposal_reuse(action, host=host, authority=authority, reset=reset, kill=kill)
     if isinstance(action, RequiredIssueCommentAction):
-        return apply_required_issue_comment(action, host=host, guard=guard)
+        return apply_required_issue_comment(action, host=host, guard=guard, post_comment=post_comment)
     # Ordinary comments preserve their reconciliation exception contract.
     guard()
     try:
-        url = host.add_comment(action.number, action.comment)
+        url = post_comment(action.number, action.comment)
         if action.is_pr:
             from ..ports import make_trace_event
             from ..events import EventName

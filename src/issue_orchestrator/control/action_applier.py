@@ -539,6 +539,7 @@ class ActionApplier:
         assert isinstance(action, AddCommentAction)
         assert self.repository_host is not None, "repository_host required for add_comment"
         return apply_issue_comment(action, host=self.repository_host,
+            post_comment=self.repository_host.add_comment,
             require_expected=self._require_expected, verify_claim=self._verify_claim_before_write,
             events=self.events, authority=self.tech_lead_ops,
             reset=self.tech_lead_reset_retry, kill=self.tech_lead_kill_session)
