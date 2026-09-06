@@ -55,6 +55,11 @@ class GitHubAppInstallationTokenProvider:
         self._expires_at_epoch: float = 0.0
 
     @property
+    def comment_app_identity(self) -> tuple[str | None, str | None]:
+        """App identifiers whose server-authored comment provenance we accept."""
+        return self._config.app_id, self._config.client_id
+
+    @property
     def auth_kind(self) -> str:
         return "github_app"
 
@@ -134,6 +139,13 @@ class GitHubAuth:
     @property
     def auth_kind(self) -> str:
         return self.token_provider.auth_kind
+
+    def comment_app_identity(self) -> tuple[str | None, str | None] | None:
+        if isinstance(self.token_provider, GitHubAppInstallationTokenProvider):
+            return self.token_provider.comment_app_identity
+        if self.auth_kind == "github_app":
+            raise GitHubAuthError("GitHub App comment provenance requires configured app identity")
+        return None
 
     def authorization_headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.token_provider.get_token()}"}
