@@ -34,13 +34,8 @@ if TYPE_CHECKING:
 
 #: Comment/routing proposals whose ``target_number`` must fall inside the
 #: general launch scope.
-#:
-#: ``defer_to_tracker`` (#6971) is scoped here on its TARGET — the issue it
-#: comments on and parks — like any other routing proposal. Its
-#: ``tracker_number`` is deliberately NOT scoped: the orchestrator only ever
-#: READS that issue's open/closed state, never writes to it, so requiring the
-#: tracker inside the launch grant would block the one binding that makes the
-#: disposition releasable.
+#: Tracker dispositions additionally require the failure-only immutable tracker
+#: grant, enforced by investigation_disposition_violation in the disposition owner.
 TARGET_SCOPED_ACTION_TYPES = frozenset(
     ("post_comment", "escalate_to_human", "defer_to_tracker")
 )

@@ -3017,12 +3017,9 @@ class TestClaimGateAudit:
     #   case file and writes the local shipped-fix + promotion ledger rows
     #   (#6957); like APPEND_PATTERN_OBSERVATION the only GitHub target is a
     #   case file, which is never claimed.
-    # - RECORD_TECH_LEAD_DISPOSITION: writes ONLY the local disposition ledger
-    #   row that parks a diagnosed issue on its recovery tracker (#6971). The
-    #   wait-state comment that explains the parking is planned as an ordinary
-    #   AddCommentAction ahead of it, so the one GitHub write in that pair goes
-    #   through this applier's claim-verified comment handler (same delegation
-    #   shape as RESET_RETRY_ISSUE).
+    # - RECORD_TECH_LEAD_DISPOSITION: owns explanation plus ledger commit;
+    #   its remote write delegates through the claim-verified comment handler,
+    #   and it revalidates the claim before activating the binding.
     # - CLEANUP_SESSION: post-completion cleanup
     # - RECONCILE_HISTORY_ENTRY: local session history mutation + event only
     # - CREATE_PR: not implemented in action_applier
@@ -3051,6 +3048,8 @@ class TestClaimGateAudit:
         ActionType.KILL_HUNG_SESSION,
         ActionType.DISCARD_TERMINAL_TECH_LEAD_PROPOSAL_OPS,
         ActionType.RECORD_TECH_LEAD_DISPOSITION,
+        # Human outcome delegates every write through guarded label/comment handlers.
+        ActionType.ESCALATE_TECH_LEAD_DISPOSITION,
         ActionType.CLEANUP_SESSION,
         ActionType.RECONCILE_HISTORY_ENTRY,
         ActionType.CREATE_PR,

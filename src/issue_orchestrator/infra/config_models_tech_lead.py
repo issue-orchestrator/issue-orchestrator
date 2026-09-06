@@ -30,13 +30,10 @@ class MilestoneStrategyConfig:
 
 TECH_LEAD_AUTHORITY_MODES = ("execute", "propose")
 
-# Action types whose authority mode is NOT configurable: they always execute.
-# Both are routing surfaces rather than acts — they mutate no runtime state and
-# no workflow label. ``escalate_to_human`` routes to a human (the fail-safe
-# floor). ``defer_to_tracker`` records the terminal disposition of a completed
-# failure investigation (#6971); under ``propose`` it would surface a shadow
-# record while the redundant re-investigations it exists to stop continued, so
-# there is nothing meaningful to gate.
+# These outcomes always execute after owner admission. Human escalation uses
+# its marker lifecycle. Tracker waiting is restricted to an immutable launch
+# grant for a declared prerequisite and a finite, non-renewable deadline; it
+# cannot park work against an arbitrary agent-chosen tracker.
 TECH_LEAD_AUTHORITY_FLOOR_ACTIONS = ("escalate_to_human", "defer_to_tracker")
 
 # Action types whose authority mode is configurable — the complement of the

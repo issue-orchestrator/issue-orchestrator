@@ -11,6 +11,7 @@ from issue_orchestrator.control.actions import (
     CreateTechLeadProposalIssueAction,
     KillHungSessionAction,
     RecordTechLeadDispositionAction,
+    EscalateTechLeadDispositionAction,
     ResetRetryIssueAction,
     SurfaceTechLeadProposalAction,
     TechLeadMilestoneIntent,
@@ -554,12 +555,7 @@ class TestDecisionIssuePolicy:
 
 
 def test_escalate_to_human_maps_to_routing_surface_only() -> None:
-    """Escalation = needs-human label + comment; never EscalateToHumanAction.
-
-    EscalateToHumanAction's applier terminates the target issue's runtime,
-    which would give the always-execute escalation floor the same effect as
-    the shadow-only kill_hung_session intent (#6764 authority hole).
-    """
+    """Escalation uses a non-terminating owner command, never runtime kill."""
     action = ProposedTechLeadAction(
         id="A3",
         action_type="escalate_to_human",
@@ -568,19 +564,12 @@ def test_escalate_to_human_maps_to_routing_surface_only() -> None:
         finding_ids=("T1",),
     )
 
-    [label, comment] = _plan(_decision(action))
-
-    assert isinstance(label, AddLabelAction)
-    assert label.issue_number == 55
-    assert label.label == NEEDS_HUMAN
-    assert label.expected is EXPECTED
-    assert isinstance(comment, AddCommentAction)
-    assert comment.number == 55
-    assert comment.is_pr is False
-    assert comment.comment.startswith("## ⚠️ Tech Lead escalation")
-    assert "Session keeps looping." in comment.comment
-    assert "(action A3; findings: T1)" in comment.comment
-    assert comment.expected is EXPECTED
+    [command] = _plan(_decision(action))
+    assert isinstance(command, EscalateTechLeadDispositionAction)
+    assert command.issue_number == 55
+    assert "Session keeps looping." in command.comment
+    assert "(action A3; findings: T1)" in command.comment
+    assert command.expected is EXPECTED
 
 
 def test_escalate_to_human_executes_even_in_full_propose_config() -> None:
@@ -595,19 +584,12 @@ def test_escalate_to_human_executes_even_in_full_propose_config() -> None:
         body="Needs a human.",
     )
 
-    [label, comment] = _plan(_decision(action), config)
-
-    assert isinstance(label, AddLabelAction)
-    assert isinstance(comment, AddCommentAction)
+    [command] = _plan(_decision(action), config)
+    assert isinstance(command, EscalateTechLeadDispositionAction)
 
 
 def test_defer_to_tracker_publishes_the_wait_state_then_binds_the_tracker() -> None:
-    """#6971: an ordered (comment, ledger row) pair, never a bare row.
-
-    The comment goes through the applier's ordinary claim-verified comment
-    handler and is planned FIRST, so an issue is never taken out of the stuck
-    sweep with nothing on it explaining why.
-    """
+    """#6971: one command owns publication and durable activation."""
     action = ProposedTechLeadAction(
         id="A2",
         action_type="defer_to_tracker",
@@ -617,14 +599,7 @@ def test_defer_to_tracker_publishes_the_wait_state_then_binds_the_tracker() -> N
         finding_ids=("T1",),
     )
 
-    [comment, record] = _plan(_decision(action))
-
-    assert isinstance(comment, AddCommentAction)
-    assert comment.number == 6410
-    assert comment.is_pr is False
-    assert "#6914" in comment.comment
-    assert "Validated work is stranded" in comment.comment
-    assert comment.expected is EXPECTED
+    [record] = _plan(_decision(action))
 
     assert isinstance(record, RecordTechLeadDispositionAction)
     disposition = record.disposition
@@ -653,11 +628,9 @@ def test_defer_to_tracker_executes_even_in_full_propose_config() -> None:
         body="Owned by the recovery lane.",
     )
 
-    [comment, record] = _plan(_decision(action), config)
-
-    assert isinstance(comment, AddCommentAction)
+    [record] = _plan(_decision(action), config)
     assert isinstance(record, RecordTechLeadDispositionAction)
-    assert _shadow_digests([comment, record]) == []
+    assert _shadow_digests([record]) == []
 
 
 def test_propose_authority_surfaces_shadow_proposal() -> None:

@@ -4031,6 +4031,10 @@ class TestLaunchTechLeadIssueSessionFlavors:
             repo="test/repo",
         )
 
+        # The queued launch issue is synthetic; grants must come from the
+        # repository's actual prerequisite edges, not its absent body.
+        mock_repo_host.issues[902] = Issue(number=902, title="real issue", labels=[],
+            body="Depends-on: #6914\nMentions #9999", repo="test/repo")
         result = launcher_bundle.launcher.launch_issue_session(
             issue,
             active_sessions=[],
@@ -4046,6 +4050,11 @@ class TestLaunchTechLeadIssueSessionFlavors:
         run_manifest = json.loads((run_dir / "manifest.json").read_text())
         assert run_manifest["board_snapshot"] == str(snapshot_path)
         assert BoardSnapshot.read(snapshot_path).schema_version == BOARD_SNAPSHOT_SCHEMA_VERSION
+        context = json.loads((run_dir / "tech-lead-data" / "recovery-context.json").read_text())
+        assert context == {"recovery_tracker_numbers": [6914], "previous_disposition": None}
+        authority = SqliteTechLeadAuthorityStore.for_repo(config.repo_root).load(
+            run_id=run_manifest["run_id"], session_name=run_manifest["session_name"])
+        assert authority.recovery_tracker_numbers == (6914,)
         # Still no PR manifest — and no GitHub reads at all for this flavor.
         assert "tech_lead_manifest" not in run_manifest
         assert mock_repo_host.get_prs_with_label_calls == []

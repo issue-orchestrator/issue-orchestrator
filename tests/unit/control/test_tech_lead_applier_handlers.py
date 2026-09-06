@@ -28,6 +28,7 @@ from issue_orchestrator.control.actions import (
     KillHungSessionAction,
     PromoteTechLeadFindingAction,
     RecordTechLeadDispositionAction,
+    EscalateTechLeadDispositionAction,
     ReportPromotedFindingEvidenceAction,
     ResetRetryIssueAction,
     SettleTechLeadPromotionAction,
@@ -106,6 +107,9 @@ def _mutating_actions() -> dict[ActionType, tuple[Action, int]]:
                 expected=expected,
             ),
             ANCHOR,
+        ),
+        ActionType.ESCALATE_TECH_LEAD_DISPOSITION: (
+            EscalateTechLeadDispositionAction(issue_number=TARGET, comment="human decision", expected=expected), TARGET,
         ),
         ActionType.RESET_RETRY_ISSUE: (
             ResetRetryIssueAction(
@@ -219,6 +223,9 @@ class _Registry:
             surface_proposal=inert,
             reset_retry=inert,
             kill_hung_session=inert,
+            events=MagicMock(), label_manager=MagicMock(), needs_human_block=MagicMock(),
+            apply_action=inert,
+            verify_claim=lambda action, number: None,
             require_expected=self._require_expected,
             repository_host=self.repository_host,
             authority=self.authority,
@@ -268,7 +275,7 @@ def test_every_mutating_command_is_dispatched_through_the_gate(action_type):
     registry.apply(action)
 
     if subject:
-        assert registry.guarded == [(action_type, subject)]
+        assert registry.guarded and set(registry.guarded) == {(action_type, subject)}
     else:
         # No subject, and therefore no expectations either — nothing to check.
         assert registry.guarded == []

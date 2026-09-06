@@ -24,6 +24,7 @@ from .session_run import SessionRunAssets
 from .tech_lead_findings import PromotionUpdate, PromotableFinding, SettledPromotion
 from .tech_lead_session import (
     ApprovedTechLeadOp,
+    TechLeadDisposition,
     GatedTechLeadProposal,
     TechLeadCaseFileSummary,
     TechLeadLaunchScope,
@@ -1448,6 +1449,7 @@ class TechLeadFacts:
 
     Immutable snapshot of conditions for Planner to decide on tech_lead.
     """
+    pending_dispositions: tuple[TechLeadDisposition, ...] = ()
     pr_count: int = 0  # PRs with watch label
     threshold: int = 0  # Configured threshold (<= 0: batch trigger disabled)
     existing_tech_lead_issue: Optional[int] = None  # Existing open tech_lead issue number

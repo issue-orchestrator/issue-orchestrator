@@ -11,8 +11,12 @@ parsing, and the end-to-end wiring into the reactive-tech-lead reaction model.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import time
 from types import SimpleNamespace
+
+import pytest
 
 from issue_orchestrator.control.fact_gatherer import FactGatherer
 from issue_orchestrator.control.label_manager import LabelManager
@@ -321,12 +325,13 @@ def test_open_proposal_target_is_not_reinjected_or_charged():
 
 def _dispositions(store, states: dict[int, str | None]):
     return TechLeadDispositionLedger(
-        authority=store, issue_state=lambda number: states.get(number)
+        authority=store, issue_state=lambda number: states.get(number),
+        now=datetime(2026, 8, 9, 1, tzinfo=timezone.utc)
     )
 
 
 def _park(store, issue_number: int, tracker: int) -> None:
-    store.record_disposition(
+    store.transition_disposition(previous=None,
         disposition=TechLeadDisposition(
             issue_number=issue_number,
             tracker_issue_number=tracker,
@@ -387,13 +392,14 @@ def test_closing_the_tracker_returns_a_still_blocked_issue_to_the_sweep():
     )
 
     assert [failure.issue_number for failure in result.recovered] == [6410]
-    assert store.load_disposition(issue_number=6410) is None
+    assert store.load_disposition(issue_number=6410) is not None  # reassessment context
 
 
 def test_a_recovered_issue_releases_its_disposition():
     """A stale row must not park a LATER, unrelated incident on the number."""
     config = _config()
     state = OrchestratorState()
+    state.recovery_attempts = {6410: 2}
     store = InMemoryTechLeadAuthorityStore()
     _park(store, 6410, tracker=6914)
     # The issue recovered: it no longer carries any blocking label.
@@ -404,12 +410,14 @@ def test_a_recovered_issue_releases_its_disposition():
         dispositions=_dispositions(store, {6914: "open"}),
     )
 
-    assert store.load_disposition(issue_number=6410) is None
+    assert store.load_disposition(issue_number=6410).phase == "recovered"
 
+    assert state.recovery_attempts == {}
 
 def test_a_closed_issue_releases_its_disposition():
     config = _config()
     state = OrchestratorState()
+    state.recovery_attempts = {6410: 2}
     store = InMemoryTechLeadAuthorityStore()
     _park(store, 6410, tracker=6914)
     host = _RecordingHost([_issue(6410, labels=["blocked-failed"], state="closed")])
@@ -419,8 +427,9 @@ def test_a_closed_issue_releases_its_disposition():
         dispositions=_dispositions(store, {6914: "open"}),
     )
 
-    assert store.load_disposition(issue_number=6410) is None
+    assert store.load_disposition(issue_number=6410).phase == "recovered"
 
+    assert state.recovery_attempts == {}
 
 def test_a_disposition_parks_only_its_own_issue():
     config = _config()
@@ -781,3 +790,48 @@ def test_stuck_sweep_config_parsed_from_yaml_dict():
         "interval_minutes": 30,
         "max_recovery_attempts": 5,
     }
+
+
+@pytest.mark.parametrize("phase", ["waiting", "reassess"])
+@pytest.mark.parametrize("scope_change", ["label_removed", "filter_changed"])
+def test_leaving_scope_preserves_incident_and_budget(phase, scope_change):
+    from dataclasses import replace
+    config = _config(filter_label="managed", max_recovery_attempts=5)
+    state = OrchestratorState()
+    state.recovery_attempts = {6410: 2}
+    store = InMemoryTechLeadAuthorityStore()
+    _park(store, 6410, tracker=6914)
+    row = store.load_disposition(issue_number=6410)
+    assert store.transition_disposition(previous=row, disposition=replace(row, phase=phase))
+    target_labels = ["blocked-failed"] if scope_change == "label_removed" else ["blocked-failed", "managed"]
+    if scope_change == "filter_changed":
+        config.filtering.label = "another-scope"
+    result = run_stuck_sweep(config, state, _RecordingHost([_issue(6410, labels=target_labels)]),
+        LabelManager(config), 1.0, dispositions=_dispositions(store, {6410: "open", 6914: "open"}))
+    assert result.recovered == ()
+    assert state.recovery_attempts == {6410: 2}
+    assert store.load_disposition(issue_number=6410).phase == phase
+    config.filtering.label = "managed"
+    restored = run_stuck_sweep(config, state,
+        _RecordingHost([_issue(6410, labels=["blocked-failed", "managed"])]), LabelManager(config), 2.0,
+        dispositions=_dispositions(store, {6410: "open", 6914: "open"}))
+    assert state.recovery_attempts == {6410: 2 if phase == "waiting" else 3}
+    assert len(restored.recovered) == (0 if phase == "waiting" else 1)
+
+
+def test_unobserved_target_read_failure_retains_incident_budget():
+    config = _config(filter_label="managed")
+    state = OrchestratorState()
+    state.recovery_attempts = {6410: 2}
+    store = InMemoryTechLeadAuthorityStore()
+    _park(store, 6410, tracker=6914)
+    def state_reader(number):
+        if number == 6410:
+            raise RuntimeError("target unavailable")
+        return "open"
+    ledger = TechLeadDispositionLedger(authority=store, issue_state=state_reader,
+        now=datetime(2026, 8, 9, 1, tzinfo=timezone.utc))
+    result = run_stuck_sweep(config, state, _RecordingHost([]), LabelManager(config), 1.0, dispositions=ledger)
+    assert result.recovered == ()
+    assert state.recovery_attempts == {6410: 2}
+    assert store.load_disposition(issue_number=6410).phase == "waiting"

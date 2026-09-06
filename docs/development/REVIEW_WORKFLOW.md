@@ -122,29 +122,37 @@ stays, the stuck sweep re-discovers the issue as "still stuck and NOT owned",
 spends a unit of recovery budget, and commissions another session to re-derive
 the same verdict (issue #6410 was investigated three times for one conclusion).
 
-Two decision actions end an investigation:
+A failure investigation must propose a focus-issue diagnosis and exactly one
+terminal action. `reset_retry` and `kill_hung_session` use configured direct or
+gated authority. `escalate_to_human` uses the existing marker-owned human
+lifecycle, preserving independent human blocks. `defer_to_tracker` commits a
+wait only for a launch-granted, open same-repository prerequisite; arbitrary
+agent-provided issue numbers are refused. A kill requires an observed worker
+generation, and a stale investigation remedy cannot count as successful unless
+its owner positively proves the target recovered.
 
-| Verdict | Action | What the orchestrator does |
-|---|---|---|
-| A person must decide | `escalate_to_human` | Applies `needs-human` + an explanatory comment |
-| Another OPEN issue owns the remedy | `defer_to_tracker` | Comments the wait state on the diagnosed issue and records a durable binding to that tracker |
+Tracker publication is a single completion-mandatory command. It persists an
+admitted `prepared` intent before publishing the guarded explanation, revalidates
+the claim, expected state, and dependency, then conditionally commits `waiting`.
+The tick's existing ledger-planning path resumes a prepared command after the
+original session and grant are gone. The authority store owns an exclusive
+publication lock across marker lookup, remote write, and conditional commit.
+Independent processes share that lock; the kernel releases it after a crash.
+A deterministic remote marker then avoids repeating the explanation on replay. Publication failure withholds successful completion,
+while the durable pending owner retries without creating a new human gate.
 
-Both are **always-execute** floors: an authority mode that turned them into
-shadow records would leave the investigation with no way to end.
+Each incident gets one wait with a 24-hour deadline. New decisions and process
+restarts cannot renew it. Closed or missing trackers latch `reassess` sooner;
+indeterminate reads preserve only an unexpired active wait. Retained context
+travels in the next investigation's `tech-lead-data/recovery-context.json`, which
+requires remediation or an explicit human handoff instead of another wait.
+Only positive target recovery releases the incident and recovery budget; absence
+from a filtered scan does not. A recovered tombstone rejects old-session replay,
+while an investigation launched after recovery may start a new incident.
 
-A `defer_to_tracker` disposition transfers stuck-sweep ownership the way a
-`tech-lead-needs-human` marker does, and the binding is also the release
-condition. `TechLeadDispositionLedger` (`control/tech_lead_dispositions.py`)
-releases the issue back to the sweep as soon as any of these becomes true:
-
-- the bound tracker closes (or never existed — the agent-supplied number is
-  untrusted, so a bogus tracker parks nothing);
-- the diagnosed issue's blocking label clears, or the issue closes.
-
-The ledger lives in the tech-lead authority store because the tracker number is
-the load-bearing half and no label can carry it. Losing that store degrades to
-the old behaviour — one redundant investigation — never to a silently parked
-issue.
+The ledger lives in the existing tech-lead authority store. Missing durable
+state never grants authority; malformed rows fail loudly. New tracker relations
+must be established through an authorized prerequisite workflow before use.
 
 ## Requesting a Tech-Lead Run from the Dashboard
 

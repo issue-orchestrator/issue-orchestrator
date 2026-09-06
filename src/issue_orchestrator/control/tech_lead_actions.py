@@ -356,6 +356,7 @@ class ResetRetryIssueAction(Action):
     # stored op (#6778): the applier then finalizes the proposal issue
     # (outcome comment + close + discard_op). 0 = direct execute-authority.
     proposal_issue_number: int = 0
+    requires_effective_disposition: bool = False
     action_type: ActionType = field(default=ActionType.RESET_RETRY_ISSUE, init=False)
 
     def __post_init__(self) -> None:
@@ -395,6 +396,7 @@ class KillHungSessionAction(Action):
     target_session_id: str = ""
     target_terminal_id: str = ""
     target_session_type: str = ""
+    requires_effective_disposition: bool = False
     action_type: ActionType = field(default=ActionType.KILL_HUNG_SESSION, init=False)
 
     def __post_init__(self) -> None:
@@ -496,6 +498,22 @@ class AppendPatternObservationAction(Action):
         """The evidence comment posted onto the case file."""
         assert self.observation is not None  # enforced by __post_init__
         return self.observation.comment
+
+
+@dataclass(frozen=True)
+class EscalateTechLeadDispositionAction(Action):
+    """Transfer an investigation to the marker-owned human lifecycle."""
+
+    issue_number: int = 0
+    comment: str = ""
+    action_type: ActionType = field(default=ActionType.ESCALATE_TECH_LEAD_DISPOSITION, init=False)
+
+    def __post_init__(self) -> None:
+        if isinstance(self.issue_number, bool) or self.issue_number <= 0 or not self.comment.strip():
+            raise ValueError("tech-lead human disposition requires an issue and explanation")
+
+    def reconciliation_subject(self) -> int:
+        return self.issue_number
 
 
 @dataclass(frozen=True)

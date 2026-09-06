@@ -1169,7 +1169,7 @@ def _disposition(
 @pytest.mark.parametrize("make_store", OP_STORES)
 def test_disposition_round_trip(tmp_path: Path, make_store) -> None:
     store = make_store(tmp_path)
-    store.record_disposition(disposition=_disposition())
+    store.transition_disposition(previous=None, disposition=_disposition())
 
     assert store.load_disposition(issue_number=6410) == _disposition()
     assert store.load_disposition(issue_number=6411) is None
@@ -1177,42 +1177,22 @@ def test_disposition_round_trip(tmp_path: Path, make_store) -> None:
 
 
 @pytest.mark.parametrize("make_store", OP_STORES)
-def test_recording_a_new_tracker_supersedes_the_previous_row(
-    tmp_path: Path, make_store
-) -> None:
-    """Deliberately NOT create-once: the row is "the latest completed
-    investigation's conclusion", so a newer binding must replace the old one
-    rather than freezing the issue on a tracker that may already be closed."""
+def test_disposition_transitions_require_the_current_row(tmp_path: Path, make_store) -> None:
+    from dataclasses import replace
     store = make_store(tmp_path)
-    store.record_disposition(disposition=_disposition(tracker=6914))
-
-    store.record_disposition(disposition=_disposition(tracker=6959))
-
-    loaded = store.load_disposition(issue_number=6410)
-    assert loaded is not None
-    assert loaded.tracker_issue_number == 6959
-    assert len(store.list_dispositions()) == 1
-
-
-@pytest.mark.parametrize("make_store", OP_STORES)
-def test_discard_disposition_releases_and_is_idempotent(
-    tmp_path: Path, make_store
-) -> None:
-    store = make_store(tmp_path)
-    store.record_disposition(disposition=_disposition())
-
-    store.discard_disposition(issue_number=6410)
-    store.discard_disposition(issue_number=6410)  # already gone: no-op
-    store.discard_disposition(issue_number=999)  # never recorded: no-op
-
-    assert store.load_disposition(issue_number=6410) is None
-    assert store.list_dispositions() == ()
+    waiting = _disposition()
+    lapsed = replace(waiting, phase="reassess")
+    assert store.transition_disposition(previous=None, disposition=waiting)
+    assert not store.transition_disposition(previous=None, disposition=_disposition(tracker=6959))
+    assert store.transition_disposition(previous=waiting, disposition=lapsed)
+    assert not store.transition_disposition(previous=waiting, disposition=waiting)
+    assert store.load_disposition(issue_number=6410) == lapsed
 
 
 def test_dispositions_survive_a_restart(tmp_path: Path) -> None:
     """The whole point is crash-safety: a restart that forgot the binding
     would re-open the investigation the disposition exists to prevent."""
-    SqliteTechLeadAuthorityStore.for_repo(tmp_path).record_disposition(
+    SqliteTechLeadAuthorityStore.for_repo(tmp_path).transition_disposition(previous=None,
         disposition=_disposition()
     )
 
@@ -1233,7 +1213,7 @@ def test_an_older_database_gains_the_disposition_table(tmp_path: Path) -> None:
         )
 
     store = SqliteTechLeadAuthorityStore.for_repo(tmp_path)
-    store.record_disposition(disposition=_disposition())
+    store.transition_disposition(previous=None, disposition=_disposition())
 
     assert store.load_disposition(issue_number=6410) == _disposition()
 
@@ -1244,11 +1224,67 @@ def test_disposition_methods_satisfy_the_port() -> None:
     )
 
     for method in (
-        "record_disposition",
+        "disposition_publication",
+        "transition_disposition",
         "load_disposition",
-        "discard_disposition",
         "list_dispositions",
     ):
         assert callable(getattr(SqliteTechLeadAuthorityStore, method))
         assert callable(getattr(InMemoryTechLeadAuthorityStore, method))
         assert callable(getattr(TechLeadAuthorityStorePort, method))
+
+
+@pytest.mark.parametrize("make_store", OP_STORES)
+def test_disposition_publication_is_nonblocking_and_released_after_exception(tmp_path, make_store):
+    store = make_store(tmp_path)
+    with pytest.raises(KeyboardInterrupt):
+        with store.disposition_publication(issue_number=6410) as acquired:
+            assert acquired
+            with store.disposition_publication(issue_number=6410) as competing:
+                assert not competing
+            with store.disposition_publication(issue_number=6411) as unrelated:
+                assert unrelated
+            raise KeyboardInterrupt("publisher terminated")
+    with store.disposition_publication(issue_number=6410) as acquired:
+        assert acquired
+
+
+def test_publication_identity_survives_aliases_and_independent_store_handles(tmp_path):
+    path = tmp_path / "authority.sqlite"
+    first = SqliteTechLeadAuthorityStore(path)
+    alias = tmp_path / "alias.sqlite"
+    alias.symlink_to(path)
+    second = SqliteTechLeadAuthorityStore(alias)
+    with first.disposition_publication(issue_number=6410) as acquired:
+        assert acquired
+        with second.disposition_publication(issue_number=6410) as competing:
+            assert not competing
+    with second.disposition_publication(issue_number=6410) as acquired:
+        assert acquired
+
+
+def test_publication_lock_excludes_other_process_and_kernel_releases_on_crash(tmp_path):
+    import sys
+    from tests.process_group_run import run_in_process_group
+    path = tmp_path / "authority.sqlite"
+    store = SqliteTechLeadAuthorityStore(path)
+    script = """
+import os, signal, sys
+signal.alarm(10)  # The child remains bounded if the harness is terminated.
+from pathlib import Path
+from issue_orchestrator.infra.tech_lead_authority_store import SqliteTechLeadAuthorityStore
+store = SqliteTechLeadAuthorityStore(Path(sys.argv[1]))
+with store.disposition_publication(issue_number=6410) as acquired:
+    print("owned" if acquired else "contended", flush=True)
+    if acquired:
+        os._exit(73)  # The context manager cannot perform normal cleanup.
+"""
+    command = [sys.executable, "-c", script, str(path)]
+    with store.disposition_publication(issue_number=6410) as acquired:
+        assert acquired
+        contender = run_in_process_group(command, timeout=10)
+        assert contender.returncode == 0 and contender.stdout.strip() == "contended"
+    crashed = run_in_process_group(command, timeout=10)
+    assert crashed.returncode == 73 and crashed.stdout.strip() == "owned"
+    with SqliteTechLeadAuthorityStore(path).disposition_publication(issue_number=6410) as acquired:
+        assert acquired

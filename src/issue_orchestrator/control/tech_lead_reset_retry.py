@@ -67,7 +67,6 @@ from ..ports import EventSink, make_trace_event
 from .actions import (
     Action,
     ActionResult,
-    ActionResultType,
     AddCommentAction,
     AddLabelAction,
     KillHungSessionAction,
@@ -81,6 +80,14 @@ if TYPE_CHECKING:
     from ..ports.issue import Issue
     from .action_applier import ActionApplier
     from .label_manager import LabelManager
+
+from .tech_lead_completion_gate import (
+    RequiredActLevelOutcome as RequiredActLevelOutcome,
+    is_required_act_level_action as is_required_act_level_action,
+    partition_required_act_level_actions as partition_required_act_level_actions,
+    require_investigation_terminal_effect as require_investigation_terminal_effect,
+    evaluate_required_act_level_outcome as evaluate_required_act_level_outcome,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -245,7 +252,8 @@ class TechLeadResetRetryExecutor:
             label_manager=self.label_manager,
         )
         if stale is not None:
-            return self._downgrade(action, stale)
+            recovered = issue is not None and (issue.state == "closed" or not self.label_manager.get_blocking(issue.labels))
+            return self._downgrade(action, stale, recovered=recovered)
         assert issue is not None  # stale check rejects None
         outcome = self.run_reset(action.issue_number, list(issue.labels))
         if not outcome.success:
@@ -290,7 +298,7 @@ class TechLeadResetRetryExecutor:
             proposal_id=action.proposal_id,
         )
 
-    def _downgrade(self, action: ResetRetryIssueAction, stale: str) -> ActionResult:
+    def _downgrade(self, action: ResetRetryIssueAction, stale: str, *, recovered: bool = False) -> ActionResult:
         """Stale precondition: surface as would-have-done, post no mutations."""
         logger.warning(
             issue_log(
@@ -316,6 +324,7 @@ class TechLeadResetRetryExecutor:
         return ActionResult.skip(
             action,
             f"stale precondition: {stale}",
+            terminal_disposition_satisfied=recovered,
             mode=STALE_DOWNGRADE_MODE,
             issue_number=action.issue_number,
             proposal_id=action.proposal_id,
@@ -348,90 +357,6 @@ def preserve_reset_retry_eligibility(
         make_retryable(candidate.issue_number)
         cleared.append(candidate.issue_number)
     return cleared
-
-
-@dataclass(frozen=True)
-class RequiredActLevelOutcome:
-    """Did every decision-mandated act-level tech_lead action commit? (ADR-0031 §2).
-
-    The single authoritative boundary the completion path consumes to decide
-    terminalization. A planned :class:`ResetRetryIssueAction` is a
-    decision-MANDATED act-level mutation: the tech_lead decision required it, so a
-    completion is authoritative-success only if it committed. This owner folds
-    the applied results into that one verdict so the executor and the
-    completion handler cannot drift on what "committed" means.
-
-    ``committed`` is true when no required act-level action FAILED. A stale
-    downgrade (``ActionResultType.SKIPPED``) counts as committed: the board
-    moved and the reset owner correctly surfaced instead of mutating — a
-    non-failure outcome. Only a hard FAILURE (the reset owner itself failed)
-    blocks success terminalization.
-    """
-
-    committed: bool
-    failures: tuple[str, ...] = ()
-    failed_actions: tuple[Action, ...] = ()
-
-    @property
-    def failed(self) -> bool:
-        return not self.committed
-
-    def failure_summary(self) -> str:
-        return "; ".join(self.failures) or "act-level owner did not commit"
-
-
-def is_required_act_level_action(action: Action) -> bool:
-    """True for a decision-MANDATED act-level action (ADR-0031 §2).
-
-    THE single source of "which actions carry mandated authority", shared by the
-    apply-time GATE (:func:`partition_required_act_level_actions`, which withholds
-    success-only effects) and the terminal VERDICT
-    (:func:`evaluate_required_act_level_outcome`), so authority and the effects it
-    gates classify the same actions and cannot drift (#6779 R13). A
-    Both wired act-level mutations are mandatory completion gates.
-    """
-    return isinstance(action, (ResetRetryIssueAction, KillHungSessionAction))
-
-
-def partition_required_act_level_actions(
-    actions: Sequence[Action],
-) -> tuple[list[Action], list[Action]]:
-    """Split completion actions into (mandated act-level, success-only remainder).
-
-    Relative order within each partition is preserved. The mandated partition is
-    the authority gate applied first; the remainder holds the success-only effects
-    (labels/comments/close) that must NOT commit unless the gate commits (#6779).
-    """
-    mandated = [action for action in actions if is_required_act_level_action(action)]
-    remainder = [
-        action for action in actions if not is_required_act_level_action(action)
-    ]
-    return mandated, remainder
-
-
-def evaluate_required_act_level_outcome(
-    applied: Sequence[ActionResult],
-) -> RequiredActLevelOutcome:
-    """Fold applied results into the required-act-level commit verdict.
-
-    Pure over the apply results — the single seam that classifies a mandated
-    act-level failure, shared by the completion terminalization path so a
-    failed reset can never be recorded as a clean success (#6764 re-review F2).
-    """
-    failed_results = tuple(
-        result
-        for result in applied
-        if is_required_act_level_action(result.action)
-        and result.result_type is ActionResultType.FAILURE
-    )
-    failures = tuple(
-        result.error or "act-level owner failed" for result in failed_results
-    )
-    return RequiredActLevelOutcome(
-        committed=not failures,
-        failures=failures,
-        failed_actions=tuple(result.action for result in failed_results),
-    )
 
 
 def apply_completion_actions_gated(
@@ -612,6 +537,8 @@ def build_required_act_level_failure_actions(
             if index < len(outcome.failed_actions)
             else None
         )
+        if action in outcome.pending_dispositions:
+            continue  # Durable tick replay already owns this incomplete command.
         target_issue, action_name, target_description = _failure_surface_identity(
             action, fallback_issue_number=issue_number
         )

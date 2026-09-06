@@ -1,14 +1,8 @@
-"""Launch-scope contract for the ``defer_to_tracker`` disposition (#6971).
-
-The disposition COMMENTS on and PARKS its target, so the target is held to the
-same launch scope as any other routing proposal. Its tracker is deliberately
-exempt: the orchestrator only reads that issue's open/closed state, and
-requiring it inside the grant would block the one binding that makes the
-disposition releasable — which is how an already-diagnosed issue would go back
-to burning recovery budget.
-"""
+"""Immutable failure-only target and tracker grants for terminal outcomes."""
 
 from __future__ import annotations
+
+import pytest
 
 from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.control.tech_lead_completion import (
@@ -35,6 +29,7 @@ def _authority() -> TechLeadLaunchAuthority:
         flavor=TechLeadSessionFlavor.FAILURE_INVESTIGATION,
         anchor_issue_number=ANCHOR,
         focus_issue_number=FOCUS,
+        recovery_tracker_numbers=(TRACKER,),
     )
 
 
@@ -94,7 +89,54 @@ def test_deferring_someone_elses_issue_is_rejected() -> None:
     assert "defer_to_tracker" in error
 
 
-def test_the_tracker_may_be_any_open_issue_outside_the_grant() -> None:
-    """A recovery mechanism issue is never inside a failure investigation's
-    grant, and the orchestrator never writes to it."""
-    assert _validate(_decision(_diagnosis(), _defer(tracker=99999))) is None
+def test_an_ungranted_tracker_is_rejected() -> None:
+    assert "launch-granted" in _validate(_decision(_diagnosis(), _defer(tracker=99999)))
+
+
+@pytest.mark.parametrize(
+    "flavor", [TechLeadSessionFlavor.HEALTH_REVIEW, TechLeadSessionFlavor.BATCH_REVIEW]
+)
+def test_other_session_flavors_cannot_defer(flavor):
+    config = Config()
+    authority = TechLeadLaunchAuthority(flavor=flavor, anchor_issue_number=FOCUS)
+    error = validate_decision_for_authority(
+        _decision(_defer()), authority, config=config, labels=LabelManager(config)
+    )
+    assert "only for a failure investigation" in error
+
+
+@pytest.mark.parametrize(
+    "actions",
+    [
+        (),
+        (_defer(), _defer()),
+        (
+            _defer(),
+            ProposedTechLeadAction(
+                id="A3",
+                action_type="escalate_to_human",
+                target_number=FOCUS,
+                body="human",
+            ),
+        ),
+    ],
+)
+def test_missing_or_conflicting_terminal_outcomes_fail(actions):
+    assert "exactly one terminal disposition" in _validate(
+        _decision(_diagnosis(), *actions)
+    )
+
+
+@pytest.mark.parametrize(
+    "remedy", ["reset_retry", "escalate_to_human"]
+)
+def test_immediate_remedies_and_human_handoff_are_terminal(remedy):
+    action = ProposedTechLeadAction(
+        id="A2", action_type=remedy, target_number=FOCUS, body="remedy"
+    )
+    assert _validate(_decision(_diagnosis(), action)) is None
+
+
+def test_kill_without_observed_generation_cannot_be_a_terminal_remedy():
+    action = ProposedTechLeadAction(id="A2", action_type="kill_hung_session", target_number=FOCUS, body="remedy")
+    assert "launch-observed worker generation" in _validate(_decision(_diagnosis(), action))

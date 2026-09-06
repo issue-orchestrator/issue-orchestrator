@@ -19,6 +19,7 @@ session's name distinguishes them. This module is the single owner for:
 """
 
 import logging
+import json
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -38,6 +39,7 @@ from ..domain.tech_lead_session import (
 )
 from .completion_pr_collision import NoCommitsBetweenError
 from .tech_lead_evidence import build_evidence_map, write_evidence_map
+from .tech_lead_dispositions import recovery_tracker_grants
 from .tech_lead_manifest_builder import TechLeadCandidatePolicy, TechLeadManifestBuilder
 
 if TYPE_CHECKING:
@@ -351,6 +353,20 @@ def prepare_tech_lead_session_data(
             key=TechLeadSessionGeneration.sort_key,
         )
     )
+    previous_disposition = tech_lead_authority.load_disposition(issue_number=issue.number) if focused else None
+    if previous_disposition is not None and previous_disposition.phase == "recovered":
+        previous_disposition = None
+    tracker_issue = repository_host.get_issue(issue.number) if focused else issue
+    if tracker_issue is None:
+        raise ValueError(f"failure investigation focus issue #{issue.number} disappeared before launch")
+    tracker_grants = tuple(sorted(set(recovery_tracker_grants(tracker_issue)) | (
+        {previous_disposition.tracker_issue_number} if previous_disposition else set()
+    ))) if focused else ()
+    if focused:
+        (run_dir / "tech-lead-data" / "recovery-context.json").write_text(json.dumps({
+            "recovery_tracker_numbers": list(tracker_grants),
+            "previous_disposition": previous_disposition.to_dict() if previous_disposition else None,
+        }, indent=2) + "\n")
     tech_lead_authority.record(
         run_id=ctx.run.run_id,
         session_name=ctx.run.session_name,
@@ -363,6 +379,7 @@ def prepare_tech_lead_session_data(
             else (),
             problem_issue_numbers=problem_issue_numbers,
             observed_session_generations=observed_session_generations,
+            recovery_tracker_numbers=tracker_grants,
         ),
     )
     logger.info("[tech_lead] Wrote %s assignment: %s", flavor.value, assignment_path)

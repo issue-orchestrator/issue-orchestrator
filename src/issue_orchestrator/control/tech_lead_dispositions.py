@@ -1,240 +1,244 @@
-"""Durable disposition of a completed failure investigation (#6971).
+"""Terminal investigation policy, publication, and durable recovery waits.
 
-A failure investigation that SUCCEEDS — diagnosis posted, pattern accrued,
-follow-ups filed — used to leave nothing machine-readable behind. The blocking
-label stayed, so the next stuck sweep re-discovered the issue "still stuck and
-NOT owned", spent a unit of recovery budget, and queued another investigation
-that re-read the same evidence and reached the same conclusion. Issue #6410 was
-investigated three times for one verdict; #6410/#6411 each had ~2 more coming.
-
-The gap was in the vocabulary, not the sweep: no tech-lead decision action could
-say "diagnosed; the remedy is owned elsewhere". ``escalate_to_human`` applies a
-bare ``needs-human`` label, which ``stuck_sweep._reconciler_owns`` deliberately
-leaves sweep-ELIGIBLE, and ``reset_retry`` is exactly wrong for the common case
-(it discards validated work). So the sweep kept re-asking a question that had
-already been answered.
-
-This module owns the missing disposition end to end:
-
-* :func:`disposition_comment` — the wait state published on the diagnosed
-  issue, rendered in one place so the comment and the row can never describe
-  different bindings.
-* :func:`apply_record_tech_lead_disposition` — the apply-time owner of the
-  durable tracker binding a ``defer_to_tracker`` decision action records.
-* :class:`TechLeadDispositionLedger` — the sweep-time owner. It answers "which
-  issues does a live disposition own?" and RELEASES rows whose binding no
-  longer holds, so a disposition can never park an issue forever.
-
-**The binding is the release condition.** A disposition names an OPEN tracker.
-While that tracker is open the diagnosed issue is owned (the way a
-``tech-lead-needs-human`` marker makes an issue owned) and the sweep leaves its
-budget alone. The moment the tracker closes — or vanishes, or was never real —
-the wait state is over: the row is released and the issue goes straight back to
-the sweep for a fresh look. A recovered issue (its blocking label cleared)
-releases for the same reason.
-
-**Ledger, not label.** The tracker number is the load-bearing half of this
-state and no label can carry it, so the authority store is the single source of
-truth rather than a label plus a store that must be reconciled with it. The
-operator-facing surface is the comment this posts on the diagnosed issue, which
-names the tracker and says exactly why the sweep will leave the issue alone.
-Losing the store degrades to the OLD behaviour (one redundant investigation),
-never to a silently-parked issue.
+Admission is persisted before the guarded explanation. Tick replay consumes that
+trusted pending command even after session cleanup; a conditional commit makes
+it a waiting binding. Neither a partial publication nor a stale remedy proves a
+successful investigation. The sweep owns bounded waiting and positive recovery.
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
-from typing import TYPE_CHECKING, Callable, Protocol
+from datetime import datetime
+from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING, Callable
 
-from .action_results import ActionResult
+from ..domain.dependencies import parse_dependency_edges
+from ..domain.tech_lead_session import TechLeadSessionFlavor
+from .action_results import ActionResult, ActionResultType
 from .tech_lead_actions import RecordTechLeadDispositionAction
 
+# Compatibility exports keep the sweep's owner import stable.
+from .tech_lead_disposition_ledger import (
+    NO_TECH_LEAD_DISPOSITIONS,
+    StuckSweepDispositions,
+    TechLeadDispositionLedger,
+    build_disposition_ledger,
+)
+
+
 if TYPE_CHECKING:
-    from ..domain.tech_lead_session import TechLeadDisposition
+    from ..domain.tech_lead_artifacts import TechLeadDecision
+    from ..domain.tech_lead_session import TechLeadDisposition, TechLeadLaunchAuthority
     from ..ports import RepositoryHost
+    from ..ports.issue import Issue
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
     from .actions import Action
 
 logger = logging.getLogger(__name__)
+TERMINAL_INVESTIGATION_ACTIONS = frozenset(
+    {
+        "defer_to_tracker",
+        "escalate_to_human",
+        "reset_retry",
+        "kill_hung_session",
+    }
+)
 
-#: ``(issue_number) -> "open" | "closed" | None``. ``None`` means the issue does
-#: not exist — treated exactly like closed, because a disposition bound to an
-#: issue that is not there has nothing left to wait for.
-IssueStateReader = Callable[[int], "str | None"]
+
+def recovery_tracker_grants(issue: "Issue") -> tuple[int, ...]:
+    """Grant only explicit, same-repository prerequisite edges, never mentions."""
+    return tuple(
+        sorted(
+            {
+                edge.issue_number
+                for edge in parse_dependency_edges(issue.body or "")
+                if edge.issue_number is not None
+                and edge.repository is None
+                and edge.issue_number != issue.number
+            }
+        )
+    )
+
+
+def investigation_disposition_violation(
+    decision: "TechLeadDecision", authority: "TechLeadLaunchAuthority"
+) -> str | None:
+    """One terminal remedy for the focus job; agent output cannot widen scope."""
+    for action in decision.proposed_actions:
+        if action.action_type == "defer_to_tracker":
+            if authority.flavor is not TechLeadSessionFlavor.FAILURE_INVESTIGATION:
+                return "defer_to_tracker is valid only for a failure investigation"
+            if (
+                action.target_number != authority.focus_issue_number
+                or action.tracker_number not in authority.recovery_tracker_numbers
+            ):
+                return "defer_to_tracker requires the focus issue and a launch-granted recovery tracker"
+    if authority.flavor is TechLeadSessionFlavor.FAILURE_INVESTIGATION:
+        terminal = [
+            a
+            for a in decision.proposed_actions
+            if a.action_type in TERMINAL_INVESTIGATION_ACTIONS
+            and a.target_number == authority.focus_issue_number
+        ]
+        if len(terminal) != 1:
+            return "failure investigation requires exactly one terminal disposition for the focus issue: defer_to_tracker, escalate_to_human, reset_retry, or kill_hung_session"
+        assert authority.focus_issue_number is not None
+        if terminal[0].action_type == "kill_hung_session" and authority.observed_kill_target(authority.focus_issue_number) is None:
+            return "kill_hung_session requires a launch-observed worker generation"
+    return None
+
+
+def disposition_marker(disposition: "TechLeadDisposition") -> str:
+    identity = f"{disposition.source_run_id}:{disposition.source_session_name}:{disposition.source_action_id}"
+    return f"<!-- io:tech-lead-disposition:{hashlib.sha256(identity.encode()).hexdigest()} -->"
+
+
+def reassess_at(disposition: "TechLeadDisposition") -> datetime:
+    return disposition.reassess_at
 
 
 def disposition_comment(disposition: "TechLeadDisposition") -> str:
-    """The operator-facing wait state published on the diagnosed issue."""
     return (
-        "## 🅿️ Tech Lead disposition — diagnosed, awaiting recovery\n\n"
-        f"This issue's failure is diagnosed. Its remedy is owned by"
-        f" #{disposition.tracker_issue_number}, so the orchestrator will NOT"
-        " re-open a failure investigation for it while that tracker is open —"
-        " re-diagnosing an answered question spends recovery budget that"
-        " undiagnosed issues need.\n\n"
+        "## Tech Lead disposition — awaiting recovery\n\n"
+        f"The remedy for this issue is tracked by #{disposition.tracker_issue_number}. "
+        "The orchestrator will retain this binding after this explanation is "
+        "published and the disposition command commits.\n\n"
         f"{disposition.rationale}\n\n"
-        f"The stuck sweep resumes examining this issue when"
-        f" #{disposition.tracker_issue_number} closes with this issue still"
-        " blocked, or when its blocking label clears."
-        f"\n\n---\n*Recorded by tech_lead session (action"
-        f" {disposition.source_action_id}) — ADR-0031, #6971.*"
+        f"Reassessment is due by {reassess_at(disposition).isoformat()}, or sooner "
+        f"when #{disposition.tracker_issue_number} closes or disappears. "
+        "Clearing this issue's blocking state releases the binding and resets "
+        "its recovery budget. A read outage preserves an active binding only until its deadline.\n\n"
+        f"Action {disposition.source_action_id}.\n{disposition_marker(disposition)}"
     )
+
+
+def _admit_disposition(
+    disposition: "TechLeadDisposition", authority: "TechLeadAuthorityStore",
+) -> None:
+    grant = authority.load(
+        run_id=disposition.source_run_id, session_name=disposition.source_session_name
+    )
+    if (
+        grant is None
+        or grant.flavor is not TechLeadSessionFlavor.FAILURE_INVESTIGATION
+        or grant.focus_issue_number != disposition.issue_number
+        or disposition.tracker_issue_number not in grant.recovery_tracker_numbers
+    ):
+        raise ValueError("disposition has no immutable launch grant for this target/tracker")
+
+
+def _validate_live_wait(disposition: "TechLeadDisposition", host: "RepositoryHost") -> None:
+    issue = host.get_issue(disposition.issue_number)
+    if issue is None or issue.state != "open":
+        raise ValueError("disposition target is missing or closed")
+    if disposition.tracker_issue_number not in recovery_tracker_grants(issue):
+        raise ValueError("recovery tracker is no longer a declared prerequisite")
+    if host.get_issue_state(disposition.tracker_issue_number) != "open":
+        raise ValueError("recovery tracker is missing or closed")
+
+
+def _prepare(
+    proposed: "TechLeadDisposition", authority: "TechLeadAuthorityStore", now: datetime,
+    host: "RepositoryHost",
+) -> "TechLeadDisposition":
+    """Persist trusted admission BEFORE any remote effect; exact replays need no session."""
+    previous = authority.load_disposition(issue_number=proposed.issue_number)
+    if previous is not None and disposition_marker(previous) == disposition_marker(proposed):
+        normalized = replace(proposed, recorded_at=previous.recorded_at,
+            phase=previous.phase, recovered_at=previous.recovered_at)
+        if normalized != previous:
+            raise ValueError("disposition replay changed its immutable command payload")
+        if previous.phase not in {"prepared", "waiting"}:
+            raise ValueError("disposition already lapsed or recovered")
+        return previous
+    _admit_disposition(proposed, authority)
+    if previous is not None and previous.phase != "recovered":
+        raise ValueError("this incident already has a disposition; reassess or remediate it")
+    if previous is not None and (
+        (previous.source_run_id, previous.source_session_name) == (proposed.source_run_id, proposed.source_session_name)
+        or datetime.fromisoformat(proposed.recorded_at) <= datetime.fromisoformat(previous.recovered_at)
+    ):
+        raise ValueError("a recovered incident requires a newly launched investigation")
+    prepared = replace(proposed, phase="prepared", recovered_at="")
+    if now >= reassess_at(prepared):
+        raise ValueError("recovery deadline expired; choose remediation or human escalation")
+    _validate_live_wait(prepared, host)
+    if not authority.transition_disposition(previous=previous, disposition=prepared):
+        raise ValueError("disposition admission raced another incident transition")
+    return prepared
+
+
+@dataclass(frozen=True)
+class _DispositionPublisher:
+    """An exclusive publisher's collaborators; admission stays with the lifecycle."""
+
+    authority: "TechLeadAuthorityStore"
+    host: "RepositoryHost"
+    apply_action: Callable[["Action"], ActionResult]
+    require_expected: Callable[["Action", int], None]
+    verify_claim: Callable[["Action", int], None]
+    clock: Callable[[], datetime]
+
+    def _revalidate(self, action: "Action", disposition: "TechLeadDisposition") -> None:
+        if self.authority.load_disposition(issue_number=disposition.issue_number) != disposition:
+            raise ValueError("disposition changed before publication; stale publisher refused")
+        if self.clock() >= disposition.reassess_at:
+            self.authority.transition_disposition(previous=disposition,
+                disposition=replace(disposition, phase="reassess"))
+            raise ValueError("recovery deadline expired; reassessment required")
+        _validate_live_wait(disposition, self.host)
+        self.require_expected(action, disposition.issue_number)
+        self.verify_claim(action, disposition.issue_number)
+
+    def publish(self, action: "Action", disposition: "TechLeadDisposition") -> None:
+        from .actions import AddCommentAction
+        self._revalidate(action, disposition)
+        present = self.host.issue_comment_marker_present(disposition.issue_number, disposition_marker(disposition))
+        # Recheck after even a marker query: time, pause, or row ownership may
+        # have changed while the remote read was outstanding.
+        self._revalidate(action, disposition)
+        if not present:
+            result = self.apply_action(AddCommentAction(number=disposition.issue_number,
+                comment=disposition_comment(disposition), reason=action.reason, expected=action.expected))
+            if result.result_type is not ActionResultType.SUCCESS:
+                raise ValueError(result.error or "disposition explanation did not commit")
+        self._revalidate(action, disposition)
+        if not self.authority.transition_disposition(previous=disposition,
+            disposition=replace(disposition, phase="waiting")):
+            raise ValueError("disposition changed during publication; reassessment required")
 
 
 def apply_record_tech_lead_disposition(
-    action: "Action",
-    *,
-    authority: "TechLeadAuthorityStore | None",
+    action: "Action", *, authority: "TechLeadAuthorityStore | None",
+    repository_host: "RepositoryHost | None",
+    apply_action: Callable[["Action"], ActionResult],
+    require_expected: Callable[["Action", int], None],
+    verify_claim: Callable[["Action", int], None], clock: Callable[[], datetime],
 ) -> ActionResult:
-    """Record the durable tracker binding for a diagnosed issue (#6971).
-
-    Ledger-only, on purpose. The wait-state COMMENT that explains the parking
-    is planned as an ordinary :class:`~.actions.AddCommentAction` ahead of this
-    one, so it crosses the applier's claim-verified comment handler like every
-    other write to a real work issue — the same delegation shape the reset and
-    kill owners use. This half writes nothing to GitHub, so it needs no claim
-    check of its own; the expected-state gate still runs, because the registry
-    wraps every mutating tech-lead command in it and this command names the
-    diagnosed issue as its reconciliation subject.
-    """
+    """Resume one exclusively owned command; only committed waiting proves success."""
     assert isinstance(action, RecordTechLeadDispositionAction)
-    if authority is None:
-        return ActionResult.fail(
-            action,
-            "recording a tech-lead disposition requires the"
-            " TechLeadAuthorityStore wired into this applier",
-        )
+    if authority is None or repository_host is None:
+        return ActionResult.fail(action, "disposition requires TechLeadAuthorityStore and RepositoryHost")
     disposition = action.disposition
-    assert disposition is not None  # enforced by the action's __post_init__
+    assert disposition is not None
+    pending = False
     try:
-        authority.record_disposition(disposition=disposition)
+        require_expected(action, disposition.issue_number)
+        verify_claim(action, disposition.issue_number)
+        disposition = _prepare(disposition, authority, clock(), repository_host)
+        pending = disposition.phase == "prepared"
+        with authority.disposition_publication(issue_number=disposition.issue_number) as acquired:
+            if not acquired:
+                raise ValueError("another publisher owns this disposition; retry on a later tick")
+            _DispositionPublisher(authority, repository_host, apply_action,
+                require_expected, verify_claim, clock).publish(action, disposition)
     except Exception as exc:
-        logger.exception(
-            "Failed to record tech-lead disposition for issue #%d (tracker #%d)",
-            disposition.issue_number,
-            disposition.tracker_issue_number,
-        )
-        return ActionResult.fail(action, str(exc))
-    return ActionResult.ok(
-        action,
-        issue_number=disposition.issue_number,
-        tracker_issue_number=disposition.tracker_issue_number,
-    )
+        logger.exception("Could not commit disposition for #%d", disposition.issue_number)
+        return ActionResult.fail(action, str(exc), pending_disposition=pending)
+    return ActionResult.ok(action, issue_number=disposition.issue_number,
+        tracker_issue_number=disposition.tracker_issue_number)
 
 
-class StuckSweepDispositions(Protocol):
-    """What the stuck sweep needs from the disposition ledger (#6971).
-
-    A behaviour-level seam, not a store handle: the sweep asks who is owned and
-    reports who recovered, and never learns that dispositions are rows, that a
-    tracker's state comes from GitHub, or when a row is discarded.
-    """
-
-    def owned_issue_numbers(self) -> frozenset[int]:
-        """Issues a live disposition owns; releases bindings that lapsed."""
-        ...
-
-    def release(self, issue_numbers: frozenset[int]) -> None:
-        """Drop dispositions for issues that recovered (no longer blocked)."""
-        ...
-
-
-class _NoDispositions:
-    """Null ledger for a sweep running without an authority store."""
-
-    def owned_issue_numbers(self) -> frozenset[int]:
-        return frozenset()
-
-    def release(self, issue_numbers: frozenset[int]) -> None:
-        return None
-
-
-#: The sweep's default: no store wired, so no issue is disposition-owned.
-NO_TECH_LEAD_DISPOSITIONS: StuckSweepDispositions = _NoDispositions()
-
-
-class TechLeadDispositionLedger:
-    """Owner of "is this issue's disposition still binding?" (#6971).
-
-    Reads are bounded and rare by construction: the ledger holds one row per
-    diagnosed-and-parked issue (a handful), the sweep is the only caller, and
-    the sweep is timer-gated — so a not-due sweep costs ZERO GitHub calls, and a
-    due one costs at most one issue-state read per DISTINCT bound tracker.
-    """
-
-    def __init__(
-        self,
-        *,
-        authority: "TechLeadAuthorityStore",
-        issue_state: IssueStateReader,
-    ) -> None:
-        self._authority = authority
-        self._issue_state = issue_state
-
-    def owned_issue_numbers(self) -> frozenset[int]:
-        """Issues whose disposition still binds, releasing the ones that lapsed.
-
-        A tracker that is closed, missing, or unreadable ends the wait state.
-        Unreadable is treated as lapsed on purpose: failing OPEN here would let
-        one flaky read park an issue indefinitely, whereas failing closed costs
-        at most one redundant investigation — the pre-#6971 behaviour.
-        """
-        owned: set[int] = set()
-        tracker_open: dict[int, bool] = {}
-        for disposition in self._authority.list_dispositions():
-            tracker = disposition.tracker_issue_number
-            if tracker not in tracker_open:
-                tracker_open[tracker] = self._tracker_is_open(tracker)
-            if tracker_open[tracker]:
-                owned.add(disposition.issue_number)
-                continue
-            logger.info(
-                "[STUCK_SWEEP] releasing disposition for issue #%d: its"
-                " recovery tracker #%d is no longer open (#6971)",
-                disposition.issue_number,
-                tracker,
-            )
-            self._authority.discard_disposition(issue_number=disposition.issue_number)
-        return frozenset(owned)
-
-    def release(self, issue_numbers: frozenset[int]) -> None:
-        """Drop the dispositions of issues that recovered.
-
-        Mirrors the sweep's own recovery-budget reset: an issue that no longer
-        carries a blocking label has recovered, so a stale row must not survive
-        to park a LATER, unrelated incident on the same number.
-        """
-        for issue_number in sorted(issue_numbers):
-            if self._authority.load_disposition(issue_number=issue_number) is None:
-                continue
-            logger.info(
-                "[STUCK_SWEEP] releasing disposition for issue #%d: it is no"
-                " longer blocked (#6971)",
-                issue_number,
-            )
-            self._authority.discard_disposition(issue_number=issue_number)
-
-    def _tracker_is_open(self, tracker_issue_number: int) -> bool:
-        try:
-            return self._issue_state(tracker_issue_number) == "open"
-        except Exception:
-            logger.warning(
-                "[STUCK_SWEEP] could not read the state of recovery tracker"
-                " #%d; treating the disposition it backs as lapsed (#6971)",
-                tracker_issue_number,
-                exc_info=True,
-            )
-            return False
-
-
-def build_disposition_ledger(
-    authority: "TechLeadAuthorityStore | None",
-    repository_host: "RepositoryHost",
-) -> StuckSweepDispositions:
-    """The sweep's disposition owner, or the null ledger without a store."""
-    if authority is None:
-        return NO_TECH_LEAD_DISPOSITIONS
-    return TechLeadDispositionLedger(
-        authority=authority, issue_state=repository_host.get_issue_state
-    )
+__all__ = ["NO_TECH_LEAD_DISPOSITIONS", "StuckSweepDispositions", "TechLeadDispositionLedger", "build_disposition_ledger"]

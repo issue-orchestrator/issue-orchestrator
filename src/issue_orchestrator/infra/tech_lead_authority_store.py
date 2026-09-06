@@ -37,7 +37,7 @@ import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator
+from typing import ContextManager, Iterator
 
 from ..domain.models import DiscoveredFailure
 from ..domain.tech_lead_findings import (
@@ -69,6 +69,7 @@ from . import tech_lead_pending_intents as pending_intents
 from . import tech_lead_shipped_fixes_sql as shipped_fixes
 from .sqlite_connection import open_sqlite
 from .tech_lead_authority_schema import initialize_tech_lead_authority_schema
+from .tech_lead_publication_lock import disposition_publication
 
 logger = logging.getLogger(__name__)
 
@@ -315,27 +316,19 @@ class SqliteTechLeadAuthorityStore:
 
     # -- Failure-investigation dispositions (#6971) -------------------------
 
-    def record_disposition(self, *, disposition: TechLeadDisposition) -> None:
-        """Persist an issue's terminal disposition (last write wins, #6971)."""
+    def disposition_publication(self, *, issue_number: int) -> ContextManager[bool]:
+        return disposition_publication(self._db_path, issue_number)
+
+    def transition_disposition(
+        self, *, previous: TechLeadDisposition | None, disposition: TechLeadDisposition
+    ) -> bool:
+        """Compare and write under the store's immediate transaction."""
         with self._transaction() as tx:
-            dispositions.upsert(tx, disposition)
-        logger.info(
-            "[tech_lead] Recorded disposition: issue=#%d tracker=#%d action=%s",
-            disposition.issue_number,
-            disposition.tracker_issue_number,
-            disposition.source_action_id,
-        )
+            return dispositions.transition(tx, previous, disposition)
 
     def load_disposition(self, *, issue_number: int) -> TechLeadDisposition | None:
         """Load an issue's disposition, or None when it is not parked."""
         return dispositions.select(self._get_connection(), issue_number)
-
-    def discard_disposition(self, *, issue_number: int) -> None:
-        """Release an issue's disposition (release owner; no-op if absent)."""
-        with self._transaction() as tx:
-            deleted = dispositions.delete(tx, issue_number)
-        if deleted:
-            logger.info("[tech_lead] Released disposition: issue=#%d", issue_number)
 
     def list_dispositions(self) -> tuple[TechLeadDisposition, ...]:
         """Every recorded disposition — the sweep's ownership ledger read."""

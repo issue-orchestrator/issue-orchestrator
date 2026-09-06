@@ -2,16 +2,11 @@
 
 One row per diagnosed-and-parked issue: the OPEN tracker that owns its remedy.
 The stuck sweep reads it to skip issues whose diagnosis already exists, and the
-disposition owner deletes a row the moment its binding lapses.
+disposition owner retains lapsed/recovered tombstones to reject stale commands.
 
-Its write rule is the opposite of every other ledger here, which is why it gets
-its own file rather than joining them: the durable ledgers in
-``tech_lead_authority_store`` are create-once (a consent binding, an identity
-map — recording a different payload is a conflict). This row means "the latest
-completed investigation's conclusion", so a newer investigation must SUPERSEDE
-it; refusing the update would freeze an issue on a tracker that may already be
-closed, which is exactly the parked-forever state the release rule exists to
-prevent.
+The compare-and-transition statement binds every write to the exact prior JSON
+row. An admitted command survives session cleanup; stale writers cannot replace
+a lapsed binding or recovered tombstone. The lifecycle owns state transitions.
 
 Plain functions over a connection, like ``tech_lead_pending_intents``: the
 owning store keeps the connection, the write lock, and the transaction
@@ -35,25 +30,6 @@ def _from_row(row: sqlite3.Row) -> TechLeadDisposition:
     return TechLeadDisposition.from_dict(json.loads(row["disposition"]))
 
 
-def upsert(tx: sqlite3.Connection, disposition: TechLeadDisposition) -> None:
-    """Record an issue's disposition, superseding any previous binding."""
-    tx.execute(
-        "INSERT INTO tech_lead_dispositions"
-        " (issue_number, tracker_issue_number, disposition, recorded_at)"
-        " VALUES (?, ?, ?, ?)"
-        " ON CONFLICT(issue_number) DO UPDATE SET"
-        " tracker_issue_number = excluded.tracker_issue_number,"
-        " disposition = excluded.disposition,"
-        " recorded_at = excluded.recorded_at",
-        (
-            disposition.issue_number,
-            disposition.tracker_issue_number,
-            json.dumps(disposition.to_dict(), sort_keys=True),
-            disposition.recorded_at,
-        ),
-    )
-
-
 def select(conn: sqlite3.Connection, issue_number: int) -> TechLeadDisposition | None:
     """One issue's disposition, or None when it is not parked."""
     row = conn.execute(
@@ -63,17 +39,33 @@ def select(conn: sqlite3.Connection, issue_number: int) -> TechLeadDisposition |
     return None if row is None else _from_row(row)
 
 
-def delete(tx: sqlite3.Connection, issue_number: int) -> int:
-    """Release an issue's disposition; returns how many rows were removed."""
-    return tx.execute(
-        "DELETE FROM tech_lead_dispositions WHERE issue_number = ?",
-        (issue_number,),
-    ).rowcount
-
-
 def select_all(conn: sqlite3.Connection) -> tuple[TechLeadDisposition, ...]:
     """Every disposition — the sweep's ownership ledger read."""
     rows = conn.execute(
         "SELECT disposition FROM tech_lead_dispositions ORDER BY issue_number",
     ).fetchall()
     return tuple(_from_row(row) for row in rows)
+
+
+def transition(
+    tx: sqlite3.Connection,
+    previous: TechLeadDisposition | None,
+    disposition: TechLeadDisposition,
+) -> bool:
+    """CAS in the SQL predicate, safe across independent store connections."""
+    encoded = json.dumps(disposition.to_dict(), sort_keys=True)
+    values = (disposition.tracker_issue_number, encoded, disposition.recorded_at, disposition.issue_number)
+    if previous is None:
+        return tx.execute(
+            "INSERT OR IGNORE INTO tech_lead_dispositions "
+            "(tracker_issue_number, disposition, recorded_at, issue_number) VALUES (?, ?, ?, ?)",
+            values,
+        ).rowcount == 1
+    row = tx.execute("SELECT disposition FROM tech_lead_dispositions WHERE issue_number = ?",
+        (disposition.issue_number,)).fetchone()
+    if row is None or _from_row(row) != previous:
+        return False
+    return tx.execute(
+        "UPDATE tech_lead_dispositions SET tracker_issue_number = ?, disposition = ?, recorded_at = ? "
+        "WHERE issue_number = ? AND disposition = ?", (*values, row["disposition"]),
+    ).rowcount == 1

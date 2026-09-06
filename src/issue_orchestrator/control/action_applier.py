@@ -279,8 +279,8 @@ class ActionApplier:
                 surface_proposal=self._apply_surface_tech_lead_proposal,
                 reset_retry=self._apply_reset_retry_issue,
                 kill_hung_session=self._apply_kill_hung_session,
-                # Mutation policy stays HERE: the extracted owners get the
-                # applier's own expected-state gate, not a copy of it (#6957 F15).
+                events=self.events, label_manager=self.label_manager, needs_human_block=self.needs_human_block,
+                apply_action=self.apply, verify_claim=self._verify_claim_before_write,
                 require_expected=self._require_expected,
                 repository_host=self.repository_host,
                 authority=self.tech_lead_ops,

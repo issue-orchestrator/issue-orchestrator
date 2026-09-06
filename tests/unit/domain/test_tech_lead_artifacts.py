@@ -413,7 +413,6 @@ class TestCanonicalIds:
 
     def test_combined_namespace_duplicates_rejected(self):
         """Even if id forms drift, the combined namespace stays unique."""
-        from issue_orchestrator.domain import tech_lead_artifacts
 
         finding = TechLeadFinding(
             id="T1", title="t", classification="infra", evidence=("log",)
@@ -424,13 +423,10 @@ class TestCanonicalIds:
         decision = TechLeadDecision(
             summary="s", findings=(finding,), proposed_actions=(action,)
         )
-        original = tech_lead_artifacts._ACTION_ID_RE
-        tech_lead_artifacts._ACTION_ID_RE = tech_lead_artifacts._FINDING_ID_RE
-        try:
-            with pytest.raises(ValueError, match="share a namespace"):
-                decision.validate()
-        finally:
-            tech_lead_artifacts._ACTION_ID_RE = original
+        # The public validator checks namespace collisions before action-id
+        # canonicality, so no private regex mutation is needed to reach it.
+        with pytest.raises(ValueError, match="share a namespace"):
+            decision.validate()
 
     def test_report_token_match_is_exact_not_substring(self):
         """T1 must not be satisfied by a report that only mentions T10."""

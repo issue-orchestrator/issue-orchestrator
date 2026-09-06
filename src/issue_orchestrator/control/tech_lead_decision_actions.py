@@ -48,17 +48,10 @@ strategy apply exactly as they do to the planner's batch tracking issue, and
 agent labels have already passed the protected-label contract check
 (``tech_lead_completion``).
 
-Disposition note (#6971): ``defer_to_tracker`` is the second always-execute
-floor alongside ``escalate_to_human``, for the same reason — it is a routing
-surface, not an act. It records that a completed failure investigation reached
-a verdict whose remedy an OPEN tracker owns, which is what stops the stuck
-sweep re-diagnosing an already-diagnosed issue. Under ``propose`` it would
-surface a shadow record and the redundant investigations would continue, so
-there is nothing to gate. It never mutates runtime state, never touches a
-workflow label, and self-releases when its tracker closes
-(``tech_lead_dispositions``). It plans an ORDERED pair — the wait-state
-comment through the applier's claim-verified comment handler, then the
-ledger-only binding — so ownership never transfers unexplained.
+Disposition note (#6971): a dependency-backed wait becomes one mandatory
+command, owning both explanation and durable binding. Admission requires the
+failure investigation's immutable tracker grant. The owner enforces a finite,
+non-renewable incident deadline and makes replay safe at the comment/store seam.
 
 Escalation note: tech_lead escalation deliberately does NOT reuse
 ``EscalateToHumanAction``. That action's applier terminates the target
@@ -90,10 +83,10 @@ from ..ports.issue import Issue
 from .actions import (
     Action,
     AddCommentAction,
-    AddLabelAction,
     CreateTechLeadIssueAction,
     KillHungSessionAction,
     RecordTechLeadDispositionAction,
+    EscalateTechLeadDispositionAction,
     ResetRetryIssueAction,
     SurfaceTechLeadProposalAction,
 )
@@ -113,7 +106,6 @@ from .tech_lead_gate_notes import (
     outcome_gate_note,
 )
 from .tech_lead_case_files import PatternCaseFilePlanner
-from .tech_lead_dispositions import disposition_comment
 from .tech_lead_issue_policy import (
     apply_tech_lead_priority_prefix,
     decision_issue_labels,
@@ -124,7 +116,6 @@ from .tech_lead_proposals import (
     build_duplicate_proposal_comment,
     build_tech_lead_proposal_issue_action,
 )
-from .needs_human_block import NeedsHumanCause
 
 if TYPE_CHECKING:
     from ..domain.tech_lead_artifacts import TechLeadFinding
@@ -174,7 +165,6 @@ def _concrete_actions(
     labels: LabelManager,
     anchor_issue: Issue,
     expected: "ExpectedState",
-    needs_human_label: str,
     source_run_id: str,
     source_session_name: str,
     observed_at: str,
@@ -245,11 +235,7 @@ def _concrete_actions(
     if action.action_type == "defer_to_tracker":
         assert action.target_number is not None  # enforced by validate()
         assert action.tracker_number is not None  # enforced by validate()
-        # Terminal disposition (#6971). Ordered explanation-then-ownership: the
-        # wait state is published through the applier's ordinary (claim-verified)
-        # comment handler BEFORE the durable binding that takes the issue out of
-        # the stuck sweep, so an issue is never parked with nothing on it saying
-        # why. Both halves render from the same disposition value.
+        # One owned command publishes and commits this terminal outcome.
         disposition = TechLeadDisposition(
             issue_number=action.target_number,
             tracker_issue_number=action.tracker_number,
@@ -261,16 +247,6 @@ def _concrete_actions(
             finding_ids=action.finding_ids,
         )
         return [
-            AddCommentAction(
-                number=action.target_number,
-                comment=disposition_comment(disposition),
-                is_pr=False,
-                reason=(
-                    f"tech_lead decision action {action.id}: publish the"
-                    f" awaiting-recovery disposition on #{action.target_number}"
-                ),
-                expected=expected,
-            ),
             RecordTechLeadDispositionAction(
                 disposition=disposition,
                 reason=(
@@ -282,24 +258,13 @@ def _concrete_actions(
         ]
     if action.action_type == "escalate_to_human":
         assert action.target_number is not None  # enforced by validate()
-        # Routing surface only — see the module docstring for why this must
-        # not reuse EscalateToHumanAction (runtime termination).
-        return [
-            AddLabelAction(
-                issue_number=action.target_number,
-                label=needs_human_label,
-                reason=f"tech_lead decision action {action.id}: escalate to human",
-                needs_human_cause=NeedsHumanCause.SESSION_LIFECYCLE,
-                expected=expected,
-            ),
-            AddCommentAction(
-                number=action.target_number,
-                comment="## ⚠️ Tech Lead escalation — human attention needed\n\n" + body,
-                is_pr=action.target_is_pr,
-                reason=f"tech_lead decision action {action.id}: escalation comment",
-                expected=expected,
-            ),
-        ]
+        return [EscalateTechLeadDispositionAction(
+            issue_number=action.target_number,
+            comment="## Tech Lead escalation — human attention needed\n\n" + body,
+            reason=f"tech_lead decision action {action.id}: escalate to human",
+            expected=expected,
+        )]
+
     raise ValueError(
         f"no concrete executor for tech_lead action type {action.action_type!r}"
     )
@@ -611,7 +576,6 @@ class _DecisionActionPlanner:
             labels=self.labels,
             anchor_issue=self.anchor_issue,
             expected=self.expected,
-            needs_human_label=self.labels.needs_human,
             source_run_id=self.source_run_id,
             source_session_name=self.source_session_name,
             observed_at=self.observed_at,

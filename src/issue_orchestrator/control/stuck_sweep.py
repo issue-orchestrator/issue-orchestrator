@@ -142,6 +142,7 @@ class _StuckScan:
     # Open issues that now carry the needs-human label — a landed escalation
     # (the acknowledgement that drops it from the durable pending set, #6824 R1).
     needs_human_numbers: frozenset[int]
+    observed_numbers: frozenset[int]
 
 
 def stuck_sweep_due(config: "Config", state: "OrchestratorState", now: float) -> bool:
@@ -219,8 +220,10 @@ def run_stuck_sweep(
         ),
         provider_circuit_open=provider_circuit_open,
     )
-    _clear_recovered_counters(state, scan)
-    dispositions.release(disposition_owned - scan.blocked_numbers)
+    _clear_recovered_counters(state, scan, dispositions.incident_issue_numbers())
+    released = dispositions.release_recovered(scan.blocked_numbers, scan.observed_numbers)
+    for number in released - _owned_issue_numbers(state) - open_proposal_targets:
+        state.recovery_attempts.pop(number, None)
     _ack_landed_escalations(state, scan)
     recovered: list[DiscoveredFailure] = []
     exhausted: list[int] = []
@@ -270,7 +273,8 @@ def _ack_landed_escalations(state: "OrchestratorState", scan: "_StuckScan") -> N
     }
 
 
-def _clear_recovered_counters(state: "OrchestratorState", scan: "_StuckScan") -> None:
+def _clear_recovered_counters(state: "OrchestratorState", scan: "_StuckScan",
+    incidents: frozenset[int]) -> None:
     """Drop the recovery budget for issues that genuinely RECOVERED (#6824 F1).
 
     An issue no longer carrying ANY blocking label (its ``blocked-failed`` was
@@ -280,12 +284,11 @@ def _clear_recovered_counters(state: "OrchestratorState", scan: "_StuckScan") ->
     stale (possibly already-exhausted) count.
 
     A disposition-parked issue counts as owned here (it is in ``base_owned``),
-    so its budget is preserved while it waits; ``run_stuck_sweep`` releases the
-    disposition itself on the same "no longer blocked" rule, after which the
-    next sweep clears the counter too.
+    so its budget is preserved while it waits. ``run_stuck_sweep`` releases
+    recovered dispositions and their counters together in the same sweep.
     """
     for number in list(state.recovery_attempts):
-        if number not in scan.blocked_numbers and number not in scan.owned_numbers:
+        if number not in scan.blocked_numbers and number not in scan.owned_numbers and number not in incidents:
             del state.recovery_attempts[number]
 
 
@@ -392,6 +395,7 @@ def _scan_stuck_issues(
         blocked_numbers=frozenset(blocked),
         owned_numbers=frozenset(owned),
         needs_human_numbers=frozenset(needs_human_numbers),
+        observed_numbers=frozenset(issue.number for issue in scoped),
     )
 
 
@@ -588,6 +592,7 @@ def run_stuck_sweep_cycle(
     queue_cache_store: "QueueCacheStore | None",
     on_result: "Callable[[StuckSweepResult], None]",
     on_scan_incomplete: "Callable[[Exception], None]",
+    dispositions: StuckSweepDispositions = NO_TECH_LEAD_DISPOSITIONS,
 ) -> None:
     """Arm the sweep, absorb what it is allowed to absorb, record the rest.
 
@@ -629,6 +634,7 @@ def run_stuck_sweep_cycle(
             now,
             open_proposal_targets=open_proposal_targets,
             provider_circuit_open=provider_circuit_open,
+            dispositions=dispositions,
         )
     except RepositoryScanIncompleteError as error:
         logger.error(

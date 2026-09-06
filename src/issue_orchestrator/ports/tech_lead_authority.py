@@ -15,8 +15,10 @@ implementation lives in ``infra/tech_lead_authority_store.py``.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Protocol
+from threading import Lock
+from typing import TYPE_CHECKING, ContextManager, Generator, Protocol
 
 if TYPE_CHECKING:
     from ..domain.models import DiscoveredFailure
@@ -134,28 +136,27 @@ class TechLeadAuthorityStore(Protocol):
     # -- Failure-investigation dispositions (#6971) -------------------------
     #
     # The durable terminal disposition of a completed failure investigation,
-    # keyed by the DIAGNOSED issue number. While the row's bound tracker is
-    # open the stuck sweep treats the issue as owned instead of re-injecting a
-    # redundant investigation; the release owner discards the row when the
-    # tracker closes or the issue recovers.
+    # keyed by the DIAGNOSED issue number. Prepared commands and unexpired
+    # waiting own recovery. Lapsed and recovered rows retain incident identity
+    # so neither a read outage nor a stale command can renew the deadline.
 
-    def record_disposition(self, *, disposition: "TechLeadDisposition") -> None:
-        """Persist an issue's terminal disposition (last write wins).
+    def disposition_publication(self, *, issue_number: int) -> ContextManager[bool]:
+        """Nonblocking, process-shared publication ownership; released on crash.
 
-        Unlike :meth:`record_op` (a consent binding that must never silently
-        change), this row is "the latest completed investigation's
-        conclusion". A newer investigation binding the issue to a different
-        tracker SUPERSEDES the previous row rather than conflicting with it —
-        refusing the update would freeze an issue on a stale tracker forever.
+        True grants exclusivity through remote marker lookup/write and local
+        commit. False permits no publication. Callers re-read their command
+        after acquiring; ordinary release must never replace the lock identity.
         """
+        ...
+
+    def transition_disposition(
+        self, *, previous: "TechLeadDisposition | None", disposition: "TechLeadDisposition"
+    ) -> bool:
+        """Atomically write only if the current row equals previous."""
         ...
 
     def load_disposition(self, *, issue_number: int) -> "TechLeadDisposition | None":
         """Return an issue's recorded disposition, or None when absent."""
-        ...
-
-    def discard_disposition(self, *, issue_number: int) -> None:
-        """Release an issue's disposition. No-op if absent (release owner)."""
         ...
 
     def list_dispositions(self) -> tuple["TechLeadDisposition", ...]:
@@ -455,6 +456,7 @@ class InMemoryTechLeadAuthorityStore:
         self._shipped_fixes: dict[int, "TechLeadShippedFixSummary"] = {}
         self._storm_cohorts: dict[int, tuple["DiscoveredFailure", ...]] = {}
         self._dispositions: dict[int, "TechLeadDisposition"] = {}
+        self._disposition_publication_locks: dict[int, Lock] = {}
 
     def record(
         self, *, run_id: str, session_name: str, authority: "TechLeadLaunchAuthority"
@@ -497,14 +499,26 @@ class InMemoryTechLeadAuthorityStore:
     def list_ops(self) -> tuple[tuple[int, "StoredTechLeadOp"], ...]:
         return tuple(sorted(self._ops.items()))
 
-    def record_disposition(self, *, disposition: "TechLeadDisposition") -> None:
+    @contextmanager
+    def disposition_publication(self, *, issue_number: int) -> Generator[bool]:
+        lock = self._disposition_publication_locks.setdefault(issue_number, Lock())
+        acquired = lock.acquire(blocking=False)
+        try:
+            yield acquired
+        finally:
+            if acquired:
+                lock.release()
+
+    def transition_disposition(
+        self, *, previous: "TechLeadDisposition | None", disposition: "TechLeadDisposition"
+    ) -> bool:
+        if self._dispositions.get(disposition.issue_number) != previous:
+            return False
         self._dispositions[disposition.issue_number] = disposition
+        return True
 
     def load_disposition(self, *, issue_number: int) -> "TechLeadDisposition | None":
         return self._dispositions.get(issue_number)
-
-    def discard_disposition(self, *, issue_number: int) -> None:
-        self._dispositions.pop(issue_number, None)
 
     def list_dispositions(self) -> tuple["TechLeadDisposition", ...]:
         return tuple(self._dispositions[key] for key in sorted(self._dispositions))
