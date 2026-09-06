@@ -52,13 +52,15 @@ def remote_factory(monkeypatch):
     clients = []
     original = httpx.Client
 
-    def make(handler):
+    def make(handler, *, api_url="https://api.github.com"):
         monkeypatch.setattr(
             httpx,
             "Client",
             lambda **kwargs: original(transport=httpx.MockTransport(handler), **kwargs),
         )
-        client = GitHubHttpClient(GitHubHttpConfig(repo="owner/repo", token="test"))
+        client = GitHubHttpClient(
+            GitHubHttpConfig(repo="owner/repo", token="test", base_url=api_url)
+        )
         clients.append(client)
         return GitHubPublicationRemote(client, repo_slug="owner/repo")
 
@@ -186,3 +188,19 @@ def test_push_endpoint_is_bound_to_repository_and_host(
         remote.accepts_push_destination(COMMAND, ExactPushDestination(endpoint))
         is accepted
     )
+
+
+@pytest.mark.parametrize(
+    "port,accepted", [("", False), (":443", False), (":8443", True)]
+)
+def test_enterprise_endpoint_requires_effective_configured_port(
+    remote_factory, port, accepted
+):
+    from issue_orchestrator.domain.exact_git import ExactPushDestination
+
+    remote = remote_factory(
+        lambda _: pytest.fail("no HTTP expected"),
+        api_url="https://git.example:8443/api/v3",
+    )
+    destination = ExactPushDestination(f"https://git.example{port}/owner/repo.git")
+    assert remote.accepts_push_destination(COMMAND, destination) is accepted

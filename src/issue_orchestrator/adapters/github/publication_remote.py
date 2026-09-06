@@ -70,7 +70,8 @@ class GitHubPublicationRemote:
             if (
                 parsed.scheme not in {"https", "ssh"}
                 or parsed.hostname != expected_host
-                or parsed.port not in {None, expected_port}
+                or (parsed.port or (443 if parsed.scheme == "https" else 22))
+                != expected_port
                 or parsed.query
                 or parsed.fragment
                 or parsed.password is not None
