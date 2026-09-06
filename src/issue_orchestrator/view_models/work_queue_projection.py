@@ -32,12 +32,13 @@ class WorkQueueProjection:
 def project_work_queue(
     *, queue_issues: Sequence[Issue], scope_issues: Sequence[Issue],
     history: Sequence[SessionHistoryEntry] = (),
+    active_issues: Sequence[Issue] = (),
     retained_classifications: Mapping[int, IssueWorkClassification] | None = None,
 ) -> WorkQueueProjection:
     """Use retained identity and historical labels across queue refreshes.
 
     The queue owner records current observations before projecting them. Its
-    retained identity outranks restored cache/history labels; absence from a
+    retained identity outranks restored session/cache/history labels; absence from a
     fetched scope does not erase identity. Source history remains intact.
     """
     classifications = {
@@ -45,7 +46,7 @@ def project_work_queue(
         for entry in history if entry.issue_labels
     }
     classifications.update({
-        issue.number: classify_issue_work(issue.labels) for issue in (*queue_issues, *scope_issues)
+        issue.number: classify_issue_work(issue.labels) for issue in (*active_issues, *queue_issues, *scope_issues)
     })
     classifications.update(retained_classifications or {})
     evidence = frozenset(number for number, kind in classifications.items()

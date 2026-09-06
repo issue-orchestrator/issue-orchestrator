@@ -1204,6 +1204,7 @@ def build_dashboard_view_model(
         work = project_work_queue(
             queue_issues=state.cached_queue_issues, scope_issues=state.cached_scope_issues,
             history=state.session_history, retained_classifications=state.issue_work_classifications,
+            active_issues=tuple(session.issue for session in state.active_sessions),
         )
         active_items = work.work_items(active_items, issue_number=_issue_number_value)
         queue_items = work.work_items(queue_items, issue_number=_issue_number_value)

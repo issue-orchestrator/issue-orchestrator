@@ -389,7 +389,8 @@ def test_real_fetch_preserves_excluded_label_changes(
         assert bool(rendered.select('[data-issue="49"]')) == remove_marker
 
 
-def test_live_session_work_lane_follows_fresh_marker_without_erasing_session(tmp_path):
+@pytest.mark.parametrize("restored_evidence", [False, True])
+def test_live_session_work_lane_follows_fresh_marker_without_erasing_session(tmp_path, restored_evidence):
     from dataclasses import replace
     import json
     from pathlib import Path
@@ -405,16 +406,18 @@ def test_live_session_work_lane_follows_fresh_marker_without_erasing_session(tmp
     agent = AgentConfig(prompt_path=tmp_path / "prompt.md", model="test", timeout_minutes=45)
     config.agents = {"agent:tech-lead": agent}
     unmarked = replace(case_file(), labels=["agent:tech-lead"])
+    restored_issue = case_file() if restored_evidence else unmarked
     session = Session(
-        key=SessionKey(issue=FakeIssueKey("49"), task=TaskKind.CODE), issue=unmarked,
+        key=SessionKey(issue=FakeIssueKey("49"), task=TaskKind.CODE), issue=restored_issue,
         agent_config=agent, terminal_id="issue-49", worktree_path=tmp_path,
         branch_name="issue-49", run_assets=make_session_run_assets(tmp_path, session_name="issue-49"),
         started_at=datetime(2026, 9, 6),
     )
     state = OrchestratorState(startup_status="complete", active_sessions=[session])
     cache = QueueCache(config, state)
-    for fresh, expected_count in ((unmarked, 1), (case_file(), 0), (unmarked, 1)):
-        cache.upsert_refreshed_issue(fresh)
+    for fresh, expected_count in ((None, int(not restored_evidence)), (unmarked, 1), (case_file(), 0), (unmarked, 1)):
+        if fresh is not None:
+            cache.upsert_refreshed_issue(fresh)
         model = build_dashboard_view_model(OrchestratorView(state, config),
             provider_circuit=NO_PROVIDER_CIRCUIT_STATUS, tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
             active_tab="kanban", e2e_status_provider=lambda _: {"enabled": False, "running": False})
@@ -455,4 +458,4 @@ process.stdout.write(expanded.getExpandedItemsFromViewModel(payload, 'running')
         expanded_dom = BeautifulSoup(expanded.stdout, "html.parser")
         assert bool(expanded_dom.select('[data-issue="49"]')) == bool(expected_count)
         assert state.active_sessions == [session]
-        assert session.issue is unmarked
+        assert session.issue is restored_issue
