@@ -47,7 +47,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Iterable, Mapping, Sequence
+from typing import Callable, TYPE_CHECKING, Iterable, Mapping, Sequence
 
 from ..domain.tech_lead_findings import (
     CaseFileClassification,
@@ -70,6 +70,8 @@ from .actions import (
     AppendPatternObservationAction,
     CreateTechLeadCaseFileIssueAction,
 )
+from .claim_gate import ClaimLostError
+from .reconciliation import ReconciliationRequired
 from .tech_lead_case_file_owner import PatternCaseFileOwner
 from .tech_lead_issue_policy import case_file_issue_labels
 
@@ -606,6 +608,7 @@ def apply_append_pattern_observation(
     *,
     repository_host: "RepositoryHost | None",
     authority: "TechLeadAuthorityStore | None",
+    before_write: Callable[[], None],
 ) -> "ActionResult":
     """Post a repeat observation and count it create-once (#6781/#6957).
 
@@ -618,10 +621,9 @@ def apply_append_pattern_observation(
     (#6957 round-2 review F3). The store still enforces the rule as a last line
     of defence, which fails this action rather than reclassifying a signature.
 
-    Like every other tech-lead applier boundary (case-file creation, proposal
-    finalization), this writes without the applier's reconciliation guard: the
-    target is an orchestrator-owned case file, never a claimed coding issue, so
-    there is no concurrent owner whose state could have moved underneath it.
+    The applier supplies mutation authority for every publication and durable
+    count. Receipt reads may observe a concurrent pause or claim change; the
+    registry's initial check alone cannot authorize a later write.
     """
     assert isinstance(action, AppendPatternObservationAction)
     if repository_host is None or authority is None:
@@ -636,6 +638,7 @@ def apply_append_pattern_observation(
             authority=authority,
             repository_host=repository_host,
             add_comment=repository_host.add_comment,
+            before_write=before_write,
         ).append_observations(
             signature=action.pattern_signature,
             issue_number=action.issue_number,
@@ -644,6 +647,8 @@ def apply_append_pattern_observation(
             area=action.area,
             diagnosis=action.diagnosis,
         )
+    except (ReconciliationRequired, ClaimLostError):
+        raise
     except Exception as exc:
         logger.exception(
             "Failed to append pattern observation for signature %r",

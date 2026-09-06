@@ -483,7 +483,7 @@ def test_apply_proposal_creation_records_op_and_links_anchor() -> None:
 
     result = apply_create_tech_lead_issue(
         action,
-        repository_host=host,
+        before_case_file_write=lambda *args: None, repository_host=host,
         events=MagicMock(),
         ops=ops,
         add_comment=host.add_comment,
@@ -508,7 +508,7 @@ def test_apply_proposal_creation_fails_when_gate_not_provisioned() -> None:
 
     result = apply_create_tech_lead_issue(
         _proposal_action(),
-        repository_host=host,
+        before_case_file_write=lambda *args: None, repository_host=host,
         events=MagicMock(),
         ops=ops,
         add_comment=host.add_comment,
@@ -525,7 +525,7 @@ def test_apply_proposal_creation_without_store_fails_loudly() -> None:
     host = _host()
     result = apply_create_tech_lead_issue(
         _proposal_action(),
-        repository_host=host,
+        before_case_file_write=lambda *args: None, repository_host=host,
         events=MagicMock(),
         ops=None,
         add_comment=host.add_comment,
@@ -590,7 +590,7 @@ def test_apply_case_file_creation_records_pattern_ledger() -> None:
 
     result = apply_create_tech_lead_issue(
         _case_file_action("db-timeout"),
-        repository_host=host,
+        before_case_file_write=lambda *args: None, repository_host=host,
         events=MagicMock(),
         ops=ops,
         add_comment=host.add_comment,
@@ -617,7 +617,7 @@ def test_apply_case_file_missing_observation_label_creates_no_orphan() -> None:
 
     result = apply_create_tech_lead_issue(
         _case_file_action("db-timeout"),
-        repository_host=host,
+        before_case_file_write=lambda *args: None, repository_host=host,
         events=MagicMock(),
         ops=ops,
         add_comment=host.add_comment,
@@ -638,7 +638,7 @@ def test_apply_case_file_missing_area_label_creates_no_orphan() -> None:
 
     result = apply_create_tech_lead_issue(
         _case_file_action("db-timeout", area="database"),
-        repository_host=host,
+        before_case_file_write=lambda *args: None, repository_host=host,
         events=MagicMock(),
         ops=ops,
         add_comment=host.add_comment,
@@ -660,7 +660,7 @@ def test_apply_case_file_provisions_labels_before_blocking_area_tagged_issue() -
 
     result = apply_create_tech_lead_issue(
         action,
-        repository_host=host,
+        before_case_file_write=lambda *args: None, repository_host=host,
         events=MagicMock(),
         ops=ops,
         add_comment=host.add_comment,
@@ -704,7 +704,7 @@ def test_apply_case_file_creation_without_store_fails_loudly() -> None:
     host = _host()
     result = apply_create_tech_lead_issue(
         _case_file_action(),
-        repository_host=host,
+        before_case_file_write=lambda *args: None, repository_host=host,
         events=MagicMock(),
         ops=None,
         add_comment=host.add_comment,
@@ -720,7 +720,7 @@ def test_apply_case_file_creation_posts_same_decision_observations() -> None:
     ops = InMemoryTechLeadAuthorityStore()
     result = apply_create_tech_lead_issue(
         _case_file_action("db-timeout", additional_comments=("second observation",)),
-        repository_host=host,
+        before_case_file_write=lambda *args: None, repository_host=host,
         events=MagicMock(),
         ops=ops,
         add_comment=host.add_comment,
@@ -738,7 +738,7 @@ def test_apply_case_file_rechecks_ledger_and_comments_inflight_duplicate() -> No
     )
     result = apply_create_tech_lead_issue(
         _case_file_action("db-timeout", additional_comments=("follow-up",)),
-        repository_host=host,
+        before_case_file_write=lambda *args: None, repository_host=host,
         events=MagicMock(),
         ops=ops,
         add_comment=host.add_comment,
@@ -766,7 +766,7 @@ def test_apply_case_file_rechecks_ledger_and_comments_inflight_duplicate() -> No
 def _apply_case_file(action, *, ops, host):
     return apply_create_tech_lead_issue(
         action,
-        repository_host=host,
+        before_case_file_write=lambda *args: None, repository_host=host,
         events=MagicMock(),
         ops=ops,
         add_comment=host.add_comment,
@@ -873,10 +873,10 @@ def test_replaying_a_repeat_observation_append_never_double_counts() -> None:
     host = _host()
 
     assert apply_append_pattern_observation(
-        action, repository_host=host, authority=ops
+        action, before_write=lambda *args: None, repository_host=host, authority=ops
     ).success
     replay = apply_append_pattern_observation(
-        action, repository_host=host, authority=ops
+        action, before_write=lambda *args: None, repository_host=host, authority=ops
     )
 
     assert replay.success
@@ -1172,7 +1172,7 @@ def test_apply_plain_tech_lead_issue_records_no_op() -> None:
             pr_count=2,
             origin=TechLeadCreationOrigin.authors_anchor(),
         ),
-        repository_host=host,
+        before_case_file_write=lambda *args: None, repository_host=host,
         events=MagicMock(),
         ops=ops,
         add_comment=host.add_comment,
@@ -1196,7 +1196,7 @@ def test_body_tamper_has_zero_effect_on_execution() -> None:
     action = _proposal_action(target=13)
     apply_create_tech_lead_issue(
         action,
-        repository_host=host,
+        before_case_file_write=lambda *args: None, repository_host=host,
         events=MagicMock(),
         ops=ops,
         add_comment=host.add_comment,

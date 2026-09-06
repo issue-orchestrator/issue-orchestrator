@@ -3731,3 +3731,76 @@ def test_fold_pause_interrupts_each_write_and_remaining_batch(
         applier.apply_all([action, CloseIssueAction(issue_number=6967)])
     mock_repository_host.update_issue_state.assert_not_called()
     assert published is (pause_at != "lookup")
+
+
+@pytest.mark.parametrize("path", ["append", "adopt", "create"])
+@pytest.mark.parametrize("loss", ["pause", "claim"])
+@pytest.mark.parametrize("arrives_at", ["lookup", "existing_receipt", "publication", "receipt"])
+def test_case_file_evidence_rechecks_authority_before_publication_and_count(
+    applier, mock_repository_host, mock_fresh_issue_reader, mock_events,
+    path, loss, arrives_at,
+):
+    from issue_orchestrator.control.actions import AppendPatternObservationAction, CreateTechLeadCaseFileIssueAction
+    from issue_orchestrator.control.reconciliation import ReconciliationRequired, build_expected_for_mutation, get_pause_label
+    from issue_orchestrator.domain.tech_lead_findings import PatternObservation, case_file_issue_marker
+    from issue_orchestrator.ports.comment_receipt import IssueCommentReceipt
+
+    authority = InMemoryTechLeadAuthorityStore()
+    if path != "create":
+        authority.record_pattern(signature="sig", issue_number=10, observation_id="original")
+    applier.tech_lead_ops = authority
+    applier.reconcile = True
+    claims = MagicMock(spec=ClaimManager)
+    claims.check_winner.return_value = True
+    applier.claim_gate = ClaimGate(claims, mock_events)
+    applier.lease_id_lookup = lambda number: "lease"
+    observation = PatternObservation(observation_id="repeat", comment="Evidence with a stable identity")
+    if path == "append":
+        action = AppendPatternObservationAction(
+            issue_number=10, pattern_signature="sig", observation=observation,
+            expected=build_expected_for_mutation(),
+        )
+    else:
+        marker = case_file_issue_marker("sig")
+        action = CreateTechLeadCaseFileIssueAction(
+            title="Pattern case file: sig", body=f"Initial observation\n{marker}",
+            labels=("tech-lead-observation",), pattern_signature="sig", idempotency_marker=marker,
+            observations=(PatternObservation(observation_id="original", comment="Initial observation"), observation),
+            origin=TechLeadCreationOrigin.derived_from_anchor(30), expected=build_expected_for_mutation(),
+        )
+        mock_repository_host.create_issue.return_value = {"number": 10}
+        mock_repository_host.find_issue_by_marker.return_value = None
+        mock_repository_host.list_labels.return_value = [{"name": "tech-lead-observation"}]
+        mock_repository_host.list_milestones.return_value = []
+    published = False
+
+    def lose_authority():
+        if loss == "pause":
+            mock_fresh_issue_reader.read_issue_labels.return_value = [get_pause_label()]
+        else:
+            claims.check_winner.return_value = False
+
+    def receipt(number, *, body):
+        if arrives_at in {"lookup", "existing_receipt"} or (published and arrives_at == "receipt"):
+            lose_authority()
+        if published or arrives_at == "existing_receipt":
+            return IssueCommentReceipt("1", "url", "github-user:7", "a" * 64)
+        return None
+
+    def publish(number, body):
+        nonlocal published
+        published = True
+        if arrives_at == "publication":
+            lose_authority()
+        return "url"
+
+    mock_repository_host.find_issue_comment_receipt.side_effect = receipt
+    mock_repository_host.add_comment.side_effect = publish
+    with pytest.raises(ReconciliationRequired if loss == "pause" else ClaimLostError):
+        applier.apply_all([action, CloseIssueAction(issue_number=21)])
+    assert published is (arrives_at in {"publication", "receipt"})
+    assert authority.load_pattern_evidence(signature="sig").observation_count == 1
+    assert not authority.has_pattern_observation(signature="sig", observation_id="repeat")
+    mock_repository_host.update_issue_state.assert_not_called()
+    expected_subject = 10 if path == "append" else 30
+    assert all(call.args[0] == expected_subject for call in mock_fresh_issue_reader.read_issue_labels.call_args_list)

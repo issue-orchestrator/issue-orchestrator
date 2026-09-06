@@ -125,10 +125,12 @@ class PatternCaseFileOwner:
         authority: "TechLeadAuthorityStore",
         repository_host: "RepositoryHost",
         add_comment: Callable[[int, str], str],
+        before_write: Callable[[], None],
     ) -> None:
         self._authority = authority
         self._repository_host = repository_host
         self._add_comment = add_comment
+        self._before_write = before_write
 
     def resolve(
         self, action: "CreateTechLeadCaseFileIssueAction"
@@ -371,8 +373,9 @@ class PatternCaseFileOwner:
                 issue_number, observation.comment,
                 find_receipt=lambda number, body: self._repository_host.find_issue_comment_receipt(number, body=body),
                 post_comment=self._add_comment,
-                before_write=lambda: None,
+                before_write=self._before_write,
             )
+            self._before_write()
             self._authority.note_pattern_observation(
                 signature=signature,
                 observation_id=observation.observation_id,

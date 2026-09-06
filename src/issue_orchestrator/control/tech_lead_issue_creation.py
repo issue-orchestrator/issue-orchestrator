@@ -23,6 +23,8 @@ from .actions import (
     CreateTechLeadIssueAction,
     CreateTechLeadProposalIssueAction,
 )
+from .claim_gate import ClaimLostError
+from .reconciliation import ReconciliationRequired
 from .label_manager import tech_lead_issue_label_metadata
 from .tech_lead_case_file_owner import CaseFileState, PatternCaseFileOwner
 from .tech_lead_issue_policy import resolve_tech_lead_milestone_number
@@ -146,6 +148,8 @@ def _creation_preflight(
                     deduplicated=True,
                     recovered=resolution.state is CaseFileState.RECOVERED,
                 )
+        except (ReconciliationRequired, ClaimLostError):
+            raise
         except Exception as exc:
             logger.exception(
                 "Failed to reconcile pattern ledger before case-file creation"
@@ -174,6 +178,7 @@ def apply_create_tech_lead_issue(
     ops: "TechLeadAuthorityStore | None",
     add_comment: Callable[[int, str], str],
     emit_labels_changed: Callable[[int, list[str], list[str]], None],
+    before_case_file_write: Callable[[], None],
     expedite_lane: "ExpediteLane | None" = None,
 ) -> ActionResult:
     """Create a tech_lead issue and finalize its optional authority ledger."""
@@ -185,6 +190,7 @@ def apply_create_tech_lead_issue(
             authority=ops,
             repository_host=repository_host,
             add_comment=add_comment,
+            before_write=before_case_file_write,
         )
         if ops is not None
         else None
@@ -313,6 +319,8 @@ def _finalize_ledger_backed_creation(
         elif isinstance(action, CreateTechLeadCaseFileIssueAction):
             assert case_files is not None
             case_files.open(action, issue_number=issue_number)
+    except (ReconciliationRequired, ClaimLostError):
+        raise
     except Exception as exc:
         logger.exception("Failed to finalize ledger-backed tech_lead issue #%d", issue_number)
         return str(exc)

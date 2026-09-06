@@ -1861,7 +1861,7 @@ class TestObservationCountBoundary:
 
         result = apply_append_pattern_observation(
             _append_action("sig", "obs-2", comment="observed again", fix_class="code"),
-            repository_host=repository_host,
+            before_write=lambda *args: None, repository_host=repository_host,
             authority=authority,
         )
 
@@ -1878,7 +1878,7 @@ class TestObservationCountBoundary:
 
         result = apply_append_pattern_observation(
             _append_action("never-recorded", "obs-1"),
-            repository_host=Mock(),
+            before_write=lambda *args: None, repository_host=Mock(),
             authority=InMemoryTechLeadAuthorityStore(),
         )
 
@@ -1901,7 +1901,7 @@ class TestAccruedSightingNeverBecomesTheDiagnosis:
         )
 
         return apply_append_pattern_observation(
-            action, repository_host=Mock(), authority=authority
+            action, before_write=lambda *args: None, repository_host=Mock(), authority=authority
         )
 
     def test_a_flag_pattern_establishes_the_diagnosis_of_an_accrued_case_file(self):
