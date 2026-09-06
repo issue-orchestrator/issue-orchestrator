@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Callable
 from .actions import AddCommentAction, ActionResult
+from ..domain.tech_lead_comment import TechLeadCommentIntent
 
 if TYPE_CHECKING:
     from ..domain.tech_lead_session import StoredTechLeadOp
@@ -16,6 +17,26 @@ if TYPE_CHECKING:
 @dataclass(frozen=True)
 class RequiredIssueCommentAction(AddCommentAction):
     """Completion requires an exact, authenticated publication receipt."""
+
+
+@dataclass(frozen=True)
+class TechLeadDecisionCommentAction(AddCommentAction):
+    """An executed post_comment retains the complete source decision intent."""
+    intent: TechLeadCommentIntent = field(kw_only=True)
+
+    def __post_init__(self) -> None:
+        if self.comment != self.intent.comment:
+            raise ValueError("decision comment differs from its source intent")
+
+
+@dataclass(frozen=True)
+class RequiredTechLeadDiagnosisAction(RequiredIssueCommentAction):
+    """A required diagnosis must publish its exact identified source content."""
+    intent: TechLeadCommentIntent = field(kw_only=True)
+
+    def __post_init__(self) -> None:
+        if self.is_pr or self.comment != self.intent.comment:
+            raise ValueError("required diagnosis must publish the exact intended issue comment")
 
 
 @dataclass(frozen=True)

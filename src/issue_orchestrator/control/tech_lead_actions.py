@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from ..domain.models import DiscoveredFailure
 from ..domain.tech_lead_milestone import TechLeadMilestoneIntent
+from ..domain.tech_lead_comment import TechLeadCommentIntent
 from ..domain.tech_lead_session import TechLeadCreationOrigin, TechLeadSessionFlavor
 from .action_base import Action, ActionType
 
@@ -337,11 +338,14 @@ class TechLeadPlanningFailureAction(SurfaceTechLeadProposalAction):
 class RequireTechLeadInvestigationAction(Action):
     """Trusted focus obligations retained even when lowering emits no work."""
     focus_issue_number: int = field(kw_only=True)
+    diagnoses: tuple[TechLeadCommentIntent, ...] = field(kw_only=True)
     action_type: ActionType = field(default=ActionType.REQUIRE_TECH_LEAD_INVESTIGATION, init=False)
 
     def __post_init__(self) -> None:
         if isinstance(self.focus_issue_number, bool) or self.focus_issue_number <= 0:
             raise ValueError("investigation obligation requires its trusted focus issue")
+        if not self.diagnoses or len({item.action_id for item in self.diagnoses}) != len(self.diagnoses):
+            raise ValueError("investigation obligation requires uniquely identified source diagnoses")
 
 
 @dataclass(frozen=True)

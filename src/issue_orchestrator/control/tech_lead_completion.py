@@ -473,6 +473,10 @@ def generate_tech_lead_completion_actions(
         # and the pattern ledger (one case file per signature, #6781) come
         # from the same injected authority store that owns launch scope:
         # both reads are local, so planning needs no GitHub call.
+        from .tech_lead_completion_obligations import build_investigation_obligation
+        obligation = (build_investigation_obligation(load_result.decision,
+            focus_issue_number=authority.focus_issue_number)
+            if authority.flavor is TechLeadSessionFlavor.FAILURE_INVESTIGATION else None)
         decision_actions = plan_tech_lead_decision_actions(
                 load_result.decision,
                 config,
@@ -488,10 +492,10 @@ def generate_tech_lead_completion_actions(
                 dedup_corpus=open_issue_corpus.load(),
                 dedup_grant=DuplicateTargetGrant.of(authority.allowed_targets()),
             )
-        if authority.flavor is TechLeadSessionFlavor.FAILURE_INVESTIGATION:
+        if obligation is not None:
             from .tech_lead_reset_retry import require_investigation_terminal_effect
             decision_actions = require_investigation_terminal_effect(decision_actions,
-                focus_issue_number=authority.focus_issue_number)
+                obligation=obligation)
         actions.extend(decision_actions)
     else:
         # Belt-and-braces: the processing path (finding 3) should already have

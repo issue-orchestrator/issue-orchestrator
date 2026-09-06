@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from issue_orchestrator.control.tech_lead_completion_obligations import build_investigation_obligation
 
 from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.control.tech_lead_completion import (
@@ -169,12 +170,15 @@ def test_focus_diagnosis_kind_cannot_escape_producer_to_terminal_requirement(tar
         source_run_id="run", source_session_name="session", observed_at="2026-08-09T00:00:00+00:00",
         observed_session_generation=lambda number: None,
         dedup_corpus=OpenIssueCorpus.disabled(), dedup_grant=DuplicateTargetGrant.none())
-    actions = require_investigation_terminal_effect(planned, focus_issue_number=_authority().focus_issue_number)
+    actions = require_investigation_terminal_effect(planned, obligation=build_investigation_obligation(
+        decision, focus_issue_number=_authority().focus_issue_number))
     [diagnosis] = [action for action in actions if isinstance(action, AddCommentAction)]
     [remedy] = [action for action in actions if isinstance(action, RecordTechLeadDispositionAction)]
-    assert isinstance(diagnosis, RequiredIssueCommentAction) and not diagnosis.is_pr
+    assert isinstance(diagnosis, RequiredIssueCommentAction) is not target_is_pr
+    assert remedy in actions
     assert evaluate_required_act_level_outcome([
-        ActionResult.fail(diagnosis, "diagnosis failed"), ActionResult.ok(remedy),
+        ActionResult.fail(action, "diagnosis failed") if action is diagnosis else ActionResult.ok(action)
+        for action in actions
     ]).failed
 
 
@@ -213,7 +217,8 @@ def test_planning_rejection_cannot_erase_investigation_obligations(conflict):
     assert len(lowered) == 1 and isinstance(lowered[0], TechLeadPlanningFailureAction)
     host = MagicMock()
     applier = ActionApplier(labels=MagicMock(), sessions=MagicMock(), events=MagicMock(), repository_host=host)
-    planned = require_investigation_terminal_effect(lowered, focus_issue_number=FOCUS)
+    planned = require_investigation_terminal_effect(lowered, obligation=build_investigation_obligation(
+        decision, focus_issue_number=FOCUS))
     results, error = apply_completion_actions_gated(applier,
         [*planned, AddCommentAction(number=FOCUS, comment="success-only")], issue_number=FOCUS)
     assert error is None
@@ -232,7 +237,8 @@ def test_empty_lowering_cannot_satisfy_trusted_investigation_obligations():
     from issue_orchestrator.control.tech_lead_reset_retry import apply_completion_actions_gated, evaluate_required_act_level_outcome
     host = MagicMock()
     applier = ActionApplier(labels=MagicMock(), sessions=MagicMock(), events=MagicMock(), repository_host=host)
-    planned = require_investigation_terminal_effect([], focus_issue_number=FOCUS)
+    planned = require_investigation_terminal_effect([], obligation=build_investigation_obligation(
+        _decision(_diagnosis(), _defer()), focus_issue_number=FOCUS))
     results, error = apply_completion_actions_gated(applier,
         [*planned, AddCommentAction(number=FOCUS, comment="success-only")], issue_number=FOCUS)
     assert error is None and evaluate_required_act_level_outcome(results).failed
