@@ -61,6 +61,7 @@ from .validated_work_rows import (
     publication,
     record_row,
     refresh_observations,
+    retention_evidence_row,
 )
 
 
@@ -165,7 +166,7 @@ class SqliteValidatedWorkStore:
     ) -> tuple[EvidenceRow, ...]:
         with self._db.transaction() as conn:
             return tuple(
-                evidence_row(row)
+                retention_evidence_row(conn, row)
                 for row in conn.execute(
                     "SELECT e.* FROM validated_work_evidence e JOIN validated_work_records r USING(record_id) "
                     "WHERE r.state IN ('recovered','abandoned') AND r.terminal_at!='' AND r.terminal_at<? "
@@ -189,7 +190,7 @@ class SqliteValidatedWorkStore:
             ).fetchone()
             if row is None:
                 return False
-            self._retention.release(evidence_row(row))
+            self._retention.release(retention_evidence_row(conn, row))
             conn.execute("UPDATE validated_work_evidence SET released_at=? WHERE evidence_id=?", (released_at, evidence_id))
             return True
 
