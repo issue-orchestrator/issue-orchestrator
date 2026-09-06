@@ -22,7 +22,13 @@ from ..domain.validated_work_store import (
 )
 from .validated_work_claims import ClaimAuthority, owner_identity
 from .validated_work_lineage import LineageClassifier
-from .validated_work_rows import current_evidence, disposition, publication, record_row
+from .validated_work_rows import (
+    current_evidence,
+    disposition,
+    has_successful_attempt,
+    publication,
+    record_row,
+)
 
 
 class PublicationResolver:
@@ -40,12 +46,13 @@ class PublicationResolver:
         pre_push_expected: str,
         finalized_at: str,
     ) -> PublicationResolution | Refusal:
-        if claim.record_id != record_id or not self._claims.holds(conn, claim):
+        if not self._claims.holds(conn, claim) or claim.record_id != record_id:
             return Refusal.STALE_CLAIM
         row = record_row(conn, record_id)
         if (
             row["state"] != "publishing"
             or row["finalization_phase"] != FinalizationPhase.RECOVERY_CLEARED
+            or not has_successful_attempt(conn, record_id)
         ):
             return Refusal.FINALIZATION_INCOMPLETE
         evidence = current_evidence(conn, record_id)

@@ -196,6 +196,32 @@ class PublishAttempt:
     failure: ValidatedWorkFailure | None = None
     finished_at: str = ""
 
+    @property
+    def succeeded(self) -> bool:
+        return self.outcome in {
+            PublishValidatedHeadStatus.PUBLISHED,
+            PublishValidatedHeadStatus.ALREADY_AT_TARGET,
+        }
+
+    def succeeded_for(self, authority: ValidatedWorkAuthoritySnapshot) -> bool:
+        """A valid success only proves the exact evidence/target/baseline it names.
+
+        The current owner may be a successor; its fence is not part of this
+        durable publication fact's binding.
+        """
+        if not self.succeeded:
+            return False
+        if (
+            self.record_id != authority.record_id
+            or self.evidence_id != authority.evidence_id
+            or self.target_head_sha != authority.validated_head_sha
+            or self.expected_remote_head != (authority.expected_remote_head_sha or "")
+        ):
+            raise ValueError(
+                "successful attempt does not match current publication evidence"
+            )
+        return True
+
     def __post_init__(self) -> None:
         require_text(self.started_at, "started_at")
         require_positive(self.attempt_no, "attempt_no")
@@ -220,13 +246,9 @@ class PublishAttempt:
         ):
             raise ValueError("only a real, typed publisher outcome can be persisted")
         require_text(self.finished_at, "finished_at")
-        success = self.outcome in {
-            PublishValidatedHeadStatus.PUBLISHED,
-            PublishValidatedHeadStatus.ALREADY_AT_TARGET,
-        }
-        if success and self.failure is not None:
+        if self.succeeded and self.failure is not None:
             raise ValueError("successful attempts cannot carry failure")
-        if not success and type(self.failure) is not ValidatedWorkFailure:
+        if not self.succeeded and type(self.failure) is not ValidatedWorkFailure:
             raise ValueError("unsuccessful attempts require enumerated failure")
 
 
