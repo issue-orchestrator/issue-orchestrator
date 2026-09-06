@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 
 from ..domain.dependencies import Dependency, DependencyState, DependencyTarget
-from ..domain.dependency_gates import DependencyGateReport, detect_cycles
+from ..domain.dependency_gates import DependencyGateReport, GateBlockReason, detect_cycles
 
 
 @dataclass(frozen=True)
@@ -96,6 +96,7 @@ def _structurally_blocked_successors(
     invalid.update(
         number for number, report in reports.items()
         if any(dependency.problem is not None for dependency in report.dependencies)
+        or any(block.reason is GateBlockReason.CROSS_MILESTONE for block in report.work.blocks)
     )
     pending = list(invalid)
     while pending:

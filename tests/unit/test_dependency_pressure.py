@@ -186,3 +186,27 @@ def test_malformed_dependent_cannot_inflate_an_otherwise_valid_roots_weight(samp
     issues = [issue(20), issue(21, "Depends-on: #20\nStack-after: ???")]
     scheduler = scheduler_for(sample_config, issues)
     assert scheduler.dependency_pressure(issues).count_for(20) == 0
+
+
+def test_cross_milestone_invalid_chain_cannot_outweigh_a_releasable_chain(sample_config):
+    from issue_orchestrator.ports.repository_host import DependencyIssueSnapshot
+
+    class MilestoneChecker(MockIssueChecker):
+        def get_dependency_issue_snapshot(self, issue_number, repo=None):
+            if issue_number == 90:
+                return DependencyIssueSnapshot(state="closed", milestone="M2")
+            return super().get_dependency_issue_snapshot(issue_number, repo)
+
+    issues = [issue(20), issue(21, "Depends-on: #20\nDepends-on: #90"),
+              issue(22, "Depends-on: #21"), issue(30), issue(31, "Depends-on: #30")]
+    checker = MilestoneChecker()
+    checker.issues = {item.number: item.state for item in issues}
+    sample_config.max_concurrent_sessions = 1
+    scheduler = Scheduler(sample_config, dependency_evaluator=DependencyEvaluator(
+        issue_checker=checker, events=CollectingEventSink(), repo=sample_config.repo))
+    pressure = scheduler.dependency_pressure(issues)
+    assert pressure.count_for(20) == 0
+    assert pressure.count_for(21) == 0
+    assert pressure.count_for(30) == 1
+    available, _ = scheduler.get_available_issues(issues)
+    assert [item.number for item in scheduler.pick_next_batch(available, 0, pressure=pressure)] == [30]
