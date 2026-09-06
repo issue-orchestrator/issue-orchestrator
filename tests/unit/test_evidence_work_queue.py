@@ -112,3 +112,126 @@ def test_history_remains_inspectable_without_reintroducing_evidence_as_work(stat
     rendered = BeautifulSoup(get_templates().get_template("dashboard.html").render(
         **model.template_context()), "html.parser")
     assert rendered.select('[data-issue="49"]') == []
+
+
+@pytest.mark.parametrize("transition", ["closed", "out_of_scope_failed", "out_of_scope_completed", "removed"])
+@pytest.mark.parametrize("restart", [False, True])
+def test_refresh_retains_case_file_identity_for_historical_work_lanes(tmp_path, transition, restart):
+    from copy import deepcopy
+    from dataclasses import replace
+
+    from issue_orchestrator.control.queue_cache import QueueCache
+    from issue_orchestrator.control.session_history import SessionHistoryOwner
+    from issue_orchestrator.execution.queue_cache_store import QueueCacheStore
+
+    config = Config(repo="porchpin/porchpin")
+    evidence = case_file()
+    work = Issue(number=50, title="Pattern rendering needs a fix", labels=["agent:tech-lead"])
+    status = "completed" if transition == "out_of_scope_completed" else "failed"
+    history = [SessionHistoryEntry(issue_number=item.number, title=item.title,
+        agent_type="agent:tech-lead", status=status, runtime_minutes=1,
+        completed_at=datetime(2026, 9, 6, tzinfo=timezone.utc),
+        pr_url=f"https://github.com/porchpin/porchpin/pull/{item.number + 100}")
+        for item in (evidence, work)]
+    original_labels = [entry.issue_labels for entry in history]
+    state = OrchestratorState(startup_status="complete", session_history=history)
+    store = QueueCacheStore(tmp_path / "queue.sqlite")
+    cache = QueueCache(config, state, store)
+    cache.replace_from_refresh([evidence, work])
+    if transition == "closed":
+        cache.upsert_refreshed_issue(replace(evidence, state="closed"))
+        SessionHistoryOwner(state.session_history).reconcile_closed_issue(
+            issue_number=49, status_reason="Issue closed; history reconciled",
+        )
+    elif transition == "removed":
+        cache.remove_issue(49)
+    else:
+        cache.replace_from_refresh([work])
+    cache.save_snapshot()
+    assert all(issue.number != 49 for issue in state.cached_scope_issues)
+    assert all(issue.number != 49 for issue in state.cached_queue_issues)
+    assert [entry.issue_labels for entry in history] == original_labels
+    if restart:
+        reopened = QueueCacheStore(tmp_path / "queue.sqlite")
+        state = OrchestratorState(startup_status="complete", session_history=deepcopy(history))
+        cache = QueueCache(config, state, reopened)
+        cache.restore_work_classifications()
+        cache.replace_from_refresh(list(reopened.load_issues(config.repo)))
+    model = build_dashboard_view_model(OrchestratorView(state, config),
+        provider_circuit=NO_PROVIDER_CIRCUIT_STATUS, tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        active_tab="kanban", e2e_status_provider=lambda _: {"enabled": False, "running": False})
+    assert model.scope_summary["in_scope_total"] == 1
+    assert model.queue_total == 0
+    all_work = [item for column in model.flow_columns for item in column["items"]]
+    assert {item["issue_number"] for item in all_work} == {50}
+    assert any(entry.issue_number == 49 for entry in state.session_history)
+    if transition in ("closed", "out_of_scope_completed"):
+        assert any(item["issue_number"] == 49 for item in model.history_items)
+    rendered = BeautifulSoup(get_templates().get_template("dashboard.html").render(**model.template_context()), "html.parser")
+    assert rendered.select('[data-issue="49"]') == []
+    assert rendered.select('.issue-card[data-issue="50"]')
+
+
+def test_history_labels_supply_identity_without_current_cache():
+    history = [SessionHistoryEntry(issue_number=49, title="Opaque title", agent_type="agent:backend",
+        status="failed", runtime_minutes=1, issue_labels=("tech-lead-observation",))]
+    projection = project_work_queue(queue_issues=(), scope_issues=(), history=history)
+    assert projection.evidence_numbers == {49}
+    assert history[0].issue_labels == ("tech-lead-observation",)
+
+
+def test_explicit_marker_removal_overrides_retained_and_historical_evidence(tmp_path):
+    from dataclasses import replace
+    from issue_orchestrator.control.queue_cache import QueueCache
+    from issue_orchestrator.execution.queue_cache_store import QueueCacheStore
+
+    config = Config(repo="porchpin/porchpin")
+    evidence = case_file()
+    history = [SessionHistoryEntry(issue_number=49, title=evidence.title, agent_type="agent:tech-lead",
+        status="failed", runtime_minutes=1, issue_labels=tuple(evidence.labels))]
+    state = OrchestratorState(session_history=history)
+    store = QueueCacheStore(tmp_path / "queue.sqlite")
+    cache = QueueCache(config, state, store)
+    cache.upsert_refreshed_issue(evidence)
+    cache.upsert_refreshed_issue(replace(evidence, labels=["agent:backend"]))
+    cache.remove_issue(49)
+    restored = OrchestratorState(session_history=history)
+    QueueCache(config, restored, QueueCacheStore(tmp_path / "queue.sqlite")).restore_work_classifications()
+    projection = project_work_queue(queue_issues=(), scope_issues=(), history=history,
+                                   retained_classifications=restored.issue_work_classifications)
+    assert projection.evidence_numbers == frozenset()
+    assert "TECH-LEAD-OBSERVATION" in history[0].issue_labels
+    assert store.load_work_classifications("different/repository") == {}
+
+
+def test_warm_delta_retains_closed_identity_and_stale_cache_cannot_reclassify_it(tmp_path):
+    from dataclasses import replace
+    from issue_orchestrator.control.queue_cache import QueueCache
+    from issue_orchestrator.execution.queue_cache_store import QueueCacheStore
+
+    config = Config(repo="porchpin/porchpin")
+    store = QueueCacheStore(tmp_path / "queue.sqlite")
+    state = OrchestratorState()
+    cache = QueueCache(config, state, store)
+    old = replace(case_file(), labels=["agent:backend"])
+    cache.replace_from_refresh([old])
+    cache.save_snapshot()
+    # A closure delta supplies the marker for the first time, then a crash
+    # happens before the older queue snapshot can be replaced.
+    cache.replace_from_delta([old], [replace(case_file(), state="closed")])
+    assert state.cached_scope_issues == []
+    restored = OrchestratorState()
+    restarted = QueueCache(config, restored, QueueCacheStore(tmp_path / "queue.sqlite"))
+    cached, _ = restarted.restore_snapshot()
+    restarted.replace_from_cache(cached)  # GitHub transiently unavailable.
+    projection = project_work_queue(queue_issues=restored.cached_queue_issues,
+        scope_issues=restored.cached_scope_issues, retained_classifications=restored.issue_work_classifications)
+    assert projection.evidence_numbers == {49}
+    restarted.replace_from_delta(cached, [])  # No fresh fact contradicts the marker.
+    assert project_work_queue(queue_issues=restored.cached_queue_issues,
+        scope_issues=restored.cached_scope_issues,
+        retained_classifications=restored.issue_work_classifications).evidence_numbers == {49}
+    restarted.replace_from_delta(cached, [old])  # Explicit fresh marker removal.
+    assert project_work_queue(queue_issues=restored.cached_queue_issues,
+        scope_issues=restored.cached_scope_issues,
+        retained_classifications=restored.issue_work_classifications).evidence_numbers == frozenset()

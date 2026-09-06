@@ -1,10 +1,11 @@
 """Keep evidence ledgers out of work columns without changing stored facts."""
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TypeVar
 
-from ..domain.tech_lead_session import is_tech_lead_observation_label
+from ..domain.issue_work_classification import IssueWorkClassification, classify_issue_work
+from ..domain.models import SessionHistoryEntry
 from ..ports.issue import Issue
 
 
@@ -13,7 +14,7 @@ Item = TypeVar("Item")
 
 @dataclass(frozen=True)
 class WorkQueueProjection:
-    """Snapshot-owned evidence classification shared by cards and work counts."""
+    """Evidence classification shared by historical cards and current work counts."""
 
     evidence_numbers: frozenset[int]
     queued_evidence_count: int
@@ -30,17 +31,25 @@ class WorkQueueProjection:
 
 def project_work_queue(
     *, queue_issues: Sequence[Issue], scope_issues: Sequence[Issue],
+    history: Sequence[SessionHistoryEntry] = (),
+    retained_classifications: Mapping[int, IssueWorkClassification] | None = None,
 ) -> WorkQueueProjection:
-    """Use the domain marker in both current snapshots, never title heuristics.
+    """Use retained identity and historical labels across queue refreshes.
 
-    Classify after collecting scope/history/retry cards so older failure cards
-    cannot reintroduce current evidence records. Stored facts remain intact for
-    the tech-lead evidence view.
+    The queue owner records current observations before projecting them. Its
+    retained identity outranks restored cache/history labels; absence from a
+    fetched scope does not erase identity. Source history remains intact.
     """
-    evidence = frozenset(
-        issue.number for issue in (*queue_issues, *scope_issues)
-        if any(is_tech_lead_observation_label(label) for label in issue.labels)
-    )
+    classifications = {
+        entry.issue_number: classify_issue_work(entry.issue_labels)
+        for entry in history if entry.issue_labels
+    }
+    classifications.update({
+        issue.number: classify_issue_work(issue.labels) for issue in (*queue_issues, *scope_issues)
+    })
+    classifications.update(retained_classifications or {})
+    evidence = frozenset(number for number, kind in classifications.items()
+                         if kind is IssueWorkClassification.EVIDENCE)
     return WorkQueueProjection(
         evidence_numbers=evidence,
         queued_evidence_count=sum(issue.number in evidence for issue in queue_issues),
