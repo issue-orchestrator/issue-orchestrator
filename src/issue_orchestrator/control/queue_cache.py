@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 
 from .issue_scope import issue_scope_skip_detail
 from .issue_refresh_batch import IssueRefreshBatch
-from ..domain.issue_work_classification import classify_issue_work
+from ..domain.issue_work_classification import resolve_work_classifications
 
 if TYPE_CHECKING:
     from ..infra.config import Config
@@ -255,15 +255,16 @@ class QueueCache:
         evidence that an existing case file became coding work.
         """
         known = self._state.issue_work_classifications
-        updates = {
-            entry.issue_number: classify_issue_work(entry.issue_labels)
-            for entry in self._state.session_history
-            if entry.issue_labels and entry.issue_number not in known
-        }
-        for issue in (*self._state.cached_queue_issues, *self._state.cached_scope_issues, *cached_issues):
-            if issue.number not in known:
-                updates[issue.number] = classify_issue_work(issue.labels)
-        updates.update({issue.number: classify_issue_work(issue.labels) for issue in issues})
+        resolved = resolve_work_classifications(
+            historical_labels=((entry.issue_number, entry.issue_labels) for entry in self._state.session_history),
+            active_labels=((session.issue.number, session.issue.labels) for session in self._state.active_sessions),
+            cached_labels=((issue.number, issue.labels) for issue in (
+                *self._state.cached_queue_issues, *self._state.cached_scope_issues, *cached_issues,
+            )),
+            retained=known,
+            observed_labels=((issue.number, issue.labels) for issue in issues),
+        )
+        updates = {number: kind for number, kind in resolved.items() if known.get(number) != kind}
         if updates and self._store is not None:
             self._store.record_work_classifications(self._config.repo or "", updates)
         known.update(updates)

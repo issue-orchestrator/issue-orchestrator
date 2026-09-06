@@ -392,9 +392,6 @@ def test_real_fetch_preserves_excluded_label_changes(
 @pytest.mark.parametrize("restored_evidence", [False, True])
 def test_live_session_work_lane_follows_fresh_marker_without_erasing_session(tmp_path, restored_evidence):
     from dataclasses import replace
-    import json
-    from pathlib import Path
-    import subprocess
 
     from issue_orchestrator.control.queue_cache import QueueCache
     from issue_orchestrator.domain.issue_key import FakeIssueKey
@@ -430,32 +427,7 @@ def test_live_session_work_lane_follows_fresh_marker_without_erasing_session(tmp
         rendered = BeautifulSoup(get_templates().get_template("dashboard.html").render(
             **model.template_context()), "html.parser")
         assert bool(rendered.select('[data-issue="49"]')) == bool(expected_count)
-        # Exercise the browser's expanded-list selector and renderer with the
-        # actual serialized producer payload, including marker removal.
-        script = r"""
-const fs = require('node:fs');
-const vm = require('node:vm');
-const expanded = require('./src/issue_orchestrator/static/js/expanded_column_state.js');
-const payload = JSON.parse(fs.readFileSync(0, 'utf8'));
-const escape = value => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
-const context = {
-    escapeHtml: escape, escapeAttr: escape, cssEscape: String, document: {},
-    compactCardState: {computeCompactCardFingerprint: () => 'fingerprint'},
-    formatDashboardTimestamps: () => {},
-    localStorage: {getItem: () => null, setItem: () => {}},
-    window: {dashboardData: {queueRefreshSeconds: 0}, location: {href: 'http://example.test/'}}
-};
-vm.createContext(context);
-vm.runInContext(fs.readFileSync('./src/issue_orchestrator/static/js/dashboard/kanban_columns.js', 'utf8'), context);
-process.stdout.write(expanded.getExpandedItemsFromViewModel(payload, 'running')
-    .map(item => context.renderExpandedCardHtml(item, 'running', false)).join(''));
-"""
-        expanded = subprocess.run(
-            ["node", "-e", script], input=json.dumps(model.to_dict(), default=str),
-            text=True, capture_output=True, check=True, cwd=Path(__file__).resolve().parents[2],
-        )
-        expanded_dom = BeautifulSoup(expanded.stdout, "html.parser")
+        expanded_dom = BeautifulSoup(render_work_lane(model, "running", tmp_path), "html.parser")
         assert bool(expanded_dom.select('[data-issue="49"]')) == bool(expected_count)
         assert state.active_sessions == [session]
         assert session.issue is restored_issue
@@ -519,9 +491,6 @@ def test_upgrade_snapshot_identity_survives_scope_filter_and_reopen(tmp_path, mo
 @pytest.mark.parametrize("at_capacity", [False, True])
 def test_stale_evidence_does_not_consume_runnable_position_in_either_renderer(tmp_path, at_capacity):
     from dataclasses import replace
-    import json
-    from pathlib import Path
-    import subprocess
 
     from issue_orchestrator.control.queue_cache import QueueCache
     from issue_orchestrator.domain.issue_key import FakeIssueKey
@@ -560,28 +529,7 @@ def test_stale_evidence_does_not_consume_runnable_position_in_either_renderer(tm
     assert len(state.active_sessions) == int(at_capacity)
     assert state.cached_queue_issues == [stale, *work]
     compact = get_templates().get_template("dashboard.html").render(**model.template_context())
-    script = r"""
-const fs = require('node:fs');
-const vm = require('node:vm');
-const expanded = require('./src/issue_orchestrator/static/js/expanded_column_state.js');
-const payload = JSON.parse(fs.readFileSync(0, 'utf8'));
-const escape = value => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
-const context = {
-    escapeHtml: escape, escapeAttr: escape, cssEscape: String, document: {},
-    compactCardState: {computeCompactCardFingerprint: () => 'fingerprint'},
-    formatDashboardTimestamps: () => {},
-    localStorage: {getItem: () => null, setItem: () => {}},
-    window: {dashboardData: {queueRefreshSeconds: 0}, location: {href: 'http://example.test/'}}
-};
-vm.createContext(context);
-vm.runInContext(fs.readFileSync('./src/issue_orchestrator/static/js/dashboard/kanban_columns.js', 'utf8'), context);
-process.stdout.write(expanded.getExpandedItemsFromViewModel(payload, 'queued')
-    .map(item => context.renderExpandedCardHtml(item, 'queued', false)).join(''));
-"""
-    expanded = subprocess.run(["node", "-e", script], input=json.dumps(model.to_dict(), default=str),
-        text=True, capture_output=True, check=True, cwd=Path(__file__).resolve().parents[2])
-    for html in (compact, expanded.stdout):
+    for html in (compact, render_work_lane(model, "queued", tmp_path)):
         dom = BeautifulSoup(html, "html.parser")
         assert dom.select('[data-issue="49"]') == []
         for number, reason in zip((50, 51), expected, strict=True):
@@ -590,12 +538,12 @@ process.stdout.write(expanded.getExpandedItemsFromViewModel(payload, 'queued')
             assert reason in card.get_text()
 
 
-def render_historical_work_lane(model, lane, tmp_path):
+def render_work_lane(model, lane, tmp_path):
     import json
     from pathlib import Path
     from tests.process_group_run import run_in_process_group
 
-    payload = tmp_path / "history-lane.json"
+    payload = tmp_path / "work-lane.json"
     payload.write_text(json.dumps({"model": model.to_dict(), "lane": lane}, default=str))
     script = r"""
 const fs = require('node:fs');
@@ -666,6 +614,104 @@ def test_evidence_cannot_consume_bounded_historical_work_slots(tmp_path, status,
             # Inspection retains its own latest-50 window, including all evidence.
             assert {item["issue_number"] for item in model.history_items} == set(range(100, 150))
         compact = get_templates().get_template("dashboard.html").render(**model.template_context())
-        for html in (compact, render_historical_work_lane(model, lane, tmp_path)):
+        for html in (compact, render_work_lane(model, lane, tmp_path)):
             dom = BeautifulSoup(html, "html.parser")
             assert {int(card["data-issue"]) for card in dom.select('[data-issue]')} == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("degraded", [False, True])
+@pytest.mark.parametrize("active_evidence", [False, True])
+@pytest.mark.parametrize("retained", [None, "work", "evidence"])
+async def test_startup_identity_uses_restored_active_before_history(
+    tmp_path, mock_event_sink, degraded, active_evidence, retained,
+):
+    from dataclasses import replace
+    from unittest.mock import MagicMock
+
+    from issue_orchestrator.control.issue_fetch_resilience import IssueFetchResilience
+    from issue_orchestrator.control.queue_cache import QueueCache
+    from issue_orchestrator.control.startup_manager import StartupManager
+    from issue_orchestrator.control.worktree_reconciliation import WorktreeRecoverySummary
+    from issue_orchestrator.domain.issue_key import FakeIssueKey
+    from issue_orchestrator.domain.issue_work_classification import IssueWorkClassification
+    from issue_orchestrator.domain.models import AgentConfig, Session
+    from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+    from issue_orchestrator.execution.queue_cache_store import QueueCacheStore
+    from issue_orchestrator.ports.repository_host import RepositoryHostError
+    from tests.unit.session_run_helpers import make_session_run_assets
+
+    config = Config(repo="porchpin/porchpin", repo_root=tmp_path)
+    config.code_review_agent = None
+    config.tech_lead_review_agent = None
+    agent = AgentConfig(prompt_path=tmp_path / "prompt.md", model="test", timeout_minutes=45)
+    config.agents = {"agent:tech-lead": agent}
+    marked = case_file()
+    unmarked = replace(marked, labels=["agent:tech-lead"])
+    active = marked if active_evidence else unmarked
+    older = unmarked if active_evidence else marked
+    history = [SessionHistoryEntry(issue_number=49, title=older.title, agent_type="agent:tech-lead",
+                                  status="failed", runtime_minutes=1, issue_labels=tuple(older.labels))]
+    session = Session(
+        key=SessionKey(issue=FakeIssueKey("49"), task=TaskKind.CODE), issue=active,
+        agent_config=agent, terminal_id="issue-49", worktree_path=tmp_path,
+        branch_name="issue-49", run_assets=make_session_run_assets(tmp_path, session_name="issue-49"),
+        started_at=datetime(2026, 9, 6),
+    )
+    work = Issue(number=50, title="Other work", labels=["agent:tech-lead"])
+    path = tmp_path / "queue.sqlite"
+    store = QueueCacheStore(path)
+    store.save_snapshot([work], "2026-09-06T00:00:00Z", repo=config.repo)
+    if retained is not None:
+        store.record_work_classifications(config.repo, {49: IssueWorkClassification(retained)})
+    state = OrchestratorState(session_history=history)
+    repo = MagicMock()
+    repo.list_issues.return_value = []
+    repo.get_prs_with_label.return_value = []
+    if degraded:
+        repo.list_issues_delta.side_effect = RepositoryHostError("transient GitHub blip")
+    else:
+        repo.list_issues_delta.return_value = ([], "2026-09-06T01:00:00Z")
+    runner = MagicMock()
+    runner.cleanup_idle_sessions.return_value = 0
+    runner.discover_running_sessions.return_value = []
+    reconciler = MagicMock()
+    reconciler.recover.return_value = WorktreeRecoverySummary(0, 0, 0)
+    startup = StartupManager(
+        config=config, events=mock_event_sink, runner=runner, repository_host=repo,
+        action_applier=MagicMock(), issue_branches_fn=lambda: {}, session_exists_fn=lambda _: True,
+        restore_sessions_fn=lambda _: state.active_sessions.append(session),
+        launch_session_fn=lambda _: None, update_queue_cache_fn=lambda: None,
+        issue_fetch_resilience=IssueFetchResilience(config.repo),
+        startup_worktree_reconciler=reconciler, queue_cache_store=store,
+    )
+    await startup.run_startup(state)
+    assert repo.list_issues_delta.call_count == 1
+    expected = (IssueWorkClassification(retained) if retained is not None else
+                IssueWorkClassification.EVIDENCE if active_evidence else IssueWorkClassification.WORK)
+    cache = QueueCache(config, state, store)
+    for fresh in (None, unmarked, marked):
+        if fresh is not None:
+            cache.upsert_refreshed_issue(fresh)
+            expected = IssueWorkClassification.WORK if fresh is unmarked else IssueWorkClassification.EVIDENCE
+        cache.save_snapshot()
+        reopened = OrchestratorState(startup_status="complete", active_sessions=[session], session_history=history)
+        restart = QueueCache(config, reopened, QueueCacheStore(path))
+        snapshot, _ = restart.restore_snapshot()
+        restart.replace_from_cache(snapshot)
+        for current in (state, reopened):
+            assert current.issue_work_classifications[49] == expected
+            model = build_dashboard_view_model(OrchestratorView(current, config),
+                provider_circuit=NO_PROVIDER_CIRCUIT_STATUS, tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+                active_tab="kanban", e2e_status_provider=lambda _: {"enabled": False, "running": False})
+            is_work = expected is IssueWorkClassification.WORK
+            assert model.active_count == int(is_work)
+            assert model.active_session_count == 1
+            assert model.scope_summary["in_scope_total"] == 1 + int(is_work)
+            compact = get_templates().get_template("dashboard.html").render(**model.template_context())
+            for html in (compact, render_work_lane(model, "running", tmp_path)):
+                dom = BeautifulSoup(html, "html.parser")
+                assert bool(dom.select('[data-issue="49"]')) == is_work
+            assert current.active_sessions == [session]
+            assert history[0].issue_labels == tuple(older.labels)
+            assert session.issue is active
