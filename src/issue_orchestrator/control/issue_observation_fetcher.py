@@ -84,4 +84,3 @@ class IssueObservationFetcher:
         if before_count != len(filtered):
             logger.debug("Excluded %d issues via filter %s", before_count - len(filtered), issue_filter)
         return filtered
-
