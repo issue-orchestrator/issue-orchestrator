@@ -138,6 +138,13 @@ def evidence_row(row: sqlite3.Row) -> EvidenceRow:
     )
 
 
+def retention_evidence_row(conn: sqlite3.Connection, row: sqlite3.Row) -> EvidenceRow:
+    """Read a retention candidate and validate its owning disposition."""
+    evidence = evidence_row(row)
+    disposition(conn, evidence.record_id)
+    return evidence
+
+
 def current_evidence(conn: sqlite3.Connection, record_id: str) -> EvidenceRow:
     row = conn.execute(
         "SELECT * FROM validated_work_evidence WHERE record_id=? AND role='current'",

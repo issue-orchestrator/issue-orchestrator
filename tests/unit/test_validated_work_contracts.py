@@ -275,3 +275,22 @@ def test_truthy_artifact_fact_cannot_begin_publication(tmp_path):
         begin(store, token)
     assert store.get(token.record_id).state is State.QUEUED
     assert store.publish_attempts(token.record_id) == ()
+
+
+@pytest.mark.parametrize("state", ["recovered", "abandoned"])
+def test_retention_rejects_malformed_resolution_before_exposing_candidates(tmp_path, state):
+    rig = Rig(tmp_path / "work.sqlite")
+    store = rig.open()
+    admission = capture()
+    store.admit(admission)
+    with closing(sqlite3.connect(rig.path)) as conn, conn:
+        conn.execute(
+            "UPDATE validated_work_records SET state=?, terminal_at=?", (state, AT)
+        )
+    for current in (store, rig.open()):
+        with pytest.raises(ValueError):
+            current.evidence_for_retention(released_before="9999")
+        with closing(sqlite3.connect(rig.path)) as conn:
+            assert conn.execute(
+                "SELECT released_at FROM validated_work_evidence"
+            ).fetchall() == [("",)]
