@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import replace
 
 from ..domain.validated_work import (
     LineageRole,
@@ -127,7 +128,9 @@ class PublishAttemptWriter:
         expected: str,
         phase: DispositionPhase,
     ) -> bool:
-        if approved is not None and approved != current:
+        if approved is not None and (
+            type(approved) is not ValidatedWorkAuthoritySnapshot or approved != current
+        ):
             return False
         if target != current.validated_head_sha or expected != (
             current.expected_remote_head_sha or ""
@@ -170,18 +173,13 @@ class PublishAttemptWriter:
         failure: Failure | None,
         finished_at: str,
     ) -> bool:
-        if not isinstance(outcome, Status) or (
-            failure is not None and not isinstance(failure, Failure)
-        ):
-            raise ValueError("attempt outcome and failure must be typed")
+        if type(outcome) is not Status:
+            raise ValueError("attempt outcome must be typed")
         if outcome is Status.SUPERSEDED:
             return False
-        if outcome not in SUCCESS_STATUSES and failure is None:
-            raise ValueError("unsuccessful attempt requires enumerated failure")
-        if outcome in SUCCESS_STATUSES and failure is not None:
-            raise ValueError("successful attempt cannot carry failure")
         if (
             not self._claims.holds(conn, claim)
+            or type(attempt) is not PublishAttempt
             or attempt.record_id != claim.record_id
             or attempt.fence != claim.fence
         ):
@@ -198,12 +196,20 @@ class PublishAttemptWriter:
             return False
         if record_row(conn, claim.record_id)["state"] != "publishing":
             return False
+        # The same constructor that validates durable reads must admit the
+        # completed value before any write. Do not duplicate its shape rules.
+        completed = replace(
+            attempt,
+            outcome=outcome,
+            failure=failure,
+            finished_at=finished_at,
+        )
         conn.execute(
             "UPDATE validated_work_publish_attempts SET outcome=?,failure=?,finished_at=? WHERE record_id=? AND attempt_no=? AND outcome='' AND fence=?",
             (
                 outcome.value,
                 failure.value if failure else "",
-                finished_at,
+                completed.finished_at,
                 claim.record_id,
                 attempt.attempt_no,
                 claim.fence,
