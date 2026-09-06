@@ -47,10 +47,7 @@ def retry_permitted(
         return True
     if last.evidence_id != evidence_id and last.outcome is not None:
         return True
-    if last.outcome in {
-        PublishValidatedHeadStatus.PUBLISHED,
-        PublishValidatedHeadStatus.ALREADY_AT_TARGET,
-    }:
+    if last.succeeded:
         return False
     if last.outcome is None:
         return last.fence != fence
