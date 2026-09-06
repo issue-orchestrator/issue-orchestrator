@@ -662,7 +662,7 @@ class ActionApplier:
         from .issue_closure import apply_issue_closure
 
         return apply_issue_closure(
-            action, read_comments=self.repository_host.get_issue_comments,
+            action, comment_marker_present=self.repository_host.issue_comment_marker_present,
             post_comment=self.repository_host.add_comment,
             set_issue_state=self.repository_host.update_issue_state,
             before_write=lambda: self._verify_claim_before_write(action, action.issue_number),

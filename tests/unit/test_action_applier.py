@@ -3579,9 +3579,9 @@ def test_case_file_fold_records_explanation_before_close_and_recovers_on_retry(
             failed = True
             raise RuntimeError("interrupted " + phase)
 
-    def read_comments(number):
+    def marker_present(number, marker):
         fail_once("comment_read")
-        return comments
+        return any(marker in comment["body"] for comment in comments)
 
     def comment(number, body):
         fail_once("comment_before")
@@ -3591,11 +3591,12 @@ def test_case_file_fold_records_explanation_before_close_and_recovers_on_retry(
         return "comment-url"
 
     def close(number, state):
-        assert comments == [{"body": action.comment}]
+        assert len(comments) == 1
+        assert comments[0]["body"].startswith(action.comment + "\n\n<!-- tech-lead-case-file-fold:")
         fail_once("close")
         effects.append("closed")
 
-    mock_repository_host.get_issue_comments.side_effect = read_comments
+    mock_repository_host.issue_comment_marker_present.side_effect = marker_present
     mock_repository_host.add_comment.side_effect = comment
     mock_repository_host.update_issue_state.side_effect = close
     first = applier.apply(action)
@@ -3604,7 +3605,8 @@ def test_case_file_fold_records_explanation_before_close_and_recovers_on_retry(
     second = applier.apply(action)
     assert second.success
     assert effects == ["explanation", "closed"]
-    assert comments == [{"body": action.comment}]
+    assert len(comments) == 1
+    assert comments[0]["body"].startswith(action.comment + "\n\n<!-- tech-lead-case-file-fold:")
 
 
 def test_ordinary_close_retains_best_effort_comment_behavior(applier, mock_repository_host):
@@ -3613,3 +3615,51 @@ def test_ordinary_close_retains_best_effort_comment_behavior(applier, mock_repos
     assert result.success
     mock_repository_host.update_issue_state.assert_called_once_with(559, "closed")
     mock_repository_host.get_issue_comments.assert_not_called()
+
+
+@pytest.mark.parametrize("fold", [False, True])
+@pytest.mark.parametrize("lost_at", ["first_write", "comment"])
+def test_close_claim_loss_interrupts_remaining_batch(
+    applier, mock_repository_host, mock_events, fold, lost_at,
+):
+    from issue_orchestrator.control.actions import FoldCaseFileIssueAction
+    from issue_orchestrator.control.reconciliation import build_expected_for_mutation
+
+    claim_manager = MagicMock(spec=ClaimManager)
+    # Ordinary closure comments follow closure; folds explain before closure.
+    claim_manager.check_winner.side_effect = [False] if lost_at == "first_write" else [True, False]
+    applier.claim_gate = ClaimGate(claim_manager, mock_events)
+    applier.lease_id_lookup = lambda number: "lease"
+    action_type = FoldCaseFileIssueAction if fold else CloseIssueAction
+    first = action_type(issue_number=6966, comment="Explanation", expected=build_expected_for_mutation())
+    second = CloseIssueAction(issue_number=6967)
+    mock_repository_host.issue_comment_marker_present.return_value = False
+
+    with pytest.raises(ClaimLostError):
+        applier.apply_all([first, second])
+
+    assert all(call.args[0] != 6967 for call in mock_repository_host.update_issue_state.call_args_list)
+    assert all(call.args[0] != 6967 for call in mock_repository_host.add_comment.call_args_list)
+
+
+def test_fold_retry_finds_explanation_beyond_cached_first_comment_page(applier, mock_repository_host):
+    from issue_orchestrator.control.actions import FoldCaseFileIssueAction
+    from issue_orchestrator.control.reconciliation import build_expected_for_mutation
+
+    action = FoldCaseFileIssueAction(issue_number=6966, comment="Recorded evidence", expected=build_expected_for_mutation())
+    comments = [{"body": "Older discussion"} for _ in range(150)]
+    mock_repository_host.get_issue_comments.return_value = comments[:100]
+    mock_repository_host.issue_comment_marker_present.side_effect = (
+        lambda number, marker: any(marker in comment["body"] for comment in comments)
+    )
+
+    def publish(number, body):
+        comments.append({"body": body})
+        raise RuntimeError("Remote comment committed but response lost")
+
+    mock_repository_host.add_comment.side_effect = publish
+    assert not applier.apply(action).success
+    assert applier.apply(action).success
+    mock_repository_host.add_comment.assert_called_once()
+    mock_repository_host.get_issue_comments.assert_not_called()
+    mock_repository_host.update_issue_state.assert_called_once_with(6966, "closed")
