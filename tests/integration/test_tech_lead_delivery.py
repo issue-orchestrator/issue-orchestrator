@@ -6,6 +6,7 @@ No live providers, GitHub calls, or production state are involved.
 """
 
 import json
+import hashlib
 from dataclasses import replace
 from datetime import datetime, timedelta
 from unittest.mock import Mock
@@ -55,6 +56,7 @@ from issue_orchestrator.infra.tech_lead_run_record_store import (
     SqliteTechLeadRunRecordStore,
 )
 from issue_orchestrator.ports import InMemoryEventSink, RepositoryHost
+from issue_orchestrator.ports.comment_receipt import IssueCommentReceipt
 from issue_orchestrator.ports.label_set import LabelSet
 from issue_orchestrator.ports.open_issue_corpus_store import (
     InMemoryOpenIssueCorpusStore,
@@ -118,9 +120,9 @@ def prepare_run(tmp_path):
     return config, session
 
 
-@pytest.mark.parametrize("reset_fails", [False, True])
+@pytest.mark.parametrize("reset_fails,receipt_fails", [(False, False), (True, False), (False, True)])
 def test_clean_decision_crosses_real_applier_and_failed_mandate_is_not_delivered(
-    tmp_path, reset_fails
+    tmp_path, reset_fails, receipt_fails
 ):
     config, session = prepare_run(tmp_path)
     authority = SqliteTechLeadAuthorityStore.for_repo(tmp_path)
@@ -205,6 +207,13 @@ def test_clean_decision_crosses_real_applier_and_failed_mandate_is_not_delivered
         written.append((number, body))
         return "https://example.test/comment/1"
 
+    def find_receipt(number, *, body):
+        if receipt_fails or (number, body) not in written:
+            return None
+        return IssueCommentReceipt("1", "https://example.test/comment/1", "github-user:1",
+                                   hashlib.sha256(body.encode()).hexdigest())
+
+    host.find_issue_comment_receipt.side_effect = find_receipt
     host.add_comment.side_effect = write_comment
     applier = ActionApplier(
         labels=Mock(spec=LabelSet), sessions=Mock(), events=events, repository_host=host
@@ -244,8 +253,10 @@ def test_clean_decision_crosses_real_applier_and_failed_mandate_is_not_delivered
         (number, body) for number, body in written if "Diagnosis for #1" in body
     ]
     reset.assert_called_once()
-    if reset_fails:
-        assert diagnoses == []
+    if reset_fails or receipt_fails:
+        # Diagnosis is itself mandatory and is published before remediation.
+        # Either failed obligation still withholds a successful delivery receipt.
+        assert len(diagnoses) == 1
         assert receipt.phase is TechLeadRunPhase.FAILED
         assert restarted.inspect_delivery_evidence().last_delivered_at is None
         assert not events.get_events(EventName.SESSION_COMPLETED.value)
@@ -257,7 +268,7 @@ def test_clean_decision_crosses_real_applier_and_failed_mandate_is_not_delivered
         assert len(events.get_events(EventName.SESSION_COMPLETED.value)) == 1
     expected = (
         TechLeadDeliveryStatus.STALLED
-        if reset_fails
+        if reset_fails or receipt_fails
         else TechLeadDeliveryStatus.OBSERVING
     )
     assert read_tech_lead_activity(restarted, now=NOW).delivery.status is expected
