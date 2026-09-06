@@ -48,6 +48,55 @@ def as_fence_port(store: SqliteValidatedWorkStore) -> ValidatedWorkFence:
     return store
 
 
+@pytest.mark.parametrize("state", ["publising", "recovered", "abandoned"])
+def test_unresolved_probe_rejects_invalid_dispositions_instead_of_no_work(
+    tmp_path, state
+):
+    rig = Rig(tmp_path / "work.sqlite")
+    store = rig.open()
+    admission = capture()
+    store.admit(admission)
+    with closing(sqlite3.connect(rig.path)) as conn, conn:
+        conn.execute("UPDATE validated_work_records SET state=?", (state,))
+    for current in (store, rig.open()):
+        with pytest.raises(ValueError):
+            current.get(admission.evidence.record_id)
+        with pytest.raises(ValueError):
+            current.has_unresolved_work(6914)
+        assert not current.has_unresolved_work(6915)
+
+
+def test_unresolved_probe_accepts_empty_and_legitimately_resolved_work(tmp_path):
+    store = Rig(tmp_path / "work.sqlite").open()
+    assert not store.has_unresolved_work(6914)
+    admission = capture()
+    store.admit(admission)
+    assert store.has_unresolved_work(6914)
+    store.resolve_observed_merge(
+        record_id=admission.evidence.record_id, merged_head_sha=V, observed_at=LATER
+    )
+    assert store.get(admission.evidence.record_id).state is State.RECOVERED
+    assert not store.has_unresolved_work(6914)
+
+
+def test_unresolved_probe_accepts_valid_abandonment_audit(tmp_path):
+    rig = Rig(tmp_path / "work.sqlite")
+    store = rig.open()
+    admission = capture()
+    store.admit(admission)
+    # The abandonment writer belongs to a later slice; represent its durable
+    # contract here rather than treating a bare terminal state as sufficient.
+    with closing(sqlite3.connect(rig.path)) as conn, conn:
+        conn.execute(
+            "UPDATE validated_work_records SET state='abandoned', resolution_kind='operator_abandoned', "
+            "resolved_by='operator', resolution_reason='accepted loss', resolved_at=?, terminal_at=?",
+            (LATER, LATER),
+        )
+    reopened = rig.open()
+    assert reopened.get(admission.evidence.record_id).state is State.ABANDONED
+    assert not reopened.has_unresolved_work(6914)
+
+
 def test_typed_ports_have_no_caller_death_timer_or_transaction_parameter(tmp_path):
     store = Rig(tmp_path / "work.sqlite").open()
     port = as_store_port(store)

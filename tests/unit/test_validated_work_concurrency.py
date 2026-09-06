@@ -12,6 +12,7 @@ import pytest
 
 from issue_orchestrator.domain.validated_work import (
     LineageRole,
+    ValidatedWorkFailure as Failure,
     ValidatedWorkState as State,
 )
 from issue_orchestrator.domain.validated_work_store import AdmissionStatus
@@ -19,6 +20,7 @@ from issue_orchestrator.infra.config import Config
 from issue_orchestrator.infra.sqlite_registry import list_sqlite_databases
 from tests.unit.threading_helpers import join_or_fail, run_in_thread
 from tests.unit.validated_work_support import (
+    LATER,
     OTHER,
     OWNER,
     L,
@@ -114,6 +116,30 @@ def test_capture_racing_begin_never_rewrites_inflight_evidence(tmp_path):
         assert row.evidence_id == new.evidence.evidence_id
     for attempt in first.publish_attempts(row.record_id):
         assert attempt.evidence_id == row.evidence_id
+
+
+def test_replay_racing_explicit_lineage_failure_cannot_restore_publication(tmp_path):
+    rig = Rig(tmp_path / "work.sqlite")
+    first, second = rig.open(), rig.open()
+    admission = capture()
+    first.admit(admission)
+    token = claim(first, admission)
+    result, _ = _race(
+        lambda: first.fail(
+            token,
+            failure=Failure.REMOTE_BASELINE_UNPROVEN,
+            reason="durable failure",
+            failed_at=LATER,
+        ),
+        lambda: second.admit(admission),
+    )
+    assert result is True
+    reopened = rig.open()
+    row = reopened.get(token.record_id)
+    assert row.state is State.FAILED
+    assert row.failure is Failure.REMOTE_BASELINE_UNPROVEN
+    assert begin(reopened, token) is None
+    assert reopened.publish_attempts(token.record_id) == ()
 
 
 def _process_capture_and_claim(args):

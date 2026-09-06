@@ -542,15 +542,115 @@ def test_outcome_shape_validation_follows_claim_authentication(tmp_path, release
     before = store.get(token.record_id)
     if released:
         assert not store.record_attempt_outcome(
-            token, attempt, outcome=Status.PUBLISHED,
-            failure=Failure.PUSH_FAILED, finished_at=LATER,
+            token,
+            attempt,
+            outcome=Status.PUBLISHED,
+            failure=Failure.PUSH_FAILED,
+            finished_at=LATER,
         )
     else:
         with pytest.raises(ValueError):
             store.record_attempt_outcome(
-                token, attempt, outcome=Status.PUBLISHED,
-                failure=Failure.PUSH_FAILED, finished_at=LATER,
+                token,
+                attempt,
+                outcome=Status.PUBLISHED,
+                failure=Failure.PUSH_FAILED,
+                finished_at=LATER,
             )
+    reopened = rig.open()
+    assert reopened.get(token.record_id) == before
+    assert reopened.publish_attempts(token.record_id) == (attempt,)
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        Failure.ANCESTOR_OF_PENDING_HEAD,
+        Failure.DIVERGENT_VALIDATED_HEADS,
+        Failure.AWAITING_LINEAGE_PREDECESSOR,
+        Failure.REMOTE_BASELINE_UNPROVEN,
+        Failure.PUSH_FAILED,
+        Failure.ARTIFACT_MISSING,
+    ],
+)
+def test_explicit_failure_survives_reclassification_replay_and_reopen(
+    tmp_path, failure
+):
+    rig = Rig(tmp_path / "work.sqlite")
+    store = rig.open()
+    admission = capture()
+    store.admit(admission)
+    token = claim(store, admission)
+    assert store.fail(token, failure=failure, reason="durable failure", failed_at=LATER)
+    for current in (store, rig.open()):
+        row = current.get(token.record_id)
+        assert (row.state, row.failure, row.reason) == (
+            State.FAILED,
+            failure,
+            "durable failure",
+        )
+        assert begin(current, token) is None
+        assert begin(current, token, approved=True) is None
+        assert current.has_unresolved_work(6914)
+        current.admit(changed_observations(admission, pr_number=313))
+        row = current.get(token.record_id)
+        assert (row.state, row.failure, row.reason) == (
+            State.FAILED,
+            failure,
+            "durable failure",
+        )
+        assert current.publish_attempts(token.record_id) == ()
+    # A distinct accepted evidence item can establish a new admission gate.
+    replacement = capture(run="new-capture")
+    store.admit(replacement)
+    assert store.get(token.record_id).state is State.QUEUED
+    assert begin(store, token) is not None
+
+
+@pytest.mark.parametrize(
+    "authentication",
+    [
+        "current",
+        "relinquished",
+        "wrong_attempt",
+        "forged",
+        "untyped",
+        "untyped_attempt",
+    ],
+)
+@pytest.mark.parametrize(
+    "outcome", ["published", "unknown", None, 12, Status.SUPERSEDED]
+)
+def test_outcome_enum_validation_requires_authenticated_stored_attempt(
+    tmp_path, authentication, outcome
+):
+    rig = Rig(tmp_path / "work.sqlite")
+    store = rig.open()
+    admission = capture()
+    store.admit(admission)
+    token = claim(store, admission)
+    attempt = begin(store, token)
+    submitted = attempt
+    if authentication == "relinquished":
+        assert store.relinquish_claim(token)
+    if authentication == "wrong_attempt":
+        submitted = replace(attempt, expected_remote_head="")
+    if authentication == "forged":
+        token = replace(token, secret=ClaimSecret())
+    if authentication == "untyped":
+        token = SimpleNamespace(record_id=token.record_id, fence=token.fence)
+    if authentication == "untyped_attempt":
+        submitted = SimpleNamespace(record_id=attempt.record_id, fence=attempt.fence)
+    before = store.get(token.record_id)
+    if authentication == "current" and outcome is not Status.SUPERSEDED:
+        with pytest.raises(ValueError):
+            store.record_attempt_outcome(
+                token, submitted, outcome=outcome, failure=None, finished_at=LATER
+            )
+    else:
+        assert not store.record_attempt_outcome(
+            token, submitted, outcome=outcome, failure=None, finished_at=LATER
+        )
     reopened = rig.open()
     assert reopened.get(token.record_id) == before
     assert reopened.publish_attempts(token.record_id) == (attempt,)
