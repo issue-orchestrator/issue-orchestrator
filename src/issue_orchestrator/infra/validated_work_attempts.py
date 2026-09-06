@@ -132,7 +132,7 @@ class PublishAttemptWriter:
         failure: Failure | None,
         finished_at: str,
     ) -> bool:
-        if not recordable_outcome(outcome, failure):
+        if not recordable_outcome(outcome):
             return False
         if (
             not self._claims.holds(conn, claim)

@@ -527,3 +527,30 @@ def test_truthy_unproven_death_cannot_transfer_authority(tmp_path):
         )
     assert store.holds_claim(token)
     assert store.owner_of(token.record_id) == OWNER
+
+
+@pytest.mark.parametrize("released", [False, True])
+def test_outcome_shape_validation_follows_claim_authentication(tmp_path, released):
+    rig = Rig(tmp_path / "work.sqlite")
+    store = rig.open()
+    admission = capture()
+    store.admit(admission)
+    token = claim(store, admission)
+    attempt = begin(store, token)
+    if released:
+        assert store.relinquish_claim(token)
+    before = store.get(token.record_id)
+    if released:
+        assert not store.record_attempt_outcome(
+            token, attempt, outcome=Status.PUBLISHED,
+            failure=Failure.PUSH_FAILED, finished_at=LATER,
+        )
+    else:
+        with pytest.raises(ValueError):
+            store.record_attempt_outcome(
+                token, attempt, outcome=Status.PUBLISHED,
+                failure=Failure.PUSH_FAILED, finished_at=LATER,
+            )
+    reopened = rig.open()
+    assert reopened.get(token.record_id) == before
+    assert reopened.publish_attempts(token.record_id) == (attempt,)
