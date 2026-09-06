@@ -10,6 +10,8 @@ Architecture reminder:
 - CompletionProcessor executes actions via adapters (labels, PR, comments)
 """
 
+from tests.run_allocation_helpers import make_completion_processor
+
 import json
 import pytest
 
@@ -157,6 +159,7 @@ class _FixedReviewExchangeSessionOutput(FileSystemSessionOutput):
             run_id=self.review_run_dir.name.split("__", 1)[0],
             parent_session_name=parent_session_name,
             assets=assets,
+            session_run=make_session_run_assets(worktree_path, session_name=f"review-exchange-{issue_number}", run_id=self.review_run_dir.name.split("__", 1)[0]),
         )
 
 
@@ -296,7 +299,7 @@ def tech_lead_authority_store(tmp_path):
 @pytest.fixture
 def processor(mock_label_adapter, mock_pr_adapter, mock_git_adapter, event_bus):
     """Create a CompletionProcessor with mocked adapters."""
-    return CompletionProcessor(
+    return make_completion_processor(
         agent_callback_endpoint=ready_callback_endpoint(),
         label_adapter=mock_label_adapter,
         pr_adapter=mock_pr_adapter,
@@ -782,7 +785,7 @@ class TestReviewExchangeModeResolution:
         reviewer_prompt = tmp_path / "reviewer.md"
         coder_prompt.write_text("Coder prompt")
         reviewer_prompt.write_text("Reviewer prompt")
-        config = Config()
+        config = Config(repo="test/repo")
         config.review_enabled = True
         config.review_exchange_mode = "auto"
         config.code_review_agent = "agent:reviewer"
@@ -798,7 +801,7 @@ class TestReviewExchangeModeResolution:
         return config
 
     def _make_processor(self, config: Config) -> CompletionProcessor:
-        return CompletionProcessor(
+        return make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=Mock(spec=LabelAdapter),
             pr_adapter=Mock(spec=PRAdapter),
@@ -839,7 +842,7 @@ class TestReviewExchangeExecution:
         reviewer_prompt = tmp_path / "reviewer.md"
         coder_prompt.write_text("Coder prompt")
         reviewer_prompt.write_text("Reviewer prompt")
-        config = Config()
+        config = Config(repo="test/repo")
         config.review_enabled = True
         config.review_exchange_mode = "via-mcp"
         config.code_review_agent = "agent:reviewer"
@@ -863,7 +866,7 @@ class TestReviewExchangeExecution:
         )
 
         session_output = FileSystemSessionOutput()
-        return CompletionProcessor(
+        return make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=Mock(spec=LabelAdapter),
             pr_adapter=Mock(spec=PRAdapter),
@@ -889,7 +892,7 @@ class TestReviewExchangeExecution:
         monkeypatch,
     ) -> None:
         config = self._make_config(tmp_path)
-        processor = CompletionProcessor(
+        processor = make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,
@@ -946,7 +949,7 @@ class TestReviewExchangeExecution:
         config = self._make_config(tmp_path)
         config.review_exchange_mode = "via-local-loop"
         config.worktree_remediation_pr_collision = "reuse_open"
-        processor = CompletionProcessor(
+        processor = make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,
@@ -1019,7 +1022,7 @@ class TestReviewExchangeExecution:
     ) -> None:
         config = self._make_config(tmp_path)
         config.review_exchange_mode = "via-local-loop"
-        processor = CompletionProcessor(
+        processor = make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,
@@ -1091,7 +1094,7 @@ class TestReviewExchangeExecution:
         """Existing PR reuse must run local-loop review before returning success."""
         config = self._make_config(tmp_path)
         config.review_exchange_mode = "via-local-loop"
-        processor = CompletionProcessor(
+        processor = make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,
@@ -1156,7 +1159,7 @@ class TestReviewExchangeExecution:
         config = self._make_config(tmp_path)
         config.review_exchange_mode = "via-local-loop"
         config.worktree_remediation_pr_collision = "reuse_open"
-        processor = CompletionProcessor(
+        processor = make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,
@@ -1226,7 +1229,7 @@ class TestReviewExchangeExecution:
         config = self._make_config(tmp_path)
         config.review_exchange_mode = "via-local-loop"
         config.worktree_remediation_pr_collision = "reuse_open"
-        processor = CompletionProcessor(
+        processor = make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,
@@ -1308,7 +1311,7 @@ class TestReviewExchangeExecution:
         review_artifact_reader = _FakeReviewArtifactReader(
             "# Review Report\n\nNo issues.\n"
         )
-        processor = CompletionProcessor(
+        processor = make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,
@@ -1421,7 +1424,7 @@ class TestReviewExchangeExecution:
         """PR comments must not read review-report paths outside the artifact policy."""
         config = self._make_config(tmp_path)
         config.review_exchange_mode = "via-local-loop"
-        processor = CompletionProcessor(
+        processor = make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,
@@ -1496,7 +1499,7 @@ class TestReviewExchangeExecution:
         """The final PR comment should answer what happened in each exchange turn."""
         config = self._make_config(tmp_path)
         config.review_exchange_mode = "via-local-loop"
-        processor = CompletionProcessor(
+        processor = make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,
@@ -1598,7 +1601,7 @@ class TestReviewExchangeExecution:
         """The generated PR comment must stay under GitHub's body limit."""
         config = self._make_config(tmp_path)
         config.review_exchange_mode = "via-local-loop"
-        processor = CompletionProcessor(
+        processor = make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,
@@ -1675,7 +1678,7 @@ class TestReviewExchangeExecution:
         """Local-loop halt should publish review.started then review.changes_requested."""
         config = self._make_config(tmp_path)
         config.review_exchange_mode = "via-local-loop"
-        processor = CompletionProcessor(
+        processor = make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,
@@ -1740,7 +1743,7 @@ class TestReviewExchangeExecution:
         monkeypatch,
     ) -> None:
         config = self._make_config(tmp_path)
-        processor = CompletionProcessor(
+        processor = make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,
@@ -1847,7 +1850,7 @@ class TestReviewExchangeExecution:
         # outcome, the replay must also be tagged cached=True so the timeline
         # narrates it as a replay rather than a fresh reviewer verdict.
         config = self._make_config(tmp_path)
-        processor = CompletionProcessor(
+        processor = make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,
@@ -1974,7 +1977,7 @@ class TestReviewExchangeExecution:
         # (different) row so a regression that re-introduces the
         # ``"cached_summary"`` overwrite breaks both tests, not one.
         config = self._make_config(tmp_path)
-        processor = CompletionProcessor(
+        processor = make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,
@@ -2067,7 +2070,7 @@ class TestReviewExchangeExecution:
         monkeypatch,
     ) -> None:
         config = self._make_config(tmp_path)
-        processor = CompletionProcessor(
+        processor = make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,
@@ -2150,7 +2153,7 @@ class TestReviewExchangeExecution:
     ) -> None:
         config = self._make_config(tmp_path)
         session_output = FileSystemSessionOutput()
-        processor = CompletionProcessor(
+        processor = make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,
@@ -2292,7 +2295,7 @@ class TestReviewExchangeExecution:
                     reason="reviewer_ok",
                 )
 
-        processor = CompletionProcessor(
+        processor = make_completion_processor(
             label_adapter=Mock(spec=LabelAdapter),
             pr_adapter=Mock(spec=PRAdapter),
             git_adapter=Mock(spec=GitAdapter),
@@ -2309,9 +2312,10 @@ class TestReviewExchangeExecution:
         exchange_run = ReviewExchangeRun(
             session_name="review-exchange-1",
             run_id="review-run-1",
+            session_run=make_session_run_assets(tmp_path, session_name="review-exchange-1", run_id="review-run-1"),
             parent_session_name="session-1",
             assets=ReviewExchangeRunAssets.from_run_dir(
-                tmp_path / ".issue-orchestrator" / "sessions" / "review-run-1"
+                tmp_path / ".issue-orchestrator" / "sessions" / "review-run-1__review-exchange-1"
             ),
         )
         processor._run_review_exchange_loop(  # noqa: SLF001
@@ -2334,7 +2338,7 @@ class TestReviewExchangeExecution:
     def test_resolve_agent_label_from_completion_path(self, tmp_path):
         coder_prompt = tmp_path / "coder.md"
         coder_prompt.write_text("Coder prompt")
-        config = Config()
+        config = Config(repo="test/repo")
         config.agents = {
             "agent:backend": AgentConfig(
                 prompt_path=coder_prompt, ai_system="claude-code"
@@ -2700,7 +2704,7 @@ class TestTechLeadCompletionEffects:
     ) -> CompletionProcessor:
         prompt = tmp_path / "tech-lead.md"
         prompt.write_text("Tech Lead prompt")
-        config = Config()
+        config = Config(repo="test/repo")
         config.repo_root = tmp_path  # authority store home
         config.tech_lead_review_agent = "agent:tech-lead"
         config.agents = {
@@ -2721,7 +2725,7 @@ class TestTechLeadCompletionEffects:
 
         if tech_lead_authority is None:
             tech_lead_authority = SqliteTechLeadAuthorityStore.for_repo(tmp_path)
-        return CompletionProcessor(
+        return make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,
@@ -3505,9 +3509,9 @@ class TestCompletionProcessorDirtyPolicy:
         event_bus,
         worktree_with_completion,
     ):
-        config = Config()
+        config = Config(repo="test/repo")
         config.validation.publish.dirty_check = "tracked"
-        processor = CompletionProcessor(
+        processor = make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,
@@ -3583,9 +3587,9 @@ class TestCompletionProcessorDirtyPolicy:
         it. The dead end had moved one boundary downstream: the agent exited 0
         believing it had escalated, and the human was never told.
         """
-        config = Config()
+        config = Config(repo="test/repo")
         config.validation.publish.dirty_check = "tracked"
-        processor = CompletionProcessor(
+        processor = make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,
@@ -3643,9 +3647,9 @@ class TestCompletionProcessorDirtyPolicy:
         publishing step taken, and that nothing stages or commits the dirty
         files on the way.
         """
-        config = Config()
+        config = Config(repo="test/repo")
         config.validation.publish.dirty_check = "tracked"
-        processor = CompletionProcessor(
+        processor = make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,
@@ -3688,9 +3692,9 @@ class TestCompletionProcessorDirtyPolicy:
         event_bus,
         worktree_with_completion,
     ):
-        config = Config()
+        config = Config(repo="test/repo")
         config.validation.publish.dirty_check = "all"
-        processor = CompletionProcessor(
+        processor = make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,
@@ -3734,9 +3738,9 @@ class TestCompletionProcessorDirtyPolicy:
         # leaving an empty list. The previous gate required dirty_files to be
         # non-empty before short-circuiting to pass, so this case fell through
         # to a confusing "Working tree is dirty" with no files listed.
-        config = Config()
+        config = Config(repo="test/repo")
         config.validation.publish.dirty_check = "all"
-        processor = CompletionProcessor(
+        processor = make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,
@@ -3773,9 +3777,9 @@ class TestCompletionProcessorDirtyPolicy:
         event_bus,
         worktree_with_completion,
     ):
-        config = Config()
+        config = Config(repo="test/repo")
         config.validation.publish.dirty_check = "tracked"
-        processor = CompletionProcessor(
+        processor = make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,
@@ -3821,9 +3825,9 @@ class TestCompletionProcessorDirtyPolicy:
         ``list_dirty_files`` must do the same, and the policy must NOT
         collapse ``None`` to ``[] -> pass`` (#6159 review feedback).
         """
-        config = Config()
+        config = Config(repo="test/repo")
         config.validation.publish.dirty_check = "all"
-        processor = CompletionProcessor(
+        processor = make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,
@@ -3862,9 +3866,9 @@ class TestCompletionProcessorDirtyPolicy:
         event_bus,
         worktree_with_completion,
     ):
-        config = Config()
+        config = Config(repo="test/repo")
         config.validation.publish.dirty_check = "off"
-        processor = CompletionProcessor(
+        processor = make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,
@@ -4008,7 +4012,7 @@ class TestCompletionProcessorPublishGate:
         mock_publish_gate,
     ):
         """Processor with publish gate configured."""
-        return CompletionProcessor(
+        return make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,
@@ -4282,7 +4286,7 @@ class TestCompletionProcessorPublishGate:
         mock_pre_publish_gate,
         worktree_with_completion,
     ):
-        processor = CompletionProcessor(
+        processor = make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,
@@ -4331,7 +4335,7 @@ class TestCompletionProcessorPublishGate:
             head_sha="abc123",
             ran=True,
         )
-        processor = CompletionProcessor(
+        processor = make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,
@@ -4380,7 +4384,7 @@ class TestCompletionProcessorPublishGate:
                 {f"review-exchange:123:test-session:{run_id}"}
             )
         )
-        processor = CompletionProcessor(
+        processor = make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,
@@ -4442,7 +4446,7 @@ class TestCompletionProcessorPublishGate:
                 ),
             ),
         )
-        processor = CompletionProcessor(
+        processor = make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,
@@ -4675,7 +4679,7 @@ class TestCompletionProcessorPublishGate:
         reviewer_prompt = tmp_path / "reviewer.md"
         coder_prompt.write_text("Coder prompt")
         reviewer_prompt.write_text("Reviewer prompt")
-        config = Config()
+        config = Config(repo="test/repo")
         config.review_enabled = True
         config.review_exchange_mode = "via-local-loop"
         config.code_review_agent = "agent:reviewer"
@@ -4702,7 +4706,7 @@ class TestCompletionProcessorPublishGate:
             head_sha="abc123",
             ran=True,
         )
-        processor = CompletionProcessor(
+        processor = make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,
@@ -4791,7 +4795,7 @@ class TestCompletionProcessorPublishGate:
         reviewer_prompt = tmp_path / "reviewer.md"
         coder_prompt.write_text("Coder prompt")
         reviewer_prompt.write_text("Reviewer prompt")
-        config = Config()
+        config = Config(repo="test/repo")
         config.review_enabled = True
         config.review_exchange_mode = "via-local-loop"
         config.code_review_agent = "agent:reviewer"
@@ -4818,7 +4822,7 @@ class TestCompletionProcessorPublishGate:
             head_sha="abc123",
             ran=True,
         )
-        processor = CompletionProcessor(
+        processor = make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,
@@ -4898,7 +4902,7 @@ class TestCompletionProcessorPublishGate:
         mock_git_adapter,
         mock_publish_gate,
     ):
-        processor = CompletionProcessor(
+        processor = make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,
@@ -4939,9 +4943,9 @@ class TestCompletionProcessorPublishGate:
         and we go around again. Counter is keyed per (session, head_sha)
         so SHA advancing naturally resets the budget.
         """
-        config = Config()
+        config = Config(repo="test/repo")
         config.review_exchange_max_rounds = 3  # tighten for the test
-        processor = CompletionProcessor(
+        processor = make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,
@@ -5023,7 +5027,7 @@ class TestCompletionProcessorPublishGate:
             BackgroundJobSupervisor,
         )
 
-        config = Config()
+        config = Config(repo="test/repo")
         config.review_exchange_max_rounds = 2
         # A fake runner that always reports the job as running, so
         # ``is_review_exchange_running`` returns True every tick.
@@ -5034,7 +5038,7 @@ class TestCompletionProcessorPublishGate:
         fake_runner.drain_completed.return_value = []
         supervisor = BackgroundJobSupervisor(fake_runner)
 
-        processor = CompletionProcessor(
+        processor = make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,
@@ -5085,9 +5089,9 @@ class TestCompletionProcessorPublishGate:
         mock_publish_gate,
     ):
         """SHA advancing means the coder made progress; budget should reset."""
-        config = Config()
+        config = Config(repo="test/repo")
         config.review_exchange_max_rounds = 2
-        processor = CompletionProcessor(
+        processor = make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,
@@ -5220,7 +5224,7 @@ class TestRunScopedArtifacts:
         )
         completion_path.write_text(json.dumps(record.to_dict()))
 
-        processor = CompletionProcessor(
+        processor = make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,
@@ -5261,7 +5265,7 @@ class TestRunScopedArtifacts:
         coder_prompt.write_text("Coder prompt")
         reviewer_prompt.write_text("Reviewer prompt")
 
-        config = Config()
+        config = Config(repo="test/repo")
         config.review_enabled = True
         config.review_exchange_mode = "via-local-loop"
         config.code_review_agent = "agent:reviewer"
@@ -5306,7 +5310,7 @@ class TestRunScopedArtifacts:
             json.dumps({"passed": True})
         )
 
-        processor = CompletionProcessor(
+        processor = make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,
@@ -5361,7 +5365,7 @@ class TestRunScopedArtifacts:
         coder_prompt.write_text("Coder prompt")
         reviewer_prompt.write_text("Reviewer prompt")
 
-        config = Config()
+        config = Config(repo="test/repo")
         config.review_enabled = True
         config.review_exchange_mode = "via-local-loop"
         config.code_review_agent = "agent:reviewer"
@@ -5400,7 +5404,7 @@ class TestRunScopedArtifacts:
         )
         completion_path.write_text(json.dumps(record.to_dict()))
 
-        processor = CompletionProcessor(
+        processor = make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,
@@ -5481,7 +5485,7 @@ class TestEscalationSurvivesAFailedPublish:
         event_bus,
         worktree_with_completion,
     ):
-        processor = CompletionProcessor(
+        processor = make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,
@@ -5557,7 +5561,7 @@ class TestEscalationSurvivesAFailedPublish:
 
         mock_pr_adapter.add_comment.side_effect = bounded_add_comment
 
-        processor = CompletionProcessor(
+        processor = make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,
@@ -5608,7 +5612,7 @@ class TestEscalationSurvivesAFailedPublish:
         worktree_with_completion,
     ):
         """For completed work the push *is* the result, so failure must halt."""
-        processor = CompletionProcessor(
+        processor = make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,

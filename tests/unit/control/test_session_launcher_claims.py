@@ -1,5 +1,7 @@
 """Unit tests for SessionLauncher claim integration."""
 
+from tests.run_allocation_helpers import make_session_launcher
+
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch, PropertyMock
@@ -100,7 +102,8 @@ class TestSessionLauncherClaimAcquisition:
         config = Config()
         config.claims.lease_seconds = 30
 
-        launcher = SessionLauncher(
+        launcher = make_session_launcher(
+            issue_run_ledger=MagicMock(),
             config=config,
             events=mock_events,
             repository_host=MagicMock(),
@@ -217,7 +220,8 @@ class TestSessionLauncherClaimAcquisition:
 
                 prompt_provider.prepare.side_effect = prepare_prompt
 
-                launcher = SessionLauncher(
+                launcher = make_session_launcher(
+                    issue_run_ledger=MagicMock(),
                     config=mock_config,
                     events=mock_events,
                     repository_host=MagicMock(),
@@ -279,7 +283,8 @@ class TestSessionLauncherClaimAcquisition:
         ))
 
         worktree_manager = MagicMock()
-        launcher = SessionLauncher(
+        launcher = make_session_launcher(
+            issue_run_ledger=MagicMock(),
             config=mock_config,
             events=mock_events,
             repository_host=MagicMock(),
@@ -329,7 +334,8 @@ class TestSessionLauncherClaimAcquisition:
         ))
 
         worktree_manager = MagicMock()
-        launcher = SessionLauncher(
+        launcher = make_session_launcher(
+            issue_run_ledger=MagicMock(),
             config=mock_config,
             events=mock_events,
             repository_host=MagicMock(),

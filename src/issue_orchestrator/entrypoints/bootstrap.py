@@ -40,6 +40,8 @@ from .bootstrap_pending_work import (
     require_repository_host,
 )
 from .bootstrap_session_launcher import build_session_launcher_factory
+from ..execution.issue_run_ledger import SqliteIssueRunLedger
+from ..control.issue_run_allocator import IssueRunAllocationService
 from .bootstrap_operator_commands import build_operator_issue_command_factory
 from .bootstrap_completion import (
     _validation_attempt_key_factory,
@@ -697,8 +699,13 @@ def build_orchestrator(
         label_writer=repository_host,
         label_manager=label_manager, events=events)
 
+    issue_run_ledger = SqliteIssueRunLedger(
+        state_dir(config.repo_root) / "issue_run_ledger.sqlite"
+    )
+    issue_run_allocator = IssueRunAllocationService(session_output, issue_run_ledger)
     completion_processor, session_controller_instance, completion_handler_factory = create_completion_components(
         config, github, events, working_copy, session_output, command_runner, provider_resilience,
+        issue_run_allocator=issue_run_allocator,
         label_manager=label_manager,
         background_job_supervisor=background_job_supervisor,
         agent_callback_endpoint=agent_callback_endpoint,
@@ -813,6 +820,7 @@ def build_orchestrator(
         command_runner=command_runner,
         session_output=session_output,
         manifest_downloader=manifest_downloader,
+        issue_run_allocator=issue_run_allocator,
         tech_lead_authority=tech_lead_authority,
         claim_manager=claim_manager,
         provider_resilience=provider_resilience,
@@ -824,6 +832,7 @@ def build_orchestrator(
         coder_prompt_addendum=coder_prompt_addendum,
     )
     deps = OrchestratorDeps(
+        issue_run_allocator=issue_run_allocator,
         events=events,
         runner=runner,
         repository_host=github,
@@ -842,6 +851,7 @@ def build_orchestrator(
         command_runner=command_runner,
         session_output=session_output,
         manifest_downloader=manifest_downloader,
+        issue_run_ledger=issue_run_ledger,
         pending_work_claims=pending_work.claims,
         claim_quarantine=pending_work.quarantine,
         needs_human_block=pending_work.needs_human_block,
@@ -970,6 +980,10 @@ def build_orchestrator_for_testing(
     working_copy = GitWorkingCopy()
     command_runner = LocalCommandRunner()
     session_output = FileSystemSessionOutput()
+    issue_run_ledger = SqliteIssueRunLedger(
+        state_dir(config.repo_root) / "issue_run_ledger.sqlite"
+    )
+    issue_run_allocator = IssueRunAllocationService(session_output, issue_run_ledger)
     coder_prompt_addendum = build_coder_prompt_addendum_provider(config)
 
     # A test composition must never shell out to a real provider CLI: readiness
@@ -1111,6 +1125,7 @@ def build_orchestrator_for_testing(
         label_manager=label_manager, events=events)
 
     completion_processor = CompletionProcessor(
+        issue_run_allocator=issue_run_allocator,
         label_adapter=GovernedLabelSet(
             labels=github, governed_label=label_manager.needs_human
         ),
@@ -1241,6 +1256,7 @@ def build_orchestrator_for_testing(
         command_runner=command_runner,
         session_output=session_output,
         manifest_downloader=manifest_downloader,
+        issue_run_allocator=issue_run_allocator,
         tech_lead_authority=tech_lead_authority_for_testing,
         claim_manager=claim_manager,
         provider_resilience=provider_resilience,
@@ -1263,6 +1279,7 @@ def build_orchestrator_for_testing(
         provider_resilience=provider_resilience,
     )
     deps = OrchestratorDeps(
+        issue_run_allocator=issue_run_allocator,
         events=events,
         runner=runner,
         repository_host=github,
@@ -1281,6 +1298,7 @@ def build_orchestrator_for_testing(
         command_runner=command_runner,
         session_output=session_output,
         manifest_downloader=manifest_downloader,
+        issue_run_ledger=issue_run_ledger,
         pending_work_claims=pending_work.claims,
         claim_quarantine=pending_work.quarantine,
         needs_human_block=pending_work.needs_human_block,

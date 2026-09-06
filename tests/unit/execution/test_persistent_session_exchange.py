@@ -13,6 +13,8 @@ exchange-loop policy on top of it.
 
 from __future__ import annotations
 
+from tests.run_allocation_helpers import make_completion_review_exchange
+
 import json
 import os
 from pathlib import Path
@@ -6856,7 +6858,7 @@ class TestProductionLayoutCacheResolution:
                 command="claude --print",
             ),
         }
-        return CompletionReviewExchange(
+        return make_completion_review_exchange(
             agent_callback_endpoint=ready_callback_endpoint(),
             config=cfg,
             session_output=session_output,

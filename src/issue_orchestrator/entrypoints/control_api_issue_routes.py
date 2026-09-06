@@ -20,6 +20,9 @@ from ..control.reconciliation import ReconciliationRequired, build_expected_for_
 from ..control.worktree_manager import get_worktree_path
 from ..domain.models import get_completion_path
 from ..domain.review_exchange_verdict import ExchangeVerdict
+from ..domain.issue_run_allocation import IssueRunAllocation
+from ..domain.issue_run_evidence import IssueRunEvidenceUnavailable
+from ..domain.session_key import SessionKey, TaskKind
 from ..domain.session_run import SessionRunAssets
 from ..ports.operator_issue_commands import (
     OperatorCommandIntent,
@@ -526,13 +529,17 @@ async def launch_debug_session(  # noqa: C901 - debug session with validation an
         task_kind="code",
     )
 
-    run_assets = orchestrator.deps.session_output.start_run(
-        worktree,
-        session_name,
-        issue_number=issue_number,
-        agent_label=agent_type,
-        backend=config.terminal_adapter or "subprocess",
-    )
+    try:
+        run_assets = orchestrator.deps.issue_run_allocator.allocate(IssueRunAllocation(
+            worktree_path=worktree,
+            session_name=session_name,
+            session_key=SessionKey(issue.key, TaskKind.CODE),
+            issue_number=issue_number,
+            agent_label=agent_type,
+            backend=config.terminal_adapter or "subprocess",
+        ))
+    except IssueRunEvidenceUnavailable as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=503)
     completion_path = get_completion_path(agent_type, run_dir=run_assets.run_dir.name)
     orchestrator.deps.session_output.update_manifest(
         run_assets.run_dir,

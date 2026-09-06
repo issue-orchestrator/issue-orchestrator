@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+from uuid import uuid4
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -140,10 +141,10 @@ class FileSystemSessionOutput(RunDirectoryArtifacts):
     ) -> SessionRunAssets:
         """Create a new run directory and initial manifest."""
         with self._io_lock:
-            run_id = self._run_timestamp()
+            run_id = f"{self._run_timestamp()}-{uuid4().hex}"
             base_dir = self._ensure_base_dir(worktree_path)
             run_dir = base_dir / self._run_dir_name(session_name, run_id)
-            run_dir.mkdir(parents=True, exist_ok=True)
+            run_dir.mkdir(parents=True, exist_ok=False)
 
             # Create symlink to latest run
             symlink_path = base_dir / session_name

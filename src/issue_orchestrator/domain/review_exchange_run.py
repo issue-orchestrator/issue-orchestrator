@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .path_guards import require_absolute_path, require_path_under
 from .review_exchange_turn_artifacts import review_exchange_dir
+from .session_run import SessionRunAssets
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +59,7 @@ class ReviewExchangeRun:
     run_id: str
     parent_session_name: str
     assets: ReviewExchangeRunAssets
+    session_run: SessionRunAssets
 
     def __post_init__(self) -> None:
         if not self.session_name:
@@ -66,6 +68,10 @@ class ReviewExchangeRun:
             raise ValueError("review exchange run requires run_id")
         if not self.parent_session_name:
             raise ValueError("review exchange run requires parent_session_name")
+        if (self.session_name, self.run_id, self.assets.run_dir) != (
+            self.session_run.session_name, self.session_run.run_id, self.session_run.run_dir,
+        ):
+            raise ValueError("review exchange must retain its exact allocated session run")
 
 
 def _require_absolute(path: object, field_name: str) -> None:

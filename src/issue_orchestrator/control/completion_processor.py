@@ -15,6 +15,8 @@ All those actions are performed here after validating the completion record
 as untrusted input.
 """
 
+from ..ports.issue_run_allocator import IssueRunAllocator
+
 import json
 import logging
 import os
@@ -213,6 +215,7 @@ class CompletionProcessor:
         # Required: an agent with no callback endpoint cannot report
         # anything back, so there is no sensible default to fall back to.
         agent_callback_endpoint: "AgentCallbackEndpoint",
+        issue_run_allocator: IssueRunAllocator,
         review_artifact_reader: ReviewArtifactReader | None = None,
         runtime_identity: RuntimeIdentity | None = None,
         tech_lead_authority: "TechLeadAuthorityStore | None" = None,
@@ -277,6 +280,7 @@ class CompletionProcessor:
         self._review_exchange = CompletionReviewExchange(
             config=config,
             session_output=session_output,
+            issue_run_allocator=issue_run_allocator,
             emit_review_started=self._emit_review_started,
             emit_review_outcome=self._emit_review_outcome,
             review_exchange_runner=review_exchange_runner or NullReviewExchangeRunner(),
