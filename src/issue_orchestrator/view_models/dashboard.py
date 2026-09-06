@@ -1223,11 +1223,12 @@ def build_dashboard_view_model(
             _attach_card_projections(items, state, lm)
         stamp_issue_item_stale_badge_visibility(history_items, mode="when_stale_and_merge_pending")
 
-        completed_items = history_projection.completed_items
+        completed_items = work.work_items(history_projection.completed_items, issue_number=_issue_number_value)
         completed_items = _sort_by_issue_number(completed_items)
 
         # Awaiting merge = PRs ready for human merge; queued-rework issues stay owned by Queued.
         awaiting_merge_items = build_awaiting_merge_items(queue_items, blocked_items, history_items, exclude_issue_numbers=queued_rework_issue_numbers(state))
+        awaiting_merge_items = work.work_items(awaiting_merge_items, issue_number=_issue_number_value)
         awaiting_merge_items = _sort_by_issue_number(awaiting_merge_items)
 
         queue_items, blocked_items, awaiting_merge_items, completed_items = apply_lane_precedence(

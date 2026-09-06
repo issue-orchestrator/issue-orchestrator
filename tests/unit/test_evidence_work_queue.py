@@ -8,7 +8,7 @@ from bs4 import BeautifulSoup
 
 from issue_orchestrator.control.scheduler import Scheduler
 from issue_orchestrator.control.tech_lead_case_files import split_tech_lead_case_file_issues
-from issue_orchestrator.domain.models import Issue, OrchestratorState
+from issue_orchestrator.domain.models import Issue, OrchestratorState, SessionHistoryEntry
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.entrypoints.web_templates import get_templates
 from issue_orchestrator.ports.provider_resilience import NO_PROVIDER_CIRCUIT_STATUS
@@ -84,3 +84,31 @@ def test_startup_does_not_advertise_restored_queue_before_it_is_ready():
         e2e_status_provider=lambda _: {"enabled": False, "running": False})
     assert model.queue_total == 0
     assert model.blocked_count == 0
+
+
+@pytest.mark.parametrize("status", ["closed", "merged", "completed"])
+@pytest.mark.parametrize("tab", ["kanban", "completed", "awaiting-merge"])
+def test_history_remains_inspectable_without_reintroducing_evidence_as_work(status, tab):
+    config = Config(repo="porchpin/porchpin")
+    evidence = case_file()
+    work = Issue(number=50, title="Pattern rendering needs a fix", labels=["agent:backend"])
+    history = [SessionHistoryEntry(issue_number=item.number, title=item.title,
+        agent_type="agent:tech-lead" if item.number == 49 else "agent:backend",
+        status=status, completed_at=datetime(2026, 9, 6, tzinfo=timezone.utc),
+        runtime_minutes=1, pr_url=f"https://github.com/porchpin/porchpin/pull/{item.number + 100}")
+        for item in (evidence, work)]
+    state = OrchestratorState(startup_status="complete", cached_scope_issues=[evidence, work],
+                             cached_queue_issues=[evidence], session_history=history)
+    model = build_dashboard_view_model(OrchestratorView(state, config),
+        provider_circuit=NO_PROVIDER_CIRCUIT_STATUS, tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        active_tab=tab, e2e_status_provider=lambda _: {"enabled": False, "running": False})
+    expected_lane = model.awaiting_merge_items if status == "completed" else model.completed_items
+    assert [item["issue_number"] for item in expected_lane] == [50]
+    assert model.scope_summary["in_scope_total"] == 1
+    assert model.queue_total == 0
+    assert all(item["issue_number"] != 49 for column in model.flow_columns for item in column["items"])
+    assert any(item["issue_number"] == 49 for item in model.history_items)
+    assert state.session_history == history
+    rendered = BeautifulSoup(get_templates().get_template("dashboard.html").render(
+        **model.template_context()), "html.parser")
+    assert rendered.select('[data-issue="49"]') == []
