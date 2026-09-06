@@ -1854,6 +1854,10 @@ class TestObservationCountBoundary:
         authority = InMemoryTechLeadAuthorityStore()
         _record_case_file(authority, signature="sig", issue_number=65, fix_class="")
         repository_host = Mock()
+        from issue_orchestrator.ports.comment_receipt import IssueCommentReceipt
+        repository_host.find_issue_comment_receipt.side_effect = [
+            None, IssueCommentReceipt("1", "url", "github-user:7", "a" * 64),
+        ]
 
         result = apply_append_pattern_observation(
             _append_action("sig", "obs-2", comment="observed again", fix_class="code"),

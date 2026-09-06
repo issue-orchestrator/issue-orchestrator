@@ -1,6 +1,9 @@
 """Tests for gated tech_lead proposal issues (#6778, amends ADR-0031 §2)."""
 
 from unittest.mock import MagicMock, call
+import hashlib
+
+from issue_orchestrator.ports.comment_receipt import IssueCommentReceipt
 
 import pytest
 
@@ -119,6 +122,17 @@ def _issue(number: int, labels: list[str], title: str = "t") -> Issue:
 
 def _host(created_number: int = 500) -> MagicMock:
     host = MagicMock()
+    comments = {}
+
+    def publish(number, body):
+        comments[(number, body)] = IssueCommentReceipt(
+            str(len(comments) + 1), "comment-url", "github-user:7",
+            hashlib.sha256(body.encode()).hexdigest(),
+        )
+        return "comment-url"
+
+    host.add_comment.side_effect = publish
+    host.find_issue_comment_receipt.side_effect = lambda number, *, body: comments.get((number, body))
     host.create_issue.return_value = {"number": created_number}
     # No orphaned remote case file unless a test says otherwise (#6957 F10).
     host.find_issue_by_marker.return_value = None
@@ -745,8 +759,8 @@ def test_apply_case_file_rechecks_ledger_and_comments_inflight_duplicate() -> No
 # --- Replay after each partial write (#6957 review F1) ---------------------
 #
 # The lane's evidence count gates promotion, so every crash window between a
-# GitHub write and the durable count has to be replay-safe: a retry may repeat
-# a comment, but it must never count one observation twice.
+# GitHub write and the durable count has to be replay-safe: receipts recover
+# remote comments, and the local ledger counts each observation once.
 
 
 def _apply_case_file(action, *, ops, host):
@@ -795,7 +809,14 @@ def test_replay_after_one_additional_comment_counts_only_what_is_missing() -> No
     host = _host(600)
     # Fail while posting the SECOND additional comment (the third observation
     # of the decision), after the first one and its count already landed.
-    host.add_comment.side_effect = [None, RuntimeError("network died")]
+    publish = host.add_comment.side_effect
+
+    def fail_third(number, body):
+        if body == "third":
+            raise RuntimeError("network died")
+        return publish(number, body)
+
+    host.add_comment.side_effect = fail_third
 
     failed = _apply_case_file(action, ops=ops, host=host)
 
@@ -813,9 +834,8 @@ def test_replay_after_one_additional_comment_counts_only_what_is_missing() -> No
     assert replay_host.add_comment.call_args_list == [call(600, "third")]
 
 
-def test_replay_after_a_lost_comment_repeats_it_rather_than_losing_evidence() -> None:
-    """The comment is posted BEFORE its count, so a crash between them repeats
-    the comment (cosmetic) instead of counting evidence nobody can read."""
+def test_replay_after_a_failed_comment_publishes_missing_evidence() -> None:
+    """A publication that never reached GitHub must be attempted on retry."""
     action = _case_file_action("db-timeout", additional_comments=("second",))
     ops = InMemoryTechLeadAuthorityStore()
     host = _host(600)
@@ -850,7 +870,7 @@ def test_replaying_a_repeat_observation_append_never_double_counts() -> None:
             observation_id="r2:s:A1", comment="observed again"
         ),
     )
-    host = MagicMock()
+    host = _host()
 
     assert apply_append_pattern_observation(
         action, repository_host=host, authority=ops

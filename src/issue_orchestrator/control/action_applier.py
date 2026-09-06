@@ -659,13 +659,19 @@ class ActionApplier:
         assert self.repository_host is not None, "repository_host required for close_issue"
 
         self._require_expected(action, action.issue_number)
+        from .actions import FoldCaseFileIssueAction
         from .issue_closure import apply_issue_closure
+
+        def before_write() -> None:
+            if isinstance(action, FoldCaseFileIssueAction):
+                self._require_expected(action, action.issue_number)
+            self._verify_claim_before_write(action, action.issue_number)
 
         return apply_issue_closure(
             action, find_comment_receipt=lambda number, body: self.repository_host.find_issue_comment_receipt(number, body=body),
             post_comment=self.repository_host.add_comment,
             set_issue_state=self.repository_host.update_issue_state,
-            before_write=lambda: self._verify_claim_before_write(action, action.issue_number),
+            before_write=before_write,
         )
 
     def _apply_set_issue_state(self, action: Action) -> ActionResult:

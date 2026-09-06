@@ -425,7 +425,9 @@ class CaseFileReconciler:
                 findings={},
                 source_run_id=plan.plan_id,
                 source_session_name=RECONCILIATION_SESSION_NAME,
-                observed_at=observed_at,
+                # Historical source timestamps are not recorded in this plan.
+                # Execution time would change the exact receipt body on retry.
+                observed_at="Historical evidence (see linked source)",
                 # The SAME fail-closed expectation every other planner builds:
                 # the pause label (``io:needs-reconcile``) must be absent. A
                 # bare ``ExpectedState()`` would still spend the gate's label

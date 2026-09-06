@@ -6,6 +6,8 @@ import logging
 
 from .actions import ActionResult, CloseIssueAction, FoldCaseFileIssueAction
 from .claim_gate import ClaimLostError
+from .comment_publication import ensure_comment_published
+from .reconciliation import ReconciliationRequired
 from ..ports.comment_receipt import IssueCommentReceipt
 
 logger = logging.getLogger(__name__)
@@ -30,23 +32,22 @@ def apply_issue_closure(
             digest = hashlib.sha256(action.comment.encode("utf-8")).hexdigest()
             marker = f"<!-- tech-lead-case-file-fold:{digest} -->"
             body = f"{action.comment}\n\n{marker}"
-            if find_comment_receipt(action.issue_number, body) is None:
-                before_write()
-                post_comment(action.issue_number, body)
-                if find_comment_receipt(action.issue_number, body) is None:
-                    raise RuntimeError("Fold explanation publication could not be verified")
+            ensure_comment_published(
+                action.issue_number, body, find_receipt=find_comment_receipt,
+                post_comment=post_comment, before_write=before_write,
+            )
         before_write()
         set_issue_state(action.issue_number, "closed")
         if action.comment and not required:
             try:
                 before_write()
                 post_comment(action.issue_number, action.comment)
-            except ClaimLostError:
+            except (ClaimLostError, ReconciliationRequired):
                 raise
             except Exception:
                 logger.warning("Failed to post close comment for #%s", action.issue_number, exc_info=True)
         return ActionResult.ok(action, issue_number=action.issue_number, state="closed")
-    except ClaimLostError:
+    except (ClaimLostError, ReconciliationRequired):
         raise
     except Exception as error:
         logger.error("Failed to close issue #%s: %s", action.issue_number, error)

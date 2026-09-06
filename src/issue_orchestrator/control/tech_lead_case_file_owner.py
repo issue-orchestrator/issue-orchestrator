@@ -48,6 +48,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Callable, Iterable
 
+from .comment_publication import ensure_comment_published
+
 from ..domain.tech_lead_findings import (
     CaseFileClassification,
     PendingCaseFile,
@@ -330,10 +332,9 @@ class PatternCaseFileOwner:
            sighting opened (#6989 round-1 review F1).
         1. an identity ALREADY recorded means a previous attempt completed —
            do nothing (a purely local ledger read, no GitHub call);
-        2. otherwise comment FIRST, then record create-once. A crash between
-           the two repeats one comment on retry (cosmetic, and the comment
-           carries the observation marker), but the durable count can never
-           move twice for one observation.
+        2. otherwise recover or publish an authoritative comment receipt,
+           then record create-once. A crash between publication and recording
+           recovers the exact-body receipt without reposting or double counting.
 
         The merged diagnosis rides the SAME create-once write as the
         classification upgrade, so a signature can never end up promotable with
@@ -366,7 +367,12 @@ class PatternCaseFileOwner:
             ):
                 skipped += 1
                 continue
-            self._add_comment(issue_number, observation.comment)
+            ensure_comment_published(
+                issue_number, observation.comment,
+                find_receipt=lambda number, body: self._repository_host.find_issue_comment_receipt(number, body=body),
+                post_comment=self._add_comment,
+                before_write=lambda: None,
+            )
             self._authority.note_pattern_observation(
                 signature=signature,
                 observation_id=observation.observation_id,

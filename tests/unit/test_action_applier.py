@@ -3604,10 +3604,12 @@ def test_case_file_fold_records_explanation_before_close_and_recovers_on_retry(
     mock_repository_host.add_comment.side_effect = comment
     mock_repository_host.update_issue_state.side_effect = close
     first = applier.apply(action)
-    assert not first.success
-    assert "closed" not in effects
-    second = applier.apply(action)
-    assert second.success
+    if failure == "comment_after":
+        assert first.success  # An authoritative receipt resolves the lost response.
+    else:
+        assert not first.success
+        assert "closed" not in effects
+        assert applier.apply(action).success
     assert effects == ["explanation", "closed"]
     assert len(comments) == 1
     assert comments[0]["body"].startswith(action.comment + "\n\n<!-- tech-lead-case-file-fold:")
@@ -3669,7 +3671,6 @@ def test_fold_retry_finds_explanation_beyond_cached_first_comment_page(applier, 
         raise RuntimeError("Remote comment committed but response lost")
 
     mock_repository_host.add_comment.side_effect = publish
-    assert not applier.apply(action).success
     assert applier.apply(action).success
     mock_repository_host.add_comment.assert_called_once()
     mock_repository_host.get_issue_comments.assert_not_called()
@@ -3689,3 +3690,44 @@ def test_fold_does_not_close_until_new_explanation_receipt_is_verified(applier, 
     mock_repository_host.add_comment.assert_called_once()
     mock_repository_host.update_issue_state.assert_not_called()
     mock_repository_host.issue_comment_marker_present.assert_not_called()
+
+
+@pytest.mark.parametrize("pause_at", ["lookup", "publication", "receipt"])
+def test_fold_pause_interrupts_each_write_and_remaining_batch(
+    applier, mock_repository_host, mock_fresh_issue_reader, pause_at,
+):
+    from issue_orchestrator.control.actions import FoldCaseFileIssueAction
+    from issue_orchestrator.control.reconciliation import (
+        ReconciliationRequired, build_expected_for_mutation, get_pause_label,
+    )
+    from issue_orchestrator.ports.comment_receipt import IssueCommentReceipt
+
+    applier.reconcile = True
+    published = False
+
+    def pause():
+        mock_fresh_issue_reader.read_issue_labels.return_value = [get_pause_label()]
+
+    def receipt(number, *, body):
+        if pause_at == "lookup" or (published and pause_at == "receipt"):
+            pause()
+        if published:
+            return IssueCommentReceipt("1", "url", "user:7", "a" * 64)
+        return None
+
+    def publish(number, body):
+        nonlocal published
+        published = True
+        if pause_at == "publication":
+            pause()
+        return "url"
+
+    mock_repository_host.find_issue_comment_receipt.side_effect = receipt
+    mock_repository_host.add_comment.side_effect = publish
+    action = FoldCaseFileIssueAction(
+        issue_number=6966, comment="Evidence", expected=build_expected_for_mutation(),
+    )
+    with pytest.raises(ReconciliationRequired):
+        applier.apply_all([action, CloseIssueAction(issue_number=6967)])
+    mock_repository_host.update_issue_state.assert_not_called()
+    assert published is (pause_at != "lookup")

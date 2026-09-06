@@ -266,6 +266,9 @@ def test_observation_identity_is_a_pure_function_of_the_plan():
     replayed = later[0]
     assert isinstance(creation, CreateTechLeadCaseFileIssueAction)
     assert isinstance(replayed, CreateTechLeadCaseFileIssueAction)
+    assert creation.observations == replayed.observations
+    assert creation.body == replayed.body
+    assert "Historical evidence (see linked source)" in creation.body
     ids = [observation.observation_id for observation in creation.observations]
     assert ids == [
         observation.observation_id for observation in replayed.observations
