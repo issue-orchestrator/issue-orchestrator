@@ -18,20 +18,12 @@ from ..domain.validated_work_store import (
     LineagePublication,
     PublicationProvenance,
 )
+from ..domain.validated_work_gate import DispositionGate
 from ..ports.validated_work_verification import (
     ValidatedWorkAncestry,
     ValidatedWorkArtifactVerifier,
 )
 from .validated_work_rows import current_evidence, publication, refresh_observations
-
-LINEAGE_FAILURES = frozenset(
-    {
-        Failure.ANCESTOR_OF_PENDING_HEAD,
-        Failure.DIVERGENT_VALIDATED_HEADS,
-        Failure.AWAITING_LINEAGE_PREDECESSOR,
-        Failure.REMOTE_BASELINE_UNPROVEN,
-    }
-)
 
 
 @dataclass
@@ -176,17 +168,15 @@ class LineageClassifier:
         conn: sqlite3.Connection, row: sqlite3.Row, reconsider: frozenset[str]
     ) -> LineageDecision:
         evidence = current_evidence(conn, row["record_id"])
-        gate = evidence.admission
-        if row["record_id"] in reconsider or row["failure"] in LINEAGE_FAILURES:
-            return LineageDecision(
-                evidence, gate.initial_state, gate.initial_failure, gate.initial_reason
-            )
-        return LineageDecision(
-            evidence,
-            State(row["state"]),
-            Failure(row["failure"]) if row["failure"] else None,
-            row["reason"],
-        )
+        if row["record_id"] in reconsider:
+            gate = DispositionGate.admitted(evidence.admission)
+        else:
+            gate = DispositionGate(
+                State(row["state"]),
+                Failure(row["failure"]) if row["failure"] else None,
+                row["reason"],
+            ).restore(evidence.admission)
+        return LineageDecision(evidence, gate.state, gate.failure, gate.reason)
 
     def _classify_publication(
         self,

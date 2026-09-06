@@ -21,6 +21,7 @@ from issue_orchestrator.domain.validated_work_claim import (
     ClaimSecret,
     ValidatedWorkClaim,
 )
+from issue_orchestrator.domain.validated_work_gate import DispositionGate, GateSource
 from issue_orchestrator.domain.validated_work_commands import (
     DispositionInitiator,
     OperatorResolution,
@@ -35,6 +36,36 @@ from tests.unit.validated_work_support import (
     capture,
     changed_observations,
 )
+
+
+@pytest.mark.parametrize(
+    "state,failure",
+    [
+        ("failed", ValidatedWorkFailure.PUSH_FAILED),
+        (ValidatedWorkState.PUBLISHING, None),
+        (ValidatedWorkState.RECOVERED, None),
+        (ValidatedWorkState.ABANDONED, None),
+        (ValidatedWorkState.FAILED, None),
+        (ValidatedWorkState.FAILED, "push_failed"),
+    ],
+)
+def test_disposition_gate_rejects_invalid_typed_state_and_failure(state, failure):
+    with pytest.raises(ValueError):
+        DispositionGate(state, failure, "gate")
+
+
+def test_gate_source_distinguishes_failure_authority_from_lineage_restriction():
+    failure = ValidatedWorkFailure.REMOTE_BASELINE_UNPROVEN
+    durable = DispositionGate(ValidatedWorkState.FAILED, failure, "failed")
+    derived = DispositionGate(ValidatedWorkState.PARKED, failure, "waiting")
+    admission = capture(state=ValidatedWorkState.PARKED, reason="operator approval")
+    assert durable.source is GateSource.DURABLE_FAILURE
+    assert durable.restore(admission) == durable
+    assert derived.source is GateSource.LINEAGE_RESTRICTION
+    restored = derived.restore(admission)
+    assert restored.source is GateSource.CURRENT_DISPOSITION
+    assert restored.state is ValidatedWorkState.PARKED
+    assert restored.reason == "operator approval"
 
 
 def test_work_and_evidence_identity_are_separate_and_canonical():
