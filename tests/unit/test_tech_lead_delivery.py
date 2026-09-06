@@ -326,6 +326,13 @@ def test_receipt_display_and_aggregate_accept_valid_naive_and_offset_times(
         ("anchor_issue_number", -1),
         ("subject_issue_number", 1),
         ("subject_title", "not a global subject"),
+        ("subject_title", b""),
+        ("subject_title", b"subject"),
+        ("run_key", b"global:health_review"),
+        ("session_name", b"s3"),
+        ("scope_kind", b"global_health_review"),
+        ("flavor", b"health_review"),
+        ("phase", b"completed"),
         ("delivery_outcome", "invented"),
         ("findings", "broken"),
         ("proposals", "broken"),
@@ -353,6 +360,21 @@ def test_malformed_success_identity_cannot_clear_warning(tmp_path, column, value
     assert evidence.history_state is DeliveryHistoryState.INCOMPLETE
     assert evidence.last_delivered_at is None
     assert status(restarted) is TechLeadDeliveryStatus.UNKNOWN
+
+
+def test_empty_text_subject_remains_valid_delivery_after_restart(tmp_path):
+    path = tmp_path / "runs.sqlite"
+    store = SqliteTechLeadRunRecordStore(path)
+    for index, age in enumerate((8, 4, 0)):
+        store.open_run(record(index, age))
+    store.open_run(record(3, 1, TechLeadRunPhase.COMPLETED))
+    restarted = SqliteTechLeadRunRecordStore(path)
+    assert len(restarted.recent(limit=20)) == 4
+    assert all(row.subject_title == "" for row in restarted.recent(limit=20))
+    evidence = restarted.inspect_delivery_evidence()
+    assert evidence.history_state is DeliveryHistoryState.COMPLETE
+    assert evidence.last_delivered_at == NOW - timedelta(hours=1)
+    assert status(restarted) is TechLeadDeliveryStatus.OBSERVING
 
 
 @pytest.mark.parametrize("boundary", ["silence", "recent_start", "after_delivery"])

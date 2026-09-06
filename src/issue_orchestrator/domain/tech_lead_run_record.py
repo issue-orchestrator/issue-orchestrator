@@ -162,12 +162,8 @@ class TechLeadRunReceipt:
         TechLeadSessionFlavor(self.flavor)
         TechLeadRunPhase(self.phase)
         TechLeadDeliveryOutcome(self.delivery_outcome)
-        if (
-            type(self.run_id) is not str
-            or type(self.session_name) is not str
-            or not self.run_id
-            or not self.session_name
-        ):
+        self._validate_strings()
+        if not self.run_id or not self.session_name:
             raise ValueError(
                 "A tech-lead run record needs its session run identity"
                 f" (run_id={self.run_id!r}, session_name={self.session_name!r}):"
@@ -200,6 +196,18 @@ class TechLeadRunReceipt:
                 " coordination anchor belongs in anchor_issue_number"
             )
         self._validate_conclusion()
+
+    def _validate_strings(self) -> None:
+        if any(
+            type(value) is not str
+            for value in (
+                self.run_key,
+                self.run_id,
+                self.session_name,
+                self.subject_title,
+            )
+        ):
+            raise ValueError("receipt identity and subject title must be strings")
 
     def _validate_counts(self) -> None:
         if any(

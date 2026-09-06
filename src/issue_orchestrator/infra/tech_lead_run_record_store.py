@@ -449,15 +449,15 @@ def _record_from_row(row: sqlite3.Row) -> Optional[TechLeadRunRecord]:
     try:
         ended = row["ended_at"]
         return TechLeadRunRecord(
-            run_key=str(row["run_key"]),
-            scope_kind=TechLeadRunScopeKind(str(row["scope_kind"])),
-            flavor=TechLeadSessionFlavor(str(row["flavor"])),
-            phase=TechLeadRunPhase(str(row["phase"])),
+            run_key=row["run_key"],
+            scope_kind=TechLeadRunScopeKind(row["scope_kind"]),
+            flavor=TechLeadSessionFlavor(row["flavor"]),
+            phase=TechLeadRunPhase(row["phase"]),
             started_at=parse_receipt_time(row["started_at"]),
             run_id=row["run_id"],
             session_name=row["session_name"],
             subject_issue_number=row["subject_issue_number"],
-            subject_title=str(row["subject_title"]),
+            subject_title=row["subject_title"],
             anchor_issue_number=row["anchor_issue_number"],
             ended_at=None if ended == "" else parse_receipt_time(ended),
             detail=str(row["detail"]),
