@@ -827,8 +827,8 @@ class TestReviewExchangeModeResolution:
         processor = self._make_processor(config)
 
         assert (
-            processor._resolve_review_exchange_mode("agent:coder") == "via-local-loop"
-        )  # noqa: SLF001
+            processor._resolve_review_exchange_mode("agent:coder") == "via-local-loop"  # noqa: SLF001
+        )
 
 
 class TestReviewExchangeExecution:
@@ -2249,8 +2249,8 @@ class TestReviewExchangeExecution:
         )
 
         assert (
-            processor._resolve_review_exchange_mode("agent:coder") == "via-local-loop"
-        )  # noqa: SLF001
+            processor._resolve_review_exchange_mode("agent:coder") == "via-local-loop"  # noqa: SLF001
+        )
 
     def test_auto_mode_without_agent_label_returns_none(self, tmp_path):
         config = self._make_config(tmp_path)
