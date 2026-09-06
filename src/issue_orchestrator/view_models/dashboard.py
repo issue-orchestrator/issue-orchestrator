@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
@@ -9,7 +10,7 @@ import time
 from typing import Any, Callable, assert_never
 
 from ..domain.issue_key import format_issue_label, parse_external_id
-from ..domain.models import BLOCKED_HISTORY_STATUSES, DONE_HISTORY_STATUSES, SessionHistoryStatus
+from ..domain.models import BLOCKED_HISTORY_STATUSES, DONE_HISTORY_STATUSES, SessionHistoryEntry, SessionHistoryStatus
 from ..domain.session_key import TaskKind
 from ..history import latest_history_entries_by_issue
 from ..control.label_manager import LabelManager
@@ -840,11 +841,11 @@ def _history_status_belongs_in_completed_lane(
     return status in DONE_HISTORY_STATUSES and not merge_pending
 
 
-def _build_history_items(state, config) -> HistoryLaneProjection:
+def _build_history_items(state, config, *, history: Sequence[SessionHistoryEntry]) -> HistoryLaneProjection:
     history_items: list[dict[str, Any]] = []
     blocked_items: list[dict[str, Any]] = []
     completed_items: list[dict[str, Any]] = []
-    for entry in latest_history_entries_by_issue(state.session_history, limit=50):
+    for entry in latest_history_entries_by_issue(history, limit=50):
         # Completed-without-PR is not a terminal lane; let queue data drive placement.
         if entry.status == "completed" and not entry.pr_url:
             continue
@@ -1196,8 +1197,12 @@ def build_dashboard_view_model(
             if issue_number is not None
         }
         backlog_items = _build_backlog_items(state, config, lm=lm)
-        history_projection = _build_history_items(state, config)
-        history_items = history_projection.history_items
+        # Work selection has its own budget; evidence remains in inspectable history.
+        history_projection = _build_history_items(state, config, history=work.work_items(
+            state.session_history, issue_number=lambda entry: entry.issue_number,
+        ))
+        history_items = _build_history_items(state, config, history=state.session_history).history_items
+        work_history_items = history_projection.history_items
         history_blocked = history_projection.blocked_items
         pending_validation_blocked = _build_pending_validation_retry_items(state, config)
         blocked_items.extend(
@@ -1218,19 +1223,20 @@ def build_dashboard_view_model(
         history_items = _sort_by_issue_number(history_items)
 
         now_ts = datetime.now(timezone.utc).timestamp()
-        for items in (active_items, queue_items, blocked_items, history_items, backlog_items):
+        for items in (active_items, queue_items, blocked_items, history_items, work_history_items, backlog_items):
             _attach_refresh_meta(items, state, config, now_ts)
             # Single owner: every lane (incl. label-blocked / validation-retry /
             # retrospective) gets the stack view and provider badge; derived
             # lanes inherit them.
             _attach_card_projections(items, state, lm)
-        stamp_issue_item_stale_badge_visibility(history_items, mode="when_stale_and_merge_pending")
+        for items in (history_items, work_history_items):
+            stamp_issue_item_stale_badge_visibility(items, mode="when_stale_and_merge_pending")
 
         completed_items = work.work_items(history_projection.completed_items, issue_number=_issue_number_value)
         completed_items = _sort_by_issue_number(completed_items)
 
         # Awaiting merge = PRs ready for human merge; queued-rework issues stay owned by Queued.
-        awaiting_merge_items = build_awaiting_merge_items(queue_items, blocked_items, history_items, exclude_issue_numbers=queued_rework_issue_numbers(state))
+        awaiting_merge_items = build_awaiting_merge_items(queue_items, blocked_items, work_history_items, exclude_issue_numbers=queued_rework_issue_numbers(state))
         awaiting_merge_items = work.work_items(awaiting_merge_items, issue_number=_issue_number_value)
         awaiting_merge_items = _sort_by_issue_number(awaiting_merge_items)
 

@@ -588,3 +588,84 @@ process.stdout.write(expanded.getExpandedItemsFromViewModel(payload, 'queued')
             card = dom.select_one(f'[data-issue="{number}"]')
             assert card is not None
             assert reason in card.get_text()
+
+
+def render_historical_work_lane(model, lane, tmp_path):
+    import json
+    from pathlib import Path
+    from tests.process_group_run import run_in_process_group
+
+    payload = tmp_path / "history-lane.json"
+    payload.write_text(json.dumps({"model": model.to_dict(), "lane": lane}, default=str))
+    script = r"""
+const fs = require('node:fs');
+const vm = require('node:vm');
+const expanded = require('./src/issue_orchestrator/static/js/expanded_column_state.js');
+const {model, lane} = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
+const escape = value => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
+const context = {
+    escapeHtml: escape, escapeAttr: escape, cssEscape: String, document: {},
+    compactCardState: {computeCompactCardFingerprint: () => 'fingerprint'},
+    formatDashboardTimestamps: () => {},
+    localStorage: {getItem: () => null, setItem: () => {}},
+    window: {dashboardData: {queueRefreshSeconds: 0}, location: {href: 'http://example.test/'}}
+};
+vm.createContext(context);
+vm.runInContext(fs.readFileSync('./src/issue_orchestrator/static/js/dashboard/kanban_columns.js', 'utf8'), context);
+process.stdout.write(expanded.getExpandedItemsFromViewModel(model, lane)
+    .map(item => context.renderExpandedCardHtml(item, lane, false)).join(''));
+"""
+    result = run_in_process_group(["node", "-e", script, str(payload)], timeout=15,
+        cwd=Path(__file__).resolve().parents[2])
+    assert result.returncode == 0, result.stderr
+    return result.stdout
+
+
+@pytest.mark.parametrize("status,lane", [
+    ("failed", "blocked"), ("merged", "completed"), ("completed", "awaiting-merge"),
+])
+def test_evidence_cannot_consume_bounded_historical_work_slots(tmp_path, status, lane):
+    from dataclasses import replace
+    from datetime import timedelta
+    from issue_orchestrator.control.queue_cache import QueueCache
+
+    config = Config(repo="porchpin/porchpin")
+    work = Issue(number=1, title="Older real work", labels=["agent:backend"])
+    evidence = [case_file(number) for number in range(100, 150)]
+    history = [SessionHistoryEntry(issue_number=issue.number, title=issue.title,
+        agent_type="agent:backend", status=status, runtime_minutes=1,
+        completed_at=datetime(2026, 9, 6, tzinfo=timezone.utc) + timedelta(minutes=index),
+        pr_url=f"https://github.com/porchpin/porchpin/pull/{issue.number + 1000}")
+        for index, issue in enumerate([work, *evidence])]
+    state = OrchestratorState(startup_status="complete", session_history=history)
+    cache = QueueCache(config, state)
+    cache.replace_from_refresh([work, *evidence])
+    # Fresh classification changes remain authoritative after every snapshot eviction.
+    transitions = [
+        (None, {1}),
+        (replace(evidence[0], labels=["agent:backend"]), {1, 100}),
+        (evidence[0], {1}),
+        (replace(work, labels=["tech-lead-observation"]), set()),
+        (work, {1}),
+    ]
+    field = lane.replace("-", "_")
+    for observation, expected in transitions:
+        if observation is not None:
+            cache.upsert_refreshed_issue(observation)
+        cache.replace_from_cache([])
+        model = build_dashboard_view_model(OrchestratorView(state, config),
+            provider_circuit=NO_PROVIDER_CIRCUIT_STATUS, tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+            active_tab="kanban", e2e_status_provider=lambda _: {"enabled": False, "running": False})
+        assert {item["issue_number"] for item in getattr(model, field + "_items")} == expected
+        assert getattr(model, field + "_count") == len(expected)
+        assert model.scope_summary["in_scope_total"] == len(expected)
+        assert model.queue_total == 0
+        assert state.session_history == history
+        if status != "failed":
+            # Inspection retains its own latest-50 window, including all evidence.
+            assert {item["issue_number"] for item in model.history_items} == set(range(100, 150))
+        compact = get_templates().get_template("dashboard.html").render(**model.template_context())
+        for html in (compact, render_historical_work_lane(model, lane, tmp_path)):
+            dom = BeautifulSoup(html, "html.parser")
+            assert {int(card["data-issue"]) for card in dom.select('[data-issue]')} == expected
