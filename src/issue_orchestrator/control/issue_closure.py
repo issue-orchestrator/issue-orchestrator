@@ -6,20 +6,21 @@ import logging
 
 from .actions import ActionResult, CloseIssueAction, FoldCaseFileIssueAction
 from .claim_gate import ClaimLostError
+from ..ports.comment_receipt import IssueCommentReceipt
 
 logger = logging.getLogger(__name__)
 
 
 def apply_issue_closure(
     action: CloseIssueAction, *,
-    comment_marker_present: Callable[[int, str], bool],
+    find_comment_receipt: Callable[[int, str], IssueCommentReceipt | None],
     post_comment: Callable[[int, str], str],
     set_issue_state: Callable[[int, str], None],
     before_write: Callable[[], None],
 ) -> ActionResult:
     """An evidence fold owes a recorded explanation before it may close.
 
-    An authoritative paginated marker lookup recovers a successful comment whose response was lost,
+    A fresh exact-body, credential-owned receipt recovers a successful comment whose response was lost,
     and retries after a failed close. Ordinary close actions retain their
     existing best-effort post-close comment contract.
     """
@@ -28,9 +29,12 @@ def apply_issue_closure(
         if required:
             digest = hashlib.sha256(action.comment.encode("utf-8")).hexdigest()
             marker = f"<!-- tech-lead-case-file-fold:{digest} -->"
-            if not comment_marker_present(action.issue_number, marker):
+            body = f"{action.comment}\n\n{marker}"
+            if find_comment_receipt(action.issue_number, body) is None:
                 before_write()
-                post_comment(action.issue_number, f"{action.comment}\n\n{marker}")
+                post_comment(action.issue_number, body)
+                if find_comment_receipt(action.issue_number, body) is None:
+                    raise RuntimeError("Fold explanation publication could not be verified")
         before_write()
         set_issue_state(action.issue_number, "closed")
         if action.comment and not required:

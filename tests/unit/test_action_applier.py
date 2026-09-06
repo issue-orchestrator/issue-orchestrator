@@ -3579,9 +3579,13 @@ def test_case_file_fold_records_explanation_before_close_and_recovers_on_retry(
             failed = True
             raise RuntimeError("interrupted " + phase)
 
-    def marker_present(number, marker):
+    def find_receipt(number, *, body):
+        from issue_orchestrator.ports.comment_receipt import IssueCommentReceipt
+        import hashlib
         fail_once("comment_read")
-        return any(marker in comment["body"] for comment in comments)
+        if any(comment["body"] == body for comment in comments):
+            return IssueCommentReceipt("c1", "comment-url", "user:1", hashlib.sha256(body.encode()).hexdigest())
+        return None
 
     def comment(number, body):
         fail_once("comment_before")
@@ -3596,7 +3600,7 @@ def test_case_file_fold_records_explanation_before_close_and_recovers_on_retry(
         fail_once("close")
         effects.append("closed")
 
-    mock_repository_host.issue_comment_marker_present.side_effect = marker_present
+    mock_repository_host.find_issue_comment_receipt.side_effect = find_receipt
     mock_repository_host.add_comment.side_effect = comment
     mock_repository_host.update_issue_state.side_effect = close
     first = applier.apply(action)
@@ -3633,7 +3637,9 @@ def test_close_claim_loss_interrupts_remaining_batch(
     action_type = FoldCaseFileIssueAction if fold else CloseIssueAction
     first = action_type(issue_number=6966, comment="Explanation", expected=build_expected_for_mutation())
     second = CloseIssueAction(issue_number=6967)
-    mock_repository_host.issue_comment_marker_present.return_value = False
+    from issue_orchestrator.ports.comment_receipt import IssueCommentReceipt
+    receipt = IssueCommentReceipt("c1", "comment-url", "github-user:1", "a" * 64)
+    mock_repository_host.find_issue_comment_receipt.side_effect = [None, receipt]
 
     with pytest.raises(ClaimLostError):
         applier.apply_all([first, second])
@@ -3649,9 +3655,14 @@ def test_fold_retry_finds_explanation_beyond_cached_first_comment_page(applier, 
     action = FoldCaseFileIssueAction(issue_number=6966, comment="Recorded evidence", expected=build_expected_for_mutation())
     comments = [{"body": "Older discussion"} for _ in range(150)]
     mock_repository_host.get_issue_comments.return_value = comments[:100]
-    mock_repository_host.issue_comment_marker_present.side_effect = (
-        lambda number, marker: any(marker in comment["body"] for comment in comments)
-    )
+    def find_receipt(number, *, body):
+        from issue_orchestrator.ports.comment_receipt import IssueCommentReceipt
+        import hashlib
+        if any(comment["body"] == body for comment in comments):
+            return IssueCommentReceipt("c151", "comment-url", "user:1", hashlib.sha256(body.encode()).hexdigest())
+        return None
+
+    mock_repository_host.find_issue_comment_receipt.side_effect = find_receipt
 
     def publish(number, body):
         comments.append({"body": body})
@@ -3663,3 +3674,18 @@ def test_fold_retry_finds_explanation_beyond_cached_first_comment_page(applier, 
     mock_repository_host.add_comment.assert_called_once()
     mock_repository_host.get_issue_comments.assert_not_called()
     mock_repository_host.update_issue_state.assert_called_once_with(6966, "closed")
+
+
+def test_fold_does_not_close_until_new_explanation_receipt_is_verified(applier, mock_repository_host):
+    from issue_orchestrator.control.actions import FoldCaseFileIssueAction
+    from issue_orchestrator.control.reconciliation import build_expected_for_mutation
+
+    action = FoldCaseFileIssueAction(issue_number=6966, comment="Recorded evidence", expected=build_expected_for_mutation())
+    mock_repository_host.find_issue_comment_receipt.return_value = None
+    mock_repository_host.issue_comment_marker_present.return_value = True
+    result = applier.apply(action)
+    assert not result.success
+    assert "could not be verified" in result.error
+    mock_repository_host.add_comment.assert_called_once()
+    mock_repository_host.update_issue_state.assert_not_called()
+    mock_repository_host.issue_comment_marker_present.assert_not_called()
