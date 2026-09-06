@@ -9,6 +9,7 @@ This module implements the WorktreePolicy protocol with a
 import logging
 import shutil
 from pathlib import Path
+from ...domain.escrow_retention_boundary import require_disposable_path
 
 from ...ports.worktree_policy import (
     ValidationResult,
@@ -137,6 +138,7 @@ class ValidateOrDeletePolicy:
     ) -> bool:
         """Delete a worktree completely."""
         worktree_path = Path(worktree_path)
+        require_disposable_path(worktree_path)
         logger.info("[POLICY] Deleting worktree for fresh start: %s", worktree_path)
 
         try:

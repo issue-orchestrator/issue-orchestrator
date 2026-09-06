@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ...ports.command_runner import CommandRunner, CommandResult, OutputNewlines
+from ...domain.escrow_retention_boundary import is_escrow_path, require_disposable_path
 from ...ports.git import Git, GitError, GitResult
 
 
@@ -92,6 +93,10 @@ class GitCLI(Git):
         check: bool = True,
         newlines: OutputNewlines = OutputNewlines.TRANSLATED,
     ) -> GitResult:
+        if argv[:2] == ["worktree", "prune"]:
+            registered = self.run(repo, ["worktree", "list", "--porcelain", "-z"])
+            if any(is_escrow_path(Path(item[9:])) for item in registered.stdout.split("\0") if item.startswith("worktree ")):
+                return GitResult(["git", "-C", str(repo), *argv], 0, "Escrow worktree registration retained\n", "")
         cmd = ["git", "-C", str(repo)] + argv
         result = self.runner.run(
             cmd,
@@ -154,6 +159,7 @@ class GitCLI(Git):
         self.run(repo, ["worktree", "add", str(path), branch])
 
     def worktree_remove(self, repo: Path, path: Path, force: bool = True, prune: bool = True) -> None:
+        require_disposable_path(path)
         argv = ["worktree", "remove"]
         if force:
             argv.append("--force")

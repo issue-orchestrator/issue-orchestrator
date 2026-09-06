@@ -75,12 +75,12 @@ def test_typed_ports_have_no_caller_death_timer_or_transaction_parameter(tmp_pat
         )
 
 
-@pytest.mark.parametrize("missing", ["ancestry", "artifacts", "liveness"])
+@pytest.mark.parametrize("missing", ["ancestry", "artifacts", "liveness", "retention"])
 def test_constructor_requires_every_verification_capability_before_creating_db(
     tmp_path, missing
 ):
     rig = Rig(tmp_path / "work.sqlite")
-    args = {"ancestry": rig.graph, "artifacts": rig.artifacts, "liveness": rig.liveness}
+    args = {"ancestry": rig.graph, "artifacts": rig.artifacts, "retention": rig.artifacts, "liveness": rig.liveness}
     del args[missing]
     with pytest.raises(TypeError):
         SqliteValidatedWorkStore(rig.path, **args)
@@ -97,7 +97,7 @@ def test_boolean_ancestry_fact_is_not_a_typed_proof(tmp_path):
 
     rig = Rig(tmp_path / "work.sqlite")
     store = SqliteValidatedWorkStore(
-        rig.path, ancestry=BadAncestry(), artifacts=rig.artifacts, liveness=rig.liveness
+        rig.path, ancestry=BadAncestry(), artifacts=rig.artifacts, retention=rig.artifacts, liveness=rig.liveness
     )
     with pytest.raises(TypeError, match="typed relation"):
         store.admit(capture())
@@ -216,7 +216,7 @@ def test_truthy_artifact_fact_cannot_begin_publication(tmp_path):
     store = SqliteValidatedWorkStore(
         rig.path,
         ancestry=rig.graph,
-        artifacts=UnverifiedArtifacts(),
+        artifacts=UnverifiedArtifacts(), retention=rig.artifacts,
         liveness=rig.liveness,
     )
     a = capture()

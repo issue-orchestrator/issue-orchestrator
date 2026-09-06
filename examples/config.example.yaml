@@ -554,3 +554,7 @@ claims:
 
 state:
   # file: ".issue-orchestrator/state.json"
+
+# Retained recovery evidence is stored outside disposable worktrees.
+validated_work:
+  escrow_retention_days: 30  # Resolved work only; unresolved evidence is always retained.

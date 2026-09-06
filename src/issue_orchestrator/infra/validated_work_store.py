@@ -46,6 +46,7 @@ from ..ports.validated_work_verification import (
     ValidatedWorkAncestry,
     ValidatedWorkArtifactVerifier,
 )
+from ..ports.validated_work_escrow import EvidenceReleaser
 from .validated_work_admission import EvidenceAdmissionWriter
 from .validated_work_attempts import PublishAttemptWriter
 from .validated_work_claims import ClaimAuthority, owner_identity
@@ -71,11 +72,13 @@ class SqliteValidatedWorkStore:
         ancestry: ValidatedWorkAncestry,
         artifacts: ValidatedWorkArtifactVerifier,
         liveness: OrchestratorLivenessPort,
+        retention: EvidenceReleaser,
     ) -> None:
-        if ancestry is None or artifacts is None or liveness is None:
+        if ancestry is None or artifacts is None or liveness is None or retention is None:
             raise ValueError(
-                "ancestry, artifact verification and liveness are required capabilities"
+                "ancestry, artifact verification, liveness and retention are required capabilities"
             )
+        self._retention = retention
         self._db = DispositionDatabase(db_path)
         self._lineage = LineageClassifier(ancestry, artifacts)
         self._claims = ClaimAuthority(liveness)
@@ -175,6 +178,25 @@ class SqliteValidatedWorkStore:
                     (released_before,),
                 )
             )
+
+    def release_evidence_for_retention(
+        self, evidence_id: str, *, released_before: str, released_at: str,
+    ) -> bool:
+        # The write transaction is the admission/cleanup serialization boundary.
+        # An unresolved or still-owned record can never reach the filesystem call.
+        with self._db.transaction(write=True) as conn:
+            row = conn.execute(
+                "SELECT e.* FROM validated_work_evidence e JOIN validated_work_records r USING(record_id) "
+                "WHERE e.evidence_id=? AND r.state IN ('recovered','abandoned') "
+                "AND r.terminal_at!='' AND r.terminal_at<? AND e.released_at='' "
+                "AND r.owner_claim_hash='' AND r.stop_reservation_id=''",
+                (evidence_id, released_before),
+            ).fetchone()
+            if row is None:
+                return False
+            self._retention.release(evidence_row(row))
+            conn.execute("UPDATE validated_work_evidence SET released_at=? WHERE evidence_id=?", (released_at, evidence_id))
+            return True
 
     def lineage_publication(self, lineage_key: str) -> LineagePublication | None:
         with self._db.transaction() as conn:

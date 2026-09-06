@@ -2,23 +2,14 @@
 
 from __future__ import annotations
 
-import json
 import sqlite3
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
 from pathlib import Path
 
-from ..domain.models import RequestedAction
-from ..domain.review_exchange_summary import ReviewExchangeTerminalState
-from ..domain.session_run import SessionRunIdentity
 from ..domain.validated_work import (
-    AdmittedArtifact,
-    ArtifactSlot,
     LineageRole,
-    ReviewDisposition,
-    ValidatedWorkEvidence,
     ValidatedWorkFailure,
-    ValidatedWorkIdentity,
     ValidatedWorkKey,
     ValidatedWorkObservations,
     ValidatedWorkState,
@@ -39,6 +30,7 @@ from ..domain.validated_work_store import (
     PublishValidatedHeadStatus,
 )
 from .sqlite_connection import open_sqlite
+from .validated_work_codec import decode_evidence
 from .validated_work_schema import SCHEMA
 
 
@@ -74,37 +66,7 @@ def record_row(conn: sqlite3.Connection, record_id: str) -> sqlite3.Row:
 
 
 def evidence_row(row: sqlite3.Row) -> EvidenceRow:
-    identity = json.loads(row["identity"])
-    for name in (
-        "completion_artifact",
-        "validation_artifact",
-        "exchange_summary_artifact",
-    ):
-        raw = identity[name]
-        if raw is not None:
-            identity[name] = AdmittedArtifact(
-                ArtifactSlot(raw["slot"]), raw["sha256"], raw["byte_size"]
-            )
-    identity["key"] = ValidatedWorkKey(**identity["key"])
-    identity["run_identity"] = SessionRunIdentity(**identity["run_identity"])
-    identity["requested_actions"] = tuple(
-        RequestedAction(v) for v in identity["requested_actions"]
-    )
-    identity["review_disposition"] = ReviewDisposition(identity["review_disposition"])
-    if identity["exchange_terminal"] is not None:
-        identity["exchange_terminal"] = ReviewExchangeTerminalState(
-            **identity["exchange_terminal"]
-        )
-    observations = json.loads(row["observations"])
-    observations["observed_blocking_labels"] = tuple(
-        observations["observed_blocking_labels"]
-    )
-    observations["admitted_from_paths"] = {
-        ArtifactSlot(k): v for k, v in observations["admitted_from_paths"].items()
-    }
-    evidence = ValidatedWorkEvidence(
-        ValidatedWorkIdentity(**identity), ValidatedWorkObservations(**observations)
-    )
+    evidence = decode_evidence(row["identity"], row["observations"])
     if (
         evidence.record_id != row["record_id"]
         or evidence.evidence_id != row["evidence_id"]

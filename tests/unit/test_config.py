@@ -4961,3 +4961,36 @@ agents:
 
         # Hooks section should not be present when using defaults
         assert "hooks" not in result
+
+
+class TestValidatedWorkRetention:
+    @pytest.mark.parametrize("days", [1, 30, 90])
+    def test_parse_and_round_trip(self, tmp_path, days):
+        path = tmp_path / ".issue-orchestrator/config/modes/default/default.yaml"
+        path.parent.mkdir(parents=True)
+        path.write_text(f"repo:\n  name: owner/repo\nvalidated_work:\n  escrow_retention_days: {days}\n")
+        config = Config.load(path)
+        assert config.validated_work.escrow_retention_days == days
+        assert config.to_event_dict()["validated_work"] == {"escrow_retention_days": days}
+        serialized = config.to_dict()
+        assert serialized.get("validated_work", {}) == ({} if days == 30 else {"escrow_retention_days": days})
+        path.write_text(yaml.safe_dump(serialized))
+        assert Config.load(path).validated_work.escrow_retention_days == days
+
+    @pytest.mark.parametrize("value", ["0", "-1", "true", "false", "1.5", "'30'", "null"])
+    def test_rejects_invalid_retention(self, tmp_path, value):
+        path = tmp_path / ".issue-orchestrator/config/modes/default/default.yaml"
+        path.parent.mkdir(parents=True)
+        path.write_text(f"repo:\n  name: owner/repo\nvalidated_work:\n  escrow_retention_days: {value}\n")
+        with pytest.raises(ValueError, match="validated_work.escrow_retention_days"):
+            Config.load(path)
+
+    def test_defaults_and_unknown_keys(self, tmp_path):
+        assert Config().validated_work.escrow_retention_days == 30
+        assert "validated_work" not in Config().to_dict()
+        path = tmp_path / ".issue-orchestrator/config/modes/default/default.yaml"
+        path.parent.mkdir(parents=True)
+        path.write_text("repo:\n  name: owner/repo\nvalidated_work:\n  escrow_retenton_days: 1\n")
+        config = Config.load(path)
+        assert any("validated_work.escrow_retenton_days" in field
+                   for field, _ in config.validate_unknown_fields())

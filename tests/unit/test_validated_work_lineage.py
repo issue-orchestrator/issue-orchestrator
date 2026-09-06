@@ -385,7 +385,7 @@ def test_late_unreachable_comparison_cannot_park_a_readable_peer(tmp_path):
     store = SqliteValidatedWorkStore(
         rig.path,
         ancestry=PairUnreachable(),
-        artifacts=rig.artifacts,
+        artifacts=rig.artifacts, retention=rig.artifacts,
         liveness=rig.liveness,
     )
     a = capture(V)

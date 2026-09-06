@@ -1,5 +1,7 @@
 """Config section parsing and application helpers."""
 
+from .config_validated_work import parse_validated_work_config
+
 import logging
 from collections.abc import Callable
 from pathlib import Path
@@ -62,7 +64,7 @@ _TOP_LEVEL_SECTION_KEYS = (
     "tech_lead", "scheduling", "e2e", "goal_pilot", "milestones", "state", "claims", "hooks",
     "ai_systems", "retry",
     "sqlite_backup",
-    "merge_queue",
+    "merge_queue", "validated_work",
 )
 
 # Derive ALLOWED_TOP_LEVEL_FIELDS from _TOP_LEVEL_SECTION_KEYS — single source of truth.
@@ -324,6 +326,7 @@ _OPTIONAL_SECTION_PARSERS: dict[str, Callable[[dict], object]] = {
     "sqlite_backup": parse_sqlite_backup_config,
     "goal_pilot": parse_goal_pilot_config,
     "merge_queue": parse_merge_queue_config,
+    "validated_work": parse_validated_work_config,
     "claims": parse_claims_config,
     "hooks": parse_hooks_config,
     "provider_resilience": parse_provider_resilience_config,

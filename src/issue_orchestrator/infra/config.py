@@ -27,6 +27,7 @@ from .config_models import (
     InterruptedSessionRetryConfig as InterruptedSessionRetryConfig,
     IsolationConfig,
     MergeQueueConfig,
+    ValidatedWorkConfig,
     MilestoneStrategyConfig as MilestoneStrategyConfig,
     ProviderCircuitBreakerConfig as ProviderCircuitBreakerConfig,
     ProviderResilienceConfig,
@@ -372,6 +373,7 @@ class Config(ConfigLaunchIdentity, RuntimeConfigReferenceOwner, TechLeadActivati
     goal_pilot: GoalPilotConfig = field(default_factory=GoalPilotConfig)
     # Optional GitHub Merge Queue integration (disabled by default)
     merge_queue: MergeQueueConfig = field(default_factory=MergeQueueConfig)
+    validated_work: ValidatedWorkConfig = field(default_factory=ValidatedWorkConfig)
     # SQLite backup configuration
     sqlite_backup: SqliteBackupConfig = field(default_factory=SqliteBackupConfig)
     # Timeline retention configuration
@@ -747,6 +749,7 @@ class Config(ConfigLaunchIdentity, RuntimeConfigReferenceOwner, TechLeadActivati
                         "dangerous_allow_failure": self.hooks.ai_gate.dangerous_allow_failure,
                     },
             },
+            "validated_work": {"escrow_retention_days": self.validated_work.escrow_retention_days},
             "merge_queue": {
                 "enabled": self.merge_queue.enabled,
                 "provider": self.merge_queue.provider,
@@ -780,6 +783,8 @@ class Config(ConfigLaunchIdentity, RuntimeConfigReferenceOwner, TechLeadActivati
             observability_section,
             worktrees_section,
         )
+
+        from .config_validated_work import validated_work_section
 
         # Build agents section
         agents_dict = {}
@@ -1025,6 +1030,9 @@ class Config(ConfigLaunchIdentity, RuntimeConfigReferenceOwner, TechLeadActivati
         # Merge queue section
         if merge_queue_dict := merge_queue_section(self):
             result["merge_queue"] = merge_queue_dict
+
+        if retained_work := validated_work_section(self):
+            result["validated_work"] = retained_work
 
         # Worktrees section
         if worktrees_dict := worktrees_section(self):
