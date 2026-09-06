@@ -201,3 +201,99 @@ def test_injected_policy_and_offset_clock_are_shared_by_projection(store):
     )
     assert view.delivery.status is TechLeadDeliveryStatus.STALLED
     assert "2 hours" in view.delivery.message
+
+
+@pytest.mark.parametrize("bad_end", ["broken", "12:00:00", "2026-09-06", " ", "now"])
+def test_malformed_running_ending_is_not_an_absent_ending(tmp_path, bad_end):
+    path = tmp_path / "runs.sqlite"
+    store = SqliteTechLeadRunRecordStore(path)
+    for index, age in enumerate((8, 4, 0)):
+        store.open_run(record(index, age, TechLeadRunPhase.RUNNING))
+    assert status(store) is TechLeadDeliveryStatus.STALLED
+    with open_sqlite(path) as connection:
+        connection.execute(
+            "UPDATE tech_lead_run_records SET ended_at = ? WHERE run_id = 'r0'",
+            (bad_end,),
+        )
+    # The display rejects this receipt; aggregation must not treat its invalid
+    # ending as the empty ending on a legitimate still-running receipt.
+    assert {row.run_id for row in store.recent(limit=20)} == {"r1", "r2"}
+    restarted = SqliteTechLeadRunRecordStore(path)
+    evidence = restarted.inspect_delivery_evidence()
+    assert evidence.history_state is DeliveryHistoryState.INCOMPLETE
+    assert status(restarted) is TechLeadDeliveryStatus.UNKNOWN
+
+
+@pytest.mark.parametrize("column", ["started_at", "ended_at"])
+@pytest.mark.parametrize(
+    "bad_time",
+    [
+        "12:00:00",
+        "2026-09-06",
+        "2461290.0",
+        "now",
+        "2026-02-30T12:00:00",
+        "2026-09-06T10:00:00+00:60",
+        "2026-09-06T10:00:00+00:00:60",
+    ],
+)
+def test_non_receipt_timestamp_cannot_reset_delivery_silence(
+    tmp_path, column, bad_time
+):
+    path = tmp_path / "runs.sqlite"
+    store = SqliteTechLeadRunRecordStore(path)
+    for index, age in enumerate((8, 4, 0)):
+        store.open_run(record(index, age))
+    store.open_run(record(3, 1, TechLeadRunPhase.COMPLETED))
+    assert status(store) is TechLeadDeliveryStatus.OBSERVING
+    with open_sqlite(path) as connection:
+        connection.execute(
+            f"UPDATE tech_lead_run_records SET {column} = ? WHERE run_id = 'r3'",
+            (bad_time,),
+        )
+    assert "r3" not in {row.run_id for row in store.recent(limit=20)}
+    evidence = store.inspect_delivery_evidence()
+    assert evidence.history_state is DeliveryHistoryState.INCOMPLETE
+    assert evidence.last_delivered_at is None
+    assert status(store) is TechLeadDeliveryStatus.UNKNOWN
+
+
+@pytest.mark.parametrize(
+    "start,end,expected",
+    [
+        ("2026-09-06T10:00:00", "2026-09-06T11:00:00", NOW - timedelta(hours=1)),
+        ("2026-09-06 10:00:00", "2026-09-06 11:00:00", NOW - timedelta(hours=1)),
+        (
+            "2026-09-06T10:00:00.123456",
+            "2026-09-06T11:00:00.500000",
+            NOW - timedelta(hours=1) + timedelta(milliseconds=500),
+        ),
+        (
+            "2026-09-06T12:00:00+02:00",
+            "2026-09-06T07:00:00-04:00",
+            NOW - timedelta(hours=1),
+        ),
+        ("2026-09-06T10:00:00Z", "2026-09-06T11:00:00+00:00", NOW - timedelta(hours=1)),
+    ],
+)
+def test_receipt_display_and_aggregate_accept_valid_naive_and_offset_times(
+    tmp_path, start, end, expected
+):
+    path = tmp_path / "runs.sqlite"
+    store = SqliteTechLeadRunRecordStore(path)
+    store.open_run(record(0, 2, TechLeadRunPhase.COMPLETED))
+    store.open_run(record(1, 0, TechLeadRunPhase.RUNNING))  # empty ending is valid
+    with open_sqlite(path) as connection:
+        connection.execute(
+            "UPDATE tech_lead_run_records SET started_at = ?, ended_at = ? WHERE run_id = 'r0'",
+            (start, end),
+        )
+    by_id = {row.run_id: row for row in store.recent(limit=20)}
+    assert by_id["r0"].started_at == datetime.fromisoformat(start)
+    assert by_id["r0"].ended_at == datetime.fromisoformat(end)
+    assert by_id["r1"].ended_at is None
+    evidence = store.inspect_delivery_evidence()
+    assert evidence.history_state is DeliveryHistoryState.COMPLETE
+    assert evidence.last_delivered_at == expected
+    assert evidence.runs_without_delivery == 1
+    assert status(store) is TechLeadDeliveryStatus.OBSERVING

@@ -16,6 +16,7 @@ history is a lost receipt, never a reason to fail the run that earned it.
 from __future__ import annotations
 
 import logging
+import re
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -27,6 +28,7 @@ from ..domain.tech_lead_delivery import (
     DELIVERED_TECH_LEAD_PHASES,
     DeliveryHistoryState,
     TechLeadDeliveryEvidence,
+    delivery_time,
 )
 from ..domain.tech_lead_run import TechLeadRunScopeKind
 from ..domain.tech_lead_run_artifacts import TechLeadRunArtifacts, kinds_from_values
@@ -73,11 +75,16 @@ _ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
 )
 
 
-# julianday compares offsets chronologically, unlike lexical ISO ordering.
-# Only scalar aggregates leave SQLite, even when years of receipts are retained.
+# Validate through the same receipt parser as the display before asking SQLite
+# to compare timestamps. julianday alone accepts time-only/relative/numeric input
+# and normalizes some invalid dates. Keep the raw ending to distinguish an empty
+# optional value from invalid input that parsing maps to NULL. Only scalar
+# aggregates leave SQLite, even when years of receipts are retained.
 DELIVERY_EVIDENCE_SQL = """
 WITH receipts AS (
-    SELECT phase, julianday(started_at) AS start, julianday(ended_at) AS end
+    SELECT phase, ended_at AS raw_end,
+        julianday(tech_lead_receipt_timestamp(started_at)) AS start,
+        julianday(tech_lead_receipt_timestamp(ended_at)) AS end
     FROM tech_lead_run_records
 ), delivery AS (
     SELECT MAX(end) AS last_end FROM receipts WHERE phase IN (?, ?)
@@ -87,6 +94,7 @@ WITH receipts AS (
 )
 SELECT
     (SELECT COUNT(*) FROM receipts WHERE start IS NULL
+        OR (raw_end IS NOT '' AND end IS NULL)
         OR (phase = 'running' AND end IS NOT NULL)
         OR phase NOT IN ('running', 'completed', 'needs_human', 'failed', 'withdrawn')
         OR (phase != 'running' AND (end IS NULL OR end < start))) AS invalid,
@@ -96,6 +104,32 @@ SELECT
     COUNT(*) AS runs
 FROM launches
 """
+
+
+# The persisted shape is datetime.isoformat(): a full date AND time, optionally
+# with fractional seconds and a UTC offset. Also accept the equivalent Z and
+# space separator understood by the prior display reader. fromisoformat validates the
+# calendar/offset values after this guard excludes its date-only shorthand.
+_RECEIPT_TIMESTAMP = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}:[0-9]{2}"
+    r"(?:\.[0-9]{1,6})?(?:Z|[+-][0-9]{2}:[0-5][0-9]"
+    r"(?::[0-5][0-9](?:\.[0-9]{1,6})?)?)?"
+)
+
+
+def _parse_receipt_time(value: object) -> datetime:
+    """Decode a present receipt timestamp; absence is the caller's decision."""
+    if not isinstance(value, str) or _RECEIPT_TIMESTAMP.fullmatch(value) is None:
+        raise ValueError("Receipt timestamps require a full ISO date and time")
+    return datetime.fromisoformat(value)
+
+
+def _sqlite_receipt_time(value: object) -> str | None:
+    """Scalar SQL adapter for the shared parser, with no retained row history."""
+    try:
+        return delivery_time(_parse_receipt_time(value)).isoformat()
+    except (ValueError, OverflowError):
+        return None
 
 
 def _evidence_time(value: str | None) -> datetime | None:
@@ -322,6 +356,12 @@ class SqliteTechLeadRunRecordStore:
         conn = getattr(self._local, "conn", None)
         if conn is None:
             conn = open_sqlite(self._db_path, row_factory=sqlite3.Row)
+            conn.create_function(
+                "tech_lead_receipt_timestamp",
+                1,
+                _sqlite_receipt_time,
+                deterministic=True,
+            )
             self._local.conn = conn
         return conn
 
@@ -377,19 +417,19 @@ def _record_from_row(row: sqlite3.Row) -> Optional[TechLeadRunRecord]:
     cost of an unreadable row is one missing history entry.
     """
     try:
-        ended = str(row["ended_at"])
+        ended = row["ended_at"]
         return TechLeadRunRecord(
             run_key=str(row["run_key"]),
             scope_kind=TechLeadRunScopeKind(str(row["scope_kind"])),
             flavor=TechLeadSessionFlavor(str(row["flavor"])),
             phase=TechLeadRunPhase(str(row["phase"])),
-            started_at=datetime.fromisoformat(str(row["started_at"])),
+            started_at=_parse_receipt_time(row["started_at"]),
             run_id=str(row["run_id"]),
             session_name=str(row["session_name"]),
             subject_issue_number=int(row["subject_issue_number"]),
             subject_title=str(row["subject_title"]),
             anchor_issue_number=int(row["anchor_issue_number"]),
-            ended_at=datetime.fromisoformat(ended) if ended else None,
+            ended_at=None if ended == "" else _parse_receipt_time(ended),
             detail=str(row["detail"]),
             findings=int(row["findings"]),
             proposals=int(row["proposals"]),
