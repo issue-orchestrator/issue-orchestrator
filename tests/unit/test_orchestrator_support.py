@@ -207,6 +207,13 @@ def make_session(issue: Issue, task: TaskKind = TaskKind.CODE, tmp_path: Path = 
     )
 
 
+
+def refresh_batch(issues):
+    from issue_orchestrator.control.issue_refresh_batch import IssueRefreshBatch
+
+    return IssueRefreshBatch(tuple(issues), tuple(issues), None)
+
+
 class TestQueueFetchPlanner:
     """Tests for queue fetch-layer planner behavior."""
 
@@ -231,7 +238,7 @@ class TestQueueFetchPlanner:
         scheduler = Mock()
         scheduler.evaluate_issues.return_value = []
         github_workflow = Mock()
-        github_workflow.fetch_all_issues.return_value = [make_issue(2, labels=["agent:web"])]
+        github_workflow.fetch_all_issues.return_value = refresh_batch([make_issue(2, labels=["agent:web"])])
 
         _fetch_and_update_queue(
             config=config,
@@ -262,9 +269,9 @@ class TestQueueFetchPlanner:
         scheduler = Mock()
         scheduler.evaluate_issues.return_value = []
         github_workflow = Mock()
-        github_workflow.fetch_all_issues.return_value = [
+        github_workflow.fetch_all_issues.return_value = refresh_batch([
             make_issue(1, labels=["agent:web"])
-        ]
+        ])
         corpus_sync = Mock()
 
         _fetch_and_update_queue(
@@ -294,7 +301,7 @@ class TestQueueFetchPlanner:
         scheduler.evaluate_issues.return_value = []
         github_workflow = Mock()
         github_workflow.refresh_issues.return_value = [make_issue(1, title="Updated 1", labels=["agent:web"])]
-        github_workflow.fetch_discovery_issues.return_value = [make_issue(3, labels=["agent:web"])]
+        github_workflow.fetch_discovery_issues.return_value = refresh_batch([make_issue(3, labels=["agent:web"])])
 
         _fetch_and_update_queue(
             config=config,
@@ -329,7 +336,7 @@ class TestQueueFetchPlanner:
         scheduler.evaluate_issues.return_value = []
         github_workflow = Mock()
         github_workflow.refresh_issues.return_value = [make_issue(1, labels=["agent:web"])]
-        github_workflow.fetch_discovery_issues.return_value = []
+        github_workflow.fetch_discovery_issues.return_value = refresh_batch([])
 
         _fetch_and_update_queue(
             config=config,
@@ -363,7 +370,7 @@ class TestQueueFetchPlanner:
         scheduler.evaluate_issues.return_value = []
         github_workflow = Mock()
         github_workflow.refresh_issues.return_value = [make_issue(1, labels=["agent:web"])]
-        github_workflow.fetch_discovery_issues.return_value = []
+        github_workflow.fetch_discovery_issues.return_value = refresh_batch([])
 
         _fetch_and_update_queue(
             config=config,
@@ -398,7 +405,7 @@ class TestQueueFetchPlanner:
         scheduler.evaluate_issues.return_value = []
         github_workflow = Mock()
         github_workflow.refresh_issues.return_value = [make_issue(1, labels=["agent:web"])]
-        github_workflow.fetch_discovery_issues.return_value = []
+        github_workflow.fetch_discovery_issues.return_value = refresh_batch([])
 
         _fetch_and_update_queue(
             config=config,
@@ -428,7 +435,7 @@ class TestQueueFetchPlanner:
         scheduler.evaluate_issues.return_value = []
         github_workflow = Mock()
         github_workflow.refresh_issues.return_value = [make_issue(1, labels=["agent:web"])]
-        github_workflow.fetch_discovery_issues.return_value = []
+        github_workflow.fetch_discovery_issues.return_value = refresh_batch([])
 
         _fetch_and_update_queue(
             config=config,
@@ -463,7 +470,7 @@ class TestQueueFetchPlanner:
         scheduler.evaluate_issues.return_value = []
         github_workflow = Mock()
         github_workflow.refresh_issues.return_value = [make_issue(1, labels=["agent:web"])]
-        github_workflow.fetch_discovery_issues.return_value = []
+        github_workflow.fetch_discovery_issues.return_value = refresh_batch([])
 
         _fetch_and_update_queue(
             config=config,
@@ -578,7 +585,7 @@ class TestQueueFetchPlanner:
         scheduler.evaluate_issues.return_value = []
         github_workflow = Mock()
         # The issue-list fetch itself succeeds...
-        github_workflow.fetch_all_issues.return_value = [make_issue(1, labels=["agent:web"])]
+        github_workflow.fetch_all_issues.return_value = refresh_batch([make_issue(1, labels=["agent:web"])])
         # ...but the downstream PR scan hits a repository-host 404.
         github_workflow.scan_pending_pr_work.side_effect = GitHubHttpError(
             "GitHub GET /repos/owner/repo/pulls failed: 404", status_code=404
@@ -710,7 +717,7 @@ class TestQueueFetchPlanner:
         scheduler.evaluate_issues.return_value = []
         github_workflow = Mock()
         github_workflow.refresh_issues.return_value = list(prior_issues[1:11])
-        github_workflow.fetch_discovery_issues.return_value = []
+        github_workflow.fetch_discovery_issues.return_value = refresh_batch([])
         last_sync = time.time()
 
         next_sync, refresh_requested = run_planning_cycle(
@@ -844,9 +851,9 @@ class TestQueueFetchPlanner:
         scheduler = Mock()
         scheduler.evaluate_issues.return_value = []
         github_workflow = Mock()
-        github_workflow.fetch_all_issues.return_value = [
+        github_workflow.fetch_all_issues.return_value = refresh_batch([
             make_issue(1, labels=["agent:web"])
-        ]
+        ])
         queue_cache_store = Mock()
 
         _fetch_and_update_queue(
@@ -885,7 +892,7 @@ class TestQueueFetchPlanner:
         scheduler.evaluate_issues.return_value = []
         github_workflow = Mock()
         github_workflow.refresh_issues.return_value = [make_issue(1, labels=["agent:web"])]
-        github_workflow.fetch_discovery_issues.return_value = []
+        github_workflow.fetch_discovery_issues.return_value = refresh_batch([])
 
         _fetch_and_update_queue(
             config=config,
@@ -919,7 +926,7 @@ class TestQueueFetchPlanner:
         scheduler = Mock()
         scheduler.evaluate_issues.return_value = []
         github_workflow = Mock()
-        github_workflow.fetch_all_issues.return_value = [issue]
+        github_workflow.fetch_all_issues.return_value = refresh_batch([issue])
 
         _fetch_and_update_queue(
             config=config,

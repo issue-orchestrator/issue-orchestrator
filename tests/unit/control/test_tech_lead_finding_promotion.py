@@ -1702,7 +1702,7 @@ class TestPromotedIssueIsDiscoverableByTheScheduler:
             label_sync=None,
             event_context=EventContext(run_id="r", tick_id=0),
         )
-        return [issue.number for issue in workflow.fetch_all_issues(None)]
+        return [issue.number for issue in workflow.fetch_all_issues(None).issues]
 
     def test_gate_removal_alone_makes_a_gated_self_route_discoverable(self):
         config = _config()

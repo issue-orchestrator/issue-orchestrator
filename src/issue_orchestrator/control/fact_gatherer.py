@@ -32,6 +32,7 @@ from ..events import EventName
 from ..ports.repository_host import RepositoryHost, RepositoryHostError
 from ..ports import EventSink,  make_trace_event
 from .provider_launch_readiness import ProviderLaunchReadiness
+from .issue_refresh_batch import IssueRefreshBatch
 from .health_review_trigger import (
     classify_tech_lead_anchor_issues,
     discover_open_tech_lead_anchor_issues,
@@ -143,7 +144,19 @@ class FactGatherer:
         required_stable_ids: set[str] | None = None,
         fetch_limit: int | None = None,
     ) -> list["Issue"]:
-        """Fetch all issues for configured agents from GitHub."""
+        """Return scoped candidates for callers that do not retain observations."""
+        return list(self.fetch_issue_batch(
+            labels_for_agent, milestone, required_stable_ids, fetch_limit,
+        ).issues)
+
+    def fetch_issue_batch(
+        self,
+        labels_for_agent: list[str],
+        milestone: str | None = None,
+        required_stable_ids: set[str] | None = None,
+        fetch_limit: int | None = None,
+    ) -> IssueRefreshBatch:
+        """Retain every fetched fact independently of candidate exclusions."""
         milestones = self.config.get_filter_milestones() or [milestone]
         limit = fetch_limit if fetch_limit is not None else self.config.filtering.fetch_limit
         all_issues, seen, still_needed = [], set(), set(required_stable_ids) if required_stable_ids else None
@@ -157,7 +170,9 @@ class FactGatherer:
                 )
                 self._process_fetched_issues(issues, all_issues, seen, still_needed, agent_label, labels, milestone_name)
 
-        return self._apply_issue_filter(all_issues)
+        return IssueRefreshBatch(
+            tuple(self._apply_issue_filter(all_issues)), tuple(all_issues), None,
+        )
 
     def _process_fetched_issues(
         self,

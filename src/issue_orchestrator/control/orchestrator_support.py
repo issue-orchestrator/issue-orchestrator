@@ -7,7 +7,7 @@ The Orchestrator delegates to this class for support operations.
 import logging
 import time
 from datetime import datetime, timezone
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Optional, Callable, cast
 
 if TYPE_CHECKING:
@@ -665,8 +665,8 @@ def _fetch_issue_list(
 ) -> IssueRefreshBatch:
     """Fetch facts without conflating fresh observations with cached projections."""
     if full_scan:
-        issues = tuple(github_workflow.fetch_all_issues(config.filtering.milestone, required_stable_ids))
-        return IssueRefreshBatch(issues, issues, _iso_now_utc())
+        batch = github_workflow.fetch_all_issues(config.filtering.milestone, required_stable_ids)
+        return replace(batch, watermark=_iso_now_utc())
     return _fetch_incremental_issues(config, state, github_workflow, required_stable_ids, sync_plan)
 
 
@@ -952,16 +952,16 @@ def _fetch_incremental_issues(
                 config.fetch_layer_discovery_limit,
             )
             next_watermark = _iso_now_utc()
-            for issue in discovered:
+            for issue in discovered.issues:
                 issue_map[issue.number] = issue
-                observed.append(issue)
+            observed.extend(discovered.observed_issues)
 
     # Ensure required IDs can still be discovered even if they were not in hot/discovery subsets.
     if required_stable_ids:
         fallback = github_workflow.fetch_all_issues(config.filtering.milestone, required_stable_ids)
-        for issue in fallback:
+        for issue in fallback.issues:
             issue_map[issue.number] = issue
-            observed.append(issue)
+        observed.extend(fallback.observed_issues)
 
     return IssueRefreshBatch(tuple(issue_map.values()), tuple(observed), next_watermark)
 

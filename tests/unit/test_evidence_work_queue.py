@@ -308,3 +308,151 @@ def test_runtime_incremental_observations_own_evidence_identity(
         rendered = BeautifulSoup(get_templates().get_template("dashboard.html").render(
             **model.template_context()), "html.parser")
         assert bool(rendered.select('[data-issue="49"]')) == (transition == "marker_removed")
+
+
+@pytest.mark.parametrize("discovery", [False, True])
+@pytest.mark.parametrize("remove_marker", [False, True])
+def test_real_fetch_preserves_excluded_label_changes(
+    tmp_path, mock_event_sink, mock_repository_host, monkeypatch, discovery, remove_marker,
+):
+    from dataclasses import replace
+    from unittest.mock import Mock
+
+    from issue_orchestrator.control.fact_gatherer import FactGatherer
+    from issue_orchestrator.control.github_workflow import GitHubWorkflow
+    from issue_orchestrator.control.issue_fetch_resilience import IssueFetchResilience
+    from issue_orchestrator.control.orchestrator_support import _fetch_and_update_queue
+    from issue_orchestrator.control.queue_cache import QueueCache
+    from issue_orchestrator.domain.issue_work_classification import IssueWorkClassification
+    from issue_orchestrator.domain.models import AgentConfig
+    from issue_orchestrator.events import EventContext
+    from issue_orchestrator.execution.queue_cache_store import QueueCacheStore
+
+    monkeypatch.setattr("time.time", lambda: 1_788_700_000.0)
+    config = Config(repo="porchpin/porchpin")
+    config.agents = {"agent:tech-lead": AgentConfig(prompt_path=tmp_path / "prompt.md", model="test", timeout_minutes=45)}
+    config.filtering.exclude_labels = ["excluded"]
+    config.fetch_layer_enabled = True
+    config.fetch_layer_full_scan_interval_seconds = 3600
+    config.fetch_layer_discovery_limit = 10
+    config.fetch_layer_max_hot_issues_per_cycle = 0
+    marked = case_file()
+    unmarked = replace(marked, labels=["agent:tech-lead"])
+    state = OrchestratorState(startup_status="complete")
+    store = QueueCacheStore(tmp_path / "queue.sqlite")
+    cache = QueueCache(config, state, store)
+    cache.replace_from_refresh([marked if remove_marker else unmarked])
+    # The observation must survive even when there is no queue candidate to retain.
+    cache.remove_issue(49)
+    work = Issue(number=50, title="Other work", labels=["agent:tech-lead"])
+    cache.upsert_refreshed_issue(work)
+    state.session_history.append(SessionHistoryEntry(
+        issue_number=49, title=marked.title, agent_type="agent:tech-lead",
+        status="failed", runtime_minutes=1,
+    ))
+    state.queue_last_full_scan_at = 1_788_700_000.0 if discovery else 0
+    fresh = unmarked if remove_marker else marked
+    fresh = replace(fresh, labels=[*fresh.labels, "excluded"])
+    mock_repository_host.issues = [fresh, work]
+    scanner = Mock()
+    scanner.load_issue_branches.return_value = {}
+    scanner.scan_for_reviews.return_value = []
+    scanner.scan_for_reworks.return_value = ([], [])
+    workflow = GitHubWorkflow(
+        config=config, events=mock_event_sink, repository_host=mock_repository_host,
+        fact_gatherer=FactGatherer(config, mock_repository_host), pr_scanner=scanner,
+        label_sync=None, event_context=EventContext(),
+    )
+    scheduler = Mock()
+    scheduler.evaluate_issues.return_value = []
+    _fetch_and_update_queue(
+        config=config, events=mock_event_sink, state=state,
+        repository_host=mock_repository_host, scheduler=scheduler, github_workflow=workflow,
+        refresh_requested=False, inflight_stable_ids={},
+        issue_fetch_resilience=IssueFetchResilience(config.repo), queue_cache_store=store,
+    )
+    assert len(mock_repository_host.list_issues_calls) == 1
+    assert state.queue_last_refresh_mode == ("incremental" if discovery else "full")
+    assert state.cached_scope_issues == [work]
+    assert state.cached_queue_issues == [work]
+    expected = IssueWorkClassification.WORK if remove_marker else IssueWorkClassification.EVIDENCE
+    reopened = OrchestratorState(startup_status="complete", session_history=state.session_history)
+    QueueCache(config, reopened, QueueCacheStore(tmp_path / "queue.sqlite")).restore_snapshot()
+    for current in (state, reopened):
+        assert current.issue_work_classifications[49] == expected
+        model = build_dashboard_view_model(OrchestratorView(current, config),
+            provider_circuit=NO_PROVIDER_CIRCUIT_STATUS, tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+            active_tab="kanban", e2e_status_provider=lambda _: {"enabled": False, "running": False})
+        assert model.blocked_count == int(remove_marker)
+        rendered = BeautifulSoup(get_templates().get_template("dashboard.html").render(
+            **model.template_context()), "html.parser")
+        assert bool(rendered.select('[data-issue="49"]')) == remove_marker
+
+
+def test_live_session_work_lane_follows_fresh_marker_without_erasing_session(tmp_path):
+    from dataclasses import replace
+    import json
+    from pathlib import Path
+    import subprocess
+
+    from issue_orchestrator.control.queue_cache import QueueCache
+    from issue_orchestrator.domain.issue_key import FakeIssueKey
+    from issue_orchestrator.domain.models import AgentConfig, Session
+    from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+    from tests.unit.session_run_helpers import make_session_run_assets
+
+    config = Config(repo="porchpin/porchpin")
+    agent = AgentConfig(prompt_path=tmp_path / "prompt.md", model="test", timeout_minutes=45)
+    config.agents = {"agent:tech-lead": agent}
+    unmarked = replace(case_file(), labels=["agent:tech-lead"])
+    session = Session(
+        key=SessionKey(issue=FakeIssueKey("49"), task=TaskKind.CODE), issue=unmarked,
+        agent_config=agent, terminal_id="issue-49", worktree_path=tmp_path,
+        branch_name="issue-49", run_assets=make_session_run_assets(tmp_path, session_name="issue-49"),
+        started_at=datetime(2026, 9, 6),
+    )
+    state = OrchestratorState(startup_status="complete", active_sessions=[session])
+    cache = QueueCache(config, state)
+    for fresh, expected_count in ((unmarked, 1), (case_file(), 0), (unmarked, 1)):
+        cache.upsert_refreshed_issue(fresh)
+        model = build_dashboard_view_model(OrchestratorView(state, config),
+            provider_circuit=NO_PROVIDER_CIRCUIT_STATUS, tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+            active_tab="kanban", e2e_status_provider=lambda _: {"enabled": False, "running": False})
+        assert model.active_count == expected_count
+        assert model.active_session_count == 1
+        running = next(column for column in model.flow_columns if column["id"] == "running")
+        assert running["count"] == expected_count
+        assert len(running["items"]) == expected_count
+        assert len(model.active_items) == expected_count
+        rendered = BeautifulSoup(get_templates().get_template("dashboard.html").render(
+            **model.template_context()), "html.parser")
+        assert bool(rendered.select('[data-issue="49"]')) == bool(expected_count)
+        # Exercise the browser's expanded-list selector and renderer with the
+        # actual serialized producer payload, including marker removal.
+        script = r"""
+const fs = require('node:fs');
+const vm = require('node:vm');
+const expanded = require('./src/issue_orchestrator/static/js/expanded_column_state.js');
+const payload = JSON.parse(fs.readFileSync(0, 'utf8'));
+const escape = value => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
+const context = {
+    escapeHtml: escape, escapeAttr: escape, cssEscape: String, document: {},
+    compactCardState: {computeCompactCardFingerprint: () => 'fingerprint'},
+    formatDashboardTimestamps: () => {},
+    localStorage: {getItem: () => null, setItem: () => {}},
+    window: {dashboardData: {queueRefreshSeconds: 0}, location: {href: 'http://example.test/'}}
+};
+vm.createContext(context);
+vm.runInContext(fs.readFileSync('./src/issue_orchestrator/static/js/dashboard/kanban_columns.js', 'utf8'), context);
+process.stdout.write(expanded.getExpandedItemsFromViewModel(payload, 'running')
+    .map(item => context.renderExpandedCardHtml(item, 'running', false)).join(''));
+"""
+        expanded = subprocess.run(
+            ["node", "-e", script], input=json.dumps(model.to_dict(), default=str),
+            text=True, capture_output=True, check=True, cwd=Path(__file__).resolve().parents[2],
+        )
+        expanded_dom = BeautifulSoup(expanded.stdout, "html.parser")
+        assert bool(expanded_dom.select('[data-issue="49"]')) == bool(expected_count)
+        assert state.active_sessions == [session]
+        assert session.issue is unmarked
