@@ -274,7 +274,8 @@ def plan_tech_lead_rejection_action(
     *, anchor_issue_number: int, failure: str, detail: str
 ) -> SurfaceTechLeadProposalAction:
     """Surface a rejected decision artifact pair (``mode="rejected"``)."""
-    return SurfaceTechLeadProposalAction(
+    from .tech_lead_actions import TechLeadPlanningFailureAction
+    return TechLeadPlanningFailureAction(
         issue_number=anchor_issue_number,
         proposal_type="decision",
         body_preview=detail[:_BODY_PREVIEW_CHARS],

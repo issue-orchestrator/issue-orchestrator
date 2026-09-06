@@ -176,3 +176,64 @@ def test_focus_diagnosis_kind_cannot_escape_producer_to_terminal_requirement(tar
     assert evaluate_required_act_level_outcome([
         ActionResult.fail(diagnosis, "diagnosis failed"), ActionResult.ok(remedy),
     ]).failed
+
+
+@pytest.mark.parametrize("conflict", ["same-decision", "persisted"])
+def test_planning_rejection_cannot_erase_investigation_obligations(conflict):
+    from unittest.mock import MagicMock
+    from issue_orchestrator.control.action_applier import ActionApplier
+    from issue_orchestrator.control.actions import AddCommentAction
+    from issue_orchestrator.control.reconciliation import build_expected_for_mutation
+    from issue_orchestrator.control.tech_lead_completion_gate import require_investigation_terminal_effect
+    from issue_orchestrator.control.tech_lead_decision_actions import plan_tech_lead_decision_actions
+    from issue_orchestrator.control.proposal_dedup_gate import DuplicateTargetGrant, OpenIssueCorpus
+    from issue_orchestrator.control.tech_lead_reset_retry import (
+        apply_completion_actions_gated, evaluate_required_act_level_outcome, effective_terminal_status,
+    )
+    from issue_orchestrator.control.tech_lead_actions import TechLeadPlanningFailureAction
+    from issue_orchestrator.domain.models import Issue, SessionStatus
+    from issue_orchestrator.domain.tech_lead_findings import PatternEvidence
+    human = ProposedTechLeadAction(id="A3", action_type="flag_pattern", body="needs operator",
+        pattern_signature="incident", fix_class="human")
+    code = ProposedTechLeadAction(id="A4", action_type="flag_pattern", body="requires fix",
+        pattern_signature="incident", fix_class="code")
+    decision = _decision(_diagnosis(), _defer(), *([human, code] if conflict == "same-decision" else [code]))
+    decision.validate()
+    assert _validate(decision) is None
+    config = Config()
+    config.tech_lead.authority.flag_pattern = "execute"
+    pattern_ledger = {} if conflict == "same-decision" else {"incident": PatternEvidence(
+        signature="incident", case_file_issue_number=7001, observation_count=1, fix_class="human")}
+    lowered = plan_tech_lead_decision_actions(decision, config, LabelManager(config),
+        anchor_issue=Issue(number=ANCHOR, title="investigation", labels=[]),
+        expected=build_expected_for_mutation(), op_ledger={}, pattern_ledger=pattern_ledger,
+        source_run_id="run", source_session_name="session", observed_at="2026-08-09T00:00:00+00:00",
+        observed_session_generation=lambda number: None,
+        dedup_corpus=OpenIssueCorpus.disabled(), dedup_grant=DuplicateTargetGrant.none())
+    assert len(lowered) == 1 and isinstance(lowered[0], TechLeadPlanningFailureAction)
+    host = MagicMock()
+    applier = ActionApplier(labels=MagicMock(), sessions=MagicMock(), events=MagicMock(), repository_host=host)
+    planned = require_investigation_terminal_effect(lowered, focus_issue_number=FOCUS)
+    results, error = apply_completion_actions_gated(applier,
+        [*planned, AddCommentAction(number=FOCUS, comment="success-only")], issue_number=FOCUS)
+    assert error is None
+    outcome = evaluate_required_act_level_outcome(results)
+    assert outcome.failed
+    assert effective_terminal_status(SessionStatus.COMPLETED, outcome) is SessionStatus.FAILED
+    host.add_comment.assert_not_called()
+    assert any("pattern_classification_conflict" in reason for reason in outcome.failures)
+
+
+def test_empty_lowering_cannot_satisfy_trusted_investigation_obligations():
+    from unittest.mock import MagicMock
+    from issue_orchestrator.control.action_applier import ActionApplier
+    from issue_orchestrator.control.actions import AddCommentAction
+    from issue_orchestrator.control.tech_lead_completion_gate import require_investigation_terminal_effect
+    from issue_orchestrator.control.tech_lead_reset_retry import apply_completion_actions_gated, evaluate_required_act_level_outcome
+    host = MagicMock()
+    applier = ActionApplier(labels=MagicMock(), sessions=MagicMock(), events=MagicMock(), repository_host=host)
+    planned = require_investigation_terminal_effect([], focus_issue_number=FOCUS)
+    results, error = apply_completion_actions_gated(applier,
+        [*planned, AddCommentAction(number=FOCUS, comment="success-only")], issue_number=FOCUS)
+    assert error is None and evaluate_required_act_level_outcome(results).failed
+    host.add_comment.assert_not_called()

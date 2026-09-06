@@ -66,6 +66,8 @@ from .tech_lead_actions import (
     ResetRetryIssueAction as ResetRetryIssueAction,
     SettleTechLeadPromotionAction as SettleTechLeadPromotionAction,
     SurfaceTechLeadProposalAction as SurfaceTechLeadProposalAction,
+    TechLeadPlanningFailureAction as TechLeadPlanningFailureAction,
+    RequireTechLeadInvestigationAction as RequireTechLeadInvestigationAction,
     TechLeadMutation as TechLeadMutation,
     reconciliation_subject_for as reconciliation_subject_for,
 )

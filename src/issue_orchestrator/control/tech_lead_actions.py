@@ -329,6 +329,22 @@ class SurfaceTechLeadProposalAction(Action):
 
 
 @dataclass(frozen=True)
+class TechLeadPlanningFailureAction(SurfaceTechLeadProposalAction):
+    """A rejected plan reports its reason but can never authorize completion."""
+
+
+@dataclass(frozen=True)
+class RequireTechLeadInvestigationAction(Action):
+    """Trusted focus obligations retained even when lowering emits no work."""
+    focus_issue_number: int = field(kw_only=True)
+    action_type: ActionType = field(default=ActionType.REQUIRE_TECH_LEAD_INVESTIGATION, init=False)
+
+    def __post_init__(self) -> None:
+        if isinstance(self.focus_issue_number, bool) or self.focus_issue_number <= 0:
+            raise ValueError("investigation obligation requires its trusted focus issue")
+
+
+@dataclass(frozen=True)
 class ResetRetryIssueAction(Action):
     """Execute a tech_lead ``reset_retry`` proposal via the reset owner (#6764).
 

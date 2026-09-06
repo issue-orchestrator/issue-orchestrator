@@ -16,6 +16,7 @@ from issue_orchestrator.control.actions import (
     SurfaceTechLeadProposalAction,
     TechLeadMilestoneIntent,
 )
+from issue_orchestrator.control.tech_lead_actions import TechLeadPlanningFailureAction
 from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.control.reconciliation import build_expected_for_mutation
 from issue_orchestrator.control.proposal_dedup import OpenIssueRef
@@ -933,7 +934,7 @@ class TestClassificationConflictWithAnEarlierDecision:
     def test_area_conflict_produces_only_a_rejection(self) -> None:
         planned = self._plan_against({"area": "db"}, {"area": "ui"})
 
-        assert [type(a) for a in planned] == [SurfaceTechLeadProposalAction]
+        assert len(planned) == 1 and isinstance(planned[0], TechLeadPlanningFailureAction)
         assert planned[0].mode == "rejected"
 
     def test_sibling_effects_of_the_same_decision_are_rejected_too(self) -> None:
@@ -955,7 +956,7 @@ class TestClassificationConflictWithAnEarlierDecision:
             pattern_ledger=_ledger("sig-x", 777, fix_class="human"),
         )
 
-        assert [type(a) for a in planned] == [SurfaceTechLeadProposalAction]
+        assert len(planned) == 1 and isinstance(planned[0], TechLeadPlanningFailureAction)
         assert planned[0].mode == "rejected"
 
     def test_replanning_the_same_conflict_stays_side_effect_free(self) -> None:
@@ -969,8 +970,8 @@ class TestClassificationConflictWithAnEarlierDecision:
             _decision(self._observation(fix_class="code")), pattern_ledger=ledger
         )
 
-        assert [type(a) for a in first] == [SurfaceTechLeadProposalAction]
-        assert [type(a) for a in replay] == [SurfaceTechLeadProposalAction]
+        assert [type(a) for a in first] == [TechLeadPlanningFailureAction]
+        assert [type(a) for a in replay] == [TechLeadPlanningFailureAction]
 
     def test_an_agreeing_observation_still_appends(self) -> None:
         """The preflight rejects conflicts, not repeat evidence."""
@@ -1006,7 +1007,7 @@ class TestClassificationConflictWithAnEarlierDecision:
             pattern_ledger=_ledger("sig-x", 777),
         )
 
-        assert [type(a) for a in planned] == [SurfaceTechLeadProposalAction]
+        assert len(planned) == 1 and isinstance(planned[0], TechLeadPlanningFailureAction)
         assert planned[0].mode == "rejected"
 
 

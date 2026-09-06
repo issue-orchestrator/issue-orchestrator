@@ -260,7 +260,7 @@ def test_the_mutating_set_covers_every_tech_lead_type_but_the_event_only_one():
     registry = _Registry()
 
     assert set(registry.handlers) - TECH_LEAD_MUTATING_ACTION_TYPES == {
-        ActionType.SURFACE_TECH_LEAD_PROPOSAL
+        ActionType.SURFACE_TECH_LEAD_PROPOSAL, ActionType.REQUIRE_TECH_LEAD_INVESTIGATION
     }
 
 

@@ -51,8 +51,9 @@ def is_required_act_level_action(action: Action) -> bool:
     Both wired act-level mutations are mandatory completion gates.
     """
     from .tech_lead_actions import RecordTechLeadDispositionAction, EscalateTechLeadDispositionAction, CreateTechLeadProposalIssueAction
+    from .tech_lead_actions import RequireTechLeadInvestigationAction, TechLeadPlanningFailureAction
     from .required_issue_comment import RequiredIssueCommentAction
-    return isinstance(action, (RequiredIssueCommentAction, ResetRetryIssueAction, KillHungSessionAction,
+    return isinstance(action, (RequireTechLeadInvestigationAction, TechLeadPlanningFailureAction, RequiredIssueCommentAction, ResetRetryIssueAction, KillHungSessionAction,
                                RecordTechLeadDispositionAction, EscalateTechLeadDispositionAction,
                                CreateTechLeadProposalIssueAction))
 
@@ -79,7 +80,10 @@ def require_investigation_terminal_effect(actions: list[Action], *,
     from dataclasses import replace
     from .actions import AddCommentAction
     from .required_issue_comment import RequiredIssueCommentAction
-    required: list[Action] = []
+    from .tech_lead_actions import RequireTechLeadInvestigationAction
+    if focus_issue_number is None:
+        raise ValueError("failure investigation requires its immutable focus")
+    required: list[Action] = [RequireTechLeadInvestigationAction(focus_issue_number=focus_issue_number)]
     for action in actions:
         if isinstance(action, (ResetRetryIssueAction, KillHungSessionAction)):
             action = replace(action, requires_effective_disposition=True)
@@ -102,11 +106,13 @@ def evaluate_required_act_level_outcome(
     failed reset can never be recorded as a clean success (#6764 re-review F2).
     """
     from .required_issue_comment import RequiredIssueCommentAction
+    from .tech_lead_actions import TechLeadPlanningFailureAction
     failed_results = tuple(
         result
         for result in applied
         if is_required_act_level_action(result.action)
-        and (result.result_type is ActionResultType.FAILURE or (
+        and (isinstance(result.action, TechLeadPlanningFailureAction)
+        or result.result_type is ActionResultType.FAILURE or (
             isinstance(result.action, RequiredIssueCommentAction)
             and result.result_type is not ActionResultType.SUCCESS
         ) or (
@@ -116,6 +122,8 @@ def evaluate_required_act_level_outcome(
             and result.details.get("terminal_disposition_satisfied") is not True
         ))
     )
+    from .tech_lead_completion_obligations import unsatisfied_investigation_obligations
+    failed_results += unsatisfied_investigation_obligations(applied)
     failures = tuple(
         result.error or "act-level owner failed" for result in failed_results
     )

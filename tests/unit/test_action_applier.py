@@ -2986,6 +2986,8 @@ class TestClaimGateAudit:
     #   evidence comment targets that orchestrator-owned case file, never a
     #   claimed coding issue
     # - SURFACE_TECH_LEAD_PROPOSAL: emits a trace event only, no GitHub calls
+    # - REQUIRE_TECH_LEAD_INVESTIGATION: carries a trusted completion contract;
+    #   its acknowledgement has no reads or writes. The aggregate verdict checks effects.
     # - RESET_RETRY_ISSUE: owner command (#6764) - every GitHub write it
     #   triggers is delegated to the reset owner, which routes label/PR
     #   mutations back through this applier's claim-verified handlers
@@ -3044,6 +3046,7 @@ class TestClaimGateAudit:
         ActionType.CREATE_TECH_LEAD_PROPOSAL_ISSUE,
         ActionType.CREATE_TECH_LEAD_CASE_FILE_ISSUE,
         ActionType.SURFACE_TECH_LEAD_PROPOSAL,
+        ActionType.REQUIRE_TECH_LEAD_INVESTIGATION,
         ActionType.RESET_RETRY_ISSUE,
         ActionType.KILL_HUNG_SESSION,
         ActionType.DISCARD_TERMINAL_TECH_LEAD_PROPOSAL_OPS,

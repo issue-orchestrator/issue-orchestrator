@@ -172,6 +172,9 @@ def apply_surface_tech_lead_proposal(
         finding_ids=action.finding_ids,
         mode=action.mode,
     )
+    from .tech_lead_actions import TechLeadPlanningFailureAction
+    if isinstance(action, TechLeadPlanningFailureAction):
+        return ActionResult.fail(action, action.reason or "tech-lead planning rejected")
     return ActionResult.ok(
         action,
         issue_number=action.issue_number,
@@ -602,6 +605,9 @@ def _failure_surface_identity(
     action: Action | None, *, fallback_issue_number: int
 ) -> tuple[int, str, str]:
     """Return the truthful action name and mutation target for operator routing."""
+    from .tech_lead_actions import RequireTechLeadInvestigationAction
+    if isinstance(action, RequireTechLeadInvestigationAction):
+        return action.focus_issue_number, "investigation_obligation", f"issue #{action.focus_issue_number}"
     if isinstance(action, KillHungSessionAction):
         target = (
             f"issue #{action.issue_number}, {action.target_session_type} terminal "
