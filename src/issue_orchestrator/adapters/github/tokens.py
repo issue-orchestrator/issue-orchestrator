@@ -65,6 +65,25 @@ class GitHubAuthSource:
 
 
 @dataclass(frozen=True, slots=True)
+class GitHubAppIdentity:
+    """The one effective issuer, also used to verify server-side provenance."""
+
+    field: Literal["id", "client_id"]
+    value: str
+
+    def matches(self, app: dict[str, object]) -> bool:
+        observed = app.get(self.field)
+        if self.field == "id":
+            return type(observed) is int and observed > 0 and str(observed) == self.value
+        return isinstance(observed, str) and observed == self.value
+
+    @property
+    def author_key(self) -> str:
+        prefix = "github-app" if self.field == "id" else "github-app-client"
+        return f"{prefix}:{self.value}"
+
+
+@dataclass(frozen=True, slots=True)
 class GitHubTokenResolution:
     """Resolved personal token plus its separately safe source metadata."""
 
@@ -130,9 +149,18 @@ class GitHubAppAuthConfig:
         )
 
     @property
+    def effective_identity(self) -> GitHubAppIdentity:
+        """Select once for JWT authentication and comment provenance alike."""
+        if self.client_id:
+            return GitHubAppIdentity("client_id", self.client_id)
+        if self.app_id:
+            return GitHubAppIdentity("id", self.app_id)
+        raise GitHubAuthError("GitHub App identity requires client_id or app_id")
+
+    @property
     def jwt_issuer(self) -> str:
         """Issuer for GitHub App JWTs. GitHub recommends Client ID when present."""
-        return self.client_id or self.app_id or ""
+        return self.effective_identity.value
 
     def read_private_key(self) -> str:
         """Read the configured private key without logging its contents."""

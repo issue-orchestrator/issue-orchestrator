@@ -51,8 +51,16 @@ def test_receipt_requires_exact_body_and_authenticated_author(monkeypatch, comme
 @pytest.mark.parametrize("configured,observed,accepted", [
     ({"id": "12"}, {"id": 12}, True), ({"id": "12"}, {"id": 13}, False),
     ({"client_id": "Iv1.same"}, {"client_id": "Iv1.same"}, True),
+    ({"id": "12", "client_id": "Iv1.active"}, {"id": 12, "client_id": "Iv1.other"}, False),
+    ({"id": "12", "client_id": "Iv1.active"}, {"id": 13, "client_id": "Iv1.active"}, True),
+    ({"id": "12", "client_id": "Iv1.active"}, {"id": 12, "client_id": "Iv1.active"}, True),
+    ({"id": "12", "client_id": "Iv1.active"}, {"id": 12}, False),
 ])
 def test_app_receipt_uses_server_app_provenance(monkeypatch, configured, observed, accepted):
+    config = GitHubAppAuthConfig.from_values(app_id=configured.get("id"),
+        client_id=configured.get("client_id"), installation_id="1", private_key_env="UNUSED_TEST_KEY")
+    assert config.jwt_issuer == config.effective_identity.value
+    assert config.effective_identity.matches(observed) is accepted
     def handler(request):
         assert request.url.path != "/user"
         return httpx.Response(200, json=[_comment(user={"id": 42, "type": "Bot"}, performed_via_github_app=observed)])
