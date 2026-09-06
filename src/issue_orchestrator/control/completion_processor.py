@@ -619,8 +619,7 @@ class CompletionProcessor:
         Returns:
             True if any requested action requires publish gate validation.
         """
-        publish_actions = {RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR}
-        return bool(set(record.requested_actions) & publish_actions)
+        return record.requests_publication
 
     def _check_publish_gate(
         self,

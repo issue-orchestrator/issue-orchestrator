@@ -2889,6 +2889,59 @@ class TestTechLeadCompletionEffects:
         mock_git_adapter.push.assert_not_called()
         mock_pr_adapter.create_pr.assert_not_called()
 
+    @pytest.mark.parametrize(
+        ("dirty", "dirty_files", "branch", "succeeds"),
+        [
+            (True, ["src/valuable.py"], "issue-123", False),
+            (True, None, "issue-123", False),
+            (False, [], "issue-123", True),
+            # Protected-branch rejection is push-specific. A clean audit whose
+            # only requested effect is CREATE_PR does not push this branch.
+            (False, [], "main", True),
+        ],
+        ids=["dirty-source", "unknown-dirty-state", "clean", "clean-main-no-push"],
+    )
+    def test_create_pr_only_intent_checks_dirty_state_before_clean_audit(
+        self, tmp_path, mock_label_adapter, mock_pr_adapter, mock_git_adapter,
+        event_bus, tech_lead_authority_store, worktree_with_completion,
+        dirty, dirty_files, branch, succeeds,
+    ):
+        runner = _CapturingReviewExchangeRunner()
+        processor = self._make_processor(
+            tmp_path, mock_label_adapter, mock_pr_adapter, mock_git_adapter,
+            event_bus, review_exchange_runner=runner,
+            tech_lead_authority=tech_lead_authority_store, dirty_check="tracked",
+        )
+        record = self._completed_record()
+        record.requested_actions = [RequestedAction.CREATE_PR]
+        worktree = worktree_with_completion(record)
+        assets = self._armed_run_assets(tech_lead_authority_store, worktree)
+        mock_git_adapter.get_current_branch.return_value = branch
+        mock_git_adapter.has_tracked_changes.return_value = dirty
+        mock_git_adapter.list_dirty_files.return_value = dirty_files
+
+        result = self._process(
+            processor, worktree, agent_label="agent:tech-lead", run_assets=assets
+        )
+
+        assert result.success is succeeds
+        mock_git_adapter.has_tracked_changes.assert_called_once_with(
+            worktree, include_staged=True
+        )
+        assert runner.calls == []
+        mock_git_adapter.push.assert_not_called()
+        mock_pr_adapter.create_pr.assert_not_called()
+        if succeeds:
+            mock_git_adapter.diff_against_base.assert_called_once_with(
+                worktree, "origin/main"
+            )
+        else:
+            mock_git_adapter.diff_against_base.assert_not_called()
+            if dirty_files is None:
+                assert "dirty state is unknown" in result.message
+            else:
+                assert "src/valuable.py" in result.message
+
     def test_changed_tech_lead_audit_publishes_pr_but_posts_no_comment(
         self,
         tmp_path,
