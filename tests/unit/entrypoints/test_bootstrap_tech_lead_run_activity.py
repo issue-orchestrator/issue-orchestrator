@@ -18,6 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
+from issue_orchestrator.domain.tech_lead_run_record import TechLeadDeliveryOutcome
 from issue_orchestrator.domain.models import SessionStatus
 from issue_orchestrator.domain.tech_lead_delivery import DeliveryHistoryState
 from issue_orchestrator.domain.tech_lead_run_record import TechLeadRunPhase
@@ -64,7 +65,10 @@ def _session(worktree: Path) -> SimpleNamespace:
 def _records_a_run(activity, worktree: Path) -> TechLeadRunPhase:
     session = _session(worktree)
     activity.note_started(session)
-    activity.note_concluded(session, SessionStatus.COMPLETED)
+    activity.note_concluded(
+        session, SessionStatus.COMPLETED,
+        delivery_outcome=TechLeadDeliveryOutcome.NOT_DELIVERED,
+    )
     (record,) = activity.recent(limit=5)
     return record.phase
 

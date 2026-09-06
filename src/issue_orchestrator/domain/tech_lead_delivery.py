@@ -6,13 +6,10 @@ monitor never uses action counts or agent intent as a substitute for receipts.
 """
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from enum import Enum
 
-from .tech_lead_run_record import TechLeadRunPhase
-
-
-DELIVERED_TECH_LEAD_PHASES = (TechLeadRunPhase.COMPLETED, TechLeadRunPhase.NEEDS_HUMAN)
+from .tech_lead_receipt_time import receipt_time as delivery_time
 
 
 class DeliveryHistoryState(str, Enum):
@@ -64,18 +61,6 @@ class TechLeadDeliveryPolicy:
         ):
             return TechLeadDeliveryStatus.STALLED
         return TechLeadDeliveryStatus.OBSERVING
-
-
-def delivery_time(value: datetime) -> datetime:
-    """Compare offset timestamps in UTC; preserve legacy naive wall timestamps.
-
-    Run receipts historically use naive engine wall time. Do not reinterpret
-    those through the reader's machine timezone. New offset-bearing evidence is
-    normalized the same way SQLite's julianday aggregate normalizes it.
-    """
-    if value.tzinfo is not None:
-        return value.astimezone(timezone.utc).replace(tzinfo=None)
-    return value
 
 
 DEFAULT_TECH_LEAD_DELIVERY_POLICY = TechLeadDeliveryPolicy()

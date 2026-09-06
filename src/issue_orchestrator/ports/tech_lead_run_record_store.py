@@ -26,13 +26,14 @@ from pathlib import Path
 from typing import Optional, Protocol, Sequence
 
 from ..domain.tech_lead_delivery import (
-    DELIVERED_TECH_LEAD_PHASES,
     DeliveryHistoryState,
     TechLeadDeliveryEvidence,
     delivery_time,
 )
 from ..domain.tech_lead_run_artifacts import TechLeadRunArtifacts
-from ..domain.tech_lead_run_record import TechLeadRunPhase, TechLeadRunRecord
+from ..domain.tech_lead_run_record import (
+    TechLeadDeliveryOutcome, TechLeadRunPhase, TechLeadRunRecord,
+)
 
 
 class TechLeadDeliveryHistoryReader(Protocol):
@@ -97,8 +98,13 @@ class TechLeadRunRecordStore(TechLeadDeliveryHistoryReader, Protocol):
         findings: int = 0,
         proposals: int = 0,
         artifacts: Optional[TechLeadRunArtifacts] = None,
+        delivery_outcome: TechLeadDeliveryOutcome = TechLeadDeliveryOutcome.LEGACY,
     ) -> None:
         """Close the open record for one session run.
+
+        ``delivery_outcome`` is the terminal owner's post-apply proof, persisted
+        atomically with the conclusion. LEGACY is for historical callers only;
+        an ambiguous old human phase supplies unknown delivery evidence.
 
         A no-op when no record was opened — a run this engine never recorded
         (an older engine's, or one whose open write failed) must not resurrect
@@ -179,6 +185,7 @@ class InMemoryTechLeadRunRecordStore:
         findings: int = 0,
         proposals: int = 0,
         artifacts: Optional[TechLeadRunArtifacts] = None,
+        delivery_outcome: TechLeadDeliveryOutcome = TechLeadDeliveryOutcome.LEGACY,
     ) -> None:
         with self._lock:
             for index, existing in enumerate(self._records):
@@ -196,6 +203,7 @@ class InMemoryTechLeadRunRecordStore:
                         findings=findings,
                         proposals=proposals,
                         artifacts=artifacts,
+                        delivery_outcome=delivery_outcome,
                     )
                     return
 
@@ -214,12 +222,14 @@ class InMemoryTechLeadRunRecordStore:
     def inspect_delivery_evidence(self) -> TechLeadDeliveryEvidence:
         with self._lock:
             records = tuple(self._records)
-            complete = self._history_complete
+            complete = self._history_complete and all(row.delivery_known for row in records)
+        if not complete:
+            return TechLeadDeliveryEvidence(history_state=DeliveryHistoryState.INCOMPLETE)
         delivered = max(
             (
                 delivery_time(row.ended_at)
                 for row in records
-                if row.phase in DELIVERED_TECH_LEAD_PHASES and row.ended_at is not None
+                if row.delivered and row.ended_at is not None
             ),
             default=None,
         )
@@ -230,11 +240,6 @@ class InMemoryTechLeadRunRecordStore:
             and (delivered is None or delivery_time(row.started_at) > delivered)
         ]
         return TechLeadDeliveryEvidence(
-            history_state=(
-                DeliveryHistoryState.COMPLETE
-                if complete
-                else DeliveryHistoryState.INCOMPLETE
-            ),
             last_delivered_at=delivered,
             first_undelivered_at=min(starts, default=None),
             latest_started_at=max(starts, default=None),

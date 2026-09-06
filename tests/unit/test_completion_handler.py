@@ -18,6 +18,7 @@ from types import SimpleNamespace
 from typing import Any, Optional
 from unittest.mock import MagicMock, Mock
 
+from issue_orchestrator.domain.tech_lead_run_record import TechLeadDeliveryOutcome
 from issue_orchestrator.infra.config import (
     Config,
     CleanupConfig,
@@ -3607,7 +3608,10 @@ class TestTechLeadAuthorityRetention:
         handler = make_handler(config)
         result = handler.process_completion(session, status, finalize_terminal=False)
         assert self._load_authority(config, session) is not None
-        handler.finalize_terminal_outcome(session, result.history_status, None, None)
+        handler.finalize_terminal_outcome(
+            session, result.history_status, None, None,
+            delivery_outcome=TechLeadDeliveryOutcome.NOT_DELIVERED,
+        )
         assert self._load_authority(config, session) is None
 
     def test_rejected_completion_discards_authority_row(

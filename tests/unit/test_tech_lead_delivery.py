@@ -1,5 +1,6 @@
 """Receipt aggregation and delivery policy: no action-event inference or clocks."""
 
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -13,6 +14,7 @@ from issue_orchestrator.domain.tech_lead_delivery import (
 )
 from issue_orchestrator.domain.tech_lead_run import TechLeadRunScopeKind
 from issue_orchestrator.domain.tech_lead_run_record import (
+    TechLeadDeliveryOutcome,
     TechLeadRunPhase,
     TechLeadRunRecord,
 )
@@ -87,7 +89,16 @@ def test_successful_post_apply_conclusions_reset_silence(store, phase, proposals
     for index, age in enumerate([10, 8, 2]):
         store.open_run(record(index, age))
     assert status(store) is TechLeadDeliveryStatus.STALLED
-    store.open_run(record(3, 1, phase, proposals=proposals))
+    store.open_run(
+        replace(
+            record(3, 1, phase, proposals=proposals),
+            delivery_outcome=(
+                TechLeadDeliveryOutcome.HUMAN_HANDOFF
+                if phase is TechLeadRunPhase.NEEDS_HUMAN
+                else TechLeadDeliveryOutcome.COMPLETED
+            ),
+        )
+    )
     assert status(store) is TechLeadDeliveryStatus.OBSERVING
     evidence = store.inspect_delivery_evidence()
     assert evidence.last_delivered_at == NOW - timedelta(hours=1)
@@ -235,6 +246,8 @@ def test_malformed_running_ending_is_not_an_absent_ending(tmp_path, bad_end):
         "2026-02-30T12:00:00",
         "2026-09-06T10:00:00+00:60",
         "2026-09-06T10:00:00+00:00:60",
+        "0001-01-01T00:00:00+00:01",
+        "9999-12-31T23:59:59-00:01",
     ],
 )
 def test_non_receipt_timestamp_cannot_reset_delivery_silence(
@@ -297,3 +310,159 @@ def test_receipt_display_and_aggregate_accept_valid_naive_and_offset_times(
     assert evidence.last_delivered_at == expected
     assert evidence.runs_without_delivery == 1
     assert status(store) is TechLeadDeliveryStatus.OBSERVING
+
+
+@pytest.mark.parametrize(
+    "column,value",
+    [
+        ("run_id", ""),
+        ("run_id", b"invalid-blob"),
+        ("session_name", ""),
+        ("run_key", "broken"),
+        ("run_key", "issue:1"),
+        ("scope_kind", "broken"),
+        ("flavor", "broken"),
+        ("subject_issue_number", -1),
+        ("anchor_issue_number", -1),
+        ("subject_issue_number", 1),
+        ("subject_title", "not a global subject"),
+        ("delivery_outcome", "invented"),
+        ("findings", "broken"),
+        ("proposals", "broken"),
+        ("subject_issue_number", 1.5),
+    ],
+)
+def test_malformed_success_identity_cannot_clear_warning(tmp_path, column, value):
+    path = tmp_path / "runs.sqlite"
+    store = SqliteTechLeadRunRecordStore(path)
+    for index, age in enumerate((8, 4, 0)):
+        store.open_run(record(index, age))
+    store.open_run(record(3, 1, TechLeadRunPhase.COMPLETED))
+    with open_sqlite(path) as connection:
+        connection.execute(
+            f"UPDATE tech_lead_run_records SET {column} = ? WHERE session_name = 's3'",
+            (value,),
+        )
+    restarted = SqliteTechLeadRunRecordStore(path)
+    assert {row.session_name for row in restarted.recent(limit=20)} == {
+        "s0",
+        "s1",
+        "s2",
+    }
+    evidence = restarted.inspect_delivery_evidence()
+    assert evidence.history_state is DeliveryHistoryState.INCOMPLETE
+    assert evidence.last_delivered_at is None
+    assert status(restarted) is TechLeadDeliveryStatus.UNKNOWN
+
+
+@pytest.mark.parametrize("boundary", ["silence", "recent_start", "after_delivery"])
+def test_microsecond_boundaries_match_in_both_stores(store, boundary):
+    delta = timedelta(microseconds=400)
+    if boundary == "silence":
+        baseline = NOW - timedelta(hours=6) + delta
+        starts = [baseline, NOW - timedelta(hours=3), NOW]
+        expected = TechLeadDeliveryStatus.OBSERVING
+    elif boundary == "recent_start":
+        baseline = NOW - timedelta(hours=12)
+        starts = [baseline, NOW - timedelta(hours=9), NOW - timedelta(hours=6) - delta]
+        expected = TechLeadDeliveryStatus.OBSERVING
+    else:
+        baseline = NOW - timedelta(hours=6)
+        store.open_run(
+            replace(record(9, 7, TechLeadRunPhase.COMPLETED), ended_at=baseline)
+        )
+        starts = [baseline + delta, NOW - timedelta(hours=3), NOW]
+        expected = TechLeadDeliveryStatus.STALLED
+    for index, start in enumerate(starts):
+        store.open_run(replace(record(index, 0), started_at=start, ended_at=start))
+    evidence = store.inspect_delivery_evidence()
+    assert evidence.first_undelivered_at == starts[0]
+    assert evidence.latest_started_at == starts[-1]
+    assert evidence.runs_without_delivery == 3
+    assert status(store) is expected
+
+
+def test_delivery_evidence_preserves_microseconds_and_offset_seconds(store):
+    start = NOW - timedelta(hours=1)
+    end = start + timedelta(microseconds=123456)
+    offset = timezone(timedelta(hours=2, microseconds=400))
+    store.open_run(
+        replace(
+            record(0, 1, TechLeadRunPhase.COMPLETED),
+            ended_at=end.replace(tzinfo=timezone.utc).astimezone(offset),
+        )
+    )
+    assert store.inspect_delivery_evidence().last_delivered_at == end
+
+
+def test_reversed_submillisecond_interval_is_rejected_by_receipt_and_sqlite(tmp_path):
+    bad_end = NOW - timedelta(microseconds=400)
+    row = record(0, 0, TechLeadRunPhase.COMPLETED)
+    with pytest.raises(ValueError, match="end before it starts"):
+        replace(
+            row, ended_at=bad_end
+        )  # Memory cannot receive an invalid typed receipt.
+    path = tmp_path / "runs.sqlite"
+    store = SqliteTechLeadRunRecordStore(path)
+    store.open_run(row)
+    with open_sqlite(path) as connection:
+        connection.execute(
+            "UPDATE tech_lead_run_records SET ended_at = ?", (bad_end.isoformat(),)
+        )
+    assert store.recent(limit=20) == ()
+    assert (
+        store.inspect_delivery_evidence().history_state
+        is DeliveryHistoryState.INCOMPLETE
+    )
+    assert status(store) is TechLeadDeliveryStatus.UNKNOWN
+
+
+@pytest.mark.parametrize(
+    "phase,expected",
+    [
+        (TechLeadRunPhase.COMPLETED, TechLeadDeliveryStatus.OBSERVING),
+        (TechLeadRunPhase.NEEDS_HUMAN, TechLeadDeliveryStatus.UNKNOWN),
+    ],
+)
+def test_historical_receipt_compatibility_is_conservative(store, phase, expected):
+    for index, age in enumerate((8, 4, 0)):
+        store.open_run(record(index, age))
+    store.open_run(record(3, 1, phase))  # Historical shape has no provenance.
+    assert status(store) is expected
+    if phase is TechLeadRunPhase.NEEDS_HUMAN:
+        assert store.inspect_delivery_evidence().last_delivered_at is None
+
+
+def test_old_schema_migration_does_not_invent_handoff_provenance(tmp_path):
+    path = tmp_path / "runs.sqlite"
+    store = SqliteTechLeadRunRecordStore(path)
+    store.open_run(record(0, 1, TechLeadRunPhase.NEEDS_HUMAN))
+    with open_sqlite(path) as connection:
+        connection.execute(
+            "ALTER TABLE tech_lead_run_records DROP COLUMN delivery_outcome"
+        )
+    restarted = SqliteTechLeadRunRecordStore(path)
+    assert (
+        restarted.recent(limit=1)[0].delivery_outcome is TechLeadDeliveryOutcome.LEGACY
+    )
+    assert status(restarted) is TechLeadDeliveryStatus.UNKNOWN
+
+
+def test_conclusion_retry_preserves_original_delivery_provenance(store):
+    store.open_run(record(0, 1, TechLeadRunPhase.RUNNING))
+    for outcome in (
+        TechLeadDeliveryOutcome.NOT_DELIVERED,
+        TechLeadDeliveryOutcome.HUMAN_HANDOFF,
+    ):
+        store.conclude_run(
+            run_id="r0",
+            session_name="s0",
+            phase=TechLeadRunPhase.NEEDS_HUMAN,
+            ended_at=NOW,
+            delivery_outcome=outcome,
+        )
+    assert (
+        store.recent(limit=1)[0].delivery_outcome
+        is TechLeadDeliveryOutcome.NOT_DELIVERED
+    )
+    assert store.inspect_delivery_evidence().last_delivered_at is None

@@ -34,6 +34,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Optional
 
+from .tech_lead_receipt_time import receipt_time
 from .tech_lead_run import TechLeadRunScopeKind, scope_kind_of_run_key
 from .tech_lead_run_artifacts import TechLeadRunArtifacts
 from .tech_lead_session import TechLeadSessionFlavor
@@ -97,8 +98,21 @@ class TechLeadRunPhase(str, Enum):
         return self is not TechLeadRunPhase.RUNNING
 
 
+class TechLeadDeliveryOutcome(str, Enum):
+    """Durable post-apply provenance, independent of the display phase.
+
+    Legacy completed receipts retain their established meaning. Old human
+    phases are ambiguous (including provider outages), so never prove delivery.
+    """
+
+    LEGACY = "legacy"
+    NOT_DELIVERED = "not_delivered"
+    COMPLETED = "completed"
+    HUMAN_HANDOFF = "human_handoff"
+
+
 @dataclass(frozen=True, slots=True)
-class TechLeadRunRecord:
+class TechLeadRunReceipt:
     """One tech-lead run as the winning engine remembers it.
 
     ``run_key`` is the logical run identity the shared ledger coordinates on, so
@@ -138,20 +152,22 @@ class TechLeadRunRecord:
     # run it is the bookkeeping anchor, which is not its subject.
     anchor_issue_number: int = 0
     ended_at: Optional[datetime] = None
-    # Operator-facing sentence for the phase. Free prose, deliberately: it is
-    # never branched on, only rendered.
-    detail: str = ""
     # What the run produced, as counted from its own decision artifact.
     findings: int = 0
     proposals: int = 0
-    # Where the run's PRESERVED artifacts are, once it has ended. ``None`` while
-    # a run is still going, and also for a run whose artifacts could not be
-    # preserved — the record then truthfully offers no drill-down rather than a
-    # button pointing into a worktree that cleanup has removed (#6858 F4).
-    artifacts: Optional[TechLeadRunArtifacts] = None
+    delivery_outcome: TechLeadDeliveryOutcome = TechLeadDeliveryOutcome.LEGACY
 
     def __post_init__(self) -> None:
-        if not self.run_id or not self.session_name:
+        # Validate vocabulary even for callers outside typed Python (SQL rows).
+        TechLeadSessionFlavor(self.flavor)
+        TechLeadRunPhase(self.phase)
+        TechLeadDeliveryOutcome(self.delivery_outcome)
+        if (
+            type(self.run_id) is not str
+            or type(self.session_name) is not str
+            or not self.run_id
+            or not self.session_name
+        ):
             raise ValueError(
                 "A tech-lead run record needs its session run identity"
                 f" (run_id={self.run_id!r}, session_name={self.session_name!r}):"
@@ -160,9 +176,9 @@ class TechLeadRunRecord:
             )
         if scope_kind_of_run_key(self.run_key) is not self.scope_kind:
             raise ValueError(
-                f"run key {self.run_key!r} does not name a"
-                f" {self.scope_kind.value} run"
+                f"run key {self.run_key!r} does not name a {self.scope_kind.value} run"
             )
+        self._validate_counts()
         if self.subject_issue_number < 0 or self.anchor_issue_number < 0:
             raise ValueError(
                 "issue references are positive numbers or 0, never negative;"
@@ -183,12 +199,60 @@ class TechLeadRunRecord:
                 f"a {self.subject_kind.value} run has no subject issue — its"
                 " coordination anchor belongs in anchor_issue_number"
             )
+        self._validate_conclusion()
+
+    def _validate_counts(self) -> None:
+        if any(
+            type(value) is not int
+            for value in (
+                self.subject_issue_number,
+                self.anchor_issue_number,
+                self.findings,
+                self.proposals,
+            )
+        ):
+            raise ValueError("receipt issue references and counts must be integers")
+
+    def _validate_conclusion(self) -> None:
+        """A conclusion has a coherent interval and delivery provenance."""
         if self.phase.is_terminal and self.ended_at is None:
             raise ValueError(
                 f"a {self.phase.value} tech-lead run must record when it ended"
             )
         if not self.phase.is_terminal and self.ended_at is not None:
             raise ValueError("a running tech-lead run has not ended yet")
+
+        start = receipt_time(self.started_at)
+        if self.ended_at is not None and receipt_time(self.ended_at) < start:
+            raise ValueError("a tech-lead receipt cannot end before it starts")
+        if (
+            self.delivery_outcome is TechLeadDeliveryOutcome.COMPLETED
+            and self.phase is not TechLeadRunPhase.COMPLETED
+        ):
+            raise ValueError("completed delivery requires a completed receipt")
+        if (
+            self.delivery_outcome is TechLeadDeliveryOutcome.HUMAN_HANDOFF
+            and self.phase
+            not in (TechLeadRunPhase.COMPLETED, TechLeadRunPhase.NEEDS_HUMAN)
+        ):
+            raise ValueError("human delivery requires a concluded handoff")
+
+    @property
+    def delivered(self) -> bool:
+        return self.delivery_outcome in (
+            TechLeadDeliveryOutcome.COMPLETED,
+            TechLeadDeliveryOutcome.HUMAN_HANDOFF,
+        ) or (
+            self.delivery_outcome is TechLeadDeliveryOutcome.LEGACY
+            and self.phase is TechLeadRunPhase.COMPLETED
+        )
+
+    @property
+    def delivery_known(self) -> bool:
+        return not (
+            self.delivery_outcome is TechLeadDeliveryOutcome.LEGACY
+            and self.phase is TechLeadRunPhase.NEEDS_HUMAN
+        )
 
     @property
     def subject_kind(self) -> TechLeadRunSubjectKind:
@@ -199,6 +263,24 @@ class TechLeadRunRecord:
         """
         return _SUBJECT_KIND_BY_SCOPE[self.scope_kind]
 
+
+@dataclass(frozen=True, slots=True)
+class TechLeadRunRecord(TechLeadRunReceipt):
+    """A validated receipt plus optional display and artifact detail.
+
+    Aggregation validates only the bounded receipt base; it never hydrates
+    display records, checks archive paths, or depends on a presentation limit.
+    """
+
+    # Operator-facing sentence for the phase. Free prose, deliberately: it is
+    # never branched on, only rendered.
+    detail: str = ""
+    # Where the run's PRESERVED artifacts are, once it has ended. ``None`` while
+    # a run is still going, and also for a run whose artifacts could not be
+    # preserved — the record then truthfully offers no drill-down rather than a
+    # button pointing into a worktree that cleanup has removed (#6858 F4).
+    artifacts: Optional[TechLeadRunArtifacts] = None
+
     def concluded(
         self,
         *,
@@ -208,6 +290,7 @@ class TechLeadRunRecord:
         findings: int = 0,
         proposals: int = 0,
         artifacts: Optional[TechLeadRunArtifacts] = None,
+        delivery_outcome: TechLeadDeliveryOutcome = TechLeadDeliveryOutcome.LEGACY,
     ) -> "TechLeadRunRecord":
         """This run, as it looks once it has stopped.
 
@@ -234,6 +317,7 @@ class TechLeadRunRecord:
             findings=findings,
             proposals=proposals,
             artifacts=artifacts,
+            delivery_outcome=delivery_outcome,
         )
 
     @property
@@ -241,4 +325,9 @@ class TechLeadRunRecord:
         """How long the run took, or 0.0 while it is still going."""
         if self.ended_at is None:
             return 0.0
-        return max(0.0, (self.ended_at - self.started_at).total_seconds())
+        return max(
+            0.0,
+            (
+                receipt_time(self.ended_at) - receipt_time(self.started_at)
+            ).total_seconds(),
+        )
