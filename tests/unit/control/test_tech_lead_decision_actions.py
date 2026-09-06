@@ -1102,7 +1102,13 @@ def test_duplicate_open_proposal_comments_instead_of_second_issue(
 
     [planned] = _plan(_decision(action), op_ledger={(act_type, 13): 321})
 
-    assert isinstance(planned, AddCommentAction)
+    from issue_orchestrator.control.required_issue_comment import ReuseTechLeadProposalAction
+    from issue_orchestrator.control.tech_lead_completion_gate import evaluate_required_act_level_outcome
+    from issue_orchestrator.control.actions import ActionResult
+    assert isinstance(planned, ReuseTechLeadProposalAction)
+    assert planned.required_op.op_type == act_type
+    assert planned.required_op.target_issue_number == 13
+    assert evaluate_required_act_level_outcome([ActionResult.fail(planned, "failed")]).failed
     assert planned.number == 321
     assert planned.is_pr is False
     assert PROPOSED_TECH_LEAD_LABEL in planned.comment
@@ -1322,3 +1328,18 @@ class TestCreateIssueExpediteProducer:
         [planned] = _plan(_decision(self._expedite_action(expedite=False)))
         assert isinstance(planned, CreateTechLeadIssueAction)
         assert planned.expedite is False
+
+
+def test_reused_kill_proposal_carries_current_launch_generation_obligation():
+    from issue_orchestrator.control.required_issue_comment import ReuseTechLeadProposalAction
+    from issue_orchestrator.domain.tech_lead_session import TechLeadSessionGeneration
+    from issue_orchestrator.domain.session_key import TaskKind
+    observed = TechLeadSessionGeneration(issue_number=13, task_kind=TaskKind.CODE,
+        terminal_id="worker-13", run_id="new-run")
+    proposed = ProposedTechLeadAction(id="A5", action_type="kill_hung_session", target_number=13, body="Again")
+    [action] = _plan(_decision(proposed), op_ledger={("kill_hung_session", 13): 321},
+        observed_session_generation=lambda number: observed)
+    assert isinstance(action, ReuseTechLeadProposalAction)
+    assert action.required_op.target_session_id == "new-run"
+    assert action.required_op.target_terminal_id == "worker-13"
+    assert action.required_op.target_session_type == "code"

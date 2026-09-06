@@ -51,7 +51,8 @@ def is_required_act_level_action(action: Action) -> bool:
     Both wired act-level mutations are mandatory completion gates.
     """
     from .tech_lead_actions import RecordTechLeadDispositionAction, EscalateTechLeadDispositionAction, CreateTechLeadProposalIssueAction
-    return isinstance(action, (ResetRetryIssueAction, KillHungSessionAction,
+    from .required_issue_comment import RequiredIssueCommentAction
+    return isinstance(action, (RequiredIssueCommentAction, ResetRetryIssueAction, KillHungSessionAction,
                                RecordTechLeadDispositionAction, EscalateTechLeadDispositionAction,
                                CreateTechLeadProposalIssueAction))
 
@@ -72,12 +73,23 @@ def partition_required_act_level_actions(
     return mandated, remainder
 
 
-def require_investigation_terminal_effect(actions: list[Action]) -> list[Action]:
-    """A failure investigation's remedy must act or prove target recovery."""
+def require_investigation_terminal_effect(actions: list[Action], *,
+        focus_issue_number: int | None = None) -> list[Action]:
+    """Require the focus diagnosis publication as well as an effective remedy."""
     from dataclasses import replace
-    return [replace(action, requires_effective_disposition=True)
-        if isinstance(action, (ResetRetryIssueAction, KillHungSessionAction)) else action
-        for action in actions]
+    from .actions import AddCommentAction
+    from .required_issue_comment import RequiredIssueCommentAction
+    required: list[Action] = []
+    for action in actions:
+        if isinstance(action, (ResetRetryIssueAction, KillHungSessionAction)):
+            action = replace(action, requires_effective_disposition=True)
+        elif (isinstance(action, AddCommentAction)
+                and not isinstance(action, RequiredIssueCommentAction)
+                and action.number == focus_issue_number and not action.is_pr):
+            action = RequiredIssueCommentAction(number=action.number, comment=action.comment,
+                reason=action.reason, expected=action.expected)
+        required.append(action)
+    return required
 
 
 def evaluate_required_act_level_outcome(
@@ -89,11 +101,15 @@ def evaluate_required_act_level_outcome(
     act-level failure, shared by the completion terminalization path so a
     failed reset can never be recorded as a clean success (#6764 re-review F2).
     """
+    from .required_issue_comment import RequiredIssueCommentAction
     failed_results = tuple(
         result
         for result in applied
         if is_required_act_level_action(result.action)
         and (result.result_type is ActionResultType.FAILURE or (
+            isinstance(result.action, RequiredIssueCommentAction)
+            and result.result_type is not ActionResultType.SUCCESS
+        ) or (
             isinstance(result.action, (ResetRetryIssueAction, KillHungSessionAction))
             and result.action.requires_effective_disposition
             and result.result_type is ActionResultType.SKIPPED
@@ -110,5 +126,3 @@ def evaluate_required_act_level_outcome(
         pending_dispositions=tuple(result.action for result in failed_results
             if result.details.get("pending_disposition") is True),
     )
-
-

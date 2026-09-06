@@ -450,8 +450,14 @@ class _DecisionActionPlanner:
         key = (proposed.action_type, proposed.target_number)
         existing = self.op_ledger.get(key)
         if existing is not None:
+            from .required_issue_comment import ReuseTechLeadProposalAction
+            from .tech_lead_proposals import build_stored_tech_lead_op
             self.actions.append(
-                AddCommentAction(
+                ReuseTechLeadProposalAction(
+                    required_op=build_stored_tech_lead_op(proposed,
+                        source_run_id=self.source_run_id, source_session_name=self.source_session_name,
+                        target_session=self.observed_session_generation(proposed.target_number)
+                            if proposed.action_type == "kill_hung_session" else None),
                     number=existing,
                     comment=build_duplicate_proposal_comment(
                         proposed, anchor_issue_number=self._anchor_number

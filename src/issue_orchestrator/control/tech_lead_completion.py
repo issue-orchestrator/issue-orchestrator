@@ -487,7 +487,8 @@ def generate_tech_lead_completion_actions(
             )
         if authority.flavor is TechLeadSessionFlavor.FAILURE_INVESTIGATION:
             from .tech_lead_reset_retry import require_investigation_terminal_effect
-            decision_actions = require_investigation_terminal_effect(decision_actions)
+            decision_actions = require_investigation_terminal_effect(decision_actions,
+                focus_issue_number=authority.focus_issue_number)
         actions.extend(decision_actions)
     else:
         # Belt-and-braces: the processing path (finding 3) should already have

@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Callable, Protocol
 
 if TYPE_CHECKING:
+    from ..domain.tech_lead_session import TechLeadDisposition
     from ..ports import RepositoryHost
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
 
@@ -31,6 +32,23 @@ class _NoDispositions:
 
 
 NO_TECH_LEAD_DISPOSITIONS: StuckSweepDispositions = _NoDispositions()
+
+
+class DispositionWaitLifecycle:
+    """Latch irreversible wait expiry consistently across sweep and publication."""
+
+    def __init__(self, authority: "TechLeadAuthorityStore") -> None:
+        self._authority = authority
+
+    def retain(self, row: "TechLeadDisposition", *, now: datetime,
+               tracker_state: str | None) -> bool:
+        if row.phase not in {"prepared", "waiting"}:
+            return False
+        if now >= row.reassess_at or tracker_state in {"closed", None}:
+            self._authority.transition_disposition(previous=row,
+                disposition=replace(row, phase="reassess"))
+            return False
+        return self._authority.load_disposition(issue_number=row.issue_number) == row
 
 
 class TechLeadDispositionLedger:
@@ -63,9 +81,8 @@ class TechLeadDispositionLedger:
             expired = self._now >= row.reassess_at
             if not expired and row.tracker_issue_number not in states:
                 states[row.tracker_issue_number] = self._read(row.tracker_issue_number)
-            if expired or states.get(row.tracker_issue_number) in {"closed", None}:
-                self._authority.transition_disposition(previous=row, disposition=replace(row, phase="reassess"))
-            else:
+            if DispositionWaitLifecycle(self._authority).retain(row, now=self._now,
+                    tracker_state=states.get(row.tracker_issue_number, "unknown")):
                 owned.add(row.issue_number)
         return frozenset(owned)
 

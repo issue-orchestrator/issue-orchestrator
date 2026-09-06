@@ -244,6 +244,12 @@ class TechLeadResetRetryExecutor:
     has_active_issue_runtime: Callable[[int], bool]
     run_reset: RunResetFn
 
+    def stale_reason(self, issue_number: int) -> str | None:
+        """Read-only applicability used when handing off to an existing proposal."""
+        return reset_retry_stale_reason(issue=self.read_issue(issue_number),
+            active_runtime=self.has_active_issue_runtime(issue_number),
+            label_manager=self.label_manager)
+
     def apply(self, action: ResetRetryIssueAction) -> ActionResult:
         issue = self.read_issue(action.issue_number)
         stale = reset_retry_stale_reason(

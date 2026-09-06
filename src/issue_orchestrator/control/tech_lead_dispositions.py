@@ -21,6 +21,7 @@ from .tech_lead_actions import RecordTechLeadDispositionAction
 
 # Compatibility exports keep the sweep's owner import stable.
 from .tech_lead_disposition_ledger import (
+    DispositionWaitLifecycle,
     NO_TECH_LEAD_DISPOSITIONS,
     StuckSweepDispositions,
     TechLeadDispositionLedger,
@@ -129,14 +130,12 @@ def _admit_disposition(
         raise ValueError("disposition has no immutable launch grant for this target/tracker")
 
 
-def _validate_live_wait(disposition: "TechLeadDisposition", host: "RepositoryHost") -> None:
+def _validate_live_target(disposition: "TechLeadDisposition", host: "RepositoryHost") -> None:
     issue = host.get_issue(disposition.issue_number)
     if issue is None or issue.state != "open":
         raise ValueError("disposition target is missing or closed")
     if disposition.tracker_issue_number not in recovery_tracker_grants(issue):
         raise ValueError("recovery tracker is no longer a declared prerequisite")
-    if host.get_issue_state(disposition.tracker_issue_number) != "open":
-        raise ValueError("recovery tracker is missing or closed")
 
 
 def _prepare(
@@ -164,7 +163,9 @@ def _prepare(
     prepared = replace(proposed, phase="prepared", recovered_at="")
     if now >= reassess_at(prepared):
         raise ValueError("recovery deadline expired; choose remediation or human escalation")
-    _validate_live_wait(prepared, host)
+    _validate_live_target(prepared, host)
+    if host.get_issue_state(prepared.tracker_issue_number) != "open":
+        raise ValueError("recovery tracker is missing or closed")
     if not authority.transition_disposition(previous=previous, disposition=prepared):
         raise ValueError("disposition admission raced another incident transition")
     return prepared
@@ -184,26 +185,38 @@ class _DispositionPublisher:
     def _revalidate(self, action: "Action", disposition: "TechLeadDisposition") -> None:
         if self.authority.load_disposition(issue_number=disposition.issue_number) != disposition:
             raise ValueError("disposition changed before publication; stale publisher refused")
-        if self.clock() >= disposition.reassess_at:
-            self.authority.transition_disposition(previous=disposition,
-                disposition=replace(disposition, phase="reassess"))
-            raise ValueError("recovery deadline expired; reassessment required")
-        _validate_live_wait(disposition, self.host)
+        # Read failures preserve unknown evidence; confirmed closure/missing or
+        # elapsed time permanently lapses this incident before any publication.
+        if not DispositionWaitLifecycle(self.authority).retain(disposition,
+                now=self.clock(), tracker_state="unknown"):
+            raise ValueError("recovery wait lapsed; reassessment required")
+        _validate_live_target(disposition, self.host)
+        now = self.clock()
+        tracker_state = ("unknown" if now >= disposition.reassess_at else
+            self.host.get_issue_state(disposition.tracker_issue_number))
+        if not DispositionWaitLifecycle(self.authority).retain(disposition,
+                now=now, tracker_state=tracker_state):
+            raise ValueError("recovery wait lapsed; reassessment required")
+        if tracker_state != "open":
+            raise ValueError("recovery tracker state is unknown; publication deferred")
         self.require_expected(action, disposition.issue_number)
         self.verify_claim(action, disposition.issue_number)
 
     def publish(self, action: "Action", disposition: "TechLeadDisposition") -> None:
         from .actions import AddCommentAction
         self._revalidate(action, disposition)
-        present = self.host.issue_comment_marker_present(disposition.issue_number, disposition_marker(disposition))
-        # Recheck after even a marker query: time, pause, or row ownership may
+        body = disposition_comment(disposition)
+        receipt = self.host.find_issue_comment_receipt(disposition.issue_number, body=body)
+        # Recheck after even a receipt query: time, pause, or row ownership may
         # have changed while the remote read was outstanding.
         self._revalidate(action, disposition)
-        if not present:
+        if receipt is None:
             result = self.apply_action(AddCommentAction(number=disposition.issue_number,
-                comment=disposition_comment(disposition), reason=action.reason, expected=action.expected))
+                comment=body, reason=action.reason, expected=action.expected))
             if result.result_type is not ActionResultType.SUCCESS:
                 raise ValueError(result.error or "disposition explanation did not commit")
+            if self.host.find_issue_comment_receipt(disposition.issue_number, body=body) is None:
+                raise ValueError("disposition explanation has no verified publication receipt")
         self._revalidate(action, disposition)
         if not self.authority.transition_disposition(previous=disposition,
             disposition=replace(disposition, phase="waiting")):
@@ -235,6 +248,8 @@ def apply_record_tech_lead_disposition(
             _DispositionPublisher(authority, repository_host, apply_action,
                 require_expected, verify_claim, clock).publish(action, disposition)
     except Exception as exc:
+        current = authority.load_disposition(issue_number=disposition.issue_number)
+        pending = pending and current is not None and current.phase == "prepared"
         logger.exception("Could not commit disposition for #%d", disposition.issue_number)
         return ActionResult.fail(action, str(exc), pending_disposition=pending)
     return ActionResult.ok(action, issue_number=disposition.issue_number,

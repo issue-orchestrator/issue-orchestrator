@@ -1,5 +1,4 @@
 """Production HTTP/adapter boundary: exact content and credential provenance."""
-from datetime import datetime, timezone
 import hashlib
 
 import httpx
@@ -79,28 +78,7 @@ def test_malformed_receipt_scan_is_unknown(monkeypatch, payload):
 
 
 @pytest.mark.parametrize("payload", [{}, {"number": 6410}, [], None, {"state": "unexpected"}, {"state": []}])
-def test_malformed_dependency_snapshot_preserves_unresolved_incident(monkeypatch, payload):
-    from issue_orchestrator.control.label_manager import LabelManager
-    from issue_orchestrator.control.stuck_sweep import run_stuck_sweep
-    from issue_orchestrator.control.tech_lead_disposition_ledger import TechLeadDispositionLedger
-    from issue_orchestrator.domain.models import OrchestratorState
-    from issue_orchestrator.domain.tech_lead_session import TechLeadDisposition
-    from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthorityStore
-    from issue_orchestrator.infra.config import Config
-    def handler(request):
-        if request.url.path.endswith("/issues/6914"):
-            return httpx.Response(200, json={"state": "open"})
-        if request.url.path.endswith("/issues/6410"):
-            return httpx.Response(200, json=payload)
-        return httpx.Response(200, json=[])
-    host = _adapter(monkeypatch, handler)
-    store = InMemoryTechLeadAuthorityStore()
-    row = TechLeadDisposition(6410, 6914, "remedy", "run", "session", "A2", "2026-08-09T00:00:00+00:00")
-    assert store.transition_disposition(previous=None, disposition=row)
-    ledger = TechLeadDispositionLedger(authority=store, issue_state=host.get_issue_state,
-        now=datetime(2026, 8, 9, 1, tzinfo=timezone.utc))
-    state, config = OrchestratorState(), Config()
-    state.recovery_attempts[6410] = 2
-    run_stuck_sweep(config, state, host, LabelManager(config), 1, dispositions=ledger)
-    assert store.load_disposition(issue_number=6410) == row
-    assert state.recovery_attempts == {6410: 2}
+def test_malformed_dependency_snapshot_is_unknown(monkeypatch, payload):
+    host = _adapter(monkeypatch, lambda request: httpx.Response(200, json=payload))
+    with pytest.raises(RepositoryHostError):
+        host.get_dependency_issue_snapshot(6410)

@@ -17,6 +17,7 @@ from issue_orchestrator.control.tech_lead_dispositions import (
     TechLeadDispositionLedger,
     apply_record_tech_lead_disposition,
     disposition_comment,
+    disposition_marker,
     recovery_tracker_grants,
 )
 from issue_orchestrator.control.tech_lead_reset_retry import (
@@ -73,8 +74,13 @@ class _Host:
             raise self.read_error
         return self.state
 
-    def issue_comment_marker_present(self, number, marker):
-        return any(marker in comment for comment in self.comments)
+    def find_issue_comment_receipt(self, number, *, body):
+        from issue_orchestrator.ports.comment_receipt import IssueCommentReceipt
+        import hashlib
+        if body in self.comments:
+            return IssueCommentReceipt("1", "https://example.test/comment", "user:7",
+                hashlib.sha256(body.encode()).hexdigest())
+        return None
 
     def add_comment(self, number, comment):
         if self.comment_error:
@@ -224,7 +230,7 @@ def test_drift_after_explanation_cannot_commit_the_binding(failure):
     harness.host.after_comment = drift
     results, _ = harness.finish()
     assert evaluate_required_act_level_outcome(results).failed
-    assert harness.store.load_disposition(issue_number=BLOCKED).phase == "prepared"
+    assert harness.store.load_disposition(issue_number=BLOCKED).phase == ("reassess" if failure == "tracker" else "prepared")
     assert len(harness.host.comments) == 1
 
 
@@ -610,18 +616,18 @@ def test_competing_replay_cannot_publish_while_first_owns_marker_check(tmp_path,
     second.host = first.host
     second.applier = first.applier
     competitor_results = []
-    original_read = first.host.issue_comment_marker_present
-    def interleaved_read(number, marker):
-        present = original_read(number, marker)
+    original_read = first.host.find_issue_comment_receipt
+    def interleaved_read(number, *, body):
+        present = original_read(number, body=body)
         competitor_results.append(second.apply(RecordTechLeadDispositionAction(disposition=_disposition())))
         return present
-    first.host.issue_comment_marker_present = interleaved_read
+    first.host.find_issue_comment_receipt = interleaved_read
     assert first.apply(RecordTechLeadDispositionAction(disposition=_disposition())).success
-    [competing] = competitor_results
+    competing = competitor_results[0]
     assert not competing.success and competing.details["pending_disposition"] is True
     assert first_store.load_disposition(issue_number=BLOCKED).phase == "waiting"
     assert len(first.host.comments) == 1
-    first.host.issue_comment_marker_present = original_read
+    first.host.find_issue_comment_receipt = original_read
     assert second.apply(RecordTechLeadDispositionAction(disposition=_disposition())).success
     assert len(first.host.comments) == 1
 
@@ -630,10 +636,10 @@ def test_competing_replay_cannot_publish_while_first_owns_marker_check(tmp_path,
 def test_publication_rechecks_deadline_after_remote_calls(advance_at):
     harness = _Harness()
     if advance_at == "marker":
-        def late_read(number, marker):
+        def late_read(number, *, body):
             harness.now += timedelta(days=2)
-            return False
-        harness.host.issue_comment_marker_present = late_read
+            return None
+        harness.host.find_issue_comment_receipt = late_read
     else:
         def late_write():
             harness.now += timedelta(days=2)
@@ -658,3 +664,94 @@ def test_publisher_rechecks_durable_identity_after_claim_admission():
     assert not harness.apply(RecordTechLeadDispositionAction(disposition=_disposition())).success
     assert harness.host.comments == []
     assert harness.store.load_disposition(issue_number=BLOCKED).phase == "recovered"
+
+
+@pytest.mark.parametrize("state", ["closed", None])
+@pytest.mark.parametrize("after", ["reopen", "outage"])
+def test_publish_time_tracker_lapse_is_irreversible_across_restart(tmp_path, state, after):
+    from issue_orchestrator.infra.tech_lead_authority_store import SqliteTechLeadAuthorityStore
+    path = tmp_path / "authority.sqlite"
+    harness = _Harness(SqliteTechLeadAuthorityStore(path))
+    harness.host.after_comment = lambda: setattr(harness.host, "state", state)
+    command = RecordTechLeadDispositionAction(disposition=_disposition())
+    assert not harness.apply(command).success
+    assert harness.store.load_disposition(issue_number=BLOCKED).phase == "reassess"
+    restarted = _Harness(SqliteTechLeadAuthorityStore(path))
+    restarted.host = harness.host
+    restarted.host.state = "open"
+    restarted.host.after_comment = lambda: None
+    if after == "outage":
+        restarted.host.read_error = RuntimeError("unknown tracker state")
+    assert restarted.ledger().owned_issue_numbers() == set()
+    assert not restarted.apply(command).success
+    assert restarted.store.load_disposition(issue_number=BLOCKED).phase == "reassess"
+    assert len(restarted.host.comments) == 1
+
+
+def test_marker_only_comment_cannot_satisfy_disposition_publication():
+    harness = _Harness()
+    harness.host.comments.append(disposition_marker(_disposition()))
+    assert harness.apply(RecordTechLeadDispositionAction(disposition=_disposition())).success
+    assert harness.host.comments[-1] == disposition_comment(_disposition())
+    assert len(harness.host.comments) == 2
+
+
+def test_posted_disposition_without_receipt_cannot_activate_wait():
+    harness = _Harness()
+    harness.host.find_issue_comment_receipt = lambda number, *, body: None
+    assert not harness.apply(RecordTechLeadDispositionAction(disposition=_disposition())).success
+    assert harness.store.load_disposition(issue_number=BLOCKED).phase == "prepared"
+
+
+def test_successful_remedy_with_failed_required_diagnosis_withholds_success_effects():
+    from issue_orchestrator.control.tech_lead_completion_gate import require_investigation_terminal_effect
+    harness = _Harness()
+    actions = require_investigation_terminal_effect([
+        RecordTechLeadDispositionAction(disposition=_disposition()),
+        AddCommentAction(number=BLOCKED, comment="required diagnosis"),
+    ], focus_issue_number=BLOCKED)
+    actions.append(AddCommentAction(number=BLOCKED, comment="success-only"))
+    original = harness.host.add_comment
+    def write(number, body):
+        if body == "required diagnosis":
+            raise RuntimeError("diagnosis write failed")
+        return original(number, body)
+    harness.host.add_comment = write
+    results, error = apply_completion_actions_gated(harness, actions, issue_number=BLOCKED)
+    assert error is None
+    assert evaluate_required_act_level_outcome(results).failed
+    assert results[0].success
+    assert "success-only" not in harness.host.comments
+
+
+@pytest.mark.parametrize("payload", [{}, {"number": BLOCKED}, [], None, {"state": "unexpected"}, {"state": []}])
+def test_production_malformed_snapshot_preserves_incident_budget(payload):
+    from issue_orchestrator.adapters.github.github_adapter import GitHubAdapter
+    from issue_orchestrator.control.label_manager import LabelManager
+    from issue_orchestrator.control.stuck_sweep import run_stuck_sweep
+    from issue_orchestrator.domain.models import OrchestratorState
+    from issue_orchestrator.infra.config import Config
+    client = MagicMock()
+    client.get_issue.side_effect = lambda number, **kwargs: {"state": "open"} if number == TRACKER else payload
+    host = GitHubAdapter(repo="owner/repo", http_client=client, verify_writes=False)
+    harness = _Harness()
+    row = _disposition()
+    assert harness.store.transition_disposition(previous=None, disposition=row)
+    ledger = TechLeadDispositionLedger(authority=harness.store, issue_state=host.get_issue_state, now=NOW)
+    state, config = OrchestratorState(), Config()
+    state.recovery_attempts[BLOCKED] = 2
+    host.list_issues = lambda *args, **kwargs: []
+    run_stuck_sweep(config, state, host, LabelManager(config), 1, dispositions=ledger)
+    assert harness.store.load_disposition(issue_number=BLOCKED) == row
+    assert state.recovery_attempts == {BLOCKED: 2}
+
+
+def test_unknown_tracker_read_preserves_admission_without_publishing():
+    harness = _Harness()
+    row = replace(_disposition(), phase="prepared")
+    assert harness.store.transition_disposition(previous=None, disposition=row)
+    harness.host.state = "unknown"
+    result = harness.apply(RecordTechLeadDispositionAction(disposition=row))
+    assert not result.success and result.details["pending_disposition"] is True
+    assert harness.store.load_disposition(issue_number=BLOCKED) == row
+    assert harness.host.comments == []

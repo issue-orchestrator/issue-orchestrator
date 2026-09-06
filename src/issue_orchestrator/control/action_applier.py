@@ -535,39 +535,13 @@ class ActionApplier:
         )
 
     def _apply_add_comment(self, action: Action) -> ActionResult:
-        """Add a comment to an issue or PR."""
+        from .required_issue_comment import apply_issue_comment
         assert isinstance(action, AddCommentAction)
         assert self.repository_host is not None, "repository_host required for add_comment"
-
-        # Enforce expected state before mutation (raises ReconciliationRequired)
-        self._require_expected(action, action.number)
-        # Verify claim ownership before write (raises ClaimLostError)
-        self._verify_claim_before_write(action, action.number)
-
-        try:
-            comment_url = self.repository_host.add_comment(action.number, action.comment)
-            logger.info(issue_log(action.number, "Comment added (%d chars)"), len(action.comment))
-            # Emit review comment event for PR-targeted comments.
-            if action.is_pr:
-                excerpt = action.comment.strip().replace("\n", " ")
-                self.events.publish(make_trace_event(
-                    EventName.REVIEW_COMMENT_ADDED,
-                    {
-                        "issue_number": action.number,
-                        "pr_number": action.number,
-                        "comment_url": comment_url,
-                        "comment_excerpt": excerpt if excerpt else "",
-                        "summary": "Posted review comment",
-                    },
-                ))
-            return ActionResult.ok(
-                action,
-                number=action.number,
-                is_pr=action.is_pr,
-            )
-        except Exception as e:
-            logger.error(issue_log(action.number, "Failed to add comment: %s"), e)
-            return ActionResult.fail(action, str(e))
+        return apply_issue_comment(action, host=self.repository_host,
+            require_expected=self._require_expected, verify_claim=self._verify_claim_before_write,
+            events=self.events, authority=self.tech_lead_ops,
+            reset=self.tech_lead_reset_retry, kill=self.tech_lead_kill_session)
 
     def _apply_supersede_pr(self, action: Action) -> ActionResult:
         """Comment on and close a PR that has been superseded by a reset."""
