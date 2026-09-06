@@ -1,0 +1,106 @@
+"""Production HTTP/adapter boundary: exact content and credential provenance."""
+from datetime import datetime, timezone
+import hashlib
+
+import httpx
+import pytest
+
+from issue_orchestrator.adapters.github.auth import GitHubAppInstallationTokenProvider, GitHubAuth
+from issue_orchestrator.adapters.github.tokens import GitHubAppAuthConfig
+from issue_orchestrator.adapters.github.http_client import GitHubHttpClient, GitHubHttpConfig
+from issue_orchestrator.adapters.github.github_adapter import GitHubAdapter
+from issue_orchestrator.ports.repository_host import RepositoryHostError
+
+BODY = "Diagnosis and remedy.\n<!-- io:receipt:test -->"
+
+
+def _adapter(monkeypatch, handler, *, app=None):
+    original_client = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda **kwargs: original_client(transport=httpx.MockTransport(handler), **kwargs))
+    auth = None
+    if app:
+        provider = GitHubAppInstallationTokenProvider(GitHubAppAuthConfig.from_values(
+            app_id=app.get("id"), client_id=app.get("client_id"), installation_id="1", private_key_env="UNUSED_TEST_KEY"))
+        monkeypatch.setattr(provider, "get_token", lambda: "test-app-token")
+        auth = GitHubAuth(provider, ())
+    client = GitHubHttpClient(GitHubHttpConfig(repo="owner/repo", token="token", auth=auth))
+    return GitHubAdapter(repo="owner/repo", http_client=client, verify_writes=False)
+
+
+def _comment(body=BODY, user_id=7, **values):
+    return {"body": body, "id": 55, "html_url": "https://github.com/owner/repo/issues/1#issuecomment-55",
+        "user": {"id": user_id, "type": "User"}, **values}
+
+
+@pytest.mark.parametrize("comment,accepted", [
+    (_comment(), True), (_comment("<!-- io:receipt:test -->"), False),
+    (_comment(user_id=8), False), (_comment("edited away\n<!-- io:receipt:test -->"), False),
+])
+def test_receipt_requires_exact_body_and_authenticated_author(monkeypatch, comment, accepted):
+    calls = []
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(200, json={"id": 7} if request.url.path == "/user" else [comment])
+    receipt = _adapter(monkeypatch, handler).find_issue_comment_receipt(1, body=BODY)
+    assert (receipt is not None) is accepted
+    assert all("if-none-match" not in request.headers for request in calls)
+    if receipt:
+        assert receipt.comment_id == "55" and receipt.author_key == "github-user:7"
+        assert receipt.body_sha256 == hashlib.sha256(BODY.encode()).hexdigest()
+
+
+@pytest.mark.parametrize("configured,observed,accepted", [
+    ({"id": "12"}, {"id": 12}, True), ({"id": "12"}, {"id": 13}, False),
+    ({"client_id": "Iv1.same"}, {"client_id": "Iv1.same"}, True),
+])
+def test_app_receipt_uses_server_app_provenance(monkeypatch, configured, observed, accepted):
+    def handler(request):
+        assert request.url.path != "/user"
+        return httpx.Response(200, json=[_comment(user={"id": 42, "type": "Bot"}, performed_via_github_app=observed)])
+    receipt = _adapter(monkeypatch, handler, app=configured).find_issue_comment_receipt(1, body=BODY)
+    assert (receipt is not None) is accepted
+
+
+def test_receipt_reads_all_pages(monkeypatch):
+    def handler(request):
+        if request.url.path == "/user":
+            return httpx.Response(200, json={"id": 7})
+        page = request.url.params["page"]
+        return httpx.Response(200, json=[_comment("other")] * 100 if page == "1" else [_comment()])
+    assert _adapter(monkeypatch, handler).find_issue_comment_receipt(1, body=BODY) is not None
+
+
+@pytest.mark.parametrize("payload", [{}, None, [None], [{"body": BODY}], [{"id": 55}]])
+def test_malformed_receipt_scan_is_unknown(monkeypatch, payload):
+    def handler(request):
+        return httpx.Response(200, json={"id": 7} if request.url.path == "/user" else payload)
+    with pytest.raises(RepositoryHostError):
+        _adapter(monkeypatch, handler).find_issue_comment_receipt(1, body=BODY)
+
+
+@pytest.mark.parametrize("payload", [{}, {"number": 6410}, [], None, {"state": "unexpected"}, {"state": []}])
+def test_malformed_dependency_snapshot_preserves_unresolved_incident(monkeypatch, payload):
+    from issue_orchestrator.control.label_manager import LabelManager
+    from issue_orchestrator.control.stuck_sweep import run_stuck_sweep
+    from issue_orchestrator.control.tech_lead_disposition_ledger import TechLeadDispositionLedger
+    from issue_orchestrator.domain.models import OrchestratorState
+    from issue_orchestrator.domain.tech_lead_session import TechLeadDisposition
+    from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthorityStore
+    from issue_orchestrator.infra.config import Config
+    def handler(request):
+        if request.url.path.endswith("/issues/6914"):
+            return httpx.Response(200, json={"state": "open"})
+        if request.url.path.endswith("/issues/6410"):
+            return httpx.Response(200, json=payload)
+        return httpx.Response(200, json=[])
+    host = _adapter(monkeypatch, handler)
+    store = InMemoryTechLeadAuthorityStore()
+    row = TechLeadDisposition(6410, 6914, "remedy", "run", "session", "A2", "2026-08-09T00:00:00+00:00")
+    assert store.transition_disposition(previous=None, disposition=row)
+    ledger = TechLeadDispositionLedger(authority=store, issue_state=host.get_issue_state,
+        now=datetime(2026, 8, 9, 1, tzinfo=timezone.utc))
+    state, config = OrchestratorState(), Config()
+    state.recovery_attempts[6410] = 2
+    run_stuck_sweep(config, state, host, LabelManager(config), 1, dispositions=ledger)
+    assert store.load_disposition(issue_number=6410) == row
+    assert state.recovery_attempts == {6410: 2}

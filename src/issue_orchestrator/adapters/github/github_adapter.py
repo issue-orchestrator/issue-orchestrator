@@ -20,7 +20,8 @@ from ...ports.pull_request_tracker import (
     StatusCheckRollupRead,
     StatusCheckRollupState,
 )
-from ...ports.repository_host import DependencyIssueSnapshot
+from ...ports.repository_host import DependencyIssueSnapshot, RepositoryHostError
+from ...ports.comment_receipt import IssueCommentReceipt
 from ...infra import gh_audit
 from .github_issue import GitHubIssue
 from .errors import GitHubHttpError, GitHubTransportError
@@ -1431,8 +1432,8 @@ class GitHubAdapter:
 
             if isinstance(output, dict):
                 state = output.get("state")
-                if not isinstance(state, str):
-                    return None
+                if not isinstance(state, str) or state not in {"open", "closed"}:
+                    raise RepositoryHostError("GitHub issue snapshot has malformed state")
                 milestone = output.get("milestone")
                 raw_milestone_title = (
                     milestone.get("title") if isinstance(milestone, dict) else None
@@ -1443,7 +1444,7 @@ class GitHubAdapter:
                     else None
                 )
                 return DependencyIssueSnapshot(state=state, milestone=milestone_title)
-            return None
+            raise RepositoryHostError("GitHub issue snapshot is not an object")
         except GitHubHttpError as e:
             if _is_not_found_error(e):
                 logger.debug(
@@ -1790,6 +1791,9 @@ class GitHubAdapter:
             List of comment dictionaries.
         """
         return self._client.get_issue_comments(issue_number)
+
+    def find_issue_comment_receipt(self, issue_number: int, *, body: str) -> IssueCommentReceipt | None:
+        return self._client.find_issue_comment_receipt(issue_number, body=body)
 
     def issue_comment_marker_present(self, issue_number: int, marker: str) -> bool:
         """Return True if any comment on the issue/PR contains ``marker``.
