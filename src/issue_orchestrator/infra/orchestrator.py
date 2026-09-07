@@ -257,15 +257,10 @@ class Orchestrator:
         :mod:`..control.tech_lead_termination`.
         """
         from ..control.tech_lead_termination import terminate_tech_lead_session
-
         return terminate_tech_lead_session(self, session)
 
     def cancel_review_exchange_for_issue(self, issue_number: int, *, reason: str) -> ReviewExchangeCancellation:
-        """Cancel issue-scoped review-exchange runtime work.
-
-        Entrypoints use this behavior-level facade instead of reaching
-        through ``deps`` to find lifecycle collaborators.
-        """
+        """Cancel review-exchange work through the issue lifecycle owner."""
         return cancel_issue_review_exchange(
             issue_number=issue_number,
             reason=reason,
@@ -296,10 +291,15 @@ class Orchestrator:
             publish_recovery=self.deps.publish_recovery,
         )
 
+    def issue_session_generation_stale_reason(self, target: "TechLeadSessionGeneration") -> str | None:
+        """Read current applicability without stopping or re-approving any work."""
+        from ..control.review_exchange_lifecycle import issue_session_generation_stale_reason
+        return issue_session_generation_stale_reason(target=target,
+            active_sessions=self.state.active_sessions, session_exists=self._session_exists)
+
     def terminate_issue_session_generation(self, target: "TechLeadSessionGeneration", *, reason: str) -> "GenerationBoundTermination":
         """Conditionally stop one exact launch-observed worker generation."""
         from ..control.review_exchange_lifecycle import terminate_issue_session_generation
-
         return terminate_issue_session_generation(
             target=target,
             reason=reason,

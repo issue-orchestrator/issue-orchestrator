@@ -20,7 +20,7 @@ from ..infra.runtime_artifacts import filter_orchestrator_untracked_planted
 from ..ports.command_runner import OutputNewlines
 from .git_exact_operations import GitExactOperations
 from .git_branch_identity import issue_number_from_branch
-from ..domain.exact_git import ExactPushResult, RefPinOutcome, RetainedRef
+from ..domain.exact_git import ExactPushDestination, ExactPushResult, RefPinOutcome, RetainedRef
 from ..domain.validated_work_store import AncestryRelation
 from ..ports.git import Git, GitError, GitResult
 from .git_revision_reader import GitRevisionReader
@@ -69,8 +69,14 @@ class GitWorkingCopy:
     def compare_commits(self, repository: Path, *, left: str, right: str) -> AncestryRelation:
         return GitExactOperations(self._git, self._git_auth).compare_commits(repository, left=left, right=right)
 
-    def push_exact(self, repository: Path, *, remote: str, branch: str, target_sha: str, expected_sha: str | None) -> ExactPushResult:
-        return GitExactOperations(self._git, self._git_auth).push_exact(repository, remote=remote, branch=branch, target_sha=target_sha, expected_sha=expected_sha)
+    def resolve_push_destination(self, repository: Path, *, remote: str) -> ExactPushDestination:
+        return GitExactOperations(self._git, self._git_auth).resolve_push_destination(repository, remote=remote)
+
+    def read_pinned_ref(self, repository: Path, *, ref: str) -> RetainedRef | None:
+        return GitExactOperations(self._git, self._git_auth).read_pinned_ref(repository, ref=ref)
+
+    def push_exact(self, repository: Path, *, remote: str, branch: str, target_sha: str, expected_sha: str | None, destination: ExactPushDestination | None = None) -> ExactPushResult:
+        return GitExactOperations(self._git, self._git_auth).push_exact(repository, remote=remote, branch=branch, target_sha=target_sha, expected_sha=expected_sha, destination=destination)
 
     def _run_git(
         self,

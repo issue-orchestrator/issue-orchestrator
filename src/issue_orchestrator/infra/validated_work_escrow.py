@@ -2,7 +2,6 @@
 
 import hashlib
 import os
-import stat
 import uuid
 from pathlib import Path
 
@@ -19,43 +18,8 @@ from ..domain.validated_work_escrow import (
 from ..domain.validated_work_store import EvidenceAdmission, EvidenceRow
 from ..ports.exact_git import ExactGit
 from .validated_work_envelope import decode_envelope, encode_envelope
-
-
-def fsync_directory(path: Path) -> None:
-    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-
-
-def durable_directory(path: Path) -> None:
-    if path.exists():
-        if path.is_symlink() or not path.is_dir():
-            raise ValueError("escrow directory must not be a symlink or file")
-        return
-    durable_directory(path.parent)
-    path.mkdir(exist_ok=True)
-    fsync_directory(path.parent)
-
-
-def read_regular(path: Path, size: int) -> bytes:
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    with os.fdopen(fd, "rb") as stream:
-        info = os.fstat(stream.fileno())
-        if not stat.S_ISREG(info.st_mode) or info.st_size != size:
-            raise ValueError(f"artifact is not a regular file of expected size: {path}")
-        data = stream.read(size + 1)
-    if len(data) != size:
-        raise ValueError(f"artifact changed while reading: {path}")
-    return data
-
-
-def write_durable(path: Path, data: bytes) -> None:
-    with path.open("xb") as stream:
-        stream.write(data)
-        stream.flush()
-        os.fsync(stream.fileno())
+from .escrow_files import fsync_directory, durable_directory, read_regular, write_durable
+from .validated_work_release import EscrowRelease
 
 
 class FilesystemValidatedWorkEscrow:
@@ -90,6 +54,9 @@ class FilesystemValidatedWorkEscrow:
 
     def _validate_admission(self, admission: EvidenceAdmission) -> None:
         validate_capture_locations(admission)
+        self._require_repository(admission)
+
+    def _require_repository(self, admission: EvidenceAdmission) -> None:
         if admission.evidence.identity.key.repo_slug != self._repo_slug:
             raise ValueError("capture belongs to another repository")
 
@@ -192,6 +159,8 @@ class FilesystemValidatedWorkEscrow:
         if not self.root.exists():
             return (), EscrowReport()
         for issue in sorted(self.root.iterdir()):
+            if issue.name == ".releases" and issue.is_dir() and not issue.is_symlink():
+                continue  # Durable release receipts survive filesystem completion and DB retries.
             if issue.name == ".tmp" and issue.is_dir() and not issue.is_symlink():
                 for partial in issue.iterdir():
                     problems.append(
@@ -227,23 +196,10 @@ class FilesystemValidatedWorkEscrow:
 
     def release(self, evidence: EvidenceRow) -> None:
         """Called only under the store's resolved-record retention transaction."""
-        original = self.inspect(evidence.admission.escrow_dir)
-        if not self.verifies(evidence):
-            raise ValueError("invalid retention evidence; retained")
-        directory = self._directory(original.escrow_dir)
-        allowed = {
-            "capture.json",
-            *(
-                ARTIFACT_FILENAMES[a.slot]
-                for a in evidence_artifacts(original.evidence)
-            ),
-        }
-        if {p.name for p in directory.iterdir()} != allowed:
-            raise ValueError("unexpected escrow contents; retained")
-        # No recursive deletion: a publication workspace needs its later owner.
-        for ref, sha in evidence_pins(original.evidence):
-            self._git.delete_pinned_ref(self._repository, ref=ref, sha=sha)
-        for filename in allowed:
-            (directory / filename).unlink()
-        directory.rmdir()
-        fsync_directory(directory.parent)
+        # Live observations may have refreshed; the receipt/immutable envelope
+        # supplies the original pin set, never the current observation columns.
+        self._require_repository(evidence.admission)
+        EscrowRelease(
+            root=self.root, directory=self._directory(evidence.admission.escrow_dir),
+            repository=self._repository, git=self._git,
+        ).release(evidence, inspect=self.inspect, verifies=self.verifies)

@@ -404,11 +404,7 @@ class FactGatherer:
             return None
 
         now_ts = time.time() if now is None else now
-        # Tech-lead attention sweep (#6823): an independent, timer-gated trigger
-        # that re-injects terminally-stuck issues into the reactive-tech-lead
-        # pipeline. Runs regardless of the batch/health/storm arming below (it
-        # feeds discovered_failures, not TechLeadFacts). stuck_sweep_due is pure
-        # state/config math, so a disabled/not-due sweep makes ZERO GitHub calls.
+        # Timer-gated recovery runs independently of the anchor triggers.
         self._run_stuck_sweep_if_due(state, now_ts)
 
         watch_label = self._get_tech_lead_watch_label()
@@ -421,20 +417,15 @@ class FactGatherer:
         # there; without it every storm mints a duplicate anchor. No API call.
         storm_armed = storm_possible(state, self.config)
 
-        # The act-level PROPOSAL machinery reconciles INDEPENDENT of the batch
-        # threshold (#6779 R12): approved proposals must execute and absent ones
-        # be surfaced even at threshold=0. The local op ledger (no GitHub call)
-        # says whether there is anything to reconcile.
+        # Durable proposal operations reconcile even when batch review is off.
         ops = (
             dict(self.tech_lead_authority.list_ops())
             if tech_lead_workflow_enabled and self.tech_lead_authority is not None
             else {}
         )
-        # The finding-promotion lane (#6957) arms INDEPENDENTLY of the batch,
-        # health, storm, and proposal triggers: it reads the durable pattern and
-        # promotion ledgers, not the anchor scan. Eligibility is pure local math
-        # (zero GitHub calls, so a board with nothing promotable costs nothing);
-        # only loop closure reads, and only for promotions actually in flight.
+        pending_dispositions = tuple(row for row in self.tech_lead_authority.list_dispositions()
+            if row.phase == "prepared") if self.tech_lead_authority is not None else ()
+        # Local promotion state arms independently of anchor triggers.
         promotable, promotion_updates, settled = gather_finding_promotion_facts(
             self.config,
             authority=self.tech_lead_authority,
@@ -457,7 +448,7 @@ class FactGatherer:
         # never report them as "nothing armed" (F5).
         other_armed = bool(
             batch_armed or health_armed or ops or storm_armed or promotable
-            or promotion_updates or settled or gated_proposals or backlog_cleared
+            or promotion_updates or settled or gated_proposals or backlog_cleared or pending_dispositions
         )
         if not approval_due and not other_armed:
             return None
@@ -515,6 +506,7 @@ class FactGatherer:
         state.tech_lead_gated_backlog_seen = bool(gated_proposals)
 
         facts = TechLeadFacts(
+            pending_dispositions=pending_dispositions,
             pr_count=len(prs),
             threshold=self.config.tech_lead_review_threshold,
             existing_tech_lead_issue=existing_tech_lead_issue,
@@ -550,6 +542,7 @@ class FactGatherer:
         the collaborators it cannot reach and routes its two observations.
         """
         from .stuck_sweep import run_stuck_sweep_cycle
+        from .tech_lead_dispositions import build_disposition_ledger
 
         run_stuck_sweep_cycle(
             self.config,
@@ -565,6 +558,15 @@ class FactGatherer:
             queue_cache_store=self.queue_cache_store,
             on_result=self._emit_stuck_sweep,
             on_scan_incomplete=self._emit_stuck_sweep_incomplete,
+            # Issues a completed failure investigation parked on an open recovery
+            # tracker (#6971): already diagnosed, so re-injecting them buys a
+            # duplicate verdict and spends budget an undiagnosed issue needs. The
+            # ledger owner also releases bindings whose tracker closed. Built per
+            # sweep because it is only reachable behind the due gate — a not-due
+            # sweep makes zero calls of any kind.
+            dispositions=build_disposition_ledger(
+                self.tech_lead_authority, self.repository_host, now
+            ),
         )
 
     def _open_proposal_targets(self) -> frozenset[int]:

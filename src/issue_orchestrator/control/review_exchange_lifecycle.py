@@ -238,6 +238,47 @@ def terminate_issue_runtime(
     )
 
 
+def issue_session_generation_stale_reason(*, target: TechLeadSessionGeneration,
+        active_sessions: list["Session"], session_exists: Callable[[str], bool]) -> str | None:
+    """One read-only generation rule shared by proposal reuse and termination."""
+    candidates = [
+        session
+        for session in active_sessions
+        if session.issue.number == target.issue_number
+        and session.key.task in {TaskKind.CODE, TaskKind.REWORK}
+    ]
+    if not candidates:
+        return (
+            f"issue #{target.issue_number} has no active killable session; "
+            "the observed generation is already gone"
+        )
+    if len(candidates) != 1:
+        return (
+            f"issue #{target.issue_number} has {len(candidates)} active "
+            "killable sessions; refusing an ambiguous termination"
+        )
+    current = candidates[0]
+    if (
+        current.key.task is not target.task_kind
+        or current.terminal_id != target.terminal_id
+        or current.run_assets.run_id != target.run_id
+    ):
+        return (
+            f"issue #{target.issue_number}'s live generation "
+            f"({current.key.task.value} terminal {current.terminal_id}, "
+            f"run {current.run_assets.run_id}) is not the observed generation "
+            f"({target.task_kind.value} terminal {target.terminal_id}, "
+            f"run {target.run_id}); refusing to kill a replacement"
+        )
+    if not session_exists(target.terminal_id):
+        return (
+            f"issue #{target.issue_number}'s observed terminal "
+            f"{target.terminal_id} is no longer running"
+        )
+
+    return None
+
+
 def terminate_issue_session_generation(
     *,
     target: TechLeadSessionGeneration,
@@ -256,48 +297,10 @@ def terminate_issue_session_generation(
     missing, replacement, review-only, or ambiguous runtime returns a stale
     outcome without touching any terminal or hidden owner.
     """
-    candidates = [
-        session
-        for session in active_sessions
-        if session.issue.number == target.issue_number
-        and session.key.task in {TaskKind.CODE, TaskKind.REWORK}
-    ]
-    if not candidates:
-        return GenerationBoundTermination(
-            stale_reason=(
-                f"issue #{target.issue_number} has no active killable session; "
-                "the observed generation is already gone"
-            )
-        )
-    if len(candidates) != 1:
-        return GenerationBoundTermination(
-            stale_reason=(
-                f"issue #{target.issue_number} has {len(candidates)} active "
-                "killable sessions; refusing an ambiguous termination"
-            )
-        )
-    current = candidates[0]
-    if (
-        current.key.task is not target.task_kind
-        or current.terminal_id != target.terminal_id
-        or current.run_assets.run_id != target.run_id
-    ):
-        return GenerationBoundTermination(
-            stale_reason=(
-                f"issue #{target.issue_number}'s live generation "
-                f"({current.key.task.value} terminal {current.terminal_id}, "
-                f"run {current.run_assets.run_id}) is not the observed generation "
-                f"({target.task_kind.value} terminal {target.terminal_id}, "
-                f"run {target.run_id}); refusing to kill a replacement"
-            )
-        )
-    if not session_exists(target.terminal_id):
-        return GenerationBoundTermination(
-            stale_reason=(
-                f"issue #{target.issue_number}'s observed terminal "
-                f"{target.terminal_id} is no longer running"
-            )
-        )
+    stale = issue_session_generation_stale_reason(target=target,
+        active_sessions=active_sessions, session_exists=session_exists)
+    if stale is not None:
+        return GenerationBoundTermination(stale_reason=stale)
 
     # Prepare every hidden owner before committing the visible terminal stop.
     # Each teardown is idempotent, and every owner is attempted even when a

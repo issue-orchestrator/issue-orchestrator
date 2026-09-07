@@ -37,6 +37,7 @@ TechLeadActionType = Literal[
     "post_comment",
     "create_issue",
     "escalate_to_human",
+    "defer_to_tracker",
     "flag_pattern",
     "reset_retry",
     "kill_hung_session",
@@ -54,6 +55,7 @@ VALID_TECH_LEAD_ACTION_TYPES: frozenset[str] = frozenset(
         "post_comment",
         "create_issue",
         "escalate_to_human",
+        "defer_to_tracker",
         "flag_pattern",
         "reset_retry",
         "kill_hung_session",
@@ -107,6 +109,7 @@ _TYPE_SCOPED_ACTION_FIELDS: tuple[tuple[str, str, str], ...] = (
     ("expedite", "create_issue", "#6870"),
     ("duplicate_of", "create_issue", "#6878"),
     ("fix_class", "flag_pattern", "#6957"),
+    ("tracker_number", "defer_to_tracker", "#6971"),
 )
 
 
@@ -179,6 +182,14 @@ class ProposedTechLeadAction:
       accrues to, so a re-sighting joins the case file of the class rather than
       one keyed by the cited issue alone (#6989).
     * ``escalate_to_human`` — ``target_number`` + ``body`` (the reason).
+    * ``defer_to_tracker`` — ``target_number`` + ``tracker_number`` + ``body``
+      (#6971): the TERMINAL DISPOSITION of a completed failure investigation.
+      "This issue is diagnosed; the remedy is owned by open tracker
+      #``tracker_number``." It transfers stuck-sweep ownership away from the
+      sweep until that tracker closes, so an already-diagnosed issue stops
+      consuming recovery budget on identical re-investigations. The tracker
+      must differ from the target: an issue that tracks its own recovery would
+      never be re-examined.
     * ``flag_pattern`` — ``body`` describing the cross-job pattern PLUS a
       REQUIRED ``pattern_signature``: a short stable slug keying the durable
       case-file ledger (#6781) — the same signature always names the same
@@ -232,6 +243,12 @@ class ProposedTechLeadAction:
     # cross-checks it. Only meaningful for ``create_issue``; ``validate()``
     # rejects it on any other action type.
     duplicate_of: int | None = None
+    # The OPEN tracker a ``defer_to_tracker`` disposition binds to (#6971). The
+    # disposition is only as durable as this binding: the orchestrator keeps the
+    # issue out of the stuck sweep while the tracker is open, and releases it the
+    # moment the tracker closes with the issue still blocked. Only meaningful for
+    # ``defer_to_tracker``; ``validate()`` rejects it on any other action type.
+    tracker_number: int | None = None
 
     @classmethod
     def from_mapping(cls, data: Any, *, index: int) -> "ProposedTechLeadAction":
@@ -289,6 +306,12 @@ class ProposedTechLeadAction:
                 f"proposed action {action_id} duplicate_of must be a positive"
                 f" integer, got {duplicate_of!r}"
             )
+        tracker_number = data.get("tracker_number")
+        if tracker_number is not None and not _is_valid_issue_number(tracker_number):
+            raise ValueError(
+                f"proposed action {action_id} tracker_number must be a positive"
+                f" integer, got {tracker_number!r}"
+            )
         action = cls(
             id=action_id,
             action_type=action_type,
@@ -306,6 +329,7 @@ class ProposedTechLeadAction:
                 f"proposed action {action_id} expedite",
             ),
             duplicate_of=duplicate_of,
+            tracker_number=tracker_number,
         )
         action.validate()
         return action
@@ -354,6 +378,11 @@ class ProposedTechLeadAction:
                 _is_valid_issue_number(self.duplicate_of),
                 f"{context} duplicate_of must be a positive issue number",
             )
+        if self.tracker_number is not None:
+            _require(
+                _is_valid_issue_number(self.tracker_number),
+                f"{context} tracker_number must be a positive issue number",
+            )
         if self.pattern_signature is not None:
             _require(
                 bool(self.pattern_signature.strip())
@@ -391,6 +420,22 @@ class ProposedTechLeadAction:
                 self.target_number is not None, f"{context} requires target_number"
             )
             _require(bool(self.body), f"{context} requires body")
+        elif self.action_type == "defer_to_tracker":
+            _require(self.target_number is not None, f"{context} requires target_number")
+            _require(bool(self.body), f"{context} requires body (the disposition)")
+            # The binding IS the release condition (#6971). Without a tracker the
+            # disposition would never release; bound to ITSELF it would release
+            # only when the issue it is parking closes — both strand the issue.
+            _require(
+                self.tracker_number is not None,
+                f"{context} requires tracker_number (the open issue that owns"
+                " the recovery, #6971)",
+            )
+            _require(
+                self.tracker_number != self.target_number,
+                f"{context} tracker_number must differ from target_number:"
+                " an issue cannot track its own recovery",
+            )
         elif self.action_type == "flag_pattern":
             _require(bool(self.body), f"{context} requires body")
             # Contract change (#6781): the signature keys the durable
@@ -427,6 +472,7 @@ class ProposedTechLeadAction:
             ("fix_class", self.fix_class),
             ("expedite", self.expedite),
             ("duplicate_of", self.duplicate_of),
+            ("tracker_number", self.tracker_number),
         )
         for key, value in optional:
             if value:
