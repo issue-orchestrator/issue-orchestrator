@@ -612,27 +612,8 @@ class CompletionReviewExchange:
     ) -> str | None:
         """Tear down issue-scoped runtime work after a terminal job failure."""
         if self._review_exchange_canceller is None:
-            logger.warning(
-                "[REVIEW_EXCHANGE] no canceller configured for background "
-                "failure issue=%d job_id=%s reason=%s",
-                issue_number,
-                job_id,
-                reason,
-            )
-            return None
-        try:
-            cancellation = self._review_exchange_canceller(issue_number, reason)
-        except Exception as exc:  # noqa: BLE001 - failure path must still halt visibly
-            logger.exception(
-                "[REVIEW_EXCHANGE] failed to cancel runtime after background "
-                "failure issue=%d job_id=%s reason=%s",
-                issue_number,
-                job_id,
-                reason,
-            )
-            return (
-                f"{REVIEW_EXCHANGE_ERROR_PREFIX} failed to cancel runtime work: {exc}"
-            )
+            raise RuntimeError("terminal exchange requires the shared runtime preservation owner")
+        cancellation = self._review_exchange_canceller(issue_number, reason)
         cancelled_jobs = cancellation.cancelled_job_ids
         logger.info(
             "[REVIEW_EXCHANGE] cancelled runtime after background failure "

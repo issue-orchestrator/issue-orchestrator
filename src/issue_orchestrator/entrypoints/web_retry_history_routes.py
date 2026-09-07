@@ -6,7 +6,6 @@ import json
 import logging
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Request
@@ -497,26 +496,6 @@ def has_active_reset_retry_runtime(*, issue_number: int, state: "OrchestratorSta
 
 def _terminate_reset_retry_runtime(*, issue_number: int, state: "OrchestratorState", deps: Any) -> IssueRuntimeTermination:
     return deps.runtime_lifecycle.terminate(issue_number, "reset-retry")
-
-
-def _configured_attr(obj: Any, name: str) -> Any | None:
-    """Return explicitly configured dataclass/test attributes only.
-
-    Unit route tests use ``MagicMock`` dependency bundles. Plain ``getattr``
-    would manufacture child mocks for collaborators that were never wired,
-    which makes lifecycle code think a session manager exists. Real
-    dataclass-based dependencies and explicitly assigned test doubles both
-    surface through ``vars``. Real slotted runtime objects may use normal
-    attribute lookup after ``vars`` proves the object has no instance
-    dictionary.
-    """
-    if obj is None:
-        return None
-    try:
-        values = vars(obj)
-    except TypeError:
-        return getattr(obj, name, None)
-    return values.get(name)
 
 
 def _clear_scratch_retry_pending_state(

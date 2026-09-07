@@ -665,6 +665,7 @@ def build_orchestrator(
     )
     if action_applier is not None:
         action_applier.completion_intake = completion_intake
+    assert action_applier is not None
     completion_processor, session_controller_instance, completion_handler_factory = (
         create_completion_components(
             config,
@@ -740,12 +741,7 @@ def build_orchestrator(
     from ..execution.label_store import LabelStore
     label_store = LabelStore(state_dir(config.repo_root) / "label_store.sqlite")
 
-    # Wire post-construction collaborators into action_applier: the pair
-    # registry + shared supervisor so escalation / history-reconcile /
-    # STOP_SESSION boundaries terminate hidden review-exchange runtime,
-    # label_store for write-through persistence, and publish_recovery so
-    # issue terminal boundaries abandon publish retries (post-construction
-    # because PublishRecoveryService depends on this applier).
+    # Publish recovery closes the composition cycle before lifecycle binding.
     if action_applier is not None:
         action_applier.pair_registry = pair_registry
         action_applier.background_job_supervisor = background_job_supervisor

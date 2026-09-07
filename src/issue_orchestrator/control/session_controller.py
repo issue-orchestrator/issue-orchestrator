@@ -757,25 +757,8 @@ class SessionController:
         reason: str,
     ) -> str | None:
         if self._review_exchange_canceller is None:
-            logger.warning(
-                "[REVIEW_EXCHANGE] no canceller configured for terminal "
-                "deferred exchange issue=%d session=%s reason=%s",
-                issue_number,
-                session_name,
-                reason,
-            )
-            return None
-        try:
-            cancellation = self._review_exchange_canceller(issue_number, reason)
-        except Exception as exc:  # noqa: BLE001 - terminal path must still surface timeout
-            logger.exception(
-                "[REVIEW_EXCHANGE] failed to cancel terminal deferred exchange "
-                "issue=%d session=%s reason=%s",
-                issue_number,
-                session_name,
-                reason,
-            )
-            return f"failed to cancel runtime work: {exc}"
+            raise RuntimeError("terminal exchange requires the shared runtime preservation owner")
+        cancellation = self._review_exchange_canceller(issue_number, reason)
         cancelled_jobs = cancellation.cancelled_job_ids
         logger.info(
             "[REVIEW_EXCHANGE] cancelled terminal deferred exchange "

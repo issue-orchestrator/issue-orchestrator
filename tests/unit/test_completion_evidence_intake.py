@@ -260,9 +260,6 @@ def test_receipt_cannot_be_rebound_to_different_allocated_assets(tmp_path):
 
 
 def test_terminal_release_refused_when_validator_attestation_cannot_commit(tmp_path):
-    from issue_orchestrator.control.review_exchange_lifecycle import (
-        terminate_issue_runtime,
-    )
     from tests.unit.test_review_exchange_lifecycle import _FakeSessionManager
 
     ledger, _, capability, owner, _, _ = setup(tmp_path)
@@ -274,28 +271,14 @@ def test_terminal_release_refused_when_validator_attestation_cannot_commit(tmp_p
             "CREATE TRIGGER interrupt_terminal BEFORE INSERT ON completion_validation_attestations BEGIN SELECT RAISE(ABORT, 'interrupted'); END"
         )
     with pytest.raises(CompletionIntakeError):
-        terminate_issue_runtime(
-            issue_number=42,
-            reason="test-terminal",
-            completion_intake=owner,
-            pair_registry=None,
-            job_supervisor=None,
-            session_manager=sessions,
-        )
+        runtime_owners(completion_intake=owner, pair_registry=None, job_supervisor=None, session_manager=sessions).terminate(42, "test-terminal")
     assert sessions.stopped == []
     assert ledger.pending_receipts()[0].receipt == receipt
     with sqlite3.connect(db) as conn:
         conn.execute("DROP TRIGGER interrupt_terminal")
     with pytest.raises(IntakeClosed):
         owner.submit(capability, command(completion(), "late"))
-    terminate_issue_runtime(
-        issue_number=42,
-        reason="test-terminal",
-        completion_intake=owner,
-        pair_registry=None,
-        job_supervisor=None,
-        session_manager=sessions,
-    )
+    runtime_owners(completion_intake=owner, pair_registry=None, job_supervisor=None, session_manager=sessions).terminate(42, "test-terminal")
     assert sessions.stopped == ["issue-42", "rework-42"]
     assert ledger.validation_for_receipt(receipt.entry_id).passed
 
@@ -535,3 +518,5 @@ def test_production_bootstrap_requires_validation_even_when_review_gate_disabled
             ValueError, match="Completion intake requires validation.quick.cmd"
         ):
             bootstrap.build_orchestrator(config)
+
+from tests.runtime_lifecycle_helpers import runtime_owners

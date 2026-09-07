@@ -162,6 +162,8 @@ class Orchestrator:
     def __post_init__(self):
         # All validation is done by OrchestratorDeps being a frozen dataclass with no Optional fields.
         # If deps is constructed, all dependencies are present.
+        if self.state.active_sessions is not self.deps.runtime_lifecycle.core.active_sessions:
+            raise ValueError("orchestrator state must share its runtime lifecycle active-session owner")
         init_orchestrator_components(self)
 
     @cached_property

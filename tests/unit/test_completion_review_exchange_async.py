@@ -366,6 +366,7 @@ def _build(
         issue_run_allocator=IssueRunAllocationService(
             cast(SessionOutput, session_output),
             issue_run_ledger if issue_run_ledger is not None else MemoryIssueRunLedger(),
+            branch_working_copy(),
         ),
         agent_callback_endpoint=ready_callback_endpoint(),
         config=_make_config(tmp_path, require_validation=require_validation),
@@ -1753,3 +1754,5 @@ def test_retry_does_not_reconsume_prior_run_timeout_cancellation(
         "review-exchange:230:coding-1:run-a",
         "review-exchange:230:coding-1:run-b",
     ]
+
+from tests.run_allocation_helpers import branch_working_copy

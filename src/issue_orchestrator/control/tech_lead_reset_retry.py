@@ -206,20 +206,10 @@ def reset_retry_stale_reason(
     """
     if issue is None:
         return "target issue could not be read from the repository host"
-    if issue.state != "open":
-        return f"target issue #{issue.number} is {issue.state}, not open"
-    if active_runtime:
-        return (
-            f"issue #{issue.number} has active runtime (session, review-exchange"
-            " pair/job, or publish retry); resetting would terminate live work"
-            " the proposal did not observe"
-        )
-    if not label_manager.get_blocking(issue.labels):
-        return (
-            f"issue #{issue.number} no longer carries a blocking-class"
-            " label; the diagnosed failure appears already recovered"
-        )
-    return None
+    from ..domain.reset_retry_policy import ResetRetryFacts
+    return ResetRetryFacts(issue.number, issue.state, active_runtime,
+        bool(label_manager.get_blocking(issue.labels))).stale_reason()
+
 
 
 @dataclass

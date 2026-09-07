@@ -14,3 +14,33 @@ class PreparedCompletionEvidence:
     completion_bytes: bytes
     validation_bytes: bytes
     requested_actions: tuple[RequestedAction, ...]
+
+
+from hashlib import sha256
+import json
+from .completion_intake import CompletionIntakeError, CompletionParseStatus
+from .models import CompletionOutcome, CompletionRecord
+
+
+def prepare_candidate_evidence(run: IssueRunRecord, entry: CompletionIntakeEntry,
+        validation: CompletionValidationAttestation | None, completion_bytes: bytes | None,
+        validation_bytes: bytes | None) -> PreparedCompletionEvidence | None:
+    if entry.run != run.run:
+        raise CompletionIntakeError("receipt differs from exact recorded run")
+    if entry.parse_status is CompletionParseStatus.REJECTED:
+        return None
+    if completion_bytes is None or sha256(completion_bytes).hexdigest() != entry.normalized_sha256:
+        raise CompletionIntakeError("admitted completion custody is corrupt")
+    record = CompletionRecord.from_dict(json.loads(completion_bytes))
+    if record.outcome is not CompletionOutcome.COMPLETED or not record.requests_publication:
+        return None
+    if validation is None:
+        raise CompletionIntakeError("completed publication intent lacks owner validation")
+    if validation_bytes is None or sha256(validation_bytes).hexdigest() != validation.result_sha256:
+        raise CompletionIntakeError("admitted validation custody is corrupt")
+    if not validation.passed:
+        return None
+    if run.branch_name is None:
+        raise CompletionIntakeError("legacy run has no owner-recorded branch binding")
+    return PreparedCompletionEvidence(run, entry, validation, completion_bytes, validation_bytes,
+        tuple(record.requested_actions))

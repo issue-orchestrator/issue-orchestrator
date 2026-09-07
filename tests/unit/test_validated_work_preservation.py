@@ -209,7 +209,8 @@ def test_manual_exact_receipt_preparation_does_not_close_run(custody):
     assert candidate.validation.head_sha == custody.git.head_sha(custody.worktree)
     with pytest.raises(CompletionIntakeError, match="allocated run"):
         custody.intake.prepare_receipt(replace(receipt, content_sha256="0" * 64), custody.run)
-    other = replace(custody.run, worktree_path=custody.worktree.parent)
+    from tests.unit.test_issue_run_evidence import run_record
+    other = run_record(custody.worktree.parent / "other").run
     with pytest.raises(CompletionIntakeError, match="allocated run"):
         custody.intake.prepare_receipt(receipt, other)
     submit(custody, "still-open")

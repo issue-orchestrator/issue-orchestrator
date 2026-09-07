@@ -8,13 +8,12 @@ from uuid import uuid4
 from ..domain.completion_intake import CompletionIntakeError
 from ..domain.historical_intake import HistoricalIntakeCommand
 from ..domain.session_run import SessionRunAssets
-from ..domain.validated_work import ValidatedWorkState
 from ..domain.historical_intake_policy import (
     require_historical_attestation,
     historical_admission_evidence,
 )
 from ..domain.completion_intake_policy import normalized_completion_artifact
-from ..domain.validated_work_store import AdmissionOutcome, EvidenceAdmission
+from ..domain.validated_work_store import AdmissionOutcome
 from ..ports.git import Git
 from ..ports.completion_intake import CompletionIntakeLedger
 from ..ports.historical_intake import ParkedEvidenceCapture

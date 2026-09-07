@@ -223,7 +223,7 @@ class TestDebugSessionEndpoint:
         ledger = SqliteIssueRunLedger(tmp_path / "state" / "runs.sqlite")
         if registration_fails:
             ledger = MagicMock(record_run=MagicMock(side_effect=IssueRunEvidenceUnavailable("disk full")))
-        mock_orch.deps.issue_run_allocator = IssueRunAllocationService(session_output, ledger)
+        mock_orch.deps.issue_run_allocator = IssueRunAllocationService(session_output, ledger, branch_working_copy())
 
         def spawn(**kwargs):
             assert len(ledger.recorded_runs(123)) == 1
@@ -1156,3 +1156,5 @@ class TestTheRouteMapsTheTypedOutcome:
         assert body["removed_labels"] == ["blocked-needs-human"]
         assert "was not dismissed" in body["error"]
         assert "retry the action" in body["error"]
+
+from tests.run_allocation_helpers import branch_working_copy

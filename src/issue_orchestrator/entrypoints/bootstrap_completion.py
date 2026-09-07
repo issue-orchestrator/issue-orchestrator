@@ -148,11 +148,6 @@ def create_completion_components(
         PersistentReviewExchangeRunner,
     )
     from ..control.governed_label_set import GovernedLabelSet
-    from ..control.review_exchange_lifecycle import (
-        ReviewExchangeCancellation,
-
-    )
-
     if github is None:
         # No repository host: there is no completion pipeline to build.
         return None, None, None

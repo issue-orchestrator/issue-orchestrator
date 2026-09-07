@@ -116,7 +116,7 @@ class ExchangeIntakeFixture:
         )
 
     def allocator(self, output):
-        return IssueRunAllocationService(output, self.ledger)
+        return IssueRunAllocationService(output, self.ledger, GitWorkingCopy(create_git(LocalCommandRunner())))
 
     def __enter__(self):
         self.thread.start()
