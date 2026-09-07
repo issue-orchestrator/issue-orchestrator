@@ -57,7 +57,7 @@ def _apply_create(state, *, labels, expedite, issue_number=100, lane=None,
     )
     result = apply_create_tech_lead_issue(
         action,
-        repository_host=repo,
+        before_case_file_write=lambda *args: None, repository_host=repo,
         events=Mock(),
         ops=None,
         add_comment=lambda number, comment: "https://example/comment",

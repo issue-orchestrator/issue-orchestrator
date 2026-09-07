@@ -143,6 +143,7 @@ def tech_lead_action_handlers(
     apply_action: ActionHandler,
     verify_claim: ExpectedStateGuard,
     require_expected: ExpectedStateGuard,
+    require_mutation_authority: ExpectedStateGuard,
     repository_host: "RepositoryHost | None",
     authority: "TechLeadAuthorityStore | None",
     promotion_target: "PromotionTargetHost | None",
@@ -170,7 +171,8 @@ def tech_lead_action_handlers(
         # Repeat pattern observation: evidence comment + durable count (#6957).
         ActionType.APPEND_PATTERN_OBSERVATION: lambda action: (
             apply_append_pattern_observation(
-                action, repository_host=repository_host, authority=authority
+                action, repository_host=repository_host, authority=authority,
+                before_write=lambda: require_mutation_authority(action, reconciliation_subject_for(action)),
             )
         ),
         # Terminal disposition: bind the diagnosed issue to its tracker (#6971).

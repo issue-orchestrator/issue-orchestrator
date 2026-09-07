@@ -219,7 +219,7 @@ class _Registry:
         self.promotion_target = MagicMock()
         inert = self._inert
         self.handlers = tech_lead_action_handlers(
-            create_tech_lead_issue=inert,
+            require_mutation_authority=lambda *args: None, create_tech_lead_issue=inert,
             surface_proposal=inert,
             reset_retry=inert,
             kill_hung_session=inert,

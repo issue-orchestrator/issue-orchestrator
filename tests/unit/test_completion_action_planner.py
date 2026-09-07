@@ -2021,12 +2021,14 @@ class TestProductionOpenIssueDedupCorpus:
             for action in actions
         )
 
-    def test_propose_gates_verified_open_issue_duplicate(self, tmp_path: Path) -> None:
+    def test_propose_accrues_verified_open_issue_duplicate_to_the_ledger(
+        self, tmp_path: Path
+    ) -> None:
+        """#6989 end-to-end: a cited duplicate the session may not comment on
+        lands on the durable case-file ledger, not on a fresh gated issue —
+        which is what grew one new open issue per review per standing problem."""
         from issue_orchestrator.domain.open_issue_corpus import (
             build_open_issue_fingerprint,
-        )
-        from issue_orchestrator.domain.tech_lead_session import (
-            PROPOSED_TECH_LEAD_LABEL,
         )
 
         config = make_tech_lead_config(tmp_path)
@@ -2050,13 +2052,21 @@ class TestProductionOpenIssueDedupCorpus:
             open_issue_corpus_store=store,
         ).generate_completion_actions(session, SessionStatus.COMPLETED)
 
-        [gated] = [
+        [case_file] = [
+            action
+            for action in actions
+            if isinstance(action, CreateTechLeadCaseFileIssueAction)
+        ]
+        assert case_file.pattern_signature == "duplicate-of-#1"
+        assert "#1" in case_file.body
+        # No fresh follow-up issue was minted (the case file subclasses the same
+        # action, so the check has to exclude it explicitly).
+        assert not [
             action
             for action in actions
             if isinstance(action, CreateTechLeadIssueAction)
+            and not isinstance(action, CreateTechLeadCaseFileIssueAction)
         ]
-        assert PROPOSED_TECH_LEAD_LABEL in gated.labels
-        assert "DUPLICATE of #1" in gated.body
         assert not any(
             isinstance(action, AddCommentAction)
             and "deduplicated follow-up" in action.comment

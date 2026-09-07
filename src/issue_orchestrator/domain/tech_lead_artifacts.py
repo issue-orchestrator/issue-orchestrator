@@ -176,7 +176,11 @@ class ProposedTechLeadAction:
 
     * ``post_comment`` — ``target_number`` + ``body`` (``target_is_pr`` selects
       the comment surface).
-    * ``create_issue`` — ``title`` + ``body`` (+ optional ``labels``).
+    * ``create_issue`` — ``title`` + ``body`` (+ optional ``labels``). Optional
+      ``duplicate_of`` states the agent's (untrusted) dedup intent; optional
+      ``pattern_signature`` names the recurring class an agent-cited duplicate
+      accrues to, so a re-sighting joins the case file of the class rather than
+      one keyed by the cited issue alone (#6989).
     * ``escalate_to_human`` — ``target_number`` + ``body`` (the reason).
     * ``defer_to_tracker`` — ``target_number`` + ``tracker_number`` + ``body``
       (#6971): the TERMINAL DISPOSITION of a completed failure investigation.

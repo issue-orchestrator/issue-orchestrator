@@ -708,6 +708,82 @@ def test_identical_classification_is_idempotent(tmp_path: Path, make_store) -> N
     )
 
 
+@pytest.mark.parametrize("make_store", OP_STORES)
+def test_a_later_observation_establishes_a_missing_diagnosis(
+    tmp_path: Path, make_store
+) -> None:
+    """#6989 round-1 review F1: a case file opened by an evidence-only duplicate
+    sighting has NO canonical diagnosis, so the first reviewed ``flag_pattern``
+    must establish it — in the SAME write as the classification upgrade, since
+    promotion reads both and files the issue on the diagnosis."""
+    store = make_store(tmp_path)
+    store.record_pattern(signature="s", issue_number=1, observation_id="r1:s:A1")
+
+    assert store.note_pattern_observation(
+        signature="s",
+        observation_id="r2:s:A1",
+        fix_class="code",
+        area="control",
+        diagnosis="Mechanism: the renewer blocks the tick; renew off-tick.",
+    )
+
+    [evidence] = store.list_pattern_evidence()
+    assert evidence.diagnosis == (
+        "Mechanism: the renewer blocks the tick; renew off-tick."
+    )
+    assert (evidence.fix_class, evidence.area, evidence.observation_count) == (
+        "code",
+        "control",
+        2,
+    )
+
+
+@pytest.mark.parametrize("make_store", OP_STORES)
+def test_a_later_observation_never_displaces_a_recorded_diagnosis(
+    tmp_path: Path, make_store
+) -> None:
+    """The diagnosis is prose, so a second reviewed narrative is not a conflict
+    to raise on — but which one a promotion is filed on must not depend on
+    observation order either. First non-empty wins, and an empty one (an
+    evidence-only sighting) never erases what is recorded."""
+    store = make_store(tmp_path)
+    store.record_pattern(
+        signature="s",
+        issue_number=1,
+        observation_id="r1:s:A1",
+        diagnosis="Mechanism: the renewer blocks the tick.",
+    )
+
+    store.note_pattern_observation(
+        signature="s", observation_id="r2:s:A1", diagnosis="Seen again today."
+    )
+    store.note_pattern_observation(signature="s", observation_id="r3:s:A1")
+
+    [evidence] = store.list_pattern_evidence()
+    assert evidence.diagnosis == "Mechanism: the renewer blocks the tick."
+    assert evidence.observation_count == 3
+
+
+@pytest.mark.parametrize("make_store", OP_STORES)
+def test_a_blank_recorded_diagnosis_does_not_block_a_real_one(
+    tmp_path: Path, make_store
+) -> None:
+    """"Recorded" has to mean "documents something". A whitespace-only value
+    says nothing a promotion could be filed on, so it must not lock the
+    signature out of ever getting a real diagnosis."""
+    store = make_store(tmp_path)
+    store.record_pattern(
+        signature="s", issue_number=1, observation_id="r1:s:A1", diagnosis="   \n "
+    )
+
+    store.note_pattern_observation(
+        signature="s", observation_id="r2:s:A1", diagnosis="Mechanism: a leaked pool."
+    )
+
+    [evidence] = store.list_pattern_evidence()
+    assert evidence.diagnosis == "Mechanism: a leaked pool."
+
+
 # --- In-flight creation intents (#6957 round-3 review F10/F11) -------------
 
 

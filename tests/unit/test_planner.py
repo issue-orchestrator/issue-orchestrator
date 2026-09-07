@@ -641,7 +641,10 @@ class TestPlannerDependencyGating:
             SkippedItem(
                 item_type="issue",
                 number=2,
-                reason="dependency: Blocked - waiting on: #100",
+                reason=("dependency: Blocked - waiting on: #100; "
+                        "predecessor_outside_scheduler_scope: #100 "
+                        "(open but absent from the observed scheduler scope; "
+                        "check configured agent assignment and queue filters)"),
             ),
         )
         assert scheduler.dependency_evaluator is evaluator
