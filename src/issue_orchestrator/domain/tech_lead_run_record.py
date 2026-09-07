@@ -35,7 +35,12 @@ from enum import Enum
 from typing import Optional
 
 from .tech_lead_receipt_time import receipt_time
-from .tech_lead_run import TechLeadRunScopeKind, scope_kind_of_run_key
+from .tech_lead_run import (
+    IssueInvestigationScope,
+    TechLeadRunScopeKind,
+    global_scope_for_flavor,
+    scope_kind_of_run_key,
+)
 from .tech_lead_run_artifacts import TechLeadRunArtifacts
 from .tech_lead_session import TechLeadSessionFlavor
 
@@ -163,7 +168,7 @@ class TechLeadRunReceipt:
         TechLeadRunPhase(self.phase)
         TechLeadDeliveryOutcome(self.delivery_outcome)
         self._validate_strings()
-        if not self.run_id or not self.session_name:
+        if not self.run_id.strip() or not self.session_name.strip():
             raise ValueError(
                 "A tech-lead run record needs its session run identity"
                 f" (run_id={self.run_id!r}, session_name={self.session_name!r}):"
@@ -181,21 +186,29 @@ class TechLeadRunReceipt:
                 f" got subject={self.subject_issue_number}"
                 f" anchor={self.anchor_issue_number}"
             )
-        # The scope decides what a subject may be. Without this a global run can
-        # still be stored as if the anchor were its subject, which is the exact
-        # confusion the anchor field exists to remove (#6858 F5).
-        if self.subject_kind is TechLeadRunSubjectKind.ISSUE:
-            if self.subject_issue_number <= 0:
-                raise ValueError(
-                    "a focused tech-lead investigation references the issue it"
-                    " investigates; got no subject issue number"
-                )
-        elif self.subject_issue_number or self.subject_title:
+        self._validate_scope()
+        self._validate_conclusion()
+
+    def _validate_scope(self) -> None:
+        """The existing scope value owns canonical key, subject and flavor."""
+        scope = (
+            IssueInvestigationScope(self.subject_issue_number)
+            if self.scope_kind is TechLeadRunScopeKind.ISSUE
+            else global_scope_for_flavor(self.flavor)
+        )
+        if (self.scope_kind, self.run_key, self.flavor) != (
+            scope.kind,
+            scope.run_key,
+            scope.flavor,
+        ):
+            raise ValueError("receipt scope, run key, subject and flavor must agree")
+        if scope.subject_issue_number is None and (
+            self.subject_issue_number or self.subject_title
+        ):
             raise ValueError(
                 f"a {self.subject_kind.value} run has no subject issue — its"
                 " coordination anchor belongs in anchor_issue_number"
             )
-        self._validate_conclusion()
 
     def _validate_strings(self) -> None:
         if any(
