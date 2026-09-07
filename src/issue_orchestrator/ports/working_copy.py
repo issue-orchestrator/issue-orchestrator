@@ -288,7 +288,9 @@ class WorkingCopy(Protocol):
         r"""Return unified diff for changes from *base_ref* to HEAD.
 
         Implementations should use merge-base semantics (``base_ref...HEAD``)
-        so callers scan exactly what the branch contributes.
+        so callers scan exactly what the branch contributes. Disable external
+        diff/text-conversion filters and submodule suppression: callers rely
+        on an empty successful diff meaning the branch has no content changes.
 
         ``diff_text`` must reproduce the patch byte-for-byte. Records are
         LF-delimited, so a bare ``\r`` inside one is content: transports that

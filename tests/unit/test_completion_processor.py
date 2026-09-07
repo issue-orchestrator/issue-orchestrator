@@ -827,8 +827,8 @@ class TestReviewExchangeModeResolution:
         processor = self._make_processor(config)
 
         assert (
-            processor._resolve_review_exchange_mode("agent:coder") == "via-local-loop"
-        )  # noqa: SLF001
+            processor._resolve_review_exchange_mode("agent:coder") == "via-local-loop"  # noqa: SLF001
+        )
 
 
 class TestReviewExchangeExecution:
@@ -2249,8 +2249,8 @@ class TestReviewExchangeExecution:
         )
 
         assert (
-            processor._resolve_review_exchange_mode("agent:coder") == "via-local-loop"
-        )  # noqa: SLF001
+            processor._resolve_review_exchange_mode("agent:coder") == "via-local-loop"  # noqa: SLF001
+        )
 
     def test_auto_mode_without_agent_label_returns_none(self, tmp_path):
         config = self._make_config(tmp_path)
@@ -2697,11 +2697,13 @@ class TestTechLeadCompletionEffects:
         *,
         review_exchange_runner=None,
         tech_lead_authority=None,
+        dirty_check="off",
     ) -> CompletionProcessor:
         prompt = tmp_path / "tech-lead.md"
         prompt.write_text("Tech Lead prompt")
         config = Config()
         config.repo_root = tmp_path  # authority store home
+        config.validation.publish.dirty_check = dirty_check
         config.tech_lead_review_agent = "agent:tech-lead"
         config.agents = {
             "agent:tech-lead": AgentConfig(prompt_path=prompt),
@@ -2774,7 +2776,8 @@ class TestTechLeadCompletionEffects:
         tech_lead_authority_store,
         worktree_with_completion,
     ):
-        """No-change audit: NoCommitsBetweenError is success, no labels/comment."""
+        """A clean audit bypasses review and publication, retaining its decision."""
+        review_runner = _CapturingReviewExchangeRunner()
         processor = self._make_processor(
             tmp_path,
             mock_label_adapter,
@@ -2782,8 +2785,8 @@ class TestTechLeadCompletionEffects:
             mock_git_adapter,
             event_bus,
             tech_lead_authority=tech_lead_authority_store,
+            review_exchange_runner=review_runner,
         )
-        processor._emit_publish_failed = MagicMock()  # noqa: SLF001
         mock_pr_adapter.create_pr.side_effect = self.NO_COMMITS_ERROR
         worktree = worktree_with_completion(self._completed_record())
         run_assets = self._armed_run_assets(tech_lead_authority_store, worktree)
@@ -2794,9 +2797,161 @@ class TestTechLeadCompletionEffects:
 
         assert result.success is True
         assert not result.errors
-        processor._emit_publish_failed.assert_not_called()  # noqa: SLF001
+        assert review_runner.calls == []
+        mock_git_adapter.push.assert_not_called()
+        mock_pr_adapter.create_pr.assert_not_called()
         # No comment: neither the requested one nor a failure diagnostic.
         mock_pr_adapter.add_comment.assert_not_called()
+
+    def test_clean_investigation_reaches_its_decision_plan(
+        self, tmp_path, mock_label_adapter, mock_pr_adapter, mock_git_adapter,
+        event_bus, worktree_with_completion,
+    ):
+        from issue_orchestrator.control.actions import AddCommentAction
+        from issue_orchestrator.domain.models import SessionStatus
+        from tests.unit.test_completion_action_planner import (
+            arm_investigation_session, make_planner, make_tech_lead_config,
+            make_tech_lead_session, plant_tech_lead_decision_pair,
+        )
+
+        config = make_tech_lead_config(tmp_path)
+        runner = _CapturingReviewExchangeRunner()
+        processor = self._make_processor(
+            tmp_path, mock_label_adapter, mock_pr_adapter, mock_git_adapter,
+            event_bus, review_exchange_runner=runner,
+        )
+        worktree = worktree_with_completion(self._completed_record())
+        session = make_tech_lead_session(worktree)
+        arm_investigation_session(config, session)
+        plant_tech_lead_decision_pair(session, comment_targets=(1,))
+        # A completed investigation owns a next step as well as a diagnosis.
+        data_dir = session.run_dir / "tech-lead-data"
+        decision_path = data_dir / "tech-lead-decision.json"
+        decision = json.loads(decision_path.read_text())
+        decision["proposed_actions"].append({
+            "id": "A2", "action_type": "escalate_to_human", "target_number": 1,
+            "body": "A human must approve the diagnosed remedy.", "finding_ids": ["T1"],
+        })
+        decision_path.write_text(json.dumps(decision))
+        report_path = data_dir / "tech-lead-report.md"
+        report_path.write_text(report_path.read_text() + "\nT1 leads to A2: human disposition.\n")
+
+        result = processor.process(
+            worktree, run_assets=session.run_assets, issue_number=1,
+            issue_title="Investigate blocked job", agent_label="agent:tech-lead",
+        )
+
+        assert result.success and not result.is_non_terminal
+        assert runner.calls == []
+        mock_git_adapter.push.assert_not_called()
+        mock_pr_adapter.create_pr.assert_not_called()
+        actions = make_planner(config).generate_completion_actions(
+            session, SessionStatus.COMPLETED, processing_errors=result.errors,
+            review_exchange_halted=result.review_exchange_halted,
+        )
+        diagnoses = [action for action in actions if isinstance(action, AddCommentAction)
+                     and action.number == 1 and "Diagnosis for #1" in action.comment]
+        assert len(diagnoses) == 1
+
+    def test_unknown_diff_blocks_publication_instead_of_claiming_clean_audit(
+        self, tmp_path, mock_label_adapter, mock_pr_adapter, mock_git_adapter,
+        event_bus, tech_lead_authority_store, worktree_with_completion,
+    ):
+        from issue_orchestrator.control.completion_action_planner import critical_processing_errors
+
+        runner = _CapturingReviewExchangeRunner()
+        processor = self._make_processor(
+            tmp_path, mock_label_adapter, mock_pr_adapter, mock_git_adapter,
+            event_bus, review_exchange_runner=runner,
+            tech_lead_authority=tech_lead_authority_store,
+        )
+        worktree = worktree_with_completion(self._completed_record())
+        assets = self._armed_run_assets(tech_lead_authority_store, worktree)
+        mock_git_adapter.diff_against_base.return_value = DiffResult(
+            success=False, error="base ref unavailable"
+        )
+        result = self._process(processor, worktree, agent_label="agent:tech-lead", run_assets=assets)
+        assert not result.success
+        assert "base ref unavailable" in result.message
+        critical, _ = critical_processing_errors(result.errors)
+        assert critical == result.errors
+        assert runner.calls == []
+        mock_git_adapter.push.assert_not_called()
+        mock_pr_adapter.create_pr.assert_not_called()
+
+    def test_empty_committed_diff_does_not_bypass_dirty_worktree_guard(
+        self, tmp_path, mock_label_adapter, mock_pr_adapter, mock_git_adapter,
+        event_bus, tech_lead_authority_store, worktree_with_completion,
+    ):
+        runner = _CapturingReviewExchangeRunner()
+        processor = self._make_processor(
+            tmp_path, mock_label_adapter, mock_pr_adapter, mock_git_adapter,
+            event_bus, review_exchange_runner=runner,
+            tech_lead_authority=tech_lead_authority_store, dirty_check="tracked",
+        )
+        worktree = worktree_with_completion(self._completed_record())
+        assets = self._armed_run_assets(tech_lead_authority_store, worktree)
+        mock_git_adapter.has_tracked_changes.return_value = True
+        mock_git_adapter.list_dirty_files.return_value = ["src/valuable.py"]
+        result = self._process(processor, worktree, agent_label="agent:tech-lead", run_assets=assets)
+        assert not result.success
+        assert runner.calls == []
+        mock_git_adapter.diff_against_base.assert_not_called()
+        mock_git_adapter.push.assert_not_called()
+        mock_pr_adapter.create_pr.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("dirty", "dirty_files", "branch", "succeeds"),
+        [
+            (True, ["src/valuable.py"], "issue-123", False),
+            (True, None, "issue-123", False),
+            (False, [], "issue-123", True),
+            # Protected-branch rejection is push-specific. A clean audit whose
+            # only requested effect is CREATE_PR does not push this branch.
+            (False, [], "main", True),
+        ],
+        ids=["dirty-source", "unknown-dirty-state", "clean", "clean-main-no-push"],
+    )
+    def test_create_pr_only_intent_checks_dirty_state_before_clean_audit(
+        self, tmp_path, mock_label_adapter, mock_pr_adapter, mock_git_adapter,
+        event_bus, tech_lead_authority_store, worktree_with_completion,
+        dirty, dirty_files, branch, succeeds,
+    ):
+        runner = _CapturingReviewExchangeRunner()
+        processor = self._make_processor(
+            tmp_path, mock_label_adapter, mock_pr_adapter, mock_git_adapter,
+            event_bus, review_exchange_runner=runner,
+            tech_lead_authority=tech_lead_authority_store, dirty_check="tracked",
+        )
+        record = self._completed_record()
+        record.requested_actions = [RequestedAction.CREATE_PR]
+        worktree = worktree_with_completion(record)
+        assets = self._armed_run_assets(tech_lead_authority_store, worktree)
+        mock_git_adapter.get_current_branch.return_value = branch
+        mock_git_adapter.has_tracked_changes.return_value = dirty
+        mock_git_adapter.list_dirty_files.return_value = dirty_files
+
+        result = self._process(
+            processor, worktree, agent_label="agent:tech-lead", run_assets=assets
+        )
+
+        assert result.success is succeeds
+        mock_git_adapter.has_tracked_changes.assert_called_once_with(
+            worktree, include_staged=True
+        )
+        assert runner.calls == []
+        mock_git_adapter.push.assert_not_called()
+        mock_pr_adapter.create_pr.assert_not_called()
+        if succeeds:
+            mock_git_adapter.diff_against_base.assert_called_once_with(
+                worktree, "origin/main"
+            )
+        else:
+            mock_git_adapter.diff_against_base.assert_not_called()
+            if dirty_files is None:
+                assert "dirty state is unknown" in result.message
+            else:
+                assert "src/valuable.py" in result.message
 
     def test_changed_tech_lead_audit_publishes_pr_but_posts_no_comment(
         self,
@@ -2816,6 +2971,9 @@ class TestTechLeadCompletionEffects:
             mock_git_adapter,
             event_bus,
             tech_lead_authority=tech_lead_authority_store,
+        )
+        mock_git_adapter.diff_against_base.return_value = DiffResult(
+            success=True, diff_text="diff --git a/doc.md b/doc.md\n--- a/doc.md\n+++ b/doc.md\n@@ -1 +1 @@\n-old\n+new\n"
         )
         worktree = worktree_with_completion(self._completed_record())
         run_assets = self._armed_run_assets(tech_lead_authority_store, worktree)
@@ -2949,6 +3107,9 @@ class TestTechLeadCompletionEffects:
             event_bus,
             review_exchange_runner=review_runner,
             tech_lead_authority=tech_lead_authority_store,
+        )
+        mock_git_adapter.diff_against_base.return_value = DiffResult(
+            success=True, diff_text="diff --git a/doc.md b/doc.md\n--- a/doc.md\n+++ b/doc.md\n@@ -1 +1 @@\n-old\n+new\n"
         )
         worktree = worktree_with_completion(self._completed_record())
         run_assets = make_session_run_assets(worktree)

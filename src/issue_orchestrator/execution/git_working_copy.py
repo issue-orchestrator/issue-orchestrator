@@ -284,6 +284,8 @@ class GitWorkingCopy:
         the diff. A command failure is a first-class result so control code can
         fail closed with a useful operator-facing message.
 
+        Disable presentation filters and submodule suppression: consumers use
+        this patch to enforce safety guards and establish publication intent.
         Read byte-exactly: patch records are LF-delimited, so a carriage return
         Git emitted inside one must survive to the caller.
         """
@@ -294,6 +296,8 @@ class GitWorkingCopy:
                     "diff",
                     "--unified=0",
                     "--no-ext-diff",
+                    "--no-textconv",
+                    "--ignore-submodules=none",
                     "--no-color",
                     f"{base_ref}...HEAD",
                 ],

@@ -348,11 +348,13 @@ def test_completion_record_schema_contract_for_all_statuses(tmp_path: Path) -> N
     repo.mkdir()
     _init_git_repo(repo)
 
+    run_assets = make_session_run_assets(repo, session_name="issue-1")
     completion_path = repo / ".issue-orchestrator" / "completion.json"
     common_env = {
         **os.environ,
         "ISSUE_ORCHESTRATOR_COMPLETION_PATH": ".issue-orchestrator/completion.json",
         "ISSUE_ORCHESTRATOR_SESSION_ID": "issue-1",
+        "ISSUE_ORCHESTRATOR_RUN_DIR": str(run_assets.run_dir),
     }
 
     cases = [
