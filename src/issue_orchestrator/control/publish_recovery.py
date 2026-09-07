@@ -37,6 +37,8 @@ from .reconciliation import ReconciliationRequired
 from ..domain.models import OrchestratorState
 from ..domain.pr_attempt_scope import scope_prs_to_active_issue_branch
 from ..domain.publish_retry import PublishRetryLocators
+from ..domain.completion_intake import CompletionIntakeReceipt
+from .publish_retry_locator_factory import PublishRetryLocatorFactory
 from ..ports.background_job import BackgroundJobRunner, CompletedJob
 from ..ports.fresh_issue_reader import FreshIssueReadError, FreshIssueReader
 from ..ports.publish_retry_locator_store import PublishRetryLocatorStore
@@ -165,6 +167,7 @@ class PublishRecoveryService:
         self._repository_host = repository_host
         self._completion_processor = completion_processor
         self._locator_store = locator_store
+        self._locator_factory = PublishRetryLocatorFactory()
         self._tech_lead_authority = tech_lead_authority
         self._runner = runner
         self._lm = label_manager
@@ -210,6 +213,7 @@ class PublishRecoveryService:
         *,
         review_exchange_completed: bool = False,
         review_exchange_halted: bool = False,
+        intake_receipt: CompletionIntakeReceipt | None = None,
     ) -> None:
         """Persist durable retry locators when a session's publish fails.
 
@@ -221,17 +225,8 @@ class PublishRecoveryService:
         """
         if not is_publish_failure(processing_errors):
             return
-        locators = PublishRetryLocators(
-            issue_number=session.issue.number,
-            issue_title=session.issue.title,
-            session_key=session.key.stable_id(),
-            worktree_path=str(session.worktree_path),
-            branch_name=session.branch_name,
-            completion_path=session.completion_path,
-            run_assets=session.run_assets,
-            agent_label=session.agent_label,
-            pr_number=session.pr_number,
-            skip_review=session.agent_config.skip_review,
+        locators = self._locator_factory.for_failed_session(
+            session, intake_receipt=intake_receipt,
             review_exchange_completed=review_exchange_completed,
             review_exchange_halted=review_exchange_halted,
         )

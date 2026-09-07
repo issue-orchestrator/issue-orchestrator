@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
+from ..domain.completion_intake import CompletionIntakeReceipt
 from ..domain.issue_key import GitHubIssueKey, IssueKey
 from ..domain.models import (
     PendingRework,
@@ -262,6 +263,7 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
     # than re-derived so the reaction owner can decline to mint a substance
     # investigation for a credential outage.
     provider_error_type: ProviderErrorType | None = None,
+    intake_receipt: CompletionIntakeReceipt | None = None,
 ) -> None:
     """Handle session completion - moved from Orchestrator per method table.
 
@@ -364,6 +366,7 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
         publish_recovery.record_publish_failure(
             session,
             processing_errors,
+            intake_receipt=intake_receipt,
             review_exchange_completed=review_exchange_completed,
             review_exchange_halted=review_exchange_halted,
         )
@@ -759,6 +762,7 @@ def _apply_completed_decision(
         completion_detail=decision.completion_detail,
         publish_recovery=publish_recovery,
         provider_error_type=decision.provider_error_type,
+        intake_receipt=decision.processing_result.intake_receipt if decision.processing_result else None,
         pending_work_claims=pending_work_claims,
     )
     elapsed = time.monotonic() - started

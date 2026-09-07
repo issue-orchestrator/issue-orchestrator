@@ -150,6 +150,7 @@ def build_processing_result(
     return ProcessingResult(
         success=success,
         message=message,
+        intake_receipt=intake_receipt,
         pr_url=pr_url,
         actions_taken=actions_taken if actions_taken else None,
         diagnostic_path=diagnostic_path,

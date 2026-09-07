@@ -1,6 +1,7 @@
 """Typed outcome of completion processing across owner boundaries."""
 
 from dataclasses import dataclass
+from .completion_intake import CompletionIntakeReceipt
 
 
 @dataclass
@@ -27,6 +28,8 @@ class ProcessingResult:
     # back into coder rework via the review-exchange path. Callers should keep
     # the session running but still surface validation-failure evidence.
     validation_failed_rerouted: bool = False
+    # Exact processed receipt; never rediscovered when recording retry custody.
+    intake_receipt: CompletionIntakeReceipt | None = None
 
     @classmethod
     def for_review_exchange_deferred(cls) -> "ProcessingResult":

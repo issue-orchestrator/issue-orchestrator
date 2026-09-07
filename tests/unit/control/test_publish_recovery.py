@@ -1418,3 +1418,20 @@ def _test_claim_store(tmp_path=None):
     return SqlitePendingWorkClaimStore.for_repo(
         _Path(tmp_path) if tmp_path is not None else _Path(tempfile.mkdtemp())
     )
+
+
+def test_retry_locator_preserves_exact_processed_receipt_after_reopen(make_session, tmp_path):
+    from issue_orchestrator.domain.completion_intake import CompletionIntakeReceipt
+
+    lm = LabelManager(_config(tmp_path))
+    repo = _Repo(issue=_issue(lm), labels=list(_issue(lm).labels))
+    service, _, _ = _service(tmp_path, repo, lm)
+    session = _record_failure(service, make_session, tmp_path)
+    receipt = CompletionIntakeReceipt("a" * 64, "b" * 64)
+    service.record_publish_failure(session, ["push_branch: rejected"], intake_receipt=receipt)
+    _, reopened, _ = _service(tmp_path, repo, lm)
+    stored = reopened.get(session.issue.number)
+    assert stored is not None
+    assert stored.intake_receipt == receipt
+    assert type(stored).from_dict(stored.to_dict()).intake_receipt == receipt
+    assert stored.run_assets == session.run_assets
