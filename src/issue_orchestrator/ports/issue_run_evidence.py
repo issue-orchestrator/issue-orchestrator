@@ -1,6 +1,7 @@
 """Run registration and evidence queries, without filesystem rediscovery."""
 
 from typing import Protocol
+from pathlib import Path
 
 from ..domain.issue_run_evidence import IssueRunEvidence, IssueRunRecord
 
@@ -20,6 +21,7 @@ class IssueRunLedger(CompletionIntakeLedger, Protocol):
 
 
 class IssueRunEvidenceSource(Protocol):
+    def issues_for_worktree(self, path: Path) -> tuple[int, ...]: ...
     def issue_numbers(self) -> tuple[int, ...]: ...
     def record_run(self, issue_number: int, record: IssueRunRecord) -> None: ...
 

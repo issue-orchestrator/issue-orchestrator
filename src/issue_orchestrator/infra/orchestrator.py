@@ -452,7 +452,7 @@ class Orchestrator:
 
     @cached_property
     def _startup_worktree_reconciler(self) -> StartupWorktreeReconciler:
-        return StartupWorktreeReconciler(self.config, self._cleanup_manager, self.deps.worktree_manager, WorktreeAuditOwner(self.deps.worktree_manager))
+        return StartupWorktreeReconciler(self.config, self._cleanup_manager, self.deps.worktree_manager, WorktreeAuditOwner(self.deps.worktree_manager), self.deps.runtime_lifecycle)
 
     async def startup(self) -> None:
         self._sweep_orphan_atomic_write_tempfiles()

@@ -1,5 +1,7 @@
 """Direct tests for completion action planning policy."""
 
+from tests.runtime_lifecycle_helpers import reset_snapshot
+
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -1665,7 +1667,7 @@ class TestResetRetryExecutionPipeline:
                 labels=["agent:test", "blocked-failed"],
                 repo="owner/repo",
             ),
-            has_active_issue_runtime=lambda _number: False,
+            runtime_snapshot=reset_snapshot,
             run_reset=run_reset,
         )
         applier = ActionApplier(

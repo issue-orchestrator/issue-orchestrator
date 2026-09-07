@@ -585,6 +585,7 @@ class SessionLauncher:
     ) -> None:
         """Apply one ordinary-vs-disposable policy to failed launch cleanup."""
         try:
+            self._action_applier.runtime_lifecycle.preserve(issue_number, "failed-launch-cleanup")
             remove = self._worktree_manager.remove_checkout
             if disposable:
                 remove = self._worktree_manager.remove_checkout_and_branch

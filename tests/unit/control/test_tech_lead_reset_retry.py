@@ -3,6 +3,8 @@
 from dataclasses import replace
 from unittest.mock import ANY, MagicMock, call
 
+from tests.runtime_lifecycle_helpers import reset_snapshot
+
 import pytest
 
 from issue_orchestrator.control.action_applier import ActionApplier
@@ -110,7 +112,7 @@ def make_executor(
         events=events,
         label_manager=LabelManager(Config()),
         read_issue=lambda _n: resolved_issue,
-        has_active_issue_runtime=lambda _n: active_session,
+        runtime_snapshot=lambda _n: reset_snapshot(_n, active_session),
         run_reset=run_reset,
     )
     return executor, events, run_reset
@@ -1109,3 +1111,16 @@ def _test_claim_store(tmp_path=None):
     return SqlitePendingWorkClaimStore.for_repo(
         _Path(tmp_path) if tmp_path is not None else _Path(tempfile.mkdtemp())
     )
+
+
+def test_late_custody_refusal_keeps_full_boundary_in_result_and_event():
+    boundary = {"validated_work": {"dispositions": [
+        {"evidence_id": "a", "state": "parked", "failure": "none"},
+        {"evidence_id": "b", "state": "failed", "failure": "custody"},
+    ]}}
+    executor, events, run_reset = make_executor(outcome=ResetRetryRunOutcome(
+        success=False, stale_reason="validated_work_unresolved", details=boundary))
+    result = executor.apply(make_action())
+    run_reset.assert_called_once()
+    assert result.details["boundary"] == boundary
+    assert published(events, EventName.TECH_LEAD_ACTION_PROPOSED)[0].payload["boundary"] == boundary

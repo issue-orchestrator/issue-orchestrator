@@ -1187,9 +1187,7 @@ def build_orchestrator_for_testing(
     from ..execution.label_store import LabelStore
     label_store = LabelStore(state_dir(config.repo_root) / "label_store.sqlite")
 
-    # Wire post-construction collaborators into action_applier (same as the
-    # primary path): label_store for write-through persistence, publish_recovery
-    # so issue terminal boundaries abandon publish retries.
+    # Bind shared post-construction owners.
     if action_applier is not None:
         action_applier.label_store = label_store
         action_applier.publish_recovery = publish_recovery

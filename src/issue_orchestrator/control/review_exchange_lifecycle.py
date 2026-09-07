@@ -8,6 +8,8 @@ reaching into pair registries, background job supervisors, or session managers.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Iterable, Protocol
@@ -564,6 +566,12 @@ class OtherRuntimeActivity:
         return self.core.probe(issue_number)
 
 
+@dataclass(frozen=True, slots=True)
+class IssueRuntimeResetSnapshot:
+    activity: IssueRuntimeActivity
+    validated_work: ValidatedWorkDispositionBatch | None
+
+
 class UnresolvedValidatedWork(RuntimeError):
     def __init__(self, batch: ValidatedWorkDispositionBatch) -> None:
         self.batch = batch
@@ -612,6 +620,22 @@ class IssueRuntimeLifecycleOwners:
         core = self.core.probe(issue_number)
         work = _probe_owners({IssueRuntimeOwnerKind.VALIDATED_WORK: lambda: self.validated_work.has_unresolved_work(issue_number)})
         return IssueRuntimeActivity(core.active | work.active, core.unverifiable | work.unverifiable)
+
+    def reset_snapshot(self, issue_number: int) -> IssueRuntimeResetSnapshot:
+        core = self.core.probe(issue_number)
+        try:
+            batch = self.validated_work.for_issue(issue_number)
+        except Exception:
+            return IssueRuntimeResetSnapshot(IssueRuntimeActivity(core.active,
+                core.unverifiable | {IssueRuntimeOwnerKind.VALIDATED_WORK}), None)
+        active = core.active | ({IssueRuntimeOwnerKind.VALIDATED_WORK} if batch.unresolved else set())
+        return IssueRuntimeResetSnapshot(IssueRuntimeActivity(frozenset(active), core.unverifiable), batch)
+
+    def preserve_worktree(self, path: Path, reason: str) -> tuple[ValidatedWorkDispositionBatch, ...]:
+        issues = self.run_evidence.issues_for_worktree(path)
+        if not issues:
+            raise RuntimeError(f"No trusted run ownership for worktree {path}")
+        return tuple(self.preserve(issue, reason) for issue in issues)
 
     def has_active_issue_runtime(self, issue_number: int) -> bool:
         return self.probe(issue_number).busy

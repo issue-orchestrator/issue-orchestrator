@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from ..infra.config import Config
     from ..ports.worktree_manager import WorktreeManager
     from .cleanup_manager import CleanupManager
+    from .review_exchange_lifecycle import IssueRuntimeLifecycleOwners
 
 logger = logging.getLogger(__name__)
 
@@ -360,11 +361,13 @@ class StartupWorktreeReconciler:
         cleanup_manager: CleanupManager,
         worktree_manager: WorktreeManager,
         audit_owner: WorktreeAuditOwner,
+        runtime_lifecycle: IssueRuntimeLifecycleOwners,
     ) -> None:
         self._config = config
         self._cleanup_manager = cleanup_manager
         self._worktree_manager = worktree_manager
         self._audit_owner = audit_owner
+        self._runtime_lifecycle = runtime_lifecycle
 
     def audit(self, state: OrchestratorState) -> tuple[WorktreeAuditEntry, ...]:
         activity = WorktreeActivityEvidence.known(
@@ -385,6 +388,7 @@ class StartupWorktreeReconciler:
                 retained += 1
                 continue
             try:
+                self._runtime_lifecycle.preserve_worktree(entry.path, "startup-worktree-cleanup")
                 self._worktree_manager.remove_checkout_and_branch(
                     entry.path,
                     force=True,

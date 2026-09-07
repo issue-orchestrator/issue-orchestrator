@@ -1,6 +1,7 @@
 """Reconcile durable run ownership with the live registry, failing closed."""
 
 from collections.abc import Callable
+from pathlib import Path
 
 from ..domain.issue_run_evidence import (
     IssueRunEvidence,
@@ -26,6 +27,11 @@ class IssueRunEvidenceService:
 
     def issue_numbers(self) -> tuple[int, ...]:
         return self._ledger.issue_numbers()
+
+    def issues_for_worktree(self, path: Path) -> tuple[int, ...]:
+        # Exact allocated paths, never agent metadata or filename patterns.
+        return tuple(issue for issue in self.issue_numbers()
+            if any(row.run.worktree_path == path for row in self._ledger.recorded_runs(issue)))
 
     def record_run(self, issue_number: int, record: IssueRunRecord) -> None:
         self._ledger.record_run(issue_number, record)

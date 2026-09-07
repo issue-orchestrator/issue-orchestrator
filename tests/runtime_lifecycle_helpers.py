@@ -28,3 +28,14 @@ def runtime_owners(*, session_manager=None, active_sessions=None, pair_registry=
     return IssueRuntimeLifecycleOwners(CoreIssueRuntimeOwners(session_manager,
         [] if active_sessions is None else active_sessions, pair_registry, job_supervisor, retry),
         preservation, source, Mock())
+
+
+def reset_snapshot(issue_number: int, busy: bool = False):
+    """Explicit runtime port response for reset executor policy tests."""
+    from issue_orchestrator.control.review_exchange_lifecycle import (
+        IssueRuntimeActivity, IssueRuntimeOwnerKind, IssueRuntimeResetSnapshot,
+    )
+    return IssueRuntimeResetSnapshot(
+        IssueRuntimeActivity(frozenset({IssueRuntimeOwnerKind.SESSIONS}) if busy else frozenset(), frozenset()),
+        ValidatedWorkDispositionBatch.no_work(issue_number, "fixture"),
+    )

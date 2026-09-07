@@ -172,6 +172,7 @@ def test_startup_retains_clean_reviewer_with_detached_commit(tmp_path: Path) -> 
         cleanup,
         manager,
         WorktreeAuditOwner(manager),
+        MagicMock(),
     ).recover(OrchestratorState())
 
     assert summary.disposable_removed == 0
@@ -208,6 +209,7 @@ def test_startup_removes_owned_reviewer_after_coder_advances(tmp_path: Path) -> 
         cleanup,
         manager,
         WorktreeAuditOwner(manager),
+        MagicMock(),
     ).recover(OrchestratorState())
 
     assert summary.disposable_removed == 1

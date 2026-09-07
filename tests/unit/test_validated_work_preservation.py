@@ -251,3 +251,35 @@ def test_stale_generation_does_not_close_replacement_intake(custody):
     assert result.stale_reason
     stop.assert_not_called()
     submit(custody, "replacement-open")
+
+
+def test_reset_snapshot_and_downgrade_keep_each_retained_member(custody):
+    from issue_orchestrator.control.tech_lead_reset_retry import TechLeadResetRetryExecutor
+    from issue_orchestrator.control.label_manager import LabelManager
+    from issue_orchestrator.infra.config import Config
+    from tests.unit.control.test_tech_lead_reset_retry import make_action, make_issue
+    submit(custody, "first")
+    advance(custody)
+    submit(custody, "second")
+    batch = custody.lifecycle.preserve(42, "stop")
+    run_reset = Mock()
+    events = Mock()
+    executor = TechLeadResetRetryExecutor(events, LabelManager(Config()),
+        lambda issue: make_issue(number=issue), custody.lifecycle.reset_snapshot, run_reset)
+    result = executor.apply(make_action(issue_number=42))
+    run_reset.assert_not_called()
+    observed = result.details["boundary"]["validated_work"]["dispositions"]
+    assert {row["evidence_id"] for row in observed} == {row.evidence_id for row in batch.dispositions}
+    assert len(observed) == 2
+    assert events.publish.call_args.args[0].payload["boundary"] == result.details["boundary"]
+
+
+def test_worktree_cleanup_requires_exact_owner_and_complete_custody(custody):
+    submit(custody, "retained")
+    with pytest.raises(RuntimeError, match="No trusted run ownership"):
+        custody.lifecycle.preserve_worktree(custody.worktree.parent / "lookalike", "cleanup")
+    batches = custody.lifecycle.preserve_worktree(custody.worktree, "cleanup")
+    assert len(batches) == 1
+    assert batches[0].unresolved
+    custody.git.run(custody.repo, ["worktree", "remove", "--force", str(custody.worktree)])
+    assert custody.lifecycle.preserve_worktree(custody.worktree, "retry")[0].dispositions == batches[0].dispositions
