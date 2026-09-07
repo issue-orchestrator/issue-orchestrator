@@ -2,7 +2,7 @@
 
 from collections.abc import Callable
 from dataclasses import replace
-from datetime import datetime, timedelta
+from datetime import datetime
 from uuid import uuid4
 
 from ..domain.budgeted_validation import (
@@ -38,27 +38,19 @@ class BudgetedValidationCycle:
                    head: str, *, force: bool) -> None:
         history = journal.read(suite)
         now = self._clock()
+        reconciled = history.reconcile_interruption(now)
+        if reconciled is not history:
+            journal.write(suite, reconciled)
+            history = reconciled
         green = history.last_success
-        # Quota, crashes and reproducibility failures retain overdue coverage
-        # but cannot restart a costly run every engine tick.
-        if not force and history.cooling_down(now, suite.cadence):
-            return
-        if not force and green and head == green.probe.commit:
+        watermark = history.scheduling_watermark
+        since_attempt = self._repository.changes(watermark.probe.commit, head) if watermark else ()
+        if not force and not history.scheduled_due(
+            now=now, cadence=suite.cadence, head=head,
+            integrations_since_attempt=self._repository.merged_count(since_attempt),
+        ):
             return
         changes = self._repository.changes(green.probe.commit, head) if green else ()
-        due = force or suite.cadence.due(
-            now=now, last_success_at=green.started_at if green else None,
-            merges_since_success=self._repository.merged_count(changes), changed=True,
-        )
-        if not due:
-            return
-        scheduled = history.last_scheduled
-        if not force and scheduled and now < scheduled.started_at + timedelta(hours=suite.cadence.max_delay_hours):
-            # Red coverage remains overdue; its retries still have a spend bound.
-            # Diagnosis probes must not move this scheduling watermark.
-            new_changes = self._repository.changes(scheduled.probe.commit, head)
-            if self._repository.merged_count(new_changes) < suite.cadence.max_merges_since_success:
-                return
         history = self._probe(journal, suite, history, head, "scheduled")
         if history.latest is None:
             raise RuntimeError("Executed probe produced no history")
@@ -66,11 +58,11 @@ class BudgetedValidationCycle:
         if not failure.is_failure:
             return
         if green is not None and not changes:
-            journal.write(suite, replace(history, diagnosis="The previously green commit now fails; no new integration exists to bisect. Investigate reproducibility or the environment."))
+            journal.write(suite, history.with_diagnosis("The previously green commit now fails; no new integration exists to bisect. Investigate reproducibility or the environment."))
             return
         if green is None or not failure.failure_signature:
             diagnosis = "No comparable successful baseline or stable failure signature; retain the failing commit for investigation."
-            journal.write(suite, replace(history, diagnosis=diagnosis))
+            journal.write(suite, history.with_diagnosis(diagnosis))
             return
         self._diagnose(journal, suite, history, (green.probe.commit, *changes), failure)
 
@@ -113,8 +105,9 @@ class BudgetedValidationCycle:
                 self._inconclusive(journal, suite, history, "Bisection encountered unavailable coverage or a different failure; original range retained.")
                 return
             state = state.observe(midpoint, probe.outcome)
-        journal.write(suite, replace(history, first_bad_commit=state.first_bad,
-            diagnosis=f"Reproduced regression; first failing integration {state.first_bad}; last green {commits[0]}; first observed failure {failure.commit}."))
+        journal.write(suite, history.with_diagnosis(
+            f"Reproduced regression; first failing integration {state.first_bad}; last green {commits[0]}; first observed failure {failure.commit}.",
+            first_bad=state.first_bad))
 
     def _inconclusive(self, journal: BudgetedValidationJournal, suite: BudgetedValidationSuite,
                       history: BudgetedValidationHistory, detail: str) -> None:
@@ -122,4 +115,4 @@ class BudgetedValidationCycle:
         if last is None:
             raise RuntimeError("Diagnosis has no preceding probe")
         ambiguous = replace(last, probe=replace(last.probe, outcome=BudgetedValidationOutcome.INCONCLUSIVE))
-        journal.write(suite, replace(history, latest=ambiguous, first_bad_commit=None, diagnosis=detail))
+        journal.write(suite, replace(history.with_diagnosis(detail), latest=ambiguous))

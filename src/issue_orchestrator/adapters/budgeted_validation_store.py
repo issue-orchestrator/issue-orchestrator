@@ -12,6 +12,7 @@ from pathlib import Path
 from ..domain.budgeted_validation import (
     BudgetedValidationHistory, BudgetedValidationOutcome, BudgetedValidationProbe,
     BudgetedValidationRun, BudgetedValidationSuite, BudgetedValidationReportReceipt,
+    BudgetedValidationRegression,
 )
 from ..ports.budgeted_validation import BudgetedValidationJournal
 
@@ -63,7 +64,7 @@ class FileBudgetedValidationStore:
         if not path.exists():
             return BudgetedValidationHistory(identity)
         data = json.loads(path.read_text())
-        if data["version"] != 1 or data["suite_identity"] != identity:
+        if data["version"] not in {1, 2} or data["suite_identity"] != identity:
             raise ValueError("Unrecognised budgeted validation history")
         runs = tuple(_decode_run(run) for run in data["runs"])
         if any(run is None for run in runs):
@@ -73,6 +74,7 @@ class FileBudgetedValidationStore:
             latest=_decode_run(data["latest"]), last_scheduled=_decode_run(data["last_scheduled"]),
             runs=tuple(run for run in runs if run is not None),
             first_bad_commit=data["first_bad_commit"], diagnosis=data["diagnosis"],
+            regression=_decode_regression(data),
         )
 
     def read_report(self, case_id: str) -> BudgetedValidationReportReceipt:
@@ -97,7 +99,7 @@ class FileBudgetedValidationStore:
     def write(self, suite: BudgetedValidationSuite, history: BudgetedValidationHistory) -> None:
         if not self._leased or history.suite_identity != suite_identity(suite):
             raise RuntimeError("History writes require the matching suite and repository lease")
-        self._write_json(self._path(suite), {"version": 1, **asdict(history)})
+        self._write_json(self._path(suite), {"version": 2, **asdict(history)})
 
     def _write_json(self, path: Path, data: dict) -> None:
         temporary = path.with_suffix(".tmp")
@@ -118,3 +120,27 @@ def _json_value(value: object) -> str:
     if isinstance(value, datetime):
         return value.isoformat()
     raise TypeError(f"Unsupported history value {type(value).__name__}")
+
+
+def _decode_regression(data: dict) -> BudgetedValidationRegression | None:
+    if data["version"] == 1:
+        # Explicit v1 migration: recover an unreported confirmed failure even
+        # when latest is an interrupted diagnosis or unavailable scheduled run.
+        completed = [run for raw in data["runs"] if (run := _decode_run(raw)) is not None
+                     and run.purpose == "scheduled" and run.finished_at is not None]
+        last_green = None
+        pending = None
+        for run in completed:
+            if run.probe.is_success:
+                last_green, pending = run.probe.commit, None
+            elif run.probe.is_failure and pending is None:
+                pending = BudgetedValidationRegression(run, last_green)
+        return pending
+    raw = data["regression"]
+    if raw is None:
+        return None
+    failed = _decode_run(raw["failed"])
+    if failed is None:
+        raise ValueError("regression lacks a failed run")
+    return BudgetedValidationRegression(failed, raw["last_green_commit"],
+        raw["first_bad_commit"], raw["diagnosis"])

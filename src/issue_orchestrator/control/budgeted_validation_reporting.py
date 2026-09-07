@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 import hashlib
 
 from ..domain.budgeted_validation import (
-    BudgetedValidationHistory, BudgetedValidationNotice, BudgetedValidationOutcome, BudgetedValidationSuite,
+    BudgetedValidationHistory, BudgetedValidationNotice, BudgetedValidationSuite,
 )
 from ..ports.budgeted_validation import BudgetedValidationJournal, BudgetedValidationStore
 from ..ports.repository_host import RepositoryHost
@@ -77,17 +77,15 @@ class BudgetedValidationReportOwner:
 
 
 def _notice(suite: BudgetedValidationSuite, history: BudgetedValidationHistory) -> BudgetedValidationNotice | None:
-    failed = history.last_scheduled
-    if not suite.enabled or failed is None or failed.finished_at is None or failed.probe.outcome is not BudgetedValidationOutcome.FAILED:
+    regression = history.regression
+    if not suite.enabled or regression is None:
         return None
-    if history.latest and history.latest.finished_at is None:
-        return None  # Let the in-flight diagnosis attach its result first.
-    green = history.last_success
-    green_commit = green.probe.commit if green else None
+    failed = regression.failed
+    green_commit = regression.last_green_commit
     case_id = hashlib.sha256(f"{history.suite_identity}:{green_commit}:{failed.probe.failure_signature}".encode()).hexdigest()
     return BudgetedValidationNotice(
         suite.name, history.suite_identity, case_id, failed.id, failed.probe.commit,
-        green_commit, history.first_bad_commit, history.diagnosis, failed.probe.evidence,
+        green_commit, regression.first_bad_commit, regression.diagnosis, failed.probe.evidence,
     )
 
 

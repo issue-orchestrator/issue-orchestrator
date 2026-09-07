@@ -41,4 +41,3 @@ def _collect_linked_issue_metadata(
             milestone_tuple = (issue.milestone_number, issue.milestone)
             if milestone_tuple not in source_milestones:
                 source_milestones.append(milestone_tuple)
-

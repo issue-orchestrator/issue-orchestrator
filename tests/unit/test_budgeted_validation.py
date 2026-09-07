@@ -278,3 +278,41 @@ def test_forced_failure_on_the_green_commit_does_not_invent_a_bisect_range():
     assert executor.calls == ["0", "0"]
     assert store.history.first_bad_commit is None
     assert "no new integration" in store.history.diagnosis
+
+
+@pytest.mark.parametrize("outcome", [BudgetedValidationOutcome.UNAVAILABLE, BudgetedValidationOutcome.INCONCLUSIVE])
+def test_unavailable_attempt_retries_at_either_configured_bound(outcome):
+    from issue_orchestrator.control.budgeted_validation import BudgetedValidationCycle
+    suite = parse_budgeted_validation({"agents": {"command": ["test"]}})["agents"]
+    store, repo, executor = MemoryBudgetedStore(), IntegrationHistory(), RecordedProbe()
+    cycle = BudgetedValidationCycle(store=store, repository=repo, executor=executor, clock=lambda: NOW)
+    cycle.run((suite,))
+    repo.current = 10
+    executor.overrides["10"] = outcome
+    cycle.run((suite,))
+    repo.current = 19
+    cycle.run((suite,))
+    assert executor.calls == ["0", "10"]
+    repo.current = 20
+    executor.overrides["20"] = BudgetedValidationOutcome.UNAVAILABLE
+    cycle.run((suite,))
+    assert executor.calls == ["0", "10", "20"]
+
+
+def test_diagnostic_probe_does_not_shift_scheduled_retry_watermark():
+    from datetime import timedelta
+    from issue_orchestrator.domain.budgeted_validation import BudgetedValidationHistory, BudgetedValidationRun, BudgetedValidationProbe
+    history = BudgetedValidationHistory("suite")
+    good = BudgetedValidationRun("good", NOW, NOW,
+        BudgetedValidationProbe("0", BudgetedValidationOutcome.PASSED, "evidence/good"), "scheduled")
+    bad = BudgetedValidationRun("bad", NOW, NOW,
+        BudgetedValidationProbe("10", BudgetedValidationOutcome.FAILED, "evidence/bad", "failure"), "scheduled")
+    pending = BudgetedValidationRun("diagnosis", NOW + timedelta(hours=1), None,
+        BudgetedValidationProbe("10", BudgetedValidationOutcome.UNAVAILABLE, ""), "reproduce")
+    history = history.append(good).append(bad).append(pending)
+    assert history.scheduled_due(now=NOW + timedelta(hours=24), cadence=ValidationCadence(),
+        head="10", integrations_since_attempt=0)
+    assert not history.scheduled_due(now=NOW + timedelta(hours=23), cadence=ValidationCadence(),
+        head="10", integrations_since_attempt=9)
+    assert history.scheduled_due(now=NOW + timedelta(hours=23), cadence=ValidationCadence(),
+        head="20", integrations_since_attempt=10)

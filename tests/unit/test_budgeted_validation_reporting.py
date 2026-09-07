@@ -92,3 +92,110 @@ def test_reporting_owner_revalidates_the_entire_notice(tmp_path, change):
     with pytest.raises(ValueError, match="stale"):
         owner.publish(replace(owner.pending()[0], **change))
     host.create_issue.assert_not_called()
+
+
+def test_confirmed_failure_survives_interrupted_diagnosis_and_unavailable_retries(tmp_path):
+    from datetime import timedelta
+    suite, store, host, owner = reporting(tmp_path)
+    original = owner.pending()[0]
+    pending = BudgetedValidationRun("interrupted", NOW, None,
+        BudgetedValidationProbe("bad", BudgetedValidationOutcome.UNAVAILABLE, ""), "reproduce")
+    store.run_exclusive(lambda journal: journal.write(suite, journal.read(suite).append(pending)))
+    assert owner.pending() == (original,)
+    # More than the bounded diagnostic history: the failure has its own durable
+    # lifecycle and cannot disappear when old run details roll out of that list.
+    for number in range(110):
+        at = NOW + timedelta(hours=25 * (number + 1))
+        unavailable = BudgetedValidationRun(f"retry-{number}", at, at,
+            BudgetedValidationProbe("bad", BudgetedValidationOutcome.UNAVAILABLE, f"evidence/{number}"), "scheduled")
+        store.run_exclusive(lambda journal: journal.write(suite, journal.read(suite).append(unavailable)))
+    reopened = FileBudgetedValidationStore(tmp_path)
+    owner = BudgetedValidationReportOwner(suites=(suite,), store=reopened, repository=host, clock=lambda: NOW)
+    assert owner.pending() == (original,)
+    assert owner.publish(original) == 42
+    host.create_issue.assert_called_once()
+
+
+def test_diagnosis_in_progress_cannot_publish_without_owning_the_repository_lease(tmp_path):
+    suite, store, host, owner = reporting(tmp_path)
+    notice = owner.pending()[0]
+    def diagnose(journal):
+        with pytest.raises(RuntimeError, match="still running"):
+            owner.publish(notice)
+        host.create_issue.assert_not_called()
+    store.run_exclusive(diagnose)
+    assert owner.publish(notice) == 42
+
+
+def test_v1_history_migration_recovers_failure_behind_interrupted_diagnosis(tmp_path):
+    import json
+    suite, store, host, _owner = reporting(tmp_path)
+    pending = BudgetedValidationRun("interrupted", NOW, None,
+        BudgetedValidationProbe("bad", BudgetedValidationOutcome.UNAVAILABLE, ""), "reproduce")
+    store.run_exclusive(lambda journal: journal.write(suite, journal.read(suite).append(pending)))
+    path, = tmp_path.glob("agents-*.json")
+    old = json.loads(path.read_text())
+    old["version"] = 1
+    old.pop("regression")
+    path.write_text(json.dumps(old))
+    reopened = FileBudgetedValidationStore(tmp_path)
+    owner = BudgetedValidationReportOwner(suites=(suite,), store=reopened, repository=host, clock=lambda: NOW)
+    notice, = owner.pending()
+    assert notice.failed_commit == "bad"
+    assert notice.run_id == "run-1"
+    assert owner.publish(notice) == 42
+
+
+def test_cycle_restart_reports_original_failure_after_diagnosis_launch_error(tmp_path):
+    from datetime import timedelta
+    from issue_orchestrator.control.budgeted_validation import BudgetedValidationCycle
+    from tests.unit.test_budgeted_validation import IntegrationHistory, RecordedProbe
+
+    class InterruptedProbe(RecordedProbe):
+        def probe(self, suite, commit, run_id):
+            if commit == "10" and self.calls.count("10") == 1:
+                raise OSError("diagnosis launch interrupted")
+            return super().probe(suite, commit, run_id)
+
+    suite = parse_budgeted_validation({"agents": {"command": ["test"]}})["agents"]
+    store = FileBudgetedValidationStore(tmp_path)
+    repository, executor = IntegrationHistory(), InterruptedProbe()
+    cycle = BudgetedValidationCycle(store=store, repository=repository,
+                                    executor=executor, clock=lambda: NOW)
+    cycle.run((suite,))
+    repository.current = 10
+    with pytest.raises(OSError, match="diagnosis launch interrupted"):
+        cycle.run((suite,))
+    interrupted = store.read(suite)
+    assert interrupted.latest.finished_at is None
+    original = interrupted.regression.failed
+    host = MagicMock(spec=RepositoryHost)
+    host.find_issue_by_marker.return_value = None
+    host.create_issue.return_value = {"number": 42}
+    restarted = FileBudgetedValidationStore(tmp_path)
+    retry = RecordedProbe()
+    retry.overrides["10"] = BudgetedValidationOutcome.UNAVAILABLE
+    BudgetedValidationCycle(store=restarted, repository=repository, executor=retry,
+                            clock=lambda: NOW + timedelta(hours=25)).run((suite,))
+    history = restarted.read(suite)
+    assert retry.calls == ["10"]
+    assert history.latest.probe.outcome is BudgetedValidationOutcome.UNAVAILABLE
+    assert history.regression.failed == original
+    reconciled = [run for run in history.runs if run.id == interrupted.latest.id
+                  and run.finished_at is not None]
+    assert len(reconciled) == 1
+    assert reconciled[0].probe.outcome is BudgetedValidationOutcome.UNAVAILABLE
+    owner = BudgetedValidationReportOwner(suites=(suite,), store=restarted,
+                                          repository=host, clock=lambda: NOW)
+    config = Config()
+    snapshot = FactGatherer(config, host, budgeted_validation_reports=owner).create_snapshot(OrchestratorState(), [])
+    reports = [action for action in Planner(config, Scheduler(config)).plan(snapshot).actions
+               if isinstance(action, ReportBudgetedValidationAction)]
+    assert len(reports) == 1
+    assert reports[0].notice.failed_commit == original.probe.commit
+    assert reports[0].notice.evidence == original.probe.evidence
+    applier = ActionApplier(labels=host, sessions=MagicMock(), events=MagicMock(),
+                            repository_host=host, budgeted_validation_reports=owner)
+    assert applier.apply(reports[0]).success
+    host.create_issue.assert_called_once()
+    assert owner.pending() == ()

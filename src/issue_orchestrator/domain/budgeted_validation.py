@@ -133,6 +133,20 @@ class BudgetedValidationRun:
 
 
 @dataclass(frozen=True, slots=True)
+class BudgetedValidationRegression:
+    """Confirmed failure retained independently of later diagnostic availability."""
+
+    failed: BudgetedValidationRun
+    last_green_commit: str | None
+    first_bad_commit: str | None = None
+    diagnosis: str = "Confirmed failure; diagnosis is pending or was interrupted."
+
+    def __post_init__(self) -> None:
+        if self.failed.finished_at is None or not self.failed.probe.is_failure:
+            raise ValueError("a regression requires a completed failing probe")
+
+
+@dataclass(frozen=True, slots=True)
 class BudgetedValidationHistory:
     suite_identity: str
     last_success: BudgetedValidationRun | None = None
@@ -142,11 +156,47 @@ class BudgetedValidationHistory:
     first_bad_commit: str | None = None
     diagnosis: str = ""
 
-    def cooling_down(self, now: datetime, cadence: ValidationCadence) -> bool:
-        last = self.latest
-        return bool(last and (last.finished_at is None or last.probe.outcome in {
-            BudgetedValidationOutcome.UNAVAILABLE, BudgetedValidationOutcome.INCONCLUSIVE,
-        }) and now < last.started_at + timedelta(hours=cadence.max_delay_hours))
+    regression: BudgetedValidationRegression | None = None
+
+    @property
+    def scheduling_watermark(self) -> BudgetedValidationRun | None:
+        """Only scheduled attempts spend the cadence budget; diagnosis never does."""
+        return self.last_scheduled or self.last_success
+
+    def scheduled_due(
+        self, *, now: datetime, cadence: ValidationCadence, head: str,
+        integrations_since_attempt: int,
+    ) -> bool:
+        last = self.scheduling_watermark
+        covered = bool(self.last_success and self.last_success.probe.commit == head
+                       and self.coverage_outcome is BudgetedValidationOutcome.PASSED)
+        return cadence.due(
+            now=now, last_success_at=last.started_at if last else None,
+            merges_since_success=integrations_since_attempt, changed=not covered,
+        )
+
+    def reconcile_interruption(self, now: datetime) -> "BudgetedValidationHistory":
+        """Called under exclusive execution ownership after a prior worker ended."""
+        from dataclasses import replace
+
+        pending = self.latest
+        if pending is None or pending.finished_at is not None:
+            return self
+        complete = replace(pending, finished_at=now, probe=replace(
+            pending.probe, outcome=BudgetedValidationOutcome.UNAVAILABLE
+        ))
+        result = self.append(complete)
+        return result.with_diagnosis(
+            "Previous validation or diagnosis was interrupted; no new commit is accused."
+        )
+
+    def with_diagnosis(self, detail: str, *, first_bad: str | None = None) -> "BudgetedValidationHistory":
+        from dataclasses import replace
+
+        regression = self.regression
+        if regression is not None and self.last_scheduled is not None and regression.failed.id == self.last_scheduled.id:
+            regression = replace(regression, diagnosis=detail, first_bad_commit=first_bad)
+        return replace(self, diagnosis=detail, first_bad_commit=first_bad, regression=regression)
 
     @property
     def coverage_outcome(self) -> BudgetedValidationOutcome:
@@ -160,9 +210,15 @@ class BudgetedValidationHistory:
         from dataclasses import replace
 
         green = self.last_success
-        if run.purpose == "scheduled" and run.finished_at is not None and run.probe.outcome is BudgetedValidationOutcome.PASSED:
-            green = run
-        return replace(self, last_success=green, latest=run,
+        regression = self.regression
+        if run.purpose == "scheduled" and run.finished_at is not None:
+            if run.probe.is_success:
+                green, regression = run, None
+            elif run.probe.is_failure and regression is None:
+                regression = BudgetedValidationRegression(
+                    run, green.probe.commit if green else None
+                )
+        return replace(self, last_success=green, latest=run, regression=regression,
                        last_scheduled=run if run.purpose == "scheduled" else self.last_scheduled,
                        first_bad_commit=None if run.purpose == "scheduled" else self.first_bad_commit,
                        diagnosis="" if run.purpose == "scheduled" else self.diagnosis,
