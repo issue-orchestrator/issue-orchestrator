@@ -1,6 +1,6 @@
 """Unit tests for ActionApplier."""
 
-from tests.runtime_lifecycle_helpers import make_action_applier
+from tests.runtime_lifecycle_helpers import make_action_applier, bind_action_runtime
 
 import logging
 import pytest
@@ -623,6 +623,7 @@ class TestReconcileHistoryEntryAction:
         )
         applier.history_owner = SessionHistoryOwner([entry])
         applier.pair_registry = MagicMock(name="pair_registry")
+        bind_action_runtime(applier)
         action = ReconcileHistoryEntryAction(
             issue_number=228,
             pr_number=318,
@@ -659,7 +660,9 @@ class TestReconcileHistoryEntryAction:
             "review-exchange:228:coding-1"
         ]
         applier.pair_registry = pair_registry
+        bind_action_runtime(applier)
         applier.background_job_supervisor = job_supervisor
+        bind_action_runtime(applier)
         action = ReconcileHistoryEntryAction(
             issue_number=228,
             pr_number=318,
@@ -733,6 +736,7 @@ class TestReconcileHistoryEntryAction:
         )
         applier.history_owner = SessionHistoryOwner([entry])
         applier.pair_registry = MagicMock(name="pair_registry")
+        bind_action_runtime(applier)
         action = ReconcileHistoryEntryAction(
             issue_number=228,
             pr_number=318,
@@ -769,6 +773,7 @@ class TestReconcileHistoryEntryAction:
         )
         applier.history_owner = SessionHistoryOwner([entry])
         applier.pair_registry = MagicMock(name="pair_registry")
+        bind_action_runtime(applier)
         action = ReconcileHistoryEntryAction(
             issue_number=228,
             pr_number=318,
@@ -961,7 +966,7 @@ class TestStopSessionAction:
         result = applier.apply(action)
 
         assert result.success
-        mock_sessions.stop.assert_called_once()
+        assert [call.args[0].name for call in mock_sessions.stop.call_args_list] == ["issue-123", "rework-123"]
 
     def test_stop_issue_session_releases_review_exchange_lifecycle(
         self, applier, mock_sessions
@@ -972,7 +977,9 @@ class TestStopSessionAction:
         job_supervisor = Mock()
         job_supervisor.cancel_matching.return_value = ["review-exchange:123:issue-123"]
         applier.pair_registry = pair_registry
+        bind_action_runtime(applier)
         applier.background_job_supervisor = job_supervisor
+        bind_action_runtime(applier)
 
         action = StopSessionAction(
             session_type=SessionType.ISSUE,
@@ -1131,6 +1138,7 @@ class TestPublishRetryAbandonmentAtLifecycleBoundaries:
     def test_escalation_abandons_publish_retry(self, applier, mock_labels):
         publish_recovery = _FakePublishRetryAbandoner()
         applier.publish_recovery = publish_recovery
+        bind_action_runtime(applier)
         action = EscalateToHumanAction(
             issue_number=123,
             pr_number=456,
@@ -1147,6 +1155,7 @@ class TestPublishRetryAbandonmentAtLifecycleBoundaries:
     def test_issue_completed_reconciliation_abandons_publish_retry(self, applier):
         publish_recovery = _FakePublishRetryAbandoner()
         applier.publish_recovery = publish_recovery
+        bind_action_runtime(applier)
         entry = SessionHistoryEntry(
             issue_number=228,
             title="Shared cache read misses",
@@ -1158,6 +1167,7 @@ class TestPublishRetryAbandonmentAtLifecycleBoundaries:
         )
         applier.history_owner = SessionHistoryOwner([entry])
         applier.pair_registry = MagicMock(name="pair_registry")
+        bind_action_runtime(applier)
         action = ReconcileHistoryEntryAction(
             issue_number=228,
             pr_number=318,
@@ -1242,6 +1252,7 @@ class TestEscalateToHumanAction:
         from unittest.mock import MagicMock
 
         applier.pair_registry = MagicMock(name="pair_registry")
+        bind_action_runtime(applier)
         action = EscalateToHumanAction(
             issue_number=123,
             pr_number=456,
@@ -1269,7 +1280,9 @@ class TestEscalateToHumanAction:
             "review-exchange:123:coding-1"
         ]
         applier.pair_registry = pair_registry
+        bind_action_runtime(applier)
         applier.background_job_supervisor = job_supervisor
+        bind_action_runtime(applier)
         action = EscalateToHumanAction(
             issue_number=123,
             pr_number=456,
@@ -1331,6 +1344,7 @@ class TestEscalateToHumanAction:
         # the two collaborators.
         parent = MagicMock()
         applier.pair_registry = parent.pair_registry
+        bind_action_runtime(applier)
         applier.labels = parent.labels  # type: ignore[assignment]
 
         action = EscalateToHumanAction(
@@ -1378,6 +1392,7 @@ class TestEscalateToHumanAction:
         from unittest.mock import MagicMock
 
         applier.pair_registry = MagicMock(name="pair_registry")
+        bind_action_runtime(applier)
         mock_labels.add_label.side_effect = Exception("API error")
         action = EscalateToHumanAction(
             issue_number=123,
@@ -1832,7 +1847,9 @@ class TestCleanupSessionAction:
         job_supervisor = Mock()
         job_supervisor.cancel_matching.return_value = ["review-exchange:123:coding-1"]
         applier.pair_registry = pair_registry
+        bind_action_runtime(applier)
         applier.background_job_supervisor = job_supervisor
+        bind_action_runtime(applier)
 
         action = CleanupSessionAction(
             issue_number=123,
@@ -1871,7 +1888,9 @@ class TestCleanupSessionAction:
         job_supervisor = Mock()
         job_supervisor.cancel_matching.return_value = []
         applier.pair_registry = pair_registry
+        bind_action_runtime(applier)
         applier.background_job_supervisor = job_supervisor
+        bind_action_runtime(applier)
 
         action = CleanupSessionAction(
             issue_number=123,
@@ -1900,7 +1919,9 @@ class TestCleanupSessionAction:
         pair_registry = Mock()
         job_supervisor = Mock()
         applier.pair_registry = pair_registry
+        bind_action_runtime(applier)
         applier.background_job_supervisor = job_supervisor
+        bind_action_runtime(applier)
 
         action = CleanupSessionAction(
             issue_number=123,

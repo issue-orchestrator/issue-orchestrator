@@ -14,6 +14,8 @@ def runtime_owners(*, session_manager=None, active_sessions=None, pair_registry=
     source.evidence_for_issue.side_effect = lambda issue: IssueRunEvidence(issue,
         IssueRunEvidenceStatus.NO_RUNS_RECORDED, (), IssueRunEvidenceOrigin.RUN_LEDGER, "2026-09-07")
     source.issue_numbers.return_value = ()
+    source.terminal_issues.return_value = ()
+    source.terminal_evidence.side_effect = lambda issue, terminal, run: source.evidence_for_issue(issue)
     preservation = Mock(spec=ValidatedWorkPreservation)
     def capture(command):
         if completion_intake is not None:
@@ -46,6 +48,10 @@ def make_action_applier(*args, **kwargs):
     """Action tests bind an explicit preservation port through the real bundle."""
     from issue_orchestrator.control.action_applier import ActionApplier
     applier = ActionApplier(*args, **kwargs)
+    return bind_action_runtime(applier)
+
+
+def bind_action_runtime(applier):
     applier.runtime_lifecycle = runtime_owners(session_manager=applier.sessions,
         pair_registry=applier.pair_registry, job_supervisor=applier.background_job_supervisor,
         publish_recovery=applier.publish_recovery, completion_intake=applier.completion_intake)

@@ -283,7 +283,7 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
         f"runtime={session.runtime_minutes}min",
     )
 
-    action_applier.runtime_lifecycle.preserve(session.issue.number, "session-completion")
+    action_applier.runtime_lifecycle.preserve_terminal(session.issue.number, session.terminal_id, "session-completion", run=session.run_assets)
 
     # Remove by session name, NOT issue number - multiple sessions can share an issue number
     state.drop_active_session(session.terminal_id)

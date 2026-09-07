@@ -11,6 +11,7 @@ from ..domain.issue_run_evidence import (
     IssueRunRecord,
 )
 from ..ports.issue_run_evidence import IssueRunLedger
+from ..domain.session_run import SessionRunAssets
 
 
 class IssueRunEvidenceService:
@@ -24,6 +25,13 @@ class IssueRunEvidenceService:
         self._ledger = ledger
         self._live_runs = live_runs
         self._now = now
+
+    def terminal_issues(self, terminal_id: str) -> tuple[int, ...]:
+        return tuple(issue for issue in self.issue_numbers()
+            if any(row.run.session_name == terminal_id for row in self._ledger.recorded_runs(issue)))
+
+    def terminal_evidence(self, issue_number: int, terminal_id: str, run: SessionRunAssets | None) -> IssueRunEvidence:
+        return self.evidence_for_issue(issue_number).select(terminal_id=terminal_id, run=run)
 
     def issue_numbers(self) -> tuple[int, ...]:
         return self._ledger.issue_numbers()

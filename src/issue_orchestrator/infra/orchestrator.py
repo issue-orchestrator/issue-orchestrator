@@ -407,7 +407,7 @@ class Orchestrator:
     def _kill_session(self, name: str) -> None:
         for session in tuple(self.state.active_sessions):
             if session.terminal_id == name:
-                self.preserve_issue_work(session.issue.number, "terminal-stop")
+                self.deps.runtime_lifecycle.preserve_terminal(session.issue.number, name, "terminal-stop", run=session.run_assets)
         _kill_session(name, self.deps.session_manager, self.deps.events)
 
     def _refresh_issue(self, n: int) -> Optional[Issue]:

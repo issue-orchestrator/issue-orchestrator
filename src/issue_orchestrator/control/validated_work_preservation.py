@@ -29,7 +29,7 @@ class ValidatedWorkPreservationService:
         return self._store.for_issue(issue_number)
 
     def dispose_at_termination(self, command: AutomaticCaptureCommand) -> ValidatedWorkDispositionBatch:
-        candidates = self._intake.prepare_termination(command.run_evidence)
+        candidates = self._intake.prepare_termination(command.run_evidence, command.scope)
         report = self._repair.reconcile_escrow_orphans()
         if report.problems:
             raise CompletionIntakeError(f"escrow custody requires repair: {report.problems}")

@@ -26,7 +26,7 @@ Usage:
 """
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional, Sequence, TypeVar
 
@@ -1085,9 +1085,10 @@ class ActionApplier:
         ref = SessionRef(session_type=action.session_type, number=action.number)
         if ref.session_type in {SessionType.ISSUE, SessionType.REWORK}:
             termination = self.runtime_lifecycle.terminate(ref.number, "session-stopped")
-            return ActionResult.ok(action, session_name=ref.name,
-                cancelled_review_exchange_jobs=list(termination.cancelled_job_ids),
-                validated_work=termination.validated_work)
+            result = ActionResult.ok(action, session_name=ref.name) if termination.stopped_session_ids else ActionResult.skip(action, f"Session {ref.name} not running")
+            return replace(result, validated_work=termination.validated_work, details={**result.details,
+                "review_exchange_lifecycle_checked": True, "cancelled_review_exchange_jobs": list(termination.cancelled_job_ids)})
+        self.runtime_lifecycle.preserve_named_terminal(ref.name, "session-stopped")
         cancellation = self._cancel_review_exchange_for_session_ref(ref, reason="session-stopped")
 
         # Check if running
@@ -1539,7 +1540,7 @@ class ActionApplier:
         assert isinstance(action, CleanupSessionAction)
 
         errors = []
-        batch = self.runtime_lifecycle.preserve(action.issue_number, "session-cleanup")
+        batch = self.runtime_lifecycle.preserve_terminal(action.issue_number, action.terminal_id, "session-cleanup")
         cancellation = self._cancel_review_exchange_for_cleanup(action)
         self._cleanup_terminal_session(action, errors)
         self._cleanup_worktree(action, errors)

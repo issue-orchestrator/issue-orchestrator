@@ -4,6 +4,7 @@ from typing import Protocol
 from pathlib import Path
 
 from ..domain.issue_run_evidence import IssueRunEvidence, IssueRunRecord
+from ..domain.session_run import SessionRunAssets
 
 
 from .completion_intake import CompletionIntakeLedger
@@ -21,6 +22,8 @@ class IssueRunLedger(CompletionIntakeLedger, Protocol):
 
 
 class IssueRunEvidenceSource(Protocol):
+    def terminal_issues(self, terminal_id: str) -> tuple[int, ...]: ...
+    def terminal_evidence(self, issue_number: int, terminal_id: str, run: SessionRunAssets | None) -> IssueRunEvidence: ...
     def issues_for_worktree(self, path: Path) -> tuple[int, ...]: ...
     def issue_numbers(self) -> tuple[int, ...]: ...
     def record_run(self, issue_number: int, record: IssueRunRecord) -> None: ...

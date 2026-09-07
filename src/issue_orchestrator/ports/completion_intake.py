@@ -1,5 +1,7 @@
 """Behavior boundaries for completion custody, processing and trusted validation."""
 
+from ..domain.validated_work_commands import AutomaticCaptureScope
+
 from typing import Protocol
 from pathlib import Path
 
@@ -88,7 +90,7 @@ class CompletionReceiptProcessor(Protocol):
 
 class CompletionIntakeRuntime(CompletionSubmissionHandler, Protocol):
     def prepare_receipt(self, receipt: CompletionIntakeReceipt, run: SessionRunAssets) -> PreparedCompletionEvidence: ...
-    def prepare_termination(self, evidence: IssueRunEvidence) -> tuple[PreparedCompletionEvidence, ...]: ...
+    def prepare_termination(self, evidence: IssueRunEvidence, scope: AutomaticCaptureScope = AutomaticCaptureScope.ISSUE) -> tuple[PreparedCompletionEvidence, ...]: ...
     def bind_exchange(self, run: SessionRunAssets) -> CompletionExchangeIntake: ...
     def resume_receipt(
         self,

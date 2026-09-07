@@ -13,6 +13,7 @@ from ..domain.completion_intake import (
 )
 from ..domain.models import CompletionRecord
 from ..domain.issue_run_evidence import IssueRunEvidence
+from ..domain.validated_work_commands import AutomaticCaptureScope
 from ..domain.prepared_completion import PreparedCompletionEvidence
 from ..domain.completion_intake_policy import (
     latest_accepted_receipt,
@@ -123,10 +124,10 @@ class CompletionEvidenceIntakeService:
                 raise CompletionIntakeError("receipt is not completed and validated publication intent")
             return candidate
 
-    def prepare_termination(self, evidence: IssueRunEvidence) -> tuple[PreparedCompletionEvidence, ...]:
+    def prepare_termination(self, evidence: IssueRunEvidence, scope: AutomaticCaptureScope = AutomaticCaptureScope.ISSUE) -> tuple[PreparedCompletionEvidence, ...]:
         """Close, repair and drain once, then select all trusted exact-run candidates."""
         with self._drain_lock:
-            entries = self.close_and_drain(evidence.issue_number)
+            entries = self._close_selected(evidence, scope)
             runs = {record.run.identity: record for record in evidence.runs}
             candidates: list[PreparedCompletionEvidence] = []
             for entry in entries:
@@ -137,6 +138,18 @@ class CompletionEvidenceIntakeService:
                 if candidate is not None:
                     candidates.append(candidate)
             return tuple(candidates)
+
+    def _close_selected(self, evidence: IssueRunEvidence, scope: AutomaticCaptureScope) -> tuple[CompletionIntakeEntry, ...]:
+        if scope is AutomaticCaptureScope.ISSUE:
+            return self.close_and_drain(evidence.issue_number)
+        for record in evidence.runs:
+            self._ledger.recorded_run(record.run)
+            self._ledger.close_run_intake(record.run)
+        identities = {record.run.identity for record in evidence.runs}
+        entries = tuple(entry for entry in self._ledger.entries_for_issue(evidence.issue_number)
+            if entry.run.identity in identities)
+        self._process(entries)
+        return entries
 
     def resume_receipt(
         self,

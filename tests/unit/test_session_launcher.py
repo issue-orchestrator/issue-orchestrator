@@ -3844,7 +3844,7 @@ class TestLaunchTechLeadIssueSessionFlavors:
         return identities
 
     @staticmethod
-    def _enable_tech_lead_agent(config, tmp_path: Path) -> None:
+    def enable_tech_lead_agent(config, tmp_path: Path) -> None:
         prompt_path = tmp_path / "tech-lead-prompt.md"
         prompt_path.write_text("Tech Lead prompt")
         config.agents["agent:tech-lead"] = AgentConfig(
@@ -3855,14 +3855,14 @@ class TestLaunchTechLeadIssueSessionFlavors:
         config.tech_lead_review_agent = "agent:tech-lead"
 
     @staticmethod
-    def _started_run_dir(mock_events) -> Path:
+    def started_run_dir(mock_events) -> Path:
         started = next(
             e for e in mock_events.events if str(e.name) == "session.started"
         )
         return Path(started.data["run_dir"])
 
     @staticmethod
-    def _tech_lead_pr(number: int) -> PRInfo:
+    def tech_lead_pr(number: int) -> PRInfo:
         return PRInfo(
             number=number,
             title=f"PR {number}",
@@ -3884,8 +3884,8 @@ class TestLaunchTechLeadIssueSessionFlavors:
         run with the same identity hits the create-once conflict.
         """
         config = launcher_bundle.launcher.config
-        self._enable_tech_lead_agent(config, tmp_path)
-        mock_repo_host.prs_with_label = [self._tech_lead_pr(555)]
+        self.enable_tech_lead_agent(config, tmp_path)
+        mock_repo_host.prs_with_label = [self.tech_lead_pr(555)]
         issue = Issue(
             number=903, title="Batch Review", labels=["agent:tech-lead"], repo="test/repo"
         )
@@ -3922,8 +3922,8 @@ class TestLaunchTechLeadIssueSessionFlavors:
         must sit at the boundary, not after the post-start bookkeeping.
         """
         config = launcher_bundle.launcher.config
-        self._enable_tech_lead_agent(config, tmp_path)
-        mock_repo_host.prs_with_label = [self._tech_lead_pr(555)]
+        self.enable_tech_lead_agent(config, tmp_path)
+        mock_repo_host.prs_with_label = [self.tech_lead_pr(555)]
         issue = Issue(
             number=907, title="Batch Review", labels=["agent:tech-lead"], repo="test/repo"
         )
@@ -3949,8 +3949,8 @@ class TestLaunchTechLeadIssueSessionFlavors:
         self, launcher_bundle, mock_repo_host, mock_events, tmp_path
     ):
         config = launcher_bundle.launcher.config
-        self._enable_tech_lead_agent(config, tmp_path)
-        mock_repo_host.prs_with_label = [self._tech_lead_pr(555)]
+        self.enable_tech_lead_agent(config, tmp_path)
+        mock_repo_host.prs_with_label = [self.tech_lead_pr(555)]
         issue = Issue(
             number=901, title="Batch Review", labels=["agent:tech-lead"], repo="test/repo"
         )
@@ -3963,7 +3963,7 @@ class TestLaunchTechLeadIssueSessionFlavors:
         assert mock_repo_host.get_prs_with_label_calls == [
             (config.tech_lead_watch_label, "all")
         ]
-        run_dir = self._started_run_dir(mock_events)
+        run_dir = self.started_run_dir(mock_events)
         run_manifest = json.loads((run_dir / "manifest.json").read_text())
         assert run_manifest["tech_lead_manifest"] == str(
             run_dir / "tech-lead-data" / "manifest.json"
@@ -3979,8 +3979,8 @@ class TestLaunchTechLeadIssueSessionFlavors:
         self, launcher_bundle, mock_repo_host, mock_events, tmp_path
     ):
         config = launcher_bundle.launcher.config
-        self._enable_tech_lead_agent(config, tmp_path)
-        mock_repo_host.prs_with_label = [self._tech_lead_pr(555)]
+        self.enable_tech_lead_agent(config, tmp_path)
+        mock_repo_host.prs_with_label = [self.tech_lead_pr(555)]
         issue = Issue(
             number=902,
             title="Investigate: session timed out",
@@ -3999,7 +3999,7 @@ class TestLaunchTechLeadIssueSessionFlavors:
         assert result.success is True
         # The global batch PR manifest must NOT be built or queried.
         assert mock_repo_host.get_prs_with_label_calls == []
-        run_dir = self._started_run_dir(mock_events)
+        run_dir = self.started_run_dir(mock_events)
         run_manifest = json.loads((run_dir / "manifest.json").read_text())
         assert "tech_lead_manifest" not in run_manifest
         assert not (run_dir / "tech-lead-data" / "manifest.json").exists()
@@ -4014,8 +4014,8 @@ class TestLaunchTechLeadIssueSessionFlavors:
         self, launcher_bundle, sample_issue, mock_repo_host, mock_events, tmp_path
     ):
         config = launcher_bundle.launcher.config
-        self._enable_tech_lead_agent(config, tmp_path)
-        mock_repo_host.prs_with_label = [self._tech_lead_pr(555)]
+        self.enable_tech_lead_agent(config, tmp_path)
+        mock_repo_host.prs_with_label = [self.tech_lead_pr(555)]
 
         result = launcher_bundle.launcher.launch_issue_session(
             sample_issue, active_sessions=[]
@@ -4023,7 +4023,7 @@ class TestLaunchTechLeadIssueSessionFlavors:
 
         assert result.success is True
         assert mock_repo_host.get_prs_with_label_calls == []
-        run_dir = self._started_run_dir(mock_events)
+        run_dir = self.started_run_dir(mock_events)
         run_manifest = json.loads((run_dir / "manifest.json").read_text())
         assert "tech_lead_manifest" not in run_manifest
         assert "tech_lead_assignment" not in run_manifest
@@ -4039,8 +4039,8 @@ class TestLaunchTechLeadIssueSessionFlavors:
         fetch — no new call types.
         """
         config = launcher_bundle.launcher.config
-        self._enable_tech_lead_agent(config, tmp_path)
-        mock_repo_host.prs_with_label = [self._tech_lead_pr(555)]
+        self.enable_tech_lead_agent(config, tmp_path)
+        mock_repo_host.prs_with_label = [self.tech_lead_pr(555)]
         provider = launcher_bundle.board_snapshot_provider
         issue = Issue(
             number=901, title="Batch Review", labels=["agent:tech-lead"], repo="test/repo"
@@ -4053,7 +4053,7 @@ class TestLaunchTechLeadIssueSessionFlavors:
         assert result.success is True
         # Batch reviews take the whole-board view: no focus issue.
         assert provider.calls == [None]
-        run_dir = self._started_run_dir(mock_events)
+        run_dir = self.started_run_dir(mock_events)
         snapshot_path = run_dir / "tech-lead-data" / "board-snapshot.json"
         run_manifest = json.loads((run_dir / "manifest.json").read_text())
         assert run_manifest["board_snapshot"] == str(snapshot_path)
@@ -4073,7 +4073,7 @@ class TestLaunchTechLeadIssueSessionFlavors:
     ):
         """Failure investigations get a snapshot scoped to the failed issue."""
         config = launcher_bundle.launcher.config
-        self._enable_tech_lead_agent(config, tmp_path)
+        self.enable_tech_lead_agent(config, tmp_path)
         provider = launcher_bundle.board_snapshot_provider
         issue = Issue(
             number=902,
@@ -4092,7 +4092,7 @@ class TestLaunchTechLeadIssueSessionFlavors:
 
         assert result.success is True
         assert provider.calls == [902]
-        run_dir = self._started_run_dir(mock_events)
+        run_dir = self.started_run_dir(mock_events)
         snapshot_path = run_dir / "tech-lead-data" / "board-snapshot.json"
         run_manifest = json.loads((run_dir / "manifest.json").read_text())
         assert run_manifest["board_snapshot"] == str(snapshot_path)
@@ -4170,8 +4170,8 @@ class TestLaunchTechLeadIssueSessionFlavors:
         )
 
         config = launcher_bundle.launcher.config
-        self._enable_tech_lead_agent(config, tmp_path)
-        mock_repo_host.prs_with_label = [self._tech_lead_pr(555)]
+        self.enable_tech_lead_agent(config, tmp_path)
+        mock_repo_host.prs_with_label = [self.tech_lead_pr(555)]
         provider = launcher_bundle.board_snapshot_provider
         issue = Issue(
             number=905,
@@ -4187,7 +4187,7 @@ class TestLaunchTechLeadIssueSessionFlavors:
         assert result.success is True
         # The global batch PR manifest must NOT be built or queried.
         assert mock_repo_host.get_prs_with_label_calls == []
-        run_dir = self._started_run_dir(mock_events)
+        run_dir = self.started_run_dir(mock_events)
         run_manifest = json.loads((run_dir / "manifest.json").read_text())
         assert "tech_lead_manifest" not in run_manifest
         assert not (run_dir / "tech-lead-data" / "manifest.json").exists()
@@ -4233,7 +4233,7 @@ class TestLaunchTechLeadIssueSessionFlavors:
         )
 
         config = launcher_bundle.launcher.config
-        self._enable_tech_lead_agent(config, tmp_path)
+        self.enable_tech_lead_agent(config, tmp_path)
         provider = launcher_bundle.board_snapshot_provider
         assert isinstance(provider, RecordingBoardSnapshotProvider)
         provider.recent_failures = [
@@ -4264,7 +4264,7 @@ class TestLaunchTechLeadIssueSessionFlavors:
         assert provider.cohort_calls == [(41, 42, 43)], (
             "the launch boundary must hand the owned cohort to the provider"
         )
-        run_dir = self._started_run_dir(mock_events)
+        run_dir = self.started_run_dir(mock_events)
         snapshot = BoardSnapshot.read(
             run_dir / "tech-lead-data" / "board-snapshot.json"
         )
@@ -4297,7 +4297,7 @@ class TestLaunchTechLeadIssueSessionFlavors:
         )
 
         config = launcher_bundle.launcher.config
-        self._enable_tech_lead_agent(config, tmp_path)
+        self.enable_tech_lead_agent(config, tmp_path)
         provider = launcher_bundle.board_snapshot_provider
         assert isinstance(provider, RecordingBoardSnapshotProvider)
         provider.recent_failures = [
@@ -4326,7 +4326,7 @@ class TestLaunchTechLeadIssueSessionFlavors:
         assert authority is not None
         assert authority.problem_issue_numbers == ()
         assert authority.allowed_act_level_targets() == frozenset()
-        run_dir = self._started_run_dir(mock_events)
+        run_dir = self.started_run_dir(mock_events)
         snapshot = BoardSnapshot.read(
             run_dir / "tech-lead-data" / "board-snapshot.json"
         )
@@ -4351,7 +4351,7 @@ class TestLaunchTechLeadIssueSessionFlavors:
         )
 
         config = launcher_bundle.launcher.config
-        self._enable_tech_lead_agent(config, tmp_path)
+        self.enable_tech_lead_agent(config, tmp_path)
         store = SqliteTechLeadAuthorityStore.for_repo(config.repo_root)
         store.record_storm_cohort(
             anchor_issue_number=907,
@@ -4402,9 +4402,9 @@ class TestLaunchTechLeadIssueSessionFlavors:
         )
 
         config = launcher_bundle.launcher.config
-        TestLaunchTechLeadIssueSessionFlavors._enable_tech_lead_agent(config, tmp_path)
+        TestLaunchTechLeadIssueSessionFlavors.enable_tech_lead_agent(config, tmp_path)
         mock_repo_host.prs_with_label = [
-            TestLaunchTechLeadIssueSessionFlavors._tech_lead_pr(555)
+            TestLaunchTechLeadIssueSessionFlavors.tech_lead_pr(555)
         ]
         state = OrchestratorState()
 
@@ -4434,7 +4434,7 @@ class TestLaunchTechLeadIssueSessionFlavors:
         assert state.active_sessions == [session]
         # Health review must NOT query or build the batch PR manifest...
         assert mock_repo_host.get_prs_with_label_calls == []
-        run_dir = TestLaunchTechLeadIssueSessionFlavors._started_run_dir(mock_events)
+        run_dir = TestLaunchTechLeadIssueSessionFlavors.started_run_dir(mock_events)
         run_manifest = json.loads((run_dir / "manifest.json").read_text())
         assert "tech_lead_manifest" not in run_manifest
         # ...its assignment records the health flavor with no focus...
@@ -4467,7 +4467,7 @@ class TestLaunchTechLeadIssueSessionFlavors:
         survive an orchestrator restart.
         """
         config = launcher_bundle.launcher.config
-        self._enable_tech_lead_agent(config, tmp_path)
+        self.enable_tech_lead_agent(config, tmp_path)
         launcher_bundle.board_snapshot_provider.error = RuntimeError("boom")
         state = OrchestratorState()
         PendingSessionQueues(state).queue_failure_investigation(
@@ -4591,7 +4591,7 @@ class TestLaunchTechLeadIssueSessionFlavors:
         a later retry cannot double-post it).
         """
         config = launcher_bundle.launcher.config
-        self._enable_tech_lead_agent(config, tmp_path)
+        self.enable_tech_lead_agent(config, tmp_path)
         launcher_bundle.board_snapshot_provider.error = RuntimeError("boom")
 
         def apply_action(action):
@@ -4643,7 +4643,7 @@ class TestLaunchTechLeadIssueSessionFlavors:
         public routing boundary.
         """
         config = launcher_bundle.launcher.config
-        self._enable_tech_lead_agent(config, tmp_path)
+        self.enable_tech_lead_agent(config, tmp_path)
         launcher_bundle.board_snapshot_provider.error = RuntimeError("boom")
 
         comment_fails = {"active": True}
@@ -4706,7 +4706,7 @@ class TestLaunchTechLeadIssueSessionFlavors:
     ):
         """A needs-human transition cannot exist without provenance."""
         config = launcher_bundle.launcher.config
-        self._enable_tech_lead_agent(config, tmp_path)
+        self.enable_tech_lead_agent(config, tmp_path)
         launcher_bundle.board_snapshot_provider.error = RuntimeError("boom")
         marker = LabelManager(config).tech_lead_needs_human
 
@@ -4743,7 +4743,7 @@ class TestLaunchTechLeadIssueSessionFlavors:
     ):
         """A later tick clears both labels after the investigation launches."""
         config = launcher_bundle.launcher.config
-        self._enable_tech_lead_agent(config, tmp_path)
+        self.enable_tech_lead_agent(config, tmp_path)
         launcher_bundle.board_snapshot_provider.error = RuntimeError("boom")
         labels = LabelManager(config)
         github_labels: set[str] = set()
@@ -5098,9 +5098,9 @@ class TestTechLeadProducerToLaunchBoundary:
     ):
         """_handle_create_tech_lead_issue -> queue -> launch prepares the manifest."""
         config = launcher_bundle.launcher.config
-        TestLaunchTechLeadIssueSessionFlavors._enable_tech_lead_agent(config, tmp_path)
+        TestLaunchTechLeadIssueSessionFlavors.enable_tech_lead_agent(config, tmp_path)
         mock_repo_host.prs_with_label = [
-            TestLaunchTechLeadIssueSessionFlavors._tech_lead_pr(555)
+            TestLaunchTechLeadIssueSessionFlavors.tech_lead_pr(555)
         ]
         state = OrchestratorState()
 
@@ -5135,7 +5135,7 @@ class TestTechLeadProducerToLaunchBoundary:
         assert mock_repo_host.get_prs_with_label_calls == [
             (config.tech_lead_watch_label, "all")
         ]
-        run_dir = TestLaunchTechLeadIssueSessionFlavors._started_run_dir(mock_events)
+        run_dir = TestLaunchTechLeadIssueSessionFlavors.started_run_dir(mock_events)
         run_manifest = json.loads((run_dir / "manifest.json").read_text())
         assert run_manifest["tech_lead_manifest"] == str(
             run_dir / "tech-lead-data" / "manifest.json"
@@ -5189,9 +5189,9 @@ class TestTechLeadProducerToLaunchBoundary:
             board_snapshot_provider=provider,
         )
         config = launcher_bundle.launcher.config
-        TestLaunchTechLeadIssueSessionFlavors._enable_tech_lead_agent(config, tmp_path)
+        TestLaunchTechLeadIssueSessionFlavors.enable_tech_lead_agent(config, tmp_path)
         mock_repo_host.prs_with_label = [
-            TestLaunchTechLeadIssueSessionFlavors._tech_lead_pr(555)
+            TestLaunchTechLeadIssueSessionFlavors.tech_lead_pr(555)
         ]
         diagnostic = tmp_path / "failure-diagnostic.md"
         diagnostic.write_text("what went wrong")
@@ -5229,7 +5229,7 @@ class TestTechLeadProducerToLaunchBoundary:
 
         # Failure investigation must NOT query or build the batch PR manifest...
         assert mock_repo_host.get_prs_with_label_calls == []
-        run_dir = TestLaunchTechLeadIssueSessionFlavors._started_run_dir(mock_events)
+        run_dir = TestLaunchTechLeadIssueSessionFlavors.started_run_dir(mock_events)
         run_manifest = json.loads((run_dir / "manifest.json").read_text())
         assert "tech_lead_manifest" not in run_manifest
         # ...and its assignment records the focused investigation.
@@ -5291,7 +5291,7 @@ class TestTechLeadProducerToLaunchBoundary:
             board_snapshot_provider=provider,
         )
         config = launcher_bundle.launcher.config
-        TestLaunchTechLeadIssueSessionFlavors._enable_tech_lead_agent(config, tmp_path)
+        TestLaunchTechLeadIssueSessionFlavors.enable_tech_lead_agent(config, tmp_path)
 
         queues = PendingSessionQueues(state)
         # The unrelated investigation that survives the storm collapse.
@@ -5316,7 +5316,7 @@ class TestTechLeadProducerToLaunchBoundary:
 
         session = self._launch(queued, state, launcher_bundle)
 
-        run_dir = TestLaunchTechLeadIssueSessionFlavors._started_run_dir(mock_events)
+        run_dir = TestLaunchTechLeadIssueSessionFlavors.started_run_dir(mock_events)
         snapshot = BoardSnapshot.read(
             run_dir / "tech-lead-data" / "board-snapshot.json"
         )
@@ -5422,7 +5422,7 @@ class TestTechLeadProducerToLaunchBoundary:
             board_snapshot_provider=provider,
         )
         config = launcher_bundle.launcher.config
-        TestLaunchTechLeadIssueSessionFlavors._enable_tech_lead_agent(config, tmp_path)
+        TestLaunchTechLeadIssueSessionFlavors.enable_tech_lead_agent(config, tmp_path)
         # The open anchor comes back from its marker label — the only
         # crash-safe truth a restart has.
         mock_repo_host.issues = {
@@ -5455,7 +5455,7 @@ class TestTechLeadProducerToLaunchBoundary:
         # authority record scopes act-level proposals to those same issues.
         session = self._launch(queued, state, launcher_bundle)
 
-        run_dir = TestLaunchTechLeadIssueSessionFlavors._started_run_dir(mock_events)
+        run_dir = TestLaunchTechLeadIssueSessionFlavors.started_run_dir(mock_events)
         snapshot = BoardSnapshot.read(
             run_dir / "tech-lead-data" / "board-snapshot.json"
         )
@@ -5504,7 +5504,7 @@ class TestTechLeadProducerToLaunchBoundary:
             mock_command_runner,
         )
         config = launcher_bundle.launcher.config
-        TestLaunchTechLeadIssueSessionFlavors._enable_tech_lead_agent(config, tmp_path)
+        TestLaunchTechLeadIssueSessionFlavors.enable_tech_lead_agent(config, tmp_path)
         mock_repo_host.issues = {
             906: Issue(
                 number=906,
@@ -7966,3 +7966,18 @@ class TestEveryLaunchPathProvisionsExactlyOnce:
         assert runs[0]["cwd"] == mock_worktree_manager.tmp_path / scratch_name, (
             "the scratch worktree must be provisioned, not the focus worktree"
         )
+
+
+def test_failed_launch_refuses_cleanup_when_custody_fails(
+    launcher_bundle, mock_worktree_manager, mock_command_runner, sample_config, sample_issue,
+):
+    """A setup failure must retain reused work when its owner cannot capture it."""
+    sample_config.setup_worktree = ["make worktree-setup"]
+    mock_command_runner.results = [CommandResult(returncode=1, stdout="", stderr="setup failed", timed_out=False)]
+    refusal = RuntimeError("trusted custody unavailable")
+    launcher_bundle.action_applier.runtime_lifecycle.preserve.side_effect = refusal
+    with pytest.raises(RuntimeError, match="trusted custody unavailable"):
+        launcher_bundle.launcher.launch_issue_session(sample_issue, active_sessions=[])
+    assert mock_worktree_manager.checkout_only_removals == []
+    assert mock_worktree_manager.checkout_and_branch_removals == []
+    launcher_bundle.action_applier.runtime_lifecycle.preserve.assert_called_once_with(sample_issue.number, "failed-launch-cleanup")

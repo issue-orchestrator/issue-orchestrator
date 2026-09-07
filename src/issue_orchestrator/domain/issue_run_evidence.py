@@ -1,6 +1,6 @@
 """Explicit, launch-owned evidence of the runs belonging to an issue."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 
 from .session_key import SessionKey
@@ -48,6 +48,15 @@ class IssueRunEvidence:
             raise ValueError("evidence status must agree with recorded runs")
         if not self.observed_at.strip():
             raise ValueError("evidence requires observed_at")
+
+
+    def select(self, *, terminal_id: str, run: SessionRunAssets | None = None) -> "IssueRunEvidence":
+        selected = tuple(row for row in self.runs if row.run.session_name == terminal_id
+            and (run is None or row.run == run))
+        if run is not None and not selected:
+            raise IssueRunEvidenceUnavailable("terminal run has no exact durable owner")
+        return replace(self, runs=selected, status=IssueRunEvidenceStatus.RUNS_RECORDED
+            if selected else IssueRunEvidenceStatus.NO_RUNS_RECORDED)
 
 
 class IssueRunEvidenceUnavailable(RuntimeError):

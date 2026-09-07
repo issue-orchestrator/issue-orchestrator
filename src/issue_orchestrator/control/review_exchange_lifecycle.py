@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Callable, Iterable, Protocol
 
 from ..ports.issue_run_evidence import IssueRunEvidenceSource
 from ..ports.validated_work_preservation import ValidatedWorkPreservation
-from ..domain.validated_work_commands import AutomaticCaptureCommand, ValidatedWorkDispositionBatch
+from ..domain.validated_work_commands import AutomaticCaptureScope, AutomaticCaptureCommand, ValidatedWorkDispositionBatch
 from enum import StrEnum
 from ..events import EventName
 from ..ports.event_sink import EventSink, make_trace_event
@@ -24,6 +24,7 @@ from ..domain.validated_work_observation import disposition_observation
 from ..ports.session_runner import SessionRunner
 from .background_job_supervisor import drain_background_jobs
 from ..domain.session_key import TaskKind
+from ..domain.session_run import SessionRunAssets
 from ..domain.tech_lead_session import TechLeadSessionGeneration
 from .completion_review_exchange import is_review_exchange_job_for_issue
 
@@ -595,6 +596,18 @@ class IssueRuntimeLifecycleOwners:
 
     def preserve(self, issue_number: int, reason: str) -> ValidatedWorkDispositionBatch:
         batch = self._capture(issue_number, reason)
+        self._observe(batch)
+        return batch
+
+    def preserve_named_terminal(self, terminal_id: str, reason: str) -> tuple[ValidatedWorkDispositionBatch, ...]:
+        issues = set(self.run_evidence.terminal_issues(terminal_id)).union(
+            session.issue.number for session in self.core.active_sessions if session.terminal_id == terminal_id)
+        return tuple(self.preserve_terminal(issue, terminal_id, reason) for issue in sorted(issues))
+
+    def preserve_terminal(self, issue_number: int, terminal_id: str, reason: str, *, run: SessionRunAssets | None = None) -> ValidatedWorkDispositionBatch:
+        evidence = self.run_evidence.terminal_evidence(issue_number, terminal_id, run)
+        batch = self.validated_work.dispose_at_termination(AutomaticCaptureCommand(
+            issue_number, reason, evidence, AutomaticCaptureScope.SELECTED_RUNS))
         self._observe(batch)
         return batch
 

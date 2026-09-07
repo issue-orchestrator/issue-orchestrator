@@ -283,3 +283,47 @@ def test_worktree_cleanup_requires_exact_owner_and_complete_custody(custody):
     assert batches[0].unresolved
     custody.git.run(custody.repo, ["worktree", "remove", "--force", str(custody.worktree)])
     assert custody.lifecycle.preserve_worktree(custody.worktree, "retry")[0].dispositions == batches[0].dispositions
+
+
+def test_startup_publishing_worktree_captures_before_removal(custody):
+    from issue_orchestrator.control.worktree_reconciliation import StartupWorktreeReconciler, WorktreeAuditEntry
+    from issue_orchestrator.domain.models import OrchestratorState
+    submit(custody, "retained")
+    manager, audit, cleanup = Mock(), Mock(), Mock()
+    cleanup.recover_orphaned_cleanups.return_value = 0
+    audit.audit.return_value = (WorktreeAuditEntry(custody.worktree, "tech_lead_scratch", "cleanup_candidate", "orphan"),)
+    def remove(path, *, force):
+        assert custody.store.for_issue(42).unresolved
+        custody.git.run(custody.repo, ["worktree", "remove", "--force", str(path)])
+    manager.remove_checkout_and_branch.side_effect = remove
+    reconciler = StartupWorktreeReconciler(SimpleNamespace(repo_root=custody.repo, worktree_base=custody.worktree.parent),
+        cleanup, manager, audit, custody.lifecycle)
+    assert reconciler.recover(OrchestratorState()).disposable_removed == 1
+    assert not custody.worktree.exists()
+
+
+def test_startup_publishing_worktree_retained_when_custody_unavailable(custody):
+    from issue_orchestrator.control.worktree_reconciliation import StartupWorktreeReconciler, WorktreeAuditEntry
+    from issue_orchestrator.domain.models import OrchestratorState
+    submit(custody, "retained")
+    custody.lifecycle.preserve(42, "first")
+    manager, audit, cleanup = Mock(), Mock(), Mock()
+    cleanup.recover_orphaned_cleanups.return_value = 0
+    audit.audit.return_value = (WorktreeAuditEntry(custody.worktree.parent / "unknown", "tech_lead_scratch", "cleanup_candidate", "orphan"),)
+    reconciler = StartupWorktreeReconciler(SimpleNamespace(repo_root=custody.repo, worktree_base=custody.worktree.parent),
+        cleanup, manager, audit, custody.lifecycle)
+    assert reconciler.recover(OrchestratorState()).retained == 1
+    manager.remove_checkout_and_branch.assert_not_called()
+
+
+def test_terminal_preservation_keeps_unrelated_allocated_run_open(custody):
+    review = IssueRunAllocationService(FileSystemSessionOutput(), custody.ledger, custody.wc).allocate(
+        IssueRunAllocation(custody.worktree, "review-42", 42,
+            SessionKey(GitHubIssueKey("owner/repo", "42"), TaskKind.REVIEW), "agent:test", "test"))
+    review_capability = custody.ledger.submission_capability(review)
+    receipt = custody.intake.submit(review_capability, command(completion(), "review-receipt"))
+    custody.intake.prepare_receipt(receipt, review)
+    assert custody.lifecycle.preserve_terminal(42, "review-42", "completed", run=review).unresolved
+    with pytest.raises(IntakeClosed):
+        custody.intake.submit(review_capability, command(completion(), "review-after-close"))
+    submit(custody, "coder-still-open")

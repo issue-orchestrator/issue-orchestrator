@@ -25,6 +25,11 @@ class DispositionInitiator(StrEnum):
     OPERATOR = "operator"  # Control Center command (§8.4)
 
 
+class AutomaticCaptureScope(StrEnum):
+    ISSUE = "issue"
+    SELECTED_RUNS = "selected_runs"
+
+
 @dataclass(frozen=True, slots=True)
 class AutomaticCaptureCommand:
     """Capture at a terminal boundary. Carries the runs, not a hint of them."""
@@ -32,6 +37,7 @@ class AutomaticCaptureCommand:
     issue_number: int
     reason: str  # the terminate_issue_runtime reason string
     run_evidence: IssueRunEvidence  # §2.5 — required; proves what was considered
+    scope: AutomaticCaptureScope = AutomaticCaptureScope.ISSUE
 
     initiator: ClassVar[DispositionInitiator] = DispositionInitiator.AUTOMATIC
 
