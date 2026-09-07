@@ -127,16 +127,9 @@ def _reviewer_payload(round_index: int) -> dict[str, object]:
 
 def _coder_payload(round_index: int) -> dict[str, object]:
     completion_path.parent.mkdir(parents=True, exist_ok=True)
-    completion_path.write_text(
-        json.dumps(
-            {
-                "outcome": "completed",
-                "implementation": f"synthetic coder round {round_index}",
-                "problems": "None",
-            }
-        ),
-        encoding="utf-8",
-    )
+    from completion_receipt import write_and_submit_completion
+
+    write_and_submit_completion(completion_path, round_index)
     return {
         "response_type": "ok",
         "response_text": f"Synthetic coder applied round {round_index}",

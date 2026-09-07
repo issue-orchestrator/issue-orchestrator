@@ -1,0 +1,124 @@
+"""Behavior boundaries for completion custody, processing and trusted validation."""
+
+from typing import Protocol
+from pathlib import Path
+
+from ..domain.completion_intake import (
+    CompletionIntakeEntry,
+    CompletionIntakeReceipt,
+    CompletionValidationAttestation,
+    OwnedCompletionSubmission,
+    OwnedValidationResult,
+    SubmitCompletionEvidence,
+)
+from ..domain.models import CompletionRecord
+from ..domain.completion_processing import ProcessingResult
+from ..domain.historical_intake import HistoricalIntakeCommand, HistoricalIntakeOutcome
+
+from ..domain.session_run import SessionRunAssets, SessionRunIdentity, RunContainedFile
+
+
+class CompletionEvidenceIntake(Protocol):
+    def register_submission(
+        self, run: SessionRunAssets, submission: OwnedCompletionSubmission
+    ) -> CompletionIntakeEntry: ...
+    def attest_validation(
+        self, entry_id: str, result: OwnedValidationResult
+    ) -> CompletionIntakeEntry: ...
+    def entries_for_run(
+        self, run: SessionRunIdentity
+    ) -> tuple[CompletionIntakeEntry, ...]: ...
+
+
+class CompletionIntakeLedger(CompletionEvidenceIntake, Protocol):
+    def run_for_capability(self, capability: str) -> SessionRunAssets: ...
+    def submission_capability_file(self, run: SessionRunAssets) -> RunContainedFile: ...
+    def submission_capability(self, run: SessionRunAssets) -> str: ...
+    def submit(
+        self, capability: str, command: SubmitCompletionEvidence
+    ) -> CompletionIntakeEntry: ...
+    def entry_for_receipt(self, entry_id: str) -> CompletionIntakeEntry: ...
+    def validation_for_receipt(
+        self, entry_id: str
+    ) -> CompletionValidationAttestation | None: ...
+    def historical_command_for_receipt(
+        self, entry_id: str
+    ) -> HistoricalIntakeCommand: ...
+    def read_completion(self, entry_id: str) -> CompletionRecord: ...
+    def pending_receipts(self) -> tuple[CompletionIntakeEntry, ...]: ...
+    def mark_processed(self, entry_id: str) -> None: ...
+    def close_run_intake(self, run: SessionRunAssets) -> None: ...
+    def entries_for_issue(
+        self, issue_number: int
+    ) -> tuple[CompletionIntakeEntry, ...]: ...
+    def close_intake(self, issue_number: int) -> None: ...
+    def repair_intake(self) -> None: ...
+
+
+class CompletionEvidenceValidator(Protocol):
+    def validate(self, entry: CompletionIntakeEntry) -> OwnedValidationResult: ...
+
+
+class CompletionSubmissionHandler(Protocol):
+    def submit(
+        self, capability: str, command: SubmitCompletionEvidence
+    ) -> CompletionIntakeReceipt: ...
+
+
+class CompletionExchangeIntake(Protocol):
+    def begin_attempt(self) -> None: ...
+    def completion_record(self) -> CompletionRecord: ...
+    def close_and_drain(self) -> None: ...
+
+
+class CompletionReceiptProcessor(Protocol):
+    def process_registered_completion(
+        self,
+        receipt: CompletionIntakeReceipt,
+        run: SessionRunAssets,
+        issue_number: int,
+        issue_title: str,
+    ) -> ProcessingResult: ...
+
+
+class CompletionIntakeRuntime(CompletionSubmissionHandler, Protocol):
+    def bind_exchange(self, run: SessionRunAssets) -> CompletionExchangeIntake: ...
+    def resume_receipt(
+        self,
+        capability: str,
+        receipt: CompletionIntakeReceipt,
+        issue_number: int,
+        issue_title: str,
+        processor: CompletionReceiptProcessor,
+    ) -> ProcessingResult: ...
+    def exchange_receipt(
+        self, run: SessionRunAssets
+    ) -> CompletionIntakeReceipt | None: ...
+    def pump(self) -> None: ...
+    def submission_capability(self, run: SessionRunAssets) -> str: ...
+    def drain(self) -> tuple[CompletionIntakeEntry, ...]: ...
+    def close_and_drain(
+        self, issue_number: int
+    ) -> tuple[CompletionIntakeEntry, ...]: ...
+
+    def receipt_for_run(
+        self, run: SessionRunAssets
+    ) -> CompletionIntakeReceipt | None: ...
+    def read_receipt(
+        self, receipt: CompletionIntakeReceipt, run: SessionRunAssets
+    ) -> CompletionRecord: ...
+    def require_publication_ready(
+        self, receipt: CompletionIntakeReceipt, run: SessionRunAssets
+    ) -> None: ...
+    def completion_artifact(
+        self, receipt: CompletionIntakeReceipt, run: SessionRunAssets
+    ) -> RunContainedFile: ...
+    def import_historical(
+        self, command: HistoricalIntakeCommand
+    ) -> HistoricalIntakeOutcome: ...
+
+
+class CompletionValidationWorkspace(Protocol):
+    def checkout(self, run: SessionRunAssets, head_sha: str, entry_id: str) -> Path:
+        """Copy the exact local commit to owner storage outside agent worktrees."""
+        ...

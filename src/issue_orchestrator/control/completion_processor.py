@@ -16,6 +16,8 @@ as untrusted input.
 """
 
 from ..ports.issue_run_allocator import IssueRunAllocator
+from ..ports.completion_intake import CompletionIntakeRuntime
+from ..domain.completion_intake import CompletionIntakeReceipt
 
 import json
 import logging
@@ -76,6 +78,7 @@ from ..ports.review_exchange_runner import (
 )
 from ..ports.session_output import SessionOutput, ValidationRecord
 from .validation import PublishGate, ValidationRecordStore
+from .completion_validation_artifacts import CompletionValidationArtifacts
 from .completion_pr_collision import (
     create_pr_with_collision_handling,
     get_open_pr_for_issue,
@@ -171,8 +174,6 @@ class _MissingTechLeadAuthorityStore:
 # owner module; the private aliases keep the processor's call sites stable.
 from .validation_record_containment import (
     contain_validation_record_path as _contain_validation_record_path,
-    copy_from_fd as _copy_from_fd,
-    open_contained_validation_record as _open_contained_validation_record,
 )
 
 # Completion actions that assert the shared needs-human block, and the cause
@@ -216,6 +217,7 @@ class CompletionProcessor:
         # anything back, so there is no sensible default to fall back to.
         agent_callback_endpoint: "AgentCallbackEndpoint",
         issue_run_allocator: IssueRunAllocator,
+        completion_intake: CompletionIntakeRuntime,
         review_artifact_reader: ReviewArtifactReader | None = None,
         runtime_identity: RuntimeIdentity | None = None,
         tech_lead_authority: "TechLeadAuthorityStore | None" = None,
@@ -255,6 +257,8 @@ class CompletionProcessor:
         self.pr_adapter = pr_adapter
         self.git_adapter = git_adapter
         self.session_output = session_output
+        self._validation_artifacts = CompletionValidationArtifacts(session_output)
+        self._completion_intake = completion_intake
         self.event_bus = event_bus
         self._trace_events: EventSink | None = None
         self._event_context: EventContext | None = None
@@ -367,6 +371,38 @@ class CompletionProcessor:
             log=logger,
         )
         return resolved.branch
+
+    def process_registered_completion(
+        self,
+        receipt: CompletionIntakeReceipt,
+        run: SessionRunAssets,
+        issue_number: int,
+        issue_title: str,
+    ) -> ProcessingResult:
+        artifact = self._completion_intake.completion_artifact(receipt, run)
+        return self.process(
+            worktree=run.worktree_path,
+            issue_number=issue_number,
+            issue_title=issue_title,
+            completion_path=str(artifact.path),
+            run_assets=run,
+            intake_receipt=receipt,
+        )
+
+    def completion_receipt_for_run(
+        self, run: SessionRunAssets
+    ) -> CompletionIntakeReceipt | None:
+        return self._completion_intake.receipt_for_run(run)
+
+    def read_completion_receipt(
+        self, receipt: CompletionIntakeReceipt, run: SessionRunAssets
+    ) -> CompletionRecord:
+        return self._completion_intake.read_receipt(receipt, run)
+
+    def require_completion_receipt(
+        self, receipt: CompletionIntakeReceipt, run: SessionRunAssets
+    ) -> None:
+        self._completion_intake.require_publication_ready(receipt, run)
 
     def read_completion_record(
         self, worktree: Path, completion_path: str | None = None
@@ -652,18 +688,10 @@ class CompletionProcessor:
             logger.warning("Publish gate failed: %s", result.reason)
             return False, result.reason, result.record
 
-    @staticmethod
-    def _load_validation_record(record_path: Path) -> ValidationRecord | None:
-        try:
-            data = json.loads(record_path.read_text())
-        except OSError:
-            return None
-        except json.JSONDecodeError:
-            return None
-        try:
-            return ValidationRecord.from_dict(data)
-        except TypeError:
-            return None
+    _load_validation_record = staticmethod(CompletionValidationArtifacts.load)
+    _materialize_validation_record = staticmethod(
+        CompletionValidationArtifacts.materialize
+    )
 
     def _attach_validation_artifacts(
         self,
@@ -672,83 +700,9 @@ class CompletionProcessor:
         record: ValidationRecord | None = None,
         record_path: Path | None = None,
     ) -> None:
-        """Attach validation artifacts to session output.
-
-        Updates manifest with paths to validation files that should already exist
-        in the session output directory (written directly by validation).
-        """
-        run_dir = validation_artifacts.run_dir
-        if record_path is None and record is not None:
-            record_path = ValidationRecordStore(worktree).get_record_path(record.head_sha)
-        run_dir_record_path = validation_artifacts.record_path
-        effective_record_path = self._materialize_validation_record(
-            worktree=worktree,
-            record_path=record_path,
-            run_dir_record_path=run_dir_record_path,
+        self._validation_artifacts.attach(
+            worktree, validation_artifacts, record, record_path
         )
-        if effective_record_path is not None:
-            self.session_output.update_manifest(
-                run_dir,
-                {"validation_record_path": str(effective_record_path)},
-            )
-            try:
-                (run_dir / "validation-record.path").write_text(str(effective_record_path))
-            except OSError:
-                logger.debug("Failed to write validation pointer for %s", run_dir)
-
-        # Update manifest with validation output paths (files written by validation)
-        updates: dict[str, str] = {}
-        stdout_path = validation_artifacts.stdout_path
-        stderr_path = validation_artifacts.stderr_path
-
-        if stdout_path.exists():
-            updates["validation_stdout"] = str(stdout_path)
-        if stderr_path.exists():
-            updates["validation_stderr"] = str(stderr_path)
-
-        if updates:
-            self.session_output.update_manifest(run_dir, updates)
-
-    def _materialize_validation_record(
-        self,
-        *,
-        worktree: Path,
-        record_path: Path | None,
-        run_dir_record_path: Path,
-    ) -> Path | None:
-        """Resolve the run-dir record's authoritative content and return its path.
-
-        Precedence: when ``record_path`` is supplied, the caller is asking
-        the helper to publish that source as the run-dir's authoritative
-        record. Falls back to a pre-existing run-dir file ONLY when no
-        source was supplied — refusing the caller's source and silently
-        publishing a stale local snapshot would be the #6017 P2 path-leak
-        class in reverse. Returns ``None`` when nothing can be attached.
-        """
-        if record_path is None or not record_path.exists():
-            return run_dir_record_path if run_dir_record_path.exists() else None
-        # Source/destination identity check. ``_copy_from_fd`` opens
-        # ``dst`` with ``open(dst, "wb")`` which truncates the file
-        # before reading completes, so a same-file copy ends up as empty
-        # JSON. When the caller already wrote the authoritative record
-        # into run_dir (the common case post-PublishGate fix), there's
-        # nothing to copy — just attach.
-        try:
-            same_file = (
-                record_path.resolve(strict=False)
-                == run_dir_record_path.resolve(strict=False)
-            )
-        except OSError:
-            same_file = False
-        if same_file:
-            return run_dir_record_path
-        # Symlink-safe walk: opens the source under the worktree with
-        # O_NOFOLLOW on every path component (#6017 re-review-4 P2),
-        # never reopens by path string.
-        src_fd = _open_contained_validation_record(str(record_path), worktree)
-        if src_fd is not None and _copy_from_fd(src_fd, run_dir_record_path):
-            return run_dir_record_path
-        return None
 
     def process(
         self,
@@ -760,6 +714,7 @@ class CompletionProcessor:
         pr_number: int | None = None,
         completion_path: str | None = None,
         agent_label: str | None = None,
+        intake_receipt: CompletionIntakeReceipt | None = None,
     ) -> ProcessingResult:
         """Process a completion record and execute actions.
 
@@ -787,6 +742,7 @@ class CompletionProcessor:
             worktree,
             completion_path,
             run_assets,
+            intake_receipt,
         )
         if error_result:
             return error_result
@@ -847,11 +803,19 @@ class CompletionProcessor:
             [a.value for a in record.requested_actions],
         )
 
-        preserved_completion_path = preserve_completion_record(
-            session_output=self.session_output,
-            worktree=worktree,
-            completion_path=completion_path,
-            run_assets=run_assets,
+        preserved_completion_path = (
+            str(
+                self._completion_intake.completion_artifact(
+                    intake_receipt, run_assets
+                ).path
+            )
+            if intake_receipt is not None
+            else preserve_completion_record(
+                session_output=self.session_output,
+                worktree=worktree,
+                completion_path=completion_path,
+                run_assets=run_assets,
+            )
         )
 
         # Execute requested actions in order.
@@ -916,6 +880,7 @@ class CompletionProcessor:
             total_duration=total_duration,
             completion_path=completion_path,
             preserved_completion_path=preserved_completion_path,
+            intake_receipt=intake_receipt,
             run_assets=run_assets,
             emit_completion_event=self._emit,
             post_issue_comment=self._add_issue_comment,
@@ -1059,6 +1024,7 @@ class CompletionProcessor:
         worktree: Path,
         completion_path: str | None,
         run_assets: SessionRunAssets,
+        intake_receipt: CompletionIntakeReceipt | None,
     ) -> tuple[CompletionRecord | None, str | None, ProcessingResult | None]:
         """Read completion record and attach validation artifacts.
 
@@ -1066,13 +1032,33 @@ class CompletionProcessor:
             Tuple of (record, session_name, error_result).
             If error_result is not None, caller should return it immediately.
         """
-        record = self.read_completion_record(worktree, completion_path)
+        record = (
+            self._completion_intake.read_receipt(intake_receipt, run_assets)
+            if intake_receipt is not None
+            else self.read_completion_record(worktree, completion_path)
+        )
         if not record:
             return None, None, ProcessingResult(
                 success=False,
                 message="No completion record found",
                 errors=["Completion record not found or invalid"],
             )
+        if intake_receipt is not None:
+            from ..domain.completion_intake import CompletionValidationFailed
+
+            try:
+                self.require_completion_receipt(intake_receipt, run_assets)
+            except CompletionValidationFailed as exc:
+                return (
+                    None,
+                    None,
+                    ProcessingResult(
+                        success=False,
+                        message=str(exc),
+                        errors=[str(exc)],
+                        failure_kind="validation_failed",
+                    ),
+                )
         # Rejected at the door, BEFORE any side effect (#6999 F2 round 5).
         # ``pr_labels`` is whatever the agent wrote, and the shared human-block
         # label is not among the things it may hand itself: applied, it would
@@ -1086,7 +1072,12 @@ class CompletionProcessor:
                 success=False, message=reserved, errors=[reserved]
             )
 
-        session_name = self.session_output.session_name_from_path(completion_path) or record.session_id
+        session_name = (
+            run_assets.session_name
+            if intake_receipt is not None
+            else self.session_output.session_name_from_path(completion_path)
+            or record.session_id
+        )
         if record.validation_record_path and session_name:
             contained = _contain_validation_record_path(
                 record.validation_record_path, worktree

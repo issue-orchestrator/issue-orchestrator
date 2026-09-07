@@ -981,7 +981,15 @@ def build_test_orchestrator_deps(
     issue_run_ledger = SqliteIssueRunLedger(state_dir(config.repo_root) / "issue_run_ledger.sqlite")
     from issue_orchestrator.control.issue_run_allocator import IssueRunAllocationService
     issue_run_allocator = IssueRunAllocationService(session_output, issue_run_ledger)
+    from issue_orchestrator.entrypoints.bootstrap_run_services import (
+        build_completion_intake,
+    )
+
+    completion_intake = build_completion_intake(
+        config, issue_run_ledger, issue_run_allocator, working_copy, command_runner
+    )
     completion_processor = CompletionProcessor(
+        completion_intake=completion_intake,
         issue_run_allocator=issue_run_allocator,
         agent_callback_endpoint=agent_callback_endpoint,
         label_adapter=repo_host,
@@ -990,7 +998,9 @@ def build_test_orchestrator_deps(
         event_bus=None,
         session_output=session_output,
         review_exchange_runner=PersistentReviewExchangeRunner(
-            session_output, InMemoryPersistentExchangePairRegistry(),
+            session_output,
+            InMemoryPersistentExchangePairRegistry(),
+            completion_intake=completion_intake,
         ),
         label_config={
             "blocked": config.get_label_blocked(),
@@ -1190,6 +1200,7 @@ def build_test_orchestrator_deps(
     # Same post-construction wiring as bootstrap: the ActionApplier abandons
     # publish retries at issue terminal boundaries via the runtime terminator.
     _action_applier.publish_recovery = publish_recovery
+    _action_applier.completion_intake = completion_intake
 
     return OrchestratorDeps(
         events=events,
@@ -1198,6 +1209,7 @@ def build_test_orchestrator_deps(
         # wires it (#6999 F7).
         pending_work_claims=pending_work_claims,
         issue_run_ledger=issue_run_ledger,
+        completion_intake=completion_intake,
         issue_run_allocator=issue_run_allocator,
         claim_quarantine=build_claim_quarantine_owner(
             store=pending_work_claims,

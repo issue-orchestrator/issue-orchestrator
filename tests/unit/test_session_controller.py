@@ -156,6 +156,22 @@ class MockCompletionProcessor:
         self.review_exchange_queries: list[ReviewExchangeRunningQuery] = []
         self.check_dirty_policy_calls: list[Path] = []
 
+    def completion_receipt_for_run(self, run):
+        from issue_orchestrator.domain.completion_intake import CompletionIntakeReceipt
+
+        return (
+            CompletionIntakeReceipt("a" * 64, "b" * 64)
+            if self.completion_record is not None
+            else None
+        )
+
+    def require_completion_receipt(self, receipt, run):
+        pass
+
+    def read_completion_receipt(self, receipt, run):
+        assert self.completion_record is not None
+        return self.completion_record
+
     def read_completion_record(
         self, worktree_path: Path, completion_path: str | None = None
     ) -> CompletionRecord | None:
@@ -188,6 +204,7 @@ class MockCompletionProcessor:
         run_assets: SessionRunAssets,
         pr_number: int | None = None,
         completion_path: str | None = None,
+        intake_receipt=None,
     ):
         self.process_calls.append(
             {

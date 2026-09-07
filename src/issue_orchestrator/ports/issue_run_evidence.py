@@ -5,7 +5,10 @@ from typing import Protocol
 from ..domain.issue_run_evidence import IssueRunEvidence, IssueRunRecord
 
 
-class IssueRunLedger(Protocol):
+from .completion_intake import CompletionIntakeLedger
+
+
+class IssueRunLedger(CompletionIntakeLedger, Protocol):
     def record_run(self, issue_number: int, record: IssueRunRecord) -> None:
         """Persist exact allocated assets before the launch may spawn."""
         ...

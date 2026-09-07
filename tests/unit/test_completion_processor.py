@@ -10,6 +10,7 @@ Architecture reminder:
 - CompletionProcessor executes actions via adapters (labels, PR, comments)
 """
 
+from issue_orchestrator.ports.completion_intake import CompletionIntakeRuntime
 from tests.run_allocation_helpers import make_completion_processor
 
 import json
@@ -875,6 +876,7 @@ class TestReviewExchangeExecution:
             review_exchange_runner=PersistentReviewExchangeRunner(
                 session_output,
                 InMemoryPersistentExchangePairRegistry(),
+                completion_intake=Mock(spec=CompletionIntakeRuntime),
             ),
             event_bus=EventBus(),
             label_config={},
@@ -2295,11 +2297,21 @@ class TestReviewExchangeExecution:
                     reason="reviewer_ok",
                 )
 
+        from tests.run_allocation_helpers import allocation_for
+        from issue_orchestrator.domain.issue_run_allocation import (
+            IssueExchangeRunAllocation,
+        )
+        from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+        from issue_orchestrator.domain.issue_key import FakeIssueKey
+
+        output = FileSystemSessionOutput()
+        allocator = allocation_for(output)
         processor = make_completion_processor(
             label_adapter=Mock(spec=LabelAdapter),
             pr_adapter=Mock(spec=PRAdapter),
             git_adapter=Mock(spec=GitAdapter),
-            session_output=FileSystemSessionOutput(),
+            session_output=output,
+            issue_run_allocator=allocator,
             review_exchange_runner=_CaptureRunner(),
             event_bus=EventBus(),
             label_config={},
@@ -2309,14 +2321,14 @@ class TestReviewExchangeExecution:
             agent_callback_endpoint=ready_callback_endpoint(),
         )
 
-        exchange_run = ReviewExchangeRun(
-            session_name="review-exchange-1",
-            run_id="review-run-1",
-            session_run=make_session_run_assets(tmp_path, session_name="review-exchange-1", run_id="review-run-1"),
-            parent_session_name="session-1",
-            assets=ReviewExchangeRunAssets.from_run_dir(
-                tmp_path / ".issue-orchestrator" / "sessions" / "review-run-1__review-exchange-1"
-            ),
+        exchange_run = allocator.allocate_exchange(
+            IssueExchangeRunAllocation(
+                worktree_path=tmp_path,
+                issue_number=1,
+                session_key=SessionKey(FakeIssueKey("1", "test/repo"), TaskKind.REWORK),
+                parent_session_name="session-1",
+                agent_label="agent:coder",
+            )
         )
         processor._run_review_exchange_loop(  # noqa: SLF001
             exchange_run=exchange_run,

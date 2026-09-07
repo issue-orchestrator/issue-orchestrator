@@ -380,3 +380,9 @@ class WorkingCopy(Protocol):
             True if deletion succeeded, False otherwise.
         """
         ...
+
+    def verify_historical_selection(
+        self, repo_root: Path, branch_name: str, head_sha: str
+    ) -> bool:
+        """Verify a full commit exists on the exact selected local branch."""
+        ...

@@ -2,7 +2,6 @@
 
 # ruff: noqa: F403,F405
 
-from dataclasses import dataclass
 from pathlib import Path
 
 from tests.unit import test_control_api as _support
@@ -25,284 +24,8 @@ globals().update(
 )
 
 
-@dataclass(frozen=True, slots=True)
-class _BoundResumeRun:
-    run_assets: SessionRunAssets
-    completion_path: str
-
-
-def _bind_resume_run(
-    mock_orch,
-    worktree: Path,
-    *,
-    issue_number: int = 123,
-    session_name: str = "debug-123",
-    completion_filename: str = "completion.json",
-    completion_path: str | None = None,
-) -> _BoundResumeRun:
-    session_output = FileSystemSessionOutput()
-    run_assets = session_output.start_run(
-        worktree.resolve(),
-        session_name,
-        issue_number=issue_number,
-        agent_label="agent:test",
-        backend="subprocess",
-    )
-    if completion_path is None:
-        completion_path = (
-            f".issue-orchestrator/sessions/{run_assets.run_dir.name}/"
-            f"{completion_filename}"
-        )
-    session_output.update_manifest(
-        run_assets.run_dir,
-        {
-            "completion_path": completion_path,
-            "issue_number": issue_number,
-            "agent_label": "agent:test",
-        },
-    )
-    mock_orch.deps.session_output = session_output
-    return _BoundResumeRun(run_assets=run_assets, completion_path=completion_path)
-
-
-class TestResumeIssueEndpoint:
-    """Test the POST /api/issues/{issue_number}/resume endpoint."""
-
-    def test_resume_returns_503_when_orchestrator_not_initialized(
-        self, client_without_orchestrator
-    ):
-        """Returns 503 when orchestrator is None."""
-        response = client_without_orchestrator.post("/api/issues/123/resume")
-
-        assert response.status_code == 503
-        assert response.json()["error"] == "Orchestrator not initialized"
-
-    def test_resume_returns_404_when_worktree_not_found(
-        self, client_with_orchestrator, tmp_path
-    ):
-        """Returns 404 when worktree does not exist."""
-        client, _mock_orch = client_with_orchestrator
-
-        with patch(
-            "issue_orchestrator.entrypoints.control_api_issue_routes.get_worktree_path"
-        ) as mock_get_path:
-            mock_get_path.return_value = tmp_path / "nonexistent-worktree"
-
-            response = client.post("/api/issues/123/resume")
-
-        assert response.status_code == 404
-        data = response.json()
-        assert data["success"] is False
-        assert "not found" in data["error"].lower()
-
-    def test_resume_requires_explicit_run_dir(
-        self, client_with_orchestrator, tmp_path
-    ):
-        """Returns 400 when the resume caller does not inject run assets."""
-        client, _mock_orch = client_with_orchestrator
-
-        worktree = tmp_path / "repo-123"
-        worktree.mkdir()
-
-        with patch(
-            "issue_orchestrator.entrypoints.control_api_issue_routes.get_worktree_path"
-        ) as mock_get_path:
-            mock_get_path.return_value = worktree
-
-            response = client.post("/api/issues/123/resume")
-
-        assert response.status_code == 400
-        data = response.json()
-        assert data["success"] is False
-        assert data["error"] == "run_dir is required"
-
-    def test_resume_returns_404_when_no_completion_record(
-        self, client_with_orchestrator, tmp_path
-    ):
-        """Returns 404 when completion.json does not exist."""
-        client, mock_orch = client_with_orchestrator
-
-        # Create worktree without completion.json
-        worktree = tmp_path / "repo-123"
-        worktree.mkdir()
-        bound_run = _bind_resume_run(mock_orch, worktree)
-
-        with patch(
-            "issue_orchestrator.entrypoints.control_api_issue_routes.get_worktree_path"
-        ) as mock_get_path:
-            mock_get_path.return_value = worktree
-
-            response = client.post(
-                "/api/issues/123/resume",
-                json={"run_dir": str(bound_run.run_assets.run_dir)},
-            )
-
-        assert response.status_code == 404
-        data = response.json()
-        assert data["success"] is False
-        assert "completion" in data["error"].lower()
-
-    def test_resume_processes_completion_successfully(
-        self, client_with_orchestrator, tmp_path
-    ):
-        """Successfully processes completion when worktree and completion.json exist."""
-        client, mock_orch = client_with_orchestrator
-
-        # Create worktree with completion.json
-        worktree = tmp_path / "repo-123"
-        worktree.mkdir()
-        bound_run = _bind_resume_run(mock_orch, worktree)
-        completion_path = worktree / bound_run.completion_path
-        completion_path.parent.mkdir(parents=True, exist_ok=True)
-        completion_path.write_text('{"outcome": "completed"}')
-
-        # Mock the completion processor
-        mock_result = MagicMock()
-        mock_result.success = True
-        mock_result.message = "Completion processed"
-        mock_result.pr_url = "https://github.com/test/repo/pull/456"
-        mock_result.actions_taken = ["pushed", "pr_created"]
-        mock_result.errors = []
-        mock_orch.deps.completion_processor.process.return_value = mock_result
-
-        with patch(
-            "issue_orchestrator.entrypoints.control_api_issue_routes.get_worktree_path"
-        ) as mock_get_path:
-            mock_get_path.return_value = worktree
-
-            response = client.post(
-                "/api/issues/123/resume",
-                json={"run_dir": str(bound_run.run_assets.run_dir)},
-            )
-
-        assert response.status_code == 200
-        data = response.json()
-        assert data["success"] is True
-        assert data["message"] == "Completion processed"
-        assert data["pr_url"] == "https://github.com/test/repo/pull/456"
-        assert data["actions_taken"] == ["pushed", "pr_created"]
-
-        # Verify completion processor was called with correct args
-        mock_orch.deps.completion_processor.process.assert_called_once()
-        call_kwargs = mock_orch.deps.completion_processor.process.call_args.kwargs
-        assert call_kwargs["worktree"] == worktree
-        assert call_kwargs["issue_number"] == 123
-        assert call_kwargs["run_assets"] == bound_run.run_assets
-
-    def test_resume_uses_non_legacy_completion_path(
-        self, client_with_orchestrator, tmp_path
-    ):
-        """Uses manifest completion_path when present."""
-        client, mock_orch = client_with_orchestrator
-
-        worktree = tmp_path / "repo-123"
-        worktree.mkdir()
-        bound_run = _bind_resume_run(
-            mock_orch,
-            worktree,
-            session_name="run-1",
-            completion_filename="completion-issue.json",
-        )
-        (worktree / bound_run.completion_path).write_text('{"outcome": "completed"}')
-
-        mock_result = MagicMock()
-        mock_result.success = True
-        mock_result.message = "Completion processed"
-        mock_result.pr_url = None
-        mock_result.actions_taken = []
-        mock_result.errors = []
-        mock_orch.deps.completion_processor.process.return_value = mock_result
-
-        with patch(
-            "issue_orchestrator.entrypoints.control_api_issue_routes.get_worktree_path"
-        ) as mock_get_path:
-            mock_get_path.return_value = worktree
-
-            response = client.post(
-                "/api/issues/123/resume",
-                json={"run_dir": str(bound_run.run_assets.run_dir)},
-            )
-
-        assert response.status_code == 200
-        call_kwargs = mock_orch.deps.completion_processor.process.call_args.kwargs
-        assert call_kwargs["completion_path"] == bound_run.completion_path
-
-    def test_resume_handles_processing_failure(
-        self, client_with_orchestrator, tmp_path
-    ):
-        """Returns error when completion processing fails."""
-        client, mock_orch = client_with_orchestrator
-
-        # Create worktree with completion.json
-        worktree = tmp_path / "repo-123"
-        worktree.mkdir()
-        bound_run = _bind_resume_run(mock_orch, worktree)
-        completion_path = worktree / bound_run.completion_path
-        completion_path.parent.mkdir(parents=True, exist_ok=True)
-        completion_path.write_text('{"outcome": "completed"}')
-
-        # Mock the completion processor to raise an exception
-        mock_orch.deps.completion_processor.process.side_effect = Exception(
-            "Push failed: remote rejected"
-        )
-
-        with patch(
-            "issue_orchestrator.entrypoints.control_api_issue_routes.get_worktree_path"
-        ) as mock_get_path:
-            mock_get_path.return_value = worktree
-
-            response = client.post(
-                "/api/issues/123/resume",
-                json={"run_dir": str(bound_run.run_assets.run_dir)},
-            )
-
-        assert response.status_code == 500
-        data = response.json()
-        assert data["success"] is False
-        assert "remote rejected" in data["error"]
-
-    def test_resume_fetches_issue_title_from_cache(
-        self, client_with_orchestrator, tmp_path
-    ):
-        """Uses cached issue title when available."""
-        client, mock_orch = client_with_orchestrator
-
-        # Create worktree with completion.json
-        worktree = tmp_path / "repo-123"
-        worktree.mkdir()
-        bound_run = _bind_resume_run(mock_orch, worktree)
-        completion_path = worktree / bound_run.completion_path
-        completion_path.parent.mkdir(parents=True, exist_ok=True)
-        completion_path.write_text('{"outcome": "completed"}')
-
-        # Add issue to cached queue
-        mock_issue = MagicMock()
-        mock_issue.number = 123
-        mock_issue.title = "Cached Issue Title"
-        mock_orch.state.cached_queue_issues = [mock_issue]
-
-        mock_result = MagicMock()
-        mock_result.success = True
-        mock_result.message = "OK"
-        mock_result.pr_url = None
-        mock_result.actions_taken = []
-        mock_result.errors = []
-        mock_orch.deps.completion_processor.process.return_value = mock_result
-
-        with patch(
-            "issue_orchestrator.entrypoints.control_api_issue_routes.get_worktree_path"
-        ) as mock_get_path:
-            mock_get_path.return_value = worktree
-
-            response = client.post(
-                "/api/issues/123/resume",
-                json={"run_dir": str(bound_run.run_assets.run_dir)},
-            )
-
-        assert response.status_code == 200
-        # Verify title was used from cache
-        call_kwargs = mock_orch.deps.completion_processor.process.call_args.kwargs
-        assert call_kwargs["issue_title"] == "Cached Issue Title"
+# Receipt-bound resume producer/handler cases live in test_completion_intake_routes.py.
+# The previous caller-selected run-directory resume contract is intentionally gone.
 
 
 class TestDebugSessionEndpoint:
@@ -484,6 +207,12 @@ class TestDebugSessionEndpoint:
         mock_orch.config.agents = {"agent:claude": mock_agent_config}
         mock_orch.config.web_port = 8080
         mock_orch.config.control_api_port = 8080
+        from issue_orchestrator.infra.agent_callback_endpoint import (
+            RuntimeAgentCallbackEndpoint,
+        )
+
+        mock_orch.deps.agent_callback_endpoint = RuntimeAgentCallbackEndpoint()
+        mock_orch.deps.agent_callback_endpoint.publish_bound_port(8080)
 
         # Session doesn't exist yet
         mock_orch.deps.runner.session_exists.return_value = False
@@ -575,6 +304,12 @@ class TestDebugSessionEndpoint:
         mock_orch.config.agents = {"agent:claude": mock_agent_config}
         mock_orch.config.web_port = 8080
         mock_orch.config.control_api_port = 8080
+        from issue_orchestrator.infra.agent_callback_endpoint import (
+            RuntimeAgentCallbackEndpoint,
+        )
+
+        mock_orch.deps.agent_callback_endpoint = RuntimeAgentCallbackEndpoint()
+        mock_orch.deps.agent_callback_endpoint.publish_bound_port(8080)
 
         # Session doesn't exist yet
         mock_orch.deps.runner.session_exists.return_value = False
@@ -616,6 +351,12 @@ class TestDebugSessionEndpoint:
         mock_orch.config.agents = {"agent:claude": mock_agent_config}
         mock_orch.config.web_port = 8080
         mock_orch.config.control_api_port = 8080
+        from issue_orchestrator.infra.agent_callback_endpoint import (
+            RuntimeAgentCallbackEndpoint,
+        )
+
+        mock_orch.deps.agent_callback_endpoint = RuntimeAgentCallbackEndpoint()
+        mock_orch.deps.agent_callback_endpoint.publish_bound_port(8080)
 
         mock_orch.deps.runner.session_exists.return_value = False
         mock_orch.deps.runner.create_session.return_value = True

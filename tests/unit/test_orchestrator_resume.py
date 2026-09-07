@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from issue_orchestrator.domain.completion_intake import CompletionIntakeReceipt
+
 import json
 import urllib.request
 
@@ -20,11 +22,11 @@ class _Response:
     def __exit__(self, *_exc: object) -> None:
         return None
 
-    def read(self) -> bytes:
+    def read(self, size: int) -> bytes:
         return json.dumps(self._payload).encode("utf-8")
 
 
-def test_trigger_orchestrator_resume_posts_owner_injected_run_dir(
+def test_trigger_orchestrator_resume_posts_exact_receipt_with_capability(
     monkeypatch,
 ) -> None:
     captured: dict[str, urllib.request.Request] = {}
@@ -36,20 +38,29 @@ def test_trigger_orchestrator_resume_posts_owner_injected_run_dir(
 
     monkeypatch.setenv("ISSUE_ORCHESTRATOR_API_PORT", "12345")
     monkeypatch.setenv("ISSUE_ORCHESTRATOR_ISSUE_NUMBER", "42")
-    monkeypatch.setenv("ISSUE_ORCHESTRATOR_RUN_DIR", "/tmp/io-run")
-    monkeypatch.setattr(urllib.request, "urlopen", _urlopen)
+    monkeypatch.setenv("ISSUE_ORCHESTRATOR_COMPLETION_CAPABILITY", "test-capability")
+    monkeypatch.setattr(
+        urllib.request,
+        "build_opener",
+        lambda *handlers: type("Transport", (), {"open": staticmethod(_urlopen)})(),
+    )
 
-    success, error = trigger_orchestrator_resume()
+    success, error = trigger_orchestrator_resume(
+        receipt=CompletionIntakeReceipt("a" * 64, "b" * 64)
+    )
 
     assert success is True
     assert error is None
     request = captured["request"]
-    assert request.full_url == "http://localhost:12345/api/issues/42/resume"
+    assert request.full_url == "http://127.0.0.1:12345/api/issues/42/resume"
     assert request.data is not None
-    assert json.loads(request.data.decode("utf-8")) == {"run_dir": "/tmp/io-run"}
+    assert json.loads(request.data.decode("utf-8")) == {
+        "entry_id": "a" * 64,
+        "content_sha256": "b" * 64,
+    }
 
 
-def test_trigger_orchestrator_resume_requires_run_dir_before_fetch(
+def test_trigger_orchestrator_resume_requires_capability_before_fetch(
     monkeypatch,
 ) -> None:
     called = False
@@ -61,12 +72,18 @@ def test_trigger_orchestrator_resume_requires_run_dir_before_fetch(
 
     monkeypatch.setenv("ISSUE_ORCHESTRATOR_API_PORT", "12345")
     monkeypatch.setenv("ISSUE_ORCHESTRATOR_ISSUE_NUMBER", "42")
-    monkeypatch.delenv("ISSUE_ORCHESTRATOR_RUN_DIR", raising=False)
-    monkeypatch.setattr(urllib.request, "urlopen", _urlopen)
+    monkeypatch.delenv("ISSUE_ORCHESTRATOR_COMPLETION_CAPABILITY", raising=False)
+    monkeypatch.setattr(
+        urllib.request,
+        "build_opener",
+        lambda *handlers: type("Transport", (), {"open": staticmethod(_urlopen)})(),
+    )
 
-    success, error = trigger_orchestrator_resume()
+    success, error = trigger_orchestrator_resume(
+        receipt=CompletionIntakeReceipt("a" * 64, "b" * 64)
+    )
 
     assert success is False
     assert error is not None
-    assert "ISSUE_ORCHESTRATOR_RUN_DIR is required" in error
+    assert "completion intake capability required" in error
     assert called is False

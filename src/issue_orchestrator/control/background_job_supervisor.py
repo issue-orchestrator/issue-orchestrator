@@ -288,3 +288,18 @@ class BackgroundJobSupervisor:
         if not callable(hook):
             return True
         return bool(hook(timeout=timeout))
+
+
+def drain_background_jobs(
+    supervisor: BackgroundJobSupervisor | None, timeout: float
+) -> None:
+    """Wait for supervised workers and surface failures before runtime shutdown."""
+    if supervisor is None:
+        return
+    logger.info("[SHUTDOWN] Waiting up to %.1fs for background job threads…", timeout)
+    idle = supervisor.wait_until_idle(timeout=timeout)
+    if not idle:
+        logger.warning(
+            "[SHUTDOWN] Background jobs still running after timeout; daemon threads will be terminated on exit"
+        )
+    supervisor.tick()

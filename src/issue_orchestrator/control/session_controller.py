@@ -50,6 +50,10 @@ from ..domain.completion_finalization import (
 )
 from ..domain.models import SessionStatus, CompletionOutcome
 from ..domain.session_run import SessionRunAssets
+from ..domain.completion_intake import (
+    CompletionIntakeReceipt,
+    CompletionValidationFailed,
+)
 from ..ports.provider_resilience import ProviderErrorType
 from ..infra.provider_resilience import ProviderStatus, read_provider_status
 from ..infra.logging_config import issue_log
@@ -124,6 +128,7 @@ class SessionFinalizationContext:
     retry_prompt_template: str | None
     repo_root: Path | None
     recovered: bool
+    intake_receipt: CompletionIntakeReceipt | None = None
 
 
 @dataclass(frozen=True)
@@ -197,6 +202,30 @@ class SessionController:
         self._validation_attempt_key_factory = validation_attempt_key_factory
         self._review_exchange_canceller = review_exchange_canceller
 
+    def _load_terminal_completion(
+        self,
+        run: SessionRunAssets,
+        task_kind: "TaskKind | None",
+        worktree: Path,
+        completion_path: str | None,
+    ) -> tuple[CompletionRecordLoadResult, CompletionIntakeReceipt | None]:
+        """Coding completion is selected by the run owner before decision policy."""
+        from ..domain.session_key import TaskKind
+
+        if task_kind not in (TaskKind.CODE, TaskKind.REWORK, TaskKind.TECH_LEAD):
+            return self.completion_processor.read_completion_record_result(
+                worktree, completion_path
+            ), None
+        receipt = self.completion_processor.completion_receipt_for_run(run)
+        record = (
+            self.completion_processor.read_completion_receipt(receipt, run)
+            if receipt is not None
+            else None
+        )
+        return CompletionRecordLoadResult(
+            path=run.completion_record_copy.path, record=record
+        ), receipt
+
     def decide_outcome(
         self,
         observation: SessionObservationResult,
@@ -249,8 +278,11 @@ class SessionController:
         self._log_completion_lookup(
             worktree_path, issue_number, session_name, completion_path
         )
-        load_result = self.completion_processor.read_completion_record_result(
-            worktree_path, completion_path
+        load_result, intake_receipt = self._load_terminal_completion(
+            run_assets,
+            task_kind,
+            worktree_path,
+            completion_path,
         )
         record = load_result.record
 
@@ -295,6 +327,7 @@ class SessionController:
                 retry_prompt_template=retry_prompt_template,
                 repo_root=repo_root,
                 recovered=recovered,
+                intake_receipt=intake_receipt,
             )
         )
         if finalization_decision is not None:
@@ -309,6 +342,7 @@ class SessionController:
             pr_number=pr_number,
             completion_path=completion_path,
             run_assets=run_assets,
+            intake_receipt=intake_receipt,
         )
         deferred_decision = self._deferred_review_exchange_decision(
             result=result,
@@ -452,10 +486,55 @@ class SessionController:
             provider_status,
         )
 
+    def _handle_intake_validation_failure(
+        self,
+        context: SessionFinalizationContext,
+        failure: CompletionValidationFailed,
+    ) -> SessionDecision:
+        error = str(failure)
+        self._record_validation_failure_manifest(
+            run_dir=context.run_assets.run_dir,
+            outcome=context.record.outcome,
+            retry_count=context.validation_retry_count,
+            validation_error=error,
+        )
+        status = self._route_validation_failure(
+            ValidationFailureContext(
+                worktree_path=context.worktree_path,
+                run_dir=context.run_assets.run_dir,
+                session_name=context.session_name,
+                issue_number=context.issue_number,
+                issue_title=context.issue_title,
+                retry_count=context.validation_retry_count,
+                error=error,
+                error_file=failure.result_path,
+                original_prompt=context.original_prompt,
+                retry_prompt_template=context.retry_prompt_template,
+                repo_root=context.repo_root,
+                failure_kind=ValidationFailureKind.VALIDATION_COMMAND,
+                dirty_files=(),
+            )
+        )
+        return SessionDecision(
+            status=status,
+            completion_processed=False,
+            reason=error,
+            validation_passed=False,
+            validation_error=error,
+            validation_error_file=failure.result_path,
+        )
+
     def _handle_completion_finalization_preconditions(
         self,
         context: SessionFinalizationContext,
     ) -> SessionDecision | None:
+        if context.intake_receipt is not None:
+            try:
+                self.completion_processor.require_completion_receipt(
+                    context.intake_receipt, context.run_assets
+                )
+            except CompletionValidationFailed as exc:
+                return self._handle_intake_validation_failure(context, exc)
         has_validation = bool(self._validation_cmd and self._command_runner)
         finalization_plan = self.completion_processor.completion_finalization_plan(
             issue_number=context.issue_number,

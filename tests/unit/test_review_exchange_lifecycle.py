@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from unittest.mock import Mock
+from issue_orchestrator.ports.completion_intake import CompletionIntakeRuntime
 
 import pytest
 
@@ -42,6 +43,7 @@ def test_terminate_issue_runtime_abandons_publish_retry() -> None:
     publish_recovery = _FakePublishRetryAbandoner()
 
     terminate_issue_runtime(
+        completion_intake=Mock(spec=CompletionIntakeRuntime),
         issue_number=230,
         reason="issue-completed",
         pair_registry=None,
@@ -55,6 +57,7 @@ def test_terminate_issue_runtime_abandons_publish_retry() -> None:
 def test_terminate_issue_runtime_without_publish_recovery_is_noop() -> None:
     """Omitting the abandoner keeps the boundary working (backward compatible)."""
     result = terminate_issue_runtime(
+        completion_intake=Mock(spec=CompletionIntakeRuntime),
         issue_number=230,
         reason="issue-completed",
         pair_registry=None,
@@ -77,6 +80,7 @@ def test_terminate_issue_runtime_stops_issue_rework_and_hidden_exchange() -> Non
     ]
 
     result = terminate_issue_runtime(
+        completion_intake=Mock(spec=CompletionIntakeRuntime),
         issue_number=230,
         reason="reset-retry",
         pair_registry=pair_registry,
@@ -105,6 +109,7 @@ def test_terminate_issue_runtime_clears_stale_active_session_records() -> None:
     active_sessions = [_active_session("issue-230"), _active_session("issue-231")]
 
     result = terminate_issue_runtime(
+        completion_intake=Mock(spec=CompletionIntakeRuntime),
         issue_number=230,
         reason="issue-completed",
         pair_registry=None,
@@ -124,6 +129,7 @@ def test_terminate_issue_runtime_requires_session_manager_for_active_records() -
 
     with pytest.raises(RuntimeError, match="without a SessionManager"):
         terminate_issue_runtime(
+            completion_intake=Mock(spec=CompletionIntakeRuntime),
             issue_number=230,
             reason="reset-retry",
             pair_registry=pair_registry,

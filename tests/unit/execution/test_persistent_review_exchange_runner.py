@@ -163,6 +163,7 @@ def _run(
     exchange_run = _make_exchange_run(tmp_path)
     return runner.run(
         exchange_run=exchange_run,
+        completion_capability="test-run-capability",
         coder_worktree=tmp_path / "coder",
         issue_number=42,
         issue_title="t",
@@ -181,6 +182,7 @@ def _make_runner(tmp_path: Path) -> "prer.PersistentReviewExchangeRunner":
     return prer.PersistentReviewExchangeRunner(
         MagicMock(name="session_output"),
         MagicMock(name="pair_registry"),
+        completion_intake=MagicMock(),
     )
 
 
@@ -257,6 +259,7 @@ def test_run_passes_per_agent_response_channels(
     runner = prer.PersistentReviewExchangeRunner(
         MagicMock(name="session_output"),
         MagicMock(name="pair_registry"),
+        completion_intake=MagicMock(),
         turn_mailbox=MagicMock(name="turn_mailbox"),
     )
     reviewer = _make_agent(
@@ -347,6 +350,7 @@ def test_run_resolves_coder_addendum_for_coder_worktree_only(
     runner = prer.PersistentReviewExchangeRunner(
         MagicMock(name="session_output"),
         MagicMock(name="pair_registry"),
+        completion_intake=MagicMock(),
         coder_prompt_addendum=provider,
     )
 
@@ -508,11 +512,14 @@ class TestKillEvidenceWiring:
         monkeypatch.setattr(prer, "run_persistent_session_exchange", _capture_kwargs)
         monkeypatch.setattr(prer, "resolve_current_branch", lambda _worktree: "branch")
         runner = prer.PersistentReviewExchangeRunner(
-            MagicMock(name="session_output"), registry
+            MagicMock(name="session_output"),
+            registry,
+            completion_intake=MagicMock(),
         )
 
         runner.run(
             exchange_run=exchange_run,
+            completion_capability="test-run-capability",
             coder_worktree=tmp_path / "coder",
             issue_number=42,
             issue_title="t",

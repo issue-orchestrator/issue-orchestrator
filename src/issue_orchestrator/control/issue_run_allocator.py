@@ -4,7 +4,7 @@ from ..domain.issue_run_allocation import IssueExchangeRunAllocation, IssueRunAl
 from ..domain.issue_run_evidence import IssueRunRecord
 from ..domain.review_exchange_run import ReviewExchangeRun
 from ..domain.session_key import SessionKey
-from ..domain.session_run import SessionRunAssets
+from ..domain.session_run import SessionRunAssets, RunContainedFile
 from ..ports.issue_run_evidence import IssueRunLedger
 from ..ports.session_output import SessionOutput
 
@@ -13,6 +13,12 @@ class IssueRunAllocationService:
     def __init__(self, output: SessionOutput, ledger: IssueRunLedger) -> None:
         self._output = output
         self._ledger = ledger
+
+    def submission_capability_file(self, run: SessionRunAssets) -> RunContainedFile:
+        return self._ledger.submission_capability_file(run)
+
+    def submission_capability(self, run: SessionRunAssets) -> str:
+        return self._ledger.submission_capability(run)
 
     def allocate(self, request: IssueRunAllocation) -> SessionRunAssets:
         run = self._output.start_run(

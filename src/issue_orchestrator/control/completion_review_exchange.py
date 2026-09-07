@@ -1311,6 +1311,9 @@ class CompletionReviewExchange:
         # into ``execution/`` directly (was done via ``importlib`` in the
         # cutover; replaced by the injected port per #6161).
         return self._review_exchange_runner.run(
+            completion_capability=self._issue_run_allocator.submission_capability(
+                exchange_run.session_run
+            ),
             exchange_run=exchange_run,
             coder_worktree=worktree,
             issue_number=issue_number,

@@ -552,6 +552,7 @@ def _terminate_reset_retry_runtime(
 ) -> None:
     owners = _reset_retry_runtime_owners(state, deps)
     terminate_issue_runtime(
+        completion_intake=deps.completion_intake,
         issue_number=issue_number,
         reason="reset-retry",
         pair_registry=owners.pair_registry,

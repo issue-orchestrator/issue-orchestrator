@@ -6,16 +6,16 @@ Generic callback plumbing (endpoint resolution, auth headers) lives in
 
 from __future__ import annotations
 
+from ...domain.completion_intake import CompletionIntakeReceipt
+
 import json
 import os
 import urllib.error
-import urllib.request
 
 from dataclasses import dataclass
-from pathlib import Path
 
-from ...infra.env import ENV_PREFIX, get_env
-from .agent_callback import api_request_headers, resolve_control_api_port
+from ...infra.env import get_env
+from .agent_callback import resolve_control_api_port
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,32 +47,21 @@ class ResumeTarget:
         return f"http://localhost:{self.port}/api/issues/{self.issue_number}/resume"
 
 
-@dataclass(frozen=True, slots=True)
-class ResumeRequestBody:
-    """Typed request body for an agent-triggered resume callback."""
-
-    run_dir: Path
-
-    def __post_init__(self) -> None:
-        if not self.run_dir.is_absolute():
-            raise ValueError(f"{ENV_PREFIX}RUN_DIR must be absolute")
-
-    @classmethod
-    def from_agent_environment(cls) -> "ResumeRequestBody":
-        run_dir = get_env("RUN_DIR")
-        if not run_dir or not run_dir.strip():
-            raise ValueError(f"{ENV_PREFIX}RUN_DIR is required")
-        return cls(run_dir=Path(run_dir))
-
-    def to_json_bytes(self) -> bytes:
-        return json.dumps({"run_dir": str(self.run_dir)}).encode("utf-8")
-
-
-def trigger_orchestrator_resume(verbose: bool = False) -> tuple[bool, str | None]:
+def trigger_orchestrator_resume(
+    verbose: bool = False, *, receipt: "CompletionIntakeReceipt"
+) -> tuple[bool, str | None]:
     """Trigger the orchestrator to resume processing for this issue."""
     try:
         target = ResumeTarget.from_agent_environment()
-        request_body = ResumeRequestBody.from_agent_environment()
+        from ...contracts.ui_openapi_models import CompletionIntakeReceiptPayload
+        from .completion_submit import CAPABILITY_ENV
+
+        capability = os.environ.get(CAPABILITY_ENV)
+        if not capability:
+            raise ValueError("completion intake capability required")
+        request_body = CompletionIntakeReceiptPayload(
+            entry_id=receipt.entry_id, content_sha256=receipt.content_sha256
+        )
     except ValueError as exc:
         return False, (
             f"Cannot resume: {exc}. Completion record written. "
@@ -83,17 +72,18 @@ def trigger_orchestrator_resume(verbose: bool = False) -> tuple[bool, str | None
         print(f"Triggering orchestrator resume for issue #{target.issue_number}...")
 
     try:
-        req = urllib.request.Request(
-            target.url(),
-            data=request_body.to_json_bytes(),
-            headers=api_request_headers().to_mutable_mapping(),
-            method="POST",
+        from .completion_submit import post_completion_command
+
+        result = json.loads(
+            post_completion_command(
+                f"/api/issues/{int(target.issue_number)}/resume",
+                request_body.model_dump_json().encode(),
+                timeout=120,
+            )
         )
-        with urllib.request.urlopen(req, timeout=120) as response:
-            result = json.loads(response.read().decode("utf-8"))
-            if result.get("success"):
-                return True, None
-            return False, result.get("error", "Unknown error from orchestrator")
+        if result.get("success"):
+            return True, None
+        return False, result.get("error", "Unknown error from orchestrator")
     except urllib.error.HTTPError as exc:
         try:
             body = exc.read().decode("utf-8")

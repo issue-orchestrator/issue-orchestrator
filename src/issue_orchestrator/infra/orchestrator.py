@@ -1,5 +1,8 @@
 """Main orchestrator - ties everything together."""
 
+from ..control.background_job_supervisor import drain_background_jobs
+from ..control.review_exchange_lifecycle import shutdown_agent_runtime
+
 import asyncio, logging, os, signal, threading, time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -8,6 +11,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Optional, cast
 
 if TYPE_CHECKING:
+    from ..domain.completion_intake import (
+        SubmitCompletionEvidence,
+        CompletionIntakeReceipt,
+    )
+    from ..domain.historical_intake import (
+        HistoricalIntakeCommand,
+        HistoricalIntakeOutcome,
+    )
     from ..control.review_exchange_lifecycle import GenerationBoundTermination
     from ..ports.provider_resilience import ProviderErrorType
     from ..control.planner_types import OrchestratorSnapshot, Plan
@@ -262,9 +273,20 @@ class Orchestrator:
             job_supervisor=self.deps.services.background_job_supervisor,
         )
 
+    def submit_completion_evidence(
+        self, capability: str, command: "SubmitCompletionEvidence"
+    ) -> "CompletionIntakeReceipt":
+        return self.deps.completion_intake.submit(capability, command)
+
+    def import_historical_completion(
+        self, command: "HistoricalIntakeCommand"
+    ) -> "HistoricalIntakeOutcome":
+        return self.deps.completion_intake.import_historical(command)
+
     def terminate_issue_runtime_for_issue(self, issue_number: int, *, reason: str) -> IssueRuntimeTermination:
         """Terminate all issue-scoped runtime owners at a lifecycle boundary."""
         return terminate_issue_runtime(
+            completion_intake=self.deps.completion_intake,
             issue_number=issue_number,
             reason=reason,
             pair_registry=self.deps.services.pair_registry,
@@ -509,6 +531,7 @@ class Orchestrator:
         )
 
     def tick(self) -> bool:
+        self.deps.completion_intake.pump()
         with self.state_lock:
             self._last_tick_time = time.time()
             self.deps.provider_resilience.close_expired()
@@ -931,15 +954,11 @@ class Orchestrator:
         )
 
     def _shutdown_runtime_owners(self) -> None:
-        """Terminate agent processes before waiting for their worker threads."""
-        logger.info("[SHUTDOWN] Terminating agent runtime owners")
-        pair_registry = getattr(self.deps, "pair_registry", None)
-        if pair_registry is not None:
-            pair_registry.shutdown_all(reason="orchestrator-shutdown")
-        self.deps.runner.on_orchestrator_shutdown()
-        # Closing the agent processes above unblocks review-exchange workers.
-        self._drain_background_jobs()
-        logger.info("[SHUTDOWN] Agent runtime owners terminated")
+        shutdown_agent_runtime(
+            self.deps.services.pair_registry,
+            self.deps.runner,
+            self.deps.services.background_job_supervisor,
+        )
 
     def _close_external_resources(self) -> None:
         """Close process-scoped resources exactly once across all exit paths."""
@@ -957,27 +976,7 @@ class Orchestrator:
             self._external_resources_closed = True
 
     def _drain_background_jobs(self, timeout: float = 60.0) -> None:
-        """Block shutdown until review-exchange background threads finish.
-
-        Without this, daemon-thread termination on process exit can strand
-        ``summary.json`` / ``round-NNN.json`` mid-write. We duck-type on the
-        optional ``wait_until_idle`` method so this module stays free of
-        ``execution/`` imports; the thread-backed adapter supplies it, and
-        a purely synchronous adapter simply doesn't.
-        """
-        supervisor = self.deps.services.background_job_supervisor
-        if supervisor is None:
-            return
-        wait_until_idle = getattr(supervisor, "wait_until_idle", None)
-        if not callable(wait_until_idle):
-            return
-        logger.info("[SHUTDOWN] Waiting up to %.1fs for background job threads…", timeout)
-        idle = wait_until_idle(timeout=timeout)
-        if not idle:
-            logger.warning("[SHUTDOWN] Background jobs still running after timeout; daemon threads will be terminated on exit")
-        # Drain any failures that landed during shutdown so they are
-        # visible in logs rather than lost.
-        supervisor.tick()
+        drain_background_jobs(self.deps.services.background_job_supervisor, timeout)
 
     def request_shutdown(self, force: bool = False) -> None:
         """Request graceful or forced shutdown."""

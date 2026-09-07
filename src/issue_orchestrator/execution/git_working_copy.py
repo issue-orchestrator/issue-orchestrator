@@ -20,6 +20,7 @@ from ..execution.git_push_operations import GitAuthEnvProvider
 from ..infra.runtime_artifacts import filter_orchestrator_untracked_planted
 from ..ports.command_runner import OutputNewlines
 from ..ports.git import Git, GitError, GitResult
+from .git_revision_reader import GitRevisionReader
 from ..ports.working_copy import (
     BranchPathsResult,
     BranchTextFile,
@@ -122,14 +123,7 @@ class GitWorkingCopy:
             logger.warning("Failed to clear stale remote-tracking ref %s: %s", ref_name, e)
 
     def get_current_branch(self, worktree: Path) -> str | None:
-        """Get the current branch name in the worktree."""
-        try:
-            result = self._run_git(worktree, ["rev-parse", "--abbrev-ref", "HEAD"])
-            branch = result.stdout.strip()
-            return None if branch == "HEAD" else branch  # HEAD means detached
-        except GitError:
-            logger.warning("Failed to get current branch in %s", worktree)
-            return None
+        return GitRevisionReader(self._run_git).get_current_branch(worktree)
 
     def _branch_from_metadata(self, worktree: Path) -> str | None:
         metadata_path = worktree / ".issue-orchestrator" / "worktree.json"
@@ -144,13 +138,7 @@ class GitWorkingCopy:
         return branch if branch else None
 
     def get_head_sha(self, worktree: Path) -> str | None:
-        """Get the HEAD commit SHA in the worktree."""
-        try:
-            result = self._run_git(worktree, ["rev-parse", "HEAD"])
-            return result.stdout.strip()
-        except GitError:
-            logger.warning("Failed to get HEAD SHA in %s", worktree)
-            return None
+        return GitRevisionReader(self._run_git).get_head_sha(worktree)
 
     def get_branch_status(self, worktree: Path) -> BranchStatus | None:
         """Get the status of the current branch."""
@@ -827,6 +815,13 @@ class GitWorkingCopy:
                 return True
             logger.warning("Failed to delete remote branch %s/%s: %s", remote, branch, e)
             return False
+
+    def verify_historical_selection(
+        self, repo_root: Path, branch_name: str, head_sha: str
+    ) -> bool:
+        return GitRevisionReader(self._run_git).verify_historical_selection(
+            repo_root, branch_name, head_sha
+        )
 
 
 def _git_error_output(error: GitError) -> str:

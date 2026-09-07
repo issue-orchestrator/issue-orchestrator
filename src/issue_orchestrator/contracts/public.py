@@ -7,9 +7,9 @@ These contracts are intentionally minimal and stable:
 
 from __future__ import annotations
 
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, Annotated
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, RootModel
 
 
 class ContractBase(BaseModel):
@@ -438,7 +438,89 @@ class StackDependencyGateView(ContractBase):
     approval_freshness: str = "unknown"
 
 
+class CompletionSubmissionContract(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    raw_bytes: str = Field(max_length=2796204, json_schema_extra={"format": "byte"})
+    content_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    submission_key: str = Field(min_length=1, max_length=128)
+
+
+class CompletionIntakeReceiptContract(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    entry_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    content_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class CompletionResumeOutcomeContract(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    success: bool
+    message: str
+    pr_url: str | None
+    actions_taken: list[str] | None
+    errors: list[str] | None
+
+
+class HistoricalIntakeCommandContract(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    repo_slug: str = Field(min_length=1)
+    issue_number: int = Field(gt=0)
+    branch_name: str = Field(min_length=1)
+    target_head_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+    candidate_path: str = Field(pattern=r"^/")
+    candidate_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    actor: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+
+
+class HistoricalIntakeParkedContract(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    status: Literal["parked"]
+    record_id: str = Field(pattern=r"^r1:[0-9a-f]{64}$")
+    evidence_id: str = Field(pattern=r"^e1:[0-9a-f]{64}$")
+
+
+class HistoricalIntakeRefusedContract(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    status: Literal["refused"]
+    reason: Literal[
+        "wrong_repository",
+        "candidate_changed",
+        "invalid_completion",
+        "invalid_selection",
+        "prerequisite_unavailable",
+    ]
+
+
+class HistoricalIntakeValidationFailedContract(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    status: Literal["validation_failed"]
+    entry_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    validation_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    validation_path: str = Field(min_length=1)
+
+
+class HistoricalIntakeOutcomeContract(
+    RootModel[
+        Annotated[
+            HistoricalIntakeParkedContract
+            | HistoricalIntakeRefusedContract
+            | HistoricalIntakeValidationFailedContract,
+            Field(discriminator="status"),
+        ]
+    ]
+):
+    """Status determines the one permissible historical outcome payload."""
+
+
 PUBLIC_CONTRACTS: dict[str, type[BaseModel]] = {
+    "completion.submission": CompletionSubmissionContract,
+    "completion.receipt": CompletionIntakeReceiptContract,
+    "completion.resume": CompletionResumeOutcomeContract,
+    "historical_intake.outcome": HistoricalIntakeOutcomeContract,
+    "historical_intake.command": HistoricalIntakeCommandContract,
+    "historical_intake.parked": HistoricalIntakeParkedContract,
+    "historical_intake.refused": HistoricalIntakeRefusedContract,
+    "historical_intake.validation_failed": HistoricalIntakeValidationFailedContract,
     "dashboard.view_model": DashboardViewModelContract,
     "sse.session.started": SessionStartedPayload,
     "sse.session.completed": SessionCompletedPayload,

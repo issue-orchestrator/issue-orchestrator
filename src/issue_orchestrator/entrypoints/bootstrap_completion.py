@@ -9,6 +9,7 @@ collaborators they share.
 from __future__ import annotations
 
 from ..ports.issue_run_allocator import IssueRunAllocator
+from ..ports.completion_intake import CompletionIntakeRuntime
 
 from typing import TYPE_CHECKING, Protocol
 
@@ -26,6 +27,9 @@ from ..ports.coder_prompt import (
 )
 
 if TYPE_CHECKING:
+    from ..control.publish_recovery import PublishRecoveryService
+    from ..control.action_applier import ActionApplier
+    from ..ports.fresh_issue_reader import FreshIssueReader
     from ..control.needs_human_block import SharedNeedsHumanBlock
     from ..control.open_issue_corpus import OpenIssueCorpusManager
     from ..ports.completion_handler_factory import CompletionHandlerFactory
@@ -109,6 +113,7 @@ def create_completion_components(
     # Required: the composition root owns the single shared endpoint.
     agent_callback_endpoint: "AgentCallbackEndpoint",
     issue_run_allocator: IssueRunAllocator,
+    completion_intake: CompletionIntakeRuntime,
     # The one owner of the shared needs-human block. The agent-requested
     # NEEDS_HUMAN completion outcome routes through it, and the label adapter
     # below refuses that label by value, so the two halves cannot disagree.
@@ -167,7 +172,7 @@ def create_completion_components(
         )
 
     completion_processor = CompletionProcessor(
-        # The governed shared block is refused here BY VALUE, so an
+        completion_intake=completion_intake,  # The governed shared block is refused here BY VALUE, so an
         # agent-supplied ``pr_labels`` entry cannot mint a cause-free block
         # (#6999 F2 round 4). The typed NEEDS_HUMAN completion outcome routes
         # through the owner instead, which is where a cause gets recorded.
@@ -184,6 +189,7 @@ def create_completion_components(
         review_exchange_runner=PersistentReviewExchangeRunner(
             session_output,
             pair_registry,
+            completion_intake=completion_intake,
             turn_mailbox=turn_mailbox,
             coder_prompt_addendum=coder_prompt_addendum,
         ),
@@ -288,3 +294,43 @@ def build_completion_handler_factory(
         )
 
     return factory
+
+
+def build_publish_recovery(
+    *,
+    repository_host: "RepositoryHost",
+    completion_processor: "CompletionProcessor",
+    label_manager: "LabelManager",
+    fresh_issue_reader: "FreshIssueReader",
+    action_applier: "ActionApplier",
+    config: Config,
+    tech_lead_authority: "TechLeadAuthorityStore",
+) -> "PublishRecoveryService":
+    """Wire the "Retry publish" owner: durable locator store + dedicated runner.
+
+    The republish runs on its own :class:`ThreadBackgroundJobRunner` (drained by
+    ``PublishRecoveryService.drain_completed_retries`` each tick), NOT the shared
+    completion/review-exchange runners — those are drained by other owners and
+    would steal or drop republish results.
+    """
+    from ..infra.repo_identity import state_dir
+    from ..execution.thread_background_job_runner import ThreadBackgroundJobRunner
+    from ..control.publish_recovery import PublishRecoveryService
+    from ..execution.json_publish_retry_locator_store import (
+        JsonPublishRetryLocatorStore,
+    )
+
+    locator_store = JsonPublishRetryLocatorStore(
+        state_dir(config.repo_root) / "publish_retry_locators.json"
+    )
+    return PublishRecoveryService(
+        repository_host=repository_host,
+        completion_processor=completion_processor,
+        locator_store=locator_store,
+        runner=ThreadBackgroundJobRunner(),
+        label_manager=label_manager,
+        fresh_issue_reader=fresh_issue_reader,
+        action_applier=action_applier,
+        code_review_agent_configured=bool(config.code_review_agent),
+        tech_lead_authority=tech_lead_authority,
+    )

@@ -4,13 +4,21 @@ from __future__ import annotations
 
 import json
 import logging
-import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Header, HTTPException
+from ..contracts.ui_openapi_models import (
+    CompletionIntakeReceiptPayload,
+    CompletionResumeOutcomePayload,
+)
+from ..domain.completion_intake import (
+    CompletionIntakeReceipt,
+    CompletionIntakeError,
+    IntakeUnauthorized,
+)
 from fastapi.responses import JSONResponse
 
 from ..control.actions import ActionResultType, CloseIssueAction
@@ -23,13 +31,11 @@ from ..domain.review_exchange_verdict import ExchangeVerdict
 from ..domain.issue_run_allocation import IssueRunAllocation
 from ..domain.issue_run_evidence import IssueRunEvidenceUnavailable
 from ..domain.session_key import SessionKey, TaskKind
-from ..domain.session_run import SessionRunAssets
 from ..ports.operator_issue_commands import (
     OperatorCommandIntent,
     OperatorCommandOutcome,
     OperatorCommandStatus,
 )
-from ..infra.env import ENV_PREFIX
 from .control_api_issue_support import ControlApiIssueDependency, StateLockFn
 
 if TYPE_CHECKING:
@@ -262,191 +268,39 @@ class _ReviewExchangeRespondRequestError(Exception):
         )
 
 
-@control_issue_router.post("/api/issues/{issue_number}/resume")
-async def resume_issue(
+@control_issue_router.post(
+    "/api/issues/{issue_number}/resume", response_model=CompletionResumeOutcomePayload
+)
+def resume_issue(
     issue_number: int,
-    request: Request,
+    body: CompletionIntakeReceiptPayload,
     deps: ControlApiIssueDependency,
-) -> JSONResponse:
-    """Resume orchestrator processing for a blocked/debug issue."""
+    x_completion_capability: str = Header(...),
+) -> CompletionResumeOutcomePayload:
+    """Process exact registered intent for the capability-owned run and issue."""
     orchestrator = deps.get_orchestrator()
     if orchestrator is None:
-        return JSONResponse(
-            {"success": False, "error": "Orchestrator not initialized"},
-            status_code=503,
-        )
-
-    worktree = get_worktree_path(orchestrator.config, issue_number)
-    if not worktree.exists():
-        return JSONResponse({
-            "success": False,
-            "error": f"Worktree not found: {worktree}",
-            "hint": "The worktree may have been cleaned up. Check if the issue is still blocked.",
-        }, status_code=404)
-
+        raise HTTPException(503, "Orchestrator not initialized")
+    receipt = CompletionIntakeReceipt(body.entry_id, body.content_sha256)
     try:
-        resume_contract = _resolve_resume_run_contract(
-            request_body=await _read_resume_request_body(request),
-            worktree=worktree,
-            orchestrator=orchestrator,
+        result = orchestrator.deps.completion_intake.resume_receipt(
+            x_completion_capability,
+            receipt,
+            issue_number,
+            _get_issue_title(orchestrator, issue_number, deps.with_state_lock),
+            orchestrator.deps.completion_processor,
         )
-    except _ResumeRunContractError as exc:
-        return exc.as_response()
-    run_assets = resume_contract.run_assets
-    completion_path = resume_contract.completion_path
-    completion_record = worktree / completion_path
-    if not completion_record.exists():
-        return JSONResponse({
-            "success": False,
-            "error": "No completion record found",
-            "hint": "Run 'coding-done completed --implementation ... --problems ...' first.",
-        }, status_code=404)
-
-    issue_title = _get_issue_title(orchestrator, issue_number, deps.with_state_lock)
-    try:
-        result = orchestrator.deps.completion_processor.process(
-            worktree=worktree,
-            issue_number=issue_number,
-            issue_title=issue_title,
-            completion_path=completion_path,
-            run_assets=run_assets,
-        )
-        return JSONResponse({
-            "success": result.success,
-            "message": result.message,
-            "pr_url": result.pr_url,
-            "actions_taken": result.actions_taken,
-            "errors": result.errors,
-        })
-    except Exception as exc:
-        logger.exception("Error processing completion for issue #%d: %s", issue_number, exc)
-        return JSONResponse({
-            "success": False,
-            "error": f"Processing failed: {exc}",
-        }, status_code=500)
-
-
-@dataclass(frozen=True, slots=True)
-class _ResumeRunContract:
-    """Typed request contract for manual resume of one active run."""
-
-    run_assets: SessionRunAssets
-    completion_path: str
-
-
-@dataclass(frozen=True, slots=True)
-class _ResumeRequestBody:
-    """Validated manual resume request body."""
-
-    run_dir: Path
-
-
-@dataclass(frozen=True, slots=True)
-class _ResumeRunContractError(Exception):
-    """HTTP error for an invalid manual resume run contract."""
-
-    status_code: int
-    error: str
-    hint: str
-
-    def as_response(self) -> JSONResponse:
-        return JSONResponse(
-            {"success": False, "error": self.error, "hint": self.hint},
-            status_code=self.status_code,
-        )
-
-
-async def _read_resume_request_body(request: Request) -> _ResumeRequestBody:
-    try:
-        body = await request.json()
-    except json.JSONDecodeError:
-        body = {}
-    if body is None:
-        body = {}
-    if not isinstance(body, dict):
-        raise _ResumeRunContractError(
-            status_code=400,
-            error="Resume request body must be a JSON object",
-            hint="Send {'run_dir': '<absolute session run directory>'}.",
-        )
-    raw_run_dir = body.get("run_dir")
-    if not isinstance(raw_run_dir, str) or not raw_run_dir.strip():
-        raise _ResumeRunContractError(
-            status_code=400,
-            error="run_dir is required",
-            hint="coding-done --resume must pass ISSUE_ORCHESTRATOR_RUN_DIR to the Control API.",
-        )
-    return _ResumeRequestBody(run_dir=Path(raw_run_dir))
-
-
-def _resolve_resume_run_contract(
-    *,
-    request_body: _ResumeRequestBody,
-    worktree: Path,
-    orchestrator: "Orchestrator",
-) -> _ResumeRunContract:
-    requested_run_dir = request_body.run_dir
-    if not requested_run_dir.is_absolute():
-        raise _ResumeRunContractError(
-            status_code=400,
-            error="run_dir must be absolute",
-            hint="The session run owner must inject the absolute session run directory.",
-        )
-    run_dir = requested_run_dir.resolve()
-    manifest = orchestrator.deps.session_output.read_manifest(run_dir)
-    if not manifest:
-        raise _ResumeRunContractError(
-            status_code=409,
-            error="Recorded run manifest not found",
-            hint="Resume processing requires a complete session run manifest.",
-        )
-    try:
-        run_assets = SessionRunAssets.from_manifest_payload(
-            run_dir=run_dir,
-            manifest=manifest,
-        )
-    except (TypeError, ValueError) as exc:
-        raise _ResumeRunContractError(
-            status_code=409,
-            error=f"Recorded run assets are invalid: {exc}",
-            hint="Resume processing requires a complete typed run contract.",
-        ) from exc
-    if run_assets.worktree_path.resolve() != worktree.resolve():
-        raise _ResumeRunContractError(
-            status_code=409,
-            error="Recorded run worktree does not match issue worktree",
-            hint="The resume request must use the run directory created for this issue worktree.",
-        )
-    completion_path = _completion_path_from_resume_manifest(manifest)
-    completion_abs = (worktree / completion_path).resolve()
-    try:
-        completion_abs.relative_to(run_assets.run_dir.resolve())
-    except ValueError as exc:
-        raise _ResumeRunContractError(
-            status_code=409,
-            error="Recorded run completion_path is outside run_dir",
-            hint="The run owner must record a completion path contained by the injected run directory.",
-        ) from exc
-    return _ResumeRunContract(run_assets=run_assets, completion_path=completion_path)
-
-
-def _completion_path_from_resume_manifest(manifest: Mapping[str, object]) -> str:
-    raw_completion_path = manifest.get("completion_path")
-    if not isinstance(raw_completion_path, str) or not raw_completion_path.strip():
-        raise _ResumeRunContractError(
-            status_code=409,
-            error="Recorded run manifest has no completion_path",
-            hint="Resume processing requires the run owner to record completion_path.",
-        )
-    completion_path = raw_completion_path.strip()
-    rel = Path(completion_path)
-    if rel.is_absolute() or ".." in rel.parts:
-        raise _ResumeRunContractError(
-            status_code=409,
-            error="Recorded run manifest has invalid completion_path",
-            hint="completion_path must be a relative path inside the issue worktree.",
-        )
-    return completion_path
+    except IntakeUnauthorized as exc:
+        raise HTTPException(401, "Invalid run capability or receipt") from exc
+    except (CompletionIntakeError, OSError) as exc:
+        raise HTTPException(503, "Completion intake unavailable") from exc
+    return CompletionResumeOutcomePayload(
+        success=result.success,
+        message=result.message,
+        pr_url=result.pr_url,
+        actions_taken=result.actions_taken,
+        errors=result.errors,
+    )
 
 
 def _find_debug_issue(
@@ -559,15 +413,21 @@ async def launch_debug_session(  # noqa: C901 - debug session with validation an
         },
     )
 
-    env_exports = f"export ORCHESTRATOR_ISSUE_NUMBER='{issue_number}'"
-    env_exports += f" ORCHESTRATOR_API_PORT='{config.control_api_port}'"
-    env_exports += f" ORCHESTRATOR_AGENT_LABEL='{agent_type}'"
-    env_exports += f" ORCHESTRATOR_SESSION_ID='{session_name}'"
-    env_exports += f" {ENV_PREFIX}COMPLETION_PATH='{completion_path}'"
-    env_exports += f" {ENV_PREFIX}VALIDATION_OUTPUT_DIR='{run_assets.run_dir}'"
-    env_exports += f" {ENV_PREFIX}RUN_DIR='{run_assets.run_dir}'"
-    orch_bin = Path(sys.executable).parent
-    env_exports += f' PATH="{orch_bin}:$PATH"'
+    from ..control.session_env import (
+        build_session_env_exports,
+        completion_capability_export,
+    )
+
+    env_exports = build_session_env_exports(
+        config=config,
+        completion_path=completion_path,
+        session_id=session_name,
+        agent_label=agent_type,
+        issue_number=issue_number,
+        run_dir=run_assets.run_dir,
+        worktree_path=worktree,
+        callback_endpoint=orchestrator.deps.agent_callback_endpoint,
+    ) + completion_capability_export(orchestrator.deps.issue_run_allocator, run_assets)
     command = f"{env_exports} && {base_command}"
 
     logger.info(

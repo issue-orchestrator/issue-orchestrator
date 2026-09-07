@@ -101,7 +101,16 @@ def mock_worktree_manager():
 
 
 @pytest.fixture
+def completion_intake(tmp_path):
+    from tests.unit.test_completion_evidence_intake import setup
+
+    # Real immutable ledger/drain owner; external validator I/O is substituted.
+    return setup(tmp_path / "intake-owner")[3]
+
+
+@pytest.fixture
 def applier(
+    completion_intake,
     mock_labels,
     mock_sessions,
     mock_events,
@@ -115,6 +124,7 @@ def applier(
     )
 
     return ActionApplier(
+        completion_intake=completion_intake,
         labels=mock_labels,
         sessions=mock_sessions,
         events=mock_events,
@@ -2076,6 +2086,10 @@ class TestRecoverTerminalIssueAction:
     labels (#6431 F1).
     """
 
+    @pytest.fixture(autouse=True)
+    def bind_intake(self, completion_intake):
+        self.completion_intake = completion_intake
+
     @pytest.fixture
     def real_label_manager(self):
         from issue_orchestrator.infra.config import Config
@@ -2103,6 +2117,7 @@ class TestRecoverTerminalIssueAction:
         reader = MagicMock()
         reader.read_issue_labels.return_value = list(github_labels)
         applier = ActionApplier(
+            completion_intake=self.completion_intake,
             labels=mock_labels,
             sessions=mock_sessions,
             events=mock_events,
@@ -2154,6 +2169,7 @@ class TestRecoverTerminalIssueAction:
             "pr-pending", "publish-failed", "agent:backend",
         ]
         applier = ActionApplier(
+            completion_intake=self.completion_intake,
             labels=mock_labels,
             sessions=mock_sessions,
             events=mock_events,
@@ -2617,6 +2633,7 @@ class TestRecoverTerminalIssueAction:
         reader = MagicMock()
         reader.read_issue_labels.return_value = ["pr-pending"]
         applier = ActionApplier(
+            completion_intake=self.completion_intake,
             labels=mock_labels,
             sessions=mock_sessions,
             events=mock_events,

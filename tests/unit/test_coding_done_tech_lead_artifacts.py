@@ -69,7 +69,39 @@ def _write_manifest(
 
 
 @pytest.fixture
-def tech_lead_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def coding_done_intake(tmp_path, monkeypatch):
+    """Replace HTTP transport only; receive through the real intake owner."""
+    import base64
+    from dataclasses import asdict
+    from io import BytesIO
+    from issue_orchestrator.domain.completion_intake import SubmitCompletionEvidence
+    from tests.unit.test_completion_evidence_intake import setup
+
+    ledger, run, capability, owner, _, _ = setup(tmp_path / "receipt-owner")
+
+    class Transport:
+        def open(self, request, timeout):
+            payload = json.loads(request.data)
+            receipt = owner.submit(
+                request.get_header("X-completion-capability"),
+                SubmitCompletionEvidence(
+                    base64.b64decode(payload["raw_bytes"], validate=True),
+                    payload["content_sha256"],
+                    payload["submission_key"],
+                ),
+            )
+            return BytesIO(json.dumps(asdict(receipt)).encode())
+
+    monkeypatch.setattr("urllib.request.build_opener", lambda *handlers: Transport())
+    monkeypatch.setenv(f"{ENV_PREFIX}COMPLETION_CAPABILITY", capability)
+    monkeypatch.setenv(f"{ENV_PREFIX}API_PORT", "8765")
+    return ledger, run
+
+
+@pytest.fixture
+def tech_lead_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, coding_done_intake
+) -> Path:
     """A managed tech-lead session, cwd'd into its worktree. Returns run_dir."""
     worktree = tmp_path / "scratch"
     run_dir = worktree / ".issue-orchestrator" / "sessions" / "run-7__issue-42"
@@ -200,7 +232,10 @@ def test_blocked_status_is_not_gated_on_artifacts(
 
 
 def test_ordinary_coding_session_is_unaffected(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    coding_done_intake,
 ) -> None:
     """No launch-time assignment means no artifact pair is owed."""
     worktree = tmp_path / "work"
@@ -231,7 +266,7 @@ def test_ordinary_coding_session_is_unaffected(
     assert (Path.cwd() / "completion.json").exists()
 
 
-def test_standalone_invocation_without_run_dir_is_unaffected(
+def test_standalone_invocation_without_capability_preserves_candidate_and_refuses_success(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.chdir(tmp_path)
@@ -244,9 +279,12 @@ def test_standalone_invocation_without_run_dir_is_unaffected(
         "sys.argv",
         ["coding-done", "completed", "--implementation", "Local run", "--problems", "None"],
     ):
-        coding_done_main()
+        with pytest.raises(SystemExit) as stopped:
+            coding_done_main()
+    assert stopped.value.code == 1
+    assert (tmp_path / "completion.json").exists()
 
-    assert REJECTION_BANNER not in capsys.readouterr().out
+    assert "No submission receipt received" in capsys.readouterr().err
 
 
 # --- the run binding a managed completion must prove (#7040 F4) ------------

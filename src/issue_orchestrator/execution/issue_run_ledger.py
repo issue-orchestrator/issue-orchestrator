@@ -8,6 +8,18 @@ from contextlib import closing, contextmanager
 from pathlib import Path
 from uuid import uuid4
 
+from .completion_intake_ledger import CompletionIntakeTables
+from ..domain.completion_intake import (
+    CompletionIntakeEntry,
+    CompletionValidationAttestation,
+    OwnedCompletionSubmission,
+    OwnedValidationResult,
+    SubmitCompletionEvidence,
+)
+from ..domain.session_run import SessionRunIdentity, RunContainedFile
+
+from ..domain.historical_intake import HistoricalIntakeCommand
+from ..domain.models import CompletionRecord
 from ..domain.issue_key import GitHubIssueKey
 from ..domain.issue_run_evidence import IssueRunEvidenceUnavailable, IssueRunRecord
 from ..domain.session_key import SessionKey, TaskKind
@@ -30,6 +42,9 @@ class SqliteIssueRunLedger:
         if marker.exists():
             self._identity = marker.read_text(encoding="ascii")
             self._validate_existing()
+            self._intake = CompletionIntakeTables(
+                self._connect, self._decode, db_path.parent / "completion-intake"
+            )
             return
         if db_path.exists():
             raise IssueRunEvidenceUnavailable("Run ledger initialization identity is missing")
@@ -67,6 +82,10 @@ class SqliteIssueRunLedger:
                 "CREATE INDEX IF NOT EXISTS ix_issue_runs_issue "
                 "ON issue_runs(issue_number, recorded_at)"
             )
+
+        self._intake = CompletionIntakeTables(
+            self._connect, self._decode, db_path.parent / "completion-intake"
+        )
 
     def _validate_existing(self) -> None:
         try:
@@ -118,8 +137,11 @@ class SqliteIssueRunLedger:
                     "INSERT INTO issue_runs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (*key, *payload, self._run_key(record.run.run_dir), record.recorded_at),
                 )
+                self._intake.allocate_run(conn, record.run)
         except sqlite3.Error as exc:
-            raise IssueRunEvidenceUnavailable("Could not persist run ownership") from exc
+            raise IssueRunEvidenceUnavailable(
+                "Could not persist run ownership"
+            ) from exc
 
     def recorded_runs(self, issue_number: int) -> tuple[IssueRunRecord, ...]:
         try:
@@ -158,3 +180,89 @@ class SqliteIssueRunLedger:
             run=assets,
             recorded_at=row["recorded_at"],
         )
+
+    def run_for_capability(self, capability: str) -> SessionRunAssets:
+        return self._intake.run_for_capability(capability)
+
+    def submission_capability(self, run: SessionRunAssets) -> str:
+        return self._intake.provision(run)
+
+    def submit(
+        self, capability: str, command: SubmitCompletionEvidence
+    ) -> CompletionIntakeEntry:
+        return self._intake.submit(capability, command)
+
+    def register_submission(
+        self, run: SessionRunAssets, submission: OwnedCompletionSubmission
+    ) -> CompletionIntakeEntry:
+        return self._intake.register(run, submission)
+
+    def attest_validation(
+        self, entry_id: str, result: OwnedValidationResult
+    ) -> CompletionIntakeEntry:
+        return self._intake.attest(entry_id, result)
+
+    def entries_for_run(
+        self, run: SessionRunIdentity
+    ) -> tuple[CompletionIntakeEntry, ...]:
+        return self._intake.entries(run)
+
+    def entry_for_receipt(self, entry_id: str) -> CompletionIntakeEntry:
+        return self._intake.entry(entry_id)
+
+    def validation_for_receipt(
+        self, entry_id: str
+    ) -> CompletionValidationAttestation | None:
+        return self._intake.attestation(entry_id)
+
+    def pending_receipts(self) -> tuple[CompletionIntakeEntry, ...]:
+        return self._intake.pending()
+
+    def mark_processed(self, entry_id: str) -> None:
+        self._intake.processed(entry_id)
+
+    def close_intake(self, issue_number: int) -> None:
+        self._intake.close_issue(issue_number)
+
+    def repair_intake(self) -> None:
+        self._intake.repair()
+
+    def read_completion(self, entry_id: str) -> "CompletionRecord":
+        from ..domain.models import CompletionRecord
+        from .completion_intake_artifacts import read_regular
+
+        entry = self.entry_for_receipt(entry_id)
+        if entry.normalized_path is None:
+            raise ValueError("rejected receipt has no normalized completion")
+        record = CompletionRecord.from_dict(
+            json.loads(read_regular(entry.normalized_path))
+        )
+        attestation = self.validation_for_receipt(entry_id)
+        if attestation is not None:
+            from hashlib import sha256
+            from ..domain.completion_intake import CompletionIntakeError
+
+            certified_path = (
+                entry.run.run_dir / "completion-intake" / entry_id / "validation.json"
+            )
+            if (
+                record.validation_record_path != str(certified_path)
+                or sha256(read_regular(certified_path)).hexdigest()
+                != attestation.result_sha256
+            ):
+                raise CompletionIntakeError(
+                    "run validation copy does not match attestation"
+                )
+        return record
+
+    def close_run_intake(self, run: SessionRunAssets) -> None:
+        self._intake.close_run(run)
+
+    def entries_for_issue(self, issue_number: int) -> tuple[CompletionIntakeEntry, ...]:
+        return self._intake.issue_entries(issue_number)
+
+    def historical_command_for_receipt(self, entry_id: str) -> HistoricalIntakeCommand:
+        return self._intake.historical_command(entry_id)
+
+    def submission_capability_file(self, run: SessionRunAssets) -> RunContainedFile:
+        return self._intake.capability_file(run)

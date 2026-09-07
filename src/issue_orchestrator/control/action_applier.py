@@ -103,7 +103,9 @@ from .actions import (
     RecoverTerminalIssueAction,
     ResetRetryIssueAction,
 )
+from .review_feedback import latest_review_section
 from .provider_impact import ApplyProviderImpactAction, apply_provider_impact
+from ..ports.completion_intake import CompletionIntakeRuntime
 from .session_manager import SessionManager, SessionRef, SessionType, SessionContext
 from .tech_lead_applier_handlers import tech_lead_action_handlers
 from .tech_lead_issue_creation import apply_create_tech_lead_issue
@@ -176,6 +178,7 @@ class ActionApplier:
     # runtime terminator so a late republish cannot repopulate a terminated
     # issue. Wired post-construction (PublishRecoveryService needs this applier).
     publish_recovery: Optional["PublishRetryAbandoner"] = None
+    completion_intake: "CompletionIntakeRuntime | None" = None
     # Callback for worktree removal notifications
     # Used by async completion processing to mark jobs as WORKTREE_GONE
     # Returns the number of jobs marked as worktree_gone
@@ -1131,7 +1134,10 @@ class ActionApplier:
         *,
         reason: str,
     ) -> "IssueRuntimeTermination":
+        if self.completion_intake is None:
+            raise RuntimeError("terminal completion intake owner is not wired")
         return terminate_issue_runtime(
+            completion_intake=self.completion_intake,
             issue_number=issue_number,
             reason=reason,
             pair_registry=self.pair_registry,
@@ -1150,36 +1156,7 @@ class ActionApplier:
     def _get_latest_review_section(
         self, pr_number: int, provided_body: str | None
     ) -> str:
-        """Build the latest review section for escalation comments.
-
-        Returns formatted markdown section or empty string.
-        """
-        review_body = provided_body
-        if not review_body and self.repository_host:
-            try:
-                reviews = self.repository_host.get_pr_reviews(pr_number)
-                for review in reversed(reviews):
-                    if review.get("state") == "CHANGES_REQUESTED" and review.get("body"):
-                        review_body = review.get("body", "")
-                        break
-            except Exception as e:
-                logger.debug("Failed to fetch PR reviews: %s", e)
-
-        if not review_body:
-            return ""
-
-        if len(review_body) > 1000:
-            review_body = review_body[:1000] + "..."
-        return f"""
-### Latest Review Feedback
-
-<details>
-<summary>Reviewer's comments (click to expand)</summary>
-
-{review_body}
-
-</details>
-"""
+        return latest_review_section(self.repository_host, pr_number, provided_body)
 
     def _apply_escalate(self, action: Action) -> ActionResult:
         """Escalate to human intervention.

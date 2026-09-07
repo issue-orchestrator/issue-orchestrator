@@ -12,6 +12,9 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Iterable, Protocol
 
+from ..ports.completion_intake import CompletionIntakeRuntime
+from ..ports.session_runner import SessionRunner
+from .background_job_supervisor import drain_background_jobs
 from ..domain.session_key import TaskKind
 from ..domain.tech_lead_session import TechLeadSessionGeneration
 from .completion_review_exchange import is_review_exchange_job_for_issue
@@ -162,6 +165,7 @@ def cancel_issue_review_exchange(
 def terminate_issue_runtime(
     *,
     issue_number: int,
+    completion_intake: CompletionIntakeRuntime,
     reason: str,
     pair_registry: "PersistentExchangePairRegistry | None",
     job_supervisor: "BackgroundJobSupervisor | None",
@@ -180,6 +184,7 @@ def terminate_issue_runtime(
     is supplied, any in-flight/stored publish retry for the issue is abandoned in
     the same boundary so a late republish cannot repopulate a terminated issue.
     """
+    completion_intake.close_and_drain(issue_number)
     refs = tuple(_issue_runtime_session_refs(issue_number, session_types))
     active_names = _active_session_names(active_sessions)
     matching_active = active_names.intersection(ref.name for ref in refs)
@@ -512,3 +517,17 @@ def _drop_active_session_records(
         for session in active_sessions
         if session.terminal_id not in terminal_id_set
     ]
+
+
+def shutdown_agent_runtime(
+    pair_registry: PersistentExchangePairRegistry | None,
+    runner: SessionRunner,
+    supervisor: BackgroundJobSupervisor | None,
+) -> None:
+    """Stop subprocess owners before waiting for supervised worker threads."""
+    logger.info("[SHUTDOWN] Terminating agent runtime owners")
+    if pair_registry is not None:
+        pair_registry.shutdown_all(reason="orchestrator-shutdown")
+    runner.on_orchestrator_shutdown()
+    drain_background_jobs(supervisor, 60.0)
+    logger.info("[SHUTDOWN] Agent runtime owners terminated")
