@@ -67,6 +67,9 @@ def test_restart_retains_every_exact_run_without_worktree_discovery(tmp_path):
 def test_composed_engine_uses_registered_ledger_and_survives_recomposition(
     tmp_path, sample_config, mock_repository_host,
 ):
+    from issue_orchestrator.execution.git_tools import create_git
+    from issue_orchestrator.execution.command_runner import LocalCommandRunner
+    create_git(LocalCommandRunner()).run(sample_config.repo_root, ["init", "-b", "main"])
     engine = build_orchestrator_for_testing(sample_config, mock_repository_host)
     record = run_record(tmp_path)
     engine.deps.issue_run_ledger.record_run(42, record)
