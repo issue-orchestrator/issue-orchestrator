@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import errno
+import fcntl
 import json
+import os
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -19,6 +24,7 @@ from issue_orchestrator.ports.lane_dispatch_journal import (
     LaneDispatchRecord,
 )
 from issue_orchestrator.ports.machine_state import MachineState
+from tests.unit.threading_helpers import join_or_fail, run_in_thread, wait_for_event
 
 _MACHINE_STATE = MachineState(
     sampled_at=datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc),
@@ -377,43 +383,143 @@ def test_record_validation_rejects_nonsense() -> None:
         )
 
 
-def test_reading_never_blocks_a_concurrent_writer_and_never_tears(
-    tmp_path: Path,
+def test_reader_waits_for_complete_page_crossing_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A gate must not stall because someone ran executor-status.
-
-    The reader takes no lock, and the writer's single O_APPEND write is
-    what keeps a concurrently-read line whole: every record the reader
-    sees parses, and the writer is never made to wait.
-    """
-    import threading
-
+    """Linux can publish one os.write page by page. Force that OS schedule."""
     journal = JsonlLaneDispatchJournal(tmp_path)
-    writes = 200
-    done = threading.Event()
+    journal.record(_record(exit_code=0))
+    path = tmp_path / "lane-dispatch.jsonl"
+    # Start the next row 96 bytes before a page boundary, inside a JSON string.
+    with path.open("ab") as stream:
+        stream.write(b"\n" * ((4096 - 96 - path.stat().st_size) % 4096))
+    partial = threading.Event()
+    contended = threading.Event()
+    release = threading.Event()
+    completed = threading.Event()
+    real_write, real_flock = os.write, fcntl.flock
 
-    def write_many() -> None:
+    def pagewise_write(fd: int, line: bytes) -> int:
+        assert os.fstat(fd).st_size % 4096 == 4000
+        assert real_write(fd, line[:96]) == 96
+        partial.set()
+        wait_for_event(release, 10, label="release publisher")
+        return 96 + real_write(fd, line[96:])
+
+    def observe_contention(fd: int, operation: int) -> None:
         try:
-            for exit_code in range(writes):
-                journal.record(_record(exit_code=exit_code))
+            real_flock(fd, operation)
+        except BlockingIOError:
+            if operation & fcntl.LOCK_SH:
+                contended.set()
+            raise
+
+    def finish_write() -> None:
+        try:
+            journal.record(_record(exit_code=1))
         finally:
-            done.set()
+            completed.set()
 
-    writer = threading.Thread(target=write_many)
-    writer.start()
-    # Read repeatedly *while* the writer runs: a torn line would raise
-    # the journal's corruption error, and a lock would deadlock or
-    # serialize the writer behind us.
-    reads = 0
-    while not done.is_set():
-        journal.read_recent(50)
-        reads += 1
-    writer.join(timeout=30)
-    assert not writer.is_alive(), "reading must not block the writer"
-    assert reads > 0, "probe never actually read during the writes"
+    monkeypatch.setattr(os, "write", pagewise_write)
+    monkeypatch.setattr(fcntl, "flock", observe_contention)
+    # Production polls only lock contention. Here an explicit event schedules
+    # the next attempt after publication, with no timing-dependent sleeps.
+    monkeypatch.setattr(time, "sleep", lambda _: wait_for_event(completed, 10))
+    monkeypatch.setattr(time, "monotonic", lambda: 0.0)
+    writer, write_result = run_in_thread(finish_write)
+    reader = None
+    try:
+        wait_for_event(partial, 10, label="partial page")
+        reader, read_result = run_in_thread(journal.read_recent, 50)
+        wait_for_event(contended, 10, label="reader attempted shared lock")
+    finally:
+        release.set()
+        join_or_fail(writer, 10, label="writer")
+        if reader is not None:
+            join_or_fail(reader, 10, label="reader")
+    write_result.unwrap()
+    assert [entry.record.exit_code for entry in read_result.unwrap().entries] == [0, 1]
 
-    final = journal.read_recent(writes)
-    assert [entry.record.exit_code for entry in final.entries] == list(range(writes))
+
+def test_writer_progresses_while_reader_parses_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    journal = JsonlLaneDispatchJournal(tmp_path)
+    journal.record(_record(exit_code=0))
+    parsing, release = threading.Event(), threading.Event()
+    real_loads = json.loads
+
+    def paused_loads(line: str) -> object:
+        parsing.set()
+        wait_for_event(release, 10, label="release parsing")
+        return real_loads(line)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(json, "loads", paused_loads)
+        reader, result = run_in_thread(journal.read_recent, 10)
+        try:
+            wait_for_event(parsing, 10, label="reader parsing")
+            # A second instance must publish before the reader can resume.
+            JsonlLaneDispatchJournal(tmp_path).record(_record(exit_code=1))
+        finally:
+            release.set()
+            join_or_fail(reader, 10)
+    assert [entry.record.exit_code for entry in result.unwrap().entries] == [0]
+    assert [entry.record.exit_code for entry in journal.read_recent(10).entries] == [0, 1]
+
+
+def test_short_append_releases_lock_and_remains_genuine_corruption(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    journal = JsonlLaneDispatchJournal(tmp_path)
+    real_write = os.write
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "write", lambda fd, line: real_write(fd, line[:96]))
+        with pytest.raises(LaneDispatchJournalError, match="short JSONL write"):
+            journal.record(_record())
+    with pytest.raises(LaneDispatchJournalError, match="corrupt at line 1"):
+        journal.read_recent(10)
+
+
+@pytest.mark.parametrize("operation", ["record", "read_recent"])
+def test_publication_timeout_is_a_typed_journal_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str,
+) -> None:
+    journal = JsonlLaneDispatchJournal(tmp_path)
+    journal.record(_record())
+    clock = iter([0.0, 5.0])
+    with (tmp_path / "lane-dispatch.jsonl").open("rb") as holder:
+        fcntl.flock(holder, fcntl.LOCK_EX)
+        with monkeypatch.context() as patch:
+            patch.setattr(time, "monotonic", lambda: next(clock))
+            with pytest.raises(LaneDispatchJournalError, match="publication lock") as caught:
+                if operation == "record":
+                    journal.record(_record())
+                else:
+                    journal.read_recent(10)
+        assert isinstance(caught.value.__cause__, TimeoutError)
+        assert caught.value.__cause__.errno == errno.ETIMEDOUT
+    assert len(journal.read_recent(10).entries) == 1
+
+
+@pytest.mark.parametrize("tail", [b'{"unfinished', b'{"unfinished\n'])
+def test_genuine_truncated_tail_is_never_discarded(tmp_path: Path, tail: bytes) -> None:
+    path = tmp_path / "lane-dispatch.jsonl"
+    path.write_bytes(tail)
+    with pytest.raises(LaneDispatchJournalError, match="not JSON"):
+        JsonlLaneDispatchJournal(tmp_path).read_recent(1)
+
+
+def test_complete_legacy_file_needs_no_newline_or_write_permission(tmp_path: Path) -> None:
+    journal = JsonlLaneDispatchJournal(tmp_path)
+    journal.record(_record())
+    path = tmp_path / "lane-dispatch.jsonl"
+    path.write_bytes(path.read_bytes().rstrip(b"\n"))
+    path.chmod(0o444)
+    try:
+        assert len(journal.read_recent(10).entries) == 1
+    finally:
+        path.chmod(0o644)
 
 
 # --- rows older than the machine-state envelope (#7135) --------------
