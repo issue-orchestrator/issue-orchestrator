@@ -4,7 +4,8 @@
 Owns the storage decisions the port hides: the journal lives beside
 the runtime history in the repository's git common dir (shared across
 worktrees, like the validation timings), one JSON object per line via
-a single O_APPEND write so concurrent gates cannot interleave rows.
+a single O_APPEND write. Shared JSONL publication coordination also keeps
+a reader from observing Linux page-wise publication inside that write.
 
 The same class owns reading the file back, because the line format is
 one decision and splitting it across a writer and a separate reader is
@@ -29,7 +30,7 @@ from ..infra.machine_state import (
     machine_state_fields,
     machine_state_from_fields,
 )
-from ..infra.validation_timings import append_jsonl
+from ..infra.jsonl_storage import append_jsonl, read_jsonl_snapshot
 from ..ports.lane_dispatch_journal import (
     LaneDispatchEntry,
     LaneDispatchHistory,
@@ -309,9 +310,7 @@ class JsonlLaneDispatchJournal:
         it appears in the tail.
         """
         try:
-            raw = self._path.read_text(encoding="utf-8")
-        except FileNotFoundError:
-            return []
+            raw = read_jsonl_snapshot(self._path).decode("utf-8")
         except OSError as error:
             raise LaneDispatchJournalError(
                 f"could not read the dispatch journal at {self._path}: {error}"
