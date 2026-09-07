@@ -806,7 +806,7 @@ class TestEffectiveTerminalOutcomeEvents:
     def test_stale_investigation_kill_cannot_finalize_success(self, tmp_path):
         events = InMemoryEventSink()
         run_kill = MagicMock(return_value=KillSessionRunOutcome(success=False, stale_reason="worker generation already disappeared"))
-        applier = ActionApplier(labels=MagicMock(), sessions=MagicMock(), events=MagicMock(), repository_host=MagicMock())
+        applier = make_action_applier(labels=MagicMock(), sessions=MagicMock(), events=MagicMock(), repository_host=MagicMock())
         applier.tech_lead_kill_session = TechLeadKillSessionExecutor(events=MagicMock(), run_kill=run_kill)
         action = KillHungSessionAction(issue_number=17, proposal_id="A2", anchor_issue_number=17,
             target_session_id="observed-run", target_terminal_id="issue-17", target_session_type="code",
