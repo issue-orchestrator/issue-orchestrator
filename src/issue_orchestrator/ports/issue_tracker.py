@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
     from .issue import Issue
+    from .comment_receipt import IssueCommentReceipt
 
 
 class IssueTracker(Protocol):
@@ -142,6 +143,15 @@ class IssueTracker(Protocol):
 
         Raises:
             RepositoryError: If there's an error accessing the data source.
+        """
+        ...
+
+    def find_issue_comment_receipt(self, issue_number: int, *, body: str) -> "IssueCommentReceipt | None":
+        """Find fresh publication proof for this exact body and credential author.
+
+        All pages must be observed before returning None. Copied comments from
+        another author and edited/mismatched bodies provide no receipt.
+        Indeterminate or malformed reads raise instead of asserting absence.
         """
         ...
 

@@ -86,6 +86,7 @@ and this table is the same set with the tier each command carries:
 | `resume` | Runtime | Supported |
 | `tech_lead` | Runtime | Supported |
 | `health-review` | Runtime | Supported |
+| `reconcile-case-files` | Runtime | Supported |
 | `refresh` | Runtime | Supported |
 | `restart` | Runtime | Supported |
 | `setup` | Setup | Supported |
