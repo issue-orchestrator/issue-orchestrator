@@ -20,6 +20,19 @@ class RemoteHeadExpectation(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class PublicationContent:
+    title: str
+    body: str
+    draft: bool
+
+    def __post_init__(self) -> None:
+        if type(self.title) is not str or not self.title.strip():
+            raise ValueError("publication title must be nonempty")
+        if type(self.body) is not str or type(self.draft) is not bool:
+            raise ValueError("publication content must have a body and typed draft state")
+
+
+@dataclass(frozen=True, slots=True)
 class PublishValidatedHeadCommand:
     issue_number: int
     repo_slug: str
@@ -30,8 +43,11 @@ class PublishValidatedHeadCommand:
     source_workspace: Path
     pr_number: int | None
     pr_base_branch: str
+    content: PublicationContent
 
     def __post_init__(self) -> None:
+        if type(self.content) is not PublicationContent:
+            raise ValueError("publication requires typed content")
         require_sha(self.target_head_sha)
         if type(self.expectation) is not RemoteHeadExpectation:
             raise ValueError("remote expectation must be typed")

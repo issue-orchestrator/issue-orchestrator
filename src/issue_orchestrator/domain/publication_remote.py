@@ -42,3 +42,9 @@ def publication_marker(issue_number: int, branch: str) -> str:
     return (
         f"<!-- issue-orchestrator:publication issue={issue_number} branch={branch} -->"
     )
+
+
+def attributed_publication_body(body: str, issue_number: int, branch_name: str) -> str:
+    """Use one exact attribution line for live and retried PR creation."""
+    marker = publication_marker(issue_number, branch_name)
+    return body if marker in body.splitlines() else f"{body}\n\n{marker}"

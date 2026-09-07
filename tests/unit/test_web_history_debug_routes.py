@@ -392,6 +392,8 @@ class TestHistoryEndpoints:
         mock_orch.deps.events = MagicMock()
         publish_recovery = Mock()
         mock_orch.deps.publish_recovery = publish_recovery
+        from tests.runtime_lifecycle_helpers import runtime_owners
+        mock_orch.deps.runtime_lifecycle = runtime_owners(publish_recovery=publish_recovery)
         mock_orch.repository_host.get_issue_labels.return_value = [
             "agent:web",
             lm.publish_failed,

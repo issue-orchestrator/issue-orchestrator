@@ -51,6 +51,7 @@ from ..domain.models import OrchestratorState
 from .bootstrap_operator_commands import build_operator_issue_command_factory
 from .bootstrap_completion import (
     build_publish_recovery as _build_publish_recovery,
+    build_manual_publisher as _build_manual_publisher,
     _validation_attempt_key_factory,
     build_completion_handler_factory,
     create_completion_components,
@@ -60,6 +61,8 @@ from .bootstrap_validated_work import build_validated_work_escrow_maintenance as
 from ..infra.env import ENV_PREFIX
 from ..adapters.github.repo import get_repo_from_git, GitRepoError
 from ..ports.event_sink import EventSink, NullEventSink
+from ..ports.manual_publication import ManualPublisher
+from ..adapters.github.publication_remote import GitHubPublicationRemote
 from ..ports.issue_tracker import IssueTracker
 from ..ports.session_runner import SessionRunner, NullSessionRunner
 from ..ports.timeline_reader import NullTimelineReader
@@ -726,9 +729,15 @@ def build_orchestrator(
     assert manifest_downloader is not None
     assert e2e_issue_tracker is not None
 
+    assert repo is not None
+    manual_publisher = _build_manual_publisher(
+        completion_processor=completion_processor, completion_intake=completion_intake,
+        working_copy=working_copy, exact_git=working_copy, repo_slug=repo,
+        remote=GitHubPublicationRemote(github.http_client, repo_slug=repo),
+    )
     publish_recovery = _build_publish_recovery(
         repository_host=github,
-        completion_processor=completion_processor,
+        manual_publisher=manual_publisher,
         label_manager=label_manager,
         fresh_issue_reader=fresh_issue_reader,
         action_applier=action_applier,
@@ -905,6 +914,7 @@ def build_orchestrator_for_testing(
     claim_manager: ClaimManager | None = None,
     provider_readiness_probe: "ProviderReadinessProbe | None" = None,
     run_ownership: TechLeadRunOwnership | None = None,
+    manual_publisher: ManualPublisher | None = None,
 ) -> "Orchestrator":
     """Build an orchestrator for testing with mock dependencies.
 
@@ -1167,9 +1177,15 @@ def build_orchestrator_for_testing(
     claim_gate, lease_renewer = claims.claim_gate, claims.lease_renewer
     run_ownership = run_ownership or claims.run_ownership
 
+    unconfigured_manual_publisher = MagicMock(spec=ManualPublisher)
+    unconfigured_manual_publisher.publish.side_effect = AssertionError(
+        "Manual publication tests must inject their behavior port"
+    )
+    manual_publisher = manual_publisher or unconfigured_manual_publisher
+
     publish_recovery = _build_publish_recovery(
         repository_host=github,
-        completion_processor=completion_processor,
+        manual_publisher=manual_publisher,
         label_manager=label_manager,
         fresh_issue_reader=fresh_issue_reader,
         action_applier=action_applier,

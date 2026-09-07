@@ -5877,3 +5877,82 @@ class TestEscalationVocabularyIsShared:
             dirty_tree_disposition(CompletionOutcome.COMPLETED.value)
             is DirtyTreeDisposition.REJECT
         )
+
+
+def test_shared_preparation_preserves_intent_without_publishing(
+    processor, mock_git_adapter, mock_pr_adapter, worktree_with_completion
+):
+    from issue_orchestrator.control.completion_preparation import PreparedCompletion
+
+    record = make_record(
+        outcome=CompletionOutcome.COMPLETED,
+        requested_actions=[RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR],
+        implementation="Preserve implementation details",
+    )
+    worktree = worktree_with_completion(record)
+    actions, errors = [], []
+    prepared = processor.prepare_completion(
+        worktree, 123, "Test Issue", run_assets=make_session_run_assets(worktree),
+        completion_path=None, agent_label="agent:coder", intake_receipt=None,
+        actions_taken=actions, errors=errors,
+    )
+    assert isinstance(prepared, PreparedCompletion)
+    assert prepared.record.requested_actions == record.requested_actions
+    assert prepared.actions.plan.ordered_actions == tuple(record.requested_actions)
+    assert not prepared.actions.halted
+    assert errors == []
+    mock_git_adapter.push.assert_not_called()
+    mock_pr_adapter.create_pr.assert_not_called()
+    publication = processor.prepare_pull_request(
+        worktree=worktree, record=prepared.record, issue_number=123,
+        issue_title="Test Issue", branch=prepared.branch, agent_label=prepared.agent_label, errors=errors,
+        exchange_mode=prepared.actions.exchange_mode,
+        exchange_result=prepared.actions.exchange_result,
+    )
+    assert publication is not None
+    assert publication.title == "#123: Test Issue"
+    assert "Preserve implementation details" in publication.body
+    mock_git_adapter.push.assert_not_called()
+    mock_pr_adapter.create_pr.assert_not_called()
+
+
+def test_manual_settlement_preserves_requested_effects_without_generic_publish(
+    processor, mock_git_adapter, mock_pr_adapter, mock_label_adapter, tmp_path
+):
+    from issue_orchestrator.domain.completion_intake import CompletionIntakeReceipt
+    from issue_orchestrator.domain.exact_git import ExactPushOutcome
+    from issue_orchestrator.domain.manual_publication import PreparedManualPublication
+    from issue_orchestrator.domain.session_run import RunContainedFile
+    from issue_orchestrator.domain.validated_head_publication import (
+        PublicationContent, PublishValidatedHeadCommand, PublishValidatedHeadOutcome,
+        RemoteHeadExpectation,
+    )
+    from issue_orchestrator.domain.validated_work import PublishValidatedHeadStatus
+
+    run = make_session_run_assets(tmp_path)
+    receipt = CompletionIntakeReceipt("a" * 64, "b" * 64)
+    command = PublishValidatedHeadCommand(123, "owner/repo", "issue-123", "c" * 40,
+        RemoteHeadExpectation.UNCONSTRAINED, None, tmp_path, None, "main",
+        PublicationContent("#123: Test Issue", "Implementation", True))
+    record = make_record(CompletionOutcome.COMPLETED,
+        [RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR, RequestedAction.REMOVE_NEEDS_REWORK_LABEL],
+        pr_labels=["feature"])
+    prepared = PreparedManualPublication(
+        command=command, receipt=receipt, run=run,
+        completion_artifact=RunContainedFile(run.run_dir, run.run_dir / "owned.json"),
+        record=record, issue_title="Test Issue", agent_label="agent:coder", label_target=123,
+        actions_taken=(), remaining_actions=(RequestedAction.REMOVE_NEEDS_REWORK_LABEL,),
+        exchange_mode=None, exchange_result=None, review_exchange_completed=False,
+        review_exchange_halted=False,
+    )
+    publication = PublishValidatedHeadOutcome(PublishValidatedHeadStatus.PUBLISHED,
+        command.target_head_sha, 42, "https://github.com/owner/repo/pull/42",
+        command.target_head_sha, ExactPushOutcome.PUSHED, None, "Published")
+    result = processor.settle_manual_publication(prepared, publication)
+    assert result.success
+    assert result.pr_url == publication.pr_url
+    assert result.intake_receipt == receipt
+    mock_git_adapter.push.assert_not_called()
+    mock_pr_adapter.create_pr.assert_not_called()
+    mock_label_adapter.add_label.assert_called_once_with(42, "feature")
+    mock_label_adapter.remove_label.assert_called_once_with(123, "needs-rework")

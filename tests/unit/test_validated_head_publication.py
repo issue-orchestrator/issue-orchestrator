@@ -12,6 +12,7 @@ from issue_orchestrator.domain.validated_head_publication import (
     PrEnsureOutcome,
     PrEnsureStatus,
     PublishValidatedHeadCommand,
+    PublicationContent,
     RemoteHeadExpectation,
     SupersededStage,
     compose_publication_outcome,
@@ -36,6 +37,7 @@ def command():
         Path("/repo"),
         None,
         "main",
+        PublicationContent("#1: Feature", "Closes #1\n\nImplementation details", True),
     )
 
 

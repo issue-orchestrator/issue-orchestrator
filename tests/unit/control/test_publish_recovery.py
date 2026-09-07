@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,6 +16,7 @@ from issue_orchestrator.control.actions import (
     SupersedePullRequestAction,
 )
 from issue_orchestrator.control.completion_types import ProcessingResult
+from issue_orchestrator.domain.completion_intake import CompletionIntakeReceipt
 from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.ports.tech_lead_authority import (
     InMemoryTechLeadAuthorityStore,
@@ -87,33 +88,30 @@ class _Repo:
 
 
 @dataclass
-class _CompletionProcessor:
+class _ManualPublisher:
     result: ProcessingResult
     calls: list[dict] = field(default_factory=list)
 
-    def process(
-        self,
-        worktree: Path,
-        issue_number: int,
-        issue_title: str,
-        *,
-        run_assets: SessionRunAssets,
-        pr_number: int | None = None,
-        completion_path: str | None = None,
-        agent_label: str | None = None,
-    ) -> ProcessingResult:
-        record_path = worktree / (completion_path or "completion.json")
-        self.calls.append({
-            "worktree": worktree,
-            "issue_number": issue_number,
-            "issue_title": issue_title,
-            "completion_path": completion_path,
-            "agent_label": agent_label,
-            # Captured at call time so tests can prove the completion record was
-            # available to the processor when the republish actually ran.
-            "completion_present": record_path.exists(),
-        })
-        return self.result
+    def publish(self, locators, issue_title, is_current):
+        from issue_orchestrator.domain.manual_publication import ManualPublicationResult
+        from issue_orchestrator.domain.validated_head_publication import PublishValidatedHeadOutcome
+        from issue_orchestrator.domain.validated_work import PublishValidatedHeadStatus, ValidatedWorkFailure
+        from issue_orchestrator.domain.exact_git import ExactPushOutcome
+
+        self.calls.append({"locators": locators, "issue_title": issue_title,
+                           "is_current": is_current, "current_at_start": is_current()})
+        processing = replace(self.result,
+            review_exchange_completed=self.result.review_exchange_completed or locators.review_exchange_completed,
+            review_exchange_halted=self.result.review_exchange_halted or locators.review_exchange_halted,
+            intake_receipt=locators.intake_receipt)
+        publication = None
+        if processing.pr_url and not processing.is_non_terminal:
+            publication = PublishValidatedHeadOutcome(
+                PublishValidatedHeadStatus.PUBLISHED if processing.success else PublishValidatedHeadStatus.TRANSIENT_FAILURE,
+                "a" * 40, int(processing.pr_url.rsplit("/", 1)[-1]), processing.pr_url,
+                "a" * 40, ExactPushOutcome.PUSHED,
+                None if processing.success else ValidatedWorkFailure.REMOTE_UNREADABLE, processing.message)
+        return ManualPublicationResult(processing, publication, locators.agent_label)
 
 
 class _RecordingRunner:
@@ -236,12 +234,12 @@ def _service(
 ) -> tuple[PublishRecoveryService, JsonPublishRetryLocatorStore, Any]:
     store = JsonPublishRetryLocatorStore(tmp_path / "publish_retry_locators.json")
     runner = runner or _RecordingRunner()
-    processor = _CompletionProcessor(
+    processor = _ManualPublisher(
         result or ProcessingResult(success=True, message="ok", pr_url=PR_URL)
     )
     service = PublishRecoveryService(
         repository_host=repo,
-        completion_processor=processor,
+        manual_publisher=processor,
         locator_store=store,
         runner=runner,
         label_manager=lm,
@@ -282,6 +280,7 @@ def _record_failure(
     service.record_publish_failure(
         session,
         ["push_branch: Push failed: remote rejected"],
+        intake_receipt=CompletionIntakeReceipt("a" * 64, "b" * 64),
         review_exchange_completed=review_exchange_completed,
         review_exchange_halted=review_exchange_halted,
     )
@@ -548,8 +547,12 @@ def test_retry_publish_recovers_existing_pr_and_clears_state(make_session, tmp_p
 
     result = service.retry_publish(4057, state)
 
-    assert result.status == "recovered_existing_pr"
-    assert not runner.running_ids()  # no republish submitted
+    assert result.status == "submitted"
+    assert runner.running_ids()
+    assert store.get(4057) is not None
+    assert repo.removed == []
+    runner.run_all()
+    service.drain_completed_retries(state)
     assert store.get(4057) is None
     assert lm.publish_failed in repo.removed
     assert lm.pr_pending in repo.added
@@ -587,7 +590,7 @@ def test_recover_existing_pr_honors_original_review_exchange_completed(
             )
         ],
     )
-    service, store, _ = _service(
+    service, store, runner = _service(
         tmp_path, repo, lm, code_review_agent_configured=True
     )
     _record_failure(service, make_session, tmp_path, review_exchange_completed=True)
@@ -595,7 +598,9 @@ def test_recover_existing_pr_honors_original_review_exchange_completed(
 
     result = service.retry_publish(4057, state)
 
-    assert result.status == "recovered_existing_pr"
+    assert result.status == "submitted"
+    runner.run_all()
+    service.drain_completed_retries(state)
     # Already reviewed to approval in-band: no new review discovery, and the PR
     # finalizes straight to awaiting-merge.
     assert state.discovered_reviews == []
@@ -737,12 +742,12 @@ def _service_with_processor(tmp_path, repo, lm):
     """Build a service and hand back the completion processor for inspection."""
     store = JsonPublishRetryLocatorStore(tmp_path / "publish_retry_locators.json")
     runner = _RecordingRunner()
-    processor = _CompletionProcessor(
+    processor = _ManualPublisher(
         ProcessingResult(success=True, message="ok", pr_url=PR_URL)
     )
     service = PublishRecoveryService(
         repository_host=repo,
-        completion_processor=processor,
+        manual_publisher=processor,
         locator_store=store,
         runner=runner,
         label_manager=lm,
@@ -754,7 +759,7 @@ def _service_with_processor(tmp_path, repo, lm):
     return service, store, runner, processor
 
 
-def test_retry_after_live_cleanup_restores_durable_completion_record(
+def test_retry_after_live_cleanup_uses_receipt_without_restoring_agent_record(
     make_session, tmp_path
 ) -> None:
     """The live path deletes the agent completion file after preserving a copy.
@@ -780,7 +785,7 @@ def test_retry_after_live_cleanup_restores_durable_completion_record(
     original = session.worktree_path / session.completion_path
     assert not original.exists()
 
-    service.record_publish_failure(session, ["push_branch: Push failed: remote rejected"])
+    service.record_publish_failure(session, ["push_branch: Push failed: remote rejected"], intake_receipt=CompletionIntakeReceipt("a" * 64, "b" * 64))
     state = OrchestratorState()
 
     # Not rejected for a missing completion record — the durable copy counts.
@@ -788,9 +793,9 @@ def test_retry_after_live_cleanup_restores_durable_completion_record(
 
     runner.run_all()
 
-    # The worker restored the durable record so the processor had a valid input.
-    assert original.exists()
-    assert processor.calls[-1]["completion_present"] is True
+    # The worker receives exact custody; the agent candidate is never restored.
+    assert not original.exists()
+    assert processor.calls[-1]["locators"].intake_receipt == CompletionIntakeReceipt("a" * 64, "b" * 64)
 
 
 def test_retry_rejected_when_no_completion_record_anywhere(make_session, tmp_path) -> None:
@@ -810,7 +815,7 @@ def test_retry_rejected_when_no_completion_record_anywhere(make_session, tmp_pat
     result = service.retry_publish(4057, OrchestratorState())
 
     assert result.status == "rejected"
-    assert "completion record" in result.message.lower()
+    assert "intake receipt" in result.message.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -1303,10 +1308,11 @@ def test_existing_pr_recovery_stays_retryable_when_the_read_fails(
 
     result = service.retry_publish(4057, state)
 
-    assert result.status == "rejected"
-    assert "retryable" in result.message
+    assert result.status == "submitted"
+    runner.run_all()
+    service.drain_completed_retries(state)
     # No partial state change: publish-failed labels intact, locators kept, no
-    # history entry, no review queued, nothing submitted to the runner.
+    # history entry, no review queued, and the completed job has drained.
     assert repo.added == [] and repo.removed == []
     assert lm.publish_failed in repo.labels
     assert store.get(4057) is not None
@@ -1385,7 +1391,8 @@ def test_a_finalize_read_failure_does_not_abort_the_rest_of_the_drain(
         completion_file.parent.mkdir(parents=True, exist_ok=True)
         completion_file.write_text("{}")
         service.record_publish_failure(
-            session, ["push_branch: Push failed: remote rejected"]
+            session, ["push_branch: Push failed: remote rejected"],
+            intake_receipt=CompletionIntakeReceipt("a" * 64, "b" * 64),
         )
         assert service.retry_publish(number, state).status == "submitted"
     runner.run_all()

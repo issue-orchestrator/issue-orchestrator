@@ -10,6 +10,10 @@ from __future__ import annotations
 
 from ..ports.issue_run_allocator import IssueRunAllocator
 from ..ports.completion_intake import CompletionIntakeRuntime
+from ..ports.manual_publication import ManualPublisher
+from ..ports.working_copy import WorkingCopy
+from ..ports.exact_git import ExactGit
+from ..ports.publication_remote import PublicationRemote
 
 from typing import TYPE_CHECKING, Protocol, Callable
 
@@ -284,7 +288,7 @@ def build_completion_handler_factory(
 def build_publish_recovery(
     *,
     repository_host: "RepositoryHost",
-    completion_processor: "CompletionProcessor",
+    manual_publisher: ManualPublisher,
     label_manager: "LabelManager",
     fresh_issue_reader: "FreshIssueReader",
     action_applier: "ActionApplier",
@@ -310,7 +314,7 @@ def build_publish_recovery(
     )
     return PublishRecoveryService(
         repository_host=repository_host,
-        completion_processor=completion_processor,
+        manual_publisher=manual_publisher,
         locator_store=locator_store,
         runner=ThreadBackgroundJobRunner(),
         label_manager=label_manager,
@@ -321,3 +325,18 @@ def build_publish_recovery(
     )
 
 from ..control.review_exchange_lifecycle import ReviewExchangeCancellation
+
+
+def build_manual_publisher(
+    *, completion_processor: "CompletionProcessor", completion_intake: CompletionIntakeRuntime,
+    working_copy: WorkingCopy, exact_git: ExactGit, remote: PublicationRemote, repo_slug: str,
+) -> ManualPublisher:
+    from ..control.manual_completion_preparation import ManualCompletionPreparation
+    from ..control.manual_publication import ManualCompletionPublisher
+    from ..execution.git_validated_head_executor import GitValidatedHeadExecutor
+
+    return ManualCompletionPublisher(
+        ManualCompletionPreparation(intake=completion_intake, completion=completion_processor,
+                                    working_copy=working_copy, repo_slug=repo_slug),
+        GitValidatedHeadExecutor(exact_git, remote),
+    )

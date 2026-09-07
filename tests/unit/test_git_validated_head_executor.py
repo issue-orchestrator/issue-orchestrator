@@ -12,6 +12,7 @@ from issue_orchestrator.domain.publication_remote import (
 )
 from issue_orchestrator.domain.validated_head_publication import (
     PublishValidatedHeadCommand,
+    PublicationContent,
     RemoteHeadExpectation,
     compose_publication_outcome,
 )
@@ -112,6 +113,7 @@ def setup(tmp_path, monkeypatch):
         rig.root,
         None,
         "main",
+        PublicationContent("#1: Feature", "Closes #1\n\nImplementation details", True),
     )
     return rig, remote, executor, command
 

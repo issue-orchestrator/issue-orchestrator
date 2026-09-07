@@ -1222,9 +1222,13 @@ def build_test_orchestrator_deps(
     # into the very store this block reads (#6999 F2 round 2).
     _action_applier.needs_human_block = needs_human_block
 
+    from issue_orchestrator.ports.manual_publication import ManualPublisher
+    manual_publisher = MagicMock(spec=ManualPublisher)
+    manual_publisher.publish.side_effect = AssertionError("Manual publication needs an explicit test port")
+
     publish_recovery = PublishRecoveryService(
         repository_host=repo_host,
-        completion_processor=completion_processor,
+        manual_publisher=manual_publisher,
         locator_store=JsonPublishRetryLocatorStore(
             config.repo_root / ".issue-orchestrator" / "state" / "publish_retry_locators.json"
         ),
