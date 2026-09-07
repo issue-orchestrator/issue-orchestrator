@@ -4,6 +4,8 @@ These tests verify that a timed-out session is detected and mapped to the
 appropriate SessionDecision without requiring full e2e orchestration.
 """
 
+from tests.run_allocation_helpers import make_completion_processor
+
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -144,7 +146,7 @@ def test_timeout_observation_and_decision(tmp_path):
     assert observation.observation == SessionObservation.TIMED_OUT
     assert observation.session_exists is True
 
-    completion_processor = CompletionProcessor(
+    completion_processor = make_completion_processor(
         agent_callback_endpoint=ready_callback_endpoint(),
         label_adapter=StubLabelAdapter(),
         pr_adapter=StubPrAdapter(),

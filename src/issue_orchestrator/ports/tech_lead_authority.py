@@ -274,6 +274,7 @@ class TechLeadAuthorityStore(Protocol):
         observation_id: str,
         fix_class: str = "",
         area: str = "",
+        diagnosis: str = "",
     ) -> bool:
         """Record ONE observation of a known signature create-once (#6957).
 
@@ -283,13 +284,17 @@ class TechLeadAuthorityStore(Protocol):
         never advance the count a second time (review F1). The identity comes
         from :func:`~..domain.tech_lead_findings.pattern_observation_id`.
 
-        ``fix_class``/``area`` are reconciled through
-        :func:`~..domain.tech_lead_findings.reconcile_pattern_classification`:
-        an empty value preserves what is recorded, an empty recorded value is
-        upgraded once, and two different non-empty values raise
+        ``fix_class``/``area``/``diagnosis`` are reconciled through
+        :meth:`~..domain.tech_lead_findings.CaseFileClassification.merged_with`
+        and written in the SAME transaction as the count: an empty value
+        preserves what is recorded, an empty recorded value is upgraded once,
+        two different non-empty CLASSIFICATION values raise
         :class:`~..domain.tech_lead_findings.PatternClassificationConflictError`
         rather than letting observation order decide whether a signature is
-        promotable and where it routes (review F3).
+        promotable and where it routes (review F3), and the canonical
+        ``diagnosis`` keeps the first non-empty value — which is how a reviewed
+        ``flag_pattern`` establishes it on a case file that an evidence-only
+        duplicate sighting opened (#6989 round-1 review F1).
 
         An unknown signature must raise :class:`UnknownTechLeadPatternError` —
         the caller appended evidence to a case file with no ledger row, which is
@@ -592,10 +597,11 @@ class InMemoryTechLeadAuthorityStore:
         observation_id: str,
         fix_class: str = "",
         area: str = "",
+        diagnosis: str = "",
     ) -> bool:
         from dataclasses import replace
 
-        from ..domain.tech_lead_findings import reconcile_pattern_classification
+        from ..domain.tech_lead_findings import CaseFileClassification
 
         if not observation_id.strip():
             raise ValueError(
@@ -608,14 +614,11 @@ class InMemoryTechLeadAuthorityStore:
             )
         # Classification is reconciled even for a replayed observation, so a
         # conflict is reported identically on the first attempt and the retry.
-        merged_fix_class = reconcile_pattern_classification(
-            field="fix_class",
+        merged = row.classification.merged_with(
+            CaseFileClassification(
+                fix_class=fix_class, area=area, diagnosis=diagnosis
+            ),
             signature=signature,
-            existing=row.fix_class,
-            incoming=fix_class,
-        )
-        merged_area = reconcile_pattern_classification(
-            field="area", signature=signature, existing=row.area, incoming=area
         )
         recorded = self._observations.setdefault(signature, set())
         if observation_id in recorded:
@@ -624,8 +627,9 @@ class InMemoryTechLeadAuthorityStore:
         self._evidence[signature] = replace(
             row,
             observation_count=row.observation_count + 1,
-            fix_class=merged_fix_class,
-            area=merged_area,
+            fix_class=merged.fix_class,
+            area=merged.area,
+            diagnosis=merged.diagnosis,
         )
         return True
 

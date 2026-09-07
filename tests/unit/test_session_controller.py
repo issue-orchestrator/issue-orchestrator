@@ -6,6 +6,8 @@ These tests verify the observer/controller separation:
 No external mocking needed - pure logic tests.
 """
 
+from tests.run_allocation_helpers import make_completion_processor
+
 import json
 import pytest
 from pathlib import Path
@@ -2251,7 +2253,7 @@ class TestSessionControllerValidationCaching:
         git_adapter.has_tracked_changes.return_value = True
         git_adapter.list_dirty_files.return_value = ["scripts/dev.sh"]
 
-        processor = CompletionProcessor(
+        processor = make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=label_adapter,
             pr_adapter=pr_adapter,

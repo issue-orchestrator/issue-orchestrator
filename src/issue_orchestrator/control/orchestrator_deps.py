@@ -21,6 +21,8 @@ if TYPE_CHECKING:
     from ..ports.session_launcher_factory import SessionLauncherFactory
     from ..ports.label_store import LabelStore
     from ..ports.pending_work_claim_store import PendingWorkClaimStore
+    from ..ports.issue_run_evidence import IssueRunLedger
+    from ..ports.issue_run_allocator import IssueRunAllocator
     from .claim_quarantine import ClaimQuarantineOwner
     from .needs_human_block import SharedNeedsHumanBlock
     from ..ports.queue_cache_store import QueueCacheStore
@@ -140,6 +142,8 @@ class OrchestratorDeps:
     # Orchestrator-owned, OUTSIDE every agent-writable worktree (#6999 F7): it
     # records which queued request each running session is carrying, and
     # restoration accepts it as authority.
+    issue_run_ledger: "IssueRunLedger"
+    issue_run_allocator: "IssueRunAllocator"
     pending_work_claims: "PendingWorkClaimStore"
     # Owns what an unreadable claim means: its own durable per-run marker, its
     # own labels/comment, and the event only after those commit (#6999 F12/A5).

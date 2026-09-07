@@ -565,8 +565,26 @@ def test_all_variants_teach_the_duplicate_of_dedup_field(variant: str) -> None:
     assert "title" in clause and "body" in clause, (
         f"{variant} dedup clause drops the title/body requirement"
     )
-    assert "instead of filing a duplicate" not in clause, (
-        f"{variant} dedup clause still promises unconditional comment routing"
+    assert (
+        "instead of filing a duplicate" not in clause
+    ), f"{variant} dedup clause still promises unconditional comment routing"
+    # #6989: a cited duplicate the session cannot comment on accrues to the
+    # durable case file instead of minting one new open issue per sighting, and
+    # naming the recurring class is how a sighting joins an existing case file.
+    assert "case file" in clause, f"{variant} dedup clause omits ledger accrual"
+    assert "pattern_signature" in clause, (
+        f"{variant} dedup clause does not teach naming the recurring class"
+    )
+    # #6989 round-1 review F2: accrual writes an orchestrator-owned ledger, so
+    # it happens only under `flag_pattern: execute`. Runtime DELIBERATELY falls
+    # back to a gated new issue under `flag_pattern: propose`, so promising
+    # accrual unconditionally is a contract a deployment may not honor.
+    assert "flag_pattern" in clause, (
+        f"{variant} dedup clause does not name the authority accrual depends on"
+    )
+    assert "propose" in clause, (
+        f"{variant} dedup clause omits the propose-authority fallback to a"
+        " gated issue"
     )
 
 

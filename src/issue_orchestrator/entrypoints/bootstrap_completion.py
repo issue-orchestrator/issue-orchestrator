@@ -8,6 +8,8 @@ collaborators they share.
 
 from __future__ import annotations
 
+from ..ports.issue_run_allocator import IssueRunAllocator
+
 from typing import TYPE_CHECKING, Protocol
 
 from ..execution.git_working_copy import GitWorkingCopy
@@ -106,6 +108,7 @@ def create_completion_components(
     *,
     # Required: the composition root owns the single shared endpoint.
     agent_callback_endpoint: "AgentCallbackEndpoint",
+    issue_run_allocator: IssueRunAllocator,
     # The one owner of the shared needs-human block. The agent-requested
     # NEEDS_HUMAN completion outcome routes through it, and the label adapter
     # below refuses that label by value, so the two halves cannot disagree.
@@ -174,6 +177,7 @@ def create_completion_components(
         pr_adapter=github,
         git_adapter=working_copy,
         session_output=session_output,
+        issue_run_allocator=issue_run_allocator,
         # The review exchange delivers verdicts through the orchestrator-owned
         # mailbox: agents run `exchange-respond`, the Control API delivers into
         # the open turn slot, and send_round polls the mailbox (#6549).

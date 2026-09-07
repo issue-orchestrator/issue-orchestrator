@@ -10,6 +10,8 @@ These tests verify:
 Tests mock at port boundaries, not internal patches, following the hexagonal architecture.
 """
 
+from tests.run_allocation_helpers import make_session_launcher
+
 import json
 import os
 import shlex
@@ -49,6 +51,8 @@ from issue_orchestrator.control.session_launch_types import (
     LaunchResult,
 )
 from tests.callback_endpoint_helpers import ready_callback_endpoint
+from issue_orchestrator.execution.issue_run_ledger import SqliteIssueRunLedger
+from issue_orchestrator.ports.issue_run_evidence import IssueRunLedger
 from issue_orchestrator.control.session_launcher import (
     SessionLauncher,
     detect_existing_work,
@@ -555,6 +559,7 @@ class LauncherTestBundle:
         default_factory=RecordingBoardSnapshotProvider
     )
     claim_manager: MagicMock | None = None
+    issue_run_ledger: IssueRunLedger = field(default_factory=MagicMock)
 
 
 def _build_launcher_bundle(
@@ -570,6 +575,7 @@ def _build_launcher_bundle(
     claim_manager: MagicMock | None = None,
     provider_resilience: ProviderResilienceManager | None = None,
     provider_readiness_probe: ProviderReadinessProbe | None = None,
+    issue_run_ledger: IssueRunLedger | None = None,
 ) -> LauncherTestBundle:
     """Create a SessionLauncher with mock dependencies and tracking.
 
@@ -627,7 +633,10 @@ def _build_launcher_bundle(
         launcher_kwargs["provider_resilience"] = provider_resilience
     if provider_readiness_probe is not None:
         launcher_kwargs["provider_readiness_probe"] = provider_readiness_probe
-    launcher = SessionLauncher(
+    if issue_run_ledger is None:
+        issue_run_ledger = SqliteIssueRunLedger(sample_config.repo_root / "state" / "runs.sqlite")
+    launcher = make_session_launcher(
+        issue_run_ledger=issue_run_ledger,
         config=sample_config,
         events=mock_events,
         repository_host=mock_repo_host,
@@ -663,6 +672,7 @@ def _build_launcher_bundle(
         action_applier=mock_action_applier,
         board_snapshot_provider=board_snapshot_provider,
         claim_manager=claim_manager,
+        issue_run_ledger=issue_run_ledger,
     )
     return bundle
 
@@ -876,6 +886,46 @@ class TestLaunchIssueSession:
         assert result.session.key.task == TaskKind.CODE
         assert result.session.run_dir is not None
         assert result.session.run_dir.name.endswith("__coding-1")
+
+    def test_run_is_durable_at_spawn_and_matches_the_active_session(
+        self, launcher_bundle, sample_issue,
+    ):
+        ledger = launcher_bundle.issue_run_ledger
+        observed = []
+
+        def create(name, cmd, path, title):
+            observed.extend(ledger.recorded_runs(sample_issue.number))
+            assert len(observed) == 1
+            return True
+
+        launcher_bundle.create_session_override[0] = create
+        result = launcher_bundle.launcher.launch_issue_session(sample_issue, active_sessions=[])
+        assert result.success and result.session is not None
+        assert observed[0].session_key == result.session.key
+        assert observed[0].run == result.session.run_assets
+
+    def test_failed_run_registration_refuses_spawn_without_consuming_work_claim(
+        self, sample_config, mock_event_sink, mock_repository_host,
+        mock_worktree_manager, mock_working_copy, mock_command_runner, sample_issue,
+    ):
+        from issue_orchestrator.domain.issue_run_evidence import IssueRunEvidenceUnavailable
+
+        ledger = MagicMock(spec=IssueRunLedger)
+        ledger.record_run.side_effect = IssueRunEvidenceUnavailable("ledger unavailable")
+        bundle = _build_launcher_bundle(
+            sample_config, mock_event_sink, mock_repository_host,
+            mock_worktree_manager, mock_working_copy, mock_command_runner,
+            issue_run_ledger=ledger,
+        )
+        work_claim = MagicMock()
+        result = bundle.launcher.launch_issue_session(
+            sample_issue, active_sessions=[], work_claim=work_claim,
+        )
+        assert not result.success
+        assert result.disposition is LaunchDisposition.CLAIM_UNRECORDED
+        assert "ledger unavailable" in result.reason
+        assert bundle.create_session_calls == []
+        work_claim.hold_before_spawn.assert_not_called()
 
     def test_internal_review_instructions_reach_initial_coder_command(
         self,
@@ -1502,7 +1552,8 @@ class TestLaunchIssueSession:
                 milestone="M7",
             )
 
-        launcher = SessionLauncher(
+        launcher = make_session_launcher(
+            issue_run_ledger=MagicMock(),
             config=sample_config,
             events=mock_events,
             repository_host=mock_repo_host,
@@ -7423,7 +7474,8 @@ class TestStackRelaunchGate:
 
         refresh_issue = refresh if refresh is not None else default_refresh
 
-        return SessionLauncher(
+        return make_session_launcher(
+            issue_run_ledger=MagicMock(),
             config=sample_config,
             events=mock_events,
             repository_host=mock_repo_host,

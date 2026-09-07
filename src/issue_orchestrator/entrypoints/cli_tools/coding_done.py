@@ -45,6 +45,8 @@ from .dirty_retry_budget import (
     record_rejection,
     reset_rejection_counter,
 )
+from ...control.tech_lead_artifact_precheck import precheck_tech_lead_artifacts
+from ...domain.session_run import SessionRunAssets
 from .orchestrator_resume import trigger_orchestrator_resume
 from .orchestrator_run_assets import require_orchestrator_run_assets_for_session
 from ...domain.dirty_remediation import (
@@ -507,7 +509,33 @@ def _open_run_assets(run: _CompletionRun) -> Any:
     return FileSystemSessionOutput().start_run(run.worktree_root, run.record.session_id)
 
 
-def _run_agent_validation(run: _CompletionRun) -> _ValidationStage:
+def _enforce_tech_lead_artifact_contract(run: _CompletionRun) -> SessionRunAssets | None:
+    """Give managed authors correctable feedback before writing completion."""
+    if not run.managed or run.status != AgentStatus.COMPLETED:
+        return None
+    assets = require_orchestrator_run_assets_for_session(
+        run.worktree_root, run.record.session_id
+    )
+    _check_tech_lead_pair(assets)
+    return assets
+
+
+def _check_tech_lead_pair(assets: SessionRunAssets) -> None:
+    """Check the pair at both feedback and final submission boundaries."""
+    result = precheck_tech_lead_artifacts(assets)
+    if result is not None and not result.ok:
+        print("TECH-LEAD ARTIFACT CONTRACT VIOLATION — coding-done cannot complete")
+        print(result.detail)
+        print(f"Repair the artifact pair in {assets.run_dir / 'tech-lead-data'}")
+        print("Fix tech-lead-decision.json and tech-lead-report.md, then run coding-done again.")
+        print("No completion was recorded; your artifacts remain available for correction.")
+        print("If you cannot complete the investigation, report coding-done blocked instead.")
+        raise SystemExit(1)
+
+
+def _run_agent_validation(
+    run: _CompletionRun, run_assets: SessionRunAssets | None
+) -> _ValidationStage:
     """Stage 3: the agent's own fast feedback loop.
 
     Deeper publish validation runs later, through the orchestrator-controlled
@@ -526,7 +554,7 @@ def _run_agent_validation(run: _CompletionRun) -> _ValidationStage:
     if not validation_cmd:
         return _ValidationStage()
 
-    assets = _open_run_assets(run)
+    assets = run_assets if run_assets is not None else _open_run_assets(run)
     validation_result = run_validation(
         run.worktree_root,
         session_output_dir=assets.run_dir,
@@ -670,9 +698,12 @@ def main() -> None:
     )
 
     _enforce_pre_validation_dirty_policy(run)
-    validation = _run_agent_validation(run)
+    run_assets = _enforce_tech_lead_artifact_contract(run)
+    validation = _run_agent_validation(run, run_assets)
     _enforce_post_validation_dirty_policy(run, validation)
     _enforce_preflight_push(run)
+    if run_assets is not None:
+        _check_tech_lead_pair(run_assets)
     _finalize(run, validation)
 
 
