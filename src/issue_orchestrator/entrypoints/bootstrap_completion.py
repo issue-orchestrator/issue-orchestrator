@@ -11,7 +11,7 @@ from __future__ import annotations
 from ..ports.issue_run_allocator import IssueRunAllocator
 from ..ports.completion_intake import CompletionIntakeRuntime
 
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, Callable
 
 from ..execution.git_working_copy import GitWorkingCopy
 from ..execution.command_runner import LocalCommandRunner
@@ -114,6 +114,7 @@ def create_completion_components(
     agent_callback_endpoint: "AgentCallbackEndpoint",
     issue_run_allocator: IssueRunAllocator,
     completion_intake: CompletionIntakeRuntime,
+    runtime_canceller: Callable[[int, str], ReviewExchangeCancellation],
     # The one owner of the shared needs-human block. The agent-requested
     # NEEDS_HUMAN completion outcome routes through it, and the label adapter
     # below refuses that label by value, so the two halves cannot disagree.
@@ -149,7 +150,7 @@ def create_completion_components(
     from ..control.governed_label_set import GovernedLabelSet
     from ..control.review_exchange_lifecycle import (
         ReviewExchangeCancellation,
-        cancel_issue_review_exchange,
+
     )
 
     if github is None:
@@ -159,17 +160,6 @@ def create_completion_components(
         label_manager = _LM(config)
     if pair_registry is None:
         pair_registry = InMemoryPersistentExchangePairRegistry()
-
-    def _cancel_review_exchange(
-        issue_number: int,
-        reason: str,
-    ) -> ReviewExchangeCancellation:
-        return cancel_issue_review_exchange(
-            issue_number=issue_number,
-            reason=reason,
-            pair_registry=pair_registry,
-            job_supervisor=background_job_supervisor,
-        )
 
     completion_processor = CompletionProcessor(
         completion_intake=completion_intake,  # The governed shared block is refused here BY VALUE, so an
@@ -201,7 +191,7 @@ def create_completion_components(
         config=config,
         background_job_supervisor=background_job_supervisor,
         agent_callback_endpoint=agent_callback_endpoint,
-        review_exchange_canceller=_cancel_review_exchange,
+        review_exchange_canceller=runtime_canceller,
         review_artifact_reader=ManifestReviewArtifactReader(),
         runtime_identity=runtime_identity.resolve_runtime_identity(),
         tech_lead_authority=tech_lead_authority,
@@ -221,7 +211,7 @@ def create_completion_components(
         attempt_store=attempt_store,
         validation_attempt_key_factory=_validation_attempt_key_factory(config),
         max_validation_retries=config.retry.max_validation_retries,
-        review_exchange_canceller=_cancel_review_exchange,
+        review_exchange_canceller=runtime_canceller,
     )
 
     completion_handler_factory = (
@@ -334,3 +324,5 @@ def build_publish_recovery(
         code_review_agent_configured=bool(config.code_review_agent),
         tech_lead_authority=tech_lead_authority,
     )
+
+from ..control.review_exchange_lifecycle import ReviewExchangeCancellation

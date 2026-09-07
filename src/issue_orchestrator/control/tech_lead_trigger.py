@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Protocol
 
@@ -121,6 +121,7 @@ class TechLeadTerminationOutcome:
     operator action, not deferred to a tick-based retry that would never run.
     """
 
+    validated_work: "ValidatedWorkDispositionBatch" = field(kw_only=True)
     terminal_stopped: bool = True
     machine_removed: bool = True
     claim_released: bool = True
@@ -610,3 +611,5 @@ def _admitted_queue_item(
         ),
         None,
     )
+
+from ..domain.validated_work_commands import ValidatedWorkDispositionBatch

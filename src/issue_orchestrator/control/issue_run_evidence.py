@@ -24,6 +24,9 @@ class IssueRunEvidenceService:
         self._live_runs = live_runs
         self._now = now
 
+    def issue_numbers(self) -> tuple[int, ...]:
+        return self._ledger.issue_numbers()
+
     def record_run(self, issue_number: int, record: IssueRunRecord) -> None:
         self._ledger.record_run(issue_number, record)
 
@@ -38,6 +41,7 @@ class IssueRunEvidenceService:
         for active in live:
             if not any(
                 row.session_key == active.session_key and row.run == active.run
+                and row.branch_name == active.branch_name
                 for row in recorded
             ):
                 raise IssueRunEvidenceUnavailable(

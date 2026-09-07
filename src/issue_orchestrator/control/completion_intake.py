@@ -12,6 +12,8 @@ from ..domain.completion_intake import (
     IntakeUnauthorized,
 )
 from ..domain.models import CompletionRecord
+from ..domain.issue_run_evidence import IssueRunEvidence
+from ..domain.prepared_completion import PreparedCompletionEvidence
 from ..domain.completion_intake_policy import (
     latest_accepted_receipt,
     require_publication_attestation,
@@ -84,7 +86,7 @@ class CompletionEvidenceIntakeService:
                 self._historical.resume(entry)
                 continue
             if entry.parse_status is CompletionParseStatus.ACCEPTED:
-                record = self._ledger.read_completion(entry.entry_id)
+                record = self._ledger.read_owned_completion(entry.entry_id)
                 if (
                     record.requests_publication
                     and self._ledger.validation_for_receipt(entry.entry_id) is None
@@ -107,6 +109,34 @@ class CompletionEvidenceIntakeService:
             entries = self._ledger.entries_for_issue(issue_number)
             self._process(entries)
             return entries
+
+    def prepare_receipt(self, receipt: CompletionIntakeReceipt, run: SessionRunAssets) -> PreparedCompletionEvidence:
+        """Prepare exactly one receipt without closing its run lifetime."""
+        with self._drain_lock:
+            entry = self._ledger.entry_for_receipt(receipt.entry_id)
+            if entry.receipt != receipt or entry.run != run:
+                raise CompletionIntakeError("receipt does not bind the allocated run")
+            recorded = self._ledger.recorded_run(run)
+            self._process((entry,))
+            candidate = self._ledger.prepare_candidate(entry.entry_id, recorded)
+            if candidate is None:
+                raise CompletionIntakeError("receipt is not completed and validated publication intent")
+            return candidate
+
+    def prepare_termination(self, evidence: IssueRunEvidence) -> tuple[PreparedCompletionEvidence, ...]:
+        """Close, repair and drain once, then select all trusted exact-run candidates."""
+        with self._drain_lock:
+            entries = self.close_and_drain(evidence.issue_number)
+            runs = {record.run.identity: record for record in evidence.runs}
+            candidates: list[PreparedCompletionEvidence] = []
+            for entry in entries:
+                recorded = runs.get(entry.run.identity)
+                if recorded is None or recorded.run != entry.run:
+                    raise CompletionIntakeError("closed intake disagrees with exact issue run evidence")
+                candidate = self._ledger.prepare_candidate(entry.entry_id, recorded)
+                if candidate is not None:
+                    candidates.append(candidate)
+            return tuple(candidates)
 
     def resume_receipt(
         self,

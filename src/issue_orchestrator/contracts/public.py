@@ -291,6 +291,22 @@ class PersistentStalePayload(ContractBase):
     threshold: int
 
 
+class ValidatedWorkDispositionMember(ContractBase):
+    record_id: str
+    evidence_id: str
+    state: Literal["queued", "parked", "publishing", "recovered", "failed", "abandoned"]
+    failure: str | None
+    branch_name: str
+    validated_head_sha: str
+    repo_slug: str
+
+
+class ValidatedWorkDispositionObservedPayload(ContractBase):
+    issue_number: int
+    reason: str
+    dispositions: list[ValidatedWorkDispositionMember]
+
+
 class HistoryReconciledPayload(ContractBase):
     issue_number: int
     issue_key: str
@@ -533,6 +549,7 @@ PUBLIC_CONTRACTS: dict[str, type[BaseModel]] = {
     "sse.stale.in_progress_cleared": StaleClearedPayload,
     "sse.stale.persistent_detected": PersistentStalePayload,
     "sse.history.reconciled": HistoryReconciledPayload,
+    "sse.validated_work.disposition_observed": ValidatedWorkDispositionObservedPayload,
     "sse.startup_complete": StartupCompletePayload,
     "sse.shutdown_requested": ShutdownRequestedPayload,
     "timeline.issue": TimelineIssueContract,

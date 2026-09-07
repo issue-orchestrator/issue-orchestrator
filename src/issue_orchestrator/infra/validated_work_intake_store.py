@@ -1,61 +1,42 @@
-"""Admission-only composition of the existing disposition transaction owners.
-
-Intake cannot acquire publication claims and therefore does not manufacture a
-liveness implementation. The full store and this adapter share schema, writer,
-lineage policy and transaction implementation.
-"""
+"""Admission-only composition using the same transactions, lineage and snapshots."""
 
 from pathlib import Path
 import sqlite3
-
-from ..domain.validated_work import ValidatedWorkState
 from ..domain.completion_intake import CompletionIntakeError
-from ..domain.validated_work_store import AdmissionOutcome, EvidenceAdmission
-from ..ports.validated_work_verification import (
-    ValidatedWorkAncestry,
-    ValidatedWorkArtifactVerifier,
-)
+from ..domain.validated_work import ValidatedWorkState
+from ..domain.validated_work_commands import ValidatedWorkDispositionBatch
+from ..domain.validated_work_store import AdmissionOutcome, EvidenceAdmission, EvidenceLookup, EvidenceRow
+from ..ports.validated_work_verification import ValidatedWorkAncestry, ValidatedWorkArtifactVerifier
 from .validated_work_admission import EvidenceAdmissionWriter
 from .validated_work_lineage import LineageClassifier
 from .validated_work_rows import DispositionDatabase, disposition
+from .validated_work_snapshots import DispositionSnapshots
 
 
 class SqliteValidatedWorkIntakeStore:
-    def __init__(
-        self,
-        path: Path,
-        ancestry: ValidatedWorkAncestry,
-        artifacts: ValidatedWorkArtifactVerifier,
-    ) -> None:
+    def __init__(self, path: Path, ancestry: ValidatedWorkAncestry, artifacts: ValidatedWorkArtifactVerifier) -> None:
         self._db = DispositionDatabase(path)
-        self._admission = EvidenceAdmissionWriter(
-            LineageClassifier(ancestry, artifacts)
-        )
+        self._snapshots = DispositionSnapshots(self._db)
+        self._admission = EvidenceAdmissionWriter(LineageClassifier(ancestry, artifacts))
 
     def admit(self, admission: EvidenceAdmission) -> AdmissionOutcome:
-        try:
-            return self._admit_parked(admission)
-        except sqlite3.Error as exc:
-            raise CompletionIntakeError(
-                "historical parked admission unavailable"
-            ) from exc
-
-    def _admit_parked(self, admission: EvidenceAdmission) -> AdmissionOutcome:
         if admission.initial_state is not ValidatedWorkState.PARKED:
-            raise CompletionIntakeError("historical intake may only admit parked work")
-        with self._db.transaction(write=True) as conn:
-            current = conn.execute(
-                "SELECT state FROM validated_work_records WHERE record_id=?",
-                (admission.evidence.record_id,),
-            ).fetchone()
-            if current is not None and current[0] in {"publishing", "recovered"}:
-                raise CompletionIntakeError(
-                    "historical intake cannot retarget active or resolved publication"
-                )
-            status = self._admission.admit(conn, admission)
-            result = disposition(conn, admission.evidence.record_id)
-            if result.state is not ValidatedWorkState.PARKED:
-                raise CompletionIntakeError(
-                    "historical admission did not establish parked state"
-                )
-            return AdmissionOutcome(status, result)
+            raise ValueError("admission-only owner requires parked capture")
+        try:
+            with self._db.transaction(write=True) as conn:
+                status = self._admission.admit(conn, admission)
+                return AdmissionOutcome(status, disposition(conn, admission.evidence.record_id))
+        except sqlite3.Error as exc:
+            raise CompletionIntakeError("parked admission unavailable") from exc
+
+    def for_issue(self, issue_number: int) -> ValidatedWorkDispositionBatch:
+        return self._snapshots.for_issue(issue_number)
+
+    def has_unresolved_work(self, issue_number: int) -> bool:
+        return self._snapshots.has_unresolved_work(issue_number)
+
+    def evidence_for_id(self, evidence_id: str) -> EvidenceLookup | None:
+        return self._snapshots.evidence_for_id(evidence_id)
+
+    def retained_evidence(self, issue_number: int) -> tuple[EvidenceRow, ...]:
+        return self._snapshots.retained_evidence(issue_number)

@@ -12,7 +12,13 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Iterable, Protocol
 
-from ..ports.completion_intake import CompletionIntakeRuntime
+from ..ports.issue_run_evidence import IssueRunEvidenceSource
+from ..ports.validated_work_preservation import ValidatedWorkPreservation
+from ..domain.validated_work_commands import AutomaticCaptureCommand, ValidatedWorkDispositionBatch
+from enum import StrEnum
+from ..events import EventName
+from ..ports.event_sink import EventSink, make_trace_event
+from ..domain.validated_work_observation import disposition_observation
 from ..ports.session_runner import SessionRunner
 from .background_job_supervisor import drain_background_jobs
 from ..domain.session_key import TaskKind
@@ -66,6 +72,7 @@ class ReviewExchangeCancellation:
 
     issue_number: int
     cancelled_job_ids: tuple[str, ...]
+    validated_work: ValidatedWorkDispositionBatch
 
 
 @dataclass(frozen=True)
@@ -76,6 +83,7 @@ class IssueRuntimeTermination:
     review_exchange: ReviewExchangeCancellation
     stopped_session_ids: tuple[str, ...]
     cleared_active_session_ids: tuple[str, ...]
+    validated_work: ValidatedWorkDispositionBatch
 
     @property
     def cancelled_job_ids(self) -> tuple[str, ...]:
@@ -99,7 +107,8 @@ class GenerationBoundTermination:
 class GenerationTerminationPartialFailure(RuntimeError):
     """The exact terminal stopped, but its lifecycle acknowledgement failed."""
 
-    def __init__(self, target: TechLeadSessionGeneration, cause: Exception) -> None:
+    def __init__(self, target: TechLeadSessionGeneration, cause: Exception, validated_work: ValidatedWorkDispositionBatch) -> None:
+        self.validated_work = validated_work
         self.target = target
         self.cause = cause
         super().__init__(
@@ -109,8 +118,9 @@ class GenerationTerminationPartialFailure(RuntimeError):
         )
 
 
-def cancel_issue_review_exchange(
+def _cancel_issue_review_exchange(
     *,
+    validated_work: ValidatedWorkDispositionBatch,
     issue_number: int,
     reason: str,
     pair_registry: "PersistentExchangePairRegistry | None",
@@ -159,13 +169,14 @@ def cancel_issue_review_exchange(
     return ReviewExchangeCancellation(
         issue_number=issue_number,
         cancelled_job_ids=cancelled,
+        validated_work=validated_work,
     )
 
 
-def terminate_issue_runtime(
+def _release_issue_runtime(
     *,
     issue_number: int,
-    completion_intake: CompletionIntakeRuntime,
+    validated_work: ValidatedWorkDispositionBatch,
     reason: str,
     pair_registry: "PersistentExchangePairRegistry | None",
     job_supervisor: "BackgroundJobSupervisor | None",
@@ -184,7 +195,6 @@ def terminate_issue_runtime(
     is supplied, any in-flight/stored publish retry for the issue is abandoned in
     the same boundary so a late republish cannot repopulate a terminated issue.
     """
-    completion_intake.close_and_drain(issue_number)
     refs = tuple(_issue_runtime_session_refs(issue_number, session_types))
     active_names = _active_session_names(active_sessions)
     matching_active = active_names.intersection(ref.name for ref in refs)
@@ -194,8 +204,8 @@ def terminate_issue_runtime(
             f"SessionManager: issue={issue_number} sessions={sorted(matching_active)}"
         )
 
-    review_exchange = cancel_issue_review_exchange(
-        issue_number=issue_number,
+    review_exchange = _cancel_issue_review_exchange(
+        validated_work=validated_work,        issue_number=issue_number,
         reason=reason,
         pair_registry=pair_registry,
         job_supervisor=job_supervisor,
@@ -235,13 +245,15 @@ def terminate_issue_runtime(
         review_exchange=review_exchange,
         stopped_session_ids=tuple(stopped),
         cleared_active_session_ids=terminal_ids_to_clear,
+        validated_work=validated_work,
     )
 
 
-def terminate_issue_session_generation(
+def _terminate_issue_session_generation(
     *,
     target: TechLeadSessionGeneration,
     reason: str,
+    preserve: Callable[[int, str], ValidatedWorkDispositionBatch],
     active_sessions: list["Session"],
     session_exists: Callable[[str], bool],
     kill_session: Callable[[str], None],
@@ -299,6 +311,8 @@ def terminate_issue_session_generation(
             )
         )
 
+    validated_work = preserve(target.issue_number, reason)
+
     # Prepare every hidden owner before committing the visible terminal stop.
     # Each teardown is idempotent, and every owner is attempted even when a
     # sibling fails. A preparation failure deliberately leaves the terminal and
@@ -307,8 +321,8 @@ def terminate_issue_session_generation(
     cleanup_errors: list[Exception] = []
     review_exchange: ReviewExchangeCancellation | None = None
     try:
-        review_exchange = cancel_issue_review_exchange(
-            issue_number=target.issue_number,
+        review_exchange = _cancel_issue_review_exchange(
+        validated_work=validated_work,            issue_number=target.issue_number,
             reason=reason,
             pair_registry=pair_registry,
             job_supervisor=job_supervisor,
@@ -334,12 +348,14 @@ def terminate_issue_session_generation(
         active_sessions=active_sessions,
         session_exists=session_exists,
         kill_session=kill_session,
+        validated_work=validated_work,
     )
     termination = IssueRuntimeTermination(
         issue_number=target.issue_number,
         review_exchange=review_exchange,
         stopped_session_ids=(target.terminal_id,),
         cleared_active_session_ids=(target.terminal_id,),
+        validated_work=validated_work,
     )
     return GenerationBoundTermination(termination=termination)
 
@@ -369,6 +385,7 @@ def _drop_exact_generation(
 
 def _stop_exact_generation(
     *,
+    validated_work: ValidatedWorkDispositionBatch,
     target: TechLeadSessionGeneration,
     active_sessions: list["Session"],
     session_exists: Callable[[str], bool],
@@ -388,67 +405,9 @@ def _stop_exact_generation(
         if terminal_still_running:
             raise
         _drop_exact_generation(active_sessions, target)
-        raise GenerationTerminationPartialFailure(target, stop_error) from stop_error
+        raise GenerationTerminationPartialFailure(target, stop_error, validated_work) from stop_error
 
     _drop_exact_generation(active_sessions, target)
-
-
-def has_active_issue_runtime(
-    *,
-    issue_number: int,
-    pair_registry: "PersistentExchangePairRegistry | None",
-    job_supervisor: "BackgroundJobSupervisor | None",
-    session_manager: "SessionManager | None" = None,
-    active_sessions: list["Session"] | None = None,
-    publish_recovery: "IssuePublishRetryRuntime | None" = None,
-    session_types: Iterable[SessionType] = ISSUE_RUNTIME_SESSION_TYPES,
-) -> bool:
-    """True when any runtime owner the reset boundary would terminate is active.
-
-    The activity counterpart to :func:`terminate_issue_runtime`, taking the SAME
-    owner set so the reset-freshness predicate and the reset teardown read/mutate
-    exactly the same runtime owners: visible issue/rework sessions, the persistent
-    coder/reviewer pair, supervised review-exchange jobs, and pending/in-flight
-    publish retry. A stale proposal can therefore never terminate live work the
-    predicate did not observe — the activity check and the boundary cannot drift
-    on what "active" means because they consult one owner set through one contract.
-
-    Fail-safe: an owner that raises when queried is treated as possibly active, so
-    unverifiable runtime state downgrades the reset rather than tearing down work
-    on an unchecked owner (orchestrator-authoritative, never silent-wrong).
-    """
-    probes: tuple[Callable[[], bool], ...] = (
-        lambda: _issue_runtime_session_active(
-            issue_number, session_manager, active_sessions, session_types
-        ),
-        lambda: (
-            pair_registry is not None and pair_registry.has_active_pair(issue_number)
-        ),
-        lambda: (
-            job_supervisor is not None
-            and job_supervisor.has_matching(
-                lambda job_id: is_review_exchange_job_for_issue(job_id, issue_number)
-            )
-        ),
-        lambda: (
-            publish_recovery is not None
-            and publish_recovery.has_active_retry(issue_number)
-        ),
-    )
-    return any(_owner_active_or_unverifiable(probe) for probe in probes)
-
-
-def _owner_active_or_unverifiable(probe: Callable[[], bool]) -> bool:
-    """Run one owner activity probe; treat a raising owner as possibly active."""
-    try:
-        return bool(probe())
-    except Exception:
-        logger.warning(
-            "[ISSUE_RUNTIME] runtime-owner activity probe raised; treating issue "
-            "runtime as active (fail-safe)",
-            exc_info=True,
-        )
-        return True
 
 
 def _issue_runtime_session_active(
@@ -519,7 +478,7 @@ def _drop_active_session_records(
     ]
 
 
-def shutdown_agent_runtime(
+def _shutdown_agent_runtime(
     pair_registry: PersistentExchangePairRegistry | None,
     runner: SessionRunner,
     supervisor: BackgroundJobSupervisor | None,
@@ -531,3 +490,140 @@ def shutdown_agent_runtime(
     runner.on_orchestrator_shutdown()
     drain_background_jobs(supervisor, 60.0)
     logger.info("[SHUTDOWN] Agent runtime owners terminated")
+
+
+class IssueRuntimeOwnerKind(StrEnum):
+    SESSIONS = "sessions"
+    EXCHANGE_PAIR = "exchange_pair"
+    EXCHANGE_JOBS = "exchange_jobs"
+    PUBLISH_RETRY = "publish_retry"
+    VALIDATED_WORK = "validated_work"
+
+
+@dataclass(frozen=True, slots=True)
+class IssueRuntimeActivity:
+    active: frozenset[IssueRuntimeOwnerKind]
+    unverifiable: frozenset[IssueRuntimeOwnerKind]
+
+    @property
+    def busy(self) -> bool:
+        return bool(self.active or self.unverifiable)
+
+
+def _probe_owners(probes: dict[IssueRuntimeOwnerKind, Callable[[], bool]]) -> IssueRuntimeActivity:
+    active: set[IssueRuntimeOwnerKind] = set()
+    unverifiable: set[IssueRuntimeOwnerKind] = set()
+    for kind, probe in probes.items():
+        try:
+            if probe():
+                active.add(kind)
+        except Exception:
+            logger.warning("Runtime owner %s is unverifiable", kind, exc_info=True)
+            unverifiable.add(kind)
+    return IssueRuntimeActivity(frozenset(active), frozenset(unverifiable))
+
+
+@dataclass(frozen=True, slots=True)
+class CoreIssueRuntimeOwners:
+    """The one composition of the four runtime owners, shared by every boundary."""
+
+    session_manager: SessionManager
+    active_sessions: list[Session]
+    pair_registry: PersistentExchangePairRegistry | None
+    job_supervisor: BackgroundJobSupervisor | None
+    publish_recovery: IssuePublishRetryRuntime
+
+    def probe(self, issue_number: int) -> IssueRuntimeActivity:
+        return _probe_owners({
+            IssueRuntimeOwnerKind.SESSIONS: lambda: _issue_runtime_session_active(
+                issue_number, self.session_manager, self.active_sessions, ISSUE_RUNTIME_SESSION_TYPES),
+            IssueRuntimeOwnerKind.EXCHANGE_PAIR: lambda: self.pair_registry is not None and self.pair_registry.has_active_pair(issue_number),
+            IssueRuntimeOwnerKind.EXCHANGE_JOBS: lambda: self.job_supervisor is not None and self.job_supervisor.has_matching(
+                lambda job_id: is_review_exchange_job_for_issue(job_id, issue_number)),
+            IssueRuntimeOwnerKind.PUBLISH_RETRY: lambda: self.publish_recovery.has_active_retry(issue_number),
+        })
+
+    def cancel_preserved_exchange(self, issue_number: int, reason: str, validated_work: ValidatedWorkDispositionBatch) -> ReviewExchangeCancellation:
+        return _cancel_issue_review_exchange(issue_number=issue_number, reason=reason, validated_work=validated_work,
+            pair_registry=self.pair_registry, job_supervisor=self.job_supervisor)
+
+    def release_preserved(self, issue_number: int, reason: str, batch: ValidatedWorkDispositionBatch) -> IssueRuntimeTermination:
+        return _release_issue_runtime(issue_number=issue_number, reason=reason, validated_work=batch,
+            pair_registry=self.pair_registry, job_supervisor=self.job_supervisor,
+            session_manager=self.session_manager, active_sessions=self.active_sessions,
+            publish_recovery=self.publish_recovery)
+
+
+@dataclass(frozen=True, slots=True)
+class OtherRuntimeActivity:
+    """Structural four-owner view; no caller-supplied exclusion list."""
+
+    core: CoreIssueRuntimeOwners
+
+    def probe(self, issue_number: int) -> IssueRuntimeActivity:
+        return self.core.probe(issue_number)
+
+
+class UnresolvedValidatedWork(RuntimeError):
+    def __init__(self, batch: ValidatedWorkDispositionBatch) -> None:
+        self.batch = batch
+        details = "; ".join(f"{d.state.value}:{d.evidence_id}:{d.failure}" for d in batch.unresolved_dispositions)
+        super().__init__(f"issue #{batch.issue_number} retains unresolved validated work: {details}")
+
+
+@dataclass(frozen=True, slots=True)
+class IssueRuntimeLifecycleOwners:
+    core: CoreIssueRuntimeOwners
+    validated_work: ValidatedWorkPreservation
+    run_evidence: IssueRunEvidenceSource
+    events: EventSink
+
+    def _capture(self, issue_number: int, reason: str) -> ValidatedWorkDispositionBatch:
+        evidence = self.run_evidence.evidence_for_issue(issue_number)
+        return self.validated_work.dispose_at_termination(AutomaticCaptureCommand(issue_number, reason, evidence))
+
+    def _observe(self, batch: ValidatedWorkDispositionBatch) -> None:
+        self.events.publish(make_trace_event(EventName.VALIDATED_WORK_DISPOSITION_OBSERVED, disposition_observation(batch)))
+
+    def preserve(self, issue_number: int, reason: str) -> ValidatedWorkDispositionBatch:
+        batch = self._capture(issue_number, reason)
+        self._observe(batch)
+        return batch
+
+    def terminate(self, issue_number: int, reason: str) -> IssueRuntimeTermination:
+        batch = self._capture(issue_number, reason)
+        result = self.core.release_preserved(issue_number, reason, batch)
+        self._observe(batch)
+        return result
+
+    def cancel_exchange(self, issue_number: int, reason: str) -> ReviewExchangeCancellation:
+        batch = self._capture(issue_number, reason)
+        result = self.core.cancel_preserved_exchange(issue_number, reason, batch)
+        self._observe(batch)
+        return result
+
+    def require_reset(self, issue_number: int, reason: str) -> ValidatedWorkDispositionBatch:
+        batch = self.preserve(issue_number, reason)
+        if batch.unresolved:
+            raise UnresolvedValidatedWork(batch)
+        return batch
+
+    def probe(self, issue_number: int) -> IssueRuntimeActivity:
+        core = self.core.probe(issue_number)
+        work = _probe_owners({IssueRuntimeOwnerKind.VALIDATED_WORK: lambda: self.validated_work.has_unresolved_work(issue_number)})
+        return IssueRuntimeActivity(core.active | work.active, core.unverifiable | work.unverifiable)
+
+    def has_active_issue_runtime(self, issue_number: int) -> bool:
+        return self.probe(issue_number).busy
+
+    def terminate_generation(self, target: TechLeadSessionGeneration, reason: str, *, session_exists: Callable[[str], bool], kill_session: Callable[[str], None]) -> GenerationBoundTermination:
+        return _terminate_issue_session_generation(target=target, reason=reason, preserve=self.preserve,
+            active_sessions=self.core.active_sessions, session_exists=session_exists, kill_session=kill_session,
+            pair_registry=self.core.pair_registry, job_supervisor=self.core.job_supervisor,
+            publish_recovery=self.core.publish_recovery)
+
+    def shutdown(self, runner: SessionRunner) -> None:
+        # Freeze every retained issue before the first global subprocess teardown.
+        for issue_number in set(self.run_evidence.issue_numbers()).union(session.issue.number for session in self.core.active_sessions):
+            self.preserve(issue_number, "orchestrator-shutdown")
+        _shutdown_agent_runtime(self.core.pair_registry, runner, self.core.job_supervisor)

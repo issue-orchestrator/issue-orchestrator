@@ -179,6 +179,7 @@ class ResetRetryRunOutcome:
     """Typed result of one reset-owner invocation (the injected boundary)."""
 
     success: bool
+    stale_reason: str | None = None
     error: str | None = None
     details: Mapping[str, Any] = field(default_factory=dict)
 
@@ -248,6 +249,8 @@ class TechLeadResetRetryExecutor:
             return self._downgrade(action, stale)
         assert issue is not None  # stale check rejects None
         outcome = self.run_reset(action.issue_number, list(issue.labels))
+        if outcome.stale_reason is not None:
+            return self._downgrade(action, outcome.stale_reason)
         if not outcome.success:
             logger.error(
                 issue_log(

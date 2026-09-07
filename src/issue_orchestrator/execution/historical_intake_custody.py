@@ -17,7 +17,8 @@ from ..domain.completion_intake_policy import normalized_completion_artifact
 from ..domain.validated_work_store import AdmissionOutcome, EvidenceAdmission
 from ..ports.git import Git
 from ..ports.completion_intake import CompletionIntakeLedger
-from ..ports.historical_intake import HistoricalParkedAdmission
+from ..ports.historical_intake import ParkedEvidenceCapture
+from ..domain.validated_work_escrow import EscrowArtifacts
 from .completion_intake_artifacts import (
     CompletionIntakeArtifacts,
     canonical_bytes,
@@ -32,19 +33,16 @@ class HistoricalIntakeCustody:
         repo_root: Path,
         state_root: Path,
         git: Git,
-        admission: HistoricalParkedAdmission,
+        custody: ParkedEvidenceCapture,
         ledger: CompletionIntakeLedger,
     ) -> None:
         self._repo_root = repo_root
         self._state = state_root
         self._git = git
-        self._admission = admission
+        self._custody = custody
         self._ledger = ledger
         self._candidates = CompletionIntakeArtifacts(
             state_root / "historical-intake-candidates"
-        )
-        self._escrow = CompletionIntakeArtifacts(
-            state_root / "historical-intake-escrow"
         )
 
     def capture_candidate(self, command: HistoricalIntakeCommand) -> bytes:
@@ -71,7 +69,7 @@ class HistoricalIntakeCustody:
                 str(workspace),
             ],
         )
-        self._git.run(workspace, ["checkout", "--detach", command.target_head_sha])
+        self._git.run(workspace, ["checkout", "-B", command.branch_name, command.target_head_sha])
         # Independent object custody: this is not a linked worktree or shared clone.
         return workspace
 
@@ -92,40 +90,10 @@ class HistoricalIntakeCustody:
         evidence = historical_admission_evidence(
             command, entry, validation, completion_bytes, validation_bytes
         )
-        custody_key = evidence.evidence_id.split(":", 1)[1]
-        pinned_ref = "refs/issue-orchestrator/validated/" + custody_key
-        # This ref names only the selected immutable commit. No branch moves.
-        current = self._git.run(
-            self._repo_root, ["rev-parse", "--verify", pinned_ref], check=False
-        )
-        if current.returncode != 0:
-            self._git.run(
-                self._repo_root,
-                ["update-ref", pinned_ref, command.target_head_sha, "0" * 40],
-            )
-        elif current.stdout.strip() != command.target_head_sha:
-            raise CompletionIntakeError("historical retention ref changed")
-        self._escrow.write(
-            custody_key,
-            {
-                "entry_id": entry.entry_id,
-                "record_id": evidence.record_id,
-                "head_sha": command.target_head_sha,
-                "pinned_ref": pinned_ref,
-            },
-            {"completion.json": completion_bytes, "validation.json": validation_bytes},
-        )
-        return self._admission.admit(
-            EvidenceAdmission(
-                evidence,
-                ValidatedWorkState.PARKED,
-                None,
-                "Historical intake requires separate snapshot-bound recovery approval",
-                "historical-intake-escrow/" + custody_key,
-                pinned_ref,
-                "",
-                validation.recorded_at,
-            )
+        return self._custody.capture(
+            evidence, EscrowArtifacts(artifact.path, validation.result_path, None),
+            reason="Historical intake requires separate snapshot-bound recovery approval",
+            failure=None,
         )
 
 

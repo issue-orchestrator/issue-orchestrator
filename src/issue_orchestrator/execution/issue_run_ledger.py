@@ -9,6 +9,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from .completion_intake_ledger import CompletionIntakeTables
+from ..domain.prepared_completion import PreparedCompletionEvidence
 from ..domain.completion_intake import (
     CompletionIntakeEntry,
     CompletionValidationAttestation,
@@ -42,6 +43,9 @@ class SqliteIssueRunLedger:
         if marker.exists():
             self._identity = marker.read_text(encoding="ascii")
             self._validate_existing()
+            with self._connect(write=True) as conn:
+                if "branch_name" not in {row[1] for row in conn.execute("PRAGMA table_info(issue_runs)")}:
+                    conn.execute("ALTER TABLE issue_runs ADD COLUMN branch_name TEXT")
             self._intake = CompletionIntakeTables(
                 self._connect, self._decode, db_path.parent / "completion-intake"
             )
@@ -75,6 +79,7 @@ class SqliteIssueRunLedger:
                     assets_json TEXT NOT NULL,
                     run_dir TEXT NOT NULL UNIQUE,
                     recorded_at TEXT NOT NULL,
+                    branch_name TEXT,
                     PRIMARY KEY(session_name, run_id, started_at)
                 )
             """)
@@ -128,20 +133,27 @@ class SqliteIssueRunLedger:
                     "FROM issue_runs WHERE session_name=? AND run_id=? AND started_at=?", key,
                 ).fetchone()
                 if existing is not None:
-                    if tuple(existing) != payload:
+                    bound_branch = conn.execute(
+                        "SELECT branch_name FROM issue_runs WHERE session_name=? AND run_id=? AND started_at=?", key,
+                    ).fetchone()[0]
+                    if tuple(existing) != payload or bound_branch != record.branch_name:
                         raise IssueRunEvidenceUnavailable(
                             f"Conflicting ownership for run {identity}"
                         )
                     return
                 conn.execute(
-                    "INSERT INTO issue_runs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (*key, *payload, self._run_key(record.run.run_dir), record.recorded_at),
+                    "INSERT INTO issue_runs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (*key, *payload, self._run_key(record.run.run_dir), record.recorded_at, record.branch_name),
                 )
                 self._intake.allocate_run(conn, record.run)
         except sqlite3.Error as exc:
             raise IssueRunEvidenceUnavailable(
                 "Could not persist run ownership"
             ) from exc
+
+    def issue_numbers(self) -> tuple[int, ...]:
+        with self._connect() as conn:
+            return tuple(row[0] for row in conn.execute("SELECT DISTINCT issue_number FROM issue_runs ORDER BY issue_number"))
 
     def recorded_runs(self, issue_number: int) -> tuple[IssueRunRecord, ...]:
         try:
@@ -179,7 +191,19 @@ class SqliteIssueRunLedger:
             ),
             run=assets,
             recorded_at=row["recorded_at"],
+            branch_name=row["branch_name"],
         )
+
+    def recorded_run(self, run: SessionRunAssets) -> IssueRunRecord:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM issue_runs WHERE session_name=? AND run_id=? AND started_at=?",
+                (run.session_name, run.run_id, run.started_at)).fetchone()
+            if row is None:
+                raise IssueRunEvidenceUnavailable("exact allocated run is not registered")
+            record = self._decode(row)
+            if record.run != run:
+                raise IssueRunEvidenceUnavailable("exact allocated run assets differ from ledger")
+            return record
 
     def run_for_capability(self, capability: str) -> SessionRunAssets:
         return self._intake.run_for_capability(capability)
@@ -226,6 +250,19 @@ class SqliteIssueRunLedger:
 
     def repair_intake(self) -> None:
         self._intake.repair()
+
+    def read_owned_completion(self, entry_id: str) -> "CompletionRecord":
+        from .completion_intake_artifacts import read_regular
+
+        entry = self.entry_for_receipt(entry_id)
+        if entry.normalized_path is None:
+            raise ValueError("rejected receipt has no normalized completion")
+        return CompletionRecord.from_dict(json.loads(read_regular(entry.normalized_path)))
+
+    def prepare_candidate(self, entry_id: str, run: IssueRunRecord) -> "PreparedCompletionEvidence | None":
+        from .completion_intake_candidates import prepare_candidate
+
+        return prepare_candidate(self, entry_id, run)
 
     def read_completion(self, entry_id: str) -> "CompletionRecord":
         from ..domain.models import CompletionRecord

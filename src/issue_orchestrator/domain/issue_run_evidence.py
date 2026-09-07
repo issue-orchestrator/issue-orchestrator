@@ -22,6 +22,7 @@ class IssueRunRecord:
     session_key: SessionKey
     run: SessionRunAssets
     recorded_at: str
+    branch_name: str | None  # None only for explicitly unbound pre-migration rows.
 
     def __post_init__(self) -> None:
         if not self.recorded_at.strip():

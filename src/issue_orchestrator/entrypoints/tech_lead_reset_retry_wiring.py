@@ -118,7 +118,8 @@ def build_tech_lead_reset_retry_executor(
             return ResetRetryRunOutcome(success=True, details=success_payload)
         error = (failure_payload or {}).get("error") or "unknown reset failure"
         return ResetRetryRunOutcome(
-            success=False, error=str(error), details=failure_payload or {}
+            success=False, error=str(error), details=failure_payload or {},
+            stale_reason=(failure_payload or {}).get("stale_reason")
         )
 
     def _read_issue(issue_number: int) -> "Issue | None":

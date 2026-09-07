@@ -41,6 +41,7 @@ def run_record(tmp_path: Path, run_id: str = "run-1") -> IssueRunRecord:
             manifest_path=run_dir / "manifest.json",
         ),
         recorded_at=NOW,
+        branch_name="feature",
     )
 
 

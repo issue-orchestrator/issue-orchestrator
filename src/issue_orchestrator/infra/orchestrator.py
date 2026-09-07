@@ -1,7 +1,6 @@
 """Main orchestrator - ties everything together."""
 
 from ..control.background_job_supervisor import drain_background_jobs
-from ..control.review_exchange_lifecycle import shutdown_agent_runtime
 
 import asyncio, logging, os, signal, threading, time
 from dataclasses import dataclass, field
@@ -100,7 +99,7 @@ from ..control.session_routing import (
 )
 from ..control.cleanup_manager import CleanupManager
 from ..control.worker_budget import worker_slot_free
-from ..control.review_exchange_lifecycle import IssueRuntimeTermination, ReviewExchangeCancellation, cancel_issue_review_exchange, terminate_issue_runtime
+from ..control.review_exchange_lifecycle import IssueRuntimeTermination, ReviewExchangeCancellation
 from ..control.completion_handler import (
     CompletionHandler,
     launch_review_by_number as _ch_launch_review_by_number,
@@ -266,12 +265,7 @@ class Orchestrator:
         Entrypoints use this behavior-level facade instead of reaching
         through ``deps`` to find lifecycle collaborators.
         """
-        return cancel_issue_review_exchange(
-            issue_number=issue_number,
-            reason=reason,
-            pair_registry=self.deps.services.pair_registry,
-            job_supervisor=self.deps.services.background_job_supervisor,
-        )
+        return self.deps.runtime_lifecycle.cancel_exchange(issue_number, reason)
 
     def submit_completion_evidence(
         self, capability: str, command: "SubmitCompletionEvidence"
@@ -285,31 +279,11 @@ class Orchestrator:
 
     def terminate_issue_runtime_for_issue(self, issue_number: int, *, reason: str) -> IssueRuntimeTermination:
         """Terminate all issue-scoped runtime owners at a lifecycle boundary."""
-        return terminate_issue_runtime(
-            completion_intake=self.deps.completion_intake,
-            issue_number=issue_number,
-            reason=reason,
-            pair_registry=self.deps.services.pair_registry,
-            job_supervisor=self.deps.services.background_job_supervisor,
-            session_manager=self.deps.session_manager,
-            active_sessions=self.state.active_sessions,
-            publish_recovery=self.deps.publish_recovery,
-        )
+        return self.deps.runtime_lifecycle.terminate(issue_number, reason)
 
     def terminate_issue_session_generation(self, target: "TechLeadSessionGeneration", *, reason: str) -> "GenerationBoundTermination":
-        """Conditionally stop one exact launch-observed worker generation."""
-        from ..control.review_exchange_lifecycle import terminate_issue_session_generation
-
-        return terminate_issue_session_generation(
-            target=target,
-            reason=reason,
-            active_sessions=self.state.active_sessions,
-            session_exists=self._session_exists,
-            kill_session=self.kill_session,
-            pair_registry=self.deps.services.pair_registry,
-            job_supervisor=self.deps.services.background_job_supervisor,
-            publish_recovery=self.deps.publish_recovery,
-        )
+        return self.deps.runtime_lifecycle.terminate_generation(target, reason,
+            session_exists=self._session_exists, kill_session=self.kill_session)
 
     @cached_property
     def _cleanup_manager(self) -> CleanupManager:
@@ -321,6 +295,7 @@ class Orchestrator:
             lambda name: _session_exists(name, self.deps.session_manager, self.deps.events),
             lambda issue_number, agent_config: get_worktree_path(self.config, issue_number, agent_config),
             lambda number, session_type="issue": get_session_name(number, session_type),
+            self.deps.runtime_lifecycle,
         )
 
     @cached_property
@@ -424,7 +399,13 @@ class Orchestrator:
     def _session_exists(self, name: str) -> bool:
         return _session_exists(name, self.deps.session_manager, self.deps.events)
 
+    def preserve_issue_work(self, issue_number: int, reason: str):
+        return self.deps.runtime_lifecycle.preserve(issue_number, reason)
+
     def _kill_session(self, name: str) -> None:
+        for session in tuple(self.state.active_sessions):
+            if session.terminal_id == name:
+                self.preserve_issue_work(session.issue.number, "terminal-stop")
         _kill_session(name, self.deps.session_manager, self.deps.events)
 
     def _refresh_issue(self, n: int) -> Optional[Issue]:
@@ -954,11 +935,7 @@ class Orchestrator:
         )
 
     def _shutdown_runtime_owners(self) -> None:
-        shutdown_agent_runtime(
-            self.deps.services.pair_registry,
-            self.deps.runner,
-            self.deps.services.background_job_supervisor,
-        )
+        self.deps.runtime_lifecycle.shutdown(self.deps.runner)
 
     def _close_external_resources(self) -> None:
         """Close process-scoped resources exactly once across all exit paths."""
@@ -994,13 +971,18 @@ class Orchestrator:
             return
         if force:
             logger.info("Force shutdown - killing %d session(s)", len(active))
-            for s in active:
+            for issue_number in {session.issue.number for session in active}:
+                self.preserve_issue_work(issue_number, "force-shutdown")
+            errors: list[Exception] = []
+            for session in tuple(active):
                 try:
-                    self._kill_session(s.terminal_id)
-                except Exception as e:
-                    logger.warning("Failed to kill session %s: %s", s.terminal_id, e)
-            with self.state_lock:
-                self.state.active_sessions = []
+                    self._kill_session(session.terminal_id)
+                    self.state.drop_active_session(session.terminal_id)
+                except Exception as exc:
+                    errors.append(exc)
+            if errors:
+                raise ExceptionGroup("forced shutdown did not stop every session", errors)
+
         else:
             logger.info("Shutdown requested - waiting for %d session(s)", len(active))
 

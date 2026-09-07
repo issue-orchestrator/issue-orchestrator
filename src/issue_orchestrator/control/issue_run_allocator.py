@@ -7,10 +7,13 @@ from ..domain.session_key import SessionKey
 from ..domain.session_run import SessionRunAssets, RunContainedFile
 from ..ports.issue_run_evidence import IssueRunLedger
 from ..ports.session_output import SessionOutput
+from ..ports.working_copy import WorkingCopy
+from ..domain.issue_run_evidence import IssueRunEvidenceUnavailable
 
 
 class IssueRunAllocationService:
-    def __init__(self, output: SessionOutput, ledger: IssueRunLedger) -> None:
+    def __init__(self, output: SessionOutput, ledger: IssueRunLedger, working_copy: WorkingCopy) -> None:
+        self._working_copy = working_copy
         self._output = output
         self._ledger = ledger
 
@@ -41,6 +44,9 @@ class IssueRunAllocationService:
         return run
 
     def _record(self, issue_number: int, key: SessionKey, run: SessionRunAssets) -> None:
+        status = self._working_copy.get_branch_status(run.worktree_path)
+        if status is None or not status.branch or status.branch == "HEAD":
+            raise IssueRunEvidenceUnavailable("Run allocation requires an attached branch")
         self._ledger.record_run(
-            issue_number, IssueRunRecord(session_key=key, run=run, recorded_at=run.started_at),
+            issue_number, IssueRunRecord(session_key=key, run=run, recorded_at=run.started_at, branch_name=status.branch),
         )

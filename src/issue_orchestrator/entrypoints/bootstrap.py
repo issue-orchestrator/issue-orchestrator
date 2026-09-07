@@ -45,6 +45,9 @@ from .bootstrap_run_services import (
     build_issue_run_services,
     build_completion_intake,
 )
+from .bootstrap_issue_runtime import build_issue_runtime
+from .bootstrap_validated_work import build_validated_work_admission
+from ..domain.models import OrchestratorState
 from .bootstrap_operator_commands import build_operator_issue_command_factory
 from .bootstrap_completion import (
     build_publish_recovery as _build_publish_recovery,
@@ -654,9 +657,11 @@ def build_orchestrator(
         label_writer=repository_host,
         label_manager=label_manager, events=events)
 
-    issue_run_ledger, issue_run_allocator = build_issue_run_services(config.repo_root, session_output)
+    runtime_state = OrchestratorState()
+    validated_work = build_validated_work_admission(config, working_copy)
+    issue_run_ledger, issue_run_allocator = build_issue_run_services(config.repo_root, session_output, working_copy)
     completion_intake = build_completion_intake(
-        config, issue_run_ledger, issue_run_allocator, working_copy, command_runner
+        config, issue_run_ledger, issue_run_allocator, working_copy, command_runner, validated_work
     )
     if action_applier is not None:
         action_applier.completion_intake = completion_intake
@@ -670,6 +675,7 @@ def build_orchestrator(
             command_runner,
             provider_resilience,
             completion_intake=completion_intake,
+            runtime_canceller=lambda issue, reason: action_applier.runtime_lifecycle.cancel_exchange(issue, reason),
             issue_run_allocator=issue_run_allocator,
             label_manager=label_manager,
             background_job_supervisor=background_job_supervisor,
@@ -797,6 +803,11 @@ def build_orchestrator(
         needs_human_block=pending_work.needs_human_block,
         coder_prompt_addendum=coder_prompt_addendum,
     )
+    runtime_lifecycle = build_issue_runtime(state=runtime_state, ledger=issue_run_ledger,
+        intake=completion_intake, validated_work=validated_work, working_copy=working_copy,
+        sessions=session_manager, pair_registry=pair_registry, supervisor=background_job_supervisor,
+        publish_recovery=publish_recovery, events=events)
+    action_applier.runtime_lifecycle = runtime_lifecycle
     deps = OrchestratorDeps(
         issue_run_allocator=issue_run_allocator,
         events=events,
@@ -818,6 +829,7 @@ def build_orchestrator(
         session_output=session_output,
         manifest_downloader=manifest_downloader,
         issue_run_ledger=issue_run_ledger,
+        runtime_lifecycle=runtime_lifecycle,
         completion_intake=completion_intake,
         pending_work_claims=pending_work.claims,
         claim_quarantine=pending_work.quarantine,
@@ -853,7 +865,7 @@ def build_orchestrator(
         services=infra_services,
     )
 
-    orchestrator = Orchestrator(config=config, deps=deps)
+    orchestrator = Orchestrator(config=config, deps=deps, state=runtime_state)
     # Act-level executor wiring closes over live orchestrator state (#6764/#6778).
     wire_tech_lead_act_executors(orchestrator)
     return orchestrator
@@ -949,9 +961,11 @@ def build_orchestrator_for_testing(
     working_copy = GitWorkingCopy()
     command_runner = LocalCommandRunner()
     session_output = FileSystemSessionOutput()
-    issue_run_ledger, issue_run_allocator = build_issue_run_services(config.repo_root, session_output)
+    runtime_state = OrchestratorState()
+    validated_work = build_validated_work_admission(config, working_copy)
+    issue_run_ledger, issue_run_allocator = build_issue_run_services(config.repo_root, session_output, working_copy)
     completion_intake = build_completion_intake(
-        config, issue_run_ledger, issue_run_allocator, working_copy, command_runner
+        config, issue_run_ledger, issue_run_allocator, working_copy, command_runner, validated_work
     )
     coder_prompt_addendum = build_coder_prompt_addendum_provider(config)
 
@@ -1054,7 +1068,7 @@ def build_orchestrator_for_testing(
     )
     from ..control.review_exchange_lifecycle import (
         ReviewExchangeCancellation,
-        cancel_issue_review_exchange,
+
     )
     pair_registry_for_testing = build_pair_registry_with_worktree_hook()
     from ..execution.review_exchange_turn_mailbox import InMemoryTurnMailbox
@@ -1077,16 +1091,8 @@ def build_orchestrator_for_testing(
         action_applier.tech_lead_ops = tech_lead_authority_for_testing
         action_applier.promotion_target = tech_lead.promotion_target
 
-    def _cancel_review_exchange_for_testing(
-        issue_number: int,
-        reason: str,
-    ) -> ReviewExchangeCancellation:
-        return cancel_issue_review_exchange(
-            issue_number=issue_number,
-            reason=reason,
-            pair_registry=pair_registry_for_testing,
-            job_supervisor=background_job_supervisor,
-        )
+    def _cancel_review_exchange_for_testing(issue_number: int, reason: str) -> ReviewExchangeCancellation:
+        return action_applier.runtime_lifecycle.cancel_exchange(issue_number, reason)
 
     pending_work = build_pending_work_wiring(
         repo_root=config.repo_root, repository_host=github,
@@ -1253,6 +1259,11 @@ def build_orchestrator_for_testing(
         label_manager=label_manager,
         provider_resilience=provider_resilience,
     )
+    runtime_lifecycle = build_issue_runtime(state=runtime_state, ledger=issue_run_ledger,
+        intake=completion_intake, validated_work=validated_work, working_copy=working_copy,
+        sessions=session_manager, pair_registry=pair_registry_for_testing, supervisor=background_job_supervisor,
+        publish_recovery=publish_recovery, events=events)
+    action_applier.runtime_lifecycle = runtime_lifecycle
     deps = OrchestratorDeps(
         issue_run_allocator=issue_run_allocator,
         events=events,
@@ -1274,6 +1285,7 @@ def build_orchestrator_for_testing(
         session_output=session_output,
         manifest_downloader=manifest_downloader,
         issue_run_ledger=issue_run_ledger,
+        runtime_lifecycle=runtime_lifecycle,
         completion_intake=completion_intake,
         pending_work_claims=pending_work.claims,
         claim_quarantine=pending_work.quarantine,
@@ -1306,4 +1318,4 @@ def build_orchestrator_for_testing(
         services=infra_services,
     )
 
-    return Orchestrator(config=config, deps=deps)
+    return Orchestrator(config=config, deps=deps, state=runtime_state)

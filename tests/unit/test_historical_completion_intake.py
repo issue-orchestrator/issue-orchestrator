@@ -61,8 +61,8 @@ def historical(tmp_path: Path):
     state = repo / ".issue-orchestrator" / "state"
     ledger = SqliteIssueRunLedger(state / "issue_run_ledger.sqlite")
     output = FileSystemSessionOutput()
-    allocator = IssueRunAllocationService(output, ledger)
     wc = GitWorkingCopy(git=git)
+    allocator = IssueRunAllocationService(output, ledger, wc)
     runner = Mock(spec=CommandRunner)
     runner.run.return_value = CommandResult(
         returncode=0, stdout="fresh validation", stderr="", timed_out=False
@@ -74,12 +74,14 @@ def historical(tmp_path: Path):
         command="configured-validation",
         timeout_seconds=30,
     )
-    verification = IntakeDispositionVerification(repo, state, git)
-    store = SqliteValidatedWorkIntakeStore(
-        state / "validated_work.sqlite", verification, verification
-    )
+    from issue_orchestrator.infra.validated_work_escrow import FilesystemValidatedWorkEscrow
+    from issue_orchestrator.execution.validated_work_ancestry import GitValidatedWorkAncestry
+    from issue_orchestrator.control.validated_work_capture import ParkedEvidenceCustody
+    escrow = FilesystemValidatedWorkEscrow(state / "validated-work", repository=repo, repo_slug="test/repo", git=wc)
+    store = SqliteValidatedWorkIntakeStore(state / "validated_work.sqlite",
+        GitValidatedWorkAncestry(repository=repo, repo_slug="test/repo", git=wc), escrow)
     custody = HistoricalIntakeCustody(
-        repo_root=repo, state_root=state, git=git, admission=store, ledger=ledger
+        repo_root=repo, state_root=state, git=git, custody=ParkedEvidenceCustody(escrow, store), ledger=ledger
     )
     owner = HistoricalCompletionIntake(
         repo_slug="test/repo",

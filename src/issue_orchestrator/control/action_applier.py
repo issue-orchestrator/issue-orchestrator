@@ -72,8 +72,8 @@ from .needs_human_block import (
 from .reconciliation import ReconciliationRequired
 from .claim_gate import ClaimGate, ClaimLostError
 from .review_exchange_lifecycle import (
-    cancel_issue_review_exchange,
-    terminate_issue_runtime,
+    IssueRuntimeLifecycleOwners,
+
 )
 from .close_on_merge import run_close_on_merge_fallback
 from .actions import (
@@ -179,6 +179,7 @@ class ActionApplier:
     # issue. Wired post-construction (PublishRecoveryService needs this applier).
     publish_recovery: Optional["PublishRetryAbandoner"] = None
     completion_intake: "CompletionIntakeRuntime | None" = None
+    runtime_lifecycle: IssueRuntimeLifecycleOwners = field(init=False, repr=False)
     # Callback for worktree removal notifications
     # Used by async completion processing to mark jobs as WORKTREE_GONE
     # Returns the number of jobs marked as worktree_gone
@@ -1082,6 +1083,11 @@ class ActionApplier:
         assert isinstance(action, StopSessionAction)
 
         ref = SessionRef(session_type=action.session_type, number=action.number)
+        if ref.session_type in {SessionType.ISSUE, SessionType.REWORK}:
+            termination = self.runtime_lifecycle.terminate(ref.number, "session-stopped")
+            return ActionResult.ok(action, session_name=ref.name,
+                cancelled_review_exchange_jobs=list(termination.cancelled_job_ids),
+                validated_work=termination.validated_work)
         cancellation = self._cancel_review_exchange_for_session_ref(ref, reason="session-stopped")
 
         # Check if running
@@ -1121,30 +1127,11 @@ class ActionApplier:
         *,
         reason: str,
     ) -> "ReviewExchangeCancellation | None":
-        return cancel_issue_review_exchange(
-            issue_number=issue_number,
-            reason=reason,
-            pair_registry=self.pair_registry,
-            job_supervisor=self.background_job_supervisor,
-        )
+        return self.runtime_lifecycle.cancel_exchange(issue_number, reason)
 
-    def _terminate_issue_runtime_for_issue(
-        self,
-        issue_number: int,
-        *,
-        reason: str,
-    ) -> "IssueRuntimeTermination":
-        if self.completion_intake is None:
-            raise RuntimeError("terminal completion intake owner is not wired")
-        return terminate_issue_runtime(
-            completion_intake=self.completion_intake,
-            issue_number=issue_number,
-            reason=reason,
-            pair_registry=self.pair_registry,
-            job_supervisor=self.background_job_supervisor,
-            session_manager=self.sessions,
-            publish_recovery=self.publish_recovery,
-        )
+    def _terminate_issue_runtime_for_issue(self, issue_number: int, *, reason: str) -> IssueRuntimeTermination:
+        return self.runtime_lifecycle.terminate(issue_number, reason)
+
 
     def _apply_queue_operation(self, action: Action) -> ActionResult:
         """Queue operations are handled by orchestrator state.
@@ -1184,7 +1171,7 @@ class ActionApplier:
         # ends with hidden review-exchange work and visible issue/rework
         # terminals stopped. The lifecycle contract is "escalation kills
         # issue automation, full stop".
-        self._terminate_issue_runtime_for_issue(
+        termination = self._terminate_issue_runtime_for_issue(
             action.issue_number,
             reason="escalated-to-human",
         )
@@ -1268,13 +1255,14 @@ class ActionApplier:
         publish_escalation_events(self.events, action, comment_url)
 
         if errors:
-            return ActionResult.fail(action, "; ".join(errors))
+            return ActionResult.fail(action, "; ".join(errors), validated_work=termination.validated_work)
 
         return ActionResult.ok(
             action,
             issue_number=action.issue_number,
             pr_number=action.pr_number,
             escalation_reason=action.escalation_reason,
+            validated_work=termination.validated_work,
         )
 
     def _emit_action_start(self, action: Action) -> None:
@@ -1310,9 +1298,7 @@ class ActionApplier:
             history_owner=self.history_owner,
             events=self.events,
             tech_lead_authority=self.tech_lead_ops,
-            terminate_issue_runtime=lambda issue_number, reason: (
-                self._terminate_issue_runtime_for_issue(issue_number, reason=reason)
-            ),
+            terminate_issue_runtime=self.runtime_lifecycle.terminate,
         )
 
     def _apply_recover_terminal_issue(self, action: Action) -> ActionResult:
@@ -1553,6 +1539,7 @@ class ActionApplier:
         assert isinstance(action, CleanupSessionAction)
 
         errors = []
+        batch = self.runtime_lifecycle.preserve(action.issue_number, "session-cleanup")
         cancellation = self._cancel_review_exchange_for_cleanup(action)
         self._cleanup_terminal_session(action, errors)
         self._cleanup_worktree(action, errors)
@@ -1568,9 +1555,9 @@ class ActionApplier:
             else [],
         }
         if errors:
-            return ActionResult.fail(action, "; ".join(errors), **details)
+            return ActionResult.fail(action, "; ".join(errors), validated_work=batch, **details)
 
-        return ActionResult.ok(action, **details)
+        return ActionResult.ok(action, validated_work=batch, **details)
 
     def _cancel_review_exchange_for_cleanup(
         self,
@@ -1674,11 +1661,12 @@ class ActionApplier:
             )
 
         try:
+            batch = self.runtime_lifecycle.preserve(action.issue_number, "remove-worktree")
             self.worktree_manager.remove_checkout(Path(action.worktree_path))
             # Notify async completion processing that worktree is gone
             if self.on_worktree_removed:
                 self.on_worktree_removed(action.worktree_path)
-            return ActionResult.ok(action, worktree_path=action.worktree_path)
+            return ActionResult.ok(action, worktree_path=action.worktree_path, validated_work=batch)
         except Exception as e:
             return ActionResult.fail(action, str(e))
 

@@ -162,7 +162,7 @@ def _terminate_sessions(*, orchestrator: Any, sessions: list[Any], killed_sessio
 
 
 def _prune_issue_runtime_state(*, state: Any, issue_number: int) -> None:
-    state.active_sessions = [s for s in state.active_sessions if s.issue.number != issue_number]
+    state.active_sessions[:] = [s for s in state.active_sessions if s.issue.number != issue_number]
     state.pending_reviews = [r for r in state.pending_reviews if r.issue_number != issue_number]
     state.pending_reworks = [r for r in state.pending_reworks if r.resolve_issue_number() != issue_number]
     state.pending_tech_lead_reviews = [r for r in state.pending_tech_lead_reviews if r.issue_number != issue_number]

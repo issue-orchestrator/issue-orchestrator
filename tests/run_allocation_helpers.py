@@ -38,8 +38,15 @@ class MemoryIssueRunLedger:
         return tuple(record for number, record in self.records.values() if number == issue_number)
 
 
+def branch_working_copy():
+    from issue_orchestrator.ports.working_copy import WorkingCopy, BranchStatus
+    working_copy = Mock(spec=WorkingCopy)
+    working_copy.get_branch_status.return_value = BranchStatus("feature", 0, 0, False, True)
+    return working_copy
+
+
 def allocation_for(output):
-    return IssueRunAllocationService(output, MemoryIssueRunLedger())
+    return IssueRunAllocationService(output, MemoryIssueRunLedger(), branch_working_copy())
 
 
 def make_completion_processor(*args, **kwargs) -> CompletionProcessor:
@@ -57,7 +64,7 @@ def make_completion_review_exchange(**kwargs) -> CompletionReviewExchange:
 def make_session_launcher(*args, **kwargs) -> SessionLauncher:
     output = kwargs["session_output"] if "session_output" in kwargs else args[8]
     ledger = kwargs.pop("issue_run_ledger", MemoryIssueRunLedger())
-    kwargs.setdefault("issue_run_allocator", IssueRunAllocationService(output, ledger))
+    kwargs.setdefault("issue_run_allocator", IssueRunAllocationService(output, ledger, branch_working_copy()))
     return SessionLauncher(*args, **kwargs)
 
 

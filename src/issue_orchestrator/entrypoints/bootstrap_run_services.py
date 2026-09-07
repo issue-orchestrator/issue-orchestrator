@@ -17,6 +17,7 @@ from ..ports.issue_run_allocator import IssueRunAllocator
 from ..ports.issue_run_evidence import IssueRunLedger
 from ..ports.working_copy import WorkingCopy
 from ..infra.config import Config
+from .bootstrap_validated_work import ValidatedWorkAdmissionOwners
 
 
 def create_io_adapters(github_auth: GitAuthEnvProvider | None = None) -> tuple[
@@ -35,11 +36,11 @@ def create_io_adapters(github_auth: GitAuthEnvProvider | None = None) -> tuple[
 
 
 def build_issue_run_services(
-    repo_root: Path, session_output: SessionOutput,
+    repo_root: Path, session_output: SessionOutput, working_copy: WorkingCopy,
 ) -> tuple[SqliteIssueRunLedger, IssueRunAllocationService]:
     """Use one ledger for allocation and the injected evidence reader."""
     ledger = SqliteIssueRunLedger(state_dir(repo_root) / "issue_run_ledger.sqlite")
-    return ledger, IssueRunAllocationService(session_output, ledger)
+    return ledger, IssueRunAllocationService(session_output, ledger, working_copy)
 
 
 def build_completion_intake(
@@ -48,6 +49,7 @@ def build_completion_intake(
     allocator: IssueRunAllocator,
     working_copy: WorkingCopy,
     command_runner: CommandRunner,
+    validated_work: ValidatedWorkAdmissionOwners,
 ) -> CompletionIntakeRuntime:
     """One owner is shared by submission, completion processing and terminal capture."""
     from ..execution.git_tools import create_git
@@ -61,17 +63,8 @@ def build_completion_intake(
         HistoricalIntakeCustody,
         IsolatedCompletionValidationWorkspace,
     )
-    from ..execution.intake_disposition_verification import (
-        IntakeDispositionVerification,
-    )
-    from ..infra.validated_work_intake_store import SqliteValidatedWorkIntakeStore
-
     root = state_dir(config.repo_root)
     git = create_git(command_runner)
-    verification = IntakeDispositionVerification(config.repo_root, root, git)
-    admission = SqliteValidatedWorkIntakeStore(
-        root / "validated_work.sqlite", verification, verification
-    )
     validator = ConfiguredCompletionEvidenceValidator(
         working_copy,
         command_runner,
@@ -87,7 +80,7 @@ def build_completion_intake(
             repo_root=config.repo_root,
             state_root=root,
             git=git,
-            admission=admission,
+            custody=validated_work.custody,
             ledger=ledger,
         ),
         allocator=allocator,

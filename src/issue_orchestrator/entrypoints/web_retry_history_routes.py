@@ -19,8 +19,9 @@ from ..control.queue_cache import (
     record_issue_refreshes,
 )
 from ..control.review_exchange_lifecycle import (
-    has_active_issue_runtime,
-    terminate_issue_runtime,
+    IssueRuntimeTermination,
+    UnresolvedValidatedWork,
+
 )
 from ..control.retry_history_state import RetryHistoryState
 from ..events import EventName
@@ -346,11 +347,13 @@ def reset_and_retry_issue(  # noqa: PLR0913
         # terminals and hidden review-exchange pair/job work before local
         # state or worktrees are removed, otherwise a live subprocess can keep
         # writing into a reset attempt or leave stale active-session gating.
-        _terminate_reset_retry_runtime(
+        termination = _terminate_reset_retry_runtime(
             issue_number=issue_number,
             state=state,
             deps=deps,
         )
+        if termination.validated_work.unresolved:
+            raise UnresolvedValidatedWork(termination.validated_work)
 
         provided_marks = current_labels
         if provided_marks is None:
@@ -473,6 +476,10 @@ def reset_and_retry_issue(  # noqa: PLR0913
             elapsed_ms(issue_started_at),
         )
         return success, None
+    except UnresolvedValidatedWork as exc:
+        from ..domain.validated_work_observation import disposition_observation
+        return None, {"issue": issue_number, "error": str(exc), "stale_reason": "validated_work_unresolved",
+            "validated_work": disposition_observation(exc.batch)}
     except Exception as exc:
         logger.error(
             "[reset-retry] Failed to reset issue #%d (from_scratch=%s): %s",
@@ -484,83 +491,12 @@ def reset_and_retry_issue(  # noqa: PLR0913
         return None, {"issue": issue_number, "error": str(exc)}
 
 
-@dataclass(frozen=True)
-class _ResetRetryRuntimeOwners:
-    """The runtime owners the reset boundary would terminate for one issue.
-
-    Resolved once and shared by both the termination boundary and the
-    freshness activity check so the reset teardown and the "is this proposal
-    still fresh?" predicate can never read a different owner set (#6777).
-    """
-
-    pair_registry: Any
-    job_supervisor: Any
-    session_manager: Any
-    active_sessions: Any
-    publish_recovery: Any
+def has_active_reset_retry_runtime(*, issue_number: int, state: "OrchestratorState", deps: Any) -> bool:
+    return deps.runtime_lifecycle.has_active_issue_runtime(issue_number)
 
 
-def _reset_retry_runtime_owners(
-    state: "OrchestratorState", deps: Any
-) -> _ResetRetryRuntimeOwners:
-    """Resolve every runtime owner the reset boundary touches for an issue."""
-    services = _configured_attr(deps, "services")
-    return _ResetRetryRuntimeOwners(
-        pair_registry=_configured_attr(services, "pair_registry"),
-        job_supervisor=_configured_attr(services, "background_job_supervisor"),
-        session_manager=_configured_attr(deps, "session_manager"),
-        active_sessions=state.active_sessions,
-        # Publish-retry work has its own owner/runner outside the review-exchange
-        # supervisor; the shared runtime boundary abandons it on the same
-        # teardown so a late republish cannot repopulate the attempt being reset.
-        publish_recovery=_configured_attr(deps, "publish_recovery"),
-    )
-
-
-def has_active_reset_retry_runtime(
-    *,
-    issue_number: int,
-    state: "OrchestratorState",
-    deps: Any,
-) -> bool:
-    """Would the reset boundary terminate live runtime for this issue?
-
-    Shares its owner set with :func:`_terminate_reset_retry_runtime` via
-    :func:`_reset_retry_runtime_owners`, so an agent-authored reset proposal's
-    freshness check and the reset teardown consult exactly the same runtime
-    owners — visible issue/rework sessions, the persistent coder/reviewer pair,
-    supervised review-exchange jobs, and pending publish retry. A stale proposal
-    therefore stale-downgrades with zero effects whenever ANY of them is active,
-    and can never terminate live work the check did not observe.
-    """
-    owners = _reset_retry_runtime_owners(state, deps)
-    return has_active_issue_runtime(
-        issue_number=issue_number,
-        pair_registry=owners.pair_registry,
-        job_supervisor=owners.job_supervisor,
-        session_manager=owners.session_manager,
-        active_sessions=owners.active_sessions,
-        publish_recovery=owners.publish_recovery,
-    )
-
-
-def _terminate_reset_retry_runtime(
-    *,
-    issue_number: int,
-    state: "OrchestratorState",
-    deps: Any,
-) -> None:
-    owners = _reset_retry_runtime_owners(state, deps)
-    terminate_issue_runtime(
-        completion_intake=deps.completion_intake,
-        issue_number=issue_number,
-        reason="reset-retry",
-        pair_registry=owners.pair_registry,
-        job_supervisor=owners.job_supervisor,
-        session_manager=owners.session_manager,
-        active_sessions=owners.active_sessions,
-        publish_recovery=owners.publish_recovery,
-    )
+def _terminate_reset_retry_runtime(*, issue_number: int, state: "OrchestratorState", deps: Any) -> IssueRuntimeTermination:
+    return deps.runtime_lifecycle.terminate(issue_number, "reset-retry")
 
 
 def _configured_attr(obj: Any, name: str) -> Any | None:
