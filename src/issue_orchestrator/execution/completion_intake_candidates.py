@@ -14,7 +14,7 @@ def prepare_candidate(ledger: CompletionIntakeLedger, entry_id: str, run: IssueR
     attestation = ledger.validation_for_receipt(entry_id)
     content = None if entry.normalized_path is None else read_regular(entry.normalized_path)
     result = None if attestation is None else read_regular(attestation.result_path)
-    return prepare_candidate_evidence(run, entry, attestation, content, result)
+    return prepare_candidate_evidence(run, ledger.role_for_receipt(entry_id), entry, attestation, content, result)
 
 
 def evidence_receive_sequence(ledger: CompletionIntakeLedger, evidence: ValidatedWorkEvidence) -> int:

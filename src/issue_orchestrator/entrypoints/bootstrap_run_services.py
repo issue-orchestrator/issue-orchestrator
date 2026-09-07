@@ -1,7 +1,5 @@
 """Compose IO adapters and the durable owner shared by every run allocator."""
 
-from pathlib import Path
-
 from ..control.issue_run_allocator import IssueRunAllocationService
 from ..execution.issue_run_ledger import SqliteIssueRunLedger
 from ..execution.worktree_adapter import GitWorktreeManager
@@ -36,11 +34,11 @@ def create_io_adapters(github_auth: GitAuthEnvProvider | None = None) -> tuple[
 
 
 def build_issue_run_services(
-    repo_root: Path, session_output: SessionOutput, working_copy: WorkingCopy,
+    config: Config, session_output: SessionOutput, working_copy: WorkingCopy,
 ) -> tuple[SqliteIssueRunLedger, IssueRunAllocationService]:
     """Use one ledger for allocation and the injected evidence reader."""
-    ledger = SqliteIssueRunLedger(state_dir(repo_root) / "issue_run_ledger.sqlite")
-    return ledger, IssueRunAllocationService(session_output, ledger, working_copy)
+    ledger = SqliteIssueRunLedger(state_dir(config.repo_root) / "issue_run_ledger.sqlite")
+    return ledger, IssueRunAllocationService(session_output, ledger, working_copy, configuration=config)
 
 
 def build_completion_intake(

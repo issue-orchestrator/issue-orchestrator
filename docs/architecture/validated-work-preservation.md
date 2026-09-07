@@ -13,11 +13,13 @@ Preservation scope follows the resource being destroyed:
 - Worktree deletion captures every recorded run in that exact worktree, including background exchange runs.
 - A stale generation target returns before intake closure or replacement-session mutation.
 
-Allocation records the attached branch and actual terminal binding independently of artifact phase names such as `coding-2`. A `RunTerminalBinding(None)` explicitly identifies a background allocation without a standalone visible terminal. Missing bindings in older SQLite rows remain unknown; migration does not invent them. Named-terminal selection refuses unknown ownership. Allocation and live evidence reconciliation use the same durable run ledger and active-session collection.
+Allocation records the agent label and effective completion task with the attached branch and actual terminal binding. One SQLite codec retains all four facts, including explicit unknown values for legacy rows. Live session reconciliation compares the observed run/branch/terminal; effective completion role comes only from the durable allocation, never from current settings. Terminal binding is recorded independently of artifact phase names such as `coding-2`. A `RunTerminalBinding(None)` explicitly identifies a background allocation without a standalone visible terminal. Missing bindings in older SQLite rows remain unknown; migration does not invent them. Named-terminal selection refuses unknown ownership. Allocation and live evidence reconciliation use the same durable run ledger and active-session collection.
 
 ## Capture and admission
 
 The completion intake owner closes and drains the selected scope, repairing acknowledged receipt artifacts before returning typed prepared candidates. Eligibility uses immutable owner-normalized completion bytes and validator attestations. Agent-authored sidecars and latest-run filesystem discovery grant no authority.
+
+Manual consumers use `prepare_receipt_for_issue(receipt, run, issue_number)`. The intake owner verifies the full receipt/run and numeric issue binding before processing under the same drain lock, then returns `PreparedCompletionEvidence` with its immutable `CompletionRunRole`. The existing `prepare_receipt` shares the same preparation policy. Historical allocations retain the explicit `operator:historical` code role; it cannot represent review or Tech Lead authority.
 
 Before teardown, escrow reconciliation repairs interrupted captures and verifies retained database rows against their envelopes and pins. Each distinct validated work key receives immutable escrow, an exact validated-head pin, and a separate observed-head pin when those heads differ. Advancing or detaching the checkout preserves both facts and leaves work parked with the corresponding failure reason. Missing objects or corrupt custody abort destructive continuation.
 

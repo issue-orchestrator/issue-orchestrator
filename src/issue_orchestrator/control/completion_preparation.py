@@ -5,6 +5,8 @@ import json
 from ..domain.prepared_completion import PreparedCompletionEvidence
 from ..domain.completion_intake import CompletionIntakeReceipt
 from ..domain.session_run import SessionRunAssets
+from ..domain.registered_completion import CompletionProcessingPolicy, RegisteredCompletion
+from ..domain.completion_custody import normalized_completion_artifact
 from .stack_base import StackBaseDecision
 
 from ..domain.models import CompletionRecord
@@ -25,10 +27,14 @@ class PreparedActionPlan:
 class PreparedCompletion:
     record: CompletionRecord
     session_name: str | None
-    agent_label: str | None
+    processing_policy: CompletionProcessingPolicy
     branch: str | None
     preserved_completion_path: str | None
     actions: PreparedActionPlan
+
+    @property
+    def agent_label(self) -> str | None:
+        return self.processing_policy.agent_label
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,3 +53,13 @@ def record_from_prepared_evidence(
     if evidence.entry.receipt != receipt or evidence.run.run != run:
         raise ValueError("prepared completion does not bind this receipt and run")
     return CompletionRecord.from_dict(json.loads(evidence.completion_bytes))
+
+
+def context_from_prepared_evidence(
+    evidence: PreparedCompletionEvidence, receipt: CompletionIntakeReceipt | None, run: SessionRunAssets,
+) -> RegisteredCompletion:
+    """Keep immutable bytes and allocated role together at the policy boundary."""
+    return RegisteredCompletion(
+        record_from_prepared_evidence(evidence, receipt, run), evidence.role,
+        normalized_completion_artifact(evidence.entry),
+    )

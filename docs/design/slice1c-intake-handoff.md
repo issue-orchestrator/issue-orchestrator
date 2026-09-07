@@ -10,6 +10,80 @@ repairs as `629dff74bf90f6af75f7fca4d1ae1e811f106d08`, the base for the fixture
 audit below. This does **not** complete #6914.
 No production historical data was imported or changed.
 
+## F1/F2 correctness repair against c37543d
+
+Expected parent: `c37543d033ee406af31b6e99ab87988fac16e650`. Root's prior
+real-listener scenario checkpoint passed all 59 scenarios/boundary tests. The
+independent external report for that parent is **incomplete, not approved**;
+these repairs address its established F1/F2/A1 findings but do not complete
+that review or #6914.
+
+F1: `domain/completion_custody.py` defines the shared 4 MiB artifact contract.
+The writer validates every blob and the envelope before creating staging or
+publishing an immutable directory. Oversized configured-validator stdout or
+stderr produces a failed attestation. Complete diagnostic bytes remain in
+ordered `stdout.log.part-NNNNNNNN` / `stderr.log.part-NNNNNNNN` files, each
+bounded and hash-checked by ordinary repair. The corresponding log path holds
+an explicit JSON failure descriptor containing ordered part names, sizes and
+hashes, plus the complete stream size/hash. Concatenating those parts in order
+reconstructs the exact original bytes. The attested validation JSON records
+`custody_failure`; this is neither truncation nor a successful validation.
+At/below the limit, the normal log bytes and behavior remain unchanged.
+
+F2/A1: allocation records both `agent_label` and `completion_task` independently
+of the session slot key. Production Tech Lead sessions may use CODE slots;
+the allocation owner captures TECH_LEAD completion policy from the current
+configured Tech Lead agent. The allocator requires the read-only typed
+`IssueRunRoleConfiguration` port, supplied by the same live Config in bootstrap.
+Previously allocated roles remain immutable across configuration changes.
+`CompletionIntakeRuntime.processing_context(receipt, run)` returns one typed
+`RegisteredCompletion` containing the owner-read record, artifact and
+`CompletionRunRole(issue_number, task, agent_label)`. Read/artifact consumers
+reuse this handoff. Direct and resumed receipt processing select policy from
+it before effects, reject caller issue/role mismatch and missing/invalid role,
+and reject Tech Lead configuration mismatch before applying the existing
+launch-authority/decision-pair gate. A frozen `CompletionProcessingPolicy`
+then carries the resolved role through pre-action gates, action shaping,
+reviewer approval (including validation reroutes), and clean-audit exception
+handling. Settings edits during an invocation cannot reselect that role.
+The same retained reviewer reproduced this settings-change race; paired tests
+pause at the external SessionOutput port and apply real settings updates to
+prove missing authority still rejects, valid Tech Lead audits still suppress
+comments, and an in-flight coder remains a coder. Agent JSON, filenames and
+manifests do not select receipt authority. Legacy filename resolution remains confined to
+non-receipt processing.
+
+SQLite `issue_runs` gains nullable `agent_label TEXT` and `completion_task TEXT`
+columns. Existing rows are not backfilled: unknown legacy roles fail closed at
+receipt processing. `IssueRunRecord` exposes corresponding keyword-only
+optional fields to represent that absence explicitly. Run-record encoding, decoding, storage comparison and column ordering live
+in one execution codec; schema creation/upgrade has one SQLite schema owner.
+INSERT uses named parameter bindings from that same codec. Preservation's independently
+added branch and terminal binding fields are untouched; this repair adds no
+terminal binding or terminal allocation fields. The preservation agent paths
+were unavailable for message delivery; root must propagate the constructor,
+record/codec and schema join explicitly. The repair does not import or modify
+historical production data or any sibling worktree.
+
+Verification during this repair: 347 focused tests passed, including exact
+stdout/stderr size boundaries, complete overflow evidence, correction,
+interrupted attestation/reopening, real local configured commands, receipt
+resume and direct processing, missing/tampered/valid Tech Lead authority,
+legacy migration and current-configuration allocation. Both pyright modes
+passed. Actual `make lint-arch`, including the original quality baseline,
+passed. Semgrep used its normal checks with sandbox-local log/settings paths
+and the installed CA bundle; network version discovery and telemetry were
+disabled. No quality suppression or baseline edit was made. Final retained
+Gauss review and the exact hash manifest are reported in the checkpoint
+message; older approvals below do not approve this new repair.
+
+Implemented abstraction findings: A1's typed allocation-to-receipt role
+handoff, shared custody production/consumption policy, pure role resolution
+and an execution codec owning run-record serialization/comparison, and
+cohesive SQLite schema ownership. No
+abstraction finding is deferred. Publication, lifecycle preservation and
+external-review completion remain later/parent-owned work.
+
 ## Owners and authority
 
 `SqliteIssueRunLedger` owns allocation, capability lifetime, immutable submission

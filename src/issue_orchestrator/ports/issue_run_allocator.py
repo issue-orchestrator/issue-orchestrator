@@ -15,3 +15,10 @@ class IssueRunAllocator(Protocol):
     def submission_capability(self, run: SessionRunAssets) -> str: ...
 
     def submission_capability_file(self, run: SessionRunAssets) -> RunContainedFile: ...
+
+
+class IssueRunRoleConfiguration(Protocol):
+    @property
+    def tech_lead_review_agent(self) -> str | None:
+        """Current configured Tech Lead role, captured once per allocation."""
+        ...

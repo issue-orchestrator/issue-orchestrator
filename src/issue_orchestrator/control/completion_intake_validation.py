@@ -13,6 +13,7 @@ from ..domain.completion_intake import (
     ValidationBinding,
 )
 from ..domain.validated_work import require_sha
+from ..domain.completion_custody import validation_output_exceeds_limit
 from ..ports.completion_intake import CompletionValidationWorkspace
 from ..ports.command_runner import CommandRunner
 from ..ports.working_copy import WorkingCopy
@@ -103,9 +104,10 @@ def run_owned_validation(
         stdout = (Path(output) / "validation-stdout.log").read_bytes()
         stderr = (Path(output) / "validation-stderr.log").read_bytes()
     destination = custody_directory / (binding.entry_id + "-validation")
+    oversized = validation_output_exceeds_limit(stdout, stderr)
     record = replace(
         record,
-        passed=record.passed and not record.timed_out,
+        passed=record.passed and not record.timed_out and not oversized,
         stdout_path=str(destination / "stdout.log"),
         stderr_path=str(destination / "stderr.log"),
     )
@@ -118,15 +120,18 @@ def run_owned_validation(
         },
         sort_keys=True,
     ).encode()
+    result = record.to_dict()
+    if oversized:
+        result["custody_failure"] = "validation output exceeds custody artifact limit; complete output retained in log parts"
     return OwnedValidationResult(
         binding=binding,
         head_sha=head_sha,
         validator_digest=hashlib.sha256(config).hexdigest(),
         result_bytes=json.dumps(
-            record.to_dict(), sort_keys=True, separators=(",", ":")
+            result, sort_keys=True, separators=(",", ":")
         ).encode(),
         stdout_bytes=stdout,
         stderr_bytes=stderr,
-        passed=record.passed and not record.timed_out,
+        passed=record.passed and not record.timed_out and not oversized,
         recorded_at=record.ended_at,
     )

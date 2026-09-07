@@ -11,6 +11,7 @@ Architecture reminder:
 """
 
 from issue_orchestrator.ports.completion_intake import CompletionIntakeRuntime
+from issue_orchestrator.domain.registered_completion import CompletionRolePolicy
 from tests.run_allocation_helpers import make_completion_processor
 
 import json
@@ -5093,7 +5094,9 @@ class TestCompletionProcessorPublishGate:
             issue_number=123,
             issue_title="Test Issue",
             session_name=None,
-            agent_label="agent:coder",
+            processing_policy=CompletionRolePolicy(("agent:coder",), None).processing_policy(
+                None, 123, "agent:coder", None
+            ),
             record=record,
             run_assets=make_session_run_assets(tmp_path),
         )
@@ -5158,7 +5161,9 @@ class TestCompletionProcessorPublishGate:
                 issue_number=1,
                 issue_title="Test",
                 session_name=run.session_name,
-                agent_label="agent:coder",
+                processing_policy=CompletionRolePolicy(("agent:coder",), None).processing_policy(
+                    None, 1, "agent:coder", None
+                ),
                 record=record,
                 run_assets=run,
             )
@@ -5172,7 +5177,9 @@ class TestCompletionProcessorPublishGate:
             issue_number=1,
             issue_title="Test",
             session_name=run.session_name,
-            agent_label="agent:coder",
+            processing_policy=CompletionRolePolicy(("agent:coder",), None).processing_policy(
+                None, 1, "agent:coder", None
+            ),
             record=record,
             run_assets=run,
         )
@@ -5245,7 +5252,9 @@ class TestCompletionProcessorPublishGate:
                 issue_number=1,
                 issue_title="Test",
                 session_name=run.session_name,
-                agent_label="agent:coder",
+                processing_policy=CompletionRolePolicy(("agent:coder",), None).processing_policy(
+                    None, 1, "agent:coder", None
+                ),
                 record=record,
                 run_assets=run,
             )
@@ -5295,7 +5304,9 @@ class TestCompletionProcessorPublishGate:
                 issue_number=1,
                 issue_title="Test",
                 session_name=run.session_name,
-                agent_label="agent:coder",
+                processing_policy=CompletionRolePolicy(("agent:coder",), None).processing_policy(
+                    None, 1, "agent:coder", None
+                ),
                 record=record,
                 run_assets=run,
             )
@@ -5309,7 +5320,9 @@ class TestCompletionProcessorPublishGate:
                 issue_number=1,
                 issue_title="Test",
                 session_name=run.session_name,
-                agent_label="agent:coder",
+                processing_policy=CompletionRolePolicy(("agent:coder",), None).processing_policy(
+                    None, 1, "agent:coder", None
+                ),
                 record=record,
                 run_assets=run,
             )
@@ -5321,7 +5334,9 @@ class TestCompletionProcessorPublishGate:
             issue_number=1,
             issue_title="Test",
             session_name=run.session_name,
-            agent_label="agent:coder",
+            processing_policy=CompletionRolePolicy(("agent:coder",), None).processing_policy(
+                None, 1, "agent:coder", None
+            ),
             record=record,
             run_assets=run,
         )

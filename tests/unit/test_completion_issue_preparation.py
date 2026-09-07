@@ -1,5 +1,7 @@
 """Numeric issue binding precedes live and historical receipt processing."""
 
+from issue_orchestrator.infra.config import Config
+
 from dataclasses import replace
 from unittest.mock import Mock
 
@@ -33,7 +35,7 @@ def test_issue_bound_preparation_processes_exact_receipt_without_closing(custody
 
 @pytest.mark.parametrize("substitution", ["issue", "receipt", "run", "bool", "zero"])
 def test_substitution_refuses_before_validation_or_processing(custody, substitution):
-    allocator = IssueRunAllocationService(FileSystemSessionOutput(), custody.ledger, custody.wc)
+    allocator = IssueRunAllocationService(FileSystemSessionOutput(), custody.ledger, custody.wc, configuration=Config(repo="owner/repo"))
     other = allocator.allocate(IssueRunAllocation(custody.worktree, custody.run.session_name, 43,
         SessionKey(GitHubIssueKey("owner/repo", "43"), TaskKind.CODE), "agent:test", "test", terminal_id="issue-43"))
     assert other.session_name == custody.run.session_name
@@ -81,5 +83,8 @@ def test_historical_receipt_uses_same_numeric_issue_binding(tmp_path, interrupte
     assert candidate.entry.receipt == entry.receipt
     assert candidate.validation.head_sha == selection.target_head_sha
     assert candidate.run.terminal_binding.terminal_id is None
+    assert candidate.role.issue_number == 42
+    assert candidate.role.agent_label == "operator:historical"
+    assert candidate.role.task is TaskKind.CODE
     assert runner.run.call_count == calls + int(interrupted)
     validator.validate.assert_not_called()

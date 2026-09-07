@@ -4,11 +4,13 @@ from dataclasses import dataclass
 from .completion_intake import CompletionIntakeEntry, CompletionValidationAttestation
 from .issue_run_evidence import IssueRunRecord
 from .models import RequestedAction
+from .registered_completion import CompletionRunRole
 
 
 @dataclass(frozen=True, slots=True)
 class PreparedCompletionEvidence:
     run: IssueRunRecord
+    role: CompletionRunRole
     entry: CompletionIntakeEntry
     validation: CompletionValidationAttestation
     completion_bytes: bytes
@@ -22,9 +24,11 @@ from .completion_intake import CompletionIntakeError, CompletionParseStatus
 from .models import CompletionOutcome, CompletionRecord
 
 
-def prepare_candidate_evidence(run: IssueRunRecord, entry: CompletionIntakeEntry,
+def prepare_candidate_evidence(run: IssueRunRecord, role: CompletionRunRole, entry: CompletionIntakeEntry,
         validation: CompletionValidationAttestation | None, completion_bytes: bytes | None,
         validation_bytes: bytes | None) -> PreparedCompletionEvidence | None:
+    if (role.agent_label, role.task) != (run.agent_label, run.completion_task):
+        raise CompletionIntakeError("receipt role differs from exact recorded allocation")
     if entry.run != run.run:
         raise CompletionIntakeError("receipt differs from exact recorded run")
     if entry.parse_status is CompletionParseStatus.REJECTED:
@@ -42,5 +46,5 @@ def prepare_candidate_evidence(run: IssueRunRecord, entry: CompletionIntakeEntry
         return None
     if run.branch_name is None:
         raise CompletionIntakeError("legacy run has no owner-recorded branch binding")
-    return PreparedCompletionEvidence(run, entry, validation, completion_bytes, validation_bytes,
+    return PreparedCompletionEvidence(run, role, entry, validation, completion_bytes, validation_bytes,
         tuple(record.requested_actions))

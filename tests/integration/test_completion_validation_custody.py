@@ -120,3 +120,35 @@ def test_command_workspace_mutations_still_refuse_attestation(
         owner.close_and_drain(42)
     assert ledger.validation_for_receipt(receipt.entry_id) is None
     assert [entry.receipt for entry in ledger.pending_receipts()] == [receipt]
+
+
+@pytest.mark.parametrize("stream", ["stdout", "stderr"])
+def test_real_oversized_validator_output_fails_inspectably_then_corrects_and_reopens(tmp_path, stream):
+    from issue_orchestrator.domain.completion_custody import CUSTODY_ARTIFACT_LIMIT
+
+    size = CUSTODY_ARTIFACT_LIMIT + 1
+    redirect = " >&2" if stream == "stderr" else ""
+    ledger, owner, receipt, git = intake(
+        tmp_path,
+        f'if test "$(cat source.txt)" = original; then head -c {size} /dev/zero{redirect}; else printf corrected; fi',
+    )
+    owner.drain()
+    entry = ledger.entry_for_receipt(receipt.entry_id)
+    failed = ledger.validation_for_receipt(receipt.entry_id)
+    assert failed is not None and not failed.passed
+    descriptor = json.loads((failed.result_path.parent / f"{stream}.log").read_bytes())
+    assert b"".join((failed.result_path.parent / part["path"]).read_bytes() for part in descriptor["parts"]) == b"\0" * size
+    reopened = SqliteIssueRunLedger(tmp_path / "receipt-owner" / "issue_run_ledger.sqlite")
+    assert reopened.validation_for_receipt(receipt.entry_id) == failed
+    # Correct the selected source, retaining the configured command unchanged.
+    worktree = entry.run.worktree_path
+    (worktree / "source.txt").write_text("corrected\n")
+    git.run(worktree, ["add", "source.txt"])
+    git.run(worktree, ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "correct validator input"])
+    corrected = owner.submit(ledger.submission_capability(entry.run), command(completion(), "correction"))
+    owner.close_and_drain(42)
+    owner.require_publication_ready(corrected, entry.run)
+    passed = reopened.validation_for_receipt(corrected.entry_id)
+    assert passed is not None and passed.passed and passed.head_sha != failed.head_sha
+    assert reopened.validation_for_receipt(receipt.entry_id) == failed
+    assert SqliteIssueRunLedger(tmp_path / "receipt-owner" / "issue_run_ledger.sqlite").pending_receipts() == ()
