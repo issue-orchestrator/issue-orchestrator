@@ -24,7 +24,7 @@ class RunTerminalBinding:
     terminal_id: str | None
 
     def __post_init__(self) -> None:
-        if self.terminal_id is not None and (not isinstance(self.terminal_id, str) or not self.terminal_id.strip()):
+        if self.terminal_id is not None and (type(self.terminal_id) is not str or not self.terminal_id.strip()):
             raise ValueError("terminal binding must be a non-empty identity")
 
 

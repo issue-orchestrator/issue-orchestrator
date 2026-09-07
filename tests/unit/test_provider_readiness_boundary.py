@@ -1706,6 +1706,9 @@ def test_a_test_composition_never_shells_out_to_a_provider_cli(tmp_path: Path) -
         StaticProviderReadinessProbe,
     )
 
+    from issue_orchestrator.execution.git_tools import create_git
+    from issue_orchestrator.execution.command_runner import LocalCommandRunner
+    create_git(LocalCommandRunner()).run(tmp_path, ["init", "-b", "main"])
     orchestrator = build_orchestrator_for_testing(
         Config(repo="test/repo", repo_root=tmp_path), github=MagicMock()
     )
