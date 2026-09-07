@@ -237,7 +237,9 @@ def cmd_demo(args: argparse.Namespace) -> int:  # noqa: ARG001, C901 - demo flow
 
     # Show scheduling decision
     available, blocked = scheduler.get_available_issues(issues)
-    sorted_available = scheduler.sort_by_priority(available)
+    sorted_available = scheduler.sort_by_priority(
+        available, pressure=scheduler.dependency_pressure(issues)
+    )
 
     console.print("[bold]Scheduling Decision:[/bold]")
     console.print(

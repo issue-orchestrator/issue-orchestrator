@@ -1,0 +1,92 @@
+# Case-file reconciliation plan — the duplicate clusters #6989 names.
+#
+#   issue-orchestrator reconcile-case-files \
+#     --plan repo-specific/reconciliation/standing-problems-2026-08.yaml
+#
+# Dry-run by default; add --apply to execute. See
+# docs/development/CASE_FILE_RECONCILIATION.md for the runbook.
+#
+# plan_id keys every observation identity this plan writes. It is IMMUTABLE
+# once applied: changing it re-posts every observation the plan already landed.
+# A later backlog gets a new plan file with its own id.
+plan_id: "6989-standing-problems-2026-08"
+
+clusters:
+  # #6989: "Search-API budget exhaustion (root tracker #6928): #6966
+  # ('re-verified 2026-08-03') and #6977 ('re-verified 2026-08-04') are BOTH
+  # still open."
+  - signature: search-api-budget-exhaustion
+    tracker: 6928
+    summary: >-
+      Scheduled refresh exhausts the GitHub search-API budget, so
+      stack-predecessor facts 403 and the board goes blind to them. Each daily
+      re-verification was filed as its own open issue instead of accruing to a
+      single ledger.
+    duplicates:
+      - issue: 6966
+        note: >-
+          Re-verification of the same exhaustion on 2026-08-03 (144 gh calls /
+          14 errors / 38.6s full refresh; 287 "Could not gather
+          stack-predecessor facts" occurrences). Evidence for #6928, not
+          distinct work.
+      - issue: 6977
+        note: >-
+          Re-verification of the same exhaustion on 2026-08-04 (147 gh calls,
+          16 errors, 16 stack-predecessor lookups 403'd, tech-lead evidence-map
+          warm cache null). Its body opens by naming #6928 and #6966 as its
+          duplicates.
+
+  # #6989: "Stranded-branch recovery: #6959, #6970, #6973, #6983 are all open
+  # for one five-branch recovery effort." #6983 is the live recovery plan the
+  # others are collapsed into.
+  - signature: stranded-branch-recovery
+    tracker: 6983
+    summary: >-
+      One five-branch recovery effort (#6327 #6335 #6337 #6410 #6411) whose
+      validated work is stranded local-only. Every re-verification, correction,
+      and drift update was filed as a separate open issue, so the effort had
+      four open trackers and no single live plan.
+    duplicates:
+      - issue: 6959
+        note: >-
+          Re-verification on 2026-08-03 that the five tips are unchanged and
+          still local-only, with a scope note for #6914. Superseded by the live
+          recovery plan.
+      - issue: 6970
+        note: >-
+          Correction to the same recovery effort: no branch carries a formal
+          review approval, so all five need a review pass before merge. A
+          revision of the plan, not separate work.
+      - issue: 6973
+        note: >-
+          Drift update for the same effort: #6411 now conflicts with
+          origin/main in tools/quality_guardrails.py, so recovery needs a
+          conflict-resolving rebase.
+
+  # #6989: "E2E suite health shows the same shape forming: #6918 (governance)
+  # then #6961 (2026-08-03 signal trust) then #6978 (2026-08-04
+  # re-verification)."
+  - signature: e2e-suite-chronic-red
+    tracker: 6918
+    summary: >-
+      The E2E suite is chronically red and its overall signal is untrustworthy:
+      runs collapse to a handful of executed tests and whole journeys go
+      unexercised. Governance is tracked by #6918; each daily re-verification
+      of the same condition was filed as a new open issue.
+    duplicates:
+      - issue: 6961
+        note: >-
+          Signal-trust re-verification on 2026-08-03 (non-passing streak 8,
+          execution collapsed to 2 tests in runs 118-120, journey test #6822
+          not exercised). Evidence for the governance tracker.
+      - issue: 6978
+        note: >-
+          Re-verification on 2026-08-04 of the same condition (streak 8, zero
+          green runs 113-120, issue-to-completion journey unverified since
+          Jul 10). Evidence for the governance tracker.
+
+# The fourth recurring class #6989 names — "exchange-timeout-strands-validated-
+# work" — needs no entry here. It was registered organically after #6989 was
+# filed, as case file #7012 `review-exchange-max-rounds-strands-validated-work`
+# (promoted to #7018), which is what this lane is supposed to produce. Verify
+# with:  gh issue list --state open --search '"Pattern case file:" in:title'

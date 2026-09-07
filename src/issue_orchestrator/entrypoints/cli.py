@@ -25,7 +25,11 @@ from .cli_support import (
     resolve_repo as _resolve_repo,
     run_test_setup as _run_test_setup,
 )
-from .cli_tech_lead import cmd_health_review, cmd_tech_lead
+from .cli_tech_lead import (
+    cmd_health_review,
+    cmd_reconcile_case_files,
+    cmd_tech_lead,
+)
 from .cli_utility_commands import cmd_demo, cmd_doctor, cmd_trace
 
 console = Console()
@@ -834,6 +838,7 @@ def main() -> int:
             resume=cmd_resume,
             tech_lead=cmd_tech_lead,
             health_review=cmd_health_review,
+            reconcile_case_files=cmd_reconcile_case_files,
             refresh=cmd_refresh,
             restart=cmd_restart,
             setup=cmd_setup,

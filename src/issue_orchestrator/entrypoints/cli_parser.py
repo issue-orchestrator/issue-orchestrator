@@ -27,6 +27,7 @@ class CLICommandHandlers:
     resume: CommandHandler
     tech_lead: CommandHandler
     health_review: CommandHandler
+    reconcile_case_files: CommandHandler
     refresh: CommandHandler
     restart: CommandHandler
     setup: CommandHandler
@@ -97,6 +98,7 @@ CLI_COMMAND_SURFACE: tuple[CLICommandSpec, ...] = (
     CLICommandSpec("resume", CLIGroup.RUNTIME, CLIStability.SUPPORTED),
     CLICommandSpec("tech_lead", CLIGroup.RUNTIME, CLIStability.SUPPORTED),
     CLICommandSpec("health-review", CLIGroup.RUNTIME, CLIStability.SUPPORTED),
+    CLICommandSpec("reconcile-case-files", CLIGroup.RUNTIME, CLIStability.SUPPORTED),
     CLICommandSpec("refresh", CLIGroup.RUNTIME, CLIStability.SUPPORTED),
     CLICommandSpec("restart", CLIGroup.RUNTIME, CLIStability.SUPPORTED),
     # Setup
@@ -394,6 +396,25 @@ def _register_runtime_commands(subparsers, handlers: CLICommandHandlers) -> None
         help="Seconds to wait for the health review to complete (default: 1800)",
     )
     health_review_parser.set_defaults(func=handlers.health_review)
+
+    reconcile_case_files_parser = subparsers.add_parser(
+        "reconcile-case-files",
+        help=(
+            "Fold an already-accumulated duplicate cluster onto its pattern"
+            " case file from a checked-in plan (dry-run by default)"
+        ),
+    )
+    reconcile_case_files_parser.add_argument(
+        "--plan",
+        required=True,
+        help="Path to the reconciliation plan YAML naming each cluster",
+    )
+    reconcile_case_files_parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="Execute the plan; without it nothing is written",
+    )
+    reconcile_case_files_parser.set_defaults(func=handlers.reconcile_case_files)
 
     refresh_parser = subparsers.add_parser(
         "refresh", help="Request immediate refresh of issues from GitHub"

@@ -165,6 +165,28 @@ def publication(
     )
 
 
+def latest_attempt(conn: sqlite3.Connection, record_id: str) -> PublishAttempt | None:
+    """Read the complete durable fact before using any part to authorize work."""
+    row = conn.execute(
+        "SELECT * FROM validated_work_publish_attempts WHERE record_id=? ORDER BY attempt_no DESC LIMIT 1",
+        (record_id,),
+    ).fetchone()
+    return attempt_row(row) if row is not None else None
+
+
+def has_successful_attempt(conn: sqlite3.Connection, record_id: str) -> bool:
+    """Called after claim authentication, including successor finalization.
+
+    The durable success survives its writer's process; the calling owner need
+    not have the original attempt fence. Shape validation never trusts a phase
+    checkpoint or a raw outcome column in place of the complete attempt.
+    """
+    attempt = latest_attempt(conn, record_id)
+    return attempt is not None and attempt.succeeded_for(
+        current_evidence(conn, record_id).authority
+    )
+
+
 def attempt_row(row: sqlite3.Row) -> PublishAttempt:
     return PublishAttempt(
         row["record_id"],

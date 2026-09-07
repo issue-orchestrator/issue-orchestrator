@@ -42,12 +42,12 @@ from typing import Iterator
 from ..domain.models import DiscoveredFailure
 from ..domain.tech_lead_findings import (
     VALID_PROMOTION_STATES,
+    CaseFileClassification,
     PatternEvidence,
     PendingCaseFile,
     PendingPromotion,
     PromotedFinding,
     PromotionState,
-    reconcile_pattern_classification,
 )
 from ..domain.tech_lead_session import (
     StoredTechLeadOp,
@@ -378,6 +378,7 @@ class SqliteTechLeadAuthorityStore:
         observation_id: str,
         fix_class: str = "",
         area: str = "",
+        diagnosis: str = "",
     ) -> bool:
         """Record ONE observation create-once and advance the count (#6957).
 
@@ -390,6 +391,10 @@ class SqliteTechLeadAuthorityStore:
         Classification/area are merged by the shared reconcile rule, which
         raises on a conflicting non-empty value rather than letting a later
         observation silently reclassify or reroute the signature (review F3).
+        The canonical ``diagnosis`` merges first-non-empty-wins in the SAME
+        transaction, so the first reviewed ``flag_pattern`` on a case file an
+        evidence-only sighting opened establishes it atomically with the
+        classification upgrade (#6989 round-1 review F1).
         """
         if not observation_id.strip():
             raise ValueError(
@@ -397,8 +402,8 @@ class SqliteTechLeadAuthorityStore:
             )
         with self._transaction() as tx:
             row = tx.execute(
-                "SELECT observation_count, fix_class, area FROM tech_lead_patterns"
-                " WHERE signature = ?",
+                "SELECT observation_count, fix_class, area, diagnosis FROM"
+                " tech_lead_patterns WHERE signature = ?",
                 (signature,),
             ).fetchone()
             if row is None:
@@ -407,17 +412,15 @@ class SqliteTechLeadAuthorityStore:
                 )
             # Reconciled before the create-once check so a conflict is reported
             # identically on the first attempt and on a replay.
-            merged_fix_class = reconcile_pattern_classification(
-                field="fix_class",
+            merged = CaseFileClassification(
+                fix_class=str(row["fix_class"]),
+                area=str(row["area"]),
+                diagnosis=str(row["diagnosis"]),
+            ).merged_with(
+                CaseFileClassification(
+                    fix_class=fix_class, area=area, diagnosis=diagnosis
+                ),
                 signature=signature,
-                existing=str(row["fix_class"]),
-                incoming=fix_class,
-            )
-            merged_area = reconcile_pattern_classification(
-                field="area",
-                signature=signature,
-                existing=str(row["area"]),
-                incoming=area,
             )
             inserted = tx.execute(
                 "INSERT OR IGNORE INTO tech_lead_pattern_observations (signature,"
@@ -428,11 +431,12 @@ class SqliteTechLeadAuthorityStore:
                 return False
             tx.execute(
                 "UPDATE tech_lead_patterns SET observation_count = ?, fix_class = ?,"
-                " area = ? WHERE signature = ?",
+                " area = ?, diagnosis = ? WHERE signature = ?",
                 (
                     int(row["observation_count"]) + 1,
-                    merged_fix_class,
-                    merged_area,
+                    merged.fix_class,
+                    merged.area,
+                    merged.diagnosis,
                     signature,
                 ),
             )

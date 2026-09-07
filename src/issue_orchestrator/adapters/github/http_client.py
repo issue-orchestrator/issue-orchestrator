@@ -14,6 +14,7 @@ import httpx
 from ...events import EventName
 from ...infra import gh_audit
 from ... import __version__
+from ...ports.comment_receipt import IssueCommentReceipt
 from .auth import (
     GitHubAppInstallationTokenProvider,
     GitHubAuth,
@@ -1199,6 +1200,11 @@ class GitHubHttpClient:
             use_cache=use_cache,
         )
         return payload if isinstance(payload, list) else []
+
+    def find_issue_comment_receipt(self, issue_number: int, *, body: str) -> "IssueCommentReceipt | None":
+        from .comment_receipts import find_comment_receipt
+        return find_comment_receipt(request=self._request_json, repo=self._config.repo,
+            issue_number=issue_number, body=body, app_identity=self._auth.comment_app_identity())
 
     def issue_comment_marker_present(self, issue_number: int, marker: str) -> bool:
         """Return True if any comment on the issue/PR contains ``marker``.
