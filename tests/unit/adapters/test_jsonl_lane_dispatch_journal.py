@@ -502,6 +502,35 @@ def test_publication_timeout_is_a_typed_journal_failure(
     assert len(journal.read_recent(10).entries) == 1
 
 
+@pytest.mark.parametrize("operation", ["record", "read_recent"])
+def test_release_after_deadline_preserves_typed_journal_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str,
+) -> None:
+    journal = JsonlLaneDispatchJournal(tmp_path)
+    journal.record(_record())
+    now = 0.0
+    with (tmp_path / "lane-dispatch.jsonl").open("rb") as holder:
+        fcntl.flock(holder, fcntl.LOCK_EX)
+
+        def release_after_deadline(_: float) -> None:
+            nonlocal now
+            now = 30.0
+            fcntl.flock(holder, fcntl.LOCK_UN)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(time, "monotonic", lambda: now)
+            patch.setattr(time, "sleep", release_after_deadline)
+            with pytest.raises(LaneDispatchJournalError, match="publication lock") as caught:
+                if operation == "record":
+                    journal.record(_record())
+                else:
+                    journal.read_recent(10)
+        assert isinstance(caught.value.__cause__, TimeoutError)
+        assert caught.value.__cause__.errno == errno.ETIMEDOUT
+        assert isinstance(caught.value.__cause__.__cause__, BlockingIOError)
+    assert len(journal.read_recent(10).entries) == 1
+
+
 @pytest.mark.parametrize("tail", [b'{"unfinished', b'{"unfinished\n'])
 def test_genuine_truncated_tail_is_never_discarded(tmp_path: Path, tail: bytes) -> None:
     path = tmp_path / "lane-dispatch.jsonl"

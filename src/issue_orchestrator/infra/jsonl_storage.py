@@ -34,11 +34,15 @@ def _publication_lock(fd: int, *, exclusive: bool) -> Iterator[None]:
             if error.errno not in (errno.EACCES, errno.EAGAIN):
                 raise
             remaining = deadline - time.monotonic()
+            if remaining > 0:
+                time.sleep(min(_LOCK_POLL_SECONDS, remaining))
+                # Sleep can resume after its budget. Check before another flock
+                # can succeed on a released lock and begin protected work.
+                remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError(
                     errno.ETIMEDOUT, "timed out acquiring JSONL publication lock"
                 ) from error
-            time.sleep(min(_LOCK_POLL_SECONDS, remaining))
     try:
         yield
     finally:

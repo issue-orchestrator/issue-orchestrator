@@ -9,6 +9,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -77,6 +78,69 @@ def test_lock_contention_uses_a_fixed_deadline_without_busy_spinning(
                 read_jsonl_snapshot(path)
     assert caught.value.errno == errno.ETIMEDOUT
     assert waits == [pytest.approx(0.001)]
+
+
+@pytest.mark.parametrize("operation", ["append", "snapshot"])
+@pytest.mark.parametrize(("resume_at", "expires"), [(4.999, False), (5.0, True), (30.0, True)])
+def test_released_lock_respects_fixed_deadline_before_protected_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    operation: str, resume_at: float, expires: bool,
+) -> None:
+    """A delayed contention sleep must not authorize work after its deadline."""
+    path = tmp_path / "journal.jsonl"
+    append_jsonl(path, {"row": 0})
+    now = 0.0
+    waits: list[float] = []
+    opened: list[int] = []
+    real_open = os.open
+    syscall = "write" if operation == "append" else "fstat"
+    protected = Mock(wraps=getattr(os, syscall))
+
+    def track_open(path: Path, flags: int, mode: int = 0o777) -> int:
+        fd = real_open(path, flags, mode)
+        opened.append(fd)
+        return fd
+
+    with path.open("rb") as holder:
+        fcntl.flock(holder, fcntl.LOCK_EX)
+
+        def release_after_delay(delay: float) -> None:
+            nonlocal now
+            waits.append(delay)
+            now = resume_at
+            fcntl.flock(holder, fcntl.LOCK_UN)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(time, "monotonic", lambda: now)
+            patch.setattr(time, "sleep", release_after_delay)
+            patch.setattr(os, "open", track_open)
+            patch.setattr(os, syscall, protected)
+
+            def operate() -> None:
+                if operation == "append":
+                    append_jsonl(path, {"row": 1})
+                else:
+                    assert read_jsonl_snapshot(path) == b'{"row": 0}\n'
+
+            if expires:
+                with pytest.raises(TimeoutError) as caught:
+                    operate()
+                assert caught.value.errno == errno.ETIMEDOUT
+                assert isinstance(caught.value.__cause__, BlockingIOError)
+                protected.assert_not_called()
+            else:
+                operate()
+                assert protected.call_count == 1
+
+    assert waits == [0.01]
+    assert len(opened) == 1
+    with pytest.raises(OSError) as closed:
+        os.fstat(opened[0])
+    assert closed.value.errno == errno.EBADF
+    expected = b'{"row": 0}\n'
+    if operation == "append" and not expires:
+        expected += b'{"row": 1}\n'
+    assert path.read_bytes() == expected
 
 
 @pytest.mark.parametrize("operation", ["append", "snapshot"])
