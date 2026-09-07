@@ -1,5 +1,7 @@
 """Historical import through real custody, allocation, validation and admission owners."""
 
+from issue_orchestrator.infra.config import Config
+
 from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path
@@ -61,7 +63,7 @@ def historical(tmp_path: Path):
     state = repo / ".issue-orchestrator" / "state"
     ledger = SqliteIssueRunLedger(state / "issue_run_ledger.sqlite")
     output = FileSystemSessionOutput()
-    allocator = IssueRunAllocationService(output, ledger)
+    allocator = IssueRunAllocationService(output, ledger, configuration=Config(repo="example/repo"))
     wc = GitWorkingCopy(git=git)
     runner = Mock(spec=CommandRunner)
     runner.run.return_value = CommandResult(

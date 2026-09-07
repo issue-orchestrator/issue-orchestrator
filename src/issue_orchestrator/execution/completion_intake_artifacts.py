@@ -8,6 +8,9 @@ from pathlib import Path
 from uuid import uuid4
 
 from ..domain.completion_intake import CompletionIntakeError
+from ..domain.completion_custody import (
+    CUSTODY_ARTIFACT_LIMIT, require_custody_artifact, require_custody_size,
+)
 
 
 def canonical_bytes(value: object) -> bytes:
@@ -24,7 +27,7 @@ def sync_directory(path: Path) -> None:
         os.close(fd)
 
 
-def read_regular(path: Path, *, limit: int = 4 * 1024 * 1024) -> bytes:
+def read_regular(path: Path, *, limit: int = CUSTODY_ARTIFACT_LIMIT) -> bytes:
     """Open each component without following symlinks, then bound the read."""
     if not path.is_absolute() or Path(os.path.normpath(path)) != path:
         raise CompletionIntakeError("artifact path must be absolute and normalized")
@@ -69,13 +72,17 @@ class CompletionIntakeArtifacts:
         envelope["blobs"] = {
             name: sha256(data).hexdigest() for name, data in blobs.items()
         }
+        envelope_bytes = canonical_bytes(envelope)
+        require_custody_size(envelope_bytes)
+        for name, data in blobs.items():
+            require_custody_artifact(name, data)
         if final.exists():
             if self.read(key) != envelope:
                 raise CompletionIntakeError("immutable custody envelope conflict")
             return
         stage = self.root / (".staging-" + uuid4().hex)
         stage.mkdir(mode=0o700)
-        for name, data in {**blobs, "envelope.json": canonical_bytes(envelope)}.items():
+        for name, data in {**blobs, "envelope.json": envelope_bytes}.items():
             with (stage / name).open("xb") as stream:
                 stream.write(data)
                 stream.flush()
@@ -93,15 +100,11 @@ class CompletionIntakeArtifacts:
         ):
             raise CompletionIntakeError("invalid custody envelope")
         for name, digest in envelope["blobs"].items():
-            if name not in {
-                "raw.json",
-                "completion.json",
-                "validation.json",
-                "stdout.log",
-                "stderr.log",
-            }:
-                raise CompletionIntakeError("unknown custody artifact")
-            if sha256(read_regular(self.root / key / name)).hexdigest() != digest:
+            # Validate the name before joining it to the owner directory.
+            require_custody_artifact(name, b"")
+            data = read_regular(self.root / key / name)
+            require_custody_artifact(name, data)
+            if sha256(data).hexdigest() != digest:
                 raise CompletionIntakeError("custody artifact hash mismatch")
         return envelope
 

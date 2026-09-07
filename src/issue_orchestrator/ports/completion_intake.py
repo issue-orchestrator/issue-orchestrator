@@ -12,6 +12,7 @@ from ..domain.completion_intake import (
     SubmitCompletionEvidence,
 )
 from ..domain.models import CompletionRecord
+from ..domain.registered_completion import CompletionRunRole, RegisteredCompletion
 from ..domain.completion_processing import ProcessingResult
 from ..domain.historical_intake import HistoricalIntakeCommand, HistoricalIntakeOutcome
 
@@ -31,6 +32,7 @@ class CompletionEvidenceIntake(Protocol):
 
 
 class CompletionIntakeLedger(CompletionEvidenceIntake, Protocol):
+    def role_for_receipt(self, entry_id: str) -> CompletionRunRole: ...
     def run_for_capability(self, capability: str) -> SessionRunAssets: ...
     def submission_capability_file(self, run: SessionRunAssets) -> RunContainedFile: ...
     def submission_capability(self, run: SessionRunAssets) -> str: ...
@@ -82,6 +84,9 @@ class CompletionReceiptProcessor(Protocol):
 
 
 class CompletionIntakeRuntime(CompletionSubmissionHandler, Protocol):
+    def processing_context(
+        self, receipt: CompletionIntakeReceipt, run: SessionRunAssets
+    ) -> RegisteredCompletion: ...
     def bind_exchange(self, run: SessionRunAssets) -> CompletionExchangeIntake: ...
     def resume_receipt(
         self,

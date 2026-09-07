@@ -654,7 +654,7 @@ def build_orchestrator(
         label_writer=repository_host,
         label_manager=label_manager, events=events)
 
-    issue_run_ledger, issue_run_allocator = build_issue_run_services(config.repo_root, session_output)
+    issue_run_ledger, issue_run_allocator = build_issue_run_services(config, session_output)
     completion_intake = build_completion_intake(
         config, issue_run_ledger, issue_run_allocator, working_copy, command_runner
     )
@@ -949,7 +949,7 @@ def build_orchestrator_for_testing(
     working_copy = GitWorkingCopy()
     command_runner = LocalCommandRunner()
     session_output = FileSystemSessionOutput()
-    issue_run_ledger, issue_run_allocator = build_issue_run_services(config.repo_root, session_output)
+    issue_run_ledger, issue_run_allocator = build_issue_run_services(config, session_output)
     completion_intake = build_completion_intake(
         config, issue_run_ledger, issue_run_allocator, working_copy, command_runner
     )

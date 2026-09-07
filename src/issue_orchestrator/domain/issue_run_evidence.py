@@ -1,9 +1,9 @@
 """Explicit, launch-owned evidence of the runs belonging to an issue."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 
-from .session_key import SessionKey
+from .session_key import SessionKey, TaskKind
 from .session_run import SessionRunAssets
 
 
@@ -22,6 +22,9 @@ class IssueRunRecord:
     session_key: SessionKey
     run: SessionRunAssets
     recorded_at: str
+    # None denotes a legacy allocation whose role was never durably recorded.
+    agent_label: str | None = field(default=None, kw_only=True)
+    completion_task: TaskKind | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         if not self.recorded_at.strip():

@@ -12,6 +12,7 @@ from ..domain.completion_intake import (
     IntakeUnauthorized,
 )
 from ..domain.models import CompletionRecord
+from ..domain.registered_completion import RegisteredCompletion
 from ..domain.completion_intake_policy import (
     latest_accepted_receipt,
     require_publication_attestation,
@@ -151,11 +152,20 @@ class CompletionEvidenceIntakeService:
     def read_receipt(
         self, receipt: CompletionIntakeReceipt, run: SessionRunAssets
     ) -> CompletionRecord:
+        return self.processing_context(receipt, run).record
+
+    def processing_context(
+        self, receipt: CompletionIntakeReceipt, run: SessionRunAssets
+    ) -> RegisteredCompletion:
+        role = self._ledger.role_for_receipt(receipt.entry_id)
         entry = self._ledger.entry_for_receipt(receipt.entry_id)
         if entry.receipt != receipt or entry.run != run:
             raise CompletionIntakeError("receipt does not bind the allocated run")
-        record = self._ledger.read_completion(entry.entry_id)
-        return record
+        return RegisteredCompletion(
+            self._ledger.read_completion(entry.entry_id),
+            role,
+            normalized_completion_artifact(entry),
+        )
 
     def require_publication_ready(
         self, receipt: CompletionIntakeReceipt, run: SessionRunAssets
@@ -168,9 +178,7 @@ class CompletionEvidenceIntakeService:
     def completion_artifact(
         self, receipt: CompletionIntakeReceipt, run: SessionRunAssets
     ) -> RunContainedFile:
-        self.read_receipt(receipt, run)
-        entry = self._ledger.entry_for_receipt(receipt.entry_id)
-        return normalized_completion_artifact(entry)
+        return self.processing_context(receipt, run).artifact
 
     def import_historical(
         self, command: HistoricalIntakeCommand

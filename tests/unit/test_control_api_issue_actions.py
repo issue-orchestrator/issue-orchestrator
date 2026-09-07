@@ -1,5 +1,7 @@
 """Issue action control route tests split from test_control_api."""
 
+from issue_orchestrator.infra.config import Config
+
 # ruff: noqa: F403,F405
 
 from pathlib import Path
@@ -223,7 +225,7 @@ class TestDebugSessionEndpoint:
         ledger = SqliteIssueRunLedger(tmp_path / "state" / "runs.sqlite")
         if registration_fails:
             ledger = MagicMock(record_run=MagicMock(side_effect=IssueRunEvidenceUnavailable("disk full")))
-        mock_orch.deps.issue_run_allocator = IssueRunAllocationService(session_output, ledger)
+        mock_orch.deps.issue_run_allocator = IssueRunAllocationService(session_output, ledger, configuration=Config(repo="example/repo"))
 
         def spawn(**kwargs):
             assert len(ledger.recorded_runs(123)) == 1

@@ -1,5 +1,7 @@
 """Real receipt/validation owners for subprocess exchange integration tests."""
 
+from issue_orchestrator.infra.config import Config
+
 import base64
 import json
 import os
@@ -117,7 +119,7 @@ class ExchangeIntakeFixture:
         )
 
     def allocator(self, output):
-        return IssueRunAllocationService(output, self.ledger)
+        return IssueRunAllocationService(output, self.ledger, configuration=Config(repo="example/repo"))
 
     def __enter__(self):
         self.thread.start()

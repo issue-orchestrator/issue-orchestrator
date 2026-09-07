@@ -17,7 +17,8 @@ as untrusted input.
 
 from ..ports.issue_run_allocator import IssueRunAllocator
 from ..ports.completion_intake import CompletionIntakeRuntime
-from ..domain.completion_intake import CompletionIntakeReceipt
+from ..domain.completion_intake import CompletionIntakeReceipt, CompletionIntakeError
+from ..domain.registered_completion import CompletionProcessingPolicy
 
 import json
 import logging
@@ -122,7 +123,7 @@ from .review_exchange_pr_comment import (
 from .test_skip_guard import added_test_paths, scan_added_test_skip_guards
 from .tech_lead_approval_gate import build_tech_lead_decision_approval_gate
 from .tech_lead_completion import tech_lead_decision_processing_error
-from .tech_lead_session_policy import is_benign_tech_lead_no_commits, is_tech_lead_session, resolve_tech_lead_completion_actions
+from .tech_lead_session_policy import is_benign_tech_lead_no_commits, resolve_tech_lead_completion_actions
 from .worktree_head import current_worktree_head_sha
 from ..ports.pull_request_tracker import PRInfo
 from ..ports.working_copy import PushResult
@@ -422,11 +423,6 @@ class CompletionProcessor:
         return self._record_validator.resolve_agent_label_from_completion_path(
             completion_path
         )
-
-    def _is_tech_lead_session(self, agent_label: str | None) -> bool:
-        """Tech Lead identity via the ADR-0031 owner (config-declared tech lead agent)."""
-        tech_lead_agent = self._config.tech_lead_review_agent if self._config else None
-        return is_tech_lead_session(tech_lead_agent, agent_label)
 
     def validate_worktree_state(
         self, worktree: Path, record: CompletionRecord
@@ -737,6 +733,17 @@ class CompletionProcessor:
         error_details: list[dict[str, Any]] = []  # Full diagnostic info per error
         pr_url: str | None = None
 
+        try:
+            context = (
+                self._completion_intake.processing_context(intake_receipt, run_assets)
+                if intake_receipt else None
+            )
+            processing_policy = self._record_validator.resolve_processing_policy(
+                context, issue_number, agent_label, completion_path
+            )
+        except CompletionIntakeError as exc:
+            return ProcessingResult(success=False, message=str(exc), errors=[str(exc)])
+
         # Read and validate completion record
         record, session_name, error_result = self._read_and_validate_record(
             worktree,
@@ -748,14 +755,6 @@ class CompletionProcessor:
             return error_result
         assert record is not None  # Guaranteed if error_result is None
 
-        if agent_label is None:
-            agent_label, agent_error = self._resolve_agent_label_from_completion_path(
-                completion_path
-            )
-            if agent_error:
-                return ProcessingResult(
-                    success=False, message=agent_error, errors=[agent_error]
-                )
         requested_actions = tuple(record.requested_actions)
         running_query = ReviewExchangeRunningQuery(
             issue_number=issue_number,
@@ -781,7 +780,7 @@ class CompletionProcessor:
             session_name,
             issue_number,
             run_assets,
-            agent_label=agent_label,
+            processing_policy=processing_policy,
         )
         if pre_action_failure:
             return pre_action_failure
@@ -833,7 +832,7 @@ class CompletionProcessor:
             label_target=label_target,
             branch=branch,
             session_name=session_name,
-            agent_label=agent_label,
+            processing_policy=processing_policy,
             actions_taken=actions_taken,
             errors=errors,
             error_details=error_details,
@@ -891,7 +890,7 @@ class CompletionProcessor:
         self,
         *,
         record: CompletionRecord,
-        agent_label: str | None,
+        processing_policy: CompletionProcessingPolicy,
         issue_number: int,
         run_assets: SessionRunAssets,
     ) -> ProcessingResult | None:
@@ -906,8 +905,10 @@ class CompletionProcessor:
         classified critical, so history records FAILED for every flavor and
         the tech_lead failure labeling path fires downstream.
         """
-        if self._config is None or not self._is_tech_lead_session(agent_label):
+        if not processing_policy.is_tech_lead:
             return None
+        if self._config is None:
+            raise CompletionIntakeError("Tech Lead processing requires configured launch policy")
         if record.outcome is not CompletionOutcome.COMPLETED:
             return None
         tech_lead_error = tech_lead_decision_processing_error(
@@ -933,16 +934,13 @@ class CompletionProcessor:
     def _review_exchange_approval_gate(
         self,
         *,
-        agent_label: str | None,
+        processing_policy: CompletionProcessingPolicy,
         run_assets: SessionRunAssets,
     ) -> "ReviewExchangeApprovalGate | None":
         """Build the artifact gate used at the terminal reviewer boundary."""
         return build_tech_lead_decision_approval_gate(
             self._config,
-            tech_lead_agent=(
-                self._config.tech_lead_review_agent if self._config else None
-            ),
-            agent_label=agent_label,
+            processing_policy=processing_policy,
             tech_lead_authority=self._tech_lead_authority,
             run_dir=run_assets.run_dir,
             run_id=run_assets.run_id,
@@ -957,7 +955,7 @@ class CompletionProcessor:
         issue_number: int,
         run_assets: SessionRunAssets,
         *,
-        agent_label: str | None,
+        processing_policy: CompletionProcessingPolicy,
     ) -> ProcessingResult | None:
         """Run completion policies that must pass before any action executes."""
         # First: tech_lead scope/decision authority (#6769 finding 1). Checked
@@ -966,7 +964,7 @@ class CompletionProcessor:
         # diagnostic comments.
         tech_lead_rejection = self._reject_tech_lead_completion_if_invalid(
             record=record,
-            agent_label=agent_label,
+            processing_policy=processing_policy,
             issue_number=issue_number,
             run_assets=run_assets,
         )
@@ -984,7 +982,7 @@ class CompletionProcessor:
                 run_assets,
             )
 
-        if self._is_tech_lead_session(agent_label):
+        if processing_policy.is_tech_lead:
             shaping_failure = resolve_tech_lead_completion_actions(
                 worktree=worktree, record=record, git_adapter=self.git_adapter,
                 base_branch=self._base_branch,
@@ -1383,7 +1381,7 @@ class CompletionProcessor:
         record: CompletionRecord,
         issue_number: int,
         issue_title: str,
-        agent_label: str | None,
+        processing_policy: CompletionProcessingPolicy,
         actions_taken: list[str],
         errors: list[str],
         run_assets: SessionRunAssets,
@@ -1413,7 +1411,7 @@ class CompletionProcessor:
             issue_number=issue_number,
             issue_title=issue_title,
             session_name=gate_session_name,
-            agent_label=agent_label,
+            processing_policy=processing_policy,
             record=record,
             run_assets=run_assets,
         )
@@ -1436,11 +1434,11 @@ class CompletionProcessor:
         issue_number: int,
         issue_title: str,
         session_name: str | None,
-        agent_label: str | None,
+        processing_policy: CompletionProcessingPolicy,
         record: CompletionRecord,
         run_assets: SessionRunAssets,
     ) -> ProcessingResult | None:
-        if session_name is None or agent_label is None:
+        if session_name is None or processing_policy.agent_label is None:
             return None
         if RequestedAction.CREATE_PR not in record.requested_actions:
             return None
@@ -1481,7 +1479,10 @@ class CompletionProcessor:
             issue_title=issue_title,
             session_name=session_name,
             run_id=run_assets.run_id,
-            agent_label=agent_label,
+            agent_label=processing_policy.agent_label,
+            approval_gate=self._review_exchange_approval_gate(
+                processing_policy=processing_policy, run_assets=run_assets,
+            ),
             initial_validation_record_path=validation_record_path,
             current_head_sha=current_worktree_head_sha(
                 git_adapter=self.git_adapter,
@@ -1636,7 +1637,7 @@ class CompletionProcessor:
         label_target: int,
         branch: str | None,
         session_name: str | None,
-        agent_label: str | None,
+        processing_policy: CompletionProcessingPolicy,
         actions_taken: list[str],
         errors: list[str],
         error_details: list[dict[str, Any]],
@@ -1669,7 +1670,7 @@ class CompletionProcessor:
             issue_title=issue_title,
             session_name=session_name,
             run_id=run_assets.run_id,
-            agent_label=agent_label,
+            agent_label=processing_policy.agent_label,
             record=record,
             review_cache_boundary_started_at=cache_boundary_started_at,
             current_head_sha=current_worktree_head_sha(
@@ -1680,7 +1681,7 @@ class CompletionProcessor:
             actions_taken=actions_taken,
             run_review_exchange_loop=self._run_review_exchange_loop,
             approval_gate=self._review_exchange_approval_gate(
-                agent_label=agent_label,
+                processing_policy=processing_policy,
                 run_assets=run_assets,
             ),
         )
@@ -1695,7 +1696,7 @@ class CompletionProcessor:
             record=record,
             issue_number=issue_number,
             issue_title=issue_title,
-            agent_label=agent_label,
+            processing_policy=processing_policy,
             actions_taken=actions_taken,
             errors=errors,
             run_assets=run_assets,
@@ -1712,7 +1713,7 @@ class CompletionProcessor:
             label_target=label_target,
             branch=branch,
             session_name=session_name,
-            agent_label=agent_label,
+            processing_policy=processing_policy,
             actions_taken=actions_taken,
             errors=errors,
             error_details=error_details,
@@ -1733,7 +1734,7 @@ class CompletionProcessor:
         label_target: int,
         branch: str | None,
         session_name: str | None,
-        agent_label: str | None,
+        processing_policy: CompletionProcessingPolicy,
         actions_taken: list[str],
         errors: list[str],
         error_details: list[dict[str, Any]],
@@ -1753,7 +1754,7 @@ class CompletionProcessor:
                 label_target=label_target,
                 branch=branch,
                 session_name=session_name,
-                agent_label=agent_label,
+                processing_policy=processing_policy,
                 actions_taken=actions_taken,
                 errors=errors,
                 error_details=error_details,
@@ -1789,7 +1790,7 @@ class CompletionProcessor:
         label_target: int,
         branch: str | None,
         session_name: str | None,
-        agent_label: str | None,
+        processing_policy: CompletionProcessingPolicy,
         actions_taken: list[str],
         errors: list[str],
         error_details: list[dict[str, Any]],
@@ -1816,7 +1817,7 @@ class CompletionProcessor:
                 label_target=label_target,
                 branch=branch,
                 session_name=session_name,
-                agent_label=agent_label,
+                agent_label=processing_policy.agent_label,
                 actions_taken=actions_taken,
                 errors=errors,
                 error_details=error_details,
@@ -1826,7 +1827,7 @@ class CompletionProcessor:
         except Exception as e:
             # A clean tech_lead audit has nothing to publish; that is success,
             # not publish-failure (ADR-0031 / #6768 B1).
-            if self._is_tech_lead_session(agent_label) and is_benign_tech_lead_no_commits(action, e):
+            if processing_policy.is_tech_lead and is_benign_tech_lead_no_commits(action, e):
                 logger.info("[tech_lead] clean audit, nothing to publish: issue=#%d", issue_number)
                 return self._ActionResult(branch=branch)
             logger.exception(

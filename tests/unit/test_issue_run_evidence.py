@@ -41,6 +41,8 @@ def run_record(tmp_path: Path, run_id: str = "run-1") -> IssueRunRecord:
             manifest_path=run_dir / "manifest.json",
         ),
         recorded_at=NOW,
+        agent_label="agent:claude",
+        completion_task=TaskKind.CODE,
     )
 
 
@@ -115,6 +117,8 @@ def test_repeated_registration_is_idempotent_but_cannot_rebind_a_run(tmp_path):
     assert ledger.recorded_runs(42) == (record,)
     for issue_number, conflict in (
         (43, record),
+        (42, replace(record, agent_label="agent:other")),
+        (42, replace(record, completion_task=TaskKind.TECH_LEAD)),
         (42, replace(record, session_key=SessionKey(record.session_key.issue, TaskKind.REWORK))),
         (42, replace(record, run=run_record(tmp_path / "other").run)),
     ):

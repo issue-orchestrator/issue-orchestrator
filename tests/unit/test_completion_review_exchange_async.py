@@ -366,6 +366,7 @@ def _build(
         issue_run_allocator=IssueRunAllocationService(
             cast(SessionOutput, session_output),
             issue_run_ledger if issue_run_ledger is not None else MemoryIssueRunLedger(),
+            configuration=Config(repo="example/repo"),
         ),
         agent_callback_endpoint=ready_callback_endpoint(),
         config=_make_config(tmp_path, require_validation=require_validation),
