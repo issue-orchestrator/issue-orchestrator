@@ -24,7 +24,7 @@ from ..domain.session_run import SessionRunIdentity, RunContainedFile
 from ..domain.historical_intake import HistoricalIntakeCommand
 from ..domain.models import CompletionRecord
 from ..domain.issue_key import GitHubIssueKey
-from ..domain.issue_run_evidence import IssueRunEvidenceUnavailable, IssueRunRecord
+from ..domain.issue_run_evidence import IssueRunEvidenceUnavailable, IssueRunRecord, RunTerminalBinding
 from ..domain.session_key import SessionKey, TaskKind
 from ..domain.session_run import SessionRunAssets
 from ..infra.sqlite_connection import open_sqlite
@@ -48,6 +48,8 @@ class SqliteIssueRunLedger:
             with self._connect(write=True) as conn:
                 if "branch_name" not in {row[1] for row in conn.execute("PRAGMA table_info(issue_runs)")}:
                     conn.execute("ALTER TABLE issue_runs ADD COLUMN branch_name TEXT")
+                if "terminal_binding" not in {row[1] for row in conn.execute("PRAGMA table_info(issue_runs)")}:
+                    conn.execute("ALTER TABLE issue_runs ADD COLUMN terminal_binding TEXT")
             self._intake = CompletionIntakeTables(
                 self._connect, self._decode, db_path.parent / "completion-intake"
             )
@@ -82,6 +84,7 @@ class SqliteIssueRunLedger:
                     run_dir TEXT NOT NULL UNIQUE,
                     recorded_at TEXT NOT NULL,
                     branch_name TEXT,
+                    terminal_binding TEXT,
                     PRIMARY KEY(session_name, run_id, started_at)
                 )
             """)
@@ -136,22 +139,26 @@ class SqliteIssueRunLedger:
                 ).fetchone()
                 if existing is not None:
                     bound_branch = conn.execute(
-                        "SELECT branch_name FROM issue_runs WHERE session_name=? AND run_id=? AND started_at=?", key,
-                    ).fetchone()[0]
-                    if tuple(existing) != payload or bound_branch != record.branch_name:
+                        "SELECT branch_name,terminal_binding FROM issue_runs WHERE session_name=? AND run_id=? AND started_at=?", key,
+                    ).fetchone()
+                    if tuple(existing) != payload or tuple(bound_branch) != (record.branch_name, self._terminal_json(record)) :
                         raise IssueRunEvidenceUnavailable(
                             f"Conflicting ownership for run {identity}"
                         )
                     return
                 conn.execute(
-                    "INSERT INTO issue_runs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (*key, *payload, self._run_key(record.run.run_dir), record.recorded_at, record.branch_name),
+                    "INSERT INTO issue_runs (session_name,run_id,started_at,issue_number,issue_scope,issue_key,task,assets_json,run_dir,recorded_at,branch_name,terminal_binding) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (*key, *payload, self._run_key(record.run.run_dir), record.recorded_at, record.branch_name, self._terminal_json(record)),
                 )
                 self._intake.allocate_run(conn, record.run)
         except sqlite3.Error as exc:
             raise IssueRunEvidenceUnavailable(
                 "Could not persist run ownership"
             ) from exc
+
+    @staticmethod
+    def _terminal_json(record: IssueRunRecord) -> str | None:
+        return None if record.terminal_binding is None else json.dumps({"terminal_id": record.terminal_binding.terminal_id})
 
     def issue_numbers(self) -> tuple[int, ...]:
         with self._connect() as conn:
@@ -194,6 +201,7 @@ class SqliteIssueRunLedger:
             run=assets,
             recorded_at=row["recorded_at"],
             branch_name=row["branch_name"],
+            terminal_binding=None if row["terminal_binding"] is None else RunTerminalBinding(**json.loads(row["terminal_binding"])),
         )
 
     def recorded_run(self, run: SessionRunAssets) -> IssueRunRecord:

@@ -1,7 +1,7 @@
 """One boundary joins filesystem allocation to durable issue-run ownership."""
 
 from ..domain.issue_run_allocation import IssueExchangeRunAllocation, IssueRunAllocation
-from ..domain.issue_run_evidence import IssueRunRecord
+from ..domain.issue_run_evidence import IssueRunRecord, RunTerminalBinding
 from ..domain.review_exchange_run import ReviewExchangeRun
 from ..domain.session_key import SessionKey
 from ..domain.session_run import SessionRunAssets, RunContainedFile
@@ -32,7 +32,7 @@ class IssueRunAllocationService:
             retention_tier=request.retention_tier, retention_days=request.retention_days,
             retention_pinned=request.retention_pinned,
         )
-        self._record(request.issue_number, request.session_key, run)
+        self._record(request.issue_number, request.session_key, run, request.terminal_id)
         return run
 
     def allocate_exchange(self, request: IssueExchangeRunAllocation) -> ReviewExchangeRun:
@@ -40,13 +40,13 @@ class IssueRunAllocationService:
             request.worktree_path, issue_number=request.issue_number,
             parent_session_name=request.parent_session_name, agent_label=request.agent_label,
         )
-        self._record(request.issue_number, request.session_key, run.session_run)
+        self._record(request.issue_number, request.session_key, run.session_run, None)
         return run
 
-    def _record(self, issue_number: int, key: SessionKey, run: SessionRunAssets) -> None:
+    def _record(self, issue_number: int, key: SessionKey, run: SessionRunAssets, terminal_id: str | None) -> None:
         status = self._working_copy.get_branch_status(run.worktree_path)
         if status is None or not status.branch or status.branch == "HEAD":
             raise IssueRunEvidenceUnavailable("Run allocation requires an attached branch")
         self._ledger.record_run(
-            issue_number, IssueRunRecord(session_key=key, run=run, recorded_at=run.started_at, branch_name=status.branch),
+            issue_number, IssueRunRecord(session_key=key, run=run, recorded_at=run.started_at, branch_name=status.branch, terminal_binding=RunTerminalBinding(terminal_id)),
         )

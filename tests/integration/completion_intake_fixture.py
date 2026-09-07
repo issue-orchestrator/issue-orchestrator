@@ -143,6 +143,7 @@ def coding_command_environment(worktree: Path, supplied: dict[str, str] | None):
         with ExchangeIntakeFixture(state, environment) as fixture:
             run = fixture.allocator(FileSystemSessionOutput()).allocate(
                 IssueRunAllocation(
+                    terminal_id="issue-123",
                     worktree_path=worktree.resolve(),
                     session_name="issue-123",
                     issue_number=123,

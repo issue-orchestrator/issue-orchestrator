@@ -538,10 +538,10 @@ def create_session(issue, worktree_path=None, branch_name="feature/test", task=T
 
 def track_session(orchestrator, session):
     """Register test allocation before exposing the same live run to lifecycle owners."""
-    from issue_orchestrator.domain.issue_run_evidence import IssueRunRecord
+    from issue_orchestrator.domain.issue_run_evidence import IssueRunRecord, RunTerminalBinding
     orchestrator.deps.issue_run_ledger.record_run(
         session.issue.number,
-        IssueRunRecord(session.key, session.run_assets, session.run_assets.started_at, session.branch_name),
+        IssueRunRecord(session.key, session.run_assets, session.run_assets.started_at, session.branch_name, RunTerminalBinding(session.terminal_id)),
     )
     orchestrator.state.active_sessions.append(session)
 

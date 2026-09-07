@@ -371,6 +371,7 @@ class WorktreeContext:
         claude_project_dir = Path.home() / ".claude" / "projects" / _escape_claude_project_path(worktree_path)
         try:
             run = run_allocator.allocate(IssueRunAllocation(
+                terminal_id=session_name,
                 worktree_path=worktree_path,
                 session_name=phase_name,
                 session_key=session_key,

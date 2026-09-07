@@ -83,6 +83,7 @@ class HistoricalCompletionIntake:
         worktree = self._workspace.allocate(command)
         run = self._allocator.allocate(
             IssueRunAllocation(
+                terminal_id=None,
                 issue_number=command.issue_number,
                 session_key=SessionKey(
                     GitHubIssueKey(command.repo_slug, str(command.issue_number)),

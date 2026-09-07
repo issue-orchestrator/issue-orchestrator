@@ -24,7 +24,7 @@ from issue_orchestrator.control.validated_work_preservation import ValidatedWork
 from issue_orchestrator.domain.completion_intake import CompletionIntakeError, IntakeClosed
 from issue_orchestrator.domain.issue_key import GitHubIssueKey
 from issue_orchestrator.domain.issue_run_allocation import IssueRunAllocation
-from issue_orchestrator.domain.issue_run_evidence import IssueRunEvidenceUnavailable
+from issue_orchestrator.domain.issue_run_evidence import IssueRunEvidenceUnavailable, RunTerminalBinding
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.domain.validated_work import ValidatedWorkFailure, ValidatedWorkState
 from issue_orchestrator.domain.tech_lead_session import TechLeadSessionGeneration
@@ -59,8 +59,8 @@ def custody(tmp_path):
     ledger = SqliteIssueRunLedger(state / "runs.sqlite")
     wc = GitWorkingCopy(git=git)
     allocator = IssueRunAllocationService(FileSystemSessionOutput(), ledger, wc)
-    run = allocator.allocate(IssueRunAllocation(worktree, "issue-42", 42,
-        SessionKey(GitHubIssueKey("owner/repo", "42"), TaskKind.CODE), "agent:test", "test"))
+    run = allocator.allocate(IssueRunAllocation(worktree, "coding-1", 42,
+        SessionKey(GitHubIssueKey("owner/repo", "42"), TaskKind.CODE), "agent:test", "test", terminal_id="issue-42"))
     validator = ConfiguredCompletionEvidenceValidator(wc, LocalCommandRunner(),
         IsolatedCompletionValidationWorkspace(state, git), command="true", timeout_seconds=30)
     intake = CompletionEvidenceIntakeService(ledger, validator, Mock(spec=HistoricalIntakeHandler), Mock(spec=BackgroundJobRunner))
@@ -319,14 +319,18 @@ def test_startup_publishing_worktree_retained_when_custody_unavailable(custody):
     manager.remove_checkout_and_branch.assert_not_called()
 
 
-def test_terminal_preservation_keeps_unrelated_allocated_run_open(custody):
+@pytest.mark.parametrize("scope", ["exact_run", "named_terminal"])
+def test_terminal_preservation_keeps_unrelated_allocated_run_open(custody, scope):
     review = IssueRunAllocationService(FileSystemSessionOutput(), custody.ledger, custody.wc).allocate(
-        IssueRunAllocation(custody.worktree, "review-42", 42,
-            SessionKey(GitHubIssueKey("owner/repo", "42"), TaskKind.REVIEW), "agent:test", "test"))
+        IssueRunAllocation(custody.worktree, "review-phase-1", 42,
+            SessionKey(GitHubIssueKey("owner/repo", "42"), TaskKind.REVIEW), "agent:test", "test", terminal_id="review-42"))
     review_capability = custody.ledger.submission_capability(review)
     receipt = custody.intake.submit(review_capability, command(completion(), "review-receipt"))
     custody.intake.prepare_receipt(receipt, review)
-    assert custody.lifecycle.preserve_terminal(42, "review-42", "completed", run=review).unresolved
+    if scope == "exact_run":
+        assert custody.lifecycle.preserve_terminal(42, "review-42", "completed", run=review).unresolved
+    else:
+        assert custody.lifecycle.preserve_named_terminal("review-42", "completed")[0].unresolved
     with pytest.raises(IntakeClosed):
         custody.intake.submit(review_capability, command(completion(), "review-after-close"))
     submit(custody, "coder-still-open")
@@ -353,7 +357,7 @@ def test_stop_committed_then_raised_preserves_batch(custody):
 def test_shutdown_unknown_live_run_refuses_before_any_global_stop(custody):
     from issue_orchestrator.domain.issue_run_evidence import IssueRunRecord
     unrecorded = FileSystemSessionOutput().start_run(custody.worktree, "issue-99")
-    live = IssueRunRecord(SessionKey(GitHubIssueKey("owner/repo", "99"), TaskKind.CODE), unrecorded, "2026-09-07", "feature")
+    live = IssueRunRecord(SessionKey(GitHubIssueKey("owner/repo", "99"), TaskKind.CODE), unrecorded, "2026-09-07", "feature", RunTerminalBinding("issue-99"))
     source = IssueRunEvidenceService(custody.ledger, live_runs=lambda issue: (live,) if issue == 99 else (), now=lambda: "2026-09-07")
     custody.lifecycle.core.active_sessions.append(SimpleNamespace(issue=SimpleNamespace(number=99)))
     lifecycle = replace(custody.lifecycle, run_evidence=source)
@@ -367,8 +371,8 @@ def test_shutdown_unknown_live_run_refuses_before_any_global_stop(custody):
 def test_review_worktree_cleanup_preserves_other_terminal_evidence(custody):
     submit(custody, "coder-retained")
     review = IssueRunAllocationService(FileSystemSessionOutput(), custody.ledger, custody.wc).allocate(
-        IssueRunAllocation(custody.worktree, "review-42", 42,
-            SessionKey(GitHubIssueKey("owner/repo", "42"), TaskKind.REVIEW), "agent:test", "test"))
+        IssueRunAllocation(custody.worktree, "review-phase-1", 42,
+            SessionKey(GitHubIssueKey("owner/repo", "42"), TaskKind.REVIEW), "agent:test", "test", terminal_id="review-42"))
     batch = custody.lifecycle.preserve_cleanup(42, review.session_name, custody.worktree, "cleanup")
     assert batch.unresolved
     custody.git.run(custody.repo, ["worktree", "remove", "--force", str(custody.worktree)])
@@ -379,7 +383,7 @@ def preserve_receipts_in_reverse_order(custody):
     submit(custody, "older")
     exchange = IssueRunAllocationService(FileSystemSessionOutput(), custody.ledger, custody.wc).allocate(
         IssueRunAllocation(custody.worktree, "exchange-42", 42,
-            SessionKey(GitHubIssueKey("owner/repo", "42"), TaskKind.CODE), "agent:test", "test"))
+            SessionKey(GitHubIssueKey("owner/repo", "42"), TaskKind.CODE), "agent:test", "test", terminal_id="issue-42"))
     import json
     new_completion = json.loads(completion())
     new_completion["implementation"] = "newer exact receipt"
