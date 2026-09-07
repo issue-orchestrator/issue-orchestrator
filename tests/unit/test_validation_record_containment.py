@@ -321,7 +321,9 @@ def test_attach_skips_manifest_when_copy_refuses(tmp_path: Path) -> None:
     import json
     from unittest.mock import MagicMock
 
-    from issue_orchestrator.control.completion_processor import CompletionProcessor
+    from issue_orchestrator.control.completion_validation_artifacts import (
+        CompletionValidationArtifacts,
+    )
 
     # Plant a valid-looking agent-supplied path that FAILS the walk
     # because its first segment is outside ``.issue-orchestrator``.
@@ -343,11 +345,9 @@ def test_attach_skips_manifest_when_copy_refuses(tmp_path: Path) -> None:
         manifest_path.write_text(json.dumps(existing))
     session_output.update_manifest.side_effect = _update_manifest
 
-    processor = CompletionProcessor.__new__(CompletionProcessor)
-    processor.session_output = session_output  # type: ignore[attr-defined]
+    artifacts = CompletionValidationArtifacts(session_output)
 
-    # Exercising the private helper is the point of this test.
-    processor._attach_validation_artifacts(  # noqa: SLF001
+    artifacts.attach(
         worktree=tmp_path,
         validation_artifacts=_validation_artifacts(run_dir),
         record=None,
@@ -375,7 +375,9 @@ def test_attach_overwrites_stale_run_dir_record_with_authoritative_source(
     import json
     from unittest.mock import MagicMock
 
-    from issue_orchestrator.control.completion_processor import CompletionProcessor
+    from issue_orchestrator.control.completion_validation_artifacts import (
+        CompletionValidationArtifacts,
+    )
 
     worktree = tmp_path
     run_dir = worktree / ".issue-orchestrator" / "sessions" / "run-1"
@@ -406,10 +408,9 @@ def test_attach_overwrites_stale_run_dir_record_with_authoritative_source(
 
     session_output.update_manifest.side_effect = _update_manifest
 
-    processor = CompletionProcessor.__new__(CompletionProcessor)
-    processor.session_output = session_output  # type: ignore[attr-defined]
+    artifacts = CompletionValidationArtifacts(session_output)
 
-    processor._attach_validation_artifacts(  # noqa: SLF001
+    artifacts.attach(
         worktree=worktree,
         validation_artifacts=_validation_artifacts(run_dir),
         record=None,
@@ -437,7 +438,9 @@ def test_attach_does_not_truncate_when_record_path_is_run_dir_record(
     import json
     from unittest.mock import MagicMock
 
-    from issue_orchestrator.control.completion_processor import CompletionProcessor
+    from issue_orchestrator.control.completion_validation_artifacts import (
+        CompletionValidationArtifacts,
+    )
 
     worktree = tmp_path
     run_dir = worktree / ".issue-orchestrator" / "sessions" / "run-1"
@@ -458,10 +461,9 @@ def test_attach_does_not_truncate_when_record_path_is_run_dir_record(
 
     session_output.update_manifest.side_effect = _update_manifest
 
-    processor = CompletionProcessor.__new__(CompletionProcessor)
-    processor.session_output = session_output  # type: ignore[attr-defined]
+    artifacts = CompletionValidationArtifacts(session_output)
 
-    processor._attach_validation_artifacts(  # noqa: SLF001
+    artifacts.attach(
         worktree=worktree,
         validation_artifacts=_validation_artifacts(run_dir),
         record=None,
@@ -486,7 +488,9 @@ def test_attach_refused_copy_does_not_fall_back_to_stale_run_dir_record(
     import json
     from unittest.mock import MagicMock
 
-    from issue_orchestrator.control.completion_processor import CompletionProcessor
+    from issue_orchestrator.control.completion_validation_artifacts import (
+        CompletionValidationArtifacts,
+    )
 
     worktree = tmp_path
     run_dir = worktree / ".issue-orchestrator" / "sessions" / "run-1"
@@ -515,10 +519,9 @@ def test_attach_refused_copy_does_not_fall_back_to_stale_run_dir_record(
 
     session_output.update_manifest.side_effect = _update_manifest
 
-    processor = CompletionProcessor.__new__(CompletionProcessor)
-    processor.session_output = session_output  # type: ignore[attr-defined]
+    artifacts = CompletionValidationArtifacts(session_output)
 
-    processor._attach_validation_artifacts(  # noqa: SLF001
+    artifacts.attach(
         worktree=worktree,
         validation_artifacts=_validation_artifacts(run_dir),
         record=None,

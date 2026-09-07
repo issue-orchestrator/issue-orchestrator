@@ -1,8 +1,12 @@
 # #6914 slice 1c intake handoff
 
-This implements accepted design §11 slice 1c on `a10bda5` in the existing
-`issue-orchestrator-wt-champion-techlead-intake` worktree. It does **not** complete
-#6914. No production historical data was imported or changed.
+This implements accepted design §11 slice 1c, originally based on `a10bda5`, in
+`issue-orchestrator-wt-champion-techlead-intake`. Root committed the reviewed
+94-file implementation as `71f53e5106a87bcdd30f34a7cb872060f6de7003`, then merged
+escrow `7381a4d` (including store A2 `7e43e20` and the prior policy fix) and
+recovery ancestry `77cc282`. The combined compatibility base is committed
+`2055cf3740897f6bf5f6ed221c5a22d91b2c5402`. This does **not** complete #6914.
+No production historical data was imported or changed.
 
 ## Owners and authority
 
@@ -12,7 +16,8 @@ private `CompletionIntakeTables` implementation uses the same SQLite transaction
 boundary and exact allocated run identity. The added tables are
 `completion_intake_runs`, `completion_intake_entries`,
 `completion_validation_attestations`, and `completion_intake_processing`.
-Disposition tables and the independently reviewed full store were not changed.
+The intake implementation does not alter disposition tables. The combined
+checkpoint includes the separately reviewed store and escrow prerequisites.
 
 `CompletionIntakeArtifacts` stores raw/normalized bytes and validation outputs
 outside agent worktrees. Envelopes and blobs are fsynced and atomically renamed
@@ -95,14 +100,15 @@ cannot admit work. An interrupted parked admission resumes from the receipt and
 existing trusted attestation without replacing either. Publication still requires
 a separate snapshot-bound recovery approval in a later slice.
 
-## Independently reviewed store interface assumptions
+## Merged store interface compatibility
 
 The new admission-only `SqliteValidatedWorkIntakeStore` composes the existing
 `DispositionDatabase.transaction`, `EvidenceAdmissionWriter.admit`,
 `LineageClassifier`, and disposition row reader. It consumes typed
 `EvidenceAdmission` / `AdmissionOutcome`, `ValidatedWorkAncestry`, and
-`ValidatedWorkArtifactVerifier` boundaries. These existing interfaces are assumed
-to retain their current transaction and identity semantics during store review.
+`ValidatedWorkArtifactVerifier` boundaries. The merged store preserves these transaction and identity interfaces; the
+combined admission, lineage, claim, retention, escrow and typed-port tests
+exercise them alongside the historical intake owner.
 It does not construct the full store, acquire publication claims, supply fake
 liveness, or fabricate caller proofs. Artifact and ancestry checks use actual
 local Git and content hashes.
@@ -114,38 +120,42 @@ adapter/composition seam, not by weakening these checks.
 
 ## Verification checkpoint
 
-- Current 22-module unit/contract/owner/local-Git suite: **923 passed**,
-  including the previously green **872** (and original **517**) cases, the
-  existing validation module and six new socket-free custody regressions.
-  Focused validation/custody suite: **78 passed**. Both have one existing
-  Starlette TestClient deprecation warning.
-  Logs: `/private/tmp/intake-validation-checkpoint-tests.log` and
-  `/private/tmp/intake-validation-custody-after.log`.
-- Changed-source standard and strict Pyright: **0 errors, 0 warnings** each.
-  Ruff checks on all changed Python files: **passed**.
-- Actual import-linter: **10 contracts kept, 0 broken**. AST architecture
-  guardrails: **passed** (exit 0); `git diff --check` is clean.
-  Changed deterministic subprocess fixtures compile successfully.
-- Quality guardrails run against the **unchanged original HEAD baseline**:
-  **no slice-owned violations**. The whole comparison still exits **2 solely
-  for unchanged prerequisite `infra/validated_work_attempts.py` (8 branch sites)**.
-  Its reviewed replacement is root's integration responsibility. No baseline,
-  suppression, rule configuration or metric-name changes are part of this slice.
-- Root's deterministic exchange integration run returned **7 failed, 5 passed,
-  1 deselected** before the repair described below. That result is not green.
-  The corrected snapshot still requires root's complete rerun:
-  `.venv/bin/pytest -q tests/integration/test_persistent_review_exchange_integration.py -m 'not live_codex'`.
-  A sandbox rerun stopped at the first fixture's localhost `socket.bind` with
-  `PermissionError` before any test/provider process ran; log:
-  `/private/tmp/intake-validation-nonlive-sandbox.log`.
-- Exactly one retained internal reviewer: `/root/intake_internal_reviewer`
-  (Gauss), **gpt-6-astra**, following `repo-specific/prompts/internal-review.md`.
-  Its earlier approval was superseded by root's required refactoring. The same
-  reviewer approved the codec/mirror refactor, then was retained again for the
-  validation-output repair and final abstraction pass. The final conversational
-  verdict accompanies this checkpoint; no new reviewer was spawned.
-- No broad gate, live-provider test, remote write, push, PR, merge, completion
-  command, production restart, commit, or index-authority bypass was performed.
+- Root's complete deterministic exchange integration run: **12 passed,
+  1 live test deselected**, before the prerequisite merges.
+  Log: `/tmp/techlead-intake-validation-repair-nonlive-integration.log`.
+  That rerun resolves the previously reported seven validation-output failures.
+- At committed combined base `2055cf3`, actual **`make lint-arch` passed**:
+  10 import contracts kept, AST rules, the original quality baseline comparison,
+  AGENTS checks and documentation checks all green. The inherited store metric
+  is resolved; there is no remaining prerequisite-metric exception.
+  Log: `/private/tmp/intake-combined-lint-arch.log`.
+- Actual **`make typecheck` passed** at the same committed base: complete standard
+  and strict modes each report **0 errors, 0 warnings**.
+  Log: `/private/tmp/intake-combined-typecheck.log`.
+- Combined focused suite: **1270 passed**. The prior 923-case suite was expanded
+  with store/domain/ports, lineage,
+  concurrency, claims, attempts, escrow, retention, validation containment and
+  retry/revalidation modules. The exact combined command is retained in
+  `/private/tmp/intake-combined-focused-command.txt`; its final result is in
+  `/private/tmp/intake-combined-focused-final.log`.
+- Extra exact-Git, configuration, settings and worktree compatibility checks:
+  **567 passed**, recorded in `/private/tmp/intake-combined-adapter-config-final.log`.
+- Compatibility testing exposed four containment tests that bypassed constructor
+  injection with `CompletionProcessor.__new__`. They now construct the actual
+  extracted `CompletionValidationArtifacts` owner and call its public `attach`
+  method, preserving all containment, stale-copy and same-file assertions.
+  The shipped maintenance-config test now loads identical YAML bytes in its
+  temporary installation, so default directory creation stays outside the real
+  checkout. No production source or configuration behavior changed.
+  The two repaired modules pass **314 tests**; log:
+  `/private/tmp/intake-combined-fixture-repair.log`.
+- The same retained reviewer `/root/intake_internal_reviewer` (Gauss),
+  **gpt-6-astra**, reviews this combined checkpoint under
+  `repo-specific/prompts/internal-review.md`, including a final abstraction pass.
+  Its final conversational verdict accompanies the checkpoint.
+- No publication, CI, full gate, live-provider test, remote write, production
+  restart, completion command or other-worktree mutation was performed.
+  Root owns the separately scheduled full gate and urgent PR #7176 CI.
 
 Focused command:
 
@@ -178,7 +188,8 @@ Focused command:
 ## Refactoring and original-baseline quality
 
 Root rejected the proposed baseline increases. `quality/guardrails-baseline.json`
-is byte-identical to HEAD. Guardrails now report no new slice-owned failure;
+is byte-identical to the original `a10bda5` baseline. The complete combined
+guardrail comparison is green;
 no new owner was split merely to distribute counts across smaller files.
 
 The six oversized files now delegate cohesive responsibilities:
@@ -205,9 +216,9 @@ No caller-supplied proof or liveness flag was introduced at a port.
 
 The four original policy-count owners now measure **2 / 2 / 1 / 0** respectively
 for completion intake, historical intake, intake ledger, and historical custody.
-The extracted pair-validation owner and persistence codec each measure 2. The complete guardrail comparison,
-including semantic and typed-boundary rules, reports only the independent store
-prerequisite mentioned above. Import-linter reports **10 contracts kept, 0 broken**;
+The extracted pair-validation owner and persistence codec each measure 2. The
+complete combined guardrail comparison, including semantic and typed-boundary
+rules, passes against the original baseline. Import-linter reports **10 contracts kept, 0 broken**;
 AST architecture guardrails and repository instruction/documentation checks pass.
 
 ## Deterministic integration repair
@@ -259,28 +270,36 @@ The six regressions prove passed and failed commands produce durable attested
 logs and a clean isolated checkout across ledger restart. Tracked edits,
 untracked output, forged files under `.issue-orchestrator/validation`, and an
 otherwise clean changed HEAD still refuse attestation and leave the receipt
-pending. The full HTTP/subprocess integration result remains unverified until
-root runs the command above outside this sandbox.
+pending. Root subsequently ran the complete deterministic HTTP/subprocess module outside
+the sandbox: all 12 cases passed, with the live-provider case deselected.
 
 The repair changes four source/test paths relative to the approved 91-file
 snapshot, plus this handoff: `control/completion_intake_validation.py`,
 `control/validation.py`, `control/validation_record_store.py`, and
 `tests/integration/test_completion_validation_custody.py`. Other reviewed files
-retain their previous hashes. Store/escrow prerequisite integration remains
-parent-owned.
+retained their previous hashes at `71f53e5`. Root has now merged the separately
+reviewed store/escrow prerequisites into the combined checkpoint.
 
 ## Remaining invariants and root sequencing
 
 “Processed” acknowledges intake validation/historical admission, not exactly-once
-publication. General disposition capture across all validated heads, general
-escrow and retention/release policy, lifecycle preservation, exact-head publishing,
-and Control Center recovery UI remain separate accepted-design slices. The legacy
+publication. General disposition capture across all validated heads, lifecycle preservation,
+exact-head publishing and Control Center recovery UI remain separate slices.
+The escrow/retention primitives are merged; wiring their scheduling and
+publication authority belongs to the later disposition owner. The generic
+slice-2 escrow factory remains unscheduled and has its own envelope format and
+root. Historical intake still uses bounded `historical-intake-escrow` custody;
+this checkpoint does not establish generic escrow maintenance or publication
+consumption of historical receipts. The legacy
 operator manual publication recovery path is not migrated by this slice.
 No implementation claim here permits publication from arbitrary historical JSON.
+`require_publication_ready` checks receipt-owned attestation; it does not grant
+lifecycle/publication authority. Later integration needs the proper behavior-level
+owner port, with no caller-fabricated trusted validator results or liveness proofs.
 
-Root owns named-file commits if needed, hook/index authority, full gates scheduled
-one at a time, the deterministic subprocess rerun, and independent external review
-after internal approval. Do not mark #6914 complete from this checkpoint.
+Root owns named-file commits if sandboxed Git metadata prevents them, hook/index
+authority, full gates scheduled one at a time, and independent external review
+after internal approval. The deterministic subprocess rerun has passed. Do not mark #6914 complete from this checkpoint.
 
 Implemented abstraction findings: receipt execution and closure now have one
 owner lifetime; persistent attempts use a typed intake boundary; shared processing
@@ -294,13 +313,19 @@ fixes requested by the retained reviewer. No storage schema decisions remain
 in the pure domain correspondence rule.
 There are no visual UI/control changes in this slice.
 
-## Exact changed-file manifest
+## Checkpoint identity and manifests
 
-The corrected checkpoint contains **94 files** listed below. After the
-final reviewer verdict, SHA-256 hashes for every listed file (including this
-handoff) are written to `/private/tmp/techlead-intake-validation-repair-files.sha256`.
-The external manifest avoids a self-referential hash; it is the named-file
-commit/review input. The unchanged quality baseline is excluded.
+The combined source base is `2055cf3740897f6bf5f6ed221c5a22d91b2c5402`.
+This compatibility update changes only this handoff and the two test files
+`tests/unit/test_config.py` and `tests/unit/test_validation_record_containment.py`.
+If Git metadata is sandbox-denied, the exact named-file SHA-256 delta is supplied
+at `/private/tmp/techlead-intake-combined-checkpoint.sha256`; apply it only to
+that combined base. Otherwise the final response names the reviewed commit.
+
+The original 94-file intake implementation inventory below is historical: root
+verified `/private/tmp/techlead-intake-validation-repair-files.sha256` before
+committing `71f53e5`. The prerequisite merges legitimately changed some of these
+files; that old manifest is not a hash claim for the combined checkpoint.
 
 - `contracts/public/completion.receipt.json`
 - `contracts/public/completion.resume.json`
