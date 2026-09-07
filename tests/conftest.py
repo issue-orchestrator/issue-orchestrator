@@ -55,7 +55,7 @@ from issue_orchestrator.ports.pull_request_tracker import (
     StatusCheckRollupRead,
 )
 from issue_orchestrator.ports.repository_host import DependencyIssueSnapshot
-from issue_orchestrator.domain.issue_key import FakeIssueKey, IssueKey
+from issue_orchestrator.domain.issue_key import FakeIssueKey, GitHubIssueKey, IssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 
@@ -319,7 +319,8 @@ class MockGitHubAdapter:
     adapter rather than patching individual functions.
     """
 
-    def __init__(self):
+    def __init__(self, *, repo: str | None = None):
+        self.repo = repo
         # Storage for test data
         self.issues: list[Issue] = []
         self.labels: dict[int, set[str]] = {}  # issue_number -> labels
@@ -401,6 +402,8 @@ class MockGitHubAdapter:
 
     def create_issue_key(self, issue_number: int) -> IssueKey:
         """Create an IssueKey for testing."""
+        if self.repo is not None:
+            return GitHubIssueKey(repo=self.repo, external_id=str(issue_number))
         return FakeIssueKey(name=str(issue_number))
 
     def get_issue_labels(self, issue_number: int) -> list[str]:

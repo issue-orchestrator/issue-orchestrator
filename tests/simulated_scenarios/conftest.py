@@ -599,7 +599,8 @@ def build_orchestrator(
     reconcile: bool = False,
     fresh_labels: dict[int, set[str]] | None = None,
 ) -> tuple[Orchestrator, MockGitHubAdapter, MockEventSink, DefaultTimelineReader]:
-    repo_host = repo_host or MockGitHubAdapter()
+    repo_host = repo_host or MockGitHubAdapter(repo=config.repo)
+    repo_host.repo = config.repo
     for issue in issues:
         issue.repo = config.repo
     repo_host.issues = issues

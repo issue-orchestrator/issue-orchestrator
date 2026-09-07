@@ -1068,7 +1068,9 @@ def test_validation_cache_invalidates_on_record_corruption(scenario_repo: Path):
     # Seed the corrupt cache before the orchestrator boots; the worktree
     # path is the conventional ``<repo>/.issue-orchestrator/worktrees/sim-wt-1``.
     from .conftest import TempWorktreeManager
-    TempWorktreeManager(scenario_repo).create(scenario_repo, 1, "cache scenario")
+    TempWorktreeManager(scenario_repo / ".issue-orchestrator" / "worktrees").create(
+        scenario_repo, 1, "cache scenario"
+    )
     validation_dir = (
         scenario_repo
         / ".issue-orchestrator" / "worktrees" / "sim-wt-1"
