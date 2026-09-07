@@ -13,6 +13,8 @@ importantly — pin that the boundary has exactly ONE owner per concern:
 
 from __future__ import annotations
 
+from tests.runtime_lifecycle_helpers import make_action_applier
+
 from tests.run_allocation_helpers import make_session_launcher
 
 import ast
@@ -2897,7 +2899,7 @@ class _ProductionTick:
                 self.launched.append(number)
             return result.session
 
-        self.applier = ActionApplier(
+        self.applier = make_action_applier(
             labels=self.github,
             sessions=MagicMock(),
             events=self.events,

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.runtime_lifecycle_helpers import make_action_applier
+
 from unittest.mock import MagicMock
 
 from issue_orchestrator.control.github_workflow import GitHubWorkflow
@@ -172,7 +174,7 @@ def test_history_reconciled_event_payload_shape():
         pr_url="https://github.com/owner/repo/pull/318",
         status_reason="Recovered awaiting merge state on startup",
     )
-    applier = ActionApplier(
+    applier = make_action_applier(
         labels=MagicMock(),
         sessions=MagicMock(),
         events=events,

@@ -441,7 +441,8 @@ def test_orphan_repair_and_restart_keep_trusted_receipt_order(custody):
 def test_unmapped_evidence_cannot_invent_receive_precedence(custody):
     admissions = retained_receipt_pair(custody)
     invented = replace(admissions[0], evidence=replace(admissions[0].evidence,
-        identity=replace(admissions[0].evidence.identity, requested_actions=())))
+        identity=replace(admissions[0].evidence.identity, completion_artifact=replace(
+            admissions[0].evidence.identity.completion_artifact, sha256="0" * 64))))
     with pytest.raises(CompletionIntakeError, match="receive-order proof"):
         custody.store.admit(invented)
     assert custody.store.for_issue(42).dispositions[0].evidence_id == admissions[-1].evidence.evidence_id
