@@ -30,10 +30,15 @@ from ..domain.validated_work_publish_policy import (
 )
 from .validated_work_claims import ClaimAuthority
 from .validated_work_lineage import LineageClassifier
-from .validated_work_rows import attempt_row, current_evidence, record_row
+from .validated_work_rows import (
+    attempt_row,
+    current_evidence,
+    has_successful_attempt,
+    latest_attempt,
+    record_row,
+)
 
 PUBLISH_ATTEMPT_LIMIT = 5
-SUCCESS_STATUSES = frozenset({Status.PUBLISHED, Status.ALREADY_AT_TARGET})
 
 
 class PublishAttemptWriter:
@@ -71,13 +76,10 @@ class PublishAttemptWriter:
             phase=phase,
         ):
             return None
-        last = conn.execute(
-            "SELECT * FROM validated_work_publish_attempts WHERE record_id=? ORDER BY attempt_no DESC LIMIT 1",
-            (claim.record_id,),
-        ).fetchone()
-        count = last["attempt_no"] if last is not None else 0
+        last = latest_attempt(conn, claim.record_id)
+        count = last.attempt_no if last is not None else 0
         if count != expected_attempt_no or not retry_permitted(
-            attempt_row(last) if last is not None else None,
+            last,
             fence=claim.fence,
             evidence_id=evidence.evidence_id,
         ):
@@ -215,19 +217,13 @@ class PublishAttemptWriter:
         phase: FinalizationPhase,
         at: str,
     ) -> bool:
-        if not isinstance(phase, FinalizationPhase):
-            raise ValueError("finalization phase must be typed")
         if not self._claims.holds(conn, claim):
             return False
+        if not isinstance(phase, FinalizationPhase):
+            raise ValueError("finalization phase must be typed")
         row = record_row(conn, claim.record_id)
-        last = conn.execute(
-            "SELECT outcome FROM validated_work_publish_attempts WHERE record_id=? ORDER BY attempt_no DESC LIMIT 1",
-            (claim.record_id,),
-        ).fetchone()
-        if (
-            row["state"] != "publishing"
-            or last is None
-            or last["outcome"] not in SUCCESS_STATUSES
+        if row["state"] != "publishing" or not has_successful_attempt(
+            conn, claim.record_id
         ):
             return False
         old = FinalizationPhase(row["finalization_phase"])

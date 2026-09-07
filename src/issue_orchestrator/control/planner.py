@@ -1264,11 +1264,16 @@ class Planner:
                 logger.info(issue_log(issue.number, "Skipped: reason=session_history"))
                 skip_reason_by_issue[issue.number] = "session_history"
 
+        # Dependency pressure breaks otherwise equal priorities; availability
+        # and explicit operator overrides still own admission and precedence.
+        pressure = self.scheduler.dependency_pressure(snapshot.issues)
+
         # Pick next batch based on priority
         to_launch = self.scheduler.pick_next_batch(
             available=not_active,
             current_count=worker_active_count,
             priority_overrides=list(snapshot.priority_queue),
+            pressure=pressure,
         )
 
         # Create launch actions
@@ -1283,7 +1288,8 @@ class Planner:
                 number=issue.number,
                 command="",  # Orchestrator will fill in
                 working_dir="",  # Orchestrator will fill in
-                reason=f"scheduled: priority={priority_reason}",
+                reason=(f"scheduled: priority={priority_reason} "
+                        f"dependency_fanout={pressure.count_for(issue.number)}"),
             ))
 
         # Pipeline funnel summary for diagnostics
@@ -1301,6 +1307,10 @@ class Planner:
         dep_blocked_map = {issue.number: reason for issue, reason in dependency_blocked}
         decision_by_issue: dict[int, str] = {}
         detail_by_issue = dict(decision_detail_by_issue)
+        for issue in not_active:
+            detail_by_issue[issue.number] = (
+                f"dependency_fanout={pressure.count_for(issue.number)}"
+            )
         for issue in snapshot.issues:
             if issue.number in launching_set:
                 decision_by_issue[issue.number] = "launch:scheduled"
