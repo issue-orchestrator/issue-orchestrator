@@ -15,6 +15,8 @@ def runtime_owners(*, session_manager=None, active_sessions=None, pair_registry=
         IssueRunEvidenceStatus.NO_RUNS_RECORDED, (), IssueRunEvidenceOrigin.RUN_LEDGER, "2026-09-07")
     source.issue_numbers.return_value = ()
     source.terminal_issues.return_value = ()
+    source.issues_for_worktree.return_value = ()
+    source.worktree_evidence.side_effect = lambda issue, path: source.evidence_for_issue(issue)
     source.terminal_evidence.side_effect = lambda issue, terminal, run: source.evidence_for_issue(issue)
     preservation = Mock(spec=ValidatedWorkPreservation)
     def capture(command):

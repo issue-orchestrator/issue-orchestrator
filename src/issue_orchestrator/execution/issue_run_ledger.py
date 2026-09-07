@@ -1,5 +1,7 @@
 """Durable exact run ownership retained outside disposable worktrees."""
 
+from ..domain.validated_work import ValidatedWorkEvidence
+
 import json
 import os
 import sqlite3
@@ -258,6 +260,10 @@ class SqliteIssueRunLedger:
         if entry.normalized_path is None:
             raise ValueError("rejected receipt has no normalized completion")
         return CompletionRecord.from_dict(json.loads(read_regular(entry.normalized_path)))
+
+    def evidence_receive_sequence(self, evidence: ValidatedWorkEvidence) -> int:
+        from .completion_intake_candidates import evidence_receive_sequence
+        return evidence_receive_sequence(self, evidence)
 
     def prepare_candidate(self, entry_id: str, run: IssueRunRecord) -> "PreparedCompletionEvidence | None":
         from .completion_intake_candidates import prepare_candidate

@@ -25,6 +25,7 @@ from ..ports.session_runner import SessionRunner
 from .background_job_supervisor import drain_background_jobs
 from ..domain.session_key import TaskKind
 from ..domain.session_run import SessionRunAssets
+from ..domain.issue_run_evidence import IssueRunEvidence
 from ..domain.tech_lead_session import TechLeadSessionGeneration
 from .completion_review_exchange import is_review_exchange_job_for_issue
 
@@ -606,10 +607,20 @@ class IssueRuntimeLifecycleOwners:
 
     def preserve_terminal(self, issue_number: int, terminal_id: str, reason: str, *, run: SessionRunAssets | None = None) -> ValidatedWorkDispositionBatch:
         evidence = self.run_evidence.terminal_evidence(issue_number, terminal_id, run)
+        return self._preserve_selected(evidence, reason)
+
+    def _preserve_selected(self, evidence: IssueRunEvidence, reason: str) -> ValidatedWorkDispositionBatch:
         batch = self.validated_work.dispose_at_termination(AutomaticCaptureCommand(
-            issue_number, reason, evidence, AutomaticCaptureScope.SELECTED_RUNS))
+            evidence.issue_number, reason, evidence, AutomaticCaptureScope.SELECTED_RUNS))
         self._observe(batch)
         return batch
+
+    def preserve_cleanup(self, issue_number: int, terminal_id: str, worktree_path: Path | None, reason: str) -> ValidatedWorkDispositionBatch:
+        if worktree_path is None:
+            return self.preserve_terminal(issue_number, terminal_id, reason)
+        for issue in set(self.run_evidence.issues_for_worktree(worktree_path)) | {issue_number}:
+            self._preserve_selected(self.run_evidence.worktree_evidence(issue, worktree_path), reason)
+        return self.validated_work.for_issue(issue_number)
 
     def terminate(self, issue_number: int, reason: str) -> IssueRuntimeTermination:
         batch = self._capture(issue_number, reason)
@@ -648,7 +659,7 @@ class IssueRuntimeLifecycleOwners:
         issues = self.run_evidence.issues_for_worktree(path)
         if not issues:
             raise RuntimeError(f"No trusted run ownership for worktree {path}")
-        return tuple(self.preserve(issue, reason) for issue in issues)
+        return tuple(self._preserve_selected(self.run_evidence.worktree_evidence(issue, path), reason) for issue in issues)
 
     def has_active_issue_runtime(self, issue_number: int) -> bool:
         return self.probe(issue_number).busy

@@ -1001,7 +1001,7 @@ def build_test_orchestrator_deps(
     )
 
     from issue_orchestrator.entrypoints.bootstrap_validated_work import build_validated_work_admission
-    validated_work = build_validated_work_admission(config, working_copy)
+    validated_work = build_validated_work_admission(config, working_copy, issue_run_ledger)
     completion_intake = build_completion_intake(
         config, issue_run_ledger, issue_run_allocator, working_copy, command_runner, validated_work
     )

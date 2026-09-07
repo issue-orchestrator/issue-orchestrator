@@ -287,3 +287,17 @@ def test_evidence_rejects_untyped_enum_values(field):
     )
     with pytest.raises(TypeError, match=f"{field} must be typed"):
         replace(evidence, **{field: str(getattr(evidence, field))})
+
+
+def test_old_ledger_reopens_without_inventing_branch_binding(tmp_path):
+    path = tmp_path / "runs.sqlite"
+    record = run_record(tmp_path)
+    ledger = SqliteIssueRunLedger(path)
+    ledger.record_run(42, record)
+    with sqlite3.connect(path) as conn:
+        conn.execute("ALTER TABLE issue_runs DROP COLUMN branch_name")
+    reopened = SqliteIssueRunLedger(path)
+    assert reopened.recorded_runs(42) == (replace(record, branch_name=None),)
+    with pytest.raises(IssueRunEvidenceUnavailable):
+        reopened.record_run(42, record)
+    assert SqliteIssueRunLedger(path).recorded_runs(42)[0].branch_name is None

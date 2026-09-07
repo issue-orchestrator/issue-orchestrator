@@ -1,5 +1,7 @@
 """Historical import through real custody, allocation, validation and admission owners."""
 
+from issue_orchestrator.control.validated_work_admission import RankedEvidenceAdmission
+
 from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path

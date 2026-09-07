@@ -26,6 +26,9 @@ class IssueRunEvidenceService:
         self._live_runs = live_runs
         self._now = now
 
+    def worktree_evidence(self, issue_number: int, path: Path) -> IssueRunEvidence:
+        return self.evidence_for_issue(issue_number).select(worktree_path=path)
+
     def terminal_issues(self, terminal_id: str) -> tuple[int, ...]:
         return tuple(issue for issue in self.issue_numbers()
             if any(row.run.session_name == terminal_id for row in self._ledger.recorded_runs(issue)))

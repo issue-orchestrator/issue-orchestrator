@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass, replace
 from enum import StrEnum
+from pathlib import Path
 
 from .session_key import SessionKey
 from .session_run import SessionRunAssets
@@ -50,9 +51,10 @@ class IssueRunEvidence:
             raise ValueError("evidence requires observed_at")
 
 
-    def select(self, *, terminal_id: str, run: SessionRunAssets | None = None) -> "IssueRunEvidence":
-        selected = tuple(row for row in self.runs if row.run.session_name == terminal_id
-            and (run is None or row.run == run))
+    def select(self, *, terminal_id: str | None = None, run: SessionRunAssets | None = None, worktree_path: Path | None = None) -> "IssueRunEvidence":
+        selected = tuple(row for row in self.runs if (terminal_id is None or row.run.session_name == terminal_id)
+            and (run is None or row.run == run)
+            and (worktree_path is None or row.run.worktree_path == worktree_path))
         if run is not None and not selected:
             raise IssueRunEvidenceUnavailable("terminal run has no exact durable owner")
         return replace(self, runs=selected, status=IssueRunEvidenceStatus.RUNS_RECORDED

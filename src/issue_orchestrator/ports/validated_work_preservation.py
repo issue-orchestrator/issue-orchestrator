@@ -2,7 +2,7 @@
 
 from typing import Protocol
 from ..domain.validated_work_commands import AutomaticCaptureCommand, ValidatedWorkDispositionBatch
-from ..domain.validated_work_store import AdmissionOutcome, EvidenceAdmission, EvidenceLookup, EvidenceRow
+from ..domain.validated_work_store import AdmissionOutcome, EvidenceAdmission, EvidenceLookup, EvidenceRow, EvidenceAdmissionSelection
 
 
 class ValidatedWorkAdmissionStore(Protocol):
@@ -17,3 +17,10 @@ class ValidatedWorkPreservation(Protocol):
     def dispose_at_termination(self, command: AutomaticCaptureCommand) -> ValidatedWorkDispositionBatch: ...
     def has_unresolved_work(self, issue_number: int) -> bool: ...
     def for_issue(self, issue_number: int) -> ValidatedWorkDispositionBatch: ...
+
+
+class ValidatedWorkAdmissionBackend(ValidatedWorkAdmissionStore, Protocol):
+    def admit_selected(self, admission: EvidenceAdmission, expected_current: str | None,
+                       selection: EvidenceAdmissionSelection) -> AdmissionOutcome | None:
+        """Atomically admit the selection, or report a changed current evidence."""
+        ...

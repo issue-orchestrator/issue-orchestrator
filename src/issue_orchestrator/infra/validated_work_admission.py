@@ -9,6 +9,7 @@ from ..domain.validated_work_store import (
     AdmissionStatus,
     EvidenceAdmission,
     EvidenceRole,
+    EvidenceAdmissionSelection,
 )
 from .validated_work_lineage import LineageClassifier
 from .validated_work_rows import current_evidence, record_row, refresh_observations
@@ -53,6 +54,23 @@ class EvidenceAdmissionWriter:
             if row["state"] == "abandoned"
             else AdmissionStatus.SUPERSEDES
         )
+
+    def admit_selected(self, conn: sqlite3.Connection, admission: EvidenceAdmission,
+                       expected_current: str | None, selection: EvidenceAdmissionSelection) -> AdmissionStatus | None:
+        current = conn.execute("SELECT evidence_id FROM validated_work_evidence WHERE record_id=? AND role='current'",
+            (admission.evidence.record_id,)).fetchone()
+        if (None if current is None else current[0]) != expected_current:
+            return None
+        if selection is EvidenceAdmissionSelection.CURRENT:
+            return self.admit(conn, admission)
+        known = conn.execute("SELECT * FROM validated_work_evidence WHERE evidence_id=?", (admission.evidence.evidence_id,)).fetchone()
+        if known is not None:
+            return self._replay(conn, admission, known)
+        admission.require_capture_gate()
+        if current is None:
+            raise ValueError("cannot retain evidence without a current work record")
+        self._insert_evidence(conn, admission, EvidenceRole.SUPERSEDED)
+        return AdmissionStatus.RETAINED
 
     def _replay(
         self, conn: sqlite3.Connection, admission: EvidenceAdmission, known: sqlite3.Row

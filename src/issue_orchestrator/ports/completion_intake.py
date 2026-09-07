@@ -1,6 +1,7 @@
 """Behavior boundaries for completion custody, processing and trusted validation."""
 
 from ..domain.validated_work_commands import AutomaticCaptureScope
+from ..domain.validated_work import ValidatedWorkEvidence
 
 from typing import Protocol
 from pathlib import Path
@@ -35,6 +36,7 @@ class CompletionEvidenceIntake(Protocol):
 
 
 class CompletionIntakeLedger(CompletionEvidenceIntake, Protocol):
+    def evidence_receive_sequence(self, evidence: ValidatedWorkEvidence) -> int: ...
     def recorded_run(self, run: SessionRunAssets) -> IssueRunRecord: ...
     def prepare_candidate(self, entry_id: str, run: IssueRunRecord) -> PreparedCompletionEvidence | None: ...
     def read_owned_completion(self, entry_id: str) -> CompletionRecord: ...

@@ -658,8 +658,8 @@ def build_orchestrator(
         label_manager=label_manager, events=events)
 
     runtime_state = OrchestratorState()
-    validated_work = build_validated_work_admission(config, working_copy)
     issue_run_ledger, issue_run_allocator = build_issue_run_services(config.repo_root, session_output, working_copy)
+    validated_work = build_validated_work_admission(config, working_copy, issue_run_ledger)
     completion_intake = build_completion_intake(
         config, issue_run_ledger, issue_run_allocator, working_copy, command_runner, validated_work
     )
@@ -958,8 +958,8 @@ def build_orchestrator_for_testing(
     command_runner = LocalCommandRunner()
     session_output = FileSystemSessionOutput()
     runtime_state = OrchestratorState()
-    validated_work = build_validated_work_admission(config, working_copy)
     issue_run_ledger, issue_run_allocator = build_issue_run_services(config.repo_root, session_output, working_copy)
+    validated_work = build_validated_work_admission(config, working_copy, issue_run_ledger)
     completion_intake = build_completion_intake(
         config, issue_run_ledger, issue_run_allocator, working_copy, command_runner, validated_work
     )

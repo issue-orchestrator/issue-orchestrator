@@ -5,7 +5,7 @@ import sqlite3
 from ..domain.completion_intake import CompletionIntakeError
 from ..domain.validated_work import ValidatedWorkState
 from ..domain.validated_work_commands import ValidatedWorkDispositionBatch
-from ..domain.validated_work_store import AdmissionOutcome, EvidenceAdmission, EvidenceLookup, EvidenceRow
+from ..domain.validated_work_store import AdmissionOutcome, EvidenceAdmission, EvidenceLookup, EvidenceRow, EvidenceAdmissionSelection
 from ..ports.validated_work_verification import ValidatedWorkAncestry, ValidatedWorkArtifactVerifier
 from .validated_work_admission import EvidenceAdmissionWriter
 from .validated_work_lineage import LineageClassifier
@@ -28,6 +28,14 @@ class SqliteValidatedWorkIntakeStore:
                 return AdmissionOutcome(status, disposition(conn, admission.evidence.record_id))
         except sqlite3.Error as exc:
             raise CompletionIntakeError("parked admission unavailable") from exc
+
+    def admit_selected(self, admission: EvidenceAdmission, expected_current: str | None,
+                       selection: EvidenceAdmissionSelection) -> AdmissionOutcome | None:
+        if admission.initial_state is not ValidatedWorkState.PARKED:
+            raise ValueError("admission-only owner requires parked capture")
+        with self._db.transaction(write=True) as conn:
+            status = self._admission.admit_selected(conn, admission, expected_current, selection)
+            return None if status is None else AdmissionOutcome(status, disposition(conn, admission.evidence.record_id))
 
     def for_issue(self, issue_number: int) -> ValidatedWorkDispositionBatch:
         return self._snapshots.for_issue(issue_number)

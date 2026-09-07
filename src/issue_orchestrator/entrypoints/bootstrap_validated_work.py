@@ -2,6 +2,8 @@
 
 from ..infra.config import Config
 from ..ports.exact_git import ExactGit
+from ..ports.completion_intake import CompletionIntakeLedger
+from ..control.validated_work_admission import RankedEvidenceAdmission
 from ..ports.validated_work_store import ValidatedWorkStore
 from ..control.validated_work_escrow import ValidatedWorkEscrowMaintenance
 
@@ -43,7 +45,7 @@ class ValidatedWorkAdmissionOwners:
     repair: EscrowReconciliation
 
 
-def build_validated_work_admission(config: Config, working_copy: ExactGit) -> ValidatedWorkAdmissionOwners:
+def build_validated_work_admission(config: Config, working_copy: ExactGit, intake: CompletionIntakeLedger) -> ValidatedWorkAdmissionOwners:
     from ..infra.repo_identity import state_dir
     from ..infra.validated_work_escrow import FilesystemValidatedWorkEscrow
     from ..infra.validated_work_intake_store import SqliteValidatedWorkIntakeStore
@@ -54,5 +56,5 @@ def build_validated_work_admission(config: Config, working_copy: ExactGit) -> Va
     root = state_dir(config.repo_root)
     escrow = FilesystemValidatedWorkEscrow(root / "validated-work", repository=config.repo_root, repo_slug=config.repo, git=working_copy)
     ancestry = GitValidatedWorkAncestry(repository=config.repo_root, repo_slug=config.repo, git=working_copy)
-    store = SqliteValidatedWorkIntakeStore(root / "validated_work.sqlite", ancestry, escrow)
+    store = RankedEvidenceAdmission(SqliteValidatedWorkIntakeStore(root / "validated_work.sqlite", ancestry, escrow), intake)
     return ValidatedWorkAdmissionOwners(store, ParkedEvidenceCustody(escrow, store), EscrowReconciliation(escrow=escrow, store=store))

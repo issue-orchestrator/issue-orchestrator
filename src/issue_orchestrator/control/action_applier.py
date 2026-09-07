@@ -1540,7 +1540,8 @@ class ActionApplier:
         assert isinstance(action, CleanupSessionAction)
 
         errors = []
-        batch = self.runtime_lifecycle.preserve_terminal(action.issue_number, action.terminal_id, "session-cleanup")
+        batch = self.runtime_lifecycle.preserve_cleanup(action.issue_number, action.terminal_id,
+            Path(action.worktree_path) if action.remove_worktrees and action.worktree_path else None, "session-cleanup")
         cancellation = self._cancel_review_exchange_for_cleanup(action)
         self._cleanup_terminal_session(action, errors)
         self._cleanup_worktree(action, errors)

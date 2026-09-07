@@ -4,6 +4,7 @@ Implements the WorktreeManager port using the git worktree implementation.
 """
 
 from pathlib import Path
+from .git_tools import run_git
 
 from ..ports.worktree_manager import (
     RegisteredWorktree,
@@ -81,6 +82,11 @@ class GitWorktreeManager:
     def can_remove_without_user_changes(self, worktree_path: Path) -> bool:
         """Return true when forced removal would not discard user changes."""
         return can_remove_without_user_changes(worktree_path)
+
+    def is_commit_retained_by_branch(self, worktree_path: Path, head_sha: str, branch: str) -> bool:
+        """No proof on missing refs, missing objects, or unavailable Git."""
+        retained, _ = run_git(["merge-base", "--is-ancestor", head_sha, f"refs/heads/{branch}"], cwd=worktree_path)
+        return retained
 
     def read_reviewer_head_ownership(
         self, worktree_path: Path

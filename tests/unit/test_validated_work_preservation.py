@@ -1,5 +1,7 @@
 """Real Git/SQLite/intake/escrow preservation across destructive boundaries."""
 
+from issue_orchestrator.control.validated_work_admission import RankedEvidenceAdmission
+
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -65,6 +67,7 @@ def custody(tmp_path):
     escrow = FilesystemValidatedWorkEscrow(state / "validated-work", repository=repo, repo_slug="owner/repo", git=wc)
     store = SqliteValidatedWorkIntakeStore(state / "work.sqlite",
         GitValidatedWorkAncestry(repository=repo, repo_slug="owner/repo", git=wc), escrow)
+    store = RankedEvidenceAdmission(store, ledger)
     repair = EscrowReconciliation(escrow=escrow, store=store)
     preservation = ValidatedWorkPreservationService(intake=intake, store=store,
         custody=ParkedEvidenceCustody(escrow, store), repair=repair, working_copy=wc)
@@ -327,3 +330,61 @@ def test_terminal_preservation_keeps_unrelated_allocated_run_open(custody):
     with pytest.raises(IntakeClosed):
         custody.intake.submit(review_capability, command(completion(), "review-after-close"))
     submit(custody, "coder-still-open")
+
+
+def test_stop_committed_then_raised_preserves_batch(custody):
+    from issue_orchestrator.control.review_exchange_lifecycle import GenerationTerminationPartialFailure
+    submit(custody, "retained")
+    active = SimpleNamespace(issue=SimpleNamespace(number=42), key=SimpleNamespace(task=TaskKind.CODE),
+        terminal_id="issue-42", run_assets=custody.run)
+    custody.lifecycle.core.active_sessions.append(active)
+    running = True
+    def stop(terminal):
+        nonlocal running
+        running = False
+        raise RuntimeError("post-stop observer failed")
+    with pytest.raises(GenerationTerminationPartialFailure) as raised:
+        custody.lifecycle.terminate_generation(TechLeadSessionGeneration(42, TaskKind.CODE, "issue-42", custody.run.run_id),
+            "kill", session_exists=lambda terminal: running, kill_session=stop)
+    assert raised.value.validated_work == custody.store.for_issue(42)
+    assert custody.lifecycle.core.active_sessions == []
+
+
+def test_shutdown_unknown_live_run_refuses_before_any_global_stop(custody):
+    from issue_orchestrator.domain.issue_run_evidence import IssueRunRecord
+    unrecorded = replace(custody.run, identity=replace(custody.run.identity, run_id="unknown"))
+    live = IssueRunRecord(SessionKey(GitHubIssueKey("owner/repo", "99"), TaskKind.CODE), unrecorded, "2026-09-07", "feature")
+    source = IssueRunEvidenceService(custody.ledger, live_runs=lambda issue: (live,) if issue == 99 else (), now=lambda: "2026-09-07")
+    custody.lifecycle.core.active_sessions.append(SimpleNamespace(issue=SimpleNamespace(number=99)))
+    lifecycle = replace(custody.lifecycle, run_evidence=source)
+    runner = Mock()
+    with pytest.raises(IssueRunEvidenceUnavailable):
+        lifecycle.shutdown(runner)
+    runner.on_orchestrator_shutdown.assert_not_called()
+    custody.pair.shutdown_all.assert_not_called()
+
+
+def test_review_worktree_cleanup_preserves_other_terminal_evidence(custody):
+    submit(custody, "coder-retained")
+    review = IssueRunAllocationService(FileSystemSessionOutput(), custody.ledger, custody.wc).allocate(
+        IssueRunAllocation(custody.worktree, "review-42", 42,
+            SessionKey(GitHubIssueKey("owner/repo", "42"), TaskKind.REVIEW), "agent:test", "test"))
+    batch = custody.lifecycle.preserve_cleanup(42, review.session_name, custody.worktree, "cleanup")
+    assert batch.unresolved
+    custody.git.run(custody.repo, ["worktree", "remove", "--force", str(custody.worktree)])
+    assert custody.lifecycle.preserve_worktree(custody.worktree, "retry")[0].dispositions == batch.dispositions
+
+
+def test_later_capture_cannot_replace_newer_receipt_for_same_key(custody):
+    submit(custody, "older")
+    exchange = IssueRunAllocationService(FileSystemSessionOutput(), custody.ledger, custody.wc).allocate(
+        IssueRunAllocation(custody.worktree, "exchange-42", 42,
+            SessionKey(GitHubIssueKey("owner/repo", "42"), TaskKind.CODE), "agent:test", "test"))
+    import json
+    new_completion = json.loads(completion())
+    new_completion["implementation"] = "newer exact receipt"
+    receipt = custody.intake.submit(custody.ledger.submission_capability(exchange), command(json.dumps(new_completion).encode(), "newer"))
+    custody.intake.prepare_receipt(receipt, exchange)
+    newer = custody.lifecycle.preserve_terminal(42, exchange.session_name, "newer", run=exchange)
+    older = custody.lifecycle.preserve_terminal(42, custody.run.session_name, "older", run=custody.run)
+    assert older.dispositions[0].evidence_id == newer.dispositions[0].evidence_id

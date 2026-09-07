@@ -752,14 +752,10 @@ class TestReconcileHistoryEntryAction:
             228, reason="issue-completed",
         )
 
-    def test_reconcile_history_entry_does_not_release_on_noop_path(
+    def test_reconcile_history_entry_rechecks_custody_on_noop_path(
         self, applier,
     ):
-        """If the history entry is already terminal (idempotent
-        no-op), the reconcile action returns early without firing the
-        HISTORY_RECONCILED event — and must NOT call release a second
-        time. Otherwise an already-released pair would receive a
-        second release call (idempotent, but noisy in logs)."""
+        """Already-terminal history still checks custody before idempotent release."""
         from unittest.mock import MagicMock
 
         entry = SessionHistoryEntry(
@@ -785,7 +781,7 @@ class TestReconcileHistoryEntryAction:
 
         applier.apply(action)
 
-        applier.pair_registry.release.assert_not_called()
+        applier.pair_registry.release.assert_called_once_with(228, reason="issue-completed")
 
 
 class TestSyncLabelsAction:

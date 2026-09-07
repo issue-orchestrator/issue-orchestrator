@@ -355,7 +355,7 @@ def apply_disposable_removal_safety(
                 )
             )
             continue
-        if parent is not None and parent.branch is not None and reviewer.head == parent.head:
+        if parent is not None and parent.branch is not None and worktree_manager.is_commit_retained_by_branch(entry.path, reviewer.head, parent.branch):
             checked.append(replace(entry, cleanup_authority=WorktreeCleanupAuthority.UNCHANGED_REVIEWER))
         else:
             checked.append(replace(entry, disposition="retained",
