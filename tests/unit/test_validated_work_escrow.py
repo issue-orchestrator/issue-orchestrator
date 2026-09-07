@@ -238,7 +238,7 @@ def test_retention_uses_resolved_records_all_roles_and_configured_window(rig, tm
         a.evidence.evidence_id for a in (first, second, attached)
     }
     assert rig.working.retained_refs(rig.root) == ()
-    assert store.evidence_for_retention(released_before="2027-01-01") == ()
+    assert store.evidence_for_retention(released_before="2027-01-01T00:00:00+00:00") == ()
 
 
 @pytest.mark.parametrize(

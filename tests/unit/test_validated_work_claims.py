@@ -284,7 +284,7 @@ def test_attempt_budget_survives_restarts_and_exhaustion_is_unresolved(tmp_path)
     assert len(store.publish_attempts(token.record_id)) == 5
     assert store.has_unresolved_work(6914)
     assert begin(store, token) is None
-    assert store.evidence_for_retention(released_before="9999") == ()
+    assert store.evidence_for_retention(released_before="9999-01-01T00:00:00+00:00") == ()
 
 
 def test_finalization_is_fenced_forward_only_and_cannot_infer_recovered(tmp_path):

@@ -5,8 +5,10 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
+from datetime import datetime
 from pathlib import Path
 
+from ..domain.retention_clock import retention_instant
 from ..domain.validated_work import (
     LineageRole,
     ValidatedWorkFailure,
@@ -100,11 +102,12 @@ def evidence_row(row: sqlite3.Row) -> EvidenceRow:
     )
 
 
-def retention_evidence_row(conn: sqlite3.Connection, row: sqlite3.Row) -> EvidenceRow:
-    """Read a retention candidate and validate its owning disposition."""
+def retention_evidence_row(conn: sqlite3.Connection, row: sqlite3.Row, cutoff: datetime) -> EvidenceRow | None:
+    """Validate the owning disposition and its clock before testing eligibility."""
     evidence = evidence_row(row)
     disposition(conn, evidence.record_id)
-    return evidence
+    terminal = retention_instant(record_row(conn, evidence.record_id)["terminal_at"])
+    return evidence if terminal < cutoff else None
 
 
 def current_evidence(conn: sqlite3.Connection, record_id: str) -> EvidenceRow:

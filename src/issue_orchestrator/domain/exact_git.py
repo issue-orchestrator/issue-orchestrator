@@ -29,3 +29,18 @@ class RefPinOutcome(StrEnum):
 class RetainedRef:
     name: str
     sha: str
+
+
+@dataclass(frozen=True, slots=True)
+class ExactPushDestination:
+    """Resolved transport endpoint; reused unchanged for one exact publication."""
+
+    endpoint: str
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.endpoint) is not str
+            or not self.endpoint
+            or any(c in self.endpoint for c in "\n\r\0")
+        ):
+            raise ValueError("exact push destination must be nonempty single-line text")
