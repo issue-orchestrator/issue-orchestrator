@@ -17,6 +17,8 @@ from issue_orchestrator.domain.tech_lead_session import StoredTechLeadOp
 from issue_orchestrator.ports.comment_receipt import IssueCommentReceipt
 from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthorityStore
 from issue_orchestrator.infra.config import Config
+from tests.runtime_lifecycle_helpers import reset_snapshot
+from issue_orchestrator.control.review_exchange_lifecycle import IssueRuntimeActivity, IssueRuntimeOwnerKind
 
 
 class Host:
@@ -54,7 +56,7 @@ def harness(op_type="reset_retry"):
         target_session_type="code" if op_type == "kill_hung_session" else "")
     authority.record_op(issue_number=7000, op=op)
     reset = TechLeadResetRetryExecutor(events=MagicMock(), label_manager=LabelManager(Config()),
-        read_issue=host.get_issue, has_active_issue_runtime=lambda n: False,
+        read_issue=host.get_issue, runtime_snapshot=reset_snapshot,
         run_reset=lambda n, labels: ResetRetryRunOutcome(success=True))
     kill = TechLeadKillSessionExecutor(events=MagicMock(), run_kill=lambda target, reason: KillSessionRunOutcome(success=True),
         read_generation_stale_reason=lambda target: None)
@@ -64,7 +66,7 @@ def harness(op_type="reset_retry"):
     return host, authority, reset, kill, applier, action
 
 
-@pytest.mark.parametrize("condition", ["closed", "missing", "no-op", "unblocked", "active", "write-race"])
+@pytest.mark.parametrize("condition", ["closed", "missing", "no-op", "unblocked", "active", "validated-work", "write-race"])
 def test_inapplicable_reuse_withholds_completion(condition):
     host, authority, reset, kill, applier, action = harness()
     if condition == "closed":
@@ -76,7 +78,10 @@ def test_inapplicable_reuse_withholds_completion(condition):
     elif condition == "unblocked":
         host.issue = replace(host.issue, labels=[])
     elif condition == "active":
-        reset.has_active_issue_runtime = lambda n: True
+        reset.runtime_snapshot = lambda n: reset_snapshot(n, busy=True)
+    elif condition == "validated-work":
+        reset.runtime_snapshot = lambda n: replace(reset_snapshot(n), activity=IssueRuntimeActivity(
+            frozenset({IssueRuntimeOwnerKind.VALIDATED_WORK}), frozenset()))
     else:
         host.after_comment = lambda: host.states.update({7000: "closed"})
     results, error = apply_completion_actions_gated(applier, [
