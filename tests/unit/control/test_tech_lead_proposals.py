@@ -1,6 +1,9 @@
 """Tests for gated tech_lead proposal issues (#6778, amends ADR-0031 §2)."""
 
 from unittest.mock import MagicMock, call
+import hashlib
+
+from issue_orchestrator.ports.comment_receipt import IssueCommentReceipt
 
 import pytest
 
@@ -119,6 +122,17 @@ def _issue(number: int, labels: list[str], title: str = "t") -> Issue:
 
 def _host(created_number: int = 500) -> MagicMock:
     host = MagicMock()
+    comments = {}
+
+    def publish(number, body):
+        comments[(number, body)] = IssueCommentReceipt(
+            str(len(comments) + 1), "comment-url", "github-user:7",
+            hashlib.sha256(body.encode()).hexdigest(),
+        )
+        return "comment-url"
+
+    host.add_comment.side_effect = publish
+    host.find_issue_comment_receipt.side_effect = lambda number, *, body: comments.get((number, body))
     host.create_issue.return_value = {"number": created_number}
     # No orphaned remote case file unless a test says otherwise (#6957 F10).
     host.find_issue_by_marker.return_value = None
@@ -469,7 +483,7 @@ def test_apply_proposal_creation_records_op_and_links_anchor() -> None:
 
     result = apply_create_tech_lead_issue(
         action,
-        repository_host=host,
+        before_case_file_write=lambda *args: None, repository_host=host,
         events=MagicMock(),
         ops=ops,
         add_comment=host.add_comment,
@@ -494,7 +508,7 @@ def test_apply_proposal_creation_fails_when_gate_not_provisioned() -> None:
 
     result = apply_create_tech_lead_issue(
         _proposal_action(),
-        repository_host=host,
+        before_case_file_write=lambda *args: None, repository_host=host,
         events=MagicMock(),
         ops=ops,
         add_comment=host.add_comment,
@@ -511,7 +525,7 @@ def test_apply_proposal_creation_without_store_fails_loudly() -> None:
     host = _host()
     result = apply_create_tech_lead_issue(
         _proposal_action(),
-        repository_host=host,
+        before_case_file_write=lambda *args: None, repository_host=host,
         events=MagicMock(),
         ops=None,
         add_comment=host.add_comment,
@@ -529,6 +543,7 @@ def _case_file_action(
     additional_comments: tuple[str, ...] = (),
     fix_class: str = "",
     observation_suffix: str = "",
+    diagnosis: str = "Pool exhaustion comes from a leaked connection.",
 ) -> CreateTechLeadCaseFileIssueAction:
     """A case-file creation action.
 
@@ -561,7 +576,7 @@ def _case_file_action(
         expected=build_expected_for_mutation(),
         area=area,
         fix_class=fix_class,
-        diagnosis="Pool exhaustion comes from a leaked connection.",
+        diagnosis=diagnosis,
         idempotency_marker=marker,
         observations=observations,
     )
@@ -575,7 +590,7 @@ def test_apply_case_file_creation_records_pattern_ledger() -> None:
 
     result = apply_create_tech_lead_issue(
         _case_file_action("db-timeout"),
-        repository_host=host,
+        before_case_file_write=lambda *args: None, repository_host=host,
         events=MagicMock(),
         ops=ops,
         add_comment=host.add_comment,
@@ -602,7 +617,7 @@ def test_apply_case_file_missing_observation_label_creates_no_orphan() -> None:
 
     result = apply_create_tech_lead_issue(
         _case_file_action("db-timeout"),
-        repository_host=host,
+        before_case_file_write=lambda *args: None, repository_host=host,
         events=MagicMock(),
         ops=ops,
         add_comment=host.add_comment,
@@ -623,7 +638,7 @@ def test_apply_case_file_missing_area_label_creates_no_orphan() -> None:
 
     result = apply_create_tech_lead_issue(
         _case_file_action("db-timeout", area="database"),
-        repository_host=host,
+        before_case_file_write=lambda *args: None, repository_host=host,
         events=MagicMock(),
         ops=ops,
         add_comment=host.add_comment,
@@ -645,7 +660,7 @@ def test_apply_case_file_provisions_labels_before_blocking_area_tagged_issue() -
 
     result = apply_create_tech_lead_issue(
         action,
-        repository_host=host,
+        before_case_file_write=lambda *args: None, repository_host=host,
         events=MagicMock(),
         ops=ops,
         add_comment=host.add_comment,
@@ -689,7 +704,7 @@ def test_apply_case_file_creation_without_store_fails_loudly() -> None:
     host = _host()
     result = apply_create_tech_lead_issue(
         _case_file_action(),
-        repository_host=host,
+        before_case_file_write=lambda *args: None, repository_host=host,
         events=MagicMock(),
         ops=None,
         add_comment=host.add_comment,
@@ -705,7 +720,7 @@ def test_apply_case_file_creation_posts_same_decision_observations() -> None:
     ops = InMemoryTechLeadAuthorityStore()
     result = apply_create_tech_lead_issue(
         _case_file_action("db-timeout", additional_comments=("second observation",)),
-        repository_host=host,
+        before_case_file_write=lambda *args: None, repository_host=host,
         events=MagicMock(),
         ops=ops,
         add_comment=host.add_comment,
@@ -723,7 +738,7 @@ def test_apply_case_file_rechecks_ledger_and_comments_inflight_duplicate() -> No
     )
     result = apply_create_tech_lead_issue(
         _case_file_action("db-timeout", additional_comments=("follow-up",)),
-        repository_host=host,
+        before_case_file_write=lambda *args: None, repository_host=host,
         events=MagicMock(),
         ops=ops,
         add_comment=host.add_comment,
@@ -744,14 +759,14 @@ def test_apply_case_file_rechecks_ledger_and_comments_inflight_duplicate() -> No
 # --- Replay after each partial write (#6957 review F1) ---------------------
 #
 # The lane's evidence count gates promotion, so every crash window between a
-# GitHub write and the durable count has to be replay-safe: a retry may repeat
-# a comment, but it must never count one observation twice.
+# GitHub write and the durable count has to be replay-safe: receipts recover
+# remote comments, and the local ledger counts each observation once.
 
 
 def _apply_case_file(action, *, ops, host):
     return apply_create_tech_lead_issue(
         action,
-        repository_host=host,
+        before_case_file_write=lambda *args: None, repository_host=host,
         events=MagicMock(),
         ops=ops,
         add_comment=host.add_comment,
@@ -794,7 +809,14 @@ def test_replay_after_one_additional_comment_counts_only_what_is_missing() -> No
     host = _host(600)
     # Fail while posting the SECOND additional comment (the third observation
     # of the decision), after the first one and its count already landed.
-    host.add_comment.side_effect = [None, RuntimeError("network died")]
+    publish = host.add_comment.side_effect
+
+    def fail_third(number, body):
+        if body == "third":
+            raise RuntimeError("network died")
+        return publish(number, body)
+
+    host.add_comment.side_effect = fail_third
 
     failed = _apply_case_file(action, ops=ops, host=host)
 
@@ -812,9 +834,8 @@ def test_replay_after_one_additional_comment_counts_only_what_is_missing() -> No
     assert replay_host.add_comment.call_args_list == [call(600, "third")]
 
 
-def test_replay_after_a_lost_comment_repeats_it_rather_than_losing_evidence() -> None:
-    """The comment is posted BEFORE its count, so a crash between them repeats
-    the comment (cosmetic) instead of counting evidence nobody can read."""
+def test_replay_after_a_failed_comment_publishes_missing_evidence() -> None:
+    """A publication that never reached GitHub must be attempted on retry."""
     action = _case_file_action("db-timeout", additional_comments=("second",))
     ops = InMemoryTechLeadAuthorityStore()
     host = _host(600)
@@ -849,13 +870,13 @@ def test_replaying_a_repeat_observation_append_never_double_counts() -> None:
             observation_id="r2:s:A1", comment="observed again"
         ),
     )
-    host = MagicMock()
+    host = _host()
 
     assert apply_append_pattern_observation(
-        action, repository_host=host, authority=ops
+        action, before_write=lambda *args: None, repository_host=host, authority=ops
     ).success
     replay = apply_append_pattern_observation(
-        action, repository_host=host, authority=ops
+        action, before_write=lambda *args: None, repository_host=host, authority=ops
     )
 
     assert replay.success
@@ -980,6 +1001,46 @@ def test_a_later_action_recovering_keeps_the_original_body_authoritative() -> No
     )
     assert evidence.observation_count == 2
     assert retry_host.add_comment.call_args_list == [call(600, "first observation")]
+
+
+def test_a_recovering_flag_pattern_establishes_a_missing_diagnosis() -> None:
+    """#6989 round-1 review F1, on the recovery path.
+
+    An evidence-only duplicate sighting can OPEN a case file, so the interrupted
+    creation this recovers may carry no canonical diagnosis at all. Recovery
+    finalizes from the original intent (it must not borrow the recovering
+    action's metadata for the body), and the recovering ``flag_pattern`` is then
+    an ordinary append — which is where its diagnosis has to land, or a later
+    promotion would be filed with nothing actionable in it.
+    """
+    sighting = _case_file_action("db-timeout", diagnosis="")
+    ops = InMemoryTechLeadAuthorityStore()
+    _crash_the_ledger_write(ops)
+    assert not _apply_case_file(sighting, ops=ops, host=_host(600)).success
+
+    diagnosing = _case_file_action(
+        "db-timeout",
+        fix_class="code",
+        observation_suffix="later",
+        additional_comments=(),
+        diagnosis="Mechanism: a leaked connection. Fix: close it on the error path.",
+    )
+    retry_host = _host(999)
+    retry_host.find_issue_by_marker.return_value = 600
+
+    recovered = _apply_case_file(diagnosing, ops=ops, host=retry_host)
+
+    assert recovered.success and recovered.details["recovered"] is True
+    retry_host.create_issue.assert_not_called()
+    [evidence] = ops.list_pattern_evidence()
+    assert evidence.case_file_issue_number == 600
+    # The row was committed from the sighting's intent (no diagnosis, no class)
+    # and then UPGRADED by the recovering flag_pattern's append.
+    assert evidence.diagnosis == (
+        "Mechanism: a leaked connection. Fix: close it on the error path."
+    )
+    assert evidence.fix_class == "code"
+    assert evidence.observation_count == 2
 
 
 def test_a_recovering_action_cannot_reclassify_the_recovered_body() -> None:
@@ -1111,7 +1172,7 @@ def test_apply_plain_tech_lead_issue_records_no_op() -> None:
             pr_count=2,
             origin=TechLeadCreationOrigin.authors_anchor(),
         ),
-        repository_host=host,
+        before_case_file_write=lambda *args: None, repository_host=host,
         events=MagicMock(),
         ops=ops,
         add_comment=host.add_comment,
@@ -1135,7 +1196,7 @@ def test_body_tamper_has_zero_effect_on_execution() -> None:
     action = _proposal_action(target=13)
     apply_create_tech_lead_issue(
         action,
-        repository_host=host,
+        before_case_file_write=lambda *args: None, repository_host=host,
         events=MagicMock(),
         ops=ops,
         add_comment=host.add_comment,

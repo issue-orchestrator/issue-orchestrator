@@ -88,9 +88,10 @@ class QueueDecisionLog:
             self._changes.note(
                 issue_number,
                 fingerprint,
-                "trace-queue-decision issue=%d decision=launch reason=%s",
+                "trace-queue-decision issue=%d decision=launch reason=%s detail=%s",
                 issue_number,
                 reason,
+                detail or "none",
             )
             return
         if reason == "dependency_blocked":
