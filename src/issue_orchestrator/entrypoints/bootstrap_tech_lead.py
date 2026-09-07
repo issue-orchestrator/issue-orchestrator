@@ -18,6 +18,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Callable
 
 from ..infra.logging_config import get_repo_log_path, read_log_tail
+from ..ports.budgeted_validation import BudgetedValidationReports, DisabledBudgetedValidationReports
 
 if TYPE_CHECKING:
     from ..control.board_snapshot_builder import BoardSnapshotBuilder
@@ -233,6 +234,7 @@ def create_tech_lead_fact_gatherer(
     queue_cache_store: "QueueCacheStore | None" = None,
     provider_resilience: "ProviderResilienceManager | None" = None,
     promotion_target: "PromotionTargetHost | None" = None,
+    budgeted_validation_reports: BudgetedValidationReports = DisabledBudgetedValidationReports(),
 ) -> "FactGatherer | None":
     """Wire the read-only tech_lead ledgers and projections as one unit.
 
@@ -253,6 +255,7 @@ def create_tech_lead_fact_gatherer(
         tech_lead_authority=authority,
         board_publisher=board_publisher,
         promotion_target=promotion_target,
+        budgeted_validation_reports=budgeted_validation_reports,
         queue_cache_store=queue_cache_store,
         # First-class E2E workload observation feed (e2e.occupies_session_slot).
         # Always wired; a no-op that touches nothing while the flag is off.
@@ -272,6 +275,7 @@ def create_tech_lead_composition(
     fact_gatherer: "FactGatherer | None" = None,
     queue_cache_store: "QueueCacheStore | None" = None,
     provider_resilience: "ProviderResilienceManager | None" = None,
+    budgeted_validation_reports: BudgetedValidationReports = DisabledBudgetedValidationReports(),
 ) -> TechLeadComposition:
     """Build the tech_lead store and ensure both projections share one publisher."""
     authority = create_tech_lead_authority_store(config)
@@ -299,6 +303,7 @@ def create_tech_lead_composition(
             queue_cache_store,
             provider_resilience,
             promotion_target,
+            budgeted_validation_reports,
         )
     return TechLeadComposition(
         authority=authority,

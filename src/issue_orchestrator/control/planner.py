@@ -25,6 +25,7 @@ import re
 import time
 from typing import TYPE_CHECKING, Callable, Optional
 
+from .budgeted_validation_reporting import ReportBudgetedValidationAction
 from ..infra.config import Config
 from ..infra.logging_config import issue_log
 from ..ports.issue import Issue
@@ -235,6 +236,8 @@ class Planner:
         })
 
         # === PHASE 1: Queue population actions (don't consume capacity) ===
+
+        actions.extend(ReportBudgetedValidationAction(notice=notice) for notice in snapshot.budgeted_validation_notices)
 
         # 1a. Clean up stale in-progress labels (no session running)
         stale_cleanup_actions = self._plan_stale_cleanup(snapshot)

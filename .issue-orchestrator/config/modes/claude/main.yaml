@@ -145,6 +145,30 @@ cleanup:
     remove_worktrees: true
 
 validation:
+  # Real model calls are an IO-owned periodic workload, outside the PR gate.
+  budgeted:
+    live-agents:
+      command:
+        - .venv/bin/python
+        - -m
+        - pytest
+        - tests/unit
+        - packages/agent_runner/tests
+        - tests/integration
+        - tests/simulated_scenarios
+        - -m
+        - "(live_agent or live_codex) and not requires_infra"
+        - -p
+        - scripts.agent_test_report
+        - -q
+        - -x
+      setup_command: [make, venv-fast]
+      issue_agent_label: agent:backend
+      branch: main
+      timeout_seconds: 3600
+      cadence:
+        max_merges_since_success: 10
+        max_delay_hours: 24
   # TEMPORARILY on the direct backend — see #7163. The condor backend runs
   # the unit lane at UNIT_PARALLEL=12 inside a 3-CPU reservation, and the
   # resulting oversubscription fails condor's own forking adapter tests.

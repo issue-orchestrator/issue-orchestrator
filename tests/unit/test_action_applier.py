@@ -3026,6 +3026,9 @@ class TestClaimGateAudit:
     # - RECONCILE_HISTORY_ENTRY: local session history mutation + event only
     # - CREATE_PR: not implemented in action_applier
     EXEMPT_ACTIONS = {
+        # Creates a new regression issue; never mutates an existing claimed
+        # issue. The reporting owner verifies its durable run and create lease.
+        ActionType.REPORT_BUDGETED_VALIDATION,
         ActionType.APPLY_PROVIDER_IMPACT,
         ActionType.APPEND_PATTERN_OBSERVATION,
         ActionType.PROMOTE_TECH_LEAD_FINDING,

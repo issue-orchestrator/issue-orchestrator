@@ -16,12 +16,20 @@ Principle: "No Nulls in Orchestrator"
 """
 
 import logging
+from pathlib import Path
 import os
 import time
 from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
 from ..control.background_job_supervisor import BackgroundJobSupervisor
+from ..ports.budgeted_validation import DisabledBudgetedValidation, DisabledBudgetedValidationReports, BudgetedValidationRuntime, BudgetedValidationReports
+from ..ports.command_runner import CommandRunner
+from ..ports.repository_host import RepositoryHost
+from ..control.budgeted_validation import BudgetedValidationCycle
+from .bootstrap_budgeted_validation import build_budgeted_validation_runtime, assemble_budgeted_validation_cycle
+from ..adapters.budgeted_validation_git import BudgetedValidationGit
+from ..adapters.budgeted_validation_store import FileBudgetedValidationStore
 from ..infra.agent_callback_endpoint import RuntimeAgentCallbackEndpoint
 from .bootstrap_provider import (
     build_provider_circuit_store,
@@ -45,6 +53,8 @@ from .bootstrap_operator_commands import build_operator_issue_command_factory
 from .bootstrap_completion import (
     _validation_attempt_key_factory,
     build_completion_handler_factory,
+    wire_stack_publish_gate,
+    build_publish_recovery as _build_publish_recovery,
     create_completion_components,
 )
 from ..infra.config import Config
@@ -135,13 +145,10 @@ if TYPE_CHECKING:
     from ..control.pr_scanner import PRScanner
     from ..control.session_restorer import SessionRestorer
     from ..control.completion_processor import CompletionProcessor
-    from ..control.publish_recovery import PublishRecoveryService
     from ..control.session_controller import SessionController
     from ..adapters.github.fresh_issue_reader import GitHubFreshIssueReader
-    from ..ports.fresh_issue_reader import FreshIssueReader
     from ..ports.e2e_issue_tracker import E2EIssueTracker
     from ..ports.attempt_store import AttemptStore
-    from ..ports.tech_lead_authority import TechLeadAuthorityStore
 
 logger = logging.getLogger(__name__)
 
@@ -342,68 +349,13 @@ def _wire_stack_publish_gate(
     completion_processor: "CompletionProcessor | None",
     dependency_evaluator: DependencyEvaluator | None,
     github: GitHubAdapter | None,
-    command_runner: "LocalCommandRunner",
+    command_runner: LocalCommandRunner,
     config: Config,
 ) -> None:
-    """Wire the stack publish-gate + branch ancestry (ADR-0029 / #6596).
-
-    Attaches the git ancestry checker to the single dependency-gate evaluator
-    and gives the completion processor a :class:`StackPublishGate` so a
-    Stack-after: successor's PR is based on its predecessor branch and a blocked
-    publish gate fails fast. A no-op when any collaborator is absent, so
-    non-stack deployments and tests keep prior behavior.
-    """
+    """Only compose publication once all required collaborators exist."""
     if completion_processor is None or dependency_evaluator is None or github is None:
         return
-    from ..control.stack_publish_gate import StackBaseGate
-    from ..execution.stack_branch_ancestry import GitStackBranchAncestry
-
-    dependency_evaluator.attach_branch_ancestry(GitStackBranchAncestry(command_runner))
-    completion_processor.attach_stack_publish_gate(
-        StackBaseGate(
-            evaluator=dependency_evaluator,
-            issue_reader=github,
-            configured_base_branch=config.worktree_base_branch_override,
-        )
-    )
-
-
-def _build_publish_recovery(
-    *,
-    repository_host: "GitHubAdapter",
-    completion_processor: "CompletionProcessor",
-    label_manager: "LabelManager",
-    fresh_issue_reader: "FreshIssueReader",
-    action_applier: "ActionApplier",
-    config: Config,
-    tech_lead_authority: "TechLeadAuthorityStore",
-) -> "PublishRecoveryService":
-    """Wire the "Retry publish" owner: durable locator store + dedicated runner.
-
-    The republish runs on its own :class:`ThreadBackgroundJobRunner` (drained by
-    ``PublishRecoveryService.drain_completed_retries`` each tick), NOT the shared
-    completion/review-exchange runners — those are drained by other owners and
-    would steal or drop republish results.
-    """
-    from ..control.publish_recovery import PublishRecoveryService
-    from ..execution.json_publish_retry_locator_store import (
-        JsonPublishRetryLocatorStore,
-    )
-
-    locator_store = JsonPublishRetryLocatorStore(
-        state_dir(config.repo_root) / "publish_retry_locators.json"
-    )
-    return PublishRecoveryService(
-        repository_host=repository_host,
-        completion_processor=completion_processor,
-        locator_store=locator_store,
-        runner=ThreadBackgroundJobRunner(),
-        label_manager=label_manager,
-        fresh_issue_reader=fresh_issue_reader,
-        action_applier=action_applier,
-        code_review_agent_configured=bool(config.code_review_agent),
-        tech_lead_authority=tech_lead_authority,
-    )
+    wire_stack_publish_gate(completion_processor, dependency_evaluator, github, command_runner, config)
 
 
 def _validate_required_deps(
@@ -564,6 +516,10 @@ def build_orchestrator(
 
     # Create IO adapters
     worktree_manager, working_copy, command_runner, session_output = _create_io_adapters(github_auth)
+    budgeted_runtime, budgeted_reports = (
+        build_budgeted_validation_services(config, command_runner, github)
+        if github else (DisabledBudgetedValidation(), DisabledBudgetedValidationReports())
+    )
     coder_prompt_addendum = build_coder_prompt_addendum_provider(config)
 
     provider_readiness_probe = build_provider_readiness_probe(command_runner)
@@ -605,6 +561,7 @@ def build_orchestrator(
         events=events,
         repository_host=github,
         worktree_manager=worktree_manager,
+        budgeted_validation_reports=budgeted_reports,
         fresh_issue_reader=fresh_issue_reader,
         label_manager=label_manager,
         reconcile=True,
@@ -616,6 +573,7 @@ def build_orchestrator(
     tech_lead = create_tech_lead_composition(
         config, github, events, queue_cache_store=queue_cache_store,
         provider_resilience=provider_resilience,
+        budgeted_validation_reports=budgeted_reports,
     )
     tech_lead_authority = tech_lead.authority
     tech_lead_board_publisher = tech_lead.board_publisher
@@ -762,6 +720,7 @@ def build_orchestrator(
         action_applier.publish_recovery = publish_recovery
 
     infra_services = InfraServices(
+        budgeted_validation=budgeted_runtime,
         pause_journal=JsonlPauseJournal(
             state_dir(config.repo_root) / PAUSE_JOURNAL_FILENAME
         ),
@@ -1197,6 +1156,7 @@ def build_orchestrator_for_testing(
         action_applier.run_ownership = run_ownership
 
     infra_services = InfraServices(
+        budgeted_validation=DisabledBudgetedValidation(),
         # Null, matching NullTimelineWriter above: a bounded test
         # composition must not write through a production adapter.
         pause_journal=NullPauseJournal(),
@@ -1309,3 +1269,30 @@ def build_orchestrator_for_testing(
     )
 
     return Orchestrator(config=config, deps=deps)
+
+
+def build_budgeted_validation_cycle(root: Path) -> tuple[BudgetedValidationCycle, FileBudgetedValidationStore]:
+    """Standalone worker/CLI composition of the same repository-wide owner."""
+    from ..execution.command_runner import LocalCommandRunner
+
+    git = BudgetedValidationGit(root, LocalCommandRunner())
+    directory = git.storage_directory()
+    store = FileBudgetedValidationStore(directory)
+    return assemble_budgeted_validation_cycle(git, git, store, directory), store
+
+
+def build_budgeted_validation_services(config: Config, command_runner: CommandRunner, repository: RepositoryHost) -> tuple[BudgetedValidationRuntime, BudgetedValidationReports]:
+    """Share one durable reporting owner with observation and application."""
+    from datetime import datetime, timezone
+    from ..control.budgeted_validation_reporting import BudgetedValidationReportOwner
+    from ..ports.budgeted_validation import DisabledBudgetedValidationReports
+
+    suites = tuple(config.validation.budgeted.values())
+    if not any(suite.enabled for suite in suites):
+        return DisabledBudgetedValidation(), DisabledBudgetedValidationReports()
+    directory = BudgetedValidationGit(config.repo_root, command_runner).storage_directory()
+    return (
+        build_budgeted_validation_runtime(config.repo_root, suites, directory),
+        BudgetedValidationReportOwner(suites=suites, store=FileBudgetedValidationStore(directory),
+            repository=repository, clock=lambda: datetime.now(timezone.utc)),
+    )

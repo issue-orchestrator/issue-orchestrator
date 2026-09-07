@@ -238,6 +238,18 @@ cleanup:
     remove_worktrees: true      # false retains worktrees for inspection
 
 validation:
+  # Optional named suites for expensive tests. IO runs these independently of
+  # the PR gate after either cadence bound, and bisects reproducible failures.
+  # budgeted:
+  #   expensive-tests:
+  #     command: [./scripts/test-expensive]
+  #     setup_command: [./scripts/setup-tests]
+  #     issue_agent_label: agent:backend
+  #     branch: main
+  #     timeout_seconds: 3600
+  #     cadence:
+  #       max_merges_since_success: 10
+  #       max_delay_hours: 24
   quick:
     cmd: "make validate-quick"
     # Fast feedback for coding-done and local coder/reviewer exchanges.
