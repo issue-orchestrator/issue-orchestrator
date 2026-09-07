@@ -143,6 +143,12 @@ _Auto-generated from settings schema._
 | `merge_queue.enqueue_after` | string | `code-reviewed` | Orchestrator gate that must pass before a PR is enqueued | `code-reviewed`, `tech-lead-reviewed` | Names the approval gate the PR must clear before enqueue. code-reviewed is the reviewer-approval gate. |
 | `merge_queue.failure_action` | string | `rework` | How to route a PR that fails the merge queue | `rework`, `needs_human` | rework sends the PR back to a coding agent; needs_human escalates it for manual attention. |
 
+## Validated Work
+
+| Field | Type | Default | Description | Examples | Notes |
+|-------|------|---------|-------------|----------|-------|
+| `validated_work.escrow_retention_days` | integer | `30` | Keep resolved recovery evidence for this many days; unresolved work is always retained. | `30`, `90` |  |
+
 ## Goal Pilot
 
 | Field | Type | Default | Description | Examples | Notes |

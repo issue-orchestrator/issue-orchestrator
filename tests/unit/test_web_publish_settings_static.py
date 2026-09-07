@@ -52,6 +52,7 @@ class TestSettingsEndpoints:
         from issue_orchestrator.entrypoints import web
 
         mock_orch = create_mock_orchestrator()
+        mock_orch.config.validated_work.escrow_retention_days = 41
         web._orchestrator = mock_orch
         try:
             client = TestClient(app)
@@ -67,10 +68,12 @@ class TestSettingsEndpoints:
                 "review",
                 "merge_queue",
                 "validation",
+                "validated_work",
                 "hooks",
                 "advanced",
                 "goal_pilot",
             }
+            assert data["validated_work"] == {"validated_work_escrow_retention_days": 41}
         finally:
             web._orchestrator = None
 

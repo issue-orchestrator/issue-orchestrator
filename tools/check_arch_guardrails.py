@@ -836,6 +836,7 @@ _NON_PROVIDER_TEXT_CLASSIFIERS = frozenset(
         "control/completion_processor.py::CompletionProcessor._is_non_fast_forward",
         "control/issue_fetch_resilience.py::_looks_like_rate_limit",
         "execution/git_push_operations.py::determine_retryable",
+        "execution/git_exact_operations.py::GitExactOperations.push_exact",
         "execution/git_push_operations.py::get_preflight_fix_hint",
         "execution/git_working_copy.py::GitWorkingCopy.push_preflight",
         "execution/verification_service.py::DefaultVerificationService.classify_error",

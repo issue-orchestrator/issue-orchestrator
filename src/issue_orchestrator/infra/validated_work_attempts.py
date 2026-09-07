@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import replace
 
 from ..domain.validated_work import (
     LineageRole,
+    ValidatedWorkState,
     ValidatedWorkFailure as Failure,
     require_positive,
     require_sha,
@@ -20,12 +22,23 @@ from ..domain.validated_work_store import (
     PublishAttempt,
     PublishValidatedHeadStatus as Status,
 )
+from ..domain.validated_work_publish_policy import (
+    publication_eligible,
+    retry_permitted,
+    recordable_outcome,
+    attempt_requires_failure,
+)
 from .validated_work_claims import ClaimAuthority
 from .validated_work_lineage import LineageClassifier
-from .validated_work_rows import attempt_row, current_evidence, record_row
+from .validated_work_rows import (
+    attempt_row,
+    current_evidence,
+    has_successful_attempt,
+    latest_attempt,
+    record_row,
+)
 
 PUBLISH_ATTEMPT_LIMIT = 5
-SUCCESS_STATUSES = frozenset({Status.PUBLISHED, Status.ALREADY_AT_TARGET})
 
 
 class PublishAttemptWriter:
@@ -53,22 +66,22 @@ class PublishAttemptWriter:
             return None
         row = record_row(conn, claim.record_id)
         evidence = current_evidence(conn, claim.record_id)
-        if not self._eligible(
-            row,
-            evidence.authority,
-            authority,
-            target_head_sha,
-            expected_remote_head,
-            phase,
+        if not publication_eligible(
+            state=ValidatedWorkState(row["state"]),
+            lineage_role=LineageRole(row["lineage_role"]),
+            current=evidence.authority,
+            approved=authority,
+            target=target_head_sha,
+            expected=expected_remote_head,
+            phase=phase,
         ):
             return None
-        last = conn.execute(
-            "SELECT * FROM validated_work_publish_attempts WHERE record_id=? ORDER BY attempt_no DESC LIMIT 1",
-            (claim.record_id,),
-        ).fetchone()
-        count = last["attempt_no"] if last is not None else 0
-        if count != expected_attempt_no or not self._retry_permitted(
-            last, claim, evidence.evidence_id
+        last = latest_attempt(conn, claim.record_id)
+        count = last.attempt_no if last is not None else 0
+        if count != expected_attempt_no or not retry_permitted(
+            last,
+            fence=claim.fence,
+            evidence_id=evidence.evidence_id,
         ):
             return None
         if count >= PUBLISH_ATTEMPT_LIMIT:
@@ -118,48 +131,6 @@ class PublishAttemptWriter:
         )
         return attempt
 
-    @staticmethod
-    def _eligible(
-        row: sqlite3.Row,
-        current: ValidatedWorkAuthoritySnapshot,
-        approved: ValidatedWorkAuthoritySnapshot | None,
-        target: str,
-        expected: str,
-        phase: DispositionPhase,
-    ) -> bool:
-        if approved is not None and approved != current:
-            return False
-        if target != current.validated_head_sha or expected != (
-            current.expected_remote_head_sha or ""
-        ):
-            return False
-        if row["state"] == "publishing":
-            return phase is DispositionPhase.RECONCILING
-        if (
-            phase is not DispositionPhase.PRE_SUBMISSION
-            or row["lineage_role"] == LineageRole.PENDING
-        ):
-            return False
-        if row["state"] == "queued":
-            return row["lineage_role"] == LineageRole.HEAD
-        # A parked head requires exact snapshot consent; an arbitrary state set
-        # passed to acquire_claim is never approval to publish it.
-        return row["state"] == "parked" and approved == current
-
-    @staticmethod
-    def _retry_permitted(
-        last: sqlite3.Row | None, claim: ValidatedWorkClaim, evidence_id: str
-    ) -> bool:
-        if last is None:
-            return True
-        if last["evidence_id"] != evidence_id and last["outcome"]:
-            return True  # new capture gets its own attempt; history/budget remain
-        if last["outcome"] in SUCCESS_STATUSES:
-            return False  # resume finalization, never repeat a successful push
-        if not last["outcome"]:
-            return last["fence"] != claim.fence  # crash reconciliation by successor
-        return last["outcome"] == Status.TRANSIENT_FAILURE
-
     def outcome(
         self,
         conn: sqlite3.Connection,
@@ -170,18 +141,9 @@ class PublishAttemptWriter:
         failure: Failure | None,
         finished_at: str,
     ) -> bool:
-        if not isinstance(outcome, Status) or (
-            failure is not None and not isinstance(failure, Failure)
-        ):
-            raise ValueError("attempt outcome and failure must be typed")
-        if outcome is Status.SUPERSEDED:
-            return False
-        if outcome not in SUCCESS_STATUSES and failure is None:
-            raise ValueError("unsuccessful attempt requires enumerated failure")
-        if outcome in SUCCESS_STATUSES and failure is not None:
-            raise ValueError("successful attempt cannot carry failure")
         if (
             not self._claims.holds(conn, claim)
+            or type(attempt) is not PublishAttempt
             or attempt.record_id != claim.record_id
             or attempt.fence != claim.fence
         ):
@@ -198,20 +160,29 @@ class PublishAttemptWriter:
             return False
         if record_row(conn, claim.record_id)["state"] != "publishing":
             return False
+        if not recordable_outcome(outcome):
+            return False
+        # The same constructor that validates durable reads must admit the
+        # completed value before any write. Do not duplicate its shape rules.
+        completed = replace(
+            attempt,
+            outcome=outcome,
+            failure=failure,
+            finished_at=finished_at,
+        )
         conn.execute(
             "UPDATE validated_work_publish_attempts SET outcome=?,failure=?,finished_at=? WHERE record_id=? AND attempt_no=? AND outcome='' AND fence=?",
             (
                 outcome.value,
                 failure.value if failure else "",
-                finished_at,
+                completed.finished_at,
                 claim.record_id,
                 attempt.attempt_no,
                 claim.fence,
             ),
         )
-        if outcome in {Status.REJECTED, Status.DIVERGED} or (
-            outcome is Status.TRANSIENT_FAILURE
-            and attempt.attempt_no >= PUBLISH_ATTEMPT_LIMIT
+        if attempt_requires_failure(
+            outcome, attempt_no=attempt.attempt_no, limit=PUBLISH_ATTEMPT_LIMIT
         ):
             assert failure is not None
             self.fail(conn, claim, failure, failure.value, finished_at)
@@ -246,19 +217,13 @@ class PublishAttemptWriter:
         phase: FinalizationPhase,
         at: str,
     ) -> bool:
-        if not isinstance(phase, FinalizationPhase):
-            raise ValueError("finalization phase must be typed")
         if not self._claims.holds(conn, claim):
             return False
+        if not isinstance(phase, FinalizationPhase):
+            raise ValueError("finalization phase must be typed")
         row = record_row(conn, claim.record_id)
-        last = conn.execute(
-            "SELECT outcome FROM validated_work_publish_attempts WHERE record_id=? ORDER BY attempt_no DESC LIMIT 1",
-            (claim.record_id,),
-        ).fetchone()
-        if (
-            row["state"] != "publishing"
-            or last is None
-            or last["outcome"] not in SUCCESS_STATUSES
+        if row["state"] != "publishing" or not has_successful_attempt(
+            conn, claim.record_id
         ):
             return False
         old = FinalizationPhase(row["finalization_phase"])

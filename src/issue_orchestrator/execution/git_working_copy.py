@@ -9,7 +9,6 @@ Part of the execution layer - performs actions, does not make decisions.
 import json
 import logging
 import os
-import re
 import time
 from pathlib import Path
 
@@ -19,6 +18,10 @@ from ..execution.command_runner import LocalCommandRunner
 from ..execution.git_push_operations import GitAuthEnvProvider
 from ..infra.runtime_artifacts import filter_orchestrator_untracked_planted
 from ..ports.command_runner import OutputNewlines
+from .git_exact_operations import GitExactOperations
+from .git_branch_identity import issue_number_from_branch
+from ..domain.exact_git import ExactPushResult, RefPinOutcome, RetainedRef
+from ..domain.validated_work_store import AncestryRelation
 from ..ports.git import Git, GitError, GitResult
 from .git_revision_reader import GitRevisionReader
 from ..ports.working_copy import (
@@ -47,6 +50,27 @@ class GitWorkingCopy:
     def __init__(self, git: Git | None = None, git_auth: GitAuthEnvProvider | None = None) -> None:
         self._git = git or GitCLI(runner=LocalCommandRunner())
         self._git_auth = git_auth
+
+    def pin_ref(self, repository: Path, *, ref: str, sha: str) -> RefPinOutcome:
+        return GitExactOperations(self._git, self._git_auth).pin_ref(repository, ref=ref, sha=sha)
+
+    def verify_ref(self, repository: Path, *, ref: str, sha: str) -> bool:
+        return GitExactOperations(self._git, self._git_auth).verify_ref(repository, ref=ref, sha=sha)
+
+    def delete_pinned_ref(self, repository: Path, *, ref: str, sha: str) -> None:
+        GitExactOperations(self._git, self._git_auth).delete_pinned_ref(repository, ref=ref, sha=sha)
+
+    def retained_refs(self, repository: Path) -> tuple[RetainedRef, ...]:
+        return GitExactOperations(self._git, self._git_auth).retained_refs(repository)
+
+    def linked_worktrees(self, repository: Path) -> tuple[Path, ...]:
+        return GitExactOperations(self._git, self._git_auth).linked_worktrees(repository)
+
+    def compare_commits(self, repository: Path, *, left: str, right: str) -> AncestryRelation:
+        return GitExactOperations(self._git, self._git_auth).compare_commits(repository, left=left, right=right)
+
+    def push_exact(self, repository: Path, *, remote: str, branch: str, target_sha: str, expected_sha: str | None) -> ExactPushResult:
+        return GitExactOperations(self._git, self._git_auth).push_exact(repository, remote=remote, branch=branch, target_sha=target_sha, expected_sha=expected_sha)
 
     def _run_git(
         self,
@@ -650,35 +674,7 @@ class GitWorkingCopy:
             )
 
     def get_issue_number_from_branch(self, worktree: Path) -> int | None:
-        """Extract issue number from branch name.
-
-        First tries the canonical format ({issue_number}-{title}) via the
-        centralized function. Falls back to legacy patterns for externally
-        created branches.
-        """
-        from ..adapters.worktree._worktree import extract_issue_number_from_branch
-
-        branch = self.get_current_branch(worktree)
-        if not branch:
-            return None
-
-        # Try canonical format first (e.g., "328-feature-name")
-        issue_num = extract_issue_number_from_branch(branch)
-        if issue_num is not None:
-            return issue_num
-
-        # Fallback patterns for legacy or externally created branches
-        fallback_patterns = [
-            r"issue-(\d+)",      # issue-123 (legacy format)
-            r"/(\d+)-",          # feature/123-thing
-        ]
-
-        for pattern in fallback_patterns:
-            match = re.search(pattern, branch)
-            if match:
-                return int(match.group(1))
-
-        return None
+        return issue_number_from_branch(self.get_current_branch(worktree))
 
     def push_preflight(
         self,

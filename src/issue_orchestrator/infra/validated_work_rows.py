@@ -2,23 +2,14 @@
 
 from __future__ import annotations
 
-import json
 import sqlite3
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
 from pathlib import Path
 
-from ..domain.models import RequestedAction
-from ..domain.review_exchange_summary import ReviewExchangeTerminalState
-from ..domain.session_run import SessionRunIdentity
 from ..domain.validated_work import (
-    AdmittedArtifact,
-    ArtifactSlot,
     LineageRole,
-    ReviewDisposition,
-    ValidatedWorkEvidence,
     ValidatedWorkFailure,
-    ValidatedWorkIdentity,
     ValidatedWorkKey,
     ValidatedWorkObservations,
     ValidatedWorkState,
@@ -39,6 +30,7 @@ from ..domain.validated_work_store import (
     PublishValidatedHeadStatus,
 )
 from .sqlite_connection import open_sqlite
+from .validated_work_codec import decode_evidence
 from .validated_work_schema import SCHEMA
 
 
@@ -74,37 +66,7 @@ def record_row(conn: sqlite3.Connection, record_id: str) -> sqlite3.Row:
 
 
 def evidence_row(row: sqlite3.Row) -> EvidenceRow:
-    identity = json.loads(row["identity"])
-    for name in (
-        "completion_artifact",
-        "validation_artifact",
-        "exchange_summary_artifact",
-    ):
-        raw = identity[name]
-        if raw is not None:
-            identity[name] = AdmittedArtifact(
-                ArtifactSlot(raw["slot"]), raw["sha256"], raw["byte_size"]
-            )
-    identity["key"] = ValidatedWorkKey(**identity["key"])
-    identity["run_identity"] = SessionRunIdentity(**identity["run_identity"])
-    identity["requested_actions"] = tuple(
-        RequestedAction(v) for v in identity["requested_actions"]
-    )
-    identity["review_disposition"] = ReviewDisposition(identity["review_disposition"])
-    if identity["exchange_terminal"] is not None:
-        identity["exchange_terminal"] = ReviewExchangeTerminalState(
-            **identity["exchange_terminal"]
-        )
-    observations = json.loads(row["observations"])
-    observations["observed_blocking_labels"] = tuple(
-        observations["observed_blocking_labels"]
-    )
-    observations["admitted_from_paths"] = {
-        ArtifactSlot(k): v for k, v in observations["admitted_from_paths"].items()
-    }
-    evidence = ValidatedWorkEvidence(
-        ValidatedWorkIdentity(**identity), ValidatedWorkObservations(**observations)
-    )
+    evidence = decode_evidence(row["identity"], row["observations"])
     if (
         evidence.record_id != row["record_id"]
         or evidence.evidence_id != row["evidence_id"]
@@ -136,6 +98,13 @@ def evidence_row(row: sqlite3.Row) -> EvidenceRow:
         row["role_changed_at"],
         row["released_at"],
     )
+
+
+def retention_evidence_row(conn: sqlite3.Connection, row: sqlite3.Row) -> EvidenceRow:
+    """Read a retention candidate and validate its owning disposition."""
+    evidence = evidence_row(row)
+    disposition(conn, evidence.record_id)
+    return evidence
 
 
 def current_evidence(conn: sqlite3.Connection, record_id: str) -> EvidenceRow:
@@ -193,6 +162,28 @@ def publication(
         PublicationProvenance(row["published_via"]),
         row["published_pre_push_expected"],
         row["published_at"],
+    )
+
+
+def latest_attempt(conn: sqlite3.Connection, record_id: str) -> PublishAttempt | None:
+    """Read the complete durable fact before using any part to authorize work."""
+    row = conn.execute(
+        "SELECT * FROM validated_work_publish_attempts WHERE record_id=? ORDER BY attempt_no DESC LIMIT 1",
+        (record_id,),
+    ).fetchone()
+    return attempt_row(row) if row is not None else None
+
+
+def has_successful_attempt(conn: sqlite3.Connection, record_id: str) -> bool:
+    """Called after claim authentication, including successor finalization.
+
+    The durable success survives its writer's process; the calling owner need
+    not have the original attempt fence. Shape validation never trusts a phase
+    checkpoint or a raw outcome column in place of the complete attempt.
+    """
+    attempt = latest_attempt(conn, record_id)
+    return attempt is not None and attempt.succeeded_for(
+        current_evidence(conn, record_id).authority
     )
 
 
