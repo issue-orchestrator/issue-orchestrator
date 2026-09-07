@@ -126,6 +126,7 @@ reviewer-done changes_requested --issues "Missing tests" --risk medium
 |-------|------|--------------|
 | Architecture overview | [docs/architecture/README.md](docs/architecture/README.md) | System diagram, core principles |
 | Review workflow | [docs/development/REVIEW_WORKFLOW.md](docs/development/REVIEW_WORKFLOW.md) | Code review, tech lead, rework cycles |
+| Case-file reconciliation | [docs/development/CASE_FILE_RECONCILIATION.md](docs/development/CASE_FILE_RECONCILIATION.md) | Folding an accumulated duplicate cluster onto its pattern case file |
 | Troubleshooting | [docs/development/TROUBLESHOOTING.md](docs/development/TROUBLESHOOTING.md) | Debugging, common problems |
 | Hook enforcement | [docs/architecture/hooks.md](docs/architecture/hooks.md) | Guardrails, agent restrictions |
 
