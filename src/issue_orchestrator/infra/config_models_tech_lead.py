@@ -30,8 +30,14 @@ class MilestoneStrategyConfig:
 
 TECH_LEAD_AUTHORITY_MODES = ("execute", "propose")
 
-# Action types whose authority mode is configurable. escalate_to_human is
-# deliberately absent: it is the non-configurable floor and always executes.
+# These outcomes always execute after owner admission. Human escalation uses
+# its marker lifecycle. Tracker waiting is restricted to an immutable launch
+# grant for a declared prerequisite and a finite, non-renewable deadline; it
+# cannot park work against an arbitrary agent-chosen tracker.
+TECH_LEAD_AUTHORITY_FLOOR_ACTIONS = ("escalate_to_human", "defer_to_tracker")
+
+# Action types whose authority mode is configurable — the complement of the
+# floor set above.
 TECH_LEAD_AUTHORITY_CONFIGURABLE_ACTIONS = (
     "post_comment",
     "create_issue",
@@ -53,8 +59,9 @@ class TechLeadAuthorityConfig:
     per-instance operator approval. Per-instance approval and config-level
     trust coexist.
 
-    ``escalate_to_human`` is intentionally not a field: it is the
-    non-configurable floor and always executes. Act-level actions
+    ``escalate_to_human`` and ``defer_to_tracker`` are intentionally not
+    fields: they are the non-configurable floor and always execute
+    (``TECH_LEAD_AUTHORITY_FLOOR_ACTIONS``). Act-level actions
     (``reset_retry``, ``kill_hung_session``) default to ``propose``.
     Both act-level actions honor ``execute`` with execution-time
     re-validation: ``reset_retry`` uses the reset+retry-from-scratch owner;
@@ -87,12 +94,12 @@ class TechLeadAuthorityConfig:
     def mode_for(self, action_type: str) -> str:
         """Return the authority mode for a proposed tech_lead action type.
 
-        ``escalate_to_human`` ALWAYS returns ``execute`` — routing to a
-        human is the fail-safe floor and cannot be configured away.
-        Unknown action types raise: authority for an unrecognized action
-        must never be silently guessed.
+        The floor action types ALWAYS return ``execute`` — routing to a human
+        and recording a completed investigation's disposition are fail-safe
+        surfaces that cannot be configured away. Unknown action types raise:
+        authority for an unrecognized action must never be silently guessed.
         """
-        if action_type == "escalate_to_human":
+        if action_type in TECH_LEAD_AUTHORITY_FLOOR_ACTIONS:
             return "execute"
         if action_type not in TECH_LEAD_AUTHORITY_CONFIGURABLE_ACTIONS:
             raise ValueError(f"unknown tech_lead action type: {action_type!r}")
