@@ -14,6 +14,7 @@ import httpx
 from ...events import EventName
 from ...infra import gh_audit
 from ... import __version__
+from ...ports.comment_receipt import IssueCommentReceipt
 from .auth import (
     GitHubAppInstallationTokenProvider,
     GitHubAuth,
@@ -1200,6 +1201,11 @@ class GitHubHttpClient:
         )
         return payload if isinstance(payload, list) else []
 
+    def find_issue_comment_receipt(self, issue_number: int, *, body: str) -> "IssueCommentReceipt | None":
+        from .comment_receipts import find_comment_receipt
+        return find_comment_receipt(request=self._request_json, repo=self._config.repo,
+            issue_number=issue_number, body=body, app_identity=self._auth.comment_app_identity())
+
     def issue_comment_marker_present(self, issue_number: int, marker: str) -> bool:
         """Return True if any comment on the issue/PR contains ``marker``.
 
@@ -1452,6 +1458,53 @@ class GitHubHttpClient:
             caller="get_pr",
         )
         return payload if isinstance(payload, dict) else None
+
+    def read_publication_pr(self, number: int) -> dict[str, Any] | None:
+        """Uncached identity read; malformed responses are never absence."""
+        try:
+            payload = self._request_json(
+                "GET", f"/repos/{self._config.repo}/pulls/{number}",
+                use_cache=False, caller="read_publication_pr",
+            )
+        except GitHubHttpError as exc:
+            if exc.status_code == 404:
+                return None
+            raise
+        if not isinstance(payload, dict):
+            raise GitHubHttpError("Malformed publication PR response")
+        return payload
+
+    def read_publication_prs(self, branch: str) -> list[dict[str, Any]]:
+        """Complete, uncached branch candidate set; refuse a capped scan."""
+        owner = self._config.repo.split("/")[0]
+        result: list[dict[str, Any]] = []
+        for page in range(1, 21):
+            payload = self._request_json(
+                "GET", f"/repos/{self._config.repo}/pulls",
+                params={"head": f"{owner}:{branch}", "state": "open", "per_page": 100, "page": page},
+                use_cache=False, caller="read_publication_prs",
+            )
+            if not isinstance(payload, list) or any(not isinstance(item, dict) for item in payload):
+                raise GitHubHttpError("Malformed publication PR candidates")
+            result.extend(payload)
+            if len(payload) < 100:
+                return result
+        raise GitHubHttpError("Publication PR scan incomplete")
+
+    def read_publication_branch(self, branch: str) -> dict[str, Any] | None:
+        encoded = quote(f"heads/{branch}", safe="/")
+        try:
+            payload = self._request_json(
+                "GET", f"/repos/{self._config.repo}/git/ref/{encoded}",
+                use_cache=False, caller="read_publication_branch",
+            )
+        except GitHubHttpError as exc:
+            if exc.status_code == 404:
+                return None
+            raise
+        if not isinstance(payload, dict):
+            raise GitHubHttpError("Malformed publication branch response")
+        return payload
 
     def get_pr_status_check_rollup(self, pr_number: int) -> str | None:
         """Fetch the aggregated status-check rollup for a PR's head commit.

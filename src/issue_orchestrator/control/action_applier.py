@@ -286,6 +286,7 @@ class ActionApplier:
                 # Mutation policy stays HERE: the extracted owners get the
                 # applier's own expected-state gate, not a copy of it (#6957 F15).
                 require_expected=self._require_expected,
+                require_mutation_authority=self._require_mutation_authority,
                 repository_host=self.repository_host,
                 authority=self.tech_lead_ops,
                 promotion_target=self.promotion_target,
@@ -663,39 +664,21 @@ class ActionApplier:
         assert self.repository_host is not None, "repository_host required for close_issue"
 
         self._require_expected(action, action.issue_number)
-        self._verify_claim_before_write(action, action.issue_number)
+        from .actions import FoldCaseFileIssueAction
+        from .issue_closure import apply_issue_closure
 
-        try:
-            self.repository_host.update_issue_state(action.issue_number, "closed")
-            logger.info(issue_log(action.issue_number, "Issue closed"))
-            if action.comment:
-                # Only after a successful close — a comment claiming "the
-                # orchestrator closed it" before the close would leave a false
-                # audit trail on failure and repeat on every retry. Best-effort:
-                # a failed comment must never fail an already-applied close.
-                try:
-                    self.repository_host.add_comment(
-                        action.issue_number, action.comment,
-                    )
-                except Exception as e:
-                    logger.warning(
-                        issue_log(
-                            action.issue_number,
-                            "Failed to post close comment: %s",
-                        ),
-                        e,
-                    )
-            return ActionResult.ok(
-                action,
-                issue_number=action.issue_number,
-                state="closed",
-            )
-        except Exception as e:
-            logger.error(
-                issue_log(action.issue_number, "Failed to close issue: %s"),
-                e,
-            )
-            return ActionResult.fail(action, str(e), issue_number=action.issue_number)
+        def before_write() -> None:
+            if isinstance(action, FoldCaseFileIssueAction):
+                self._require_mutation_authority(action, action.issue_number)
+            else:
+                self._verify_claim_before_write(action, action.issue_number)
+
+        return apply_issue_closure(
+            action, find_comment_receipt=lambda number, body: self.repository_host.find_issue_comment_receipt(number, body=body),
+            post_comment=self.repository_host.add_comment,
+            set_issue_state=self.repository_host.update_issue_state,
+            before_write=before_write,
+        )
 
     def _apply_set_issue_state(self, action: Action) -> ActionResult:
         """Set an issue's open/closed state through the repository host."""
@@ -748,6 +731,11 @@ class ActionApplier:
             ReconciliationRequired: the expectation is violated, or unverifiable.
         """
         self._gate.require_expected(action, issue_number)
+
+    def _require_mutation_authority(self, action: Action, issue_number: int) -> None:
+        """Recheck board expectations and claim ownership immediately before a write."""
+        self._require_expected(action, issue_number)
+        self._verify_claim_before_write(action, issue_number)
 
     def _verify_claim_before_write(self, action: Action, issue_number: int) -> None:
         """Verify claim ownership before a write operation.
@@ -1470,6 +1458,8 @@ class ActionApplier:
     ) -> ActionResult:
         """The GitHub create itself, with no run-coordination policy of its own."""
         assert self.repository_host is not None
+        from .tech_lead_actions import reconciliation_subject_for
+
         return apply_create_tech_lead_issue(
             action,
             repository_host=self.repository_host,
@@ -1477,6 +1467,7 @@ class ActionApplier:
             ops=self.tech_lead_ops,
             add_comment=self.repository_host.add_comment,
             emit_labels_changed=self._emit_issue_labels_changed,
+            before_case_file_write=lambda: self._require_mutation_authority(action, reconciliation_subject_for(action)),
             expedite_lane=self.expedite_lane,
         )
 

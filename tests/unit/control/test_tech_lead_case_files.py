@@ -11,6 +11,8 @@ from issue_orchestrator.control.actions import CreateTechLeadCaseFileIssueAction
 from issue_orchestrator.control.reconciliation import build_expected_for_mutation
 from issue_orchestrator.control.tech_lead_case_files import (
     CASE_FILE_TITLE_PREFIX,
+    CaseFileIntake,
+    ResolvedCaseFileIntake,
     build_case_file_evidence_comment,
     build_case_file_issue_action,
     build_case_file_summary,
@@ -20,6 +22,7 @@ from issue_orchestrator.control.tech_lead_case_files import (
     split_tech_lead_case_file_issues,
 )
 from issue_orchestrator.domain.tech_lead_findings import (
+    CaseFileClassification,
     PatternEvidence,
     PatternObservation,
     case_file_issue_marker,
@@ -55,6 +58,17 @@ def _proposed(
         area=area,
         finding_ids=finding_ids,
     )
+
+
+def _resolved(**overrides) -> ResolvedCaseFileIntake:
+    """A reviewed ``flag_pattern`` intake, reconciled against an EMPTY ledger.
+
+    Mirrors the planner's own preflight for a signature's first observation:
+    with nothing recorded, the merged durable facts are exactly what the
+    observation claimed.
+    """
+    intake = CaseFileIntake.diagnosing(_proposed(**overrides))
+    return ResolvedCaseFileIntake(intake=intake, durable=intake.classification)
 
 
 def _findings() -> dict[str, TechLeadFinding]:
@@ -97,7 +111,7 @@ def test_build_pattern_ledger_empty() -> None:
 
 def test_build_case_file_issue_action_first_observation() -> None:
     action = build_case_file_issue_action(
-        _proposed(),
+        _resolved(),
         config=_config(),
         anchor_issue_number=99,
         findings=_findings(),
@@ -136,7 +150,7 @@ def test_build_case_file_issue_action_first_observation() -> None:
 
 def test_build_case_file_issue_action_unclassified_area() -> None:
     action = build_case_file_issue_action(
-        _proposed(area=None),
+        _resolved(area=None),
         config=_config(),
         anchor_issue_number=99,
         findings=_findings(),
@@ -153,7 +167,7 @@ def test_build_case_file_issue_action_unclassified_area() -> None:
 
 def test_build_case_file_evidence_comment_repeat_observation() -> None:
     comment = build_case_file_evidence_comment(
-        _proposed(),
+        _resolved(),
         anchor_issue_number=77,
         findings=_findings(),
         source_run_id="run-2",
@@ -173,7 +187,7 @@ def test_build_case_file_evidence_comment_repeat_observation() -> None:
 
 def test_evidence_block_omitted_when_no_findings_linked() -> None:
     comment = build_case_file_evidence_comment(
-        _proposed(finding_ids=()),
+        _resolved(finding_ids=()),
         anchor_issue_number=77,
         findings=_findings(),
         source_run_id="run-2",
@@ -198,9 +212,9 @@ def test_observation_identity_is_stable_and_marks_its_comment() -> None:
         source_session_name="issue-77",
         observed_at="2026-07-11T01:00:00+00:00",
     )
-    first = build_pattern_observation(_proposed(), source_run_id="run-2", **kwargs)
-    replay = build_pattern_observation(_proposed(), source_run_id="run-2", **kwargs)
-    other_run = build_pattern_observation(_proposed(), source_run_id="run-3", **kwargs)
+    first = build_pattern_observation(_resolved(), source_run_id="run-2", **kwargs)
+    replay = build_pattern_observation(_resolved(), source_run_id="run-2", **kwargs)
+    other_run = build_pattern_observation(_resolved(), source_run_id="run-3", **kwargs)
 
     assert first.observation_id == replay.observation_id
     assert first.observation_id != other_run.observation_id
@@ -210,7 +224,7 @@ def test_observation_identity_is_stable_and_marks_its_comment() -> None:
 
 def test_case_file_creation_carries_its_body_observation() -> None:
     action = build_case_file_issue_action(
-        _proposed(),
+        _resolved(),
         config=_config(),
         anchor_issue_number=99,
         findings=_findings(),
@@ -222,6 +236,36 @@ def test_case_file_creation_carries_its_body_observation() -> None:
 
     assert action.body_observation.observation_id == "run-1:issue-99:A4"
     assert action.additional_observations == ()
+
+
+def test_case_file_creation_records_only_the_reconciled_durable_facts() -> None:
+    """#6989 round-1 review F1: the durable row's classification and canonical
+    diagnosis come from the intake contract the planner reconciled, never from
+    the observation text. An evidence-only sighting therefore opens a case file
+    that establishes nothing — while its evidence is still recorded in full."""
+    action = build_case_file_issue_action(
+        ResolvedCaseFileIntake(
+            intake=CaseFileIntake.sighting(_proposed()),
+            durable=CaseFileClassification(),
+        ),
+        config=_config(),
+        anchor_issue_number=99,
+        findings=_findings(),
+        source_run_id="run-1",
+        source_session_name="issue-99",
+        observed_at="2026-07-11T00:00:00+00:00",
+        expected=EXPECTED,
+    )
+
+    # Nothing promotable, nothing routable, and no diagnosis to be filed on.
+    assert action.diagnosis == ""
+    assert action.fix_class == ""
+    assert action.area is None
+    assert not any(label.startswith("area:") for label in action.labels)
+    # The evidence is not what was dropped.
+    assert "Three sessions hit the same DB pool timeout." in action.body
+    assert "| Area | unclassified |" in action.body
+    assert "| Fix class | unclassified |" in action.body
 
 
 # --- Case-file action self-validation -------------------------------------
@@ -298,7 +342,7 @@ def test_case_file_action_marker_must_appear_in_the_body() -> None:
 
 def test_composed_case_file_carries_its_recovery_marker() -> None:
     action = build_case_file_issue_action(
-        _proposed(),
+        _resolved(),
         config=_config(),
         anchor_issue_number=99,
         findings=_findings(),

@@ -110,6 +110,81 @@ def reconcile_pattern_classification(
     )
 
 
+def reconcile_pattern_diagnosis(*, existing: str, incoming: str) -> str:
+    """Merge an incoming canonical diagnosis into the recorded one.
+
+    The diagnosis is the actionable mechanism and suggested fix a promotion is
+    filed on, so unlike ``fix_class``/``area`` it is PROSE, and two reviewed
+    diagnoses of one signature are not a contract violation — they are two
+    descriptions, both preserved verbatim in the case file's evidence comments.
+    So the rule is first-non-empty-wins rather than raise-on-disagreement:
+
+    * an EMPTY incoming value preserves what is recorded — this is what keeps an
+      evidence-only sighting from erasing a reviewed diagnosis;
+    * an empty recorded value is ESTABLISHED once by the first non-empty value —
+      this is what lets the first genuine ``flag_pattern`` supply the canonical
+      diagnosis for a signature whose case file an accrued sighting opened
+      (#6989 round-1 review F1);
+    * a later non-empty value never displaces the established one, so promotion
+      does not depend on observation order.
+
+    "Empty" means blank, not falsy: a recorded value of whitespace documents
+    nothing, so it must not block a real diagnosis from being established.
+    """
+    return existing if existing.strip() else incoming
+
+
+@dataclass(frozen=True)
+class CaseFileClassification:
+    """The signature-scoped durable facts ONE observation may establish.
+
+    Held apart from the observation's evidence text because the two have
+    different provenance rules. Any sighting may add evidence to a case file,
+    but only a reviewed ``flag_pattern`` may say what class of problem the
+    signature IS (``fix_class``/``area``, which decide promotability and
+    routing) or supply the canonical ``diagnosis`` a promotion is filed on.
+    Modelling that as a value object rather than as per-call-site checks is what
+    keeps "an accrued sighting classifies and diagnoses nothing" a property of
+    the intake contract instead of a rule each builder has to remember
+    (#6989 round-1 review F1/A1).
+
+    All three fields default to ``""`` — "this observation establishes nothing" —
+    so the evidence-only case is the type's natural zero value.
+    """
+
+    fix_class: str = ""
+    area: str = ""
+    diagnosis: str = ""
+
+    def merged_with(
+        self, incoming: "CaseFileClassification", *, signature: str
+    ) -> "CaseFileClassification":
+        """This signature's facts after *incoming* lands, or raise on conflict.
+
+        Applies each field's own rule through its single owner:
+        :func:`reconcile_pattern_classification` for the immutable classification
+        fields (a disagreement raises) and :func:`reconcile_pattern_diagnosis`
+        for the canonical narrative (first non-empty wins).
+        """
+        return CaseFileClassification(
+            fix_class=reconcile_pattern_classification(
+                field="fix_class",
+                signature=signature,
+                existing=self.fix_class,
+                incoming=incoming.fix_class,
+            ),
+            area=reconcile_pattern_classification(
+                field="area",
+                signature=signature,
+                existing=self.area,
+                incoming=incoming.area,
+            ),
+            diagnosis=reconcile_pattern_diagnosis(
+                existing=self.diagnosis, incoming=incoming.diagnosis
+            ),
+        )
+
+
 def pattern_observation_id(
     *, source_run_id: str, source_session_name: str, action_id: str
 ) -> str:
@@ -300,15 +375,29 @@ class PatternEvidence:
     # "" = unclassified. Only FINDING_FIX_CLASS_CODE is promotable.
     fix_class: str = ""
     area: str = ""
-    # Original tech-lead diagnosis/recommended fix from the first flag_pattern
-    # observation. Stored with the trigger facts so a routed promotion carries
-    # the actionable mechanism instead of only pointing back to the case file.
+    # Tech-lead diagnosis/recommended fix from the first flag_pattern
+    # observation to supply one — which is not necessarily the observation that
+    # OPENED the case file, since an evidence-only duplicate sighting can open
+    # one and diagnoses nothing (#6989). Stored with the trigger facts so a
+    # routed promotion carries the actionable mechanism instead of only pointing
+    # back to the case file. Merged by :func:`reconcile_pattern_diagnosis`.
     diagnosis: str = ""
 
     @property
     def is_code_fix(self) -> bool:
         """True iff the tech lead classified this as fixable by code."""
         return self.fix_class == FINDING_FIX_CLASS_CODE
+
+    @property
+    def classification(self) -> CaseFileClassification:
+        """The durable facts this row already establishes for its signature.
+
+        The seed every reconcile starts from, so planning and the apply-time
+        store agree on what "already recorded" means field for field.
+        """
+        return CaseFileClassification(
+            fix_class=self.fix_class, area=self.area, diagnosis=self.diagnosis
+        )
 
 
 @dataclass(frozen=True)

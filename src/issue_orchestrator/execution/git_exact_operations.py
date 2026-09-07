@@ -7,6 +7,7 @@ from ..adapters.git.git_cli import GIT_ENV_STRIP
 from pathlib import Path
 
 from ..domain.exact_git import (
+    ExactPushDestination,
     ExactPushOutcome,
     ExactPushResult,
     RefPinOutcome,
@@ -162,19 +163,54 @@ class GitExactOperations:
         branch: str,
         target: str,
         expected: str | None,
+        destination: ExactPushDestination | None,
     ) -> str:
         require_sha(target)
         if expected is not None:
             require_sha(expected)
+        if type(branch) is not str or not branch or branch.startswith(("-", "refs/")):
+            raise ValueError("branch must be a short branch name")
+        self._git.run(repository, ["check-ref-format", f"refs/heads/{branch}"])
+        if destination is None:
+            return self._configured_push_destination(repository, remote=remote).endpoint
+        current = self.resolve_push_destination(repository, remote=remote)
+        if type(destination) is not ExactPushDestination or destination != current:
+            raise ValueError("configured push destination changed before publication")
+        return destination.endpoint
+
+    def resolve_push_destination(
+        self, repository: Path, *, remote: str
+    ) -> ExactPushDestination:
+        """Fail closed on rewriting; preserve existing configuration and hooks.
+
+        The destination is checked again immediately before submission. This
+        boundary does not lock arbitrary external writers of local/global Git
+        configuration: hostile mutation after that final check is outside the
+        publication threat model. No configuration is overridden to claim a
+        stronger guarantee.
+        """
+        rewrites = self._git.run(
+            repository,
+            ["config", "--get-regexp", r"^url\..*\.(insteadof|pushinsteadof)$"],
+            check=False,
+        )
+        if rewrites.returncode == 0:
+            raise ValueError(
+                "destination-bound publication does not support Git URL rewriting"
+            )
+        if rewrites.returncode != 1:
+            raise GitError(rewrites)
+        return self._configured_push_destination(repository, remote=remote)
+
+    def _configured_push_destination(
+        self, repository: Path, *, remote: str
+    ) -> ExactPushDestination:
         # Accept configured remote names only: no options, URLs, paths or helpers.
         if (
             type(remote) is not str
             or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", remote) is None
         ):
             raise ValueError("remote must be a configured remote name")
-        if type(branch) is not str or not branch or branch.startswith(("-", "refs/")):
-            raise ValueError("branch must be a short branch name")
-        self._git.run(repository, ["check-ref-format", f"refs/heads/{branch}"])
         urls = self._git.run(
             repository, ["remote", "get-url", "--push", "--all", remote]
         ).stdout.splitlines()
@@ -184,7 +220,7 @@ class GitExactOperations:
         # A relative local path must not be reinterpreted as another remote name.
         if ":" not in endpoint or endpoint.startswith(("/", "./", "../")):
             endpoint = str((repository / endpoint).resolve())
-        return endpoint
+        return ExactPushDestination(endpoint)
 
     def push_exact(
         self,
@@ -194,9 +230,10 @@ class GitExactOperations:
         branch: str,
         target_sha: str,
         expected_sha: str | None,
+        destination: ExactPushDestination | None = None,
     ) -> ExactPushResult:
         endpoint = self._validate_push(
-            repository, remote, branch, target_sha, expected_sha
+            repository, remote, branch, target_sha, expected_sha, destination
         )
         if not self._commit_exists(repository, target_sha):
             return ExactPushResult(
