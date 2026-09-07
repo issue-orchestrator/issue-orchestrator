@@ -579,6 +579,10 @@ class StubWorkingCopy:
 
     branch: str = "issue-1"
 
+    def linked_worktrees(self, repository: Path) -> tuple[Path, ...]:
+        """Scenario fixtures have no registered disposable Git worktrees."""
+        return ()
+
     def get_head_sha(self, worktree: Path) -> str | None:
         return "deadbeef"
 
@@ -881,6 +885,8 @@ def build_orchestrator(
         rework_workflow=ReworkWorkflow(config=config, events=composite_events),
     )
 
+    from issue_orchestrator.domain.models import OrchestratorState
+    runtime_state = OrchestratorState()
     deps = build_test_orchestrator_deps(
         config,
         repo_host,
@@ -892,6 +898,7 @@ def build_orchestrator(
         planner=planner,
         timeline_reader=timeline_reader,
         timeline_writer=timeline_writer,
+        state=runtime_state,
     )
 
     if reconcile:
@@ -899,7 +906,7 @@ def build_orchestrator(
         labels_by_issue = fresh_labels or {}
         deps.action_applier.fresh_issue_reader = FreshIssueReader(labels_by_issue)
 
-    orchestrator = Orchestrator(config=config, deps=deps)
+    orchestrator = Orchestrator(config=config, deps=deps, state=runtime_state)
     orchestrator.deps.completion_processor.set_event_emitter(
         composite_events,
         orchestrator.event_context,

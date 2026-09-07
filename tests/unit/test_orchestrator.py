@@ -148,13 +148,13 @@ def test_cancel_review_exchange_for_issue_delegates_to_lifecycle_services(sample
     pair_registry = MagicMock()
     job_supervisor = MagicMock()
     job_supervisor.cancel_matching.return_value = ["review-exchange:77:issue-77"]
-    object.__setattr__(
+    from tests.runtime_lifecycle_helpers import runtime_owners
+    orchestrator.deps = replace(
         orchestrator.deps,
-        "services",
-        replace(
-            orchestrator.deps.services,
-            pair_registry=pair_registry,
-            background_job_supervisor=job_supervisor,
+        runtime_lifecycle=runtime_owners(
+            session_manager=orchestrator.deps.session_manager,
+            active_sessions=orchestrator.state.active_sessions,
+            pair_registry=pair_registry, job_supervisor=job_supervisor,
         ),
     )
 
@@ -181,16 +181,6 @@ def test_terminate_issue_runtime_for_issue_delegates_to_canonical_services(sampl
     session_manager.exists.side_effect = (
         lambda ref: ref.name in {"issue-77", "rework-77"}
     )
-    object.__setattr__(orchestrator.deps, "session_manager", session_manager)
-    object.__setattr__(
-        orchestrator.deps,
-        "services",
-        replace(
-            orchestrator.deps.services,
-            pair_registry=pair_registry,
-            background_job_supervisor=job_supervisor,
-        ),
-    )
     orchestrator.state.active_sessions = [
         SimpleNamespace(
             terminal_id="issue-77",
@@ -205,6 +195,15 @@ def test_terminate_issue_runtime_for_issue_delegates_to_canonical_services(sampl
             issue=SimpleNamespace(number=88),
         ),
     ]
+    from tests.runtime_lifecycle_helpers import runtime_owners
+    orchestrator.deps = replace(
+        orchestrator.deps,
+        runtime_lifecycle=runtime_owners(
+            session_manager=session_manager,
+            active_sessions=orchestrator.state.active_sessions,
+            pair_registry=pair_registry, job_supervisor=job_supervisor,
+        ),
+    )
 
     result = orchestrator.terminate_issue_runtime_for_issue(
         77,
@@ -223,6 +222,18 @@ def test_terminate_issue_runtime_for_issue_delegates_to_canonical_services(sampl
     assert [session.terminal_id for session in orchestrator.state.active_sessions] == [
         "issue-88",
     ]
+
+
+def _bind_controlled_runtime(orchestrator, session_manager):
+    """Keep facade cleanup tests explicit about their empty preservation response."""
+    from tests.runtime_lifecycle_helpers import runtime_owners
+    orchestrator.deps = replace(
+        orchestrator.deps,
+        runtime_lifecycle=runtime_owners(
+            session_manager=session_manager,
+            active_sessions=orchestrator.state.active_sessions,
+        ),
+    )
 
 
 def test_terminate_tech_lead_session_is_behavior_complete(sample_config, tmp_path):
@@ -251,7 +262,8 @@ def test_terminate_tech_lead_session_is_behavior_complete(sample_config, tmp_pat
         terminal_id="issue-88", issue=SimpleNamespace(number=88), lease_id=None,
         scratch_worktree=False, worktree_path=None, tech_lead_scope=None,
     )
-    orchestrator.state.active_sessions = [tech_lead, other]
+    orchestrator.state.active_sessions[:] = [tech_lead, other]
+    _bind_controlled_runtime(orchestrator, session_manager)
     # The run this session holds across engines — termination owns BOTH
     # coordination layers, so it must go back too (#6994 round 2 F10).
     assert orchestrator.deps.run_ownership.claim(IssueInvestigationScope(77)).owned
@@ -291,7 +303,8 @@ def _terminate_fixture(sample_config, tmp_path):
         terminal_id="tech-lead-77", issue=SimpleNamespace(number=77), lease_id="lease-1",
         scratch_worktree=True, worktree_path=scratch,
     )
-    orchestrator.state.active_sessions = [tech_lead]
+    orchestrator.state.active_sessions[:] = [tech_lead]
+    _bind_controlled_runtime(orchestrator, session_manager)
     return orchestrator, tech_lead, session_manager, claim_manager, worktree_manager, scratch
 
 
@@ -375,9 +388,10 @@ def test_composed_one_shot_timeout_terminates_via_real_driver_and_facade(
 
     def _launch(_tech_lead):
         # Inject the launched session; the REAL driver then drives + times out.
-        orchestrator.state.active_sessions = [session]
+        orchestrator.state.active_sessions[:] = [session]
         return session
 
+    _bind_controlled_runtime(orchestrator, session_manager)
     orchestrator.launch_tech_lead_session = _launch
     orchestrator.tick = lambda: True  # never drains the session -> forces timeout
     orchestrator.pause = lambda **kwargs: None
@@ -441,6 +455,8 @@ def create_test_orchestrator(
     wt_manager = worktree_manager or MockWorktreeManager()
     if working_copy is None:
         wc = MagicMock()
+        from issue_orchestrator.ports.working_copy import BranchStatus
+        wc.get_branch_status.return_value = BranchStatus("feature", 0, 0, False, True)
         wc.list_remote_branches.return_value = []
     else:
         wc = working_copy
@@ -450,6 +466,8 @@ def create_test_orchestrator(
     runner = runner or MockSessionRunner()
 
     # Build OrchestratorDeps with all dependencies
+    from issue_orchestrator.domain.models import OrchestratorState
+    runtime_state = OrchestratorState()
     deps = build_test_orchestrator_deps(
         config,
         repo_host,
@@ -459,9 +477,10 @@ def create_test_orchestrator(
         working_copy=wc,
         session_controller=session_controller,
         label_sync=label_sync,
+        state=runtime_state,
     )
 
-    return Orchestrator(config=config, deps=deps)
+    return Orchestrator(config=config, deps=deps, state=runtime_state)
 
 
 async def run_loop_one_tick(orchestrator: Orchestrator) -> None:
@@ -515,6 +534,16 @@ def create_session(issue, worktree_path=None, branch_name="feature/test", task=T
             session_name=f"issue-{issue.number}",
         ),
     )
+
+
+def track_session(orchestrator, session):
+    """Register test allocation before exposing the same live run to lifecycle owners."""
+    from issue_orchestrator.domain.issue_run_evidence import IssueRunRecord
+    orchestrator.deps.issue_run_ledger.record_run(
+        session.issue.number,
+        IssueRunRecord(session.key, session.run_assets, session.run_assets.started_at, session.branch_name),
+    )
+    orchestrator.state.active_sessions.append(session)
 
 
 def create_pr_info(number, title="Test PR", labels=None, branch="feature/test", body=None):
@@ -990,9 +1019,9 @@ class TestLaunchSession:
     ):
         """Runtime registry scans are rate-limited when active state is stable."""
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
-        existing = MagicMock(spec=Session)
-        existing.terminal_id = "issue-1"
-        orchestrator.state.active_sessions = [existing]
+        existing = create_session(create_issue(1), sample_config.repo_root / "wt-1")
+        orchestrator.state.active_sessions.clear()
+        track_session(orchestrator, existing)
         orchestrator._last_orphan_reconcile_scan_at = 100.0  # noqa: SLF001
         orchestrator._last_orphan_reconcile_active_count = 1  # noqa: SLF001
         orchestrator.deps.runner.discover_running_sessions = MagicMock(return_value=[])
@@ -1054,14 +1083,15 @@ class TestLaunchSession:
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
         from tests.unit.session_run_helpers import make_session_run_assets
 
-        existing = MagicMock(spec=Session)
+        existing = create_session(create_issue(100), sample_config.repo_root, task=TaskKind.REVIEW)
         existing.terminal_id = "review-456"
         # An active session always carries typed run assets; the ledger sweep
         # that now runs on every reconcile reads its run key (#6999 F8).
         existing.run_assets = make_session_run_assets(
             sample_config.repo_root, session_name="review-456"
         )
-        orchestrator.state.active_sessions = [existing]
+        orchestrator.state.active_sessions.clear()
+        track_session(orchestrator, existing)
         orchestrator.deps.runner.discover_running_sessions = MagicMock(return_value=[
             {"issue_number": 100, "tab_name": "#100 Review PR #456", "is_review": True}
         ])
@@ -1133,7 +1163,7 @@ class TestHandleSessionCompletion:
         session = create_session(issue)
 
         orchestrator = create_test_orchestrator(sample_config, worktree_manager=mock_worktree_manager)
-        orchestrator.state.active_sessions.append(session)
+        track_session(orchestrator, session)
 
         assert len(orchestrator.state.active_sessions) == 1
 
@@ -1151,7 +1181,7 @@ class TestHandleSessionCompletion:
         session = create_session(issue)
 
         orchestrator = create_test_orchestrator(sample_config, worktree_manager=mock_worktree_manager)
-        orchestrator.state.active_sessions.append(session)
+        track_session(orchestrator, session)
 
         with patch.object(orchestrator.observer, "handle_completion") as mock_monitor:
             orchestrator.handle_session_completion(session, SessionStatus.COMPLETED)
@@ -1168,7 +1198,7 @@ class TestHandleSessionCompletion:
         session = create_session(issue)
 
         orchestrator = create_test_orchestrator(sample_config, worktree_manager=mock_worktree_manager)
-        orchestrator.state.active_sessions.append(session)
+        track_session(orchestrator, session)
 
         assert len(orchestrator.state.completed_today) == 0
 
@@ -1187,7 +1217,7 @@ class TestHandleSessionCompletion:
         session = create_session(issue)
 
         orchestrator = create_test_orchestrator(sample_config, worktree_manager=mock_worktree_manager)
-        orchestrator.state.active_sessions.append(session)
+        track_session(orchestrator, session)
 
         orchestrator.handle_session_completion(session, SessionStatus.FAILED)
 
@@ -1203,7 +1233,7 @@ class TestHandleSessionCompletion:
         session = create_session(issue, worktree_path=mock_worktree_manager.worktree_path)
 
         orchestrator = create_test_orchestrator(sample_config, worktree_manager=mock_worktree_manager)
-        orchestrator.state.active_sessions.append(session)
+        track_session(orchestrator, session)
 
         orchestrator.handle_session_completion(session, SessionStatus.COMPLETED)
 
@@ -1244,7 +1274,7 @@ class TestHandleSessionCompletion:
         )
         orchestrator.deps.action_applier.pair_registry = pair_registry
         orchestrator.deps.action_applier.background_job_supervisor = background_jobs
-        orchestrator.state.active_sessions.append(session)
+        track_session(orchestrator, session)
 
         orchestrator.handle_session_completion(session, SessionStatus.COMPLETED)
 
@@ -1294,7 +1324,7 @@ class TestHandleSessionCompletion:
             sample_config,
             worktree_manager=mock_worktree_manager,
         )
-        orchestrator.state.active_sessions.append(session)
+        track_session(orchestrator, session)
         apply_error = RuntimeError("completion action apply failed")
         orchestrator.deps.action_applier.apply_all = MagicMock(
             side_effect=apply_error
@@ -1337,7 +1367,7 @@ class TestHandleSessionCompletion:
         )
 
         orchestrator = create_test_orchestrator(sample_config, worktree_manager=mock_worktree_manager)
-        orchestrator.state.active_sessions.append(session)
+        track_session(orchestrator, session)
 
         orchestrator.handle_session_completion(session, SessionStatus.COMPLETED)
 
@@ -1354,7 +1384,7 @@ class TestHandleSessionCompletion:
         session = create_session(issue)
 
         orchestrator = create_test_orchestrator(sample_config, worktree_manager=mock_worktree_manager)
-        orchestrator.state.active_sessions.append(session)
+        track_session(orchestrator, session)
 
         orchestrator.handle_session_completion(session, SessionStatus.BLOCKED)
 
@@ -1373,7 +1403,7 @@ class TestHandleSessionCompletion:
         session = create_session(issue)
 
         orchestrator = create_test_orchestrator(sample_config, worktree_manager=mock_worktree_manager)
-        orchestrator.state.active_sessions.append(session)
+        track_session(orchestrator, session)
 
         orchestrator.handle_session_completion(session, SessionStatus.FAILED)
 
@@ -1399,7 +1429,7 @@ class TestHandleSessionCompletion:
         session = create_session(issue)
 
         orchestrator = create_test_orchestrator(sample_config, worktree_manager=mock_worktree_manager)
-        orchestrator.state.active_sessions.append(session)
+        track_session(orchestrator, session)
 
         # Should not raise exception
         orchestrator.handle_session_completion(session, SessionStatus.COMPLETED)
@@ -1468,6 +1498,15 @@ class TestRunLoop:
                 background_job_supervisor=job_supervisor,
             ),
         )
+        from tests.runtime_lifecycle_helpers import runtime_owners
+        orchestrator.deps = replace(
+            orchestrator.deps,
+            runtime_lifecycle=runtime_owners(
+                session_manager=orchestrator.deps.session_manager,
+                active_sessions=orchestrator.state.active_sessions,
+                pair_registry=pair_registry, job_supervisor=job_supervisor,
+            ),
+        )
         orchestrator.shutdown_requested = True
 
         await orchestrator.run_loop()
@@ -1496,6 +1535,15 @@ class TestRunLoop:
             ),
         )
 
+        from tests.runtime_lifecycle_helpers import runtime_owners
+        orchestrator.deps = replace(
+            orchestrator.deps,
+            runtime_lifecycle=runtime_owners(
+                session_manager=orchestrator.deps.session_manager,
+                active_sessions=orchestrator.state.active_sessions,
+                pair_registry=pair_registry, job_supervisor=job_supervisor,
+            ),
+        )
         orchestrator.close()
         orchestrator.close()
 
@@ -1555,7 +1603,7 @@ class TestRunLoop:
         orchestrator = create_test_orchestrator(
             sample_config, mock_repository_host, session_controller=mock_controller
         )
-        orchestrator.state.active_sessions.append(session)
+        track_session(orchestrator, session)
 
         with patch.object(orchestrator.observer, "observe_session") as mock_observe:
             # Mock observe to return TERMINATED (session exited)
@@ -1593,7 +1641,7 @@ class TestRunLoop:
         orchestrator = create_test_orchestrator(
             sample_config, mock_repository_host, session_controller=mock_controller
         )
-        orchestrator.state.active_sessions.append(session)
+        track_session(orchestrator, session)
 
         with patch.object(orchestrator.observer, "observe_session") as mock_observe:
             # Mock observe to return TERMINATED (session exited)
@@ -1723,8 +1771,8 @@ class TestRunLoop:
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
 
         # Already have 2 active sessions
-        orchestrator.state.active_sessions.append(create_session(issue1))
-        orchestrator.state.active_sessions.append(create_session(issue2))
+        track_session(orchestrator, create_session(issue1))
+        track_session(orchestrator, create_session(issue2))
 
         with patch.object(orchestrator.observer, "observe_session") as mock_observe:
             # Mock observe_session to return RUNNING (sessions still active)
@@ -2144,7 +2192,7 @@ class TestControlMethods:
         # Add an active session to test force behavior
         issue = create_issue(123)
         session = create_session(issue)
-        orchestrator.state.active_sessions.append(session)
+        track_session(orchestrator, session)
 
         orchestrator.request_shutdown(force=True)
 
@@ -2694,7 +2742,7 @@ class TestHandleSessionCompletionWithCodeReview:
         session = create_session(issue, branch_name="feature/issue-1")
 
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host, worktree_manager=mock_worktree_manager)
-        orchestrator.state.active_sessions.append(session)
+        track_session(orchestrator, session)
 
         # Initially no discovered reviews
         assert len(orchestrator.state.discovered_reviews) == 0
@@ -2736,7 +2784,7 @@ class TestHandleSessionCompletionWithCodeReview:
         session = create_session(issue)
 
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host, worktree_manager=mock_worktree_manager)
-        orchestrator.state.active_sessions.append(session)
+        track_session(orchestrator, session)
 
         orchestrator.handle_session_completion(session, SessionStatus.COMPLETED)
 
@@ -2756,7 +2804,7 @@ class TestHandleSessionCompletionWithCodeReview:
         session = create_session(issue)
 
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host, worktree_manager=mock_worktree_manager)
-        orchestrator.state.active_sessions.append(session)
+        track_session(orchestrator, session)
 
         orchestrator.handle_session_completion(session, SessionStatus.BLOCKED)
 
@@ -2779,7 +2827,7 @@ class TestHandleSessionCompletionWithCodeReview:
         session = create_session(issue)
 
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host, worktree_manager=mock_worktree_manager)
-        orchestrator.state.active_sessions.append(session)
+        track_session(orchestrator, session)
 
         orchestrator.handle_session_completion(session, SessionStatus.COMPLETED)
 
@@ -3210,7 +3258,7 @@ class TestSessionExistsDetection:
         # Simulate session already tracked in active_sessions
         existing_session = create_session(create_issue(42))
         existing_session.terminal_id = "review-123"
-        orchestrator.state.active_sessions.append(existing_session)
+        track_session(orchestrator, existing_session)
 
         result = orchestrator.launch_review_session(review)
 
@@ -3417,7 +3465,7 @@ class TestDeferredCleanup:
         session = create_session(issue)
 
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host, worktree_manager=mock_worktree_manager)
-        orchestrator.state.active_sessions.append(session)
+        track_session(orchestrator, session)
 
         orchestrator.handle_session_completion(session, SessionStatus.COMPLETED)
 
@@ -3461,7 +3509,7 @@ class TestDeferredCleanup:
         session = create_session(issue)
 
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host, worktree_manager=mock_worktree_manager)
-        orchestrator.state.active_sessions.append(session)
+        track_session(orchestrator, session)
 
         orchestrator.handle_session_completion(session, SessionStatus.COMPLETED)
 
@@ -3501,7 +3549,7 @@ class TestDeferredCleanup:
         session = create_session(issue)
 
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host, worktree_manager=mock_worktree_manager)
-        orchestrator.state.active_sessions.append(session)
+        track_session(orchestrator, session)
 
         orchestrator.handle_session_completion(session, SessionStatus.COMPLETED)
 
@@ -3528,7 +3576,7 @@ class TestDeferredCleanup:
         session = create_session(issue)
 
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host, worktree_manager=mock_worktree_manager)
-        orchestrator.state.active_sessions.append(session)
+        track_session(orchestrator, session)
 
         orchestrator.handle_session_completion(session, SessionStatus.FAILED)
 
@@ -4130,7 +4178,7 @@ class TestPublicCompletionFacadeSettlesClaims:
                 agent_label="agent:backend",
             ),
         )
-        orchestrator.state.active_sessions.append(session)
+        track_session(orchestrator, session)
         InFlightWorkLedger(
             orchestrator.state, orchestrator.deps.pending_work_claims
         ).take(session, claim)
@@ -4227,12 +4275,12 @@ class TestReconcileSweepsThePendingWorkLedger:
 
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
         self._seed_unresolved_claim(orchestrator, tmp_path)
-        tracked = MagicMock(spec=Session)
-        tracked.terminal_id = "issue-99"
+        tracked = create_session(create_issue(99), tmp_path / "live-wt")
         tracked.run_assets = make_session_run_assets(
             tmp_path / "live-wt", session_name="issue-99"
         )
-        orchestrator.state.active_sessions = [tracked]
+        orchestrator.state.active_sessions.clear()
+        track_session(orchestrator, tracked)
         orchestrator.deps.runner.discover_running_sessions = MagicMock(return_value=[
             {"issue_number": 99, "tab_name": "issue-99", "is_review": False,
              "session_name": "issue-99"}

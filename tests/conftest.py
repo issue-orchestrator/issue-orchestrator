@@ -896,6 +896,7 @@ def build_test_orchestrator_deps(
     worktree_manager,
     working_copy=None,
     *,
+    state,
     session_controller=None,
     label_sync=None,
     fact_gatherer=None,
@@ -920,6 +921,7 @@ def build_test_orchestrator_deps(
         events: EventSink (MockEventSink or similar)
         runner: SessionRunner (MockSessionRunner or similar)
         worktree_manager: WorktreeManager mock
+        state: The exact state later passed to Orchestrator; lifecycle shares its sessions.
         working_copy: Optional WorkingCopy (defaults to GitWorkingCopy)
         session_controller: Optional override for SessionController (for testing)
         label_sync: Optional override for LabelSync (for testing)
@@ -993,14 +995,17 @@ def build_test_orchestrator_deps(
 
     issue_run_ledger = SqliteIssueRunLedger(state_dir(config.repo_root) / "issue_run_ledger.sqlite")
     from issue_orchestrator.control.issue_run_allocator import IssueRunAllocationService
-    issue_run_allocator = IssueRunAllocationService(session_output, issue_run_ledger)
+    issue_run_allocator = IssueRunAllocationService(session_output, issue_run_ledger, working_copy)
     from issue_orchestrator.entrypoints.bootstrap_run_services import (
         build_completion_intake,
     )
 
+    from issue_orchestrator.entrypoints.bootstrap_validated_work import build_validated_work_admission
+    validated_work = build_validated_work_admission(config, working_copy)
     completion_intake = build_completion_intake(
-        config, issue_run_ledger, issue_run_allocator, working_copy, command_runner
+        config, issue_run_ledger, issue_run_allocator, working_copy, command_runner, validated_work
     )
+    pair_registry = InMemoryPersistentExchangePairRegistry()
     completion_processor = CompletionProcessor(
         completion_intake=completion_intake,
         issue_run_allocator=issue_run_allocator,
@@ -1012,7 +1017,7 @@ def build_test_orchestrator_deps(
         session_output=session_output,
         review_exchange_runner=PersistentReviewExchangeRunner(
             session_output,
-            InMemoryPersistentExchangePairRegistry(),
+            pair_registry,
             completion_intake=completion_intake,
         ),
         label_config={
@@ -1133,9 +1138,8 @@ def build_test_orchestrator_deps(
     )
 
     _action_applier.claim_gate = claim_gate
-    # build_test_orchestrator_deps() returns deps without a live Orchestrator state.
-    # Use an explicit no-op lease lookup so claim verification behavior is predictable
-    # for tests that consume deps directly instead of relying on runtime wiring.
+    # Tests consuming deps directly choose single-instance claim behavior; the
+    # Orchestrator binds its actual lease lookup when constructed.
     _action_applier.lease_id_lookup = lambda _issue_number: None
 
     from issue_orchestrator.ports.provider_readiness import (
@@ -1145,6 +1149,7 @@ def build_test_orchestrator_deps(
     readiness_probe = provider_readiness_probe or NO_PROVIDER_READINESS_PROBE
 
     infra_services = InfraServices(
+        pair_registry=pair_registry,
         # Explicitly null: a test that pauses must never write through a
         # production filesystem adapter.
         pause_journal=NullPauseJournal(),
@@ -1214,8 +1219,17 @@ def build_test_orchestrator_deps(
     # publish retries at issue terminal boundaries via the runtime terminator.
     _action_applier.publish_recovery = publish_recovery
     _action_applier.completion_intake = completion_intake
+    from issue_orchestrator.entrypoints.bootstrap_issue_runtime import build_issue_runtime
+    runtime_lifecycle = build_issue_runtime(
+        state=state, ledger=issue_run_ledger, intake=completion_intake,
+        validated_work=validated_work, working_copy=working_copy,
+        sessions=_session_manager, pair_registry=pair_registry, supervisor=None,
+        publish_recovery=publish_recovery, events=events,
+    )
+    _action_applier.runtime_lifecycle = runtime_lifecycle
 
     return OrchestratorDeps(
+        runtime_lifecycle=runtime_lifecycle,
         events=events,
         runner=runner,
         # Orchestrator-owned, outside every worktree, exactly as bootstrap
@@ -1357,12 +1371,11 @@ def explicit_orchestrator_deps(request):
 
     Usage:
         def test_something(explicit_orchestrator_deps, sample_config):
-            deps = explicit_orchestrator_deps(sample_config, mock_repo_host, mock_wt_manager)
-            orchestrator = Orchestrator(
-                config=sample_config,
-                _repository_host=mock_repo_host,
-                **deps,
+            state = OrchestratorState()
+            deps = explicit_orchestrator_deps(
+                sample_config, mock_repo_host, mock_wt_manager, state=state
             )
+            orchestrator = Orchestrator(config=sample_config, deps=deps, state=state)
     """
     # Use provided mocks if test requests them, otherwise create new ones
     if 'mock_terminal_plugin' in request.fixturenames:
@@ -1378,11 +1391,11 @@ def explicit_orchestrator_deps(request):
     mock_events = MockEventSink()
     mock_runner = MockSessionRunner(plugin)
 
-    def create_deps(config, repo_host=None, worktree_manager=None):
+    def create_deps(config, repo_host=None, worktree_manager=None, *, state):
         """Create all dependencies for Orchestrator constructor."""
         rh = repo_host or default_repo_host
         wm = worktree_manager or MagicMock()
-        return build_test_orchestrator_deps(config, rh, mock_events, mock_runner, wm)
+        return build_test_orchestrator_deps(config, rh, mock_events, mock_runner, wm, state=state)
 
     return create_deps
 
@@ -1433,6 +1446,13 @@ def sample_orchestrator(sample_config, mock_repository_host):
     runner.plugin.session_exists_override = False
     wt_manager = GitWorktreeManager()
     wc = GitWorkingCopy()
+    from issue_orchestrator.execution.command_runner import LocalCommandRunner
+    initialized = LocalCommandRunner().run(
+        ["git", "init", "--initial-branch=main"], cwd=sample_config.repo_root, timeout_seconds=30
+    )
+    assert initialized.returncode == 0, initialized.stderr
+    from issue_orchestrator.domain.models import OrchestratorState
+    state = OrchestratorState()
 
     deps = build_test_orchestrator_deps(
         sample_config,
@@ -1441,9 +1461,10 @@ def sample_orchestrator(sample_config, mock_repository_host):
         runner,
         wt_manager,
         working_copy=wc,
+        state=state,
     )
 
-    return Orchestrator(config=sample_config, deps=deps)
+    return Orchestrator(config=sample_config, deps=deps, state=state)
 
 
 @pytest.fixture

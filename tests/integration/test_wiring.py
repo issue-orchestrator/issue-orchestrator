@@ -71,17 +71,22 @@ class TestOrchestratorWiring:
         from tests.conftest import build_test_orchestrator_deps, MockEventSink, MockSessionRunner
 
         working_copy = MagicMock()
+        from issue_orchestrator.ports.working_copy import BranchStatus
+        working_copy.get_branch_status.return_value = BranchStatus("456-test-feature", 0, 0, False, True)
         working_copy.list_remote_branches.return_value = []
 
         events = MockEventSink()
         runner = MockSessionRunner()
         worktree_manager = GitWorktreeManager()
 
+        from issue_orchestrator.domain.models import OrchestratorState
+        runtime_state = OrchestratorState()
         deps = build_test_orchestrator_deps(
-            config, mock_repository_host, events, runner, worktree_manager, working_copy=working_copy
+            config, mock_repository_host, events, runner, worktree_manager, working_copy=working_copy,
+            state=runtime_state,
         )
 
-        orchestrator = Orchestrator(config=config, deps=deps)
+        orchestrator = Orchestrator(config=config, deps=deps, state=runtime_state)
 
         await orchestrator.startup()
 
@@ -100,6 +105,8 @@ class TestOrchestratorWiring:
 
         events = MockEventSink()
         claim_manager = MagicMock()
+        from issue_orchestrator.domain.models import OrchestratorState
+        runtime_state = OrchestratorState()
         deps = build_test_orchestrator_deps(
             config,
             mock_repository_host,
@@ -107,9 +114,10 @@ class TestOrchestratorWiring:
             patch_plugin_manager,
             MagicMock(),
             claim_manager=claim_manager,
+            state=runtime_state,
         )
 
-        orchestrator = Orchestrator(config=config, deps=deps)
+        orchestrator = Orchestrator(config=config, deps=deps, state=runtime_state)
         session = MagicMock()
         session.issue.number = 456
         session.lease_id = "lease-456"
@@ -142,15 +150,20 @@ class TestOrchestratorWiring:
         )
 
         working_copy = MagicMock()
+        from issue_orchestrator.ports.working_copy import BranchStatus
+        working_copy.get_branch_status.return_value = BranchStatus("456-test-feature", 0, 0, False, True)
         working_copy.list_remote_branches.return_value = []
 
         events = MockEventSink()
 
+        from issue_orchestrator.domain.models import OrchestratorState
+        runtime_state = OrchestratorState()
         deps = build_test_orchestrator_deps(
-            config, mock_repository_host, events, patch_plugin_manager, mock_worktree_manager, working_copy=working_copy
+            config, mock_repository_host, events, patch_plugin_manager, mock_worktree_manager, working_copy=working_copy,
+            state=runtime_state,
         )
 
-        orchestrator = Orchestrator(config=config, deps=deps)
+        orchestrator = Orchestrator(config=config, deps=deps, state=runtime_state)
         test_issue = Issue(
             number=456,
             title="Test Feature",

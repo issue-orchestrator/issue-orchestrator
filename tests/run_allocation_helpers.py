@@ -34,6 +34,9 @@ class MemoryIssueRunLedger:
             raise IssueRunEvidenceUnavailable("unallocated test run")
         return "test-run-capability"
 
+    def issue_numbers(self):
+        return tuple(sorted({number for number, _ in self.records.values()}))
+
     def recorded_runs(self, issue_number):
         return tuple(record for number, record in self.records.values() if number == issue_number)
 
