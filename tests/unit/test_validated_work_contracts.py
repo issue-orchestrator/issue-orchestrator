@@ -236,10 +236,10 @@ def test_retention_query_addresses_every_role_but_no_unresolved_work(tmp_path):
     attempt = begin(store, token)
     attached = capture(run="attached")
     store.admit(attached)
-    assert store.evidence_for_retention(released_before="9999") == ()
+    assert store.evidence_for_retention(released_before="9999-01-01T00:00:00+00:00") == ()
     finalize(store, token, attempt)
     assert {
-        row.evidence_id for row in store.evidence_for_retention(released_before="9999")
+        row.evidence_id for row in store.evidence_for_retention(released_before="9999-01-01T00:00:00+00:00")
     } == {a.evidence.evidence_id, attached.evidence.evidence_id}
 
 
@@ -289,7 +289,7 @@ def test_retention_rejects_malformed_resolution_before_exposing_candidates(tmp_p
         )
     for current in (store, rig.open()):
         with pytest.raises(ValueError):
-            current.evidence_for_retention(released_before="9999")
+            current.evidence_for_retention(released_before="9999-01-01T00:00:00+00:00")
         with closing(sqlite3.connect(rig.path)) as conn:
             assert conn.execute(
                 "SELECT released_at FROM validated_work_evidence"

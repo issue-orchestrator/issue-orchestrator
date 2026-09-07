@@ -143,7 +143,7 @@ def test_corrupt_success_cannot_advance_phase_or_resolve_after_reopen(
         assert _snapshot(rig.path) == before
         assert current.get(token.record_id).state is State.PUBLISHING
         assert current.has_unresolved_work(6914)
-        assert current.evidence_for_retention(released_before="9999") == ()
+        assert current.evidence_for_retention(released_before="9999-01-01T00:00:00+00:00") == ()
 
 
 @pytest.mark.parametrize(

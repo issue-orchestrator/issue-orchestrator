@@ -19,6 +19,7 @@ from ..domain.models import Session
 SortKey = tuple[float | int | str, ...]
 from ..infra.config import Config
 from .dependency_evaluator import DependencyEvaluator
+from .dependency_pressure import DependencyPressure, local_work_blockers, project_dependency_pressure
 
 if TYPE_CHECKING:
     from .label_manager import LabelManager
@@ -210,6 +211,7 @@ class IssueAvailabilityDecision:
     available: bool
     reason: AvailabilityReason
     detail: str | None = None
+    outside_scope_predecessors: tuple[int, ...] = ()
 
     @property
     def is_blocked(self) -> bool:
@@ -311,11 +313,13 @@ class Scheduler:
     ) -> list[IssueAvailabilityDecision]:
         """Evaluate scheduler availability for each issue with explicit reason codes."""
         active_issue_numbers = {s.issue.number for s in active_sessions} if active_sessions else set()
+        scope = frozenset(issue.number for issue in all_issues)
         return [
             self._evaluate_issue(
                 issue,
                 active_issue_numbers=active_issue_numbers,
                 check_dependencies=check_dependencies,
+                scope=scope,
             )
             for issue in all_issues
         ]
@@ -326,6 +330,7 @@ class Scheduler:
         *,
         active_issue_numbers: set[int],
         check_dependencies: bool,
+        scope: frozenset[int],
     ) -> IssueAvailabilityDecision:
         if issue.state == "closed":
             return IssueAvailabilityDecision(
@@ -361,11 +366,23 @@ class Scheduler:
                 source_milestone=issue.milestone,
             )
             if not report.can_start_work:
+                outside_scope = tuple(sorted({
+                    dependency.issue_number
+                    for dependency in local_work_blockers(report, repository=self.config.repo)
+                    if dependency.issue_number is not None and dependency.issue_number not in scope
+                }))
+                detail = report.work_summary()
+                if outside_scope:
+                    refs = ", ".join(f"#{number}" for number in outside_scope)
+                    detail += (f"; predecessor_outside_scheduler_scope: {refs} "
+                               "(open but absent from the observed scheduler scope; "
+                               "check configured agent assignment and queue filters)")
                 return IssueAvailabilityDecision(
                     issue=issue,
                     available=False,
                     reason=AvailabilityReason.DEPENDENCY_BLOCKED,
-                    detail=report.work_summary(),
+                    detail=detail,
+                    outside_scope_predecessors=outside_scope,
                 )
             return IssueAvailabilityDecision(
                 issue=issue, available=True, reason=AvailabilityReason.AVAILABLE
@@ -385,14 +402,37 @@ class Scheduler:
         ]
         return "blocking labels: " + ", ".join(described)
 
-    def sort_by_priority(self, issues: Sequence[Issue]) -> list[Issue]:
+    def dependency_pressure(self, issues: Sequence[Issue]) -> DependencyPressure:
+        """Project current gate facts without changing issue availability.
+
+        The evaluator resolves references through its cached repository port;
+        this uses the same gate policy as launch rather than a second parser.
+        """
+        if self.dependency_evaluator is None:
+            return DependencyPressure({})
+        open_issues = [issue for issue in issues if issue.state != "closed"]
+        reports = {
+            issue.number: self.dependency_evaluator.evaluate_all_gates(
+                issue.number, issue.body, issue.milestone
+            )
+            for issue in open_issues if issue.body
+        }
+        return project_dependency_pressure(
+            reports, open_issue_numbers=frozenset(issue.number for issue in open_issues),
+            repository=self.config.repo,
+        )
+
+    def sort_by_priority(
+        self, issues: Sequence[Issue], *, pressure: DependencyPressure | None = None
+    ) -> list[Issue]:
         """Sort issues by milestone, priority tier, sequence, then issue number.
 
         Sort order (from naming standard):
         1. Milestone order: M0, M1, M2...
         2. Priority tier: P0 < P1 < P2 < ... < P9
         3. Sequence: numeric part after dash in [Px-nnn]
-        4. Tie-breaker: GitHub issue number ascending
+        4. Work-blocked transitive dependent count descending (when supplied)
+        5. Tie-breaker: GitHub issue number ascending
 
         Args:
             issues: List of issues to sort.
@@ -412,7 +452,8 @@ class Scheduler:
             sequence_value = self._get_sequence_value(issue)
 
             # Combine: milestone, priority tier, sequence, issue number
-            return milestone_key + (priority_value, sequence_value, issue.number)
+            fanout = pressure.count_for(issue.number) if pressure is not None else 0
+            return milestone_key + (priority_value, sequence_value, -fanout, issue.number)
 
         return sorted(issues, key=sort_key)
 
@@ -436,6 +477,8 @@ class Scheduler:
         available: list[Issue],
         current_count: int,
         priority_overrides: Optional[list[int]] = None,
+        *,
+        pressure: DependencyPressure | None = None,
     ) -> list[Issue]:
         """Pick up to (max_sessions - current_count) issues to launch.
 
@@ -464,7 +507,7 @@ class Scheduler:
                 picked.append(override_map[issue_num])
 
         # Then add from sorted available issues
-        sorted_issues = self.sort_by_priority(available)
+        sorted_issues = self.sort_by_priority(available, pressure=pressure)
         for issue in sorted_issues:
             if len(picked) >= remaining_slots:
                 break

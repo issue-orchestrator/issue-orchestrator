@@ -3586,3 +3586,363 @@ class TestTechLeadIssueCreationCrossesTheReconciliationGate:
         ):
             with pytest.raises(TypeError, match="origin"):
                 command(title="t", body="b", labels=("agent:backend",))  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize("failure", ["comment_read", "comment_before", "comment_after", "close"])
+def test_case_file_fold_records_explanation_before_close_and_recovers_on_retry(
+    applier, mock_repository_host, failure,
+):
+    from issue_orchestrator.control.actions import FoldCaseFileIssueAction
+    from issue_orchestrator.control.reconciliation import build_expected_for_mutation
+
+    action = FoldCaseFileIssueAction(issue_number=6966, comment="Evidence summary on #7100; work on #6928",
+                                    expected=build_expected_for_mutation())
+    comments = []
+    effects = []
+    failed = False
+
+    def fail_once(phase):
+        nonlocal failed
+        if failure == phase and not failed:
+            failed = True
+            raise RuntimeError("interrupted " + phase)
+
+    def find_receipt(number, *, body):
+        from issue_orchestrator.ports.comment_receipt import IssueCommentReceipt
+        import hashlib
+        fail_once("comment_read")
+        if any(comment["body"] == body for comment in comments):
+            return IssueCommentReceipt("c1", "comment-url", "user:1", hashlib.sha256(body.encode()).hexdigest())
+        return None
+
+    def comment(number, body):
+        fail_once("comment_before")
+        comments.append({"body": body})
+        effects.append("explanation")
+        fail_once("comment_after")  # Remote write succeeded; response was lost.
+        return "comment-url"
+
+    def close(number, state):
+        assert len(comments) == 1
+        assert comments[0]["body"].startswith(action.comment + "\n\n<!-- tech-lead-case-file-fold:")
+        fail_once("close")
+        effects.append("closed")
+
+    mock_repository_host.find_issue_comment_receipt.side_effect = find_receipt
+    mock_repository_host.add_comment.side_effect = comment
+    mock_repository_host.update_issue_state.side_effect = close
+    first = applier.apply(action)
+    if failure == "comment_after":
+        assert first.success  # An authoritative receipt resolves the lost response.
+    else:
+        assert not first.success
+        assert "closed" not in effects
+        assert applier.apply(action).success
+    assert effects == ["explanation", "closed"]
+    assert len(comments) == 1
+    assert comments[0]["body"].startswith(action.comment + "\n\n<!-- tech-lead-case-file-fold:")
+
+
+def test_ordinary_close_retains_best_effort_comment_behavior(applier, mock_repository_host):
+    mock_repository_host.add_comment.side_effect = RuntimeError("comment unavailable")
+    result = applier.apply(CloseIssueAction(issue_number=559, comment="Closed after merge"))
+    assert result.success
+    mock_repository_host.update_issue_state.assert_called_once_with(559, "closed")
+    mock_repository_host.get_issue_comments.assert_not_called()
+
+
+@pytest.mark.parametrize("fold", [False, True])
+@pytest.mark.parametrize("lost_at", ["first_write", "comment"])
+def test_close_claim_loss_interrupts_remaining_batch(
+    applier, mock_repository_host, mock_events, fold, lost_at,
+):
+    from issue_orchestrator.control.actions import FoldCaseFileIssueAction
+    from issue_orchestrator.control.reconciliation import build_expected_for_mutation
+
+    claim_manager = MagicMock(spec=ClaimManager)
+    # Ordinary closure comments follow closure; folds explain before closure.
+    claim_manager.check_winner.side_effect = [False] if lost_at == "first_write" else [True, False]
+    applier.claim_gate = ClaimGate(claim_manager, mock_events)
+    applier.lease_id_lookup = lambda number: "lease"
+    action_type = FoldCaseFileIssueAction if fold else CloseIssueAction
+    first = action_type(issue_number=6966, comment="Explanation", expected=build_expected_for_mutation())
+    second = CloseIssueAction(issue_number=6967)
+    from issue_orchestrator.ports.comment_receipt import IssueCommentReceipt
+    receipt = IssueCommentReceipt("c1", "comment-url", "github-user:1", "a" * 64)
+    mock_repository_host.find_issue_comment_receipt.side_effect = [None, receipt]
+
+    with pytest.raises(ClaimLostError):
+        applier.apply_all([first, second])
+
+    assert all(call.args[0] != 6967 for call in mock_repository_host.update_issue_state.call_args_list)
+    assert all(call.args[0] != 6967 for call in mock_repository_host.add_comment.call_args_list)
+
+
+def test_fold_retry_finds_explanation_beyond_cached_first_comment_page(applier, mock_repository_host):
+    from issue_orchestrator.control.actions import FoldCaseFileIssueAction
+    from issue_orchestrator.control.reconciliation import build_expected_for_mutation
+
+    action = FoldCaseFileIssueAction(issue_number=6966, comment="Recorded evidence", expected=build_expected_for_mutation())
+    comments = [{"body": "Older discussion"} for _ in range(150)]
+    mock_repository_host.get_issue_comments.return_value = comments[:100]
+    def find_receipt(number, *, body):
+        from issue_orchestrator.ports.comment_receipt import IssueCommentReceipt
+        import hashlib
+        if any(comment["body"] == body for comment in comments):
+            return IssueCommentReceipt("c151", "comment-url", "user:1", hashlib.sha256(body.encode()).hexdigest())
+        return None
+
+    mock_repository_host.find_issue_comment_receipt.side_effect = find_receipt
+
+    def publish(number, body):
+        comments.append({"body": body})
+        raise RuntimeError("Remote comment committed but response lost")
+
+    mock_repository_host.add_comment.side_effect = publish
+    assert applier.apply(action).success
+    mock_repository_host.add_comment.assert_called_once()
+    mock_repository_host.get_issue_comments.assert_not_called()
+    mock_repository_host.update_issue_state.assert_called_once_with(6966, "closed")
+
+
+def test_fold_does_not_close_until_new_explanation_receipt_is_verified(applier, mock_repository_host):
+    from issue_orchestrator.control.actions import FoldCaseFileIssueAction
+    from issue_orchestrator.control.reconciliation import build_expected_for_mutation
+
+    action = FoldCaseFileIssueAction(issue_number=6966, comment="Recorded evidence", expected=build_expected_for_mutation())
+    mock_repository_host.find_issue_comment_receipt.return_value = None
+    mock_repository_host.issue_comment_marker_present.return_value = True
+    result = applier.apply(action)
+    assert not result.success
+    assert "could not be verified" in result.error
+    mock_repository_host.add_comment.assert_called_once()
+    mock_repository_host.update_issue_state.assert_not_called()
+    mock_repository_host.issue_comment_marker_present.assert_not_called()
+
+
+@pytest.mark.parametrize("pause_at", ["lookup", "publication", "receipt"])
+def test_fold_pause_interrupts_each_write_and_remaining_batch(
+    applier, mock_repository_host, mock_fresh_issue_reader, pause_at,
+):
+    from issue_orchestrator.control.actions import FoldCaseFileIssueAction
+    from issue_orchestrator.control.reconciliation import (
+        ReconciliationRequired, build_expected_for_mutation, get_pause_label,
+    )
+    from issue_orchestrator.ports.comment_receipt import IssueCommentReceipt
+
+    applier.reconcile = True
+    published = False
+
+    def pause():
+        mock_fresh_issue_reader.read_issue_labels.return_value = [get_pause_label()]
+
+    def receipt(number, *, body):
+        if pause_at == "lookup" or (published and pause_at == "receipt"):
+            pause()
+        if published:
+            return IssueCommentReceipt("1", "url", "user:7", "a" * 64)
+        return None
+
+    def publish(number, body):
+        nonlocal published
+        published = True
+        if pause_at == "publication":
+            pause()
+        return "url"
+
+    mock_repository_host.find_issue_comment_receipt.side_effect = receipt
+    mock_repository_host.add_comment.side_effect = publish
+    action = FoldCaseFileIssueAction(
+        issue_number=6966, comment="Evidence", expected=build_expected_for_mutation(),
+    )
+    with pytest.raises(ReconciliationRequired):
+        applier.apply_all([action, CloseIssueAction(issue_number=6967)])
+    mock_repository_host.update_issue_state.assert_not_called()
+    assert published is (pause_at != "lookup")
+
+
+@pytest.mark.parametrize("path", ["append", "adopt", "create"])
+@pytest.mark.parametrize("loss", ["pause", "claim"])
+@pytest.mark.parametrize("arrives_at", ["lookup", "existing_receipt", "publication", "receipt"])
+def test_case_file_evidence_rechecks_authority_before_publication_and_count(
+    applier, mock_repository_host, mock_fresh_issue_reader, mock_events,
+    path, loss, arrives_at,
+):
+    from issue_orchestrator.control.actions import AppendPatternObservationAction, CreateTechLeadCaseFileIssueAction
+    from issue_orchestrator.control.reconciliation import ReconciliationRequired, build_expected_for_mutation, get_pause_label
+    from issue_orchestrator.domain.tech_lead_findings import PatternObservation, case_file_issue_marker
+    from issue_orchestrator.ports.comment_receipt import IssueCommentReceipt
+
+    authority = InMemoryTechLeadAuthorityStore()
+    if path != "create":
+        authority.record_pattern(signature="sig", issue_number=10, observation_id="original")
+    applier.tech_lead_ops = authority
+    applier.reconcile = True
+    claims = MagicMock(spec=ClaimManager)
+    claims.check_winner.return_value = True
+    applier.claim_gate = ClaimGate(claims, mock_events)
+    applier.lease_id_lookup = lambda number: "lease"
+    observation = PatternObservation(observation_id="repeat", comment="Evidence with a stable identity")
+    if path == "append":
+        action = AppendPatternObservationAction(
+            issue_number=10, pattern_signature="sig", observation=observation,
+            expected=build_expected_for_mutation(),
+        )
+    else:
+        marker = case_file_issue_marker("sig")
+        action = CreateTechLeadCaseFileIssueAction(
+            title="Pattern case file: sig", body=f"Initial observation\n{marker}",
+            labels=("tech-lead-observation",), pattern_signature="sig", idempotency_marker=marker,
+            observations=(PatternObservation(observation_id="original", comment="Initial observation"), observation),
+            origin=TechLeadCreationOrigin.derived_from_anchor(30), expected=build_expected_for_mutation(),
+        )
+        mock_repository_host.create_issue.return_value = {"number": 10}
+        mock_repository_host.find_issue_by_marker.return_value = None
+        mock_repository_host.list_labels.return_value = [{"name": "tech-lead-observation"}]
+        mock_repository_host.list_milestones.return_value = []
+    published = False
+
+    def lose_authority():
+        if loss == "pause":
+            mock_fresh_issue_reader.read_issue_labels.return_value = [get_pause_label()]
+        else:
+            claims.check_winner.return_value = False
+
+    def receipt(number, *, body):
+        if arrives_at in {"lookup", "existing_receipt"} or (published and arrives_at == "receipt"):
+            lose_authority()
+        if published or arrives_at == "existing_receipt":
+            return IssueCommentReceipt("1", "url", "github-user:7", "a" * 64)
+        return None
+
+    def publish(number, body):
+        nonlocal published
+        published = True
+        if arrives_at == "publication":
+            lose_authority()
+        return "url"
+
+    mock_repository_host.find_issue_comment_receipt.side_effect = receipt
+    mock_repository_host.add_comment.side_effect = publish
+    with pytest.raises(ReconciliationRequired if loss == "pause" else ClaimLostError):
+        applier.apply_all([action, CloseIssueAction(issue_number=21)])
+    assert published is (arrives_at in {"publication", "receipt"})
+    assert authority.load_pattern_evidence(signature="sig").observation_count == 1
+    assert not authority.has_pattern_observation(signature="sig", observation_id="repeat")
+    mock_repository_host.update_issue_state.assert_not_called()
+    expected_subject = 10 if path == "append" else 30
+    assert all(call.args[0] == expected_subject for call in mock_fresh_issue_reader.read_issue_labels.call_args_list)
+
+
+@pytest.mark.parametrize("loss", ["pause", "claim"])
+@pytest.mark.parametrize("arrives_at", [
+    "initial", "marker", "labels", "intent", "created", "recovery", "stale_intent", "recorded",
+])
+def test_single_observation_creation_guards_every_mutation_and_preserves_recovery(
+    applier, mock_repository_host, mock_fresh_issue_reader, mock_events, loss, arrives_at,
+):
+    from issue_orchestrator.control.actions import CreateTechLeadCaseFileIssueAction
+    from issue_orchestrator.control.reconciliation import ReconciliationRequired, build_expected_for_mutation, get_pause_label
+    from issue_orchestrator.domain.tech_lead_findings import PendingCaseFile, PatternObservation, case_file_issue_marker
+
+    authority = InMemoryTechLeadAuthorityStore()
+    applier.tech_lead_ops = authority
+    applier.reconcile = True
+    claims = MagicMock(spec=ClaimManager)
+    claims.check_winner.return_value = True
+    applier.claim_gate = ClaimGate(claims, mock_events)
+    applier.lease_id_lookup = lambda number: "lease"
+    marker = case_file_issue_marker("sig")
+    action = CreateTechLeadCaseFileIssueAction(
+        title="Pattern case file: sig", body=f"Only observation\n{marker}",
+        labels=("tech-lead-observation",), pattern_signature="sig", idempotency_marker=marker,
+        observations=(PatternObservation(observation_id="original", comment="Only observation"),),
+        origin=TechLeadCreationOrigin.derived_from_anchor(30), expected=build_expected_for_mutation(),
+    )
+    intent = PendingCaseFile(
+        signature="sig", title=action.title, idempotency_marker=marker,
+        body_observation_id="original", fix_class="", area="", diagnosis="",
+    )
+    if arrives_at in {"recovery", "stale_intent"}:
+        authority.record_pending_case_file(pending=intent)
+    remote_issue_exists = arrives_at == "recovery"
+
+    def lose_authority():
+        if loss == "pause":
+            mock_fresh_issue_reader.read_issue_labels.return_value = [get_pause_label()]
+        else:
+            claims.check_winner.return_value = False
+
+    def find_marker(**kwargs):
+        if arrives_at in {"marker", "recovery", "stale_intent"}:
+            lose_authority()
+        return 10 if remote_issue_exists else None
+
+    def list_labels():
+        if arrives_at == "labels":
+            lose_authority()
+            return []  # Missing label requires its own guarded remote write.
+        return [{"name": "tech-lead-observation"}]
+
+    def create_issue(**kwargs):
+        nonlocal remote_issue_exists
+        remote_issue_exists = True
+        if arrives_at == "created":
+            lose_authority()
+        return {"number": 10}
+
+    record_pending = authority.record_pending_case_file
+    record_pattern = authority.record_pattern
+
+    def write_intent(**kwargs):
+        record_pending(**kwargs)
+        if arrives_at == "intent":
+            lose_authority()
+
+    def write_pattern(**kwargs):
+        record_pattern(**kwargs)
+        if arrives_at == "recorded":
+            lose_authority()
+
+    mock_repository_host.find_issue_by_marker.side_effect = find_marker
+    mock_repository_host.list_labels.side_effect = list_labels
+    mock_repository_host.list_milestones.return_value = []
+    mock_repository_host.create_issue.side_effect = create_issue
+    if arrives_at == "initial":
+        lose_authority()
+    with patch.object(authority, "record_pending_case_file", side_effect=write_intent), \
+            patch.object(authority, "record_pattern", side_effect=write_pattern), \
+            pytest.raises(ReconciliationRequired if loss == "pause" else ClaimLostError):
+        applier.apply_all([action, CloseIssueAction(issue_number=21)])
+
+    mock_repository_host.add_comment.assert_not_called()  # No append can mask the initial transaction.
+    mock_repository_host.update_issue_state.assert_not_called()  # Batch stopped.
+    mock_repository_host.create_label.assert_not_called()
+    assert mock_repository_host.create_issue.call_count == (arrives_at in {"created", "recorded"})
+    row = authority.load_pattern_evidence(signature="sig")
+    if arrives_at == "recorded":
+        assert row is not None and row.observation_count == 1
+    else:
+        assert row is None
+    pending = authority.load_pending_case_file(signature="sig")
+    assert (pending is not None) == (arrives_at in {"intent", "created", "recovery", "stale_intent", "recorded"})
+    if pending is not None:
+        assert pending == intent
+    if loss == "claim":
+        assert claims.check_winner.called
+
+    # A later authorized run resolves exactly the persisted intent/remote issue,
+    # with no duplicate issue or observation, including a half-retired commit.
+    mock_fresh_issue_reader.read_issue_labels.return_value = []
+    claims.check_winner.return_value = True
+    mock_repository_host.find_issue_by_marker.side_effect = None
+    mock_repository_host.find_issue_by_marker.return_value = 10 if remote_issue_exists else None
+    mock_repository_host.list_labels.side_effect = None
+    mock_repository_host.list_labels.return_value = [{"name": "tech-lead-observation"}]
+    mock_repository_host.create_issue.side_effect = None
+    mock_repository_host.create_issue.return_value = {"number": 10}
+    mock_repository_host.create_issue.reset_mock()
+    assert applier.apply(action).success
+    assert mock_repository_host.create_issue.call_count == (not remote_issue_exists)
+    assert authority.load_pattern_evidence(signature="sig").observation_count == 1
+    assert authority.load_pending_case_file(signature="sig") is None
