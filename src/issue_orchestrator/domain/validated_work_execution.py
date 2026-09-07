@@ -31,3 +31,11 @@ class RecordExecutionToken:
 
     def __reduce__(self) -> Never:
         raise TypeError("execution tokens cannot be serialized or copied")
+
+
+class ValidatedWorkClaimLost(RuntimeError):
+    """No further effect may run with this invocation's token and claim."""
+
+
+class ValidatedWorkAuthorityUnavailable(RuntimeError):
+    """Authority could not be freshly read; no effect was dispatched."""

@@ -10,15 +10,15 @@ drained republish) delegate here, so they cannot drift apart on that policy.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
 from ..control.actions import AddLabelAction, RemoveLabelAction
-from ..domain.models import DiscoveredReview, OrchestratorState, SessionHistoryEntry
+from ..domain.models import OrchestratorState, SessionHistoryEntry
+from ..domain.retry_review_routing import RetryReviewRouting as RetryReviewRouting
 from ..ports.fresh_issue_reader import FreshIssueReader
-from .review_routing import should_queue_pr_review
+from .retry_review_routing import RetryReviewPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -33,21 +33,6 @@ class _LabelManager(Protocol):
     @property
     def pr_pending(self) -> str: ...
     def extract_publish_fail_count(self, labels: list[str]) -> int: ...
-
-
-@dataclass(frozen=True)
-class RetryReviewRouting:
-    """Session-level inputs for the "PR produced — queue review?" decision.
-
-    Threaded into :meth:`RetrySuccessFinalizer.finalize` so a successful retry
-    routes a PR through the same review-discovery policy as live completion
-    instead of unconditionally finalizing to ``pr-pending``.
-    """
-
-    branch_name: str
-    skip_review: bool
-    review_exchange_completed: bool
-    review_exchange_halted: bool
 
 
 class RetrySuccessFinalizer:
@@ -68,7 +53,7 @@ class RetrySuccessFinalizer:
         # that produces a PR must route through the same review-discovery policy
         # as live completion, so a retry-published PR cannot bypass the review
         # gate. The planner still owns the dry-run / already-queued gates.
-        self._code_review_agent_configured = code_review_agent_configured
+        self._review_policy = RetryReviewPolicy(code_review_agent_configured=code_review_agent_configured)
 
     def finalize(
         self,
@@ -88,7 +73,7 @@ class RetrySuccessFinalizer:
         # external label cleanup below can raise, and a half-applied finalize
         # must not leave review-discovery state queued for a PR whose
         # publish-failed cleanup never completed (split-brain).
-        review_candidate = self._review_candidate(
+        review_candidate = self._review_policy.candidate(
             issue_number=issue_number,
             pr_url=pr_url,
             pr_number=pr_number,
@@ -123,43 +108,6 @@ class RetrySuccessFinalizer:
             worktree_path=worktree_path,
             history_reason=history_reason,
             issue_labels=tuple(labels),
-        )
-
-    def _review_candidate(
-        self,
-        *,
-        issue_number: int,
-        pr_url: str | None,
-        pr_number: int | None,
-        agent_label: str | None,
-        routing: RetryReviewRouting,
-    ) -> DiscoveredReview | None:
-        """Build the review-discovery candidate for a still-unreviewed PR (pure).
-
-        A publish failure is only ever recorded for a work session (review
-        sessions do not push / create PRs), so this PR always came from a work
-        session. When code review still applies, return the same
-        ``DiscoveredReview`` fact live completion uses so the planner owns
-        pr-pending + the review queue (and the dry-run / already-queued gates).
-        Returns ``None`` when no review is needed. Performs no mutation.
-        """
-        if pr_url is None or pr_number is None:
-            return None
-        if not should_queue_pr_review(
-            has_pr=True,
-            code_review_agent_configured=self._code_review_agent_configured,
-            skip_review=routing.skip_review,
-            is_review_session=False,
-            review_exchange_completed=routing.review_exchange_completed,
-            review_exchange_halted=routing.review_exchange_halted,
-        ):
-            return None
-        return DiscoveredReview(
-            issue_number,
-            pr_number,
-            pr_url,
-            routing.branch_name,
-            agent_label=agent_label,
         )
 
     def _build_label_actions(

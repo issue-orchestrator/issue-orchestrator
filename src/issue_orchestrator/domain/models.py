@@ -3,6 +3,7 @@
 import os
 import re
 import shlex
+from urllib.parse import urlsplit
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -1318,6 +1319,15 @@ class SessionHistoryEntry:
     issue_labels: tuple[str, ...] = ()  # Snapshot retained for area/seam facts
 
 
+    @property
+    def publication_identity(self) -> tuple[int, int] | None:
+        """Completed history dedupes by issue and PR number, across URL spellings."""
+        path = urlsplit(self.pr_url or "").path.rstrip("/").split("/")
+        if self.status == "completed" and len(path) >= 2 and path[-2] == "pull" and path[-1].isdigit():
+            return self.issue_number, int(path[-1])
+        return None
+
+
 @dataclass
 class PendingCleanup:
     """A session awaiting cleanup after review completes.
@@ -2160,8 +2170,26 @@ class OrchestratorState:
         self.pending_validation_retries.extend([retry])
 
     def record_discovered_review(self, review: DiscoveredReview) -> None:
-        """Record a completion-discovered review for Planner consumption."""
+        """Record a completion-discovered review once per issue/PR pair."""
+        if any(
+            (existing.issue_number, existing.pr_number) == (review.issue_number, review.pr_number)
+            for existing in self.discovered_reviews
+        ):
+            return
         self.discovered_reviews.extend([review])
+
+    def record_publication_history(self, entry: SessionHistoryEntry) -> None:
+        """Replay completed publication history without erasing unrelated runs."""
+        identity = entry.publication_identity
+        if identity is None:
+            raise ValueError("publication history requires a completed issue/PR pair")
+        if not any(existing.publication_identity == identity for existing in self.session_history):
+            self.session_history.append(entry)
+
+    def record_completed_issue(self, issue_number: int) -> None:
+        """Preserve the existing daily completion list, with idempotent intake."""
+        if issue_number not in self.completed_today:
+            self.completed_today.extend([issue_number])
 
     def record_discovered_failure(self, failure: DiscoveredFailure) -> None:
         """Record a session-failure fact for the Planner (owner boundary).
