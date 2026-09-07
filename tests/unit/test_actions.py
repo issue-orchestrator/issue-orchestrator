@@ -280,8 +280,9 @@ class TestActionApplier:
         )
 
     @pytest.fixture
-    def applier(self, mock_labels, session_manager, collecting_sink):
+    def applier(self, mock_labels, session_manager, collecting_sink, completion_intake):
         return ActionApplier(
+            completion_intake=completion_intake,
             labels=mock_labels,
             sessions=session_manager,
             events=collecting_sink,

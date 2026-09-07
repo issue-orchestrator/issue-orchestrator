@@ -52,7 +52,18 @@ def allocation_for(output):
 def make_completion_processor(*args, **kwargs) -> CompletionProcessor:
     output = kwargs["session_output"] if "session_output" in kwargs else args[3]
     kwargs.setdefault("issue_run_allocator", allocation_for(output))
-    kwargs.setdefault("completion_intake", Mock(spec=CompletionIntakeRuntime))
+    if "completion_intake" not in kwargs:
+        # Legacy record-only tests do not exercise receipt authority. Any new
+        # lifetime call must inject a real intake fixture, never a passing Mock.
+        intake = Mock(spec=CompletionIntakeRuntime)
+        for name in dir(CompletionIntakeRuntime):
+            if not name.startswith("_") and callable(
+                getattr(CompletionIntakeRuntime, name)
+            ):
+                getattr(intake, name).side_effect = AssertionError(
+                    f"{name} requires an explicitly injected completion intake fixture"
+                )
+        kwargs["completion_intake"] = intake
     return CompletionProcessor(*args, **kwargs)
 
 

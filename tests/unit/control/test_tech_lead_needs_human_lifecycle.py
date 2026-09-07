@@ -830,6 +830,10 @@ class TestEveryOrchestratorCauseOwnsTheSharedBlock:
     that exist today and the eleventh someone adds tomorrow.
     """
 
+    @pytest.fixture(autouse=True)
+    def bind_intake(self, completion_intake_fixture):
+        self.intake = completion_intake_fixture
+
     def _wiring(self, sample_config, tmp_path, live):
         from unittest.mock import MagicMock
 
@@ -863,6 +867,7 @@ class TestEveryOrchestratorCauseOwnsTheSharedBlock:
             causes=claims,
         )
         applier = ActionApplier(
+            completion_intake=self.intake.runtime,
             labels=label_set,
             sessions=MagicMock(),
             events=MagicMock(),
@@ -1061,6 +1066,10 @@ class TestTheBlockOwnerIsNotBypassableInProduction:
     generic label actions, because the generic actions were never the gap.
     """
 
+    @pytest.fixture(autouse=True)
+    def bind_intake(self, completion_intake_fixture):
+        self.intake = completion_intake_fixture
+
     def _wiring(self, sample_config, tmp_path, live):
         from unittest.mock import MagicMock
 
@@ -1094,6 +1103,7 @@ class TestTheBlockOwnerIsNotBypassableInProduction:
                 return sorted(live.get(number, set()))
 
         applier = ActionApplier(
+            completion_intake=self.intake.runtime,
             labels=label_set,
             sessions=MagicMock(),
             events=MagicMock(),
@@ -1183,6 +1193,7 @@ class TestTheBlockOwnerIsNotBypassableInProduction:
         git_adapter = MagicMock()
         git_adapter.get_current_branch.return_value = "branch"
         processor = make_completion_processor(
+            completion_intake=self.intake.runtime,
             # Wired exactly as the composition root wires it: the governed
             # label is refused at the capability, and the typed outcome routes
             # through the owner.
@@ -1413,8 +1424,9 @@ class TestTheBlockOwnerIsNotBypassableInProduction:
         quarantine.reconcile_released(frozenset())
         assert labels.needs_human not in live[903]
 
+    @pytest.mark.parametrize("corrupt_custody", [False, True])
     def test_merge_escalation_records_provenance_against_its_pr(
-        self, sample_config, tmp_path
+        self, sample_config, tmp_path, corrupt_custody
     ):
         """The target is the PR, not the issue the escalation belongs to.
 
@@ -1429,7 +1441,16 @@ class TestTheBlockOwnerIsNotBypassableInProduction:
             sample_config, tmp_path, live
         )
 
-        applier.apply(
+        accepted = self.intake.accept(903)
+        if corrupt_custody:
+            entry = self.intake.ledger.entry_for_receipt(accepted.receipt.entry_id)
+            entry.raw_path.write_bytes(b"corrupted custody")
+
+        def before_stop(_ref):
+            self.intake.assert_closed_and_drained(accepted)
+
+        applier.sessions.stop.side_effect = before_stop
+        result = applier.apply(
             EscalateToHumanAction(
                 issue_number=903,
                 pr_number=77,
@@ -1440,6 +1461,17 @@ class TestTheBlockOwnerIsNotBypassableInProduction:
             )
         )
 
+        if corrupt_custody:
+            assert not result.success
+            applier.sessions.stop.assert_not_called()
+            assert live == {903: set(), 77: set()}
+            assert claims.needs_human_causes(77) == frozenset()
+            assert claims.needs_human_causes(903) == frozenset()
+            return
+
+        assert result.success
+        assert applier.sessions.stop.call_count == 2
+        self.intake.assert_closed_and_drained(accepted)
         assert labels.needs_human in live[77]
         assert labels.needs_human not in live[903]
         assert claims.needs_human_causes(77) == frozenset(

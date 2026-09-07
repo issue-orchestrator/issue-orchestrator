@@ -2,11 +2,17 @@
 
 import base64
 import json
+import os
+from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Thread
 from unittest.mock import Mock
+from uuid import uuid4
+
+import pytest
 
 from issue_orchestrator.contracts.ui_openapi_models import CompletionSubmissionPayload
 from issue_orchestrator.control.completion_intake import CompletionEvidenceIntakeService
@@ -15,6 +21,10 @@ from issue_orchestrator.control.completion_intake_validation import (
 )
 from issue_orchestrator.control.issue_run_allocator import IssueRunAllocationService
 from issue_orchestrator.domain.completion_intake import SubmitCompletionEvidence
+from issue_orchestrator.domain.issue_run_allocation import IssueRunAllocation
+from issue_orchestrator.domain.issue_key import FakeIssueKey
+from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.session_run import SessionRunAssets
 from issue_orchestrator.execution.command_runner import LocalCommandRunner
 from issue_orchestrator.execution.git_tools import create_git
 from issue_orchestrator.execution.git_working_copy import GitWorkingCopy
@@ -22,6 +32,7 @@ from issue_orchestrator.execution.historical_intake_custody import (
     IsolatedCompletionValidationWorkspace,
 )
 from issue_orchestrator.execution.issue_run_ledger import SqliteIssueRunLedger
+from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 from issue_orchestrator.ports.background_job import BackgroundJobRunner
 from issue_orchestrator.ports.historical_intake import HistoricalIntakeHandler
 
@@ -94,7 +105,7 @@ class ExchangeIntakeFixture:
                     self.send_response(404)
                     self.end_headers()
 
-            def log_message(self, *_args):
+            def log_message(self, format: str, *args: object) -> None:
                 pass
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
@@ -115,3 +126,50 @@ class ExchangeIntakeFixture:
         self.server.shutdown()
         self.server.server_close()
         self.thread.join(timeout=2)
+
+
+@dataclass(frozen=True)
+class CodingCommandRun:
+    environment: dict[str, str] = field(repr=False)
+    run: SessionRunAssets
+    owner: CompletionEvidenceIntakeService
+
+
+@contextmanager
+def coding_command_environment(worktree: Path, supplied: dict[str, str] | None):
+    """Allocate a real contract-test run before handing authority to its CLI child."""
+    state = worktree.parent / ("command-intake-" + uuid4().hex)
+    with pytest.MonkeyPatch.context() as environment:
+        with ExchangeIntakeFixture(state, environment) as fixture:
+            run = fixture.allocator(FileSystemSessionOutput()).allocate(
+                IssueRunAllocation(
+                    worktree_path=worktree.resolve(),
+                    session_name="issue-123",
+                    issue_number=123,
+                    session_key=SessionKey(
+                        FakeIssueKey("123", "example/repo"), TaskKind.CODE
+                    ),
+                    agent_label="agent:contract",
+                    backend="subprocess",
+                )
+            )
+            child_env = {**os.environ, **(supplied or {})}
+            child_env.update(
+                ISSUE_ORCHESTRATOR_API_PORT=str(fixture.server.server_port),
+                ISSUE_ORCHESTRATOR_AGENT_CALLBACK_TOKEN=TEST_CALLBACK_TOKEN,
+                ISSUE_ORCHESTRATOR_COMPLETION_CAPABILITY=fixture.owner.submission_capability(
+                    run
+                ),
+                ISSUE_ORCHESTRATOR_RUN_DIR=str(run.run_dir),
+                ISSUE_ORCHESTRATOR_SESSION_ID=run.session_name,
+            )
+            # The candidate locator is intentionally independent of receipt
+            # authority. These older consumer tests inspect this exact file.
+            child_env.setdefault(
+                "ISSUE_ORCHESTRATOR_COMPLETION_PATH",
+                ".issue-orchestrator/completion.json",
+            )
+            try:
+                yield CodingCommandRun(child_env, run, fixture.owner)
+            finally:
+                fixture.owner.close_and_drain(123)
