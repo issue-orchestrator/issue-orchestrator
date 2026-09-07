@@ -9,6 +9,8 @@ These are NOT framework examples - they are our working configuration.
 - `scripts/` - Repo-maintainer scripts (not framework/user-facing)
 - `hooks/` - Repo-maintainer hook extensions run by local guardrails
 - `config/` - Repo-maintainer guardrail/profiling configuration
+- `reconciliation/` - Checked-in case-file reconciliation plans for this repo's
+  board (see [docs/development/CASE_FILE_RECONCILIATION.md](../docs/development/CASE_FILE_RECONCILIATION.md))
 - `Makefile` - Repo-maintainer targets (for internal profiling/workflows)
 
 ## What does NOT belong here

@@ -40,6 +40,7 @@ from .bootstrap_pending_work import (
     require_repository_host,
 )
 from .bootstrap_session_launcher import build_session_launcher_factory
+from .bootstrap_run_services import create_io_adapters as _create_io_adapters, build_issue_run_services
 from .bootstrap_operator_commands import build_operator_issue_command_factory
 from .bootstrap_completion import (
     _validation_attempt_key_factory,
@@ -328,21 +329,6 @@ def _create_planner(
         label_manager=label_manager,
     )
     return planner, scheduler, dependency_evaluator, label_sync
-
-
-def _create_io_adapters(github_auth: GitHubAuth | None = None) -> tuple[
-    GitWorktreeManager,
-    GitWorkingCopy,
-    LocalCommandRunner,
-    FileSystemSessionOutput,
-]:
-    """Create IO adapter instances."""
-    return (
-        GitWorktreeManager(),
-        GitWorkingCopy(git_auth=github_auth),
-        LocalCommandRunner(),
-        FileSystemSessionOutput(),
-    )
 
 
 def create_attempt_store(config: Config) -> "AttemptStore":
@@ -697,8 +683,10 @@ def build_orchestrator(
         label_writer=repository_host,
         label_manager=label_manager, events=events)
 
+    issue_run_ledger, issue_run_allocator = build_issue_run_services(config.repo_root, session_output)
     completion_processor, session_controller_instance, completion_handler_factory = create_completion_components(
         config, github, events, working_copy, session_output, command_runner, provider_resilience,
+        issue_run_allocator=issue_run_allocator,
         label_manager=label_manager,
         background_job_supervisor=background_job_supervisor,
         agent_callback_endpoint=agent_callback_endpoint,
@@ -813,6 +801,7 @@ def build_orchestrator(
         command_runner=command_runner,
         session_output=session_output,
         manifest_downloader=manifest_downloader,
+        issue_run_allocator=issue_run_allocator,
         tech_lead_authority=tech_lead_authority,
         claim_manager=claim_manager,
         provider_resilience=provider_resilience,
@@ -824,6 +813,7 @@ def build_orchestrator(
         coder_prompt_addendum=coder_prompt_addendum,
     )
     deps = OrchestratorDeps(
+        issue_run_allocator=issue_run_allocator,
         events=events,
         runner=runner,
         repository_host=github,
@@ -842,6 +832,7 @@ def build_orchestrator(
         command_runner=command_runner,
         session_output=session_output,
         manifest_downloader=manifest_downloader,
+        issue_run_ledger=issue_run_ledger,
         pending_work_claims=pending_work.claims,
         claim_quarantine=pending_work.quarantine,
         needs_human_block=pending_work.needs_human_block,
@@ -970,6 +961,7 @@ def build_orchestrator_for_testing(
     working_copy = GitWorkingCopy()
     command_runner = LocalCommandRunner()
     session_output = FileSystemSessionOutput()
+    issue_run_ledger, issue_run_allocator = build_issue_run_services(config.repo_root, session_output)
     coder_prompt_addendum = build_coder_prompt_addendum_provider(config)
 
     # A test composition must never shell out to a real provider CLI: readiness
@@ -1111,6 +1103,7 @@ def build_orchestrator_for_testing(
         label_manager=label_manager, events=events)
 
     completion_processor = CompletionProcessor(
+        issue_run_allocator=issue_run_allocator,
         label_adapter=GovernedLabelSet(
             labels=github, governed_label=label_manager.needs_human
         ),
@@ -1241,6 +1234,7 @@ def build_orchestrator_for_testing(
         command_runner=command_runner,
         session_output=session_output,
         manifest_downloader=manifest_downloader,
+        issue_run_allocator=issue_run_allocator,
         tech_lead_authority=tech_lead_authority_for_testing,
         claim_manager=claim_manager,
         provider_resilience=provider_resilience,
@@ -1263,6 +1257,7 @@ def build_orchestrator_for_testing(
         provider_resilience=provider_resilience,
     )
     deps = OrchestratorDeps(
+        issue_run_allocator=issue_run_allocator,
         events=events,
         runner=runner,
         repository_host=github,
@@ -1281,6 +1276,7 @@ def build_orchestrator_for_testing(
         command_runner=command_runner,
         session_output=session_output,
         manifest_downloader=manifest_downloader,
+        issue_run_ledger=issue_run_ledger,
         pending_work_claims=pending_work.claims,
         claim_quarantine=pending_work.quarantine,
         needs_human_block=pending_work.needs_human_block,

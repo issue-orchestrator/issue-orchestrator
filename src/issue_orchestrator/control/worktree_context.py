@@ -35,6 +35,11 @@ from ..infra.logging_config import get_repo_log_path
 from ..infra.repo_identity import get_repo_head_sha
 from ..ports import EventSink,  make_trace_event
 from ..domain.session_run import SessionRunAssets
+from ..domain.session_key import SessionKey
+from ..domain.issue_run_allocation import IssueRunAllocation
+from ..domain.issue_run_evidence import IssueRunEvidenceUnavailable
+from ..ports.issue_run_allocator import IssueRunAllocator
+from .session_launch_types import LaunchDisposition
 from ..ports.session_output import SessionOutput
 from ..ports.command_runner import CommandRunner
 from ..ports.worktree_manager import WorktreeManager, WorktreeInfo, WorktreeReuseOptions
@@ -42,6 +47,10 @@ from .isolation import build_runtime_tool_env
 from .worktree import Worktree, WorktreePreparationError, WorktreeSetupError
 
 logger = logging.getLogger(__name__)
+
+
+class WorktreeRunOwnershipError(WorktreePreparationError):
+    """Allocation could not become durable; no worker or queued claim started."""
 
 
 def _escape_claude_project_path(path: Path) -> str:
@@ -147,6 +156,8 @@ class WorktreeContext:
         command_runner: CommandRunner,
         events: EventSink,
         session_output: SessionOutput,
+        run_allocator: IssueRunAllocator,
+        session_key: SessionKey,
         issue_number: int,
         issue_title: str,
         session_name: str,
@@ -358,18 +369,29 @@ class WorktreeContext:
 
         # Setup output directories and tracking
         claude_project_dir = Path.home() / ".claude" / "projects" / _escape_claude_project_path(worktree_path)
-        run = session_output.start_run(
-            worktree_path=worktree_path,
-            session_name=phase_name,
-            issue_number=issue_number,
-            agent_label=agent_label,
-            backend=config.terminal_adapter or "subprocess",
-            claude_log_dir=str(claude_project_dir),
-            orchestrator_log=str(get_repo_log_path(config.repo_root)),
-            retention_tier=config.session_output_retention_tier,
-            retention_days=config.session_output_retention_days,
-            retention_pinned=False,
-        )
+        try:
+            run = run_allocator.allocate(IssueRunAllocation(
+                worktree_path=worktree_path,
+                session_name=phase_name,
+                session_key=session_key,
+                issue_number=issue_number,
+                agent_label=agent_label,
+                backend=config.terminal_adapter or "subprocess",
+                claude_log_dir=str(claude_project_dir),
+                orchestrator_log=str(get_repo_log_path(config.repo_root)),
+                retention_tier=config.session_output_retention_tier,
+                retention_days=config.session_output_retention_days,
+                retention_pinned=False,
+            ))
+        except IssueRunEvidenceUnavailable as exc:
+            return cls(
+                worktree_path=worktree_path, branch_name=actual_branch,
+                session_name=session_name, phase_name=phase_name, issue_number=issue_number,
+                worktree_info=worktree_info, run=None,  # type: ignore[arg-type]
+                claude_project_dir=claude_project_dir,
+                error=WorktreeRunOwnershipError(worktree_path, issue_number, str(exc)),
+                _config=config, _session_output=session_output,
+            )
 
         return cls(
             worktree_path=worktree_path,
@@ -382,6 +404,14 @@ class WorktreeContext:
             claude_project_dir=claude_project_dir,
             _config=config,
             _session_output=session_output,
+        )
+
+    @property
+    def failure_disposition(self) -> LaunchDisposition:
+        return (
+            LaunchDisposition.CLAIM_UNRECORDED
+            if isinstance(self.error, WorktreeRunOwnershipError)
+            else LaunchDisposition.PERMANENT_FAILURE
         )
 
     def write_worktree_note(self) -> None:

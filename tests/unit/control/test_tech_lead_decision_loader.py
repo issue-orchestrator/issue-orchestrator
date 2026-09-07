@@ -152,3 +152,15 @@ def test_happy_path(tmp_path: Path) -> None:
     assert result.decision.summary.startswith("Two sessions hung")
     assert [f.id for f in result.decision.findings] == ["T1"]
     assert [a.id for a in result.decision.proposed_actions] == ["A1"]
+
+
+def test_invalid_utf8_is_a_typed_json_rejection(tmp_path: Path) -> None:
+    decision_path, report_path = _write_pair(tmp_path, decision="placeholder")
+    decision_path.write_bytes(b"\xff")
+
+    result = load_tech_lead_artifact_pair(decision_path, report_path)
+
+    assert not result.ok
+    assert result.failure is TechLeadDecisionLoadFailure.INVALID_JSON
+    assert "utf-8" in result.detail
+    assert decision_path.read_bytes() == b"\xff"

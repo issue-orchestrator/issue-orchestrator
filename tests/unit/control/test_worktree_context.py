@@ -3,6 +3,8 @@
 Tests for the WorktreeContext dataclass and helper functions.
 """
 
+from tests.run_allocation_helpers import make_worktree_context
+
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 import pytest
@@ -114,7 +116,7 @@ class TestWorktreeContextCreate:
             mock_worktree = MagicMock()
             mock_worktree_cls.return_value = mock_worktree
 
-            ctx = WorktreeContext.create(
+            ctx = make_worktree_context(
                 command_runner=_NoSetupRunner(),
                 worktree_manager=mock_worktree_manager,
                 config=mock_config,
@@ -150,7 +152,7 @@ class TestWorktreeContextCreate:
             mock_worktree.prepare_for_session.side_effect = prep_error
             mock_worktree_cls.return_value = mock_worktree
 
-            ctx = WorktreeContext.create(
+            ctx = make_worktree_context(
                 command_runner=_NoSetupRunner(),
                 worktree_manager=mock_worktree_manager,
                 config=mock_config,
@@ -172,7 +174,7 @@ class TestWorktreeContextCreate:
         mock_worktree_manager.create.side_effect = RuntimeError("branch already used by worktree")
         mock_config.worktree_base = tmp_path
 
-        ctx = WorktreeContext.create(
+        ctx = make_worktree_context(
             command_runner=_NoSetupRunner(),
             worktree_manager=mock_worktree_manager,
             config=mock_config,
@@ -213,7 +215,7 @@ class TestWorktreeContextCreate:
             mock_worktree = MagicMock()
             mock_worktree_cls.return_value = mock_worktree
 
-            WorktreeContext.create(
+            make_worktree_context(
                 command_runner=_NoSetupRunner(),
                 worktree_manager=mock_worktree_manager,
                 config=mock_config,
@@ -241,7 +243,7 @@ class TestWorktreeContextCreate:
             mock_worktree = MagicMock()
             mock_worktree_cls.return_value = mock_worktree
 
-            ctx = WorktreeContext.create(
+            ctx = make_worktree_context(
                 command_runner=_NoSetupRunner(),
                 worktree_manager=mock_worktree_manager,
                 config=mock_config,
@@ -268,7 +270,7 @@ class TestWorktreeContextCreate:
             mock_worktree = MagicMock()
             mock_worktree_cls.return_value = mock_worktree
 
-            ctx = WorktreeContext.create(
+            ctx = make_worktree_context(
                 command_runner=_NoSetupRunner(),
                 worktree_manager=mock_worktree_manager,
                 config=mock_config,
@@ -303,7 +305,7 @@ class TestWorktreeContextCreate:
         ) as mock_worktree_cls:
             mock_worktree_cls.return_value = MagicMock()
 
-            WorktreeContext.create(
+            make_worktree_context(
                 command_runner=_NoSetupRunner(),
                 worktree_manager=mock_worktree_manager,
                 config=mock_config,
@@ -337,7 +339,7 @@ class TestWorktreeContextCreate:
         ) as mock_worktree_cls:
             mock_worktree_cls.return_value = MagicMock()
 
-            WorktreeContext.create(
+            make_worktree_context(
                 command_runner=_NoSetupRunner(),
                 worktree_manager=mock_worktree_manager,
                 config=mock_config,
@@ -371,7 +373,7 @@ class TestWorktreeContextCreate:
         ) as mock_worktree_cls:
             mock_worktree_cls.return_value = MagicMock()
 
-            WorktreeContext.create(
+            make_worktree_context(
                 command_runner=_NoSetupRunner(),
                 worktree_manager=mock_worktree_manager,
                 config=mock_config,
@@ -397,7 +399,7 @@ class TestWorktreeContextCreate:
             mock_worktree = MagicMock()
             mock_worktree_cls.return_value = mock_worktree
 
-            WorktreeContext.create(
+            make_worktree_context(
                 command_runner=_NoSetupRunner(),
                 worktree_manager=mock_worktree_manager,
                 config=mock_config,

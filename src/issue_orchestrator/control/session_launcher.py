@@ -52,6 +52,7 @@ from ..domain.coder_prompt import (
     PreparedCoderPromptAddendum,
 )
 from ..domain.session_run import SessionRunAssets
+from ..ports.issue_run_allocator import IssueRunAllocator
 from .worktree import WorktreeSetupError
 from .worktree_context import WorktreeContext
 from ..infra.validation_state import DEFAULT_RETRY_TEMPLATE, _truncate_with_tail
@@ -180,6 +181,7 @@ class SessionLauncher:
         # produce one. Tests inject a null-object/fake provider, never None.
         board_snapshot_provider: "BoardSnapshotProvider",
         agent_callback_endpoint: "AgentCallbackEndpoint",
+        issue_run_allocator: IssueRunAllocator,
         # The typed provider-readiness boundary (#6999). Defaults to the
         # explicit "nothing to probe" reader so a composition path that has no
         # provider adapter names that fact instead of silently claiming the
@@ -202,6 +204,7 @@ class SessionLauncher:
         self._tech_lead_authority = tech_lead_authority
         self._board_snapshot_provider = board_snapshot_provider
         self._agent_callback_endpoint = agent_callback_endpoint
+        self._issue_run_allocator = issue_run_allocator
         self._session_exists = session_exists_fn
         self._create_session = create_session_fn
         self._get_issue_machine = get_issue_machine
@@ -787,6 +790,8 @@ class SessionLauncher:
             config=self.config,
             events=self.events,
             session_output=self._session_output,
+            run_allocator=self._issue_run_allocator,
+            session_key=session_key,
             issue_number=issue.number,
             issue_title=issue.title,
             session_name=session_name,
@@ -849,7 +854,10 @@ class SessionLauncher:
                 },
             )
             self._release_claim_if_held(issue.number, claim)
-            return LaunchResult(None, False, f"Worktree preparation failed: {ctx.error}")
+            return LaunchResult(
+                None, False, f"Worktree preparation failed: {ctx.error}",
+                disposition=ctx.failure_disposition,
+            )
 
         # Extract values from context for local use
         worktree_path = ctx.worktree_path
@@ -1229,6 +1237,8 @@ class SessionLauncher:
             config=self.config,
             events=self.events,
             session_output=self._session_output,
+            run_allocator=self._issue_run_allocator,
+            session_key=session_key,
             issue_number=issue.number,
             issue_title=issue.title,
             session_name=session_name,
@@ -1245,7 +1255,10 @@ class SessionLauncher:
             logger.error(issue_log(issue.number, "BLOCKED: worktree preparation failed: %s"), ctx.error)
             write_worktree_diagnostic(ctx.error)
             self._release_claim_if_held(issue.number, claim)
-            return LaunchResult(None, False, f"Worktree preparation failed: {ctx.error}")
+            return LaunchResult(
+                None, False, f"Worktree preparation failed: {ctx.error}",
+                disposition=ctx.failure_disposition,
+            )
 
         worktree_path = ctx.worktree_path
         branch_name = ctx.branch_name
@@ -1594,6 +1607,8 @@ class SessionLauncher:
             config=self.config,
             events=self.events,
             session_output=self._session_output,
+            run_allocator=self._issue_run_allocator,
+            session_key=session_key,
             issue_number=review.issue_number,
             issue_title=f"Review PR #{review.pr_number}",
             session_name=session_name,
@@ -1620,7 +1635,10 @@ class SessionLauncher:
                     "reason": str(ctx.error),
                 },
             )
-            return LaunchResult(None, False, f"Worktree preparation failed: {ctx.error}")
+            return LaunchResult(
+                None, False, f"Worktree preparation failed: {ctx.error}",
+                disposition=ctx.failure_disposition,
+            )
 
         # Extract values from context
         worktree_path = ctx.worktree_path
@@ -1892,6 +1910,8 @@ class SessionLauncher:
             config=self.config,
             events=self.events,
             session_output=self._session_output,
+            run_allocator=self._issue_run_allocator,
+            session_key=session_key,
             issue_number=review.issue_number,
             issue_title=f"Review Existing Implementation #{review.issue_number}",
             session_name=session_name,
@@ -1929,7 +1949,10 @@ class SessionLauncher:
                     "task": TaskKind.RETROSPECTIVE_REVIEW.value,
                 },
             )
-            return LaunchResult(None, False, f"Worktree preparation failed: {ctx.error}")
+            return LaunchResult(
+                None, False, f"Worktree preparation failed: {ctx.error}",
+                disposition=ctx.failure_disposition,
+            )
 
         worktree_path = ctx.worktree_path
         worktree_info = ctx.worktree_info
@@ -2109,6 +2132,7 @@ class SessionLauncher:
             repository_host=self.repository_host,
             worktree_manager=self._worktree_manager,
             session_output=self._session_output,
+            issue_run_allocator=self._issue_run_allocator,
             label_manager=self._lm,
             session_exists=self._session_exists,
             create_session=self._create_session,

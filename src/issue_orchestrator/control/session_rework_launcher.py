@@ -23,6 +23,7 @@ from ..domain.models import (
     get_completion_path,
 )
 from ..domain.session_run import SessionRunAssets
+from ..ports.issue_run_allocator import IssueRunAllocator
 from ..events import EventName
 from ..infra.config import Config
 from ..infra.logging_config import issue_log, log_context
@@ -139,6 +140,7 @@ class ReworkLaunchDependencies:
     worktree_manager: WorktreeManager
     command_runner: CommandRunner
     session_output: SessionOutput
+    issue_run_allocator: IssueRunAllocator
     label_manager: LabelManager
     session_exists: SessionExistsFn
     create_session: SessionCreatorFn
@@ -329,6 +331,8 @@ def launch_rework_session(
         config=deps.config,
         events=deps.events,
         session_output=deps.session_output,
+        run_allocator=deps.issue_run_allocator,
+        session_key=session_key,
         issue_number=issue_number,
         issue_title=f"Rework #{pr_number}",
         session_name=session_name,
@@ -367,7 +371,10 @@ def launch_rework_session(
                 "reason": str(ctx.error),
             },
         ))
-        return LaunchResult(None, False, f"Worktree preparation failed: {ctx.error}")
+        return LaunchResult(
+            None, False, f"Worktree preparation failed: {ctx.error}",
+            disposition=ctx.failure_disposition,
+        )
 
     worktree_path = ctx.worktree_path
     worktree_info = ctx.worktree_info

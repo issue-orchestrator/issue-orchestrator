@@ -15,6 +15,8 @@ All those actions are performed here after validating the completion record
 as untrusted input.
 """
 
+from ..ports.issue_run_allocator import IssueRunAllocator
+
 import json
 import logging
 import os
@@ -117,7 +119,7 @@ from .review_exchange_pr_comment import (
 from .test_skip_guard import added_test_paths, scan_added_test_skip_guards
 from .tech_lead_approval_gate import build_tech_lead_decision_approval_gate
 from .tech_lead_completion import tech_lead_decision_processing_error
-from .tech_lead_session_policy import is_benign_tech_lead_no_commits, is_tech_lead_session, shape_requested_actions_for_tech_lead
+from .tech_lead_session_policy import is_benign_tech_lead_no_commits, is_tech_lead_session, resolve_tech_lead_completion_actions
 from .worktree_head import current_worktree_head_sha
 from ..ports.pull_request_tracker import PRInfo
 from ..ports.working_copy import PushResult
@@ -213,6 +215,7 @@ class CompletionProcessor:
         # Required: an agent with no callback endpoint cannot report
         # anything back, so there is no sensible default to fall back to.
         agent_callback_endpoint: "AgentCallbackEndpoint",
+        issue_run_allocator: IssueRunAllocator,
         review_artifact_reader: ReviewArtifactReader | None = None,
         runtime_identity: RuntimeIdentity | None = None,
         tech_lead_authority: "TechLeadAuthorityStore | None" = None,
@@ -277,6 +280,7 @@ class CompletionProcessor:
         self._review_exchange = CompletionReviewExchange(
             config=config,
             session_output=session_output,
+            issue_run_allocator=issue_run_allocator,
             emit_review_started=self._emit_review_started,
             emit_review_outcome=self._emit_review_outcome,
             review_exchange_runner=review_exchange_runner or NullReviewExchangeRunner(),
@@ -619,8 +623,7 @@ class CompletionProcessor:
         Returns:
             True if any requested action requires publish gate validation.
         """
-        publish_actions = {RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR}
-        return bool(set(record.requested_actions) & publish_actions)
+        return record.requests_publication
 
     def _check_publish_gate(
         self,
@@ -797,12 +800,6 @@ class CompletionProcessor:
                 return ProcessingResult(
                     success=False, message=agent_error, errors=[agent_error]
                 )
-        # Tech Lead prompts promise no orchestrator comments (ADR-0031); the
-        # record is untrusted intent, so shape it once at the door.
-        if self._is_tech_lead_session(agent_label):
-            record.requested_actions = list(
-                shape_requested_actions_for_tech_lead(tuple(record.requested_actions))
-            )
         requested_actions = tuple(record.requested_actions)
         running_query = ReviewExchangeRunningQuery(
             issue_number=issue_number,
@@ -1021,6 +1018,14 @@ class CompletionProcessor:
                 worktree_state,
                 run_assets,
             )
+
+        if self._is_tech_lead_session(agent_label):
+            shaping_failure = resolve_tech_lead_completion_actions(
+                worktree=worktree, record=record, git_adapter=self.git_adapter,
+                base_branch=self._base_branch,
+            )
+            if shaping_failure is not None:
+                return shaping_failure
 
         test_skip_error = self._check_test_skip_guard_if_required(
             worktree,

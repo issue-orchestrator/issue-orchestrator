@@ -458,6 +458,14 @@ class CompletionRecord:
     validation_record_path: Optional[str] = None  # Path to validation record JSON
     follow_up_issues: Optional[list["ProposedFollowUpIssue"]] = None
 
+    @property
+    def requests_publication(self) -> bool:
+        """Whether this intent requires publication prerequisites, before shaping."""
+        return any(
+            action in (RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR)
+            for action in self.requested_actions
+        )
+
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
         return {

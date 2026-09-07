@@ -110,6 +110,7 @@ def _record_case_file(
     observations: int = 1,
     fix_class: str = "code",
     area: str = "",
+    diagnosis: str = "",
 ) -> None:
     """Open a case file and accrue *observations* distinct observations."""
     authority.record_pattern(
@@ -118,6 +119,7 @@ def _record_case_file(
         observation_id=f"{signature}:obs-1",
         fix_class=fix_class,
         area=area,
+        diagnosis=diagnosis,
     )
     for index in range(2, observations + 1):
         authority.note_pattern_observation(
@@ -133,6 +135,7 @@ def _append_action(
     comment: str = "observed again",
     fix_class: str = "",
     area: str = "",
+    diagnosis: str = "",
 ):
     from issue_orchestrator.control.actions import AppendPatternObservationAction
     from issue_orchestrator.domain.tech_lead_findings import PatternObservation
@@ -145,6 +148,7 @@ def _append_action(
         ),
         fix_class=fix_class,
         area=area,
+        diagnosis=diagnosis,
     )
 
 
@@ -1850,10 +1854,14 @@ class TestObservationCountBoundary:
         authority = InMemoryTechLeadAuthorityStore()
         _record_case_file(authority, signature="sig", issue_number=65, fix_class="")
         repository_host = Mock()
+        from issue_orchestrator.ports.comment_receipt import IssueCommentReceipt
+        repository_host.find_issue_comment_receipt.side_effect = [
+            None, IssueCommentReceipt("1", "url", "github-user:7", "a" * 64),
+        ]
 
         result = apply_append_pattern_observation(
             _append_action("sig", "obs-2", comment="observed again", fix_class="code"),
-            repository_host=repository_host,
+            before_write=lambda *args: None, repository_host=repository_host,
             authority=authority,
         )
 
@@ -1870,8 +1878,93 @@ class TestObservationCountBoundary:
 
         result = apply_append_pattern_observation(
             _append_action("never-recorded", "obs-1"),
-            repository_host=Mock(),
+            before_write=lambda *args: None, repository_host=Mock(),
             authority=InMemoryTechLeadAuthorityStore(),
         )
 
         assert not result.success
+
+
+class TestAccruedSightingNeverBecomesTheDiagnosis:
+    """#6989 round-1 review F1: promotion's central claim must come from a
+    reviewed ``flag_pattern``, never from a duplicate re-sighting.
+
+    An accrued sighting can now OPEN a case file, so a signature's first durable
+    row may exist with no canonical diagnosis at all. Everything downstream —
+    the ledger, and the promotion issue that is filed on it — must then take its
+    diagnosis from the first genuine ``flag_pattern``, whenever that arrives.
+    """
+
+    def _apply(self, action, authority):
+        from issue_orchestrator.control.tech_lead_case_files import (
+            apply_append_pattern_observation,
+        )
+
+        return apply_append_pattern_observation(
+            action, before_write=lambda *args: None, repository_host=Mock(), authority=authority
+        )
+
+    def test_a_flag_pattern_establishes_the_diagnosis_of_an_accrued_case_file(self):
+        authority = InMemoryTechLeadAuthorityStore()
+        # As an accrued sighting opens it: evidence, no classification, and —
+        # the point of this test — no canonical diagnosis.
+        _record_case_file(authority, signature="sig", fix_class="", diagnosis="")
+
+        result = self._apply(
+            _append_action(
+                "sig",
+                "obs-2",
+                fix_class="code",
+                area="control",
+                diagnosis="Mechanism: the renewer blocks the tick; renew off-tick.",
+            ),
+            authority,
+        )
+
+        assert result.success
+        [row] = authority.list_pattern_evidence()
+        # Established ATOMICALLY with the classification upgrade: promotion
+        # reads both, so a row can never be promotable with no diagnosis.
+        assert row.diagnosis == (
+            "Mechanism: the renewer blocks the tick; renew off-tick."
+        )
+        assert (row.fix_class, row.area) == ("code", "control")
+
+    def test_the_promotion_body_is_filed_on_that_diagnosis(self):
+        authority = InMemoryTechLeadAuthorityStore()
+        _record_case_file(authority, signature="sig", fix_class="", diagnosis="")
+        self._apply(
+            _append_action(
+                "sig",
+                "obs-2",
+                fix_class="code",
+                diagnosis="Mechanism: the renewer blocks the tick; renew off-tick.",
+            ),
+            authority,
+        )
+        [row] = authority.list_pattern_evidence()
+
+        [action] = plan_finding_promotions(
+            _config(),
+            promotable=(PromotableFinding(evidence=row, target_repo=UPSTREAM),),
+        )
+
+        assert isinstance(action, PromoteTechLeadFindingAction)
+        assert "### Diagnosis and suggested fix" in action.body
+        assert "renew off-tick" in action.body
+        # And never the fallback prose for a row recorded before diagnoses were
+        # persisted — that would mean the diagnosis was silently lost.
+        assert "legacy case-file row" not in action.body
+
+    def test_a_later_sighting_never_displaces_the_recorded_diagnosis(self):
+        authority = InMemoryTechLeadAuthorityStore()
+        _record_case_file(
+            authority, signature="sig", diagnosis="Mechanism: the renewer blocks."
+        )
+
+        # An evidence-only sighting: it accrues, and establishes nothing.
+        self._apply(_append_action("sig", "obs-2", diagnosis=""), authority)
+
+        [row] = authority.list_pattern_evidence()
+        assert row.diagnosis == "Mechanism: the renewer blocks."
+        assert row.observation_count == 2

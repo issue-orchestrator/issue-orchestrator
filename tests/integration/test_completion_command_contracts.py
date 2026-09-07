@@ -8,6 +8,8 @@ invalid command forms.
 
 from __future__ import annotations
 
+from tests.run_allocation_helpers import make_completion_processor
+
 import json
 from datetime import datetime, timedelta, timezone
 import os
@@ -348,11 +350,13 @@ def test_completion_record_schema_contract_for_all_statuses(tmp_path: Path) -> N
     repo.mkdir()
     _init_git_repo(repo)
 
+    run_assets = make_session_run_assets(repo, session_name="issue-1")
     completion_path = repo / ".issue-orchestrator" / "completion.json"
     common_env = {
         **os.environ,
         "ISSUE_ORCHESTRATOR_COMPLETION_PATH": ".issue-orchestrator/completion.json",
         "ISSUE_ORCHESTRATOR_SESSION_ID": "issue-1",
+        "ISSUE_ORCHESTRATOR_RUN_DIR": str(run_assets.run_dir),
     }
 
     cases = [
@@ -469,7 +473,7 @@ def test_completion_record_drives_expected_review_actions(
 
     label_adapter = _RecordingLabelAdapter()
     pr_adapter = _RecordingPRAdapter()
-    processor = CompletionProcessor(
+    processor = make_completion_processor(
         agent_callback_endpoint=ready_callback_endpoint(),
         label_adapter=label_adapter,
         pr_adapter=pr_adapter,
@@ -1109,7 +1113,7 @@ class TestEscalationReachesTheHumanThroughTheProductionGate:
         config = Config()
         config.validation.publish.dirty_check = "tracked"
 
-        processor = CompletionProcessor(
+        processor = make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=label_adapter,
             pr_adapter=pr_adapter,

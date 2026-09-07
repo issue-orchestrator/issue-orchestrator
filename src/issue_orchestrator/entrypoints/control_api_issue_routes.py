@@ -20,6 +20,9 @@ from ..control.reconciliation import ReconciliationRequired, build_expected_for_
 from ..control.worktree_manager import get_worktree_path
 from ..domain.models import get_completion_path
 from ..domain.review_exchange_verdict import ExchangeVerdict
+from ..domain.issue_run_allocation import IssueRunAllocation
+from ..domain.issue_run_evidence import IssueRunEvidenceUnavailable
+from ..domain.session_key import SessionKey, TaskKind
 from ..domain.session_run import SessionRunAssets
 from ..ports.operator_issue_commands import (
     OperatorCommandIntent,
@@ -446,6 +449,27 @@ def _completion_path_from_resume_manifest(manifest: Mapping[str, object]) -> str
     return completion_path
 
 
+def _find_debug_issue(
+    deps: ControlApiIssueDependency, orchestrator: "Orchestrator", issue_number: int,
+) -> "IssueProtocol | None":
+    """Resolve the debug target under the state lock, then from the host."""
+    state = orchestrator.state
+    def _cached_issue() -> "IssueProtocol | None":
+        for cached_issue in state.cached_queue_issues:
+            if cached_issue.number == issue_number:
+                return cached_issue
+        return None
+
+    issue: IssueProtocol | None = deps.with_state_lock(_cached_issue)
+    if not issue:
+        try:
+            issue = orchestrator.deps.repository_host.get_issue(issue_number)
+        except Exception as exc:
+            logger.warning("Could not fetch issue #%d: %s", issue_number, exc)
+
+    return issue
+
+
 @control_issue_router.post("/api/issues/{issue_number}/debug-session")
 async def launch_debug_session(  # noqa: C901 - debug session with validation and setup phases
     issue_number: int,
@@ -460,7 +484,6 @@ async def launch_debug_session(  # noqa: C901 - debug session with validation an
         )
 
     config = orchestrator.config
-    state = orchestrator.state
     worktree = get_worktree_path(config, issue_number)
     if not worktree.exists():
         return JSONResponse({
@@ -469,18 +492,7 @@ async def launch_debug_session(  # noqa: C901 - debug session with validation an
             "hint": "The worktree may have been cleaned up. The issue needs to be re-run first.",
         }, status_code=404)
 
-    def _cached_issue() -> "IssueProtocol | None":
-        for cached_issue in state.cached_queue_issues:
-            if cached_issue.number == issue_number:
-                return cached_issue
-        return None
-
-    issue: IssueProtocol | None = deps.with_state_lock(_cached_issue)
-    if not issue:
-        try:
-            issue = orchestrator.deps.repository_host.get_issue(issue_number)
-        except Exception as exc:
-            logger.warning("Could not fetch issue #%d: %s", issue_number, exc)
+    issue = _find_debug_issue(deps, orchestrator, issue_number)
 
     if not issue:
         return JSONResponse({
@@ -526,13 +538,17 @@ async def launch_debug_session(  # noqa: C901 - debug session with validation an
         task_kind="code",
     )
 
-    run_assets = orchestrator.deps.session_output.start_run(
-        worktree,
-        session_name,
-        issue_number=issue_number,
-        agent_label=agent_type,
-        backend=config.terminal_adapter or "subprocess",
-    )
+    try:
+        run_assets = orchestrator.deps.issue_run_allocator.allocate(IssueRunAllocation(
+            worktree_path=worktree,
+            session_name=session_name,
+            session_key=SessionKey(issue.key, TaskKind.CODE),
+            issue_number=issue_number,
+            agent_label=agent_type,
+            backend=config.terminal_adapter or "subprocess",
+        ))
+    except IssueRunEvidenceUnavailable as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=503)
     completion_path = get_completion_path(agent_type, run_dir=run_assets.run_dir.name)
     orchestrator.deps.session_output.update_manifest(
         run_assets.run_dir,

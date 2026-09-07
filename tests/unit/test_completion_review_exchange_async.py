@@ -8,6 +8,8 @@ or short-circuits onto a cached on-disk summary (returning the outcome).
 
 from __future__ import annotations
 
+from tests.run_allocation_helpers import make_completion_review_exchange
+
 import json
 import logging
 from collections.abc import Callable
@@ -129,6 +131,9 @@ class _CapturedSummary:
     review_run: ReviewExchangeRun
 
 
+from tests.unit.session_run_helpers import make_session_run_assets
+
+
 class _FakeSessionOutput:
     """Minimal SessionOutput stand-in exposing only what the async path touches."""
 
@@ -137,7 +142,8 @@ class _FakeSessionOutput:
         self._summary: _CapturedSummary | None = None
         self.no_completion_count = 0
         self.started_runs: list[ReviewExchangeRun] = []
-        self._run_dir = worktree / ".sessions" / "exchange-run"
+        self.session_run = make_session_run_assets(worktree, session_name="review-exchange-230", run_id="exchange-run-cached")
+        self._run_dir = self.session_run.run_dir
         (self._run_dir / "review-exchange").mkdir(parents=True, exist_ok=True)
 
     @property
@@ -156,10 +162,11 @@ class _FakeSessionOutput:
         agent_label: str,
     ) -> ReviewExchangeRun:
         run = ReviewExchangeRun(
-            session_name=f"review-exchange-{issue_number}-{len(self.started_runs) + 1}",
-            run_id=f"exchange-run-{len(self.started_runs) + 1}",
+            session_name=self.session_run.session_name,
+            run_id=self.session_run.run_id,
             parent_session_name=parent_session_name,
             assets=ReviewExchangeRunAssets.from_run_dir(self._run_dir),
+            session_run=self.session_run,
         )
         self.started_runs.append(run)
         return run
@@ -172,6 +179,7 @@ class _FakeSessionOutput:
             run_id="exchange-run-cached",
             parent_session_name=parent_session_name,
             assets=ReviewExchangeRunAssets.from_run_dir(self._run_dir),
+            session_run=self.session_run,
         )
 
     def store_review_exchange_summary(
@@ -212,7 +220,7 @@ class _FakeSessionOutput:
 
 
 def _make_config(tmp_path: Path, *, require_validation: bool = False) -> Config:
-    cfg = Config(repo_root=tmp_path)
+    cfg = Config(repo_root=tmp_path, repo="test/repo")
     config_path = tmp_path / ".issue-orchestrator" / "config" / "default.yaml"
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text("validation:\n  quick:\n    cmd: 'true'\n", encoding="utf-8")
@@ -333,6 +341,7 @@ def _build(
     outcome_events: list[dict[str, Any]],
     *,
     require_validation: bool = False,
+    issue_run_ledger=None,
 ) -> tuple[CompletionReviewExchange, _FakeSessionOutput]:
     from issue_orchestrator.control.background_job_supervisor import (
         BackgroundJobSupervisor,
@@ -350,7 +359,14 @@ def _build(
     # — matching the production contract. Nothing calls supervisor.tick in
     # these tests because the fake runner doesn't raise; when failure paths
     # need testing, tests call `supervisor.tick()` themselves.
-    review = CompletionReviewExchange(
+    from issue_orchestrator.control.issue_run_allocator import IssueRunAllocationService
+    from tests.run_allocation_helpers import MemoryIssueRunLedger
+
+    review = make_completion_review_exchange(
+        issue_run_allocator=IssueRunAllocationService(
+            cast(SessionOutput, session_output),
+            issue_run_ledger if issue_run_ledger is not None else MemoryIssueRunLedger(),
+        ),
         agent_callback_endpoint=ready_callback_endpoint(),
         config=_make_config(tmp_path, require_validation=require_validation),
         session_output=cast(SessionOutput, session_output),
@@ -404,6 +420,45 @@ def test_first_pass_submits_background_job_and_returns_deferred(tmp_path: Path) 
     assert called == []
     # Job id is stable for the same (issue, session_name).
     assert job_runner.submitted[0][0] == "review-exchange:230:coding-1:coding-run-1"
+
+
+@pytest.mark.parametrize("registration_fails", [False, True])
+def test_exchange_records_exact_assets_before_background_submission(tmp_path, registration_fails):
+    from unittest.mock import Mock
+    from issue_orchestrator.domain.issue_run_evidence import IssueRunEvidenceUnavailable
+    from issue_orchestrator.execution.issue_run_ledger import SqliteIssueRunLedger
+
+    ledger = SqliteIssueRunLedger(tmp_path / "state" / "runs.sqlite")
+    failing_ledger = Mock()
+    failing_ledger.record_run.side_effect = IssueRunEvidenceUnavailable("ledger unavailable")
+    jobs = _FakeJobRunner()
+    review, output = _build(
+        tmp_path, jobs, [], [],
+        issue_run_ledger=failing_ledger if registration_fails else ledger,
+    )
+    submitted = []
+
+    def submit(job_id, fn):
+        recorded = ledger.recorded_runs(230)
+        assert len(recorded) == 1
+        assert recorded[0].run == output.started_runs[0].session_run
+        submitted.append(job_id)
+        return True
+
+    jobs.submit = submit
+    arguments = dict(
+        requested_actions=(RequestedAction.CREATE_PR, RequestedAction.PUSH_BRANCH),
+        worktree=tmp_path, issue_number=230, issue_title="Example",
+        session_name="coding-1", run_id="coding-run-1", agent_label="agent:backend",
+        record=_make_record(), errors=[], actions_taken=[], run_review_exchange_loop=Mock(),
+    )
+    if registration_fails:
+        with pytest.raises(IssueRunEvidenceUnavailable, match="ledger unavailable"):
+            review.prepare_review_exchange(**arguments)
+        assert submitted == []
+    else:
+        review.prepare_review_exchange(**arguments)
+        assert len(submitted) == 1
 
 
 def test_background_job_forwards_approval_gate_to_loop(tmp_path: Path) -> None:
@@ -466,7 +521,7 @@ def test_background_deadline_is_derived_from_runner_port(tmp_path: Path) -> None
     runner = _TimeoutRunner()
     supervisor = _CapturingSupervisor()
     cfg = _make_config(tmp_path)
-    review = CompletionReviewExchange(
+    review = make_completion_review_exchange(
         agent_callback_endpoint=ready_callback_endpoint(),
         config=cfg,
         session_output=cast(SessionOutput, _FakeSessionOutput(tmp_path)),
@@ -565,7 +620,7 @@ def test_running_background_job_without_deadline_halts(tmp_path: Path) -> None:
         return _Cancellation(cancelled_job_ids=cancelled)
 
     errors: list[str] = []
-    review = CompletionReviewExchange(
+    review = make_completion_review_exchange(
         agent_callback_endpoint=ready_callback_endpoint(),
         config=_make_config(tmp_path),
         session_output=cast(SessionOutput, _FakeSessionOutput(tmp_path)),
@@ -653,7 +708,7 @@ def test_within_deadline_for_completion_returns_false_for_unbounded_job(
 
     job_runner = _FakeJobRunner()
     supervisor = BackgroundJobSupervisor(job_runner)
-    review = CompletionReviewExchange(
+    review = make_completion_review_exchange(
         agent_callback_endpoint=ready_callback_endpoint(),
         config=_make_config(tmp_path),
         session_output=cast(SessionOutput, _FakeSessionOutput(tmp_path)),
@@ -712,7 +767,7 @@ def test_within_deadline_for_completion_returns_true_for_bounded_running_job(
     supervisor = BackgroundJobSupervisor(job_runner)
     # The default _FakeReviewExchangeRunner reports a 60s deadline, so
     # the BG job is bounded and still inside it.
-    review = CompletionReviewExchange(
+    review = make_completion_review_exchange(
         agent_callback_endpoint=ready_callback_endpoint(),
         config=_make_config(tmp_path),
         session_output=cast(SessionOutput, _FakeSessionOutput(tmp_path)),
@@ -778,7 +833,7 @@ def test_background_deadline_failure_cancels_runtime(tmp_path: Path) -> None:
         return _Cancellation(cancelled_job_ids=cancelled)
 
     errors: list[str] = []
-    review = CompletionReviewExchange(
+    review = make_completion_review_exchange(
         agent_callback_endpoint=ready_callback_endpoint(),
         config=_make_config(tmp_path),
         session_output=cast(SessionOutput, _FakeSessionOutput(tmp_path)),
@@ -1465,7 +1520,7 @@ def test_no_job_runner_falls_back_to_inline_execution(
         logger="issue_orchestrator.control.completion_review_exchange",
     )
 
-    review = CompletionReviewExchange(
+    review = make_completion_review_exchange(
         agent_callback_endpoint=ready_callback_endpoint(),
         config=_make_config(tmp_path),
         session_output=cast(SessionOutput, session_output),
@@ -1532,7 +1587,7 @@ def test_inline_review_exchange_halt_is_logged(
         logger="issue_orchestrator.control.completion_review_exchange",
     )
 
-    review = CompletionReviewExchange(
+    review = make_completion_review_exchange(
         agent_callback_endpoint=ready_callback_endpoint(),
         config=_make_config(tmp_path),
         session_output=cast(SessionOutput, session_output),
@@ -1631,7 +1686,7 @@ def test_retry_does_not_reconsume_prior_run_timeout_cancellation(
         )
         return _Cancellation(cancelled_job_ids=cancelled)
 
-    review = CompletionReviewExchange(
+    review = make_completion_review_exchange(
         agent_callback_endpoint=ready_callback_endpoint(),
         config=_make_config(tmp_path),
         session_output=cast(SessionOutput, _FakeSessionOutput(tmp_path)),
