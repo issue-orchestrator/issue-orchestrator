@@ -114,6 +114,46 @@ flowchart TD
   TFAIL -->|no| SKIP["No investigation"]
 ```
 
+## How a Failure Investigation Ends (#6971)
+
+An investigation is only finished when it leaves a **disposition** — something
+machine-readable that says what happens next. Without one the blocking label
+stays, the stuck sweep re-discovers the issue as "still stuck and NOT owned",
+spends a unit of recovery budget, and commissions another session to re-derive
+the same verdict (issue #6410 was investigated three times for one conclusion).
+
+A failure investigation must propose a focus-issue diagnosis and exactly one
+terminal action. `reset_retry` and `kill_hung_session` use configured direct or
+gated authority. `escalate_to_human` uses the existing marker-owned human
+lifecycle, preserving independent human blocks. `defer_to_tracker` commits a
+wait only for a launch-granted, open same-repository prerequisite; arbitrary
+agent-provided issue numbers are refused. A kill requires an observed worker
+generation, and a stale investigation remedy cannot count as successful unless
+its owner positively proves the target recovered.
+
+Tracker publication is a single completion-mandatory command. It persists an
+admitted `prepared` intent before publishing the guarded explanation, revalidates
+the claim, expected state, and dependency, then conditionally commits `waiting`.
+The tick's existing ledger-planning path resumes a prepared command after the
+original session and grant are gone. The authority store owns an exclusive
+publication lock across marker lookup, remote write, and conditional commit.
+Independent processes share that lock; the kernel releases it after a crash.
+A deterministic remote marker then avoids repeating the explanation on replay. Publication failure withholds successful completion,
+while the durable pending owner retries without creating a new human gate.
+
+Each incident gets one wait with a 24-hour deadline. New decisions and process
+restarts cannot renew it. Closed or missing trackers latch `reassess` sooner;
+indeterminate reads preserve only an unexpired active wait. Retained context
+travels in the next investigation's `tech-lead-data/recovery-context.json`, which
+requires remediation or an explicit human handoff instead of another wait.
+Only positive target recovery releases the incident and recovery budget; absence
+from a filtered scan does not. A recovered tombstone rejects old-session replay,
+while an investigation launched after recovery may start a new incident.
+
+The ledger lives in the existing tech-lead authority store. Missing durable
+state never grants authority; malformed rows fail loudly. New tracker relations
+must be established through an authorized prerequisite workflow before use.
+
 ## Requesting a Tech-Lead Run from the Dashboard
 
 Every tech-lead run — whether a timer, a failure, a problem storm, the one-shot

@@ -100,6 +100,12 @@ class TechLeadKillSessionExecutor:
 
     events: EventSink
     run_kill: RunKillFn
+    read_generation_stale_reason: Callable[[TechLeadSessionGeneration], str | None] | None = None
+
+    def proposal_stale_reason(self, target: TechLeadSessionGeneration) -> str | None:
+        if self.read_generation_stale_reason is None:
+            raise ValueError("proposal reuse requires a live generation reader")
+        return self.read_generation_stale_reason(target)
 
     def apply(self, action: KillHungSessionAction) -> ActionResult:
         stale = kill_hung_session_stale_reason(
