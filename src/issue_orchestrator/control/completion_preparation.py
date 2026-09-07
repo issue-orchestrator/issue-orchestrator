@@ -1,6 +1,10 @@
 """Prepared completion phases shared by live execution and manual publication."""
 
 from dataclasses import dataclass
+import json
+from ..domain.prepared_completion import PreparedCompletionEvidence
+from ..domain.completion_intake import CompletionIntakeReceipt
+from ..domain.session_run import SessionRunAssets
 from .stack_base import StackBaseDecision
 
 from ..domain.models import CompletionRecord
@@ -34,3 +38,12 @@ class PreparedPullRequest:
     base_branch: str
     stack_decision: StackBaseDecision | None
     exchange_mode: str | None
+
+
+def record_from_prepared_evidence(
+    evidence: PreparedCompletionEvidence, receipt: CompletionIntakeReceipt | None, run: SessionRunAssets,
+) -> CompletionRecord:
+    """Consume only the immutable bytes bound to this exact invocation."""
+    if evidence.entry.receipt != receipt or evidence.run.run != run:
+        raise ValueError("prepared completion does not bind this receipt and run")
+    return CompletionRecord.from_dict(json.loads(evidence.completion_bytes))

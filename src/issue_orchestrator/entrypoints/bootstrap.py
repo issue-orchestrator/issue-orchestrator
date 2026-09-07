@@ -49,9 +49,10 @@ from .bootstrap_issue_runtime import build_issue_runtime
 from .bootstrap_validated_work import build_validated_work_admission
 from ..domain.models import OrchestratorState
 from .bootstrap_operator_commands import build_operator_issue_command_factory
+from .bootstrap_testing import TestingFreshIssueReader, manual_publication_for_testing
 from .bootstrap_completion import (
     build_publish_recovery as _build_publish_recovery,
-    build_manual_publisher as _build_manual_publisher,
+    build_github_manual_publisher as _build_github_manual_publisher,
     _validation_attempt_key_factory,
     build_completion_handler_factory,
     create_completion_components,
@@ -62,8 +63,6 @@ from ..infra.env import ENV_PREFIX
 from ..adapters.github.repo import get_repo_from_git, GitRepoError
 from ..ports.event_sink import EventSink, NullEventSink
 from ..ports.manual_publication import ManualPublisher
-from ..adapters.github.publication_remote import GitHubPublicationRemote
-from ..ports.issue_tracker import IssueTracker
 from ..ports.session_runner import SessionRunner, NullSessionRunner
 from ..ports.timeline_reader import NullTimelineReader
 from ..ports.timeline_store import NullTimelineStore, TimelineStore
@@ -729,11 +728,8 @@ def build_orchestrator(
     assert manifest_downloader is not None
     assert e2e_issue_tracker is not None
 
-    assert repo is not None
-    manual_publisher = _build_manual_publisher(
-        completion_processor=completion_processor, completion_intake=completion_intake,
-        working_copy=working_copy, exact_git=working_copy, repo_slug=repo,
-        remote=GitHubPublicationRemote(github.http_client, repo_slug=repo),
+    manual_publisher = _build_github_manual_publisher(
+        github, completion_processor, completion_intake, working_copy,
     )
     publish_recovery = _build_publish_recovery(
         repository_host=github,
@@ -1006,16 +1002,7 @@ def build_orchestrator_for_testing(
         command_runner=command_runner,
     )
 
-    class _TestFreshIssueReader:
-        """Fallback FreshIssueReader for tests without network dependencies."""
-
-        def __init__(self, issue_tracker: IssueTracker) -> None:
-            self._issue_tracker = issue_tracker
-
-        def read_issue_labels(self, issue_number: int) -> list[str]:
-            return self._issue_tracker.get_issue_labels(issue_number)
-
-    fresh_issue_reader = _TestFreshIssueReader(github)
+    fresh_issue_reader = TestingFreshIssueReader(github)
     e2e_issue_tracker = MagicMock()
 
     # Create default action applier
@@ -1177,15 +1164,9 @@ def build_orchestrator_for_testing(
     claim_gate, lease_renewer = claims.claim_gate, claims.lease_renewer
     run_ownership = run_ownership or claims.run_ownership
 
-    unconfigured_manual_publisher = MagicMock(spec=ManualPublisher)
-    unconfigured_manual_publisher.publish.side_effect = AssertionError(
-        "Manual publication tests must inject their behavior port"
-    )
-    manual_publisher = manual_publisher or unconfigured_manual_publisher
-
     publish_recovery = _build_publish_recovery(
         repository_host=github,
-        manual_publisher=manual_publisher,
+        manual_publisher=manual_publication_for_testing(manual_publisher),
         label_manager=label_manager,
         fresh_issue_reader=fresh_issue_reader,
         action_applier=action_applier,

@@ -1442,3 +1442,30 @@ def test_retry_locator_preserves_exact_processed_receipt_after_reopen(make_sessi
     assert stored.intake_receipt == receipt
     assert type(stored).from_dict(stored.to_dict()).intake_receipt == receipt
     assert stored.run_assets == session.run_assets
+
+
+@pytest.mark.parametrize("finished_before_abandon", [False, True])
+def test_abandon_preserves_partial_pr_facts_until_tombstone_drain(
+    make_session, tmp_path, finished_before_abandon
+):
+    lm = LabelManager(_config(tmp_path))
+    repo = _Repo(issue=_issue(lm), labels=list(_issue(lm).labels), prs=[
+        PRInfo(number=5453, title="Feature", url=PR_URL, branch=BRANCH,
+               body="", state="open", labels=[]),
+    ])
+    service, store, runner = _service(tmp_path, repo, lm,
+        result=ProcessingResult(False, "Accepted create but final observation failed", pr_url=PR_URL))
+    _record_failure(service, make_session, tmp_path)
+    state = OrchestratorState()
+    assert service.retry_publish(4057, state).status == "submitted"
+    if finished_before_abandon:
+        runner.run_all()
+    service.abandon_issue(4057)
+    if not finished_before_abandon:
+        runner.run_all()
+    service.drain_completed_retries(state)
+    assert repo.superseded == [5453]
+    assert store.get(4057) is None
+    assert repo.added == [] and repo.removed == []
+    assert state.session_history == []
+    assert state.discovered_reviews == []

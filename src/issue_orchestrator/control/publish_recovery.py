@@ -280,7 +280,7 @@ class PublishRecoveryService:
         The daemon worker thread cannot be force-killed mid-``process``, so this
         does the honest thing instead of pretending to cancel it:
 
-        - drops the in-flight republish context/result so a late drain is
+        - drops the in-flight republish context so a late drain is
           ignored rather than reconciled as success,
         - clears the stored locators (this attempt is no longer retryable),
         - tombstones the issue so :meth:`drain_completed_retries` supersedes any
@@ -294,11 +294,10 @@ class PublishRecoveryService:
         with self._lock:
             context = self._pending.pop(issue_number, None)
             if context is not None:
-                # Drop the in-flight result and tombstone this exact submission
+                # Keep any finished result and tombstone this exact submission
                 # (by token) so its late completion is superseded, not
                 # reconciled — and a fresh submission for the same issue is
                 # unaffected.
-                self._results.pop(context.token, None)
                 self._tombstoned.add(context.token)
                 logger.info(
                     "[publish-retry] Abandoned in-flight republish for issue=%s "
