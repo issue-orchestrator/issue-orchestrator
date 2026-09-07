@@ -11,6 +11,8 @@ from issue_orchestrator.control.completion_processor import CompletionProcessor
 from issue_orchestrator.control.manual_completion_preparation import ManualCompletionPreparation
 from issue_orchestrator.control.review_publish_pipeline import PublishPipelinePlan
 from issue_orchestrator.domain.completion_processing import ProcessingResult
+from issue_orchestrator.domain.registered_completion import CompletionProcessingPolicy
+from issue_orchestrator.domain.session_key import TaskKind
 from issue_orchestrator.domain.manual_publication import PreparedManualPublication
 from issue_orchestrator.domain.models import CompletionRecord, RequestedAction
 from issue_orchestrator.domain.publish_retry import PublishRetryLocators
@@ -33,7 +35,7 @@ def rig(custody):
         agent_label="agent:forged", intake_receipt=receipt)
     shared = Mock(spec=CompletionProcessor)
     shared.prepare_completion.return_value = PreparedCompletion(
-        record, custody.run.session_name, "agent:test", "feature", str(evidence.entry.normalized_path),
+        record, custody.run.session_name, CompletionProcessingPolicy("agent:test", TaskKind.CODE), "feature", str(evidence.entry.normalized_path),
         PreparedActionPlan(PublishPipelinePlan(tuple(record.requested_actions), False), None, None, False, False))
     shared.prepare_pull_request.return_value = PreparedPullRequest("#42: Feature", "Prepared body", "main", None, None)
     owner = ManualCompletionPreparation(intake=custody.intake, completion=shared,

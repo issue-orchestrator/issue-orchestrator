@@ -275,6 +275,8 @@ def test_role_failures_precede_effects(tmp_path, role_boundary, failure):
         agent_label="agent:coder" if failure == "caller-role" else None,
     )
     assert not result.success
+    assert result.require_processing_policy().agent_label is None
+    assert not result.require_processing_policy().is_tech_lead
     assert all(not port.mock_calls for port in effects)
 
 
@@ -379,10 +381,40 @@ def test_settings_change_cannot_reselect_in_flight_processing_role(
         join_or_fail(thread, 5, label="receipt processing")
     completed = result.unwrap()
     assert completed.success is success
+    policy = completed.require_processing_policy()
+    assert policy.agent_label == label
+    assert policy.is_tech_lead is (label == "agent:tech-lead")
     assert effects[1].add_comment.call_count == comments
     if not success:
         assert any("missing_authority" in error for error in completed.errors)
         assert all(not port.mock_calls for port in effects)
+
+    # The post-processor planner and terminal owner must consume this same
+    # policy even though settings now identify the coder as the Tech Lead.
+    from issue_orchestrator.domain.models import Issue, Session, SessionStatus
+    from issue_orchestrator.control.tech_lead_actions import TechLeadPlanningFailureAction
+    from issue_orchestrator.control.tech_lead_completion import discard_tech_lead_authority_after_completion
+    from tests.unit.test_completion_action_planner import make_planner
+
+    session = Session(
+        key=SessionKey(FakeIssueKey("42", "example/repo"), TaskKind.CODE),
+        issue=Issue(42, "Review", labels=[label]),
+        agent_config=config.agents[label], terminal_id="issue-42",
+        worktree_path=run.worktree_path, branch_name="feature", run_assets=run,
+    )
+    if authority_state == "missing":
+        actions = make_planner(config).generate_completion_actions(
+            session, SessionStatus.COMPLETED, processing_errors=completed.errors,
+            processing_policy=policy,
+        )
+        assert any(isinstance(action, TechLeadPlanningFailureAction) for action in actions) is policy.is_tech_lead
+    else:
+        assert authority.load(run_id=run.run_id, session_name=run.session_name) is not None
+        discard_tech_lead_authority_after_completion(
+            config, authority, session, processing_policy=policy,
+            processing_errors=completed.errors,
+        )
+        assert authority.load(run_id=run.run_id, session_name=run.session_name) is None
 
 
 @pytest.mark.parametrize("authority_state", ["missing", "valid"])

@@ -56,12 +56,13 @@ class ManualCompletionPreparation:
             return replace(prepared, intake_receipt=receipt)
         if prepared.actions.halted or errors:
             return ProcessingResult(False, "Completion preparation halted manual publication",
+                processing_policy=prepared.processing_policy,
                 errors=errors, review_exchange_completed=prepared.actions.review_exchange_completed,
                 review_exchange_halted=True, intake_receipt=receipt)
         if (prepared.record.outcome is not CompletionOutcome.COMPLETED
                 or RequestedAction.CREATE_PR not in prepared.actions.plan.ordered_actions
                 or prepared.agent_label is None):
-            return replace(self._refusal("Prepared completion does not authorize PR publication with an allocated agent role"), intake_receipt=receipt)
+            return replace(self._refusal("Prepared completion does not authorize PR publication with an allocated agent role"), intake_receipt=receipt, processing_policy=prepared.processing_policy)
         publication = self._completion.prepare_pull_request(
             worktree=worktree, record=prepared.record, issue_number=locators.issue_number,
             issue_title=issue_title, branch=branch, agent_label=prepared.agent_label, errors=errors,
@@ -69,11 +70,12 @@ class ManualCompletionPreparation:
         )
         if publication is None or errors:
             return ProcessingResult(False, "PR preparation refused manual publication", errors=errors,
+                                    processing_policy=prepared.processing_policy,
                                     intake_receipt=receipt)
         # Review/pre-push preparation may have changed the source. Its new HEAD
         # is never substituted for the receipt's immutable validated target.
         if prepared.branch != branch or not self._source_matches(worktree, branch, target):
-            return replace(self._refusal("Completion preparation changed the validated source; publication refused"), intake_receipt=receipt)
+            return replace(self._refusal("Completion preparation changed the validated source; publication refused"), intake_receipt=receipt, processing_policy=prepared.processing_policy)
         command = PublishValidatedHeadCommand(
             issue_number=locators.issue_number, repo_slug=self._repo_slug,
             branch_name=branch, target_head_sha=target,
@@ -86,7 +88,7 @@ class ManualCompletionPreparation:
         return PreparedManualPublication(
             command=command, receipt=receipt, run=evidence.run.run,
             completion_artifact=self._intake.completion_artifact(receipt, evidence.run.run),
-            record=prepared.record, issue_title=issue_title, agent_label=prepared.agent_label,
+            record=prepared.record, issue_title=issue_title, processing_policy=prepared.processing_policy,
             label_target=locators.pr_number or locators.issue_number,
             actions_taken=tuple(actions), remaining_actions=tuple(action for action in prepared.actions.plan.ordered_actions
                 if action not in {RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR}),
@@ -107,4 +109,4 @@ class ManualCompletionPreparation:
 
     @staticmethod
     def _refusal(message: str) -> ProcessingResult:
-        return ProcessingResult(False, message, errors=[message])
+        return ProcessingResult.for_intake_refusal(CompletionIntakeError(message))

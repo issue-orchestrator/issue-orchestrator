@@ -15,6 +15,7 @@ missing session_exists_by_name hook in the terminal plugin, which made sessions 
 terminated immediately (before completing). This test ensures the happy path works.
 """
 
+from issue_orchestrator.domain.registered_completion import CompletionProcessingPolicy
 import pytest
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -190,7 +191,7 @@ class TestReviewAfterCodingFlow:
             config=config,
             session_output=MagicMock(spec=SessionOutput),
             pending_work_claims=_test_claim_store(),
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(sample_session.issue.agent_type, config.tech_lead_review_agent))
 
         assert len(state.discovered_reviews) == 1, (
             "discovered_reviews must be populated when should_queue_review=True"
@@ -228,7 +229,7 @@ class TestReviewAfterCodingFlow:
             session_output=MagicMock(spec=SessionOutput),
             review_exchange_completed=False,
             pending_work_claims=_test_claim_store(),
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(sample_session.issue.agent_type, config.tech_lead_review_agent))
 
         assert len(state.discovered_reviews) == 1
         planner = Planner(config=config, scheduler=Scheduler(config))
@@ -274,7 +275,7 @@ class TestReviewAfterCodingFlow:
             session_output=MagicMock(spec=SessionOutput),
             review_exchange_completed=True,
             pending_work_claims=_test_claim_store(),
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(sample_session.issue.agent_type, config.tech_lead_review_agent))
 
         assert len(state.discovered_reviews) == 0
 
@@ -421,7 +422,7 @@ class TestReviewNotQueuedWhenConditionsNotMet:
             config=config,
             session_output=MagicMock(spec=SessionOutput),
             pending_work_claims=_test_claim_store(),
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(sample_session.issue.agent_type, config.tech_lead_review_agent))
 
         assert len(state.discovered_reviews) == 0, (
             "No review should be queued when session has no PR"
@@ -469,7 +470,7 @@ class TestReviewNotQueuedWhenConditionsNotMet:
             config=config,
             session_output=MagicMock(spec=SessionOutput),
             pending_work_claims=_test_claim_store(),
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(sample_session.issue.agent_type, config.tech_lead_review_agent))
 
         assert len(state.discovered_reviews) == 0, (
             "No review should be queued when session fails"
@@ -513,7 +514,7 @@ class TestReviewNotQueuedWhenConditionsNotMet:
             config=config,
             session_output=MagicMock(spec=SessionOutput),
             pending_work_claims=_test_claim_store(),
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(sample_session.issue.agent_type, config.tech_lead_review_agent))
 
         assert len(state.discovered_reviews) == 0, (
             "No review should be queued when code_review_agent not configured"

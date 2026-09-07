@@ -718,18 +718,12 @@ class CompletionProcessor:
         agent_label: str | None = None,
         intake_receipt: CompletionIntakeReceipt | None = None,
     ) -> ProcessingResult:
-        """Process a completion record and execute actions.
+        """Process one run under a policy retained through terminal handling.
 
-        Args:
-            worktree: Path to the worktree containing the completion record.
-            issue_number: The GitHub issue number this work is for.
-            issue_title: The issue title (for PR creation).
-            pr_number: Optional PR number for review sessions. When provided,
-                label operations will target the PR instead of the issue.
-            completion_path: Relative path to completion file. If None, uses legacy path.
-
-        Returns:
-            ProcessingResult with success status and details.
+        A receipt supplies allocation-owned role and issue identity. Legacy
+        standalone callers use the explicit label/path policy. Select once,
+        before effects; every result carries that selection, including failure
+        and review deferral. A PR number targets review label operations.
         """
         start_time = time.monotonic()
         # For review sessions, label operations target the PR
@@ -793,7 +787,7 @@ class CompletionProcessor:
             emit_completion_event=self._emit,
             post_issue_comment=self._add_issue_comment,
             cleanup_completion_record_fn=self._cleanup_completion_record,
-        )
+        ).with_processing_policy(processing_policy)
 
     def prepare_completion(
         self, worktree: Path, issue_number: int, issue_title: str, *,
@@ -814,7 +808,7 @@ class CompletionProcessor:
                 context, issue_number, agent_label, completion_path
             )
         except CompletionIntakeError as exc:
-            return ProcessingResult(success=False, message=str(exc), errors=[str(exc)])
+            return ProcessingResult.for_intake_refusal(exc)
         # Read and validate completion record
         record, session_name, error_result = self._read_and_validate_record(
             worktree,
@@ -824,7 +818,7 @@ class CompletionProcessor:
             prepared_evidence,
         )
         if error_result:
-            return error_result
+            return error_result.with_processing_policy(processing_policy)
         assert record is not None  # Guaranteed if error_result is None
 
         requested_actions = tuple(record.requested_actions)
@@ -844,7 +838,7 @@ class CompletionProcessor:
                 issue_number,
                 session_name,
             )
-            return ProcessingResult.for_review_exchange_deferred()
+            return ProcessingResult.for_review_exchange_deferred().with_processing_policy(processing_policy)
 
         pre_action_failure = self._check_pre_action_policies(
             worktree,
@@ -855,7 +849,7 @@ class CompletionProcessor:
             processing_policy=processing_policy,
         )
         if pre_action_failure:
-            return pre_action_failure
+            return pre_action_failure.with_processing_policy(processing_policy)
 
         # Get branch name for PR operations
         branch = self.git_adapter.get_current_branch(worktree)
@@ -895,7 +889,7 @@ class CompletionProcessor:
             actions_taken=actions_taken, errors=errors, run_assets=run_assets,
         )
         if isinstance(actions, ProcessingResult):
-            return actions
+            return actions.with_processing_policy(processing_policy)
         return PreparedCompletion(record, session_name, processing_policy, branch,
                                   preserved_completion_path, actions)
 

@@ -67,6 +67,14 @@ class CompletionProcessingPolicy:
     agent_label: str | None
     task: TaskKind | None
 
+    @classmethod
+    def for_unprocessed_session(
+        cls, agent_label: str | None, tech_lead_label: str | None,
+    ) -> "CompletionProcessingPolicy":
+        """Capture legacy session classification when no processor was invoked."""
+        task = TaskKind.TECH_LEAD if agent_label is not None and agent_label == tech_lead_label else None
+        return cls(agent_label, task)
+
     @property
     def is_tech_lead(self) -> bool:
         return self.task is TaskKind.TECH_LEAD
@@ -117,9 +125,4 @@ class CompletionRolePolicy:
             label, error = self.legacy_label(completion_path)
             if error:
                 raise CompletionIntakeError(error)
-        task = (
-            TaskKind.TECH_LEAD
-            if label is not None and label == self.tech_lead_label
-            else None
-        )
-        return CompletionProcessingPolicy(label, task)
+        return CompletionProcessingPolicy.for_unprocessed_session(label, self.tech_lead_label)

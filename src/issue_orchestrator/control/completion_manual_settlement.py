@@ -51,7 +51,7 @@ def settle_manual_publication(
                 worktree=command.source_workspace, record=prepared.record,
                 issue_number=command.issue_number, issue_title=prepared.issue_title,
                 label_target=prepared.label_target, branch=command.branch_name,
-                session_name=prepared.run.session_name, agent_label=prepared.agent_label,
+                session_name=prepared.run.session_name, processing_policy=prepared.processing_policy,
                 actions_taken=actions, errors=errors, error_details=details,
                 exchange_mode=prepared.exchange_mode, exchange_result=prepared.exchange_result,
                 review_exchange_completed=completed,
@@ -72,5 +72,4 @@ def settle_manual_publication(
         cleanup_completion_record_fn=cleanup_completion_record,
     )
     result.review_exchange_halted |= prepared.review_exchange_halted
-    return result
-
+    return result.with_processing_policy(prepared.processing_policy)

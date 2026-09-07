@@ -13,6 +13,8 @@ from issue_orchestrator.domain.manual_publication import PreparedManualPublicati
 from issue_orchestrator.domain.models import CompletionOutcome, CompletionRecord
 from issue_orchestrator.domain.session_run import RunContainedFile
 from issue_orchestrator.domain.publish_retry import PublishRetryLocators
+from issue_orchestrator.domain.registered_completion import CompletionProcessingPolicy
+from issue_orchestrator.domain.session_key import TaskKind
 from issue_orchestrator.domain.validated_head_publication import (
     BranchWriteOutcome, BranchWriteStatus, PrEnsureOutcome, PrEnsureStatus,
     PublicationContent, PublishValidatedHeadCommand, RemoteHeadExpectation,
@@ -35,7 +37,7 @@ def rig(tmp_path):
         PublicationContent("Title", "Body", True))
     record = CompletionRecord("session", "2026-09-07T00:00:00Z", CompletionOutcome.COMPLETED,
                               "Summary", [])
-    prepared = PreparedManualPublication(command, receipt, run, RunContainedFile(run.run_dir, run.run_dir / "owned.json"), record, "Title", "agent:coder", 1,
+    prepared = PreparedManualPublication(command, receipt, run, RunContainedFile(run.run_dir, run.run_dir / "owned.json"), record, "Title", CompletionProcessingPolicy("agent:coder", TaskKind.CODE), 1,
                                          (), (), None, None, False, False)
     preparation = Mock(spec=ManualPublicationPreparation)
     preparation.prepare_manual_publication.return_value = prepared
@@ -65,6 +67,7 @@ def test_abandonment_uses_actual_owner_checks(rig, checks, stage, pushed):
     preparation.settle_manual_publication.assert_not_called()
     assert not result.processing.success
     assert result.processing.intake_receipt == prepared.receipt
+    assert result.processing.require_processing_policy() == prepared.processing_policy
 
 
 def test_late_pr_result_keeps_metadata_for_tombstone_owner(rig):

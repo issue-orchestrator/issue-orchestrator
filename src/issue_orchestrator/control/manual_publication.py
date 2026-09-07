@@ -57,4 +57,4 @@ class ManualCompletionPublisher:
                     success=False, message=f"Manual publication settlement failed: {exc}",
                     pr_url=publication.pr_url, intake_receipt=prepared.receipt,
                 )
-        return ManualPublicationResult(processing, publication, prepared.agent_label)
+        return ManualPublicationResult(processing.with_processing_policy(prepared.processing_policy), publication, prepared.agent_label)

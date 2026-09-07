@@ -10,6 +10,7 @@ These tests verify:
 Tests mock at port boundaries, not internal patches, following the hexagonal architecture.
 """
 
+from issue_orchestrator.domain.registered_completion import CompletionProcessingPolicy
 from tests.run_allocation_helpers import make_session_launcher
 
 import json
@@ -6649,7 +6650,7 @@ class TestHandleSessionCompletion:
             config=config,
             session_output=MagicMock(spec=SessionOutput),
             pending_work_claims=_test_claim_store(),
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
         assert len(state.active_sessions) == 0
         assert len(state.completed_today) == 1
@@ -6717,7 +6718,7 @@ class TestHandleSessionCompletion:
             session_output=session_output,
             diagnostic_path=diagnostic_path,
             pending_work_claims=_test_claim_store(),
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
         assert len(state.discovered_failures) == 1
         failure = state.discovered_failures[0]
@@ -6848,7 +6849,7 @@ class TestHandleSessionCompletion:
             config=MagicMock(),
             session_output=session_output,
             pending_work_claims=_test_claim_store(),
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, MagicMock().tech_lead_review_agent))
 
         assert calls == ["process_completion", "kill", "actions"]
         assert state.active_sessions == []
@@ -6912,7 +6913,7 @@ class TestHandleSessionCompletion:
             config=MagicMock(),
             session_output=session_output,
             pending_work_claims=_test_claim_store(),
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, MagicMock().tech_lead_review_agent))
 
         session_output.find_run_dir.assert_not_called()
         session_output.read_manifest.assert_not_called()
@@ -6977,7 +6978,7 @@ class TestHandleSessionCompletion:
             config=MagicMock(),
             session_output=session_output,
             pending_work_claims=_test_claim_store(),
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, MagicMock().tech_lead_review_agent))
 
         assert calls == ["process_completion", "kill", "actions"]
         assert state.active_sessions == []
@@ -7047,7 +7048,7 @@ class TestHandleSessionCompletion:
             session_output=session_output,
             completion_detail=completion_detail,
             pending_work_claims=_test_claim_store(),
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, MagicMock().tech_lead_review_agent))
 
         assert len(state.pending_reworks) == 1
         rework = state.pending_reworks[0]
@@ -7132,7 +7133,7 @@ class TestHandleSessionCompletion:
                 config=MagicMock(),
                 session_output=MagicMock(spec=SessionOutput),
                 pending_work_claims=_test_claim_store(),
-            )
+             processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, MagicMock().tech_lead_review_agent))
 
         assert state.active_sessions == []
         assert state.discovered_failures == []
@@ -7194,7 +7195,7 @@ class TestHandleSessionCompletion:
             config=config,
             session_output=MagicMock(spec=SessionOutput),
             pending_work_claims=_test_claim_store(),
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
         assert len(state.discovered_reviews) == 1
         assert state.discovered_reviews[0].pr_number == 456
@@ -7254,7 +7255,7 @@ class TestHandleSessionCompletion:
             blocked_label="blocked-upstream",
             blocked_reason="Waiting for external API",
             pending_work_claims=_test_claim_store(),
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
         mock_completion_handler.process_completion.assert_called_once()
         kwargs = mock_completion_handler.process_completion.call_args.kwargs

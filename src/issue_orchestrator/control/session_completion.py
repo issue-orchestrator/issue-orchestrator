@@ -6,6 +6,8 @@ claims, and preserving failure diagnostics. Session launch setup stays in
 ``session_launcher``.
 """
 
+from ..domain.registered_completion import CompletionProcessingPolicy
+
 import logging
 import time
 from pathlib import Path
@@ -246,6 +248,7 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
     # completing a session MEANS, and a default let one completion path drift
     # from the other (#6999 F9/A4).
     pending_work_claims: PendingWorkClaimStore,
+    processing_policy: CompletionProcessingPolicy,
     pr_url_hint: Optional[str] = None,
     processing_errors: Optional[list[str]] = None,
     diagnostic_path: Optional[str] = None,
@@ -349,6 +352,7 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
             blocked_reason=blocked_reason,
             completion_detail=completion_detail,
             finalize_terminal=False,
+            processing_policy=processing_policy,
             # Routes a provider-caused block to the provider-impact owner
             # rather than generic blocked handling (#6999 F5).
             provider_error_type=provider_error_type,
@@ -409,6 +413,7 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
         effective_terminal_status(result.history_status, required_act_outcome),
         result.pr_url,
         result.pr_number,
+        processing_policy=processing_policy,
         blocked_reason=blocked_reason,
         completion_detail=completion_detail,
         processing_errors=processing_errors,
@@ -688,6 +693,13 @@ def _apply_completed_decisions(
     raise BaseExceptionGroup("completion decision apply failures", errors)
 
 
+def unprocessed_session_policy(session: Session, config: Config) -> CompletionProcessingPolicy:
+    """Classify terminal-only paths that never invoked completion processing."""
+    return CompletionProcessingPolicy.for_unprocessed_session(
+        session.issue.agent_type, config.tech_lead_review_agent
+    )
+
+
 def _apply_completed_decision(
     completed: CompletedDecision,
     *,
@@ -739,6 +751,11 @@ def _apply_completed_decision(
         review_exchange_completed = decision.processing_result.review_exchange_completed
         review_exchange_halted = decision.processing_result.review_exchange_halted
     diagnostic_path = decision.diagnostic_path or diagnostic_path
+    processing_policy = (
+        decision.processing_result.require_processing_policy()
+        if decision.processing_result is not None
+        else unprocessed_session_policy(session, config)
+    )
     handle_session_completion(
         session,
         decision.status,
@@ -764,6 +781,7 @@ def _apply_completed_decision(
         provider_error_type=decision.provider_error_type,
         intake_receipt=decision.processing_result.intake_receipt if decision.processing_result else None,
         pending_work_claims=pending_work_claims,
+        processing_policy=processing_policy,
     )
     elapsed = time.monotonic() - started
     if elapsed > 5:
@@ -773,5 +791,4 @@ def _apply_completed_decision(
             session.terminal_id,
             session.issue.number,
         )
-
 

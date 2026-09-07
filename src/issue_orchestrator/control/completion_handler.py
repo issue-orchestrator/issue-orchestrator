@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from .label_manager import LabelManager
 
 from ..domain.issue_key import StableIssueId
+from ..domain.registered_completion import CompletionProcessingPolicy
 from ..domain.run_manifest import RunManifest
 from ..infra.config import Config
 from ..events import EventName
@@ -118,6 +119,7 @@ class CompletionResult:
 
     history_entry: SessionHistoryEntry
     cleanup: CleanupDecision
+    processing_policy: CompletionProcessingPolicy
     history_status: SessionStatus = SessionStatus.COMPLETED
     pr_url: Optional[str] = None
     pr_number: Optional[int] = None
@@ -206,6 +208,7 @@ class CompletionHandler:
         completion_detail: Optional[dict[str, Any]] = None,
         finalize_terminal: bool = True,
         provider_error_type: "ProviderErrorType | None" = None,
+        *, processing_policy: CompletionProcessingPolicy,
     ) -> CompletionResult:
         """Process a session completion and update all state machines.
 
@@ -305,6 +308,7 @@ class CompletionHandler:
                 pr_url=pr_url,
                 completion_detail=completion_detail,
                 provider_error_type=provider_error_type,
+                processing_policy=processing_policy,
             )
         )
         completion_actions.extend(
@@ -355,7 +359,8 @@ class CompletionHandler:
         # seam; publish-stage failures keep the row for Retry Publish.
         if finalize_terminal:
             discard_tech_lead_authority_after_completion(
-                self.config, self._tech_lead_authority, session, processing_errors=processing_errors
+                self.config, self._tech_lead_authority, session, processing_errors=processing_errors,
+                processing_policy=processing_policy,
             )
         # ADR-0033's run record is NOT closed here: the authoritative terminal
         # status does not exist until required tech-lead actions have applied, so
@@ -364,6 +369,7 @@ class CompletionHandler:
 
         result = CompletionResult(
             history_entry=history_entry,
+            processing_policy=processing_policy,
             history_status=history_status,
             pr_url=pr_url,
             pr_number=pr_number,
@@ -548,6 +554,7 @@ class CompletionHandler:
         pr_url: Optional[str],
         pr_number: Optional[int],
         *,
+        processing_policy: CompletionProcessingPolicy,
         blocked_reason: Optional[str] = None,
         completion_detail: Optional[dict[str, Any]] = None,
         processing_errors: Optional[list[str]] = None,
@@ -580,6 +587,7 @@ class CompletionHandler:
         discard_tech_lead_authority_after_completion(
             self.config, self._tech_lead_authority, session,
             processing_errors=processing_errors,
+            processing_policy=processing_policy,
         )
 
     def emit_trace_events(

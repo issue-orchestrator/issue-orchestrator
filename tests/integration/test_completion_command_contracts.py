@@ -8,6 +8,7 @@ invalid command forms.
 
 from __future__ import annotations
 
+from issue_orchestrator.domain.registered_completion import CompletionProcessingPolicy
 from tests.run_allocation_helpers import make_completion_processor
 from tests.integration.completion_intake_fixture import coding_command_environment
 
@@ -594,7 +595,7 @@ def test_publish_failure_multi_attempt_contract(
             session,
             SessionStatus.COMPLETED,
             processing_errors=["publish_blocked: simulated push failure"],
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
         # Each attempt either adds publish-failed or escalates to needs-human
         assert any(
             isinstance(action, AddLabelAction)

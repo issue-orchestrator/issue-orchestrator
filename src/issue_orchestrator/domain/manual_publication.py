@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from .completion_intake import CompletionIntakeReceipt
 from .completion_processing import ProcessingResult
+from .registered_completion import CompletionProcessingPolicy
 from .models import CompletionRecord, RequestedAction
 from .review_exchange import ReviewExchangeOutcome
 from .session_run import SessionRunAssets, RunContainedFile
@@ -19,7 +20,7 @@ class PreparedManualPublication:
     completion_artifact: RunContainedFile
     record: CompletionRecord
     issue_title: str
-    agent_label: str
+    processing_policy: CompletionProcessingPolicy
     label_target: int
     actions_taken: tuple[str, ...]
     remaining_actions: tuple[RequestedAction, ...]
@@ -27,6 +28,13 @@ class PreparedManualPublication:
     exchange_result: ReviewExchangeOutcome | None
     review_exchange_completed: bool
     review_exchange_halted: bool
+
+    @property
+    def agent_label(self) -> str:
+        label = self.processing_policy.agent_label
+        if label is None:
+            raise ValueError("manual preparation requires an allocated agent label")
+        return label
 
     def __post_init__(self) -> None:
         if self.command.source_workspace != self.run.worktree_path:

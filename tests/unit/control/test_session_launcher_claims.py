@@ -1,5 +1,6 @@
 """Unit tests for SessionLauncher claim integration."""
 
+from issue_orchestrator.domain.registered_completion import CompletionProcessingPolicy
 from tests.run_allocation_helpers import make_session_launcher
 
 from datetime import datetime, timedelta
@@ -441,7 +442,7 @@ class TestSessionCompletionClaimRelease:
             claim_manager=mock_claim_manager,
             events=mock_events,
             pending_work_claims=_test_claim_store(),
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, MagicMock(validation_cmd=None).tech_lead_review_agent))
 
         # Verify claim was released
         assert len(mock_claim_manager.release_claim_calls) == 1
@@ -511,7 +512,7 @@ class TestSessionCompletionClaimRelease:
             claim_manager=mock_claim_manager,
             events=mock_events,
             pending_work_claims=_test_claim_store(),
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, MagicMock(validation_cmd=None).tech_lead_review_agent))
 
         # Verify no release was attempted
         assert len(mock_claim_manager.release_claim_calls) == 0

@@ -6,7 +6,7 @@ from ..domain.prepared_completion import PreparedCompletionEvidence
 from ..domain.completion_intake import CompletionIntakeReceipt
 from ..domain.session_run import SessionRunAssets
 from ..domain.registered_completion import CompletionProcessingPolicy, RegisteredCompletion
-from ..domain.completion_custody import normalized_completion_artifact
+from ..domain.completion_intake_policy import normalized_completion_artifact
 from .stack_base import StackBaseDecision
 
 from ..domain.models import CompletionRecord

@@ -10,6 +10,8 @@ Architecture reminder:
 - CompletionProcessor executes actions via adapters (labels, PR, comments)
 """
 
+from issue_orchestrator.domain.registered_completion import CompletionProcessingPolicy
+from issue_orchestrator.domain.session_key import TaskKind
 from issue_orchestrator.ports.completion_intake import CompletionIntakeRuntime
 from issue_orchestrator.domain.registered_completion import CompletionRolePolicy
 from tests.run_allocation_helpers import make_completion_processor
@@ -2865,7 +2867,7 @@ class TestTechLeadCompletionEffects:
         actions = make_planner(config).generate_completion_actions(
             session, SessionStatus.COMPLETED, processing_errors=result.errors,
             review_exchange_halted=result.review_exchange_halted,
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
         diagnoses = [action for action in actions if isinstance(action, AddCommentAction)
                      and action.number == 1 and "Diagnosis for #1" in action.comment]
         assert len(diagnoses) == 1
@@ -5955,7 +5957,7 @@ def test_manual_settlement_preserves_requested_effects_without_generic_publish(
     prepared = PreparedManualPublication(
         command=command, receipt=receipt, run=run,
         completion_artifact=RunContainedFile(run.run_dir, run.run_dir / "owned.json"),
-        record=record, issue_title="Test Issue", agent_label="agent:coder", label_target=123,
+        record=record, issue_title="Test Issue", processing_policy=CompletionProcessingPolicy("agent:coder", TaskKind.CODE), label_target=123,
         actions_taken=(), remaining_actions=(RequestedAction.REMOVE_NEEDS_REWORK_LABEL,),
         exchange_mode=None, exchange_result=None, review_exchange_completed=False,
         review_exchange_halted=False,
