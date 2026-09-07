@@ -87,7 +87,6 @@ def test_malformed_receipt_scan_is_unknown(monkeypatch, payload):
 
 @pytest.mark.parametrize("payload", [{}, {"number": 6410}, [], None, {"state": "unexpected"}, {"state": []}])
 def test_malformed_dependency_snapshot_is_unknown(monkeypatch, payload):
-    def handler(request):
-        return httpx.Response(200, json=payload)
+    host = _adapter(monkeypatch, lambda request: httpx.Response(200, json=payload))
     with pytest.raises(RepositoryHostError):
-        _adapter(monkeypatch, handler).get_dependency_issue_snapshot(6410)
+        host.get_dependency_issue_snapshot(6410)

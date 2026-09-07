@@ -76,6 +76,7 @@ def build_tech_lead_kill_session_executor(
     return TechLeadKillSessionExecutor(
         events=orchestrator.deps.events,
         run_kill=_run_kill,
+        read_generation_stale_reason=orchestrator.issue_session_generation_stale_reason,
     )
 
 

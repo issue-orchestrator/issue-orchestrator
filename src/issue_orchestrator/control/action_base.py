@@ -65,6 +65,7 @@ class ActionType(Enum):
 
     # Tech Lead decision proposals (event-only surfacing, ADR-0031)
     SURFACE_TECH_LEAD_PROPOSAL = "surface_tech_lead_proposal"
+    REQUIRE_TECH_LEAD_INVESTIGATION = "require_tech_lead_investigation"
 
     # Act-level tech_lead execution: scratch reset via the reset owner (#6764)
     RESET_RETRY_ISSUE = "reset_retry_issue"
@@ -79,6 +80,12 @@ class ActionType(Enum):
 
     # Repeat pattern observation: evidence comment + durable count (#6781/#6957)
     APPEND_PATTERN_OBSERVATION = "append_pattern_observation"
+
+    # Terminal disposition of a completed failure investigation (#6971):
+    # publish the wait state on the diagnosed issue + record the durable
+    # tracker binding that transfers stuck-sweep ownership.
+    RECORD_TECH_LEAD_DISPOSITION = "record_tech_lead_disposition"
+    ESCALATE_TECH_LEAD_DISPOSITION = "escalate_tech_lead_disposition"
 
     # Finding promotion (#6957): file a case file's diagnosis as a gated
     # runnable issue in the routed repo, report later evidence onto that one

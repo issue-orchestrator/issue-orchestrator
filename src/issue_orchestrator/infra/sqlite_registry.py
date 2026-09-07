@@ -28,6 +28,12 @@ def list_sqlite_databases(config: Config) -> list[SQLiteDatabase]:
     """Return the list of SQLite DBs used by the orchestrator."""
     return [
         SQLiteDatabase(
+            key="validated_work",
+            label="Validated Work",
+            path_fn=lambda cfg: _state_db(cfg, "validated_work.sqlite"),
+            enabled_fn=lambda cfg: True,
+        ),
+        SQLiteDatabase(
             key="issue_run_ledger",
             label="Issue Run Ledger",
             path_fn=lambda cfg: _state_db(cfg, "issue_run_ledger.sqlite"),
