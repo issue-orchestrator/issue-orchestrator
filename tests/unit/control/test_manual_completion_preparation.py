@@ -122,3 +122,83 @@ def test_shared_policy_refusal_never_builds_a_publication_command(rig, phase):
     assert isinstance(result, ProcessingResult) and not result.success
     if phase == "review":
         shared.prepare_pull_request.assert_not_called()
+
+
+@pytest.fixture
+def execution_rig(rig):
+    from issue_orchestrator.control.manual_publication import ManualCompletionPublisher
+    from issue_orchestrator.execution.git_validated_head_executor import GitValidatedHeadExecutor
+    from issue_orchestrator.domain.validated_work import PublishValidatedHeadStatus
+    from tests.unit.test_git_validated_head_executor import Remote
+
+    custody, evidence, locators, shared, owner = rig
+    remote_path = custody.repo.parent / "remote.git"
+    custody.git.run(custody.repo, ["clone", "--bare", str(custody.repo), str(remote_path)])
+    custody.git.run(custody.repo, ["remote", "add", "origin", str(remote_path)])
+    base = custody.git.run(custody.worktree, ["rev-parse", "HEAD^"]).stdout.strip()
+    custody.git.run(remote_path, ["update-ref", "refs/heads/feature", base])
+    custody.remote = remote_path
+    remote = Remote(custody)
+    shared.settle_manual_publication.side_effect = lambda prepared, outcome: ProcessingResult(
+        outcome.status in {PublishValidatedHeadStatus.PUBLISHED, PublishValidatedHeadStatus.ALREADY_AT_TARGET},
+        outcome.message, pr_url=outcome.pr_url, intake_receipt=prepared.receipt)
+    worker = ManualCompletionPublisher(owner, GitValidatedHeadExecutor(custody.wc, remote))
+    return custody, evidence, locators, shared, owner, remote, worker, base
+
+
+@pytest.mark.parametrize("pr_state", ["existing", "missing", "accepted-response-lost"])
+def test_manual_worker_moves_remote_to_validated_head_before_pr_settlement(execution_rig, pr_state):
+    from issue_orchestrator.domain.validated_work import PublishValidatedHeadStatus
+
+    custody, evidence, locators, shared, owner, remote, worker, base = execution_rig
+    prepared = owner.prepare_manual_publication(locators, "Feature")
+    assert isinstance(prepared, PreparedManualPublication)
+    assert remote.read_branch(prepared.command) == base
+    assert base != prepared.command.target_head_sha
+    if pr_state == "existing":
+        pr = remote.add_pr(prepared.command, body="Older explicitly recorded PR")
+        locators = replace(locators, pr_number=pr.number)
+    remote.lost_create = pr_state == "accepted-response-lost"
+    result = worker.publish(locators, "Feature", lambda: True)
+    assert result.processing.success
+    assert result.publication is not None
+    assert result.publication.status is PublishValidatedHeadStatus.PUBLISHED
+    assert result.publication.pr_head_sha == evidence.validation.head_sha
+    assert remote.read_branch(prepared.command) == evidence.validation.head_sha
+    assert custody.git.head_sha(custody.worktree) == evidence.validation.head_sha
+    assert remote.created == (0 if pr_state == "existing" else 1)
+    settled, observed = shared.settle_manual_publication.call_args.args
+    assert settled.command.target_head_sha == observed.pr_head_sha == evidence.validation.head_sha
+
+
+@pytest.mark.parametrize("mutation", ["unseen-before-read", "advance-after-read", "diverge-after-read"])
+def test_manual_exact_lease_refuses_remote_mutation(execution_rig, mutation):
+    from issue_orchestrator.domain.validated_work import PublishValidatedHeadStatus
+
+    custody, evidence, locators, _, owner, remote, worker, base = execution_rig
+    prepared = owner.prepare_manual_publication(locators, "Feature")
+    assert isinstance(prepared, PreparedManualPublication)
+    custody.git.run(custody.remote, ["config", "user.name", "Remote mutation test"])
+    custody.git.run(custody.remote, ["config", "user.email", "remote@example.invalid"])
+    parent = evidence.validation.head_sha if mutation == "advance-after-read" else base
+    tree = custody.git.run(custody.remote, ["rev-parse", f"{parent}^{{tree}}"]).stdout.strip()
+    third = custody.git.run(custody.remote, ["commit-tree", tree, "-p", parent, "-m", "Remote concurrent change"]).stdout.strip()
+    def mutate():
+        custody.git.run(custody.remote, ["update-ref", "refs/heads/feature", third])
+    if mutation == "unseen-before-read":
+        mutate()
+    else:
+        remote.on_branch_read = mutate
+    result = worker.publish(locators, "Feature", lambda: True)
+    assert not result.processing.success
+    assert result.publication is not None
+    if mutation == "unseen-before-read":
+        from issue_orchestrator.domain.validated_work import ValidatedWorkFailure
+        assert result.publication.status is PublishValidatedHeadStatus.REJECTED
+        assert result.publication.failure is ValidatedWorkFailure.REMOTE_BASELINE_UNPROVEN
+        assert result.publication.push_outcome is None
+    else:
+        assert result.publication.status is PublishValidatedHeadStatus.DIVERGED
+    assert remote.read_branch(prepared.command) == third
+    assert remote.created == 0
+    assert custody.git.head_sha(custody.worktree) == evidence.validation.head_sha
