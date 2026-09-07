@@ -1004,18 +1004,19 @@ def build_test_orchestrator_deps(
 
     issue_run_ledger = SqliteIssueRunLedger(state_dir(config.repo_root) / "issue_run_ledger.sqlite")
     from issue_orchestrator.control.issue_run_allocator import IssueRunAllocationService
-    issue_run_allocator = IssueRunAllocationService(session_output, issue_run_ledger, working_copy)
+    evidence_working_copy = working_copy if intake_working_copy is None else intake_working_copy
+    issue_run_allocator = IssueRunAllocationService(session_output, issue_run_ledger, evidence_working_copy)
     from issue_orchestrator.entrypoints.bootstrap_run_services import (
         build_completion_intake,
     )
 
     from issue_orchestrator.entrypoints.bootstrap_validated_work import build_validated_work_admission
-    validated_work = build_validated_work_admission(config, working_copy, issue_run_ledger)
+    validated_work = build_validated_work_admission(config, evidence_working_copy, issue_run_ledger)
     completion_intake = build_completion_intake(
         config,
         issue_run_ledger,
         issue_run_allocator,
-        working_copy if intake_working_copy is None else intake_working_copy,
+        evidence_working_copy,
         command_runner,
         validated_work,
     )
@@ -1240,7 +1241,7 @@ def build_test_orchestrator_deps(
     from issue_orchestrator.entrypoints.bootstrap_issue_runtime import build_issue_runtime
     runtime_lifecycle = build_issue_runtime(
         state=state, ledger=issue_run_ledger, intake=completion_intake,
-        validated_work=validated_work, working_copy=working_copy,
+        validated_work=validated_work, working_copy=evidence_working_copy,
         sessions=_session_manager, pair_registry=pair_registry, supervisor=None,
         publish_recovery=publish_recovery, events=events,
     )

@@ -448,9 +448,9 @@ class TempWorktreeManager:
         worktree = (worktree_base or self.base) / (worktree_name or f"sim-wt-{issue_number}")
         worktree.mkdir(parents=True, exist_ok=True)
         final_branch = branch_name or f"{issue_number}-sim"
-        from tests.simulated_scenarios.git_workspace import initialize_scenario_checkout
+        from tests.simulated_scenarios.git_workspace import initialize_linked_scenario_checkout
 
-        initialize_scenario_checkout(worktree, final_branch)
+        initialize_linked_scenario_checkout(repo_root, worktree, final_branch)
         return WorktreeInfo(path=worktree, branch_name=final_branch)
 
     def remove_checkout(self, worktree_path: Path, *, force: bool = False) -> None:
@@ -480,6 +480,8 @@ class TempWorktreeManager:
 def scenario_repo(tmp_path: Path) -> Path:
     repo_root = tmp_path / "repo"
     repo_root.mkdir(parents=True, exist_ok=True)
+    from tests.simulated_scenarios.git_workspace import initialize_scenario_checkout
+    initialize_scenario_checkout(repo_root, "main")
     return repo_root
 
 

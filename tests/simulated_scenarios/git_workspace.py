@@ -29,3 +29,18 @@ def initialize_scenario_checkout(worktree: Path, branch: str) -> None:
     ignore.write_text(previous + "\n.issue-orchestrator/\n")
     git("add", ".gitignore")
     git("commit", "-m", "Scenario baseline")
+
+
+def initialize_linked_scenario_checkout(repository: Path, worktree: Path, branch: str) -> None:
+    """Share real Git objects so custody pins survive the source checkout."""
+    from issue_orchestrator.execution.git_tools import create_git
+    from issue_orchestrator.execution.command_runner import LocalCommandRunner
+    git = create_git(LocalCommandRunner())
+    if (worktree / ".git").exists():
+        if git.run(worktree, ["branch", "--show-current"]).stdout.strip() != branch:
+            raise ValueError("scenario checkout belongs to a different branch")
+        return
+    exists = git.run(repository, ["show-ref", "--verify", f"refs/heads/{branch}"], check=False).returncode == 0
+    arguments = ["worktree", "add", "--force"]
+    arguments += [str(worktree), branch] if exists else ["-b", branch, str(worktree), "HEAD"]
+    git.run(repository, arguments)
