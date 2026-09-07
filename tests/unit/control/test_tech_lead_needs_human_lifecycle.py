@@ -17,6 +17,8 @@ from tests.run_allocation_helpers import make_completion_processor
 from dataclasses import dataclass
 from pathlib import Path
 
+from tests.runtime_lifecycle_helpers import make_action_applier
+
 import pytest
 
 from issue_orchestrator.control.actions import (
@@ -866,7 +868,7 @@ class TestEveryOrchestratorCauseOwnsTheSharedBlock:
             quarantined_issue_numbers=claims.quarantined_issue_numbers,
             causes=claims,
         )
-        applier = ActionApplier(
+        applier = make_action_applier(
             completion_intake=self.intake.runtime,
             labels=label_set,
             sessions=MagicMock(),
@@ -1102,7 +1104,7 @@ class TestTheBlockOwnerIsNotBypassableInProduction:
             def read_issue_labels(self, number: int) -> list[str]:
                 return sorted(live.get(number, set()))
 
-        applier = ActionApplier(
+        applier = make_action_applier(
             completion_intake=self.intake.runtime,
             labels=label_set,
             sessions=MagicMock(),

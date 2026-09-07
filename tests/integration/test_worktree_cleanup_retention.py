@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.runtime_lifecycle_helpers import runtime_owners
+
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -73,6 +75,7 @@ def _cleanup_manager(
         agents={"agent:backend": SimpleNamespace()},
     )
     return CleanupManager(
+        runtime_lifecycle=runtime_owners(),
         config=config,
         repository_host=repository_host,
         worktree_manager=GitWorktreeManager(),

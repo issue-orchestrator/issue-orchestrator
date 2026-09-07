@@ -5,6 +5,8 @@ from unittest.mock import ANY, MagicMock, call
 
 from tests.runtime_lifecycle_helpers import reset_snapshot
 
+from tests.runtime_lifecycle_helpers import make_action_applier
+
 import pytest
 
 from issue_orchestrator.control.action_applier import ActionApplier
@@ -133,6 +135,8 @@ class _RaisingApplier:
     publishes exactly once with no second GitHub write after the raise."""
 
     def __init__(self, error: BaseException) -> None:
+        from tests.runtime_lifecycle_helpers import runtime_owners
+        self.runtime_lifecycle = runtime_owners()
         self._error = error
         self.apply_all_calls = 0
 
@@ -262,7 +266,7 @@ class TestExecutorApply:
 class TestApplierDispatch:
     def _applier(self, executor=None) -> tuple[ActionApplier, MagicMock]:
         events = MagicMock()
-        applier = ActionApplier(
+        applier = make_action_applier(
             labels=MagicMock(),
             sessions=MagicMock(),
             events=events,
@@ -385,7 +389,7 @@ class TestCompletionPipelineEligibility:
             pr_url=None,
             pr_number=None,
         )
-        applier = ActionApplier(
+        applier = make_action_applier(
             labels=labels if labels is not None else MagicMock(),
             sessions=MagicMock(),
             events=MagicMock(),
@@ -686,7 +690,7 @@ class TestEffectiveTerminalOutcomeEvents:
             state = OrchestratorState()
         state.active_sessions = [session]
         if action_applier is None:
-            action_applier = ActionApplier(
+            action_applier = make_action_applier(
                 labels=MagicMock(),
                 sessions=MagicMock(),
                 events=MagicMock(),
@@ -757,7 +761,7 @@ class TestEffectiveTerminalOutcomeEvents:
         labels = MagicMock()
         labels.has_label.return_value = False
         repository_host = MagicMock()
-        action_applier = ActionApplier(
+        action_applier = make_action_applier(
             labels=labels,
             sessions=MagicMock(),
             events=MagicMock(),
@@ -1016,7 +1020,7 @@ class TestTheDurableRunRecordAgreesWithTheTerminalOutcome:
         state = OrchestratorState()
         state.active_sessions = [session]
         if applier is None:
-            applier = ActionApplier(
+            applier = make_action_applier(
                 labels=MagicMock(),
                 sessions=MagicMock(),
                 events=MagicMock(),
@@ -1123,4 +1127,4 @@ def test_late_custody_refusal_keeps_full_boundary_in_result_and_event():
     result = executor.apply(make_action())
     run_reset.assert_called_once()
     assert result.details["boundary"] == boundary
-    assert published(events, EventName.TECH_LEAD_ACTION_PROPOSED)[0].payload["boundary"] == boundary
+    assert published(events, EventName.TECH_LEAD_ACTION_PROPOSED)[0].data["boundary"] == boundary

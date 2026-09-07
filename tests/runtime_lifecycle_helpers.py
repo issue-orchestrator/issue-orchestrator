@@ -21,6 +21,7 @@ def runtime_owners(*, session_manager=None, active_sessions=None, pair_registry=
         return ValidatedWorkDispositionBatch.no_work(command.issue_number, "controlled preservation response")
     preservation.dispose_at_termination.side_effect = capture
     preservation.has_unresolved_work.return_value = False
+    preservation.for_issue.side_effect = lambda issue: ValidatedWorkDispositionBatch.no_work(issue, "fixture")
     retry = publish_recovery
     if retry is None:
         retry = Mock()
@@ -39,3 +40,13 @@ def reset_snapshot(issue_number: int, busy: bool = False):
         IssueRuntimeActivity(frozenset({IssueRuntimeOwnerKind.SESSIONS}) if busy else frozenset(), frozenset()),
         ValidatedWorkDispositionBatch.no_work(issue_number, "fixture"),
     )
+
+
+def make_action_applier(*args, **kwargs):
+    """Action tests bind an explicit preservation port through the real bundle."""
+    from issue_orchestrator.control.action_applier import ActionApplier
+    applier = ActionApplier(*args, **kwargs)
+    applier.runtime_lifecycle = runtime_owners(session_manager=applier.sessions,
+        pair_registry=applier.pair_registry, job_supervisor=applier.background_job_supervisor,
+        publish_recovery=applier.publish_recovery, completion_intake=applier.completion_intake)
+    return applier

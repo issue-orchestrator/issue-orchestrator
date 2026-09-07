@@ -2,6 +2,8 @@
 
 from tests.runtime_lifecycle_helpers import reset_snapshot
 
+from tests.runtime_lifecycle_helpers import make_action_applier
+
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -1670,7 +1672,7 @@ class TestResetRetryExecutionPipeline:
             runtime_snapshot=reset_snapshot,
             run_reset=run_reset,
         )
-        applier = ActionApplier(
+        applier = make_action_applier(
             labels=MagicMock(),
             sessions=MagicMock(),
             events=MagicMock(),

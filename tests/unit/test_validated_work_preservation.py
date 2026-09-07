@@ -271,7 +271,7 @@ def test_reset_snapshot_and_downgrade_keep_each_retained_member(custody):
     observed = result.details["boundary"]["validated_work"]["dispositions"]
     assert {row["evidence_id"] for row in observed} == {row.evidence_id for row in batch.dispositions}
     assert len(observed) == 2
-    assert events.publish.call_args.args[0].payload["boundary"] == result.details["boundary"]
+    assert events.publish.call_args.args[0].data["boundary"] == result.details["boundary"]
 
 
 def test_worktree_cleanup_requires_exact_owner_and_complete_custody(custody):

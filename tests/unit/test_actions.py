@@ -1,5 +1,7 @@
 """Unit tests for the Action dataclasses and ActionApplier."""
 
+from tests.runtime_lifecycle_helpers import make_action_applier
+
 import pytest
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -281,7 +283,7 @@ class TestActionApplier:
 
     @pytest.fixture
     def applier(self, mock_labels, session_manager, collecting_sink, completion_intake):
-        return ActionApplier(
+        return make_action_applier(
             completion_intake=completion_intake,
             labels=mock_labels,
             sessions=session_manager,

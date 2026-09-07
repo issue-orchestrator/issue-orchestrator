@@ -1,5 +1,7 @@
 """Unit tests for ActionApplier."""
 
+from tests.runtime_lifecycle_helpers import make_action_applier
+
 import logging
 import pytest
 from unittest.mock import MagicMock, Mock, patch
@@ -115,7 +117,7 @@ def applier(
         single_instance_run_ownership,
     )
 
-    return ActionApplier(
+    return make_action_applier(
         completion_intake=completion_intake,
         labels=mock_labels,
         sessions=mock_sessions,
@@ -1778,7 +1780,7 @@ class TestCleanupSessionAction:
         def _boom(_path):
             raise RuntimeError("async notify failed")
 
-        applier = ActionApplier(
+        applier = make_action_applier(
             labels=mock_labels, sessions=mock_sessions, events=mock_events,
             repository_host=mock_repository_host, worktree_manager=mock_worktree_manager,
             fresh_issue_reader=mock_fresh_issue_reader, reconcile=False,
@@ -1923,7 +1925,7 @@ class TestRemoveWorktreeAction:
 
     def test_remove_worktree_success(self, applier, mock_worktree_manager, tmp_path):
         """Test successful worktree removal."""
-        action = RemoveWorktreeAction(worktree_path=str(tmp_path))
+        action = RemoveWorktreeAction(worktree_path=str(tmp_path), issue_number=123)
 
         result = applier.apply(action)
 
@@ -1933,7 +1935,7 @@ class TestRemoveWorktreeAction:
     def test_remove_worktree_no_manager(self, applier, tmp_path):
         """Test worktree removal without manager."""
         applier.worktree_manager = None
-        action = RemoveWorktreeAction(worktree_path=str(tmp_path))
+        action = RemoveWorktreeAction(worktree_path=str(tmp_path), issue_number=123)
 
         result = applier.apply(action)
 
@@ -2048,7 +2050,7 @@ class TestShedRecoveredWorkflowLabelsNotDispatchable:
         mock_fresh_issue_reader.read_issue_labels.return_value = [
             "pr-pending", "publish-failed",
         ]
-        applier = ActionApplier(
+        applier = make_action_applier(
             labels=mock_labels,
             sessions=mock_sessions,
             events=mock_events,
@@ -2108,7 +2110,7 @@ class TestRecoverTerminalIssueAction:
     ):
         reader = MagicMock()
         reader.read_issue_labels.return_value = list(github_labels)
-        applier = ActionApplier(
+        applier = make_action_applier(
             completion_intake=self.completion_intake,
             labels=mock_labels,
             sessions=mock_sessions,
@@ -2160,7 +2162,7 @@ class TestRecoverTerminalIssueAction:
         reader.read_issue_labels.return_value = [
             "pr-pending", "publish-failed", "agent:backend",
         ]
-        applier = ActionApplier(
+        applier = make_action_applier(
             completion_intake=self.completion_intake,
             labels=mock_labels,
             sessions=mock_sessions,
@@ -2624,7 +2626,7 @@ class TestRecoverTerminalIssueAction:
         entry = self._awaiting_merge_entry()
         reader = MagicMock()
         reader.read_issue_labels.return_value = ["pr-pending"]
-        applier = ActionApplier(
+        applier = make_action_applier(
             completion_intake=self.completion_intake,
             labels=mock_labels,
             sessions=mock_sessions,
@@ -2745,7 +2747,7 @@ class TestExpectedStateEnforcement:
         mock_fresh_issue_reader,
     ):
         """Create an ActionApplier with reconciliation enabled."""
-        return ActionApplier(
+        return make_action_applier(
             labels=mock_labels,
             sessions=mock_sessions,
             events=mock_events,
@@ -2872,7 +2874,7 @@ class TestExpectedStateEnforcement:
         """Test ExpectedState is not enforced when reconcile=False."""
         from issue_orchestrator.control.reconciliation import ExpectedState
 
-        applier = ActionApplier(
+        applier = make_action_applier(
             labels=mock_labels,
             sessions=mock_sessions,
             events=mock_events,
@@ -3133,7 +3135,7 @@ class TestTechLeadMutationsCrossTheReconciliationGate:
         ]
         authority = MagicMock()
         target = MagicMock()
-        applier = ActionApplier(
+        applier = make_action_applier(
             labels=mock_labels,
             sessions=mock_sessions,
             events=mock_events,
@@ -3276,7 +3278,7 @@ class TestActLevelOpsCrossTheGateExactlyOnce:
         )
         executor = MagicMock()
         executor.apply.side_effect = lambda action: ActionResult.ok(action)
-        applier = ActionApplier(
+        applier = make_action_applier(
             labels=mock_labels,
             sessions=mock_sessions,
             events=mock_events,
@@ -3371,7 +3373,7 @@ class TestTechLeadIssueCreationCrossesTheReconciliationGate:
         reader = MagicMock()
         reader.read_issue_labels.return_value = ["tech-lead", "io:needs-reconcile"]
         authority = MagicMock()
-        applier = ActionApplier(
+        applier = make_action_applier(
             labels=mock_labels,
             sessions=mock_sessions,
             events=mock_events,
@@ -3475,7 +3477,7 @@ class TestTechLeadIssueCreationCrossesTheReconciliationGate:
             {"name": "tech-lead-observation"},
         ]
         mock_repository_host.create_issue.return_value = {"number": 900}
-        applier = ActionApplier(
+        applier = make_action_applier(
             labels=mock_labels,
             sessions=mock_sessions,
             events=mock_events,
