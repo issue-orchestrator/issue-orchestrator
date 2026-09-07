@@ -394,6 +394,7 @@ async def launch_debug_session(  # noqa: C901 - debug session with validation an
 
     try:
         run_assets = orchestrator.deps.issue_run_allocator.allocate(IssueRunAllocation(
+            terminal_id=session_name,
             worktree_path=worktree,
             session_name=session_name,
             session_key=SessionKey(issue.key, TaskKind.CODE),

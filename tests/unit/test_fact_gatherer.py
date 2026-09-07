@@ -2043,6 +2043,9 @@ class _LabelAwareIssueHost:
     def get_prs_with_label(self, *_a, **_k):
         return []
 
+    def get_issue_state(self, number):
+        raise AssertionError("empty disposition ledger needs no tracker reads")
+
 
 class TestTheBacklogSeesWhatOnlyItsOwnScopeCanSee:
     """The completeness property, tested where it can actually fail."""
@@ -2187,6 +2190,9 @@ class TestAFailedApprovalQueryDoesNotDiscardObservedFacts:
 
         def get_prs_with_label(self, *_a, **_k):
             return []
+
+        def get_issue_state(self, number):
+            raise AssertionError("empty disposition ledger needs no tracker reads")
 
     def test_the_observed_anchor_survives_an_approval_query_failure(
         self, mock_config, sample_state

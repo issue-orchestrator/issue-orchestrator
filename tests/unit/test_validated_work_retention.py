@@ -91,7 +91,7 @@ def retained(tmp_path, monkeypatch):
         repo_slug="owner/repo",
         git=git.working,
     )
-    admission, sources = real_capture(git, tmp_path / "sources")
+    admission, sources = real_capture(git, tmp_path / "sources", observed=git.tip, state=State.PARKED)
     result = RetentionRig(
         git,
         escrow,

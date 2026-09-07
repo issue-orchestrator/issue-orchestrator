@@ -258,7 +258,6 @@ class Orchestrator:
         :mod:`..control.tech_lead_termination`.
         """
         from ..control.tech_lead_termination import terminate_tech_lead_session
-
         return terminate_tech_lead_session(self, session)
 
     def cancel_review_exchange_for_issue(self, issue_number: int, *, reason: str) -> ReviewExchangeCancellation:
@@ -282,6 +281,11 @@ class Orchestrator:
     def terminate_issue_runtime_for_issue(self, issue_number: int, *, reason: str) -> IssueRuntimeTermination:
         """Terminate all issue-scoped runtime owners at a lifecycle boundary."""
         return self.deps.runtime_lifecycle.terminate(issue_number, reason)
+
+    def issue_session_generation_stale_reason(self, target: "TechLeadSessionGeneration") -> str | None:
+        """Read current applicability without stopping or re-approving any work."""
+        return self.deps.runtime_lifecycle.generation_stale_reason(target,
+            session_exists=self._session_exists)
 
     def terminate_issue_session_generation(self, target: "TechLeadSessionGeneration", *, reason: str) -> "GenerationBoundTermination":
         return self.deps.runtime_lifecycle.terminate_generation(target, reason,

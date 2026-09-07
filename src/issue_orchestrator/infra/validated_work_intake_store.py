@@ -1,6 +1,8 @@
 """Admission-only composition using the same transactions, lineage and snapshots."""
 
 from pathlib import Path
+from contextlib import contextmanager
+from collections.abc import Iterator
 import sqlite3
 from ..domain.completion_intake import CompletionIntakeError
 from ..domain.validated_work import ValidatedWorkState
@@ -19,21 +21,24 @@ class SqliteValidatedWorkIntakeStore:
         self._snapshots = DispositionSnapshots(self._db)
         self._admission = EvidenceAdmissionWriter(LineageClassifier(ancestry, artifacts))
 
-    def admit(self, admission: EvidenceAdmission) -> AdmissionOutcome:
+    @contextmanager
+    def _admission_write(self, admission: EvidenceAdmission) -> Iterator[sqlite3.Connection]:
         if admission.initial_state is not ValidatedWorkState.PARKED:
             raise ValueError("admission-only owner requires parked capture")
         try:
             with self._db.transaction(write=True) as conn:
-                status = self._admission.admit(conn, admission)
-                return AdmissionOutcome(status, disposition(conn, admission.evidence.record_id))
+                yield conn
         except sqlite3.Error as exc:
             raise CompletionIntakeError("parked admission unavailable") from exc
 
+    def admit(self, admission: EvidenceAdmission) -> AdmissionOutcome:
+        with self._admission_write(admission) as conn:
+            status = self._admission.admit(conn, admission)
+            return AdmissionOutcome(status, disposition(conn, admission.evidence.record_id))
+
     def admit_selected(self, admission: EvidenceAdmission, expected_current: str | None,
                        selection: EvidenceAdmissionSelection) -> AdmissionOutcome | None:
-        if admission.initial_state is not ValidatedWorkState.PARKED:
-            raise ValueError("admission-only owner requires parked capture")
-        with self._db.transaction(write=True) as conn:
+        with self._admission_write(admission) as conn:
             status = self._admission.admit_selected(conn, admission, expected_current, selection)
             return None if status is None else AdmissionOutcome(status, disposition(conn, admission.evidence.record_id))
 

@@ -88,6 +88,12 @@ CREATE TABLE IF NOT EXISTS tech_lead_storm_cohorts (
     cohort TEXT NOT NULL,
     recorded_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS tech_lead_dispositions (
+    issue_number INTEGER PRIMARY KEY,
+    tracker_issue_number INTEGER NOT NULL,
+    disposition TEXT NOT NULL,
+    recorded_at TEXT NOT NULL
+);
 """
 
 # (table, column, DDL) added after that table first shipped. ``CREATE TABLE IF

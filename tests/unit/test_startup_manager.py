@@ -1,6 +1,8 @@
 """Unit tests for StartupManager."""
 
 import json
+from tests.runtime_lifecycle_helpers import make_action_applier
+
 from pathlib import Path
 
 import pytest
@@ -535,7 +537,7 @@ class TestStartupManagerLabelStoreReconcile:
         store.add_label(1, "in-progress")  # orchestrator claim before the crash
         github_labels = _FakeLabelSet({1: {"agent:web", "in-progress"}})
 
-        applier = ActionApplier(
+        applier = make_action_applier(
             labels=github_labels,
             sessions=MagicMock(),
             events=mock_events,

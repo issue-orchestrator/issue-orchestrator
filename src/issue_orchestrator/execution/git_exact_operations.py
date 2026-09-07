@@ -1,6 +1,5 @@
 """Immutable pins and explicit compare-and-set pushes over the Git port."""
 
-import re
 import os
 
 from ..adapters.git.git_cli import GIT_ENV_STRIP
@@ -16,7 +15,8 @@ from ..domain.exact_git import (
 from ..domain.validated_work import require_sha
 from ..domain.validated_work_store import AncestryRelation
 from ..ports.git import Git, GitError
-from .git_push_operations import GitAuthEnvProvider, prepare_git_auth_env
+from .git_push_operations import GitAuthEnvProvider
+from .git_exact_context import ExactPushAuthenticationError, ExactPushContextOwner, require_remote
 
 _PREFIXES = ("refs/issue-orchestrator/validated/", "refs/issue-orchestrator/observed/")
 
@@ -31,10 +31,10 @@ class GitExactOperations:
             raise ValueError("ref must belong to validated-work retention")
         self._git.run(repository, ["check-ref-format", ref])
 
-    def _commit_exists(self, repository: Path, sha: str) -> bool:
+    def _commit_exists(self, repository: Path, sha: str, env: dict[str, str] | None = None) -> bool:
         require_sha(sha)
         result = self._git.run(
-            repository, ["--no-replace-objects", "cat-file", "-t", sha], check=False
+            repository, ["--no-replace-objects", "cat-file", "-t", sha], check=False, env=env
         )
         return result.returncode == 0 and result.stdout.strip() == "commit"
 
@@ -90,6 +90,11 @@ class GitExactOperations:
             repository, sha
         )
 
+    def read_pinned_ref(self, repository: Path, *, ref: str) -> RetainedRef | None:
+        self._check_ref(repository, ref)
+        sha = self._read_pin(repository, ref)
+        return RetainedRef(ref, sha) if sha is not None else None
+
     def delete_pinned_ref(self, repository: Path, *, ref: str, sha: str) -> None:
         if not self.verify_ref(repository, ref=ref, sha=sha):
             raise ValueError("retention pin missing or changed; retained")
@@ -114,12 +119,12 @@ class GitExactOperations:
         # The first entry is the durable repository, all others are disposable.
         return tuple(paths[1:])
 
-    def _is_ancestor(self, repository: Path, left: str, right: str) -> bool:
+    def _is_ancestor(self, repository: Path, left: str, right: str, env: dict[str, str] | None = None) -> bool:
         result = self._git.run(
             repository,
             ["--no-replace-objects", "merge-base", "--is-ancestor", left, right],
             check=False,
-            env={
+            env=env if env is not None else {
                 **{
                     key: value
                     for key, value in os.environ.items()
@@ -136,9 +141,12 @@ class GitExactOperations:
     def compare_commits(
         self, repository: Path, *, left: str, right: str
     ) -> AncestryRelation:
+        return self._compare_commits(repository, left, right, None)
+
+    def _compare_commits(self, repository: Path, left: str, right: str, env: dict[str, str] | None) -> AncestryRelation:
         a, b = (
-            self._commit_exists(repository, left),
-            self._commit_exists(repository, right),
+            self._commit_exists(repository, left, env),
+            self._commit_exists(repository, right, env),
         )
         if not a or not b:
             return (
@@ -150,77 +158,14 @@ class GitExactOperations:
             )
         if left == right:
             return AncestryRelation.EQUAL
-        if self._is_ancestor(repository, left, right):
+        if self._is_ancestor(repository, left, right, env):
             return AncestryRelation.ANCESTOR
-        if self._is_ancestor(repository, right, left):
+        if self._is_ancestor(repository, right, left, env):
             return AncestryRelation.DESCENDANT
         return AncestryRelation.DIVERGENT
 
-    def _validate_push(
-        self,
-        repository: Path,
-        remote: str,
-        branch: str,
-        target: str,
-        expected: str | None,
-        destination: ExactPushDestination | None,
-    ) -> str:
-        require_sha(target)
-        if expected is not None:
-            require_sha(expected)
-        if type(branch) is not str or not branch or branch.startswith(("-", "refs/")):
-            raise ValueError("branch must be a short branch name")
-        self._git.run(repository, ["check-ref-format", f"refs/heads/{branch}"])
-        if destination is None:
-            return self._configured_push_destination(repository, remote=remote).endpoint
-        current = self.resolve_push_destination(repository, remote=remote)
-        if type(destination) is not ExactPushDestination or destination != current:
-            raise ValueError("configured push destination changed before publication")
-        return destination.endpoint
-
-    def resolve_push_destination(
-        self, repository: Path, *, remote: str
-    ) -> ExactPushDestination:
-        """Fail closed on rewriting; preserve existing configuration and hooks.
-
-        The destination is checked again immediately before submission. This
-        boundary does not lock arbitrary external writers of local/global Git
-        configuration: hostile mutation after that final check is outside the
-        publication threat model. No configuration is overridden to claim a
-        stronger guarantee.
-        """
-        rewrites = self._git.run(
-            repository,
-            ["config", "--get-regexp", r"^url\..*\.(insteadof|pushinsteadof)$"],
-            check=False,
-        )
-        if rewrites.returncode == 0:
-            raise ValueError(
-                "destination-bound publication does not support Git URL rewriting"
-            )
-        if rewrites.returncode != 1:
-            raise GitError(rewrites)
-        return self._configured_push_destination(repository, remote=remote)
-
-    def _configured_push_destination(
-        self, repository: Path, *, remote: str
-    ) -> ExactPushDestination:
-        # Accept configured remote names only: no options, URLs, paths or helpers.
-        if (
-            type(remote) is not str
-            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", remote) is None
-        ):
-            raise ValueError("remote must be a configured remote name")
-        urls = self._git.run(
-            repository, ["remote", "get-url", "--push", "--all", remote]
-        ).stdout.splitlines()
-        if len(urls) != 1 or not urls[0]:
-            raise ValueError("exact push requires one configured push endpoint")
-        endpoint = urls[0]
-        # A relative local path must not be reinterpreted as another remote name.
-        if ":" not in endpoint or endpoint.startswith(("/", "./", "../")):
-            endpoint = str((repository / endpoint).resolve())
-        return ExactPushDestination(endpoint)
+    def resolve_push_destination(self, repository: Path, *, remote: str) -> ExactPushDestination:
+        return ExactPushContextOwner(self._git, self._auth).prepare(repository, remote).destination
 
     def push_exact(
         self,
@@ -232,48 +177,51 @@ class GitExactOperations:
         expected_sha: str | None,
         destination: ExactPushDestination | None = None,
     ) -> ExactPushResult:
-        endpoint = self._validate_push(
-            repository, remote, branch, target_sha, expected_sha, destination
-        )
-        if not self._commit_exists(repository, target_sha):
+        require_remote(remote)
+        require_exact_refspec(branch, target_sha, expected_sha)
+        owner = ExactPushContextOwner(self._git, self._auth)
+        try:
+            context = owner.prepare(repository, remote)
+        except ExactPushAuthenticationError as exc:
+            return ExactPushResult(ExactPushOutcome.AUTH_FAILED, str(exc))
+        if destination is not None and (type(destination) is not ExactPushDestination or destination != context.destination):
+            raise ValueError("configured push destination changed before publication")
+        self._git.run(repository, ["check-ref-format", f"refs/heads/{branch}"], env=dict(context.environment))
+        if not self._commit_exists(repository, target_sha, dict(context.environment)):
             return ExactPushResult(
                 ExactPushOutcome.NOT_FAST_FORWARD, "target commit unavailable"
             )
-        if expected_sha is not None and self.compare_commits(
-            repository, left=expected_sha, right=target_sha
+        if expected_sha is not None and self._compare_commits(
+            repository, expected_sha, target_sha, dict(context.environment)
         ) not in {AncestryRelation.EQUAL, AncestryRelation.ANCESTOR}:
             return ExactPushResult(
                 ExactPushOutcome.NOT_FAST_FORWARD, "positive ancestry proof required"
             )
-        try:
-            env = prepare_git_auth_env(self._auth, remote=remote)
-        except Exception as exc:
-            return ExactPushResult(ExactPushOutcome.AUTH_FAILED, str(exc))
+        owner.recheck(repository, remote, context)
         target_ref = f"refs/heads/{branch}"
         try:
             result = self._git.run(
                 repository,
                 [
-                    "-c",
-                    "push.followTags=false",
                     "push",
                     "--porcelain",
+                    "--no-follow-tags",
                     "--atomic",
                     "--recurse-submodules=no",
                     f"--force-with-lease={target_ref}:{expected_sha or ''}",
                     "--",
-                    endpoint,
+                    context.destination.endpoint,
                     f"{target_sha}:{target_ref}",
                 ],
-                env=env,
+                env=dict(context.environment),
                 check=False,
                 timeout_s=300,
             )
         except (GitError, OSError, TimeoutError) as exc:
             return ExactPushResult(ExactPushOutcome.TRANSIENT, str(exc))
+        detail = result.stdout + result.stderr
         if result.returncode == 0:
             return ExactPushResult(ExactPushOutcome.PUSHED)
-        detail = result.stdout + result.stderr
         if "[rejected]" in detail and "stale info" in detail:
             outcome = ExactPushOutcome.LEASE_REJECTED
         elif "non-fast-forward" in detail:
@@ -290,3 +238,11 @@ class GitExactOperations:
         else:
             outcome = ExactPushOutcome.TRANSIENT
         return ExactPushResult(outcome, detail)
+
+
+def require_exact_refspec(branch: str, target: str, expected: str | None) -> None:
+    require_sha(target)
+    if expected is not None:
+        require_sha(expected)
+    if type(branch) is not str or not branch or branch.startswith(("-", "refs/")):
+        raise ValueError("branch must be a short branch name")

@@ -803,6 +803,21 @@ class TestEffectiveTerminalOutcomeEvents:
         assert "terminal adapter refused the stop" in comment_body
         assert "reset" not in comment_body.lower()
 
+    def test_stale_investigation_kill_cannot_finalize_success(self, tmp_path):
+        events = InMemoryEventSink()
+        run_kill = MagicMock(return_value=KillSessionRunOutcome(success=False, stale_reason="worker generation already disappeared"))
+        applier = make_action_applier(labels=MagicMock(), sessions=MagicMock(), events=MagicMock(), repository_host=MagicMock())
+        applier.tech_lead_kill_session = TechLeadKillSessionExecutor(events=MagicMock(), run_kill=run_kill)
+        action = KillHungSessionAction(issue_number=17, proposal_id="A2", anchor_issue_number=17,
+            target_session_id="observed-run", target_terminal_id="issue-17", target_session_type="code",
+            requires_effective_disposition=True)
+        state = self._run(tmp_path, events=events, mandated_action=action, action_applier=applier)
+        run_kill.assert_called_once()
+        assert events.get_events(EventName.SESSION_COMPLETED.value) == []
+        assert len(events.get_events(EventName.SESSION_FAILED.value)) == 1
+        assert 17 not in state.completed_today
+        assert state.session_history[0].status == "failed"
+
     def test_committed_reset_publishes_only_session_completed(self, tmp_path):
         events = InMemoryEventSink()
         executor, _events, run_reset = make_executor()  # commits
@@ -1128,3 +1143,13 @@ def test_late_custody_refusal_keeps_full_boundary_in_result_and_event():
     run_reset.assert_called_once()
     assert result.details["boundary"] == boundary
     assert published(events, EventName.TECH_LEAD_ACTION_PROPOSED)[0].data["boundary"] == boundary
+
+
+@pytest.mark.parametrize("recovered", [False, True])
+def test_investigation_reset_skip_requires_positive_recovery(recovered):
+    from issue_orchestrator.control.tech_lead_reset_retry import evaluate_required_act_level_outcome
+    executor, _events, run_reset = make_executor(issue=make_issue(labels=[] if recovered else [BLOCKED_FAILED]), active_session=True)
+    result = executor.apply(make_action(requires_effective_disposition=True))
+    assert result.result_type is ActionResultType.SKIPPED
+    assert evaluate_required_act_level_outcome([result]).committed is recovered
+    run_reset.assert_not_called()

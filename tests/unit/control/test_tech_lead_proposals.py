@@ -1,5 +1,7 @@
 """Tests for gated tech_lead proposal issues (#6778, amends ADR-0031 §2)."""
 
+from tests.runtime_lifecycle_helpers import make_action_applier
+
 from unittest.mock import MagicMock, call
 import hashlib
 
@@ -1307,7 +1309,7 @@ def test_finalize_passthrough_for_direct_execute_authority() -> None:
 
 
 def _applier(host: MagicMock, ops: InMemoryTechLeadAuthorityStore) -> ActionApplier:
-    applier = ActionApplier(
+    applier = make_action_applier(
         labels=MagicMock(),
         sessions=MagicMock(),
         events=MagicMock(),

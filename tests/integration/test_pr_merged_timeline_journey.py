@@ -39,6 +39,8 @@ The journey from "awaiting-merge reconciler detects a merged PR" to
 
 from __future__ import annotations
 
+from tests.runtime_lifecycle_helpers import make_action_applier
+
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -111,7 +113,7 @@ def _build_applier_with_dual_sink(
     fresh_issue_reader = MagicMock()
     fresh_issue_reader.read_issue_labels.return_value = []
 
-    applier = ActionApplier(
+    applier = make_action_applier(
         completion_intake=completion_intake,
         labels=labels,
         sessions=sessions,

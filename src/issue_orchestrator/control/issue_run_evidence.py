@@ -31,7 +31,7 @@ class IssueRunEvidenceService:
 
     def terminal_issues(self, terminal_id: str) -> tuple[int, ...]:
         return tuple(issue for issue in self.issue_numbers()
-            if any(row.run.session_name == terminal_id for row in self._ledger.recorded_runs(issue)))
+            if self.evidence_for_issue(issue).owns_terminal(terminal_id))
 
     def terminal_evidence(self, issue_number: int, terminal_id: str, run: SessionRunAssets | None) -> IssueRunEvidence:
         return self.evidence_for_issue(issue_number).select(terminal_id=terminal_id, run=run)
@@ -59,6 +59,7 @@ class IssueRunEvidenceService:
             if not any(
                 row.session_key == active.session_key and row.run == active.run
                 and row.branch_name == active.branch_name
+                and row.terminal_binding == active.terminal_binding
                 for row in recorded
             ):
                 raise IssueRunEvidenceUnavailable(

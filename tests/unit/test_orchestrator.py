@@ -250,8 +250,10 @@ def test_terminate_tech_lead_session_is_behavior_complete(sample_config, tmp_pat
     object.__setattr__(orchestrator.deps, "claim_manager", claim_manager)
     object.__setattr__(orchestrator.deps, "state_machine_manager", smm)
     object.__setattr__(orchestrator.deps, "worktree_manager", worktree_manager)
+    from tests.unit.session_run_helpers import make_session_run_assets
     scratch = tmp_path / "repo-tech-lead-77-abc"
     tech_lead = SimpleNamespace(
+        run_assets=make_session_run_assets(scratch, session_name="coding-1"),
         terminal_id="tech-lead-77", issue=SimpleNamespace(number=77), lease_id="lease-1",
         scratch_worktree=True, worktree_path=scratch,
         tech_lead_scope=TechLeadLaunchScope(
@@ -298,8 +300,10 @@ def _terminate_fixture(sample_config, tmp_path):
     object.__setattr__(orchestrator.deps, "claim_manager", claim_manager)
     object.__setattr__(orchestrator.deps, "state_machine_manager", smm)
     object.__setattr__(orchestrator.deps, "worktree_manager", worktree_manager)
+    from tests.unit.session_run_helpers import make_session_run_assets
     scratch = tmp_path / "repo-tech-lead-77-abc"
     tech_lead = SimpleNamespace(
+        run_assets=make_session_run_assets(scratch, session_name="coding-1"),
         terminal_id="tech-lead-77", issue=SimpleNamespace(number=77), lease_id="lease-1",
         scratch_worktree=True, worktree_path=scratch,
     )
@@ -538,10 +542,10 @@ def create_session(issue, worktree_path=None, branch_name="feature/test", task=T
 
 def track_session(orchestrator, session):
     """Register test allocation before exposing the same live run to lifecycle owners."""
-    from issue_orchestrator.domain.issue_run_evidence import IssueRunRecord
+    from issue_orchestrator.domain.issue_run_evidence import IssueRunRecord, RunTerminalBinding
     orchestrator.deps.issue_run_ledger.record_run(
         session.issue.number,
-        IssueRunRecord(session.key, session.run_assets, session.run_assets.started_at, session.branch_name),
+        IssueRunRecord(session.key, session.run_assets, session.run_assets.started_at, session.branch_name, RunTerminalBinding(session.terminal_id)),
     )
     orchestrator.state.active_sessions.append(session)
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from issue_orchestrator.domain.models import Issue
 from issue_orchestrator.events import EventName
@@ -53,6 +53,42 @@ class ScenarioContext:
     def timeline_since_baseline(self) -> list:
         stream = self.timeline_reader.read(self.issue_number)
         return list(stream.events[self.timeline_baseline:])
+
+    def validation_records(self) -> tuple[Path, ...]:
+        ledger = self.orch.deps.issue_run_ledger
+        results = (
+            ledger.validation_for_receipt(entry.entry_id)
+            for entry in ledger.entries_for_issue(self.issue_number)
+        )
+        return tuple(result.result_path for result in results if result is not None)
+
+    def invalidate_cached_review_validation(
+        self, mode: Literal["missing", "invalid"]
+    ) -> None:
+        """Damage only the disposable legacy review-cache projection for a test."""
+        summaries = {}
+        for recorded in self.orch.deps.issue_run_ledger.recorded_runs(self.issue_number):
+            cached = self.orch.deps.session_output.load_review_exchange_summary(
+                recorded.run.worktree_path, recorded.run.session_name
+            )
+            if cached is not None:
+                summaries[cached.summary_path] = cached
+        assert len(summaries) == 1, "scenario requires exactly one owned review cache"
+        cached = next(iter(summaries.values()))
+        assert cached.summary.validation_passed is None, (
+            "test requires a legacy cache backed by its validation file"
+        )
+        assert cached.validation_record_path.is_file()
+        # Trusted receipt evidence is separate and must survive cache damage.
+        trusted = {path: path.read_bytes() for path in self.validation_records()}
+        assert trusted
+        if mode == "missing":
+            cached.validation_record_path.unlink()
+        else:
+            cached.validation_record_path.write_text("{invalid review validation cache")
+        assert {
+            path: path.read_bytes() for path in self.validation_records()
+        } == trusted
 
     def restart(self) -> "ScenarioContext":
         orch, repo_host, events, timeline_reader = build_orchestrator(
@@ -383,8 +419,9 @@ class Scenario:
         def _assert(ctx: ScenarioContext) -> None:
             worktree = ctx.worktree
             assert worktree is not None
-            record_path = _latest_validation_record(worktree)
-            assert record_path is not None, "validation-record.json not found"
+            records = ctx.validation_records()
+            assert records, "durable validation attestation not found"
+            record_path = records[-1]
             record = json.loads(record_path.read_text())
             assert record.get("passed") is passed
             if exit_code is not None:

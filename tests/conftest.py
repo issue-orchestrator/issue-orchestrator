@@ -37,6 +37,10 @@ from issue_orchestrator.ports.run_ledger_store import (
     SingleInstanceRunLedgerStore,
 )
 from pathlib import Path
+from collections.abc import Callable
+from issue_orchestrator.ports.completion_intake import CompletionIntakeRuntime
+from issue_orchestrator.ports.review_exchange_runner import ReviewExchangeRunner
+from issue_orchestrator.ports.working_copy import WorkingCopy
 from typing import Optional
 from unittest.mock import MagicMock, PropertyMock, patch
 from fastapi.testclient import TestClient
@@ -51,7 +55,7 @@ from issue_orchestrator.ports.pull_request_tracker import (
     StatusCheckRollupRead,
 )
 from issue_orchestrator.ports.repository_host import DependencyIssueSnapshot
-from issue_orchestrator.domain.issue_key import FakeIssueKey, IssueKey
+from issue_orchestrator.domain.issue_key import FakeIssueKey, GitHubIssueKey, IssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 
@@ -315,7 +319,8 @@ class MockGitHubAdapter:
     adapter rather than patching individual functions.
     """
 
-    def __init__(self):
+    def __init__(self, *, repo: str | None = None):
+        self.repo = repo
         # Storage for test data
         self.issues: list[Issue] = []
         self.labels: dict[int, set[str]] = {}  # issue_number -> labels
@@ -397,6 +402,8 @@ class MockGitHubAdapter:
 
     def create_issue_key(self, issue_number: int) -> IssueKey:
         """Create an IssueKey for testing."""
+        if self.repo is not None:
+            return GitHubIssueKey(repo=self.repo, external_id=str(issue_number))
         return FakeIssueKey(name=str(issue_number))
 
     def get_issue_labels(self, issue_number: int) -> list[str]:
@@ -908,6 +915,11 @@ def build_test_orchestrator_deps(
     timeline_reader=None,
     timeline_writer=None,
     provider_readiness_probe=None,
+    intake_working_copy: WorkingCopy | None = None,
+    review_exchange_runner_factory: Callable[
+        [CompletionIntakeRuntime], ReviewExchangeRunner
+    ]
+    | None = None,
 ):
     """Factory function to create OrchestratorDeps for testing.
 
@@ -995,15 +1007,21 @@ def build_test_orchestrator_deps(
 
     issue_run_ledger = SqliteIssueRunLedger(state_dir(config.repo_root) / "issue_run_ledger.sqlite")
     from issue_orchestrator.control.issue_run_allocator import IssueRunAllocationService
-    issue_run_allocator = IssueRunAllocationService(session_output, issue_run_ledger, working_copy)
+    evidence_working_copy = working_copy if intake_working_copy is None else intake_working_copy
+    issue_run_allocator = IssueRunAllocationService(session_output, issue_run_ledger, evidence_working_copy)
     from issue_orchestrator.entrypoints.bootstrap_run_services import (
         build_completion_intake,
     )
 
     from issue_orchestrator.entrypoints.bootstrap_validated_work import build_validated_work_admission
-    validated_work = build_validated_work_admission(config, working_copy, issue_run_ledger)
+    validated_work = build_validated_work_admission(config, evidence_working_copy, issue_run_ledger)
     completion_intake = build_completion_intake(
-        config, issue_run_ledger, issue_run_allocator, working_copy, command_runner, validated_work
+        config,
+        issue_run_ledger,
+        issue_run_allocator,
+        evidence_working_copy,
+        command_runner,
+        validated_work,
     )
     pair_registry = InMemoryPersistentExchangePairRegistry()
     completion_processor = CompletionProcessor(
@@ -1015,10 +1033,14 @@ def build_test_orchestrator_deps(
         git_adapter=working_copy,
         event_bus=None,
         session_output=session_output,
-        review_exchange_runner=PersistentReviewExchangeRunner(
-            session_output,
-            pair_registry,
-            completion_intake=completion_intake,
+        review_exchange_runner=(
+            PersistentReviewExchangeRunner(
+                session_output,
+                pair_registry,
+                completion_intake=completion_intake,
+            )
+            if review_exchange_runner_factory is None
+            else review_exchange_runner_factory(completion_intake)
         ),
         label_config={
             "blocked": config.get_label_blocked(),
@@ -1222,7 +1244,7 @@ def build_test_orchestrator_deps(
     from issue_orchestrator.entrypoints.bootstrap_issue_runtime import build_issue_runtime
     runtime_lifecycle = build_issue_runtime(
         state=state, ledger=issue_run_ledger, intake=completion_intake,
-        validated_work=validated_work, working_copy=working_copy,
+        validated_work=validated_work, working_copy=evidence_working_copy,
         sessions=_session_manager, pair_registry=pair_registry, supervisor=None,
         publish_recovery=publish_recovery, events=events,
     )

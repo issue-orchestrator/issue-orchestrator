@@ -132,6 +132,7 @@ class TechLeadNeedsHumanLifecycle:
         comment: str,
         context: str,
         event_data: dict[str, object],
+        preserve_existing_human: bool = False,
     ) -> bool:
         """Apply provenance, blocking state, and explanation in safe order.
 
@@ -176,6 +177,11 @@ class TechLeadNeedsHumanLifecycle:
         human_owned_block = needs_human_present and not self._block.held_by_another_cause(
             issue_number, excluding=NeedsHumanCause.TECH_LEAD_ESCALATION
         )
+
+        preserve_human = preserve_existing_human and not marker_present and human_owned_block
+        if preserve_human and not self._preserve_existing_human_request(issue_number, context):
+            return False
+        human_owned_block = human_owned_block and not preserve_human
 
         if not marker_present and not human_owned_block:
             # The label is forbidden only when this escalation is also the one
@@ -230,6 +236,19 @@ class TechLeadNeedsHumanLifecycle:
             make_trace_event(EventName.ISSUE_NEEDS_HUMAN, dict(event_data))
         )
         return True
+
+    def _preserve_existing_human_request(self, issue_number: int, context: str) -> bool:
+        """Keep prior human intent independently of our supersedable marker."""
+        if not self._block.owns(self._labels.needs_human):
+            return False  # cannot preserve an independent human cause without its owner
+        preserved = AddLabelAction(
+            issue_number=issue_number, label=self._labels.needs_human,
+            needs_human_cause=NeedsHumanCause.SESSION_LIFECYCLE,
+            reason="preserve existing human request during tech-lead disposition",
+            expected=self._expected(required={self._labels.needs_human},
+                                    forbidden={self._labels.tech_lead_needs_human}),
+        )
+        return self._apply_guarded([preserved], context)
 
     def reconcile(
         self,

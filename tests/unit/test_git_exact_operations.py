@@ -272,14 +272,11 @@ def test_grafts_cannot_forge_fast_forward(rig):
         rig.working.compare_commits(rig.root, left=rig.divergent, right=rig.target)
         is AncestryRelation.DIVERGENT
     )
-    result = rig.working.push_exact(
-        rig.root,
-        remote="origin",
-        branch="feature",
-        target_sha=rig.target,
-        expected_sha=rig.divergent,
-    )
-    assert result.outcome is ExactPushOutcome.NOT_FAST_FORWARD
+    with pytest.raises(ValueError, match="graft"):
+        rig.working.push_exact(
+            rig.root, remote="origin", branch="feature",
+            target_sha=rig.target, expected_sha=rig.divergent,
+        )
     assert rig.remote_refs() == before
 
 
@@ -295,14 +292,14 @@ def test_shallow_metadata_does_not_change_exact_commit_ancestry(rig):
     )
 
 
-def test_recursive_submodule_configuration_cannot_add_writes(rig, tmp_path):
+def test_recursive_submodule_configuration_cannot_add_writes(rig, tmp_path, monkeypatch):
+    monkeypatch.setenv("GIT_ALLOW_PROTOCOL", "file")
     subspace = tmp_path / "sub"
     subspace.mkdir()
     subrig = git_rig(subspace)
     subrig.git.run(subrig.remote, ["symbolic-ref", "HEAD", "refs/heads/feature"])
+    rig.run("config", "protocol.file.allow", "always")
     rig.run(
-        "-c",
-        "protocol.file.allow=always",
         "submodule",
         "add",
         str(subrig.remote),

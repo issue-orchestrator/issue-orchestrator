@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.runtime_lifecycle_helpers import make_action_applier
+
 from dataclasses import replace
 from unittest.mock import MagicMock, call
 
@@ -860,7 +862,7 @@ def test_second_reconcile_pass_on_terminal_entry_is_noop() -> None:
         reason=first_result.reconciliations[0].status_reason,
     )
     events = InMemoryEventSink()
-    applier = ActionApplier(
+    applier = make_action_applier(
         labels=MagicMock(),
         sessions=MagicMock(),
         events=events,

@@ -72,6 +72,9 @@ class GitWorkingCopy:
     def resolve_push_destination(self, repository: Path, *, remote: str) -> ExactPushDestination:
         return GitExactOperations(self._git, self._git_auth).resolve_push_destination(repository, remote=remote)
 
+    def read_pinned_ref(self, repository: Path, *, ref: str) -> RetainedRef | None:
+        return GitExactOperations(self._git, self._git_auth).read_pinned_ref(repository, ref=ref)
+
     def push_exact(self, repository: Path, *, remote: str, branch: str, target_sha: str, expected_sha: str | None, destination: ExactPushDestination | None = None) -> ExactPushResult:
         return GitExactOperations(self._git, self._git_auth).push_exact(repository, remote=remote, branch=branch, target_sha=target_sha, expected_sha=expected_sha, destination=destination)
 

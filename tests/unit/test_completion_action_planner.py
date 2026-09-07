@@ -45,6 +45,7 @@ from issue_orchestrator.domain.tech_lead_session import (
     TechLeadAssignment,
     TechLeadLaunchAuthority,
     TechLeadSessionFlavor,
+    TechLeadSessionGeneration,
 )
 from issue_orchestrator.infra.tech_lead_authority_store import (
     SqliteTechLeadAuthorityStore,
@@ -61,6 +62,20 @@ from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthori
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.ports import RepositoryHost
 from tests.unit.session_run_helpers import make_session_run_assets
+
+
+def add_human_disposition(session: Session) -> None:
+    """Complete positive investigation fixtures with an explicit terminal owner."""
+    data = session.run_dir / "tech-lead-data"
+    path = data / "tech-lead-decision.json"
+    payload = json.loads(path.read_text())
+    payload["proposed_actions"].append({
+        "id": "A99", "action_type": "escalate_to_human", "target_number": 1,
+        "body": "Human must approve the diagnosed remedy.", "finding_ids": ["T1"],
+    })
+    path.write_text(json.dumps(payload))
+    report = data / "tech-lead-report.md"
+    report.write_text(report.read_text() + "\nA99: human disposition.\n")
 
 
 def make_issue(
@@ -287,7 +302,8 @@ def arm_batch_session(
 
 
 def arm_investigation_session(
-    config: Config, session: Session, *, focus: int = 1
+    config: Config, session: Session, *, focus: int = 1,
+    generations: tuple[TechLeadSessionGeneration, ...] = (),
 ) -> None:
     """Plant matching worktree copies AND the launch authority for a focus run."""
     plant_tech_lead_assignment(
@@ -305,6 +321,7 @@ def arm_investigation_session(
             flavor=TechLeadSessionFlavor.FAILURE_INVESTIGATION,
             anchor_issue_number=session.issue.number,
             focus_issue_number=focus,
+            observed_session_generations=generations,
         ),
     )
 
@@ -555,6 +572,7 @@ def test_completed_tech_lead_investigation_session_plans_decision_without_labels
     session = make_tech_lead_session(tmp_path)
     arm_investigation_session(config, session)
     plant_tech_lead_decision_pair(session, comment_targets=(1,))
+    add_human_disposition(session)
 
     actions = make_planner(config).generate_completion_actions(
         session,
@@ -1095,6 +1113,7 @@ class TestFailureInvestigationDiagnosisRequired:
         session = make_tech_lead_session(tmp_path)
         arm_investigation_session(config, session)
         plant_tech_lead_decision_pair(session, comment_targets=(1,))
+        add_human_disposition(session)
 
         actions = make_planner(config).generate_completion_actions(
             session, SessionStatus.COMPLETED
@@ -1976,6 +1995,7 @@ class TestProductionOpenIssueDedupCorpus:
         session = make_tech_lead_session(tmp_path)
         arm_investigation_session(config, session)
         self._plant_duplicate_pair(session)
+        add_human_disposition(session)
         store = SqliteOpenIssueCorpusStore.for_repo(tmp_path)
         store.replace_all(
             (
@@ -2020,6 +2040,7 @@ class TestProductionOpenIssueDedupCorpus:
         session = make_tech_lead_session(tmp_path)
         arm_investigation_session(config, session)
         self._plant_duplicate_pair(session)
+        add_human_disposition(session)
         store = SqliteOpenIssueCorpusStore.for_repo(tmp_path)
         store.replace_all(
             (
@@ -2127,6 +2148,7 @@ class TestMilestoneResolutionBoundary:
         session = make_tech_lead_session(tmp_path)
         arm_investigation_session(config, session)
         self._plant_pair_with_create_issue(session)
+        add_human_disposition(session)
         host = MagicMock()
 
         actions = self._completed_actions(config, session, host)
@@ -2157,6 +2179,7 @@ class TestMilestoneResolutionBoundary:
         session = make_tech_lead_session(tmp_path)
         arm_investigation_session(config, session)
         self._plant_pair_with_create_issue(session)
+        add_human_disposition(session)
         host = MagicMock()
 
         actions = self._completed_actions(config, session, host)
@@ -2221,3 +2244,34 @@ def test_provider_blocked_issue_session_adds_no_rework_trigger(
     assert LabelManager(config).needs_rework not in added_labels(actions)
     # The claim is still released, exactly as before.
     assert "in-progress" in removed_labels(actions)
+
+
+def test_planned_investigation_kill_that_becomes_stale_withholds_success_effects(tmp_path):
+    from unittest.mock import MagicMock
+    from issue_orchestrator.control.action_applier import ActionApplier
+    from issue_orchestrator.control.actions import KillHungSessionAction
+    from issue_orchestrator.control.tech_lead_kill_session import TechLeadKillSessionExecutor, KillSessionRunOutcome
+    from issue_orchestrator.control.tech_lead_reset_retry import apply_completion_actions_gated, evaluate_required_act_level_outcome, effective_terminal_status
+    config = make_tech_lead_config(tmp_path)
+    config.tech_lead.authority.kill_hung_session = "execute"
+    session = make_tech_lead_session(tmp_path)
+    observed = TechLeadSessionGeneration(issue_number=1, task_kind=TaskKind.CODE, terminal_id="worker-1", run_id="worker-run")
+    arm_investigation_session(config, session, generations=(observed,))
+    _plant_decision_with_actions(session, [
+        {"id": "A1", "action_type": "post_comment", "target_number": 1, "body": "Diagnosis.", "finding_ids": ["T1"]},
+        {"id": "A2", "action_type": "kill_hung_session", "target_number": 1, "body": "Hung worker.", "finding_ids": ["T1"]},
+    ])
+    actions = make_planner(config).generate_completion_actions(session, SessionStatus.COMPLETED)
+    [kill] = [action for action in actions if isinstance(action, KillHungSessionAction)]
+    assert kill.requires_effective_disposition and kill.target_session_id == "worker-run"
+    host = MagicMock()
+    run_kill = MagicMock(return_value=KillSessionRunOutcome(success=False, stale_reason="observed generation disappeared"))
+    applier = ActionApplier(labels=MagicMock(), sessions=MagicMock(), events=MagicMock(), repository_host=host)
+    applier.tech_lead_kill_session = TechLeadKillSessionExecutor(events=MagicMock(), run_kill=run_kill)
+    results, error = apply_completion_actions_gated(applier, actions, issue_number=1)
+    assert error is None
+    outcome = evaluate_required_act_level_outcome(results)
+    assert outcome.failed and effective_terminal_status(SessionStatus.COMPLETED, outcome) is SessionStatus.FAILED
+    host.add_comment.assert_not_called()
+    host.close_issue.assert_not_called()
+    run_kill.assert_called_once()

@@ -13,6 +13,8 @@ importantly — pin that the boundary has exactly ONE owner per concern:
 
 from __future__ import annotations
 
+from tests.runtime_lifecycle_helpers import make_action_applier
+
 from tests.run_allocation_helpers import make_session_launcher
 
 import ast
@@ -1704,6 +1706,9 @@ def test_a_test_composition_never_shells_out_to_a_provider_cli(tmp_path: Path) -
         StaticProviderReadinessProbe,
     )
 
+    from issue_orchestrator.execution.git_tools import create_git
+    from issue_orchestrator.execution.command_runner import LocalCommandRunner
+    create_git(LocalCommandRunner()).run(tmp_path, ["init", "-b", "main"])
     orchestrator = build_orchestrator_for_testing(
         Config(repo="test/repo", repo_root=tmp_path), github=MagicMock()
     )
@@ -2897,7 +2902,7 @@ class _ProductionTick:
                 self.launched.append(number)
             return result.session
 
-        self.applier = ActionApplier(
+        self.applier = make_action_applier(
             labels=self.github,
             sessions=MagicMock(),
             events=self.events,
