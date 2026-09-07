@@ -22,6 +22,7 @@ from typing import Any
 
 from ..domain.validated_work_claim import ProcessIdentity
 from ..ports.command_runner import CommandRunner
+from .process_table import ps_command, ps_env
 from .repo_lock_capability import HeldStartupGate, _issue_gate
 from .repo_identity import lock_file, locks_dir, normalize_repo_root, state_dir
 
@@ -59,8 +60,8 @@ def held_startup_gate(
         if startup is None or startup[0] != os.getpid():
             raise RuntimeError("successful local startup gate is required")
         result = runner.run(
-            ["ps", "-o", "lstart=", "-p", str(os.getpid())],
-            env={**os.environ, "LC_ALL": "C"},
+            ps_command("-o", "lstart=", "-p", str(os.getpid())),
+            env=ps_env(LC_ALL="C"),
             timeout_seconds=10,
         )
         if result.returncode != 0 or result.timed_out:
