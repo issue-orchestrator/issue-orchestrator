@@ -13,6 +13,8 @@ importantly — pin that the boundary has exactly ONE owner per concern:
 
 from __future__ import annotations
 
+from tests.run_allocation_helpers import make_session_launcher
+
 import ast
 import importlib.util
 import json
@@ -554,7 +556,8 @@ class _LauncherHarness:
         # through this applier, so it is the only place a test can see whether
         # a failed launch nevertheless committed a destructive transition.
         self.action_applier = MagicMock()
-        self.launcher = SessionLauncher(
+        self.launcher = make_session_launcher(
+            issue_run_ledger=MagicMock(),
             config=config,
             events=self.events,
             repository_host=MockRepositoryHost(),

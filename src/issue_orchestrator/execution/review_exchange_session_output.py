@@ -39,6 +39,7 @@ def start_review_exchange_run(
         run_id=run.run_id,
         parent_session_name=parent_session_name,
         assets=assets,
+        session_run=run,
     )
 
 

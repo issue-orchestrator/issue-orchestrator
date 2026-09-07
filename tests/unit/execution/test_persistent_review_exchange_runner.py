@@ -108,11 +108,15 @@ def _make_agent(
     )
 
 
+from tests.unit.session_run_helpers import make_session_run_assets
+
+
 def _make_exchange_run(tmp_path: Path) -> ReviewExchangeRun:
     run_dir = tmp_path / ".issue-orchestrator" / "sessions" / "r1__review-exchange-42"
     return ReviewExchangeRun(
         session_name="review-exchange-42",
         run_id="r1",
+        session_run=make_session_run_assets(tmp_path, session_name="review-exchange-42", run_id="r1"),
         parent_session_name="coding-42",
         assets=ReviewExchangeRunAssets.from_run_dir(run_dir),
     )

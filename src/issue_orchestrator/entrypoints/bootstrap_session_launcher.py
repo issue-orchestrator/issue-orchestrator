@@ -19,6 +19,7 @@ from ..ports.coder_prompt import (
     NO_CODER_PROMPT_ADDENDUM,
 )
 from ..ports.provider_readiness import ProviderReadinessProbe
+from ..ports.issue_run_allocator import IssueRunAllocator
 
 if TYPE_CHECKING:
     from ..control.dependency_evaluator import DependencyEvaluator
@@ -43,6 +44,7 @@ def build_session_launcher_factory(
     working_copy,
     command_runner,
     session_output,
+    issue_run_allocator: IssueRunAllocator,
     manifest_downloader,
     tech_lead_authority,
     claim_manager,
@@ -87,6 +89,7 @@ def build_session_launcher_factory(
             ),
             board_snapshot_provider=board_snapshot_provider,
             agent_callback_endpoint=agent_callback_endpoint,
+            issue_run_allocator=issue_run_allocator,
             provider_readiness_probe=provider_readiness_probe,
             needs_human_block=needs_human_block,
             coder_prompt_addendum=coder_prompt_addendum,

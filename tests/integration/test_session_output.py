@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.run_allocation_helpers import make_completion_processor
+
 import json
 import os
 from datetime import datetime, timezone, timedelta
@@ -118,7 +120,7 @@ def test_session_output_manifest_and_validation_pointer(tmp_path: Path) -> None:
     )
     _write_completion(tmp_path / completion_path, record)
 
-    processor = CompletionProcessor(
+    processor = make_completion_processor(
         agent_callback_endpoint=ready_callback_endpoint(),
         label_adapter=DummyLabelAdapter(),
         pr_adapter=DummyPRAdapter(),
@@ -297,7 +299,7 @@ def test_review_completion_writes_feedback_file(tmp_path: Path) -> None:
     )
     _write_completion(tmp_path / completion_path, record)
 
-    processor = CompletionProcessor(
+    processor = make_completion_processor(
         agent_callback_endpoint=ready_callback_endpoint(),
         label_adapter=DummyLabelAdapter(),
         pr_adapter=DummyPRAdapter(),
@@ -346,7 +348,7 @@ def test_feedback_file_not_written_for_approved(tmp_path: Path) -> None:
     )
     _write_completion(tmp_path / completion_path, record)
 
-    processor = CompletionProcessor(
+    processor = make_completion_processor(
         agent_callback_endpoint=ready_callback_endpoint(),
         label_adapter=DummyLabelAdapter(),
         pr_adapter=DummyPRAdapter(),

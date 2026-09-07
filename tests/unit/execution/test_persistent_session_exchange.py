@@ -13,6 +13,8 @@ exchange-loop policy on top of it.
 
 from __future__ import annotations
 
+from tests.run_allocation_helpers import make_completion_review_exchange
+
 import json
 import os
 from pathlib import Path
@@ -1011,6 +1013,9 @@ class TestPersistentSessionExchangeHappyPath:
         fresh process for the follow-up prompt avoids paying a 120s
         prompt_not_accepted timeout before the existing retry path respawns.
         """
+        monkeypatch.setenv(
+            "ISSUE_ORCHESTRATOR_CODEX_RUNTIME_ROOT", str(tmp_path / "codex-runtime"),
+        )
         prompt_path = tmp_path / "p.md"
         prompt_path.write_text("Prompt", encoding="utf-8")
         coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
@@ -5918,9 +5923,13 @@ class TestLoopBoundCounting:
             == 3
         )
 
+    @pytest.mark.parametrize("separator", ["-", "T"])
+    @pytest.mark.parametrize("suffix", ["", "-0123456789abcdef0123456789abcdef"])
     def test_run_dir_timestamp_orders_partial_manifest_before_mtime(
         self,
         tmp_path: Path,
+        separator: str,
+        suffix: str,
     ) -> None:
         """A partial manifest still has a durable timestamp in its run id."""
         worktree = tmp_path / "wt"
@@ -5936,7 +5945,7 @@ class TestLoopBoundCounting:
         )
         os.utime(coding_dir, (1700009999, 1700009999))
 
-        run_dir = sessions_dir / "20260102-000000Z__review-exchange-42-r1"
+        run_dir = sessions_dir / f"20260102{separator}000000Z{suffix}__review-exchange-42-r1"
         run_dir.mkdir()
         exchange_dir = run_dir / "review-exchange"
         exchange_dir.mkdir()
@@ -6856,7 +6865,7 @@ class TestProductionLayoutCacheResolution:
                 command="claude --print",
             ),
         }
-        return CompletionReviewExchange(
+        return make_completion_review_exchange(
             agent_callback_endpoint=ready_callback_endpoint(),
             config=cfg,
             session_output=session_output,

@@ -15,6 +15,8 @@ defers — not merely that the endpoint object reports unready.
 
 from __future__ import annotations
 
+from tests.run_allocation_helpers import make_session_launcher
+
 from unittest.mock import MagicMock
 
 import pytest
@@ -36,7 +38,8 @@ DEFER_REASON = "Agent callback endpoint not published yet"
 
 
 def _launcher(endpoint) -> SessionLauncher:
-    return SessionLauncher(
+    return make_session_launcher(
+        issue_run_ledger=MagicMock(),
         config=Config(),
         events=MagicMock(),
         repository_host=MagicMock(),

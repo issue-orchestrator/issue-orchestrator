@@ -975,7 +975,14 @@ def build_test_orchestrator_deps(
     )
     agent_callback_endpoint = ready_callback_endpoint()
 
+    from issue_orchestrator.execution.issue_run_ledger import SqliteIssueRunLedger
+    from issue_orchestrator.infra.repo_identity import state_dir
+
+    issue_run_ledger = SqliteIssueRunLedger(state_dir(config.repo_root) / "issue_run_ledger.sqlite")
+    from issue_orchestrator.control.issue_run_allocator import IssueRunAllocationService
+    issue_run_allocator = IssueRunAllocationService(session_output, issue_run_ledger)
     completion_processor = CompletionProcessor(
+        issue_run_allocator=issue_run_allocator,
         agent_callback_endpoint=agent_callback_endpoint,
         label_adapter=repo_host,
         pr_adapter=repo_host,
@@ -1190,6 +1197,8 @@ def build_test_orchestrator_deps(
         # Orchestrator-owned, outside every worktree, exactly as bootstrap
         # wires it (#6999 F7).
         pending_work_claims=pending_work_claims,
+        issue_run_ledger=issue_run_ledger,
+        issue_run_allocator=issue_run_allocator,
         claim_quarantine=build_claim_quarantine_owner(
             store=pending_work_claims,
             action_applier=_action_applier,
@@ -1215,6 +1224,7 @@ def build_test_orchestrator_deps(
             command_runner=command_runner,
             session_output=session_output,
             manifest_downloader=manifest_downloader,
+            issue_run_allocator=issue_run_allocator,
             tech_lead_authority=tech_lead_authority,
             claim_manager=claim_manager,
             provider_resilience=provider_resilience,

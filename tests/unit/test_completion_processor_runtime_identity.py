@@ -1,5 +1,7 @@
 """Runtime identity audit coverage for completion PR creation."""
 
+from tests.run_allocation_helpers import make_completion_processor
+
 import json
 from pathlib import Path
 from unittest.mock import MagicMock, Mock
@@ -89,7 +91,7 @@ def test_completion_processor_stamps_runtime_identity_on_created_pr(
     pr_adapter = _make_pr_adapter()
     git_adapter = _make_git_adapter()
     session_output = FileSystemSessionOutput()
-    processor = CompletionProcessor(
+    processor = make_completion_processor(
         agent_callback_endpoint=ready_callback_endpoint(),
         label_adapter=label_adapter,
         pr_adapter=pr_adapter,
