@@ -367,6 +367,7 @@ def _build(
             cast(SessionOutput, session_output),
             issue_run_ledger if issue_run_ledger is not None else MemoryIssueRunLedger(),
             branch_working_copy(),
+            configuration=Config(repo="example/repo"),
         ),
         agent_callback_endpoint=ready_callback_endpoint(),
         config=_make_config(tmp_path, require_validation=require_validation),

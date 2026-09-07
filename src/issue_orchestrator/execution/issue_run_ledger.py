@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from .completion_intake_ledger import CompletionIntakeTables
 from ..domain.prepared_completion import PreparedCompletionEvidence
+from .issue_run_schema import create_issue_run_schema, validate_issue_run_schema
 from ..domain.completion_intake import (
     CompletionIntakeEntry,
     CompletionValidationAttestation,
@@ -20,12 +21,12 @@ from ..domain.completion_intake import (
     SubmitCompletionEvidence,
 )
 from ..domain.session_run import SessionRunIdentity, RunContainedFile
+from ..domain.registered_completion import CompletionRunRole
 
 from ..domain.historical_intake import HistoricalIntakeCommand
 from ..domain.models import CompletionRecord
-from ..domain.issue_key import GitHubIssueKey
-from ..domain.issue_run_evidence import IssueRunEvidenceUnavailable, IssueRunRecord, RunTerminalBinding
-from ..domain.session_key import SessionKey, TaskKind
+from .issue_run_codec import IssueRunRow
+from ..domain.issue_run_evidence import IssueRunEvidenceUnavailable, IssueRunRecord
 from ..domain.session_run import SessionRunAssets
 from ..infra.sqlite_connection import open_sqlite
 
@@ -69,29 +70,7 @@ class SqliteIssueRunLedger:
         finally:
             os.close(directory)
         with closing(open_sqlite(db_path)) as conn, conn:
-            conn.execute("CREATE TABLE issue_run_ledger_identity (identity TEXT PRIMARY KEY)")
-            conn.execute("INSERT INTO issue_run_ledger_identity VALUES (?)", (self._identity,))
-            conn.execute("""
-                CREATE TABLE issue_runs (
-                    session_name TEXT NOT NULL,
-                    run_id TEXT NOT NULL,
-                    started_at TEXT NOT NULL,
-                    issue_number INTEGER NOT NULL CHECK(issue_number > 0),
-                    issue_scope TEXT NOT NULL,
-                    issue_key TEXT NOT NULL,
-                    task TEXT NOT NULL,
-                    assets_json TEXT NOT NULL,
-                    run_dir TEXT NOT NULL UNIQUE,
-                    recorded_at TEXT NOT NULL,
-                    branch_name TEXT,
-                    terminal_binding TEXT,
-                    PRIMARY KEY(session_name, run_id, started_at)
-                )
-            """)
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS ix_issue_runs_issue "
-                "ON issue_runs(issue_number, recorded_at)"
-            )
+            create_issue_run_schema(conn, self._identity)
 
         self._intake = CompletionIntakeTables(
             self._connect, self._decode, db_path.parent / "completion-intake"
@@ -99,11 +78,8 @@ class SqliteIssueRunLedger:
 
     def _validate_existing(self) -> None:
         try:
-            with self._connect() as conn:
-                conn.execute(
-                    "SELECT session_name, run_id, started_at, issue_number, issue_scope, "
-                    "issue_key, task, assets_json, run_dir, recorded_at FROM issue_runs LIMIT 0"
-                )
+            with self._connect(write=True) as conn:
+                validate_issue_run_schema(conn)
         except sqlite3.Error as exc:
             raise IssueRunEvidenceUnavailable("Established run ledger schema is unavailable") from exc
 
@@ -122,43 +98,20 @@ class SqliteIssueRunLedger:
     def record_run(self, issue_number: int, record: IssueRunRecord) -> None:
         if type(issue_number) is not int or issue_number <= 0:
             raise ValueError("run ownership requires a positive issue number")
-        identity = record.run.identity
-        payload = (
-            issue_number,
-            record.session_key.issue.scope(),
-            record.session_key.issue.stable_id(),
-            record.session_key.task.value,
-            json.dumps(record.run.to_dict(), sort_keys=True, separators=(",", ":")),
-        )
-        key = (identity.session_name, identity.run_id, identity.started_at)
+        codec = IssueRunRow.from_record(issue_number, record)
         try:
             with self._connect(write=True) as conn:
-                existing = conn.execute(
-                    "SELECT issue_number, issue_scope, issue_key, task, assets_json "
-                    "FROM issue_runs WHERE session_name=? AND run_id=? AND started_at=?", key,
-                ).fetchone()
+                existing = conn.execute(codec.select_sql, codec.key_values).fetchone()
                 if existing is not None:
-                    bound_branch = conn.execute(
-                        "SELECT branch_name,terminal_binding FROM issue_runs WHERE session_name=? AND run_id=? AND started_at=?", key,
-                    ).fetchone()
-                    if tuple(existing) != payload or tuple(bound_branch) != (record.branch_name, self._terminal_json(record)) :
-                        raise IssueRunEvidenceUnavailable(
-                            f"Conflicting ownership for run {identity}"
-                        )
+                    codec.require_existing(existing)
                     return
-                conn.execute(
-                    "INSERT INTO issue_runs (session_name,run_id,started_at,issue_number,issue_scope,issue_key,task,assets_json,run_dir,recorded_at,branch_name,terminal_binding) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (*key, *payload, self._run_key(record.run.run_dir), record.recorded_at, record.branch_name, self._terminal_json(record)),
-                )
+                conn.execute(codec.insert_sql, codec.insert_values)
                 self._intake.allocate_run(conn, record.run)
         except sqlite3.Error as exc:
             raise IssueRunEvidenceUnavailable(
                 "Could not persist run ownership"
             ) from exc
 
-    @staticmethod
-    def _terminal_json(record: IssueRunRecord) -> str | None:
-        return None if record.terminal_binding is None else json.dumps({"terminal_id": record.terminal_binding.terminal_id})
 
     def issue_numbers(self) -> tuple[int, ...]:
         with self._connect() as conn:
@@ -176,33 +129,11 @@ class SqliteIssueRunLedger:
             raise IssueRunEvidenceUnavailable("Could not read run ownership") from exc
 
     @staticmethod
-    def _run_key(run_dir: Path) -> str:
-        # Match pending-work claim keys: retain the allocated lexical path,
-        # including any worktree symlink, without following mutable targets.
-        return os.path.normpath(str(run_dir))
+    def _decode(row: sqlite3.Row) -> IssueRunRecord:
+        return IssueRunRow(dict(row)).decode()
 
-    @classmethod
-    def _decode(cls, row: sqlite3.Row) -> IssueRunRecord:
-        payload = json.loads(row["assets_json"])
-        if not isinstance(payload, dict):
-            raise ValueError("Run ledger assets must be an object")
-        assets = SessionRunAssets.from_dict(payload)
-        if (assets.session_name, assets.run_id, assets.started_at) != (
-            row["session_name"], row["run_id"], row["started_at"],
-        ):
-            raise ValueError("Run ledger key and assets disagree")
-        if cls._run_key(assets.run_dir) != row["run_dir"]:
-            raise ValueError("Run ledger root and assets disagree")
-        return IssueRunRecord(
-            session_key=SessionKey(
-                issue=GitHubIssueKey(repo=row["issue_scope"], external_id=row["issue_key"]),
-                task=TaskKind(row["task"]),
-            ),
-            run=assets,
-            recorded_at=row["recorded_at"],
-            branch_name=row["branch_name"],
-            terminal_binding=None if row["terminal_binding"] is None else RunTerminalBinding(**json.loads(row["terminal_binding"])),
-        )
+    def role_for_receipt(self, entry_id: str) -> CompletionRunRole:
+        return self._intake.role(entry_id)
 
     def recorded_run(self, run: SessionRunAssets) -> IssueRunRecord:
         with self._connect() as conn:

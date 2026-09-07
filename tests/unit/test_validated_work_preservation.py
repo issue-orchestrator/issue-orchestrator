@@ -2,6 +2,8 @@
 
 from issue_orchestrator.control.validated_work_admission import RankedEvidenceAdmission
 
+from issue_orchestrator.infra.config import Config
+
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -58,7 +60,7 @@ def custody(tmp_path):
     state = tmp_path / "owner-state"
     ledger = SqliteIssueRunLedger(state / "runs.sqlite")
     wc = GitWorkingCopy(git=git)
-    allocator = IssueRunAllocationService(FileSystemSessionOutput(), ledger, wc)
+    allocator = IssueRunAllocationService(FileSystemSessionOutput(), ledger, wc, configuration=Config(repo="owner/repo"))
     run = allocator.allocate(IssueRunAllocation(worktree, "coding-1", 42,
         SessionKey(GitHubIssueKey("owner/repo", "42"), TaskKind.CODE), "agent:test", "test", terminal_id="issue-42"))
     validator = ConfiguredCompletionEvidenceValidator(wc, LocalCommandRunner(),
@@ -321,7 +323,7 @@ def test_startup_publishing_worktree_retained_when_custody_unavailable(custody):
 
 @pytest.mark.parametrize("scope", ["exact_run", "named_terminal"])
 def test_terminal_preservation_keeps_unrelated_allocated_run_open(custody, scope):
-    review = IssueRunAllocationService(FileSystemSessionOutput(), custody.ledger, custody.wc).allocate(
+    review = IssueRunAllocationService(FileSystemSessionOutput(), custody.ledger, custody.wc, configuration=Config(repo="owner/repo")).allocate(
         IssueRunAllocation(custody.worktree, "review-phase-1", 42,
             SessionKey(GitHubIssueKey("owner/repo", "42"), TaskKind.REVIEW), "agent:test", "test", terminal_id="review-42"))
     review_capability = custody.ledger.submission_capability(review)
@@ -370,7 +372,7 @@ def test_shutdown_unknown_live_run_refuses_before_any_global_stop(custody):
 
 def test_review_worktree_cleanup_preserves_other_terminal_evidence(custody):
     submit(custody, "coder-retained")
-    review = IssueRunAllocationService(FileSystemSessionOutput(), custody.ledger, custody.wc).allocate(
+    review = IssueRunAllocationService(FileSystemSessionOutput(), custody.ledger, custody.wc, configuration=Config(repo="owner/repo")).allocate(
         IssueRunAllocation(custody.worktree, "review-phase-1", 42,
             SessionKey(GitHubIssueKey("owner/repo", "42"), TaskKind.REVIEW), "agent:test", "test", terminal_id="review-42"))
     batch = custody.lifecycle.preserve_cleanup(42, review.session_name, custody.worktree, "cleanup")
@@ -381,7 +383,7 @@ def test_review_worktree_cleanup_preserves_other_terminal_evidence(custody):
 
 def preserve_receipts_in_reverse_order(custody):
     submit(custody, "older")
-    exchange = IssueRunAllocationService(FileSystemSessionOutput(), custody.ledger, custody.wc).allocate(
+    exchange = IssueRunAllocationService(FileSystemSessionOutput(), custody.ledger, custody.wc, configuration=Config(repo="owner/repo")).allocate(
         IssueRunAllocation(custody.worktree, "exchange-42", 42,
             SessionKey(GitHubIssueKey("owner/repo", "42"), TaskKind.CODE), "agent:test", "test", terminal_id="issue-42"))
     import json

@@ -15,6 +15,7 @@ from ..domain.models import CompletionRecord
 from ..domain.issue_run_evidence import IssueRunEvidence
 from ..domain.validated_work_commands import AutomaticCaptureScope
 from ..domain.prepared_completion import PreparedCompletionEvidence
+from ..domain.registered_completion import RegisteredCompletion
 from ..domain.completion_intake_policy import (
     latest_accepted_receipt,
     require_publication_attestation,
@@ -128,9 +129,10 @@ class CompletionEvidenceIntakeService:
             entry = self._ledger.entry_for_receipt(receipt.entry_id)
             if entry.receipt != receipt or entry.run != run:
                 raise CompletionIntakeError("receipt does not bind the allocated run")
-            if issue_number is not None and entry not in self._ledger.entries_for_issue(issue_number):
-                raise CompletionIntakeError("receipt does not bind the allocated issue")
             recorded = self._ledger.recorded_run(run)
+            role = self._ledger.role_for_receipt(entry.entry_id)
+            if issue_number is not None and role.issue_number != issue_number:
+                raise CompletionIntakeError("receipt role does not bind the allocated issue")
             self._process((entry,))
             candidate = self._ledger.prepare_candidate(entry.entry_id, recorded)
             if candidate is None:
@@ -207,11 +209,20 @@ class CompletionEvidenceIntakeService:
     def read_receipt(
         self, receipt: CompletionIntakeReceipt, run: SessionRunAssets
     ) -> CompletionRecord:
+        return self.processing_context(receipt, run).record
+
+    def processing_context(
+        self, receipt: CompletionIntakeReceipt, run: SessionRunAssets
+    ) -> RegisteredCompletion:
+        role = self._ledger.role_for_receipt(receipt.entry_id)
         entry = self._ledger.entry_for_receipt(receipt.entry_id)
         if entry.receipt != receipt or entry.run != run:
             raise CompletionIntakeError("receipt does not bind the allocated run")
-        record = self._ledger.read_completion(entry.entry_id)
-        return record
+        return RegisteredCompletion(
+            self._ledger.read_completion(entry.entry_id),
+            role,
+            normalized_completion_artifact(entry),
+        )
 
     def require_publication_ready(
         self, receipt: CompletionIntakeReceipt, run: SessionRunAssets
@@ -224,9 +235,7 @@ class CompletionEvidenceIntakeService:
     def completion_artifact(
         self, receipt: CompletionIntakeReceipt, run: SessionRunAssets
     ) -> RunContainedFile:
-        self.read_receipt(receipt, run)
-        entry = self._ledger.entry_for_receipt(receipt.entry_id)
-        return normalized_completion_artifact(entry)
+        return self.processing_context(receipt, run).artifact
 
     def import_historical(
         self, command: HistoricalIntakeCommand

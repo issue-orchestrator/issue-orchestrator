@@ -33,6 +33,9 @@ from ..domain.completion_intake import (
     SubmitCompletionEvidence,
 )
 from .completion_intake_codec import SubmissionEnvelope, AttestationEnvelope, run_key
+from ..domain.registered_completion import CompletionRunRole
+from .issue_run_codec import IssueRunRow
+from ..domain.completion_custody import validation_custody_blobs
 from ..domain.issue_run_evidence import IssueRunRecord, IssueRunEvidenceUnavailable
 from ..domain.models import CompletionRecord
 from ..domain.completion_custody_integrity import (
@@ -164,6 +167,21 @@ class CompletionIntakeTables:
             finally:
                 os.unlink(temporary)
         return RunContainedFile(root, path)
+
+    def role(self, entry_id: str) -> CompletionRunRole:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT issue_runs.* FROM completion_intake_entries "
+                "JOIN completion_intake_runs USING(run_key) "
+                "JOIN issue_runs USING(session_name,run_id,started_at) WHERE entry_id=?",
+                (entry_id,),
+            ).fetchone()
+            if row is None:
+                raise CompletionIntakeError("recorded completion agent role is missing")
+            try:
+                return IssueRunRow(dict(row)).processing_role()
+            except (ValueError, TypeError) as exc:
+                raise CompletionIntakeError("recorded completion role is invalid") from exc
 
     def run_for_capability(self, capability: str) -> SessionRunAssets:
         with self._connect() as conn:
@@ -437,11 +455,7 @@ class CompletionIntakeTables:
             self.artifacts.write(
                 entry_id + "-validation",
                 envelope,
-                {
-                    "validation.json": result.result_bytes,
-                    "stdout.log": result.stdout_bytes,
-                    "stderr.log": result.stderr_bytes,
-                },
+                validation_custody_blobs(result),
             )
             self._insert_attestation(
                 conn, self.artifacts.read(entry_id + "-validation")

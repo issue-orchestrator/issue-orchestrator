@@ -2,6 +2,8 @@
 
 from issue_orchestrator.control.validated_work_admission import RankedEvidenceAdmission
 
+from issue_orchestrator.infra.config import Config
+
 from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path
@@ -64,7 +66,7 @@ def historical(tmp_path: Path):
     ledger = SqliteIssueRunLedger(state / "issue_run_ledger.sqlite")
     output = FileSystemSessionOutput()
     wc = GitWorkingCopy(git=git)
-    allocator = IssueRunAllocationService(output, ledger, wc)
+    allocator = IssueRunAllocationService(output, ledger, wc, configuration=Config(repo="test/repo"))
     runner = Mock(spec=CommandRunner)
     runner.run.return_value = CommandResult(
         returncode=0, stdout="fresh validation", stderr="", timed_out=False
