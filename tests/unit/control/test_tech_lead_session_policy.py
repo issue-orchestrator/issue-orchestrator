@@ -1,5 +1,6 @@
 """Tests for the ADR-0031 tech_lead session policy owner."""
 
+from issue_orchestrator.domain.registered_completion import CompletionProcessingPolicy
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -197,7 +198,7 @@ class TestDiscardTechLeadAuthorityAfterCompletion:
             store,
             self._session("agent:tech-lead"),
             processing_errors=None,
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(self._session('agent:tech-lead').issue.agent_type, self._config().tech_lead_review_agent))
 
         assert store.load(run_id="r1", session_name="issue-999") is None
         assert store.load_storm_cohort(anchor_issue_number=999) is None
@@ -218,7 +219,7 @@ class TestDiscardTechLeadAuthorityAfterCompletion:
             store,
             self._session("agent:tech-lead"),
             processing_errors=[f"{ERROR_PREFIX_PUSH}: remote rejected"],
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(self._session('agent:tech-lead').issue.agent_type, self._config().tech_lead_review_agent))
 
         assert store.load(run_id="r1", session_name="issue-999") is not None
         assert store.load_storm_cohort(anchor_issue_number=999) is not None
@@ -235,7 +236,7 @@ class TestDiscardTechLeadAuthorityAfterCompletion:
             store,
             self._session("agent:coder"),
             processing_errors=None,
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(self._session('agent:coder').issue.agent_type, self._config().tech_lead_review_agent))
 
         assert store.load(run_id="r1", session_name="issue-999") is not None
         assert store.load_storm_cohort(anchor_issue_number=999) is not None

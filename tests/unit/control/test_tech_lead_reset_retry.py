@@ -1,5 +1,6 @@
 """Tests for the tech_lead reset_retry execution owner (#6764, ADR-0031 §2)."""
 
+from issue_orchestrator.domain.registered_completion import CompletionProcessingPolicy
 from dataclasses import replace
 from unittest.mock import ANY, MagicMock, call
 
@@ -411,7 +412,7 @@ class TestCompletionPipelineEligibility:
                 config=config,
                 session_output=session_output,
                 pending_work_claims=_test_claim_store(),
-            )
+             processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
         return state, run
 
@@ -711,7 +712,7 @@ class TestEffectiveTerminalOutcomeEvents:
             claim_manager=claim_manager if claim_manager is not None else MagicMock(),
             events=events,
             pending_work_claims=_test_claim_store(),
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, Config().tech_lead_review_agent))
         return state
 
     def test_failed_mandated_reset_publishes_only_session_failed(self, tmp_path):
@@ -1056,7 +1057,7 @@ class TestTheDurableRunRecordAgreesWithTheTerminalOutcome:
             claim_manager=MagicMock(),
             events=events,
             pending_work_claims=_test_claim_store(),
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, Config().tech_lead_review_agent))
         return state
 
     def test_a_failed_mandated_action_records_the_run_failed(self, tmp_path):

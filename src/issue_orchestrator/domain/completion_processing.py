@@ -1,6 +1,9 @@
 """Typed outcome of completion processing across owner boundaries."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+
+from .completion_intake import CompletionIntakeError
+from .registered_completion import CompletionProcessingPolicy
 
 
 @dataclass
@@ -9,6 +12,7 @@ class ProcessingResult:
 
     success: bool
     message: str
+    processing_policy: CompletionProcessingPolicy | None = None
     failure_kind: str | None = None
     pr_url: str | None = None
     actions_taken: list[str] | None = None
@@ -27,6 +31,24 @@ class ProcessingResult:
     # back into coder rework via the review-exchange path. Callers should keep
     # the session running but still surface validation-failure evidence.
     validation_failed_rerouted: bool = False
+
+    def require_processing_policy(self) -> CompletionProcessingPolicy:
+        """A processed result cannot be reclassified as an unprocessed session."""
+        if self.processing_policy is None:
+            raise CompletionIntakeError("completion processing did not establish a role policy")
+        return self.processing_policy
+
+    def with_processing_policy(self, policy: CompletionProcessingPolicy) -> "ProcessingResult":
+        """Bind the selected invocation policy to every terminal/deferred outcome."""
+        return replace(self, processing_policy=policy)
+
+    @classmethod
+    def for_intake_refusal(cls, error: CompletionIntakeError) -> "ProcessingResult":
+        """Untrusted intake confers no role authority on terminal handling."""
+        return cls(
+            success=False, message=str(error), errors=[str(error)],
+            processing_policy=CompletionProcessingPolicy(None, None),
+        )
 
     @classmethod
     def for_review_exchange_deferred(cls) -> "ProcessingResult":

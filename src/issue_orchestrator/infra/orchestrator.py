@@ -71,7 +71,7 @@ from ..domain.pause_state import PauseActor, PauseReason, PauseTransitionOutcome
 from ..domain.state_machines.issue_machine import IssueStateMachine
 from ..domain.state_machines.session_machine import SessionStateMachine
 from ..domain.state_machines.review_machine import ReviewStateMachine
-from ..control.session_completion import handle_session_completion as _handle_session_completion, process_active_sessions as _process_active_sessions
+from ..control.session_completion import handle_session_completion as _handle_session_completion, process_active_sessions as _process_active_sessions, unprocessed_session_policy
 from ..control.session_launcher import SessionLauncher
 from ..control.board_snapshot_builder import StateBoardSnapshotProvider
 from ..control.tech_lead_run_wiring import (
@@ -528,6 +528,7 @@ class Orchestrator:
             publish_recovery=self.deps.publish_recovery,
             pending_work_claims=self.deps.pending_work_claims,
             provider_error_type=provider_error_type,
+            processing_policy=unprocessed_session_policy(session, self.config),
         )
 
     def tick(self) -> bool:

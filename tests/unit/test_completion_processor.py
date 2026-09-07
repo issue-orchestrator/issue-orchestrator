@@ -10,6 +10,7 @@ Architecture reminder:
 - CompletionProcessor executes actions via adapters (labels, PR, comments)
 """
 
+from issue_orchestrator.domain.registered_completion import CompletionProcessingPolicy
 from issue_orchestrator.ports.completion_intake import CompletionIntakeRuntime
 from issue_orchestrator.domain.registered_completion import CompletionRolePolicy
 from tests.run_allocation_helpers import make_completion_processor
@@ -2865,7 +2866,7 @@ class TestTechLeadCompletionEffects:
         actions = make_planner(config).generate_completion_actions(
             session, SessionStatus.COMPLETED, processing_errors=result.errors,
             review_exchange_halted=result.review_exchange_halted,
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
         diagnoses = [action for action in actions if isinstance(action, AddCommentAction)
                      and action.number == 1 and "Diagnosis for #1" in action.comment]
         assert len(diagnoses) == 1

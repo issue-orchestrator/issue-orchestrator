@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from issue_orchestrator.domain.registered_completion import CompletionProcessingPolicy
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -1020,7 +1021,7 @@ def test_locators_persisted_before_publish_failed_labels_applied(make_session, t
             processing_errors=["push_branch: Push failed: remote rejected"],
             publish_recovery=service,
             pending_work_claims=_test_claim_store(),
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, MagicMock().tech_lead_review_agent))
 
     # Even though the label application crashed, the durable locators were
     # already persisted, so Retry Publish survives.

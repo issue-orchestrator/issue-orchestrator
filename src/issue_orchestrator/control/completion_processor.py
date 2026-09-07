@@ -712,27 +712,13 @@ class CompletionProcessor:
         agent_label: str | None = None,
         intake_receipt: CompletionIntakeReceipt | None = None,
     ) -> ProcessingResult:
-        """Process a completion record and execute actions.
+        """Process one run under a policy retained through terminal handling.
 
-        Args:
-            worktree: Path to the worktree containing the completion record.
-            issue_number: The GitHub issue number this work is for.
-            issue_title: The issue title (for PR creation).
-            pr_number: Optional PR number for review sessions. When provided,
-                label operations will target the PR instead of the issue.
-            completion_path: Relative path to completion file. If None, uses legacy path.
-
-        Returns:
-            ProcessingResult with success status and details.
+        A receipt supplies allocation-owned role and issue identity. Legacy
+        standalone callers use the explicit label/path policy. Select once,
+        before effects; every result carries that selection, including failure
+        and review deferral. A PR number targets review label operations.
         """
-        start_time = time.monotonic()
-        # For review sessions, label operations target the PR
-        label_target = pr_number if pr_number else issue_number
-        actions_taken: list[str] = []
-        errors: list[str] = []
-        error_details: list[dict[str, Any]] = []  # Full diagnostic info per error
-        pr_url: str | None = None
-
         try:
             context = (
                 self._completion_intake.processing_context(intake_receipt, run_assets)
@@ -742,7 +728,28 @@ class CompletionProcessor:
                 context, issue_number, agent_label, completion_path
             )
         except CompletionIntakeError as exc:
-            return ProcessingResult(success=False, message=str(exc), errors=[str(exc)])
+            return ProcessingResult.for_intake_refusal(exc)
+
+        return self._process_with_policy(
+            worktree, issue_number, issue_title, run_assets=run_assets,
+            pr_number=pr_number, completion_path=completion_path,
+            intake_receipt=intake_receipt, processing_policy=processing_policy,
+        ).with_processing_policy(processing_policy)
+
+    def _process_with_policy(
+        self, worktree: Path, issue_number: int, issue_title: str, *,
+        run_assets: SessionRunAssets, pr_number: int | None,
+        completion_path: str | None, intake_receipt: CompletionIntakeReceipt | None,
+        processing_policy: CompletionProcessingPolicy,
+    ) -> ProcessingResult:
+        """Execute one invocation under its already selected immutable role."""
+        start_time = time.monotonic()
+        # For review sessions, label operations target the PR
+        label_target = pr_number if pr_number else issue_number
+        actions_taken: list[str] = []
+        errors: list[str] = []
+        error_details: list[dict[str, Any]] = []  # Full diagnostic info per error
+        pr_url: str | None = None
 
         # Read and validate completion record
         record, session_name, error_result = self._read_and_validate_record(
