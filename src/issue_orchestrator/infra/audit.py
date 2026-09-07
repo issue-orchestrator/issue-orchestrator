@@ -136,7 +136,8 @@ def get_queue_issues(
         if issue.number not in active_numbers and issue.number not in history_numbers
     ]
 
-    # Sort by priority (same order as launching)
+    # Audit omits dependency facts: show configured priority order only.
+    # The live planner additionally breaks ties using work-blocked fan-out.
     return scheduler.sort_by_priority(queue_issues)
 
 

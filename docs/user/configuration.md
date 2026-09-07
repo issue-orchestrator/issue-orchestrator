@@ -195,9 +195,11 @@ milestones:
   foundation: "M0"
 ```
 
-The full sort key is `(milestone_key, priority_tier, sequence, issue.number)` — each layer only tie-breaks when the previous one ties.
+The full sort key is `(milestone_key, priority_tier, sequence, -dependency_fanout, issue.number)` — each layer only tie-breaks when the previous one ties. The live planner counts unique open transitive dependents whose work gates are blocked on a candidate; a larger count wins the tie. Explicit priority overrides still come first. Closed issues, ready stack edges, invalid references and cross-repository dependencies do not inflate this count.
 
-`milestone_number` is the default because it works whether or not milestones have due dates. `due_date` only sorts meaningfully when every milestone has a `dueOn` set; otherwise due-less milestones tie on the milestone key and ordering falls through to priority tier (from `[Px-nnn]` in the title), then sequence, then issue number.
+An open blocking predecessor absent from the observed scheduler scope is reported as `predecessor_outside_scheduler_scope` in the skip detail and health board dependency summary. Check its configured agent assignment and queue filters, or resolve the dependency manually. This diagnostic does not infer why it is absent or assign an agent automatically.
+
+`milestone_number` is the default because it works whether or not milestones have due dates. `due_date` only sorts meaningfully when every milestone has a `dueOn` set; otherwise due-less milestones tie on the milestone key and ordering falls through to priority tier (from `[Px-nnn]` in the title), then sequence, then dependency fan-out, then issue number.
 
 ### Enable Code Review
 

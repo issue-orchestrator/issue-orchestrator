@@ -131,6 +131,7 @@ def tech_lead_action_handlers(
     reset_retry: ActionHandler,
     kill_hung_session: ActionHandler,
     require_expected: ExpectedStateGuard,
+    require_mutation_authority: ExpectedStateGuard,
     repository_host: "RepositoryHost | None",
     authority: "TechLeadAuthorityStore | None",
     promotion_target: "PromotionTargetHost | None",
@@ -153,7 +154,8 @@ def tech_lead_action_handlers(
         # Repeat pattern observation: evidence comment + durable count (#6957).
         ActionType.APPEND_PATTERN_OBSERVATION: lambda action: (
             apply_append_pattern_observation(
-                action, repository_host=repository_host, authority=authority
+                action, repository_host=repository_host, authority=authority,
+                before_write=lambda: require_mutation_authority(action, reconciliation_subject_for(action)),
             )
         ),
         # Finding promotion: file in the routed repo, then close the loop

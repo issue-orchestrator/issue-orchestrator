@@ -97,6 +97,7 @@ def _ledger(
     *,
     fix_class: str = "",
     area: str = "",
+    diagnosis: str = "",
     observations: int = 1,
 ) -> dict[str, PatternEvidence]:
     """A durable pattern ledger row, as planning now receives it (#6957 F3)."""
@@ -107,6 +108,7 @@ def _ledger(
             observation_count=observations,
             fix_class=fix_class,
             area=area,
+            diagnosis=diagnosis,
         )
     }
 
@@ -135,6 +137,21 @@ def _plan(
         dedup_grant=dedup_grant or DuplicateTargetGrant.none(),
         **SOURCE_RUN,
     )
+
+
+def _follow_up_creates(actions) -> list[CreateTechLeadIssueAction]:
+    """Decision-driven follow-up ISSUE creations only.
+
+    ``CreateTechLeadCaseFileIssueAction`` subclasses ``CreateTechLeadIssueAction``,
+    so a bare isinstance check cannot tell "minted a new open issue" from
+    "opened the durable ledger" — the exact distinction #6989 turns on.
+    """
+    return [
+        action
+        for action in actions
+        if isinstance(action, CreateTechLeadIssueAction)
+        and not isinstance(action, CreateTechLeadCaseFileIssueAction)
+    ]
 
 
 def _shadow_digests(actions) -> list[AddCommentAction]:
@@ -233,39 +250,54 @@ class TestCreateIssueDedup:
 
     # --- GateSuspectedDuplicate: authority-respecting, evidence-carrying ---
 
-    def test_confirmed_duplicate_gated_under_propose_authority(self) -> None:
-        [planned] = _plan(
+    def test_confirmed_duplicate_accrues_to_ledger_under_propose_authority(
+        self,
+    ) -> None:
+        # #6989: no immediate comment under propose (B2) — and no fresh open
+        # issue either. The cited observation accrues to the durable case file.
+        surfaced, case_file = _plan(
             _decision(self._issue(duplicate_of=1234)),
             _config(create_issue="propose"),
             dedup_corpus=self._ready(),
             dedup_grant=self._GRANT,
         )
-        # No immediate comment under propose (B2); a gated create carries evidence.
-        assert isinstance(planned, CreateTechLeadIssueAction)
-        assert PROPOSED_TECH_LEAD_LABEL in planned.labels
-        assert "#1234" in planned.body
+        assert isinstance(surfaced, SurfaceTechLeadProposalAction)
+        assert surfaced.mode == "pattern" and surfaced.proposal_type == "create_issue"
+        assert isinstance(case_file, CreateTechLeadCaseFileIssueAction)
+        assert case_file.pattern_signature == "duplicate-of-#1234"
+        assert TECH_LEAD_OBSERVATION_LABEL in case_file.labels
+        assert "#1234" in case_file.body
 
-    def test_confirmed_duplicate_gated_when_post_comment_is_propose(self) -> None:
-        # create_issue=execute but post_comment=propose -> still no immediate write.
-        [planned] = _plan(
+    def test_confirmed_duplicate_accrues_when_post_comment_is_propose(self) -> None:
+        # create_issue=execute but post_comment=propose -> still no immediate
+        # comment on the candidate; the observation lands on the ledger (#6989).
+        planned = _plan(
             _decision(self._issue(duplicate_of=1234)),
             _config(post_comment="propose"),
             dedup_corpus=self._ready(),
             dedup_grant=self._GRANT,
         )
-        assert isinstance(planned, CreateTechLeadIssueAction)
-        assert PROPOSED_TECH_LEAD_LABEL in planned.labels
+        assert not _follow_up_creates(planned)
+        assert not any(isinstance(a, AddCommentAction) for a in planned)
+        [case_file] = [
+            a for a in planned if isinstance(a, CreateTechLeadCaseFileIssueAction)
+        ]
+        assert case_file.pattern_signature == "duplicate-of-#1234"
 
-    def test_verified_but_out_of_grant_citation_is_gated_not_commented(self) -> None:
-        # A known open issue outside the comment grant: gated (writes nothing).
-        [gated] = _plan(
+    def test_verified_but_out_of_grant_citation_accrues_never_comments(self) -> None:
+        # A known open issue outside the comment grant: nothing is written to it,
+        # and no new open issue is minted — the sighting accrues (#6989).
+        planned = _plan(
             _decision(self._issue(duplicate_of=1234)),
             dedup_corpus=self._ready(),
             dedup_grant=DuplicateTargetGrant.none(),
         )
-        assert isinstance(gated, CreateTechLeadIssueAction)
-        assert PROPOSED_TECH_LEAD_LABEL in gated.labels
-        assert "#1234" in gated.body
+        assert not _follow_up_creates(planned)
+        assert not any(isinstance(a, AddCommentAction) for a in planned)
+        [case_file] = [
+            a for a in planned if isinstance(a, CreateTechLeadCaseFileIssueAction)
+        ]
+        assert "#1234" in case_file.body
 
     def test_lexical_backstop_gates_regardless_of_grant(self) -> None:
         # B2: the backstop gates even with no redirect grant (batch/failure).
@@ -323,18 +355,21 @@ class TestCreateIssueDedup:
         assert isinstance(created, CreateTechLeadIssueAction)
         assert PROPOSED_TECH_LEAD_LABEL not in created.labels
 
-    def test_disabled_corpus_with_citation_is_gated_not_filed(self) -> None:
-        # The agent's dedup intent is preserved (gated with the candidate), never
-        # discarded into a novel issue.
+    def test_disabled_corpus_with_citation_accrues_not_filed(self) -> None:
+        # The agent's dedup intent is preserved (the candidate rides the
+        # observation), never discarded into a novel issue — and #6989: never
+        # minted as one either.
         planned = _plan(
             _decision(self._issue(duplicate_of=1234)),
             dedup_corpus=OpenIssueCorpus.disabled(),
         )
-        [gated] = planned
-        assert isinstance(gated, CreateTechLeadIssueAction)
-        assert PROPOSED_TECH_LEAD_LABEL in gated.labels
-        assert "#1234" in gated.body
+        assert not _follow_up_creates(planned)
         assert not any(isinstance(a, AddCommentAction) for a in planned)
+        [case_file] = [
+            a for a in planned if isinstance(a, CreateTechLeadCaseFileIssueAction)
+        ]
+        assert "#1234" in case_file.body
+        assert "could not verify" in case_file.body or "not yet verifiable" in case_file.body
 
     def test_unavailable_corpus_without_citation_fails_closed(self) -> None:
         # A fact-production failure must NEVER file unchecked — gate it.
@@ -346,15 +381,17 @@ class TestCreateIssueDedup:
         assert PROPOSED_TECH_LEAD_LABEL in gated.labels
         assert not any(isinstance(a, AddCommentAction) for a in planned)
 
-    def test_unavailable_corpus_with_citation_gates_with_candidate(self) -> None:
+    def test_unavailable_corpus_with_citation_accrues_with_candidate(self) -> None:
         planned = _plan(
             _decision(self._issue(duplicate_of=1234)),
             dedup_corpus=OpenIssueCorpus.unavailable(),
         )
-        [gated] = planned
-        assert isinstance(gated, CreateTechLeadIssueAction)
-        assert PROPOSED_TECH_LEAD_LABEL in gated.labels
-        assert "#1234" in gated.body
+        assert not _follow_up_creates(planned)
+        [case_file] = [
+            a for a in planned if isinstance(a, CreateTechLeadCaseFileIssueAction)
+        ]
+        assert case_file.pattern_signature == "duplicate-of-#1234"
+        assert "#1234" in case_file.body
 
     def test_novel_proposal_files_normally_under_execute(self) -> None:
         [created] = _plan(
@@ -475,6 +512,330 @@ class TestCreateIssueDedup:
 
         with pytest.raises(AssertionError):
             outcome_gate_note(object(), execute=True)  # type: ignore[arg-type]
+
+
+class TestDuplicateObservationAccrual:
+    """#6989: an AGENT-CITED duplicate the session cannot comment on accrues to
+    the durable case-file ledger instead of minting one new open issue per
+    sighting of the same standing problem."""
+
+    _TRACKER = OpenIssueRef(6928, "Search API budget exhaustion", "403 storm")
+
+    def _issue(self, **overrides) -> ProposedTechLeadAction:
+        base = dict(
+            id="A1",
+            action_type="create_issue",
+            title="Search-API budget exhaustion re-verified 2026-08-04",
+            body="1,824 403s in three hours.",
+            duplicate_of=6928,
+        )
+        base.update(overrides)
+        return ProposedTechLeadAction(**base)
+
+    def _ready(self) -> OpenIssueCorpus:
+        return OpenIssueCorpus.ready((self._TRACKER,))
+
+    def test_first_sighting_opens_one_case_file_naming_the_tracker(self) -> None:
+        surfaced, case_file = _plan(
+            _decision(self._issue()),
+            dedup_corpus=self._ready(),
+            dedup_grant=DuplicateTargetGrant.none(),
+        )
+        assert isinstance(surfaced, SurfaceTechLeadProposalAction)
+        assert surfaced.mode == "pattern"
+        assert isinstance(case_file, CreateTechLeadCaseFileIssueAction)
+        assert case_file.pattern_signature == "duplicate-of-#6928"
+        # The proposal is preserved verbatim, plus the reconciliation evidence.
+        assert "1,824 403s in three hours." in case_file.body
+        assert "Search-API budget exhaustion re-verified 2026-08-04" in case_file.body
+        assert "#6928" in case_file.body
+
+    def test_repeat_sighting_appends_evidence_instead_of_a_second_issue(self) -> None:
+        planned = _plan(
+            _decision(self._issue(id="A2", body="Same storm, next day.")),
+            dedup_corpus=self._ready(),
+            dedup_grant=DuplicateTargetGrant.none(),
+            pattern_ledger=_ledger("duplicate-of-#6928", 7000),
+        )
+        assert not _follow_up_creates(planned)
+        assert not any(
+            isinstance(a, CreateTechLeadCaseFileIssueAction) for a in planned
+        )
+        [appended] = [
+            a for a in planned if isinstance(a, AppendPatternObservationAction)
+        ]
+        assert appended.issue_number == 7000
+        assert appended.pattern_signature == "duplicate-of-#6928"
+        assert "Same storm, next day." in appended.observation.comment
+
+    def test_named_recurring_class_keys_the_accrual(self) -> None:
+        # Scope item 2: naming the class lets a create_issue sighting join the
+        # case file an earlier flag_pattern already opened for it.
+        planned = _plan(
+            _decision(self._issue(pattern_signature="search-api-budget-exhaustion")),
+            dedup_corpus=self._ready(),
+            dedup_grant=DuplicateTargetGrant.none(),
+            pattern_ledger=_ledger("search-api-budget-exhaustion", 6927),
+        )
+        [appended] = [
+            a for a in planned if isinstance(a, AppendPatternObservationAction)
+        ]
+        assert appended.issue_number == 6927
+        assert appended.pattern_signature == "search-api-budget-exhaustion"
+
+    def test_accrued_observation_is_never_promotable(self) -> None:
+        # create_issue cannot carry fix_class, so the ledger row stays
+        # unclassified — a duplicate sighting is evidence, not a diagnosed fix.
+        _surfaced, case_file = _plan(
+            _decision(self._issue()),
+            dedup_corpus=self._ready(),
+            dedup_grant=DuplicateTargetGrant.none(),
+        )
+        assert isinstance(case_file, CreateTechLeadCaseFileIssueAction)
+        assert case_file.fix_class == ""
+
+    def test_a_sighting_never_classifies_the_signatures_area(self) -> None:
+        # area IS carriable by create_issue and is the ledger's other immutable
+        # field. Letting a sighting supply it would let evidence that diagnosed
+        # nothing pick the repo a fix:code promotion is filed into.
+        _surfaced, case_file = _plan(
+            _decision(self._issue(area="github-api")),
+            dedup_corpus=self._ready(),
+            dedup_grant=DuplicateTargetGrant.none(),
+        )
+        assert isinstance(case_file, CreateTechLeadCaseFileIssueAction)
+        assert case_file.area is None
+        assert not any(
+            label.startswith("area:") for label in case_file.labels
+        )
+        assert "`github-api`" in case_file.body  # kept as evidence, not applied
+
+    def test_a_sighting_never_upgrades_a_recorded_area(self) -> None:
+        planned = _plan(
+            _decision(self._issue(area="github-api")),
+            dedup_corpus=self._ready(),
+            dedup_grant=DuplicateTargetGrant.none(),
+            pattern_ledger=_ledger("duplicate-of-#6928", 7000, fix_class="code"),
+        )
+        [appended] = [
+            a for a in planned if isinstance(a, AppendPatternObservationAction)
+        ]
+        assert appended.area == ""  # the recorded (empty) value stands
+        assert appended.fix_class == "code"  # and is preserved, not erased
+
+    def test_sightings_that_disagree_on_area_never_abort_the_decision(self) -> None:
+        # Two daily sightings of one standing problem, described from different
+        # angles, must not raise a classification conflict — that unwinds into
+        # WHOLE-decision rejection and discards every other planned action.
+        planned = _plan(
+            _decision(
+                ProposedTechLeadAction(
+                    id="A1",
+                    action_type="post_comment",
+                    target_number=99,
+                    body="Anchor diagnosis.",
+                ),
+                self._issue(id="A2", area="github-api"),
+                self._issue(id="A3", area="control", body="Different angle."),
+            ),
+            dedup_corpus=self._ready(),
+            dedup_grant=DuplicateTargetGrant.none(),
+        )
+        assert not any(
+            isinstance(a, SurfaceTechLeadProposalAction) and a.mode == "rejected"
+            for a in planned
+        )
+        # The unrelated sibling action still applies...
+        assert any(
+            isinstance(a, AddCommentAction) and a.number == 99 for a in planned
+        )
+        # ...and both sightings share one case file.
+        [case_file] = [
+            a for a in planned if isinstance(a, CreateTechLeadCaseFileIssueAction)
+        ]
+        assert len(case_file.observations) == 2
+
+    def test_two_sightings_in_one_decision_open_one_case_file(self) -> None:
+        planned = _plan(
+            _decision(self._issue(id="A1"), self._issue(id="A2")),
+            dedup_corpus=self._ready(),
+            dedup_grant=DuplicateTargetGrant.none(),
+        )
+        creations = [
+            a for a in planned if isinstance(a, CreateTechLeadCaseFileIssueAction)
+        ]
+        assert len(creations) == 1
+        assert len(creations[0].additional_observations) == 1
+        # The intra-decision sibling reason rides the observation, not a second
+        # gated issue — no evidence is lost by taking the accrual route.
+        assert "A1" in creations[0].additional_observations[0].comment
+        assert not _follow_up_creates(planned)
+
+    def test_lexical_only_suspicion_still_gates_a_fresh_issue(self) -> None:
+        # No citation: the agent claimed nothing, so a false-positive lexical
+        # match must not bury real work in an evidence ledger.
+        planned = _plan(
+            _decision(self._issue(duplicate_of=None)),
+            dedup_corpus=OpenIssueCorpus.ready(
+                (
+                    OpenIssueRef(
+                        6928,
+                        "Search-API budget exhaustion re-verified 2026-08-04",
+                        "1,824 403s in three hours.",
+                    ),
+                )
+            ),
+            dedup_grant=DuplicateTargetGrant.none(),
+        )
+        [gated] = planned
+        assert isinstance(gated, CreateTechLeadIssueAction)
+        assert PROPOSED_TECH_LEAD_LABEL in gated.labels
+        assert "#6928" in gated.body and "score" in gated.body.lower()
+
+    def test_rejected_candidate_still_gates_a_fresh_issue(self) -> None:
+        # A provably-bad citation names no accrual point; the content may well
+        # be novel, so it keeps the gated create (fail closed).
+        planned = _plan(
+            _decision(self._issue(duplicate_of=4242)),
+            dedup_corpus=self._ready(),
+            dedup_grant=DuplicateTargetGrant.none(),
+        )
+        [gated] = planned
+        assert isinstance(gated, CreateTechLeadIssueAction)
+        assert PROPOSED_TECH_LEAD_LABEL in gated.labels
+
+    def test_no_candidate_and_unavailable_corpus_still_gates(self) -> None:
+        planned = _plan(
+            _decision(self._issue(duplicate_of=None)),
+            dedup_corpus=OpenIssueCorpus.unavailable(),
+        )
+        [gated] = planned
+        assert isinstance(gated, CreateTechLeadIssueAction)
+        assert PROPOSED_TECH_LEAD_LABEL in gated.labels
+
+    def test_verified_and_granted_citation_still_comments_on_the_candidate(
+        self,
+    ) -> None:
+        # Accrual is the fallback for what could NOT be routed. When the session
+        # may comment on the tracker, the observation still lands there directly.
+        planned = _plan(
+            _decision(self._issue()),
+            dedup_corpus=self._ready(),
+            dedup_grant=DuplicateTargetGrant.of({6928}),
+        )
+        [comment] = [a for a in planned if isinstance(a, AddCommentAction)]
+        assert comment.number == 6928
+        assert not any(
+            isinstance(a, CreateTechLeadCaseFileIssueAction) for a in planned
+        )
+
+    _DIAGNOSIS = (
+        "Mechanism: predecessor-fact scans burn the search-API budget."
+        " Suggested fix: cache the scan per tick."
+    )
+
+    def _flag(self, **overrides) -> ProposedTechLeadAction:
+        base = dict(
+            id="A2",
+            action_type="flag_pattern",
+            body=self._DIAGNOSIS,
+            pattern_signature="search-api-budget-exhaustion",
+            fix_class="code",
+            area="github-api",
+        )
+        base.update(overrides)
+        return ProposedTechLeadAction(**base)
+
+    def test_an_accrued_sighting_never_seeds_the_canonical_diagnosis(self) -> None:
+        # #6989 round-1 review F1: the diagnosis is the actionable mechanism a
+        # routed promotion is FILED ON. A sighting classifies nothing, so its
+        # text — "a known problem was seen again", plus this routing prose —
+        # must not become that claim.
+        _surfaced, case_file = _plan(
+            _decision(self._issue()),
+            dedup_corpus=self._ready(),
+            dedup_grant=DuplicateTargetGrant.none(),
+        )
+        assert isinstance(case_file, CreateTechLeadCaseFileIssueAction)
+        assert case_file.diagnosis == ""
+
+    def test_a_later_flag_pattern_establishes_the_diagnosis_it_left_empty(
+        self,
+    ) -> None:
+        # The case file exists because a sighting opened it on an earlier day,
+        # so its durable row carries no diagnosis. The first genuine
+        # flag_pattern for that signature must supply one, together with the
+        # classification that makes the signature promotable at all.
+        planned = _plan(
+            _decision(self._flag()),
+            dedup_corpus=self._ready(),
+            dedup_grant=DuplicateTargetGrant.none(),
+            pattern_ledger=_ledger("search-api-budget-exhaustion", 7000),
+        )
+        [appended] = [
+            a for a in planned if isinstance(a, AppendPatternObservationAction)
+        ]
+        assert appended.diagnosis == self._DIAGNOSIS
+        assert (appended.fix_class, appended.area) == ("code", "github-api")
+
+    def test_a_sighting_never_displaces_a_recorded_diagnosis(self) -> None:
+        planned = _plan(
+            _decision(self._issue(pattern_signature="search-api-budget-exhaustion")),
+            dedup_corpus=self._ready(),
+            dedup_grant=DuplicateTargetGrant.none(),
+            pattern_ledger=_ledger(
+                "search-api-budget-exhaustion", 7000, diagnosis=self._DIAGNOSIS
+            ),
+        )
+        [appended] = [
+            a for a in planned if isinstance(a, AppendPatternObservationAction)
+        ]
+        assert appended.diagnosis == self._DIAGNOSIS
+
+    @pytest.mark.parametrize("flag_first", [False, True], ids=["sighting-first", "flag-first"])
+    def test_a_sibling_flag_pattern_owns_the_diagnosis_in_either_order(
+        self, flag_first: bool
+    ) -> None:
+        # Both first-seen in ONE decision, so they coalesce into a single
+        # pending creation. Whichever the planner reaches first, the case file
+        # is created carrying the flag_pattern's diagnosis and classification —
+        # the sighting only adds evidence.
+        sighting = self._issue(
+            id="A1", pattern_signature="search-api-budget-exhaustion"
+        )
+        proposals = (
+            (self._flag(), sighting) if flag_first else (sighting, self._flag())
+        )
+
+        planned = _plan(
+            _decision(*proposals),
+            dedup_corpus=self._ready(),
+            dedup_grant=DuplicateTargetGrant.none(),
+        )
+
+        [case_file] = [
+            a for a in planned if isinstance(a, CreateTechLeadCaseFileIssueAction)
+        ]
+        assert case_file.diagnosis == self._DIAGNOSIS
+        assert case_file.fix_class == "code"
+        assert case_file.area == "github-api"
+        assert len(case_file.observations) == 2
+        assert not _follow_up_creates(planned)
+
+    def test_without_flag_pattern_authority_the_gated_create_stands(self) -> None:
+        # Accrual writes orchestrator-owned ledgers — a flag_pattern effect. With
+        # that authority in propose mode there is no durable accrual point, so
+        # the pre-#6989 gated create remains.
+        planned = _plan(
+            _decision(self._issue()),
+            _config(flag_pattern="propose"),
+            dedup_corpus=self._ready(),
+            dedup_grant=DuplicateTargetGrant.none(),
+        )
+        [gated] = planned
+        assert isinstance(gated, CreateTechLeadIssueAction)
+        assert PROPOSED_TECH_LEAD_LABEL in gated.labels
+        assert "#6928" in gated.body
 
 
 class TestDecisionIssuePolicy:

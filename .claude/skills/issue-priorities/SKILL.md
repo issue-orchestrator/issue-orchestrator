@@ -16,7 +16,7 @@ Read this before setting priority on anything.
 
 An issue is invisible to the orchestrator until it carries an `agent:*` label.
 Once visible, it is ordered by **milestone, then the `[Px-nnn]` prefix in its
-title, then issue number** — and the `priority:high` / `priority:medium` /
+title, then work-blocked dependency fan-out, then issue number** — and the `priority:high` / `priority:medium` /
 `priority:low` labels take no part in that ordering at all.
 
 ## What each piece actually does
@@ -81,16 +81,19 @@ to people; never report that setting one changed scheduling.
 2. **Priority tier** — `[P(\d)-` from the title, else `default_priority_tier`.
 3. **Sequence** — `-(\d+)]` from the title, else `float("inf")` (sorts last
    within its tier).
-4. **Issue number**, ascending, as the final tie-break.
+4. **Dependency fan-out**, descending: unique open transitive dependents whose
+   work gates are blocked, supplied by the live planner.
+5. **Issue number**, ascending, as the final tie-break.
 
 `pick_next_batch` then takes from the front, after any explicit
 `priority_overrides` (issue numbers, jumped to the head of the batch).
 
 ### Ordering is not gating
 
-Because ties break by **ascending issue number**, a prerequisite filed *after*
-its dependent sorts *behind* it. Filing #7160 as a blocker for #7152 puts the
-blocker second by default.
+With equal milestone, title priority and dependency fan-out, ties break by
+**ascending issue number**. Filing a prerequisite later does not by itself
+move it ahead; declared work-blocking dependencies contribute scheduling
+weight only after the explicit milestone and title priorities tie.
 
 **Ordering does not stop the dependent from starting.** Sorting only decides
 who is picked first among issues that are already eligible. With two free
