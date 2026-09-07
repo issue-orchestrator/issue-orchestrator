@@ -52,7 +52,7 @@ from .bootstrap_operator_commands import build_operator_issue_command_factory
 from .bootstrap_testing import TestingFreshIssueReader, manual_publication_for_testing
 from .bootstrap_completion import (
     build_publish_recovery as _build_publish_recovery,
-    build_github_manual_publisher as _build_github_manual_publisher,
+    build_manual_publisher as _build_manual_publisher,
     _validation_attempt_key_factory,
     build_completion_handler_factory,
     create_completion_components,
@@ -63,6 +63,7 @@ from ..infra.env import ENV_PREFIX
 from ..adapters.github.repo import get_repo_from_git, GitRepoError
 from ..ports.event_sink import EventSink, NullEventSink
 from ..ports.manual_publication import ManualPublisher
+from ..adapters.github.publication_remote import GitHubPublicationRemote
 from ..ports.session_runner import SessionRunner, NullSessionRunner
 from ..ports.timeline_reader import NullTimelineReader
 from ..ports.timeline_store import NullTimelineStore, TimelineStore
@@ -728,8 +729,10 @@ def build_orchestrator(
     assert manifest_downloader is not None
     assert e2e_issue_tracker is not None
 
-    manual_publisher = _build_github_manual_publisher(
-        github, completion_processor, completion_intake, working_copy,
+    manual_publisher = _build_manual_publisher(
+        completion_processor=completion_processor, completion_intake=completion_intake, working_copy=working_copy,
+        exact_git=working_copy, repo_slug=github.http_client.config.repo,
+        remote=GitHubPublicationRemote(github.http_client, repo_slug=github.http_client.config.repo),
     )
     publish_recovery = _build_publish_recovery(
         repository_host=github,

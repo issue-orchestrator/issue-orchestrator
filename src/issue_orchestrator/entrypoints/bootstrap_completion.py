@@ -31,7 +31,6 @@ from ..ports.coder_prompt import (
 )
 
 if TYPE_CHECKING:
-    from ..adapters.github import GitHubAdapter
     from ..control.publish_recovery import PublishRecoveryService
     from ..control.action_applier import ActionApplier
     from ..ports.fresh_issue_reader import FreshIssueReader
@@ -342,16 +341,3 @@ def build_manual_publisher(
         GitValidatedHeadExecutor(exact_git, remote),
     )
 
-
-def build_github_manual_publisher(
-    github: "GitHubAdapter", completion_processor: "CompletionProcessor", completion_intake: CompletionIntakeRuntime,
-    working_copy: GitWorkingCopy,
-) -> ManualPublisher:
-    from ..adapters.github.publication_remote import GitHubPublicationRemote
-
-    client = github.http_client
-    return build_manual_publisher(
-        completion_processor=completion_processor, completion_intake=completion_intake,
-        working_copy=working_copy, exact_git=working_copy, repo_slug=client.config.repo,
-        remote=GitHubPublicationRemote(client, repo_slug=client.config.repo),
-    )
