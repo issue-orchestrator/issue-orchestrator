@@ -4,13 +4,19 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from unittest.mock import Mock
-from issue_orchestrator.ports.completion_intake import CompletionIntakeRuntime
 
 import pytest
 
 from issue_orchestrator.control.review_exchange_lifecycle import (
     terminate_issue_runtime,
 )
+
+
+@pytest.fixture
+def completion_intake(completion_intake_fixture):
+    accepted = completion_intake_fixture.accept(230)
+    yield completion_intake_fixture.runtime
+    completion_intake_fixture.assert_closed_and_drained(accepted)
 
 
 class _FakeSessionManager:
@@ -38,12 +44,12 @@ class _FakePublishRetryAbandoner:
         self.abandoned.append(issue_number)
 
 
-def test_terminate_issue_runtime_abandons_publish_retry() -> None:
+def test_terminate_issue_runtime_abandons_publish_retry(completion_intake) -> None:
     """The shared boundary must also abandon in-flight publish retries."""
     publish_recovery = _FakePublishRetryAbandoner()
 
     terminate_issue_runtime(
-        completion_intake=Mock(spec=CompletionIntakeRuntime),
+        completion_intake=completion_intake,
         issue_number=230,
         reason="issue-completed",
         pair_registry=None,
@@ -54,10 +60,12 @@ def test_terminate_issue_runtime_abandons_publish_retry() -> None:
     assert publish_recovery.abandoned == [230]
 
 
-def test_terminate_issue_runtime_without_publish_recovery_is_noop() -> None:
+def test_terminate_issue_runtime_without_publish_recovery_is_noop(
+    completion_intake,
+) -> None:
     """Omitting the abandoner keeps the boundary working (backward compatible)."""
     result = terminate_issue_runtime(
-        completion_intake=Mock(spec=CompletionIntakeRuntime),
+        completion_intake=completion_intake,
         issue_number=230,
         reason="issue-completed",
         pair_registry=None,
@@ -67,7 +75,9 @@ def test_terminate_issue_runtime_without_publish_recovery_is_noop() -> None:
     assert result.issue_number == 230
 
 
-def test_terminate_issue_runtime_stops_issue_rework_and_hidden_exchange() -> None:
+def test_terminate_issue_runtime_stops_issue_rework_and_hidden_exchange(
+    completion_intake,
+) -> None:
     pair_registry = Mock()
     job_supervisor = Mock()
     job_supervisor.cancel_matching.return_value = ["review-exchange:230:coding-1"]
@@ -80,7 +90,7 @@ def test_terminate_issue_runtime_stops_issue_rework_and_hidden_exchange() -> Non
     ]
 
     result = terminate_issue_runtime(
-        completion_intake=Mock(spec=CompletionIntakeRuntime),
+        completion_intake=completion_intake,
         issue_number=230,
         reason="reset-retry",
         pair_registry=pair_registry,
@@ -104,12 +114,14 @@ def test_terminate_issue_runtime_stops_issue_rework_and_hidden_exchange() -> Non
     ]
 
 
-def test_terminate_issue_runtime_clears_stale_active_session_records() -> None:
+def test_terminate_issue_runtime_clears_stale_active_session_records(
+    completion_intake,
+) -> None:
     session_manager = _FakeSessionManager(set())
     active_sessions = [_active_session("issue-230"), _active_session("issue-231")]
 
     result = terminate_issue_runtime(
-        completion_intake=Mock(spec=CompletionIntakeRuntime),
+        completion_intake=completion_intake,
         issue_number=230,
         reason="issue-completed",
         pair_registry=None,
@@ -124,12 +136,14 @@ def test_terminate_issue_runtime_clears_stale_active_session_records() -> None:
     assert [session.terminal_id for session in active_sessions] == ["issue-231"]
 
 
-def test_terminate_issue_runtime_requires_session_manager_for_active_records() -> None:
+def test_terminate_issue_runtime_requires_session_manager_for_active_records(
+    completion_intake,
+) -> None:
     pair_registry = Mock()
 
     with pytest.raises(RuntimeError, match="without a SessionManager"):
         terminate_issue_runtime(
-            completion_intake=Mock(spec=CompletionIntakeRuntime),
+            completion_intake=completion_intake,
             issue_number=230,
             reason="reset-retry",
             pair_registry=pair_registry,

@@ -65,6 +65,19 @@ TEST_AGENT_CALLBACK_TOKEN = "test-agent-callback-token"
 # Prevent tests from accidentally writing git config to the main repo.
 # When GIT_DIR is set, `git config` writes to that repo regardless of cwd.
 
+@pytest.fixture
+def completion_intake_fixture(tmp_path):
+    from tests.completion_intake_helpers import make_completion_intake_fixture
+
+    return make_completion_intake_fixture(tmp_path / "intake-owner")
+
+
+@pytest.fixture
+def completion_intake(completion_intake_fixture):
+    """Inject the real receipt lifetime through the typed runtime port."""
+    return completion_intake_fixture.runtime
+
+
 @pytest.fixture(autouse=True)
 def isolate_git_env(monkeypatch):
     """Strip git env vars to prevent test git commands from affecting main repo.

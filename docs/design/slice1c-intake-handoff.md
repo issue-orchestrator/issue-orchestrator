@@ -5,7 +5,9 @@ This implements accepted design §11 slice 1c, originally based on `a10bda5`, in
 94-file implementation as `71f53e5106a87bcdd30f34a7cb872060f6de7003`, then merged
 escrow `7381a4d` (including store A2 `7e43e20` and the prior policy fix) and
 recovery ancestry `77cc282`. The combined compatibility base is committed
-`2055cf3740897f6bf5f6ed221c5a22d91b2c5402`. This does **not** complete #6914.
+`2055cf3740897f6bf5f6ed221c5a22d91b2c5402`; root committed its compatibility
+repairs as `629dff74bf90f6af75f7fca4d1ae1e811f106d08`, the base for the fixture
+audit below. This does **not** complete #6914.
 No production historical data was imported or changed.
 
 ## Owners and authority
@@ -118,7 +120,67 @@ inside one transaction. Existing publishing/recovered records cannot be retarget
 by import. Changes to the independent store API should be reconciled at this
 adapter/composition seam, not by weakening these checks.
 
-## Verification checkpoint
+## Terminal intake fixture audit at `629dff7`
+
+Root's full gate exposed a manually constructed `ActionApplier` without its
+required terminal intake owner. Production bootstrap already injects the same
+real owner into the applier, lifecycle and processor. The bounded constructor
+audit found the same gap in `test_actions` and terminal timeline fixtures.
+There are **no production source, API, schema or quality-baseline changes** in
+this repair; downstream preservation needs no production API propagation.
+
+The shared typed fixture now owns a real `CompletionEvidenceIntakeService`,
+SQLite ledger and configured `ValidationRunner`; only external ports are
+substituted. Applier and lifecycle tests inject it explicitly. Accepted receipts
+prove capability closure, queue drain and trusted attestation before session
+stop. Corrupted custody proves escalation fails before session or label effects.
+Unused processor fixture intake methods now fail loudly when invoked without
+explicit injection, so future terminal paths cannot silently pass on a mock.
+
+The broader audit also exposed seven raw `coding-done` producer failures in
+`test_completion_command_contracts`: those subprocess fixtures supplied no
+allocated capability or receipt endpoint. They now allocate through the real
+run owner and submit through the existing real HTTP fixture. The end-to-end
+human-routing case retains that same owner and allocated run through actual
+receipt consumption. Context exit closes/drains in `finally`. Existing dirty
+file, real-hook, schema and human-routing assertions remain intact. The shared
+real-hook repository builder has one module-level fixture boundary.
+
+Verification for this test-only repair:
+
+- Initial 23-module constructor audit: **2 failed, 1144 passed**; both failures
+  were missing applier fixture owners.
+- Five directly affected lifetime/timeline modules after repair: **88 passed**,
+  including safe and corrupted custody controls.
+- Expanded 30-module audit: **7 failed, 1206 passed**, exposing the raw producer
+  fixtures described above.
+- Final serial run of the other 29 modules: **1192 passed** in 62 seconds;
+  `/private/tmp/intake-629-socketfree-final.log`. Exact module list:
+  `/private/tmp/intake-629-constructor-final-modules.txt` minus the raw command
+  contract module named below.
+- The complete raw command contract module remains **unverified after repair**:
+  the sandbox rerun reached `socket.bind` and failed with `PermissionError`
+  before invoking the first coder subprocess (3 earlier cases passed). Root must
+  run `.venv/bin/pytest -q -n 0 tests/integration/test_completion_command_contracts.py --tb=short`
+  outside the sandbox. No repository test was skipped or suppressed.
+- Changed Python files pass Ruff; both shared intake fixture modules pass targeted
+  Pyright. Production source and the original `a10bda5` quality baseline remain
+  byte-for-byte unchanged. No full gate, live-provider run or remote write ran.
+
+The same retained Gauss reviewer (`/root/intake_internal_reviewer`,
+`gpt-6-astra`) reviews this exact fixture repair, including the final abstraction
+pass. Its final verdict accompanies the checkpoint. Implemented abstraction
+findings: one typed lifetime fixture across manual constructors, fail-fast
+unused processor intake ports, and one allocated authority spanning subprocess
+submission and receipt consumption. No abstraction finding is deferred.
+
+The exact repair manifest is
+`/private/tmp/techlead-intake-629-fixture-checkpoint.sha256`, bound to base
+`629dff74bf90f6af75f7fca4d1ae1e811f106d08`. It supersedes the earlier three-file
+combined-base manifest for this repair only; prior verification below remains
+historical evidence, not a claim that the root full gate passed.
+
+## Prior combined verification checkpoint
 
 - Root's complete deterministic exchange integration run: **12 passed,
   1 live test deselected**, before the prerequisite merges.
@@ -315,12 +377,12 @@ There are no visual UI/control changes in this slice.
 
 ## Checkpoint identity and manifests
 
-The combined source base is `2055cf3740897f6bf5f6ed221c5a22d91b2c5402`.
-This compatibility update changes only this handoff and the two test files
-`tests/unit/test_config.py` and `tests/unit/test_validation_record_containment.py`.
-If Git metadata is sandbox-denied, the exact named-file SHA-256 delta is supplied
-at `/private/tmp/techlead-intake-combined-checkpoint.sha256`; apply it only to
-that combined base. Otherwise the final response names the reviewed commit.
+The earlier combined source base was `2055cf3740897f6bf5f6ed221c5a22d91b2c5402`.
+Root committed the three-file compatibility update (this handoff,
+`tests/unit/test_config.py` and `tests/unit/test_validation_record_containment.py`)
+as `629dff7`. `/private/tmp/techlead-intake-combined-checkpoint.sha256` is therefore
+historical. The current test-only repair manifest and its verification limits
+are specified in the terminal intake fixture audit above.
 
 The original 94-file intake implementation inventory below is historical: root
 verified `/private/tmp/techlead-intake-validation-repair-files.sha256` before

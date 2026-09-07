@@ -101,14 +101,6 @@ def mock_worktree_manager():
 
 
 @pytest.fixture
-def completion_intake(tmp_path):
-    from tests.unit.test_completion_evidence_intake import setup
-
-    # Real immutable ledger/drain owner; external validator I/O is substituted.
-    return setup(tmp_path / "intake-owner")[3]
-
-
-@pytest.fixture
 def applier(
     completion_intake,
     mock_labels,
