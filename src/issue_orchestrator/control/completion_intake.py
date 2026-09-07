@@ -113,10 +113,23 @@ class CompletionEvidenceIntakeService:
 
     def prepare_receipt(self, receipt: CompletionIntakeReceipt, run: SessionRunAssets) -> PreparedCompletionEvidence:
         """Prepare exactly one receipt without closing its run lifetime."""
+        return self._prepare_receipt(receipt, run, issue_number=None)
+
+    def prepare_receipt_for_issue(self, receipt: CompletionIntakeReceipt, run: SessionRunAssets,
+                                  issue_number: int) -> PreparedCompletionEvidence:
+        """Bind numeric issue ownership before any receipt processing."""
+        if type(issue_number) is not int or issue_number <= 0:
+            raise CompletionIntakeError("receipt preparation requires a positive issue number")
+        return self._prepare_receipt(receipt, run, issue_number=issue_number)
+
+    def _prepare_receipt(self, receipt: CompletionIntakeReceipt, run: SessionRunAssets,
+                         *, issue_number: int | None) -> PreparedCompletionEvidence:
         with self._drain_lock:
             entry = self._ledger.entry_for_receipt(receipt.entry_id)
             if entry.receipt != receipt or entry.run != run:
                 raise CompletionIntakeError("receipt does not bind the allocated run")
+            if issue_number is not None and entry not in self._ledger.entries_for_issue(issue_number):
+                raise CompletionIntakeError("receipt does not bind the allocated issue")
             recorded = self._ledger.recorded_run(run)
             self._process((entry,))
             candidate = self._ledger.prepare_candidate(entry.entry_id, recorded)
