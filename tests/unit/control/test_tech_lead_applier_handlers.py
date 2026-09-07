@@ -27,6 +27,8 @@ from issue_orchestrator.control.actions import (
     DiscardTerminalTechLeadProposalOpsAction,
     KillHungSessionAction,
     PromoteTechLeadFindingAction,
+    RecordTechLeadDispositionAction,
+    EscalateTechLeadDispositionAction,
     ReportPromotedFindingEvidenceAction,
     ResetRetryIssueAction,
     SettleTechLeadPromotionAction,
@@ -43,6 +45,7 @@ from issue_orchestrator.domain.tech_lead_session import (
     StoredTechLeadOp,
     TECH_LEAD_OBSERVATION_LABEL,
     TechLeadCreationOrigin,
+    TechLeadDisposition,
 )
 
 ANCHOR = 77
@@ -105,6 +108,9 @@ def _mutating_actions() -> dict[ActionType, tuple[Action, int]]:
             ),
             ANCHOR,
         ),
+        ActionType.ESCALATE_TECH_LEAD_DISPOSITION: (
+            EscalateTechLeadDispositionAction(issue_number=TARGET, comment="human decision", expected=expected), TARGET,
+        ),
         ActionType.RESET_RETRY_ISSUE: (
             ResetRetryIssueAction(
                 issue_number=TARGET,
@@ -133,6 +139,21 @@ def _mutating_actions() -> dict[ActionType, tuple[Action, int]]:
                 expected=expected,
             ),
             CASE_FILE,
+        ),
+        ActionType.RECORD_TECH_LEAD_DISPOSITION: (
+            RecordTechLeadDispositionAction(
+                disposition=TechLeadDisposition(
+                    issue_number=TARGET,
+                    tracker_issue_number=900,
+                    rationale="recover, don't reset",
+                    source_run_id="r1",
+                    source_session_name="s",
+                    source_action_id="A1",
+                    recorded_at="2026-08-09T00:00:00Z",
+                ),
+                expected=expected,
+            ),
+            TARGET,
         ),
         ActionType.PROMOTE_TECH_LEAD_FINDING: (
             PromoteTechLeadFindingAction(
@@ -202,6 +223,9 @@ class _Registry:
             surface_proposal=inert,
             reset_retry=inert,
             kill_hung_session=inert,
+            events=MagicMock(), label_manager=MagicMock(), needs_human_block=MagicMock(),
+            apply_action=inert,
+            verify_claim=lambda action, number: None,
             require_expected=self._require_expected,
             repository_host=self.repository_host,
             authority=self.authority,
@@ -236,7 +260,7 @@ def test_the_mutating_set_covers_every_tech_lead_type_but_the_event_only_one():
     registry = _Registry()
 
     assert set(registry.handlers) - TECH_LEAD_MUTATING_ACTION_TYPES == {
-        ActionType.SURFACE_TECH_LEAD_PROPOSAL
+        ActionType.SURFACE_TECH_LEAD_PROPOSAL, ActionType.REQUIRE_TECH_LEAD_INVESTIGATION
     }
 
 
@@ -251,7 +275,7 @@ def test_every_mutating_command_is_dispatched_through_the_gate(action_type):
     registry.apply(action)
 
     if subject:
-        assert registry.guarded == [(action_type, subject)]
+        assert registry.guarded and set(registry.guarded) == {(action_type, subject)}
     else:
         # No subject, and therefore no expectations either — nothing to check.
         assert registry.guarded == []

@@ -19,6 +19,7 @@ only (tamper evidence when they diverge).
 
 import json
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from enum import Enum
 from pathlib import Path
 from typing import Collection, cast
@@ -461,6 +462,7 @@ class TechLeadLaunchAuthority:
     # direct and gated kill commands bind to it rather than to live state at
     # completion time.
     observed_session_generations: tuple[TechLeadSessionGeneration, ...] = ()
+    recovery_tracker_numbers: tuple[int, ...] = ()
     schema_version: int = _SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -506,6 +508,7 @@ class TechLeadLaunchAuthority:
                 "TechLeadLaunchAuthority problem_issue_numbers must be sorted "
                 "and unique"
             )
+        _validate_recovery_tracker_grants(self)
         if self.observed_session_generations != tuple(
             sorted(
                 set(self.observed_session_generations),
@@ -589,6 +592,7 @@ class TechLeadLaunchAuthority:
             "focus_issue_number": self.focus_issue_number,
             "manifest_pr_numbers": list(self.manifest_pr_numbers),
             "problem_issue_numbers": list(self.problem_issue_numbers),
+            "recovery_tracker_numbers": list(self.recovery_tracker_numbers),
             "observed_session_generations": [
                 generation.to_dict() for generation in self.observed_session_generations
             ],
@@ -638,6 +642,11 @@ class TechLeadLaunchAuthority:
                 "tech_lead authority problem_issue_numbers must be a list of ints, "
                 f"got {raw_problems!r}"
             )
+        raw_trackers = data.get("recovery_tracker_numbers", [])
+        if not isinstance(raw_trackers, list) or any(
+            isinstance(n, bool) or not isinstance(n, int) for n in raw_trackers
+        ):
+            raise ValueError("recovery_tracker_numbers must be a list of ints")
         raw_generations = data.get("observed_session_generations", [])
         if not isinstance(raw_generations, list) or any(
             not isinstance(item, dict) for item in raw_generations
@@ -652,11 +661,23 @@ class TechLeadLaunchAuthority:
             focus_issue_number=focus,
             manifest_pr_numbers=tuple(raw_prs),
             problem_issue_numbers=tuple(raw_problems),
+            recovery_tracker_numbers=tuple(raw_trackers),
             observed_session_generations=tuple(
                 TechLeadSessionGeneration.from_dict(item) for item in raw_generations
             ),
             schema_version=raw_schema,
         )
+
+
+def _validate_recovery_tracker_grants(authority: TechLeadLaunchAuthority) -> None:
+    if authority.recovery_tracker_numbers:
+        if authority.flavor is not TechLeadSessionFlavor.FAILURE_INVESTIGATION:
+            raise ValueError("recovery tracker grants require a failure investigation")
+        if any(isinstance(n, bool) or not isinstance(n, int) or n <= 0
+               or n == authority.focus_issue_number for n in cast(tuple[object, ...], authority.recovery_tracker_numbers)):
+            raise ValueError("recovery tracker grants must name distinct positive issue numbers")
+        if authority.recovery_tracker_numbers != tuple(sorted(set(authority.recovery_tracker_numbers))):
+            raise ValueError("recovery tracker grants must be sorted and unique")
 
 
 @dataclass(frozen=True)
@@ -803,6 +824,151 @@ def _validate_stored_op_session_fields(op: StoredTechLeadOp) -> None:
             "StoredTechLeadOp target session fields must be empty for reset_retry;"
             " that op is never bound to a specific session generation,"
             f" got {session_fields!r}"
+        )
+
+
+def _validate_disposition_phase(phase: object, recovered_at: object) -> None:
+    if not isinstance(phase, str) or phase not in {"prepared", "waiting", "reassess", "recovered"}:
+        raise ValueError("invalid disposition phase")
+    if not isinstance(recovered_at, str):
+        raise ValueError("recovered_at must be a string")
+    if (phase == "recovered") != bool(recovered_at):
+        raise ValueError("only a recovered disposition requires recovered_at")
+    if recovered_at:
+        _validate_disposition_timestamp(recovered_at)
+
+
+def _validate_disposition_timestamp(value: str) -> None:
+    try:
+        recorded = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError("TechLeadDisposition recorded_at must be ISO-8601") from exc
+    if recorded.tzinfo is None:
+        raise ValueError("TechLeadDisposition recorded_at must include a timezone")
+
+
+@dataclass(frozen=True)
+class TechLeadDisposition:
+    """Durable tracker outcome for one diagnosed incident.
+
+    ``recorded_at`` is the incident's FIRST disposition timestamp, preserved
+    through command replay so its 24-hour deadline cannot be renewed. A lapsed
+    row remains as reassessment context until positive target recovery. Its
+    recovered tombstone rejects commands launched before that recovery.
+    """
+
+    issue_number: int
+    tracker_issue_number: int
+    rationale: str
+    source_run_id: str
+    source_session_name: str
+    source_action_id: str  # the decision artifact action id (A<n>)
+    recorded_at: str  # ISO-8601 UTC timestamp
+    finding_ids: tuple[str, ...] = ()
+    phase: str = "waiting"
+    recovered_at: str = ""
+    schema_version: int = _SCHEMA_VERSION
+
+    def __post_init__(self) -> None:
+        if self.schema_version != _SCHEMA_VERSION:
+            raise ValueError(
+                "Unsupported tech_lead disposition schema_version:"
+                f" {self.schema_version!r}"
+            )
+        # Runtime re-checks: from_dict feeds this dataclass persisted JSON,
+        # so the declared annotations carry no runtime guarantee here.
+        for field_name in ("issue_number", "tracker_issue_number"):
+            number = cast(object, getattr(self, field_name))
+            if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
+                raise ValueError(
+                    f"TechLeadDisposition {field_name} must be a positive int,"
+                    f" got {number!r}"
+                )
+        if self.issue_number == self.tracker_issue_number:
+            raise ValueError(
+                "TechLeadDisposition tracker_issue_number must differ from"
+                f" issue_number (#{self.issue_number}): an issue cannot track"
+                " its own recovery, so the disposition would never release"
+            )
+        for field_name in (
+            "source_run_id",
+            "source_session_name",
+            "source_action_id",
+            "recorded_at",
+        ):
+            value: object = getattr(self, field_name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(
+                    f"TechLeadDisposition {field_name} must be a non-empty"
+                    f" string, got {value!r}"
+                )
+        _validate_disposition_phase(self.phase, self.recovered_at)
+        _validate_disposition_timestamp(self.recorded_at)
+        rationale = cast(object, self.rationale)
+        if not isinstance(rationale, str):
+            raise ValueError(
+                f"TechLeadDisposition rationale must be a string, got {rationale!r}"
+            )
+        findings = cast(object, self.finding_ids)
+        if not isinstance(findings, tuple) or any(
+            not isinstance(item, str) for item in findings
+        ):
+            raise ValueError(
+                "TechLeadDisposition finding_ids must be a tuple of strings,"
+                f" got {findings!r}"
+            )
+
+    @property
+    def reassess_at(self) -> datetime:
+        """Immutable upper bound for preparing and waiting on this incident."""
+        return datetime.fromisoformat(self.recorded_at) + timedelta(hours=24)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version,
+            "issue_number": self.issue_number,
+            "tracker_issue_number": self.tracker_issue_number,
+            "rationale": self.rationale,
+            "source_run_id": self.source_run_id,
+            "source_session_name": self.source_session_name,
+            "source_action_id": self.source_action_id,
+            "recorded_at": self.recorded_at,
+            "finding_ids": list(self.finding_ids),
+            "phase": self.phase,
+            "recovered_at": self.recovered_at,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> "TechLeadDisposition":
+        """Parse from dict; malformed content fails loudly with ValueError.
+
+        The store is orchestrator-owned, so corruption is a bug, never agent
+        input to fail-safe around (mirrors :meth:`StoredTechLeadOp.from_dict`).
+        """
+        raw_schema = data.get("schema_version")
+        if isinstance(raw_schema, bool) or not isinstance(raw_schema, int):
+            raise ValueError(
+                "tech_lead disposition schema_version must be an int, got"
+                f" {raw_schema!r}"
+            )
+        raw_findings = data.get("finding_ids", [])
+        if not isinstance(raw_findings, list):
+            raise ValueError(
+                "tech_lead disposition finding_ids must be a list, got"
+                f" {raw_findings!r}"
+            )
+        return cls(
+            issue_number=data.get("issue_number"),  # type: ignore[arg-type]
+            tracker_issue_number=data.get("tracker_issue_number"),  # type: ignore[arg-type]
+            rationale=data.get("rationale"),  # type: ignore[arg-type]
+            source_run_id=data.get("source_run_id"),  # type: ignore[arg-type]
+            source_session_name=data.get("source_session_name"),  # type: ignore[arg-type]
+            source_action_id=data.get("source_action_id"),  # type: ignore[arg-type]
+            recorded_at=data.get("recorded_at"),  # type: ignore[arg-type]
+            finding_ids=tuple(raw_findings),
+            phase=data.get("phase", "waiting"),  # type: ignore[arg-type]
+            recovered_at=data.get("recovered_at", ""),  # type: ignore[arg-type]
+            schema_version=raw_schema,
         )
 
 

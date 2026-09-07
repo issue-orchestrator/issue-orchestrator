@@ -24,8 +24,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .actions import Action, DiscardTerminalTechLeadProposalOpsAction
+from .actions import Action, DiscardTerminalTechLeadProposalOpsAction, RecordTechLeadDispositionAction
 from .tech_lead_finding_promotion import plan_finding_promotion_actions
+from .reconciliation import build_expected_for_mutation
 from .tech_lead_proposals import plan_approved_tech_lead_op_executions
 
 if TYPE_CHECKING:
@@ -53,5 +54,7 @@ def plan_tech_lead_ledger_actions(
                 candidate_issue_numbers=facts.absent_proposal_op_candidates
             )
         )
+    actions.extend(RecordTechLeadDispositionAction(disposition=row,
+        reason="resume admitted tech-lead disposition", expected=build_expected_for_mutation()) for row in facts.pending_dispositions)
     actions.extend(plan_finding_promotion_actions(config, facts))
     return actions

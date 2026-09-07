@@ -99,6 +99,7 @@ was given) and **typed proposed actions**:
 | `post_comment` | Diagnosis comment on an issue/PR | `execute` |
 | `create_issue` | File a follow-up issue (labels, milestone per `tech_lead:` config) | `execute` |
 | `escalate_to_human` | Route to the needs-human surface | `execute` (floor: cannot be disabled) |
+| `defer_to_tracker` | Dependency-backed terminal wait for the focus issue, admitted by immutable launch grant and revalidated at apply; reassess on tracker closure or a non-renewable 24-hour deadline (#6971) | `execute` (floor: cannot be disabled) |
 | `flag_pattern` | Open/append a durable pattern case-file issue for a cross-job pattern (amended by #6781); requires a `pattern_signature` | `execute` |
 | `reset_retry` | Reset-and-retry an issue from scratch (executor wired — #6764 first slice) | `propose` |
 | `kill_hung_session` | Terminate the exact observed stuck session generation (executor wired) | `propose` |
