@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-marker=".issue-orchestrator/validation/.fail_once"
+marker="${1:?per-scenario validation state path is required}"
 if [[ -f "$marker" ]]; then
   echo "validation ok"
   exit 0

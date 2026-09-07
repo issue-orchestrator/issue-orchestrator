@@ -33,6 +33,7 @@ from issue_orchestrator.execution.historical_intake_custody import (
 )
 from issue_orchestrator.execution.issue_run_ledger import SqliteIssueRunLedger
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+from issue_orchestrator.ports.completion_intake import CompletionIntakeRuntime
 from issue_orchestrator.ports.background_job import BackgroundJobRunner
 from issue_orchestrator.ports.historical_intake import HistoricalIntakeHandler
 
@@ -44,7 +45,7 @@ TEST_CALLBACK_TOKEN = "test-agent-callback-token"
 
 
 def serve_completion_submission(
-    handler: BaseHTTPRequestHandler, owner: CompletionEvidenceIntakeService
+    handler: BaseHTTPRequestHandler, owner: CompletionIntakeRuntime
 ) -> bool:
     """Subprocess HTTP transport; producer/real FastAPI contract is covered separately."""
     if handler.path != "/api/completion/submissions":

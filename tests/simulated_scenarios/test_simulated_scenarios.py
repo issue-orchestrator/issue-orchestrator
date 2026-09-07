@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import sqlite3
 
@@ -197,18 +198,20 @@ def test_validation_retry_succeeds_after_retry(scenario_repo: Path):
         config.session_grace_period_seconds = 0
         config.session_log_activity_seconds = 0
 
-    scenario("validation_retry_succeeds", scenario_repo) \
-        .coder(script("coder_dual_mode.sh")) \
-        .reviewer(script("reviewer_ok.sh", prompt=True)) \
-        .validation(cmd=script("validate_fail_once.sh"), max_retries=1) \
-        .review_exchange(mode="via-local-loop", require_validation=False) \
-        .configure(_disable_grace_period) \
-        .wait_for_event(EventName.SESSION_VALIDATION_PASSED) \
-        .wait_for(lambda orch: True, max_ticks=12) \
-        .expect_event(EventName.SESSION_VALIDATION_RETRY_NEEDED) \
-        .expect_validation_status("passed") \
-        .expect_validation_artifacts(True) \
-        .run()
+    scenario("validation_retry_succeeds", scenario_repo).coder(
+        script("coder_dual_mode.sh")
+    ).reviewer(script("reviewer_ok.sh", prompt=True)).validation(
+        cmd=script("validate_fail_once.sh")
+        + " "
+        + shlex.quote(str(scenario_repo / "validation-attempt-state")),
+        max_retries=1,
+    ).review_exchange(mode="via-local-loop", require_validation=False).configure(
+        _disable_grace_period
+    ).wait_for_event(EventName.SESSION_VALIDATION_PASSED).wait_for(
+        lambda orch: True, max_ticks=12
+    ).expect_event(EventName.SESSION_VALIDATION_RETRY_NEEDED).expect_validation_status(
+        "passed"
+    ).expect_validation_artifacts(True).run()
 
 
 def test_validation_retry_failure_exhausts_final_attempt(scenario_repo: Path):
@@ -360,6 +363,7 @@ def test_review_exchange_cache_requires_validation(scenario_repo: Path):
         .expect_validation_status("passed") \
         .run()
     assert ctx1 is not None
+    ctx1.invalidate_cached_review_validation("missing")
 
     ctx2 = scenario("cache_validation_second", scenario_repo) \
         .coder(script("coder_dual_mode.sh")) \
@@ -379,6 +383,7 @@ def test_review_exchange_cache_invalid_validation_reruns(scenario_repo: Path):
         .expect_event(EventName.REVIEW_EXCHANGE_STARTED) \
         .run()
     assert ctx1 is not None
+    ctx1.invalidate_cached_review_validation("invalid")
 
     ctx2 = scenario("cache_invalid_second", scenario_repo) \
         .coder(script("coder_dual_mode.sh")) \
@@ -1107,7 +1112,7 @@ def test_dirty_enumeration_failure_fails_closed(scenario_repo: Path):
 def test_validation_diagnostics_persisted_on_failure(scenario_repo: Path):
     """A failed validation run must leave diagnostic artifacts that the
     UI's ``open_session_diagnostics`` action can resolve: a
-    ``validation/<sha>.json`` record with stdout_path / stderr_path
+    durable receipt attestation with stdout_path / stderr_path
     fields, and the underlying log files. Without these, a failed-
     validation timeline row links to nothing and the operator can't
     see what broke.
@@ -1120,17 +1125,12 @@ def test_validation_diagnostics_persisted_on_failure(scenario_repo: Path):
         .expect_validation_status("failed") \
         .run()
 
-    # Find the worktree the orchestrator used so we can inspect its
-    # ``.issue-orchestrator/validation/`` directory.
-    worktree_root = scenario_repo / ".issue-orchestrator" / "worktrees"
-    sim_worktrees = [p for p in worktree_root.iterdir() if p.is_dir()] if worktree_root.exists() else []
-    assert sim_worktrees, "expected a simulated worktree to exist"
-    validation_dir = sim_worktrees[0] / ".issue-orchestrator" / "validation"
-    record_files = list(validation_dir.glob("*.json")) if validation_dir.exists() else []
+    # Inspect the durable receipt attestation outside the agent checkout.
+    record_files = ctx.validation_records()
     assert record_files, (
-        f"expected validation/<sha>.json record under {validation_dir}; "
-        "the failed-validation diagnostics action depends on it."
+        "expected durable validation diagnostics for the failed receipt"
     )
+
     record = json.loads(record_files[0].read_text())
     assert record.get("passed") is False
     stdout_rel = record.get("stdout_path")
@@ -1139,8 +1139,9 @@ def test_validation_diagnostics_persisted_on_failure(scenario_repo: Path):
         "validation record missing stdout_path/stderr_path; "
         "diagnostic action cannot link to the actual log files"
     )
-    stdout_abs = sim_worktrees[0] / stdout_rel
-    stderr_abs = sim_worktrees[0] / stderr_rel
+    stdout_abs = Path(stdout_rel)
+    stderr_abs = Path(stderr_rel)
+    assert stdout_abs.is_absolute() and stderr_abs.is_absolute()
     assert stdout_abs.exists(), f"stdout log missing at {stdout_abs}"
     assert stderr_abs.exists(), f"stderr log missing at {stderr_abs}"
     # Sanity: events emitted with the right context were captured.
