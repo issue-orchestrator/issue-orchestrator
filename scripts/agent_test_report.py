@@ -8,7 +8,7 @@ import pytest
 
 UNAVAILABLE_MESSAGES = (
     "you've hit your usage limit", "you’ve hit your usage limit",
-    "you've hit your limit", "you’ve hit your limit", "weekly limit",
+    "you've hit your limit", "you’ve hit your limit", "weekly limit", "monthly spend limit",
     "credit balance is too low", "insufficient_quota", "rate_limit_exceeded",
 )
 

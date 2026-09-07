@@ -55,10 +55,14 @@ raise SystemExit(pytest.main(sys.argv[1:]))
         "tests/integration/test_claude_execution.py", "tests/integration/test_codex_execution.py",
         "tests/integration/test_live_agent_chain.py", "tests/integration/test_sandbox_os_boundary.py",
         "tests/integration/test_persistent_review_exchange_integration.py",
+        "tests/integration/test_ai_gate_hooks.py",
         "tests/simulated_scenarios/test_foreign_repo_lifecycle.py",
     ]
     environment = {**os.environ, "PROVIDER_AUDIT": str(audit), "PYTEST_ADDOPTS": ""}
-    result = subprocess.run([sys.executable, "-c", launcher, "--collect-only", "-q", *modules],
+    result = subprocess.run([sys.executable, "-c", launcher, "--collect-only", "-q",
+        "-m", "not live_agent and not live_codex", *modules],
         cwd=root, env=environment, capture_output=True, text=True, timeout=60)
     assert not audit.exists(), audit.read_text() if audit.exists() else ""
     assert result.returncode == 0, result.stdout + result.stderr
+    assert "test_ai_gate_blocks_no_verify" not in result.stdout
+    assert "test_ai_gate_detects_missing_hooks" in result.stdout
