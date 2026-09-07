@@ -37,6 +37,10 @@ from issue_orchestrator.ports.run_ledger_store import (
     SingleInstanceRunLedgerStore,
 )
 from pathlib import Path
+from collections.abc import Callable
+from issue_orchestrator.ports.completion_intake import CompletionIntakeRuntime
+from issue_orchestrator.ports.review_exchange_runner import ReviewExchangeRunner
+from issue_orchestrator.ports.working_copy import WorkingCopy
 from typing import Optional
 from unittest.mock import MagicMock, PropertyMock, patch
 from fastapi.testclient import TestClient
@@ -908,6 +912,11 @@ def build_test_orchestrator_deps(
     timeline_reader=None,
     timeline_writer=None,
     provider_readiness_probe=None,
+    intake_working_copy: WorkingCopy | None = None,
+    review_exchange_runner_factory: Callable[
+        [CompletionIntakeRuntime], ReviewExchangeRunner
+    ]
+    | None = None,
 ):
     """Factory function to create OrchestratorDeps for testing.
 
@@ -1003,7 +1012,12 @@ def build_test_orchestrator_deps(
     from issue_orchestrator.entrypoints.bootstrap_validated_work import build_validated_work_admission
     validated_work = build_validated_work_admission(config, working_copy, issue_run_ledger)
     completion_intake = build_completion_intake(
-        config, issue_run_ledger, issue_run_allocator, working_copy, command_runner, validated_work
+        config,
+        issue_run_ledger,
+        issue_run_allocator,
+        working_copy if intake_working_copy is None else intake_working_copy,
+        command_runner,
+        validated_work,
     )
     pair_registry = InMemoryPersistentExchangePairRegistry()
     completion_processor = CompletionProcessor(
@@ -1015,10 +1029,14 @@ def build_test_orchestrator_deps(
         git_adapter=working_copy,
         event_bus=None,
         session_output=session_output,
-        review_exchange_runner=PersistentReviewExchangeRunner(
-            session_output,
-            pair_registry,
-            completion_intake=completion_intake,
+        review_exchange_runner=(
+            PersistentReviewExchangeRunner(
+                session_output,
+                pair_registry,
+                completion_intake=completion_intake,
+            )
+            if review_exchange_runner_factory is None
+            else review_exchange_runner_factory(completion_intake)
         ),
         label_config={
             "blocked": config.get_label_blocked(),

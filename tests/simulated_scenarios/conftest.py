@@ -12,7 +12,6 @@ import sys
 import pytest
 
 from issue_orchestrator.domain.models import Issue, AgentConfig
-from issue_orchestrator.domain.review_exchange_run import ReviewExchangeRunAssets
 from issue_orchestrator.execution.agent_runner import AgentRunner, AgentSpec
 from issue_orchestrator.ports.working_copy import (
     BranchPathsResult,
@@ -51,6 +50,22 @@ from issue_orchestrator.control.workflows.rework_workflow import ReworkWorkflow
 
 
 @pytest.fixture(autouse=True)
+def _completion_submission_transports(monkeypatch):
+    from contextlib import ExitStack
+
+    from tests.integration.completion_intake_fixture import TEST_CALLBACK_TOKEN
+    from tests.simulated_scenarios.intake_transport import scenario_transports
+
+    monkeypatch.setenv("ISSUE_ORCHESTRATOR_AGENT_CALLBACK_TOKEN", TEST_CALLBACK_TOKEN)
+    with ExitStack() as transports:
+        binding = scenario_transports.set(transports)
+        try:
+            yield
+        finally:
+            scenario_transports.reset(binding)
+
+
+@pytest.fixture(autouse=True)
 def _strip_nested_session_env(monkeypatch):
     """Allow Claude subprocess invocations from within a Claude Code session.
 
@@ -79,293 +94,16 @@ def pytest_configure(config):
     )
 
 
-def _validation_passed(run_dir: Path) -> bool:
-    """Mirror :func:`persistent_session_exchange._validation_passed`.
-
-    Existence of ``validation-record.json`` is not enough — the runner
-    parses it and requires ``passed: true``. Invalid JSON or
-    ``{"passed": false}`` must read as not-passed so a failed seeded
-    record cannot let a reviewer ``ok`` slip through.
-    """
-    record_path = run_dir / "validation-record.json"
-    if not record_path.exists():
-        return False
-    try:
-        data = json.loads(record_path.read_text())
-    except json.JSONDecodeError:
-        return False
-    return bool(data.get("passed"))
-
-
 @pytest.fixture(autouse=True)
-def _stub_persistent_review_exchange_setup(monkeypatch, request):
-    """Bypass the persistent-session runner in simulated scenarios.
-
-    The simulated-scenario harness was built around the spawn-per-phase
-    review-exchange model where each round was a fresh subprocess managed
-    by ``ScriptSessionRunner``. The persistent runner manages its own
-    subprocesses via PTY directly, so scenarios that exercise
-    review-exchange would now hit real ``git rev-parse``, ``git worktree
-    add``, and PTY spawns against non-git scratch dirs.
-
-    Replace :meth:`PersistentReviewExchangeRunner.run` with a stub that
-    fabricates an outcome and the right event sequence. The default is a
-    single-round reviewer-ok exchange; tests that need a different shape
-    (multi-round, no-progress, max-rounds-exceeded, protocol error, etc.)
-    apply ``@pytest.mark.simulated_review_outcome(...)`` to override.
-
-    The persistent runner's own behavior is covered exhaustively by
-    ``tests/unit/execution/test_persistent_session_exchange.py`` and
-    ``test_persistent_round_runner.py`` against the real PTY runner;
-    this conftest only stubs the integration boundary so the
-    simulated-scenario harness doesn't need a real git repo or PTY.
-    """
-    from datetime import datetime, timezone
-
-    from issue_orchestrator.domain.review_exchange import (
-        ReviewExchangeOutcome,
-        ReviewExchangeResponse,
-    )
-    from issue_orchestrator.domain.review_exchange_summary import (
-        ReviewExchangeSummaryV1,
-    )
-    from issue_orchestrator.domain.runtime_config import RuntimeConfigReference
-    from issue_orchestrator.events import EventName
-    from issue_orchestrator.execution.persistent_review_exchange_runner import (
-        PersistentReviewExchangeRunner,
-    )
+def _scripted_review_exchange_outcome(request):
+    from tests.simulated_scenarios.review_exchange_fixture import review_outcomes
 
     marker = request.node.get_closest_marker("simulated_review_outcome")
-    overrides: dict[str, object] = dict(marker.kwargs) if marker is not None else {}
-
-    default_reviewer_responses = [
-        {
-            "response_type": "ok",
-            "response_text": "LGTM (stubbed scenario response)",
-            "getting_closer": True,
-        }
-    ]
-    reviewer_responses_raw = overrides.get(
-        "reviewer_responses",
-        default_reviewer_responses,
-    )
-    coder_response_type = overrides.get("coder_response_type")
-    rounds_override = overrides.get("rounds")
-    status_override = overrides.get("status")
-    reason_override = overrides.get("reason")
-    # Mirror the reviewer_ok_with_validation.sh fixture: when a test
-    # opts in via ``write_validation_record_passed=True``, the stub
-    # writes a passing validation-record.json into the run dir before
-    # the reviewer round so the runner's require_validation guard
-    # accepts the reviewer-ok outcome.
-    write_validation_record_passed = bool(
-        overrides.get("write_validation_record_passed", False)
-    )
-    # Counterpart for the negative-seeded-record case: writes
-    # ``{"passed": false}`` so the require_validation guard flips a
-    # reviewer ``ok`` even though the file exists. Without this, the
-    # simulated coverage would treat file-existence as success and
-    # miss a failed/corrupt seeded record.
-    write_validation_record_failed = bool(
-        overrides.get("write_validation_record_failed", False)
-    )
-
-    def _stub_run(
-        self,
-        *,
-        exchange_run,
-        coder_worktree,
-        issue_number,
-        issue_title,  # noqa: ARG001
-        coder_label,  # noqa: ARG001
-        reviewer_label,  # noqa: ARG001
-        coder_agent,  # noqa: ARG001
-        reviewer_agent,  # noqa: ARG001
-        runtime_config,
-        max_rounds,
-        max_no_progress,
-        require_validation,
-        initial_validation_record_path=None,
-        approval_gate=None,
-        web_port=None,  # noqa: ARG001
-        nit_policy="surface",
-        events=None,
-        event_context=None,
-    ):
-        assert isinstance(runtime_config, RuntimeConfigReference)
-        session_name = exchange_run.session_name
-        run_dir = exchange_run.assets.run_dir
-        exchange_dir = exchange_run.assets.exchange_dir
-        exchange_dir.mkdir(parents=True, exist_ok=True)
-
-        # Mirror the real runner: when an initial validation record was
-        # passed in (cache hit / pre-seeded scenarios), copy it into the
-        # exchange's run_dir before the require_validation guard fires.
-        # Without this, scenarios named after the cache/seeding path
-        # (cache_requires_validation, cache_invalid_validation_reruns)
-        # silently fall through the production path they claim to test.
-        if (
-            initial_validation_record_path is not None
-            and initial_validation_record_path.exists()
-        ):
-            seed_target = run_dir / "validation-record.json"
-            if not seed_target.exists():
-                seed_target.write_bytes(initial_validation_record_path.read_bytes())
-
-        if write_validation_record_passed:
-            (run_dir / "validation-record.json").write_text(
-                json.dumps({"passed": True}),
-                encoding="utf-8",
-            )
-        if write_validation_record_failed:
-            (run_dir / "validation-record.json").write_text(
-                json.dumps({"passed": False}),
-                encoding="utf-8",
-            )
-
-        def _emit(name, payload):
-            if events is None or event_context is None:
-                return
-            from issue_orchestrator.ports import make_trace_event
-
-            enriched = dict(payload)
-            enriched["run_dir"] = str(run_dir)
-            enriched["session_run_id"] = exchange_run.run_id
-            events.publish(make_trace_event(name, event_context.enrich(enriched)))
-
-        _emit(
-            EventName.REVIEW_EXCHANGE_STARTED,
-            {
-                "issue_number": issue_number,
-                "session_name": session_name,
-                "exchange_dir": str(exchange_dir),
-            },
-        )
-
-        # Walk the scripted reviewer responses, capping at max_rounds.
-        # If validation is required and no record exists, the runner's
-        # contract is to flip a reviewer "ok" into "changes_requested"
-        # with reason "validation missing" — mirror that here so tests
-        # that exercise the validation gate see the same shape.
-        responses = list(reviewer_responses_raw)
-        rounds_run = 0
-        last_reviewer: ReviewExchangeResponse | None = None
-        no_progress_streak = 0
-        terminating_status: str | None = None
-        terminating_reason: str | None = None
-
-        for round_index in range(1, max_rounds + 1):
-            if not responses:
-                break
-            entry = responses.pop(0) if len(responses) > 1 else responses[0]
-            response_type = str(entry.get("response_type", "ok"))
-            getting_closer = bool(entry.get("getting_closer", True))
-            response_text = str(entry.get("response_text", "stub-reviewer"))
-
-            if (
-                response_type == "ok"
-                and require_validation
-                and not _validation_passed(run_dir)
-            ):
-                response_type = "changes_requested"
-                response_text = "Validation record missing or failed"
-                getting_closer = False
-
-            if response_type == "ok" and approval_gate is not None:
-                rejection_reason = approval_gate.rejection_reason()
-                if rejection_reason is not None:
-                    response_type = "changes_requested"
-                    response_text = f"{rejection_reason} Address it and continue."
-                    getting_closer = False
-
-            reviewer = ReviewExchangeResponse(
-                response_type=response_type,
-                response_text=response_text,
-                getting_closer=getting_closer,
-            )
-            last_reviewer = reviewer
-            rounds_run = round_index
-            _emit(
-                EventName.REVIEW_EXCHANGE_ROUND_COMPLETED,
-                {
-                    "issue_number": issue_number,
-                    "session_name": session_name,
-                    "round_index": round_index,
-                    "reviewer_response_type": reviewer.response_type,
-                    "reviewer_response_text": reviewer.response_text,
-                    "coder_response_type": coder_response_type,
-                    "review_nit_policy": nit_policy,
-                    "review_abstraction_status": "no_issues",
-                },
-            )
-
-            if response_type == "ok":
-                terminating_status = "ok"
-                terminating_reason = "reviewer_ok"
-                break
-            if not getting_closer:
-                no_progress_streak += 1
-            else:
-                no_progress_streak = 0
-            if max_no_progress > 0 and no_progress_streak >= max_no_progress:
-                terminating_status = "stopped"
-                terminating_reason = "reviewer_reports_no_progress"
-                break
-        else:
-            terminating_status = "stopped"
-            terminating_reason = "max_rounds_exceeded"
-
-        if terminating_status is None:
-            terminating_status = "ok"
-            terminating_reason = "reviewer_ok"
-
-        # Marker-level overrides win — useful for protocol-error/error
-        # scenarios that the round loop above can't naturally produce.
-        if status_override is not None:
-            terminating_status = str(status_override)
-        if reason_override is not None:
-            terminating_reason = str(reason_override)
-        if rounds_override is not None:
-            rounds_run = int(rounds_override)
-
-        _emit(
-            EventName.REVIEW_EXCHANGE_COMPLETED,
-            {
-                "issue_number": issue_number,
-                "session_name": session_name,
-                "rounds": rounds_run,
-                "status": terminating_status,
-                "reason": terminating_reason,
-                "review_nit_policy": nit_policy,
-                "review_abstraction_status": "no_issues",
-            },
-        )
-        summary = ReviewExchangeSummaryV1.from_payload(
-            {
-                "completed_rounds": rounds_run,
-                "status": terminating_status,
-                "response_text": last_reviewer.response_text if last_reviewer else None,
-                "reason": terminating_reason,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            }
-        )
-        # The real runner persists summary.json atomically into
-        # exchange_dir; the orchestration logic reads it on the next
-        # tick to decide cache-hit / advance / halt. Mirror that here so
-        # scenario tests that walk the run-dir layout match production.
-        from issue_orchestrator.infra.atomic_io import atomic_write_json
-
-        atomic_write_json(exchange_dir / "summary.json", summary.to_payload())
-        return ReviewExchangeOutcome(
-            status=terminating_status,
-            rounds=rounds_run,
-            reason=terminating_reason,
-            run_assets=ReviewExchangeRunAssets.from_exchange_dir(exchange_dir),
-            reviewer_response=last_reviewer,
-            summary=summary,
-        )
-
-    monkeypatch.setattr(PersistentReviewExchangeRunner, "run", _stub_run)
+    binding = review_outcomes.set(dict(marker.kwargs) if marker is not None else {})
+    try:
+        yield
+    finally:
+        review_outcomes.reset(binding)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -586,12 +324,21 @@ class StubWorkingCopy:
     def get_head_sha(self, worktree: Path) -> str | None:
         return "deadbeef"
 
-    def get_current_branch(self, worktree: Path) -> str | None:
-        return self.branch
+    def get_current_branch(self, worktree: Path) -> str:
+        from issue_orchestrator.execution.git_working_copy import GitWorkingCopy
+
+        branch = GitWorkingCopy().get_current_branch(worktree)
+        if branch is None:
+            raise AssertionError("scenario checkout has no current branch")
+        return branch
 
     def get_branch_status(self, worktree: Path) -> BranchStatus | None:
         return BranchStatus(
-            branch=self.branch, ahead=0, behind=0, has_remote=True, clean=True
+            branch=self.get_current_branch(worktree),
+            ahead=0,
+            behind=0,
+            has_remote=True,
+            clean=True,
         )
 
     def has_uncommitted_changes(self, worktree: Path) -> bool:
@@ -625,7 +372,9 @@ class StubWorkingCopy:
         return RebaseResult(success=True, message="ok")
 
     def create_branch_from_current(self, worktree: Path, branch: str) -> None:
-        self.branch = branch
+        from issue_orchestrator.execution.git_working_copy import GitWorkingCopy
+
+        GitWorkingCopy().create_branch_from_current(worktree, branch)
 
     def push(
         self,
@@ -635,7 +384,12 @@ class StubWorkingCopy:
         set_upstream: bool = True,
         skip_hooks: bool = False,
     ) -> PushResult:
-        return PushResult(success=True, branch=self.branch, remote=remote, message="ok")
+        return PushResult(
+            success=True,
+            branch=self.get_current_branch(worktree),
+            remote=remote,
+            message="ok",
+        )
 
     def diff_against_base(self, worktree: Path, base_ref: str) -> DiffResult:
         return DiffResult(success=True, diff_text="")
@@ -651,7 +405,7 @@ class StubWorkingCopy:
         return BranchPathsResult(success=True, paths=())
 
     def get_issue_number_from_branch(self, worktree: Path) -> int | None:
-        parts = self.branch.split("-")
+        parts = self.get_current_branch(worktree).split("-")
         if parts and parts[0].isdigit():
             return int(parts[0])
         return None
@@ -667,7 +421,7 @@ class StubWorkingCopy:
     # --- Extra methods for CompletionProcessor.GitAdapter protocol ---
 
     def list_branch_names(self, worktree: Path) -> list[str]:
-        return [self.branch]
+        return [self.get_current_branch(worktree)]
 
     def default_branch(self, repo_root: Path, remote: str = "origin") -> str:
         return "main"
@@ -694,26 +448,9 @@ class TempWorktreeManager:
         worktree = (worktree_base or self.base) / (worktree_name or f"sim-wt-{issue_number}")
         worktree.mkdir(parents=True, exist_ok=True)
         final_branch = branch_name or f"{issue_number}-sim"
-        # Use a real git repo so branch/introspection commands work in scenarios.
-        subprocess.run(["git", "init"], cwd=worktree, check=True, capture_output=True)
-        subprocess.run(
-            ["git", "config", "user.email", "test@test.com"],
-            cwd=worktree,
-            check=True,
-            capture_output=True,
-        )
-        subprocess.run(
-            ["git", "config", "user.name", "Test User"],
-            cwd=worktree,
-            check=True,
-            capture_output=True,
-        )
-        subprocess.run(
-            ["git", "checkout", "-b", final_branch],
-            cwd=worktree,
-            check=True,
-            capture_output=True,
-        )
+        from tests.simulated_scenarios.git_workspace import initialize_scenario_checkout
+
+        initialize_scenario_checkout(worktree, final_branch)
         return WorktreeInfo(path=worktree, branch_name=final_branch)
 
     def remove_checkout(self, worktree_path: Path, *, force: bool = False) -> None:
@@ -758,6 +495,9 @@ def build_config(
     validation_cmd: str | None = None,
     max_validation_retries: int = 0,
 ) -> Config:
+    validation_cmd = validation_cmd or str(
+        Path(__file__).parent / "fixtures/scripts/validate_pass.sh"
+    )
     config = Config()
     config.repo_root = repo_root
     config.config_path = _write_runtime_config(repo_root, validation_cmd)
@@ -779,9 +519,7 @@ def build_config(
     config.review_exchange_max_no_progress = review_exchange_max_no_progress
     config.filtering.label = "simulated-scenario"
     config.retry.max_validation_retries = max_validation_retries
-    # Use port 0 so the completion command's push preflight check cannot accidentally
-    # connect to a real orchestrator running on the default port (8080).
-    # Connection to port 0 always fails with URLError → preflight skipped.
+    # The fixture publishes its actual bound port before any agent launch.
     config.web_port = 0
 
     if validation_cmd:
@@ -887,6 +625,15 @@ def build_orchestrator(
 
     from issue_orchestrator.domain.models import OrchestratorState
     runtime_state = OrchestratorState()
+    from issue_orchestrator.execution.git_working_copy import GitWorkingCopy
+    from tests.simulated_scenarios.review_exchange_fixture import (
+        build_scripted_review_runner,
+    )
+    from tests.simulated_scenarios.intake_transport import (
+        completion_transport,
+        scenario_transports,
+    )
+
     deps = build_test_orchestrator_deps(
         config,
         repo_host,
@@ -899,6 +646,15 @@ def build_orchestrator(
         timeline_reader=timeline_reader,
         timeline_writer=timeline_writer,
         state=runtime_state,
+        intake_working_copy=GitWorkingCopy(),
+        review_exchange_runner_factory=build_scripted_review_runner,
+    )
+    scenario_transports.get().enter_context(
+        completion_transport(
+            deps.completion_intake,
+            deps.agent_callback_endpoint,
+            tuple(issue.number for issue in issues),
+        )
     )
 
     if reconcile:

@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Shared helper for simulated scenario scripts.
-# Writes a completion record directly (bypasses dirty-file and validation
-# checks that coding-done/reviewer-done run, which are irrelevant for
-# simulated scenarios).
+# Writes agent intent, then submits coding intent through the real authenticated
+# intake producer. The configured orchestrator validator owns acceptance.
 #
 # Usage:
 #   source "$(dirname "$0")/_write_completion.sh"
@@ -16,6 +15,9 @@ write_completion() {
   local outcome="$1"
   local field1="${2:-}"
   local field2="${3:-}"
+  if [[ -n "${SCENARIO_COMPLETION_ATTEMPT:-}" ]]; then
+    field1="${field1} (attempt ${SCENARIO_COMPLETION_ATTEMPT})"
+  fi
 
   local completion_path="${ISSUE_ORCHESTRATOR_COMPLETION_PATH:-}"
   if [[ -z "$completion_path" ]]; then
@@ -109,5 +111,16 @@ ENDJSON
       ;;
   esac
 
+  case "$outcome" in
+    completed|blocked|needs_human)
+      python - "$completion_path" <<'PYTHON'
+import sys
+from pathlib import Path
+from issue_orchestrator.entrypoints.cli_tools.completion_submit import submit_completion_file
+receipt = submit_completion_file(Path(sys.argv[1]))
+print(f"Completion receipt received: {receipt.entry_id}")
+PYTHON
+      ;;
+  esac
   echo "Completion record written: outcome=${outcome} path=${completion_path}"
 }
