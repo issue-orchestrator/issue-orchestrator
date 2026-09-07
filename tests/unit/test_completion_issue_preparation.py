@@ -64,8 +64,8 @@ def test_substitution_refuses_before_validation_or_processing(custody, substitut
 def test_historical_receipt_uses_same_numeric_issue_binding(tmp_path, interrupted):
     owner, ledger, selection, runner = historical(tmp_path)
     if interrupted:
-        runner.run.side_effect = RuntimeError("interrupted validator")
-        with pytest.raises(RuntimeError, match="interrupted validator"):
+        runner.run.side_effect = KeyboardInterrupt("interrupted validator")
+        with pytest.raises(KeyboardInterrupt, match="interrupted validator"):
             owner.import_historical(selection)
         runner.run.side_effect = None
     else:
