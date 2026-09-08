@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..domain.models import AgentConfig, CommentHeadings
+from .budgeted_validation_config import parse_budgeted_validation
 from .config_models import (
     AiGateConfig,
     ClaimsConfig,
@@ -71,6 +72,7 @@ ALLOWED_TOP_LEVEL_FIELDS = frozenset(_TOP_LEVEL_SECTION_KEYS) | {"repo", "defaul
 
 _SUPPORTED_VALIDATION_KEYS = frozenset(
     {
+        "budgeted",
         "coverage_guardrail",
         "junit_xml_paths",
         "publish",
@@ -707,6 +709,7 @@ def load_validation_section(config: "Config", validation_section: dict) -> None:
         quick_data = validation_section.get("quick", {}) or {}
         publish_data = validation_section.get("publish", {}) or {}
         config.validation = ValidationConfig(
+            budgeted=parse_budgeted_validation(validation_section.get("budgeted", {})),
             quick=ValidationCommandConfig(
                 cmd=quick_data.get("cmd"),
                 timeout_seconds=quick_data.get("timeout_seconds", 300),

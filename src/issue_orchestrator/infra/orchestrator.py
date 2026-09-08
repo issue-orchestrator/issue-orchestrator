@@ -512,14 +512,7 @@ class Orchestrator:
         with self.state_lock:
             self._last_tick_time = time.time()
             self.deps.provider_resilience.close_expired()
-            self.deps.services.state_health_check()
-            # Drain any background-job completions BEFORE the planning phase
-            # decides next-step actions. That way a failed review-exchange
-            # job is observable to the planner (via recorded failure) in the
-            # same tick instead of causing another resubmit.
-            supervisor = self.deps.services.background_job_supervisor
-            if supervisor is not None:
-                supervisor.tick()
+            self.deps.services.tick_before_planning(paused=self.state.paused, shutdown_requested=self._shutdown_requested)
             # Reconcile completed off-thread publish retries; success clears
             # failure state, while failures remain retryable.
             self.deps.publish_recovery.drain_completed_retries(self.state)

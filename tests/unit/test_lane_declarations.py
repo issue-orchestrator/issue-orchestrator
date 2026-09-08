@@ -2,8 +2,8 @@
 lane scheduling facts — and it cannot drift from the Makefile's lanes.
 
 Drift is enforced bidirectionally the way the settings-schema tests
-enforce theirs: every work key the gate submits must be declared, and
-every declared lane must still exist in the gate. A row nobody runs is
+enforce theirs: every submitted work key must be declared, and
+every declared lane must still have a Makefile target. A row nobody runs is
 dead configuration; a lane nobody declared cannot run at all.
 """
 
@@ -153,6 +153,12 @@ _CONDOR_LANE_TARGETS = (
     # Condor-capable targets outside the flat fan.
     "test-integration-core-local",
     "test-integration-agent",
+    # Live convenience targets remain available on explicit request, outside
+    # the deterministic PR fan. Their scheduling declarations are still live.
+    "test-simulated-agent",
+    "test-integration-agent-claude",
+    "test-integration-agent-codex",
+    "test-integration-agent-chain",
 )
 
 

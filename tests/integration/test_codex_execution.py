@@ -67,6 +67,7 @@ class TestCodexExecution:
         assert result.returncode == 0
         assert "non-interactively" in result.stdout.lower()
 
+    @pytest.mark.live_agent
     def test_codex_simple_calculation(self, tmp_path):
         """Run Codex with a simple calculation task to verify execution works.
 
@@ -130,6 +131,7 @@ class TestCodexExecution:
 class TestCodexWithAgentRunner:
     """Integration tests for Codex via AgentRunner."""
 
+    @pytest.mark.live_agent
     def test_codex_via_agent_runner_returns_exit_code(self, tmp_path):
         """Test that AgentRunner correctly runs Codex and returns exit code.
 
@@ -203,6 +205,7 @@ class TestCodexAgentDoneInvocation:
     and write completion.json, which is how sessions signal completion.
     """
 
+    @pytest.mark.live_agent
     def test_agent_done_invocable_from_codex(self, tmp_path, require_codex):
         """Verify Codex can invoke completion commands in worktree-like environment.
 
@@ -308,6 +311,7 @@ class TestCodexAgentDoneInvocation:
             f"Unexpected outcome: {completion_data}"
         )
 
+    @pytest.mark.live_agent
     def test_codex_file_creation(self, tmp_path, require_codex):
         """Test that Codex can create files (simpler than completion command).
 
@@ -371,6 +375,7 @@ class TestCodexAgentDoneInvocation:
 class TestCodexWithAgentRunnerFullPath:
     """E2E test that runs Codex through AgentRunner with full orchestrator path."""
 
+    @pytest.mark.live_agent
     def test_codex_via_agent_runner_with_agent_done(self, tmp_path, require_codex):
         """Run Codex via AgentRunner and verify completion command works.
 

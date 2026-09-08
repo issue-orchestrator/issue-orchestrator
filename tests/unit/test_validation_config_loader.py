@@ -30,6 +30,7 @@ def test_extract_validation_config_merges_nested_defaults() -> None:
     )
 
     assert result == {
+        "budgeted": {},
         "quick": {
             "cmd": "make verify",
             "timeout_seconds": 300,

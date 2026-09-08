@@ -34,6 +34,7 @@ def extract_validation_config(config: dict) -> dict:
     publish = validation.get("publish", {}) or {}
     guardrail = validation.get("coverage_guardrail", {}) or {}
     return {
+        "budgeted": validation.get("budgeted", {}),
         "quick": {
             "cmd": quick.get("cmd"),
             "timeout_seconds": quick.get(
