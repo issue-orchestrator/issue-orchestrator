@@ -892,6 +892,15 @@
           "artifactsNote": {"type": "string"}
         }
       },
+      "TechLeadDeliveryPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["status", "message"],
+        "properties": {
+          "status": {"type": "string", "enum": ["observing", "stalled", "unknown"]},
+          "message": {"type": "string"}
+        }
+      },
       "TechLeadActivityPayload": {
         "type": "object",
         "additionalProperties": false,
@@ -901,6 +910,7 @@
             "type": "array",
             "items": {"$ref": "#/components/schemas/TechLeadRunActivityEntryPayload"}
           },
+          "delivery": {"$ref": "#/components/schemas/TechLeadDeliveryPayload"},
           "emptyMessage": {"type": "string"}
         }
       },

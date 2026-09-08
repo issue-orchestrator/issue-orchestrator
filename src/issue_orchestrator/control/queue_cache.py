@@ -6,6 +6,7 @@ cannot bypass scope policy when updating ``state.cached_queue_issues``.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
 import logging
@@ -14,6 +15,8 @@ import traceback
 from typing import TYPE_CHECKING
 
 from .issue_scope import issue_scope_skip_detail
+from .issue_refresh_batch import IssueRefreshBatch
+from ..domain.issue_work_classification import resolve_work_classifications
 
 if TYPE_CHECKING:
     from ..infra.config import Config
@@ -62,6 +65,19 @@ class QueueCache:
 
     def replace_from_refresh(self, issues: list["Issue"]) -> list["Issue"]:
         """Replace queue from fetched issues using canonical eligibility policy."""
+        return self.replace_from_observations(IssueRefreshBatch(tuple(issues), tuple(issues), None))
+
+    def replace_from_observations(self, batch: IssueRefreshBatch) -> list["Issue"]:
+        """Apply one freshness contract for full, warm-delta and runtime refresh."""
+        self._observe_work_classifications(list(batch.observed_issues), cached_issues=batch.issues)
+        return self._replace_scope(list(batch.issues))
+
+    def replace_from_cache(self, issues: list["Issue"]) -> list["Issue"]:
+        """Restore queue visibility without treating cached labels as a fresh observation."""
+        self._observe_work_classifications([], cached_issues=issues)
+        return self._replace_scope(issues)
+
+    def _replace_scope(self, issues: list["Issue"]) -> list["Issue"]:
         prior_scope = list(self._state.cached_scope_issues)
         prior_queue = list(self._state.cached_queue_issues)
         prior_count = len(prior_queue)
@@ -118,8 +134,15 @@ class QueueCache:
         self.prune_refresh_timestamps()
         return queue
 
+    def replace_from_delta(self, cached: Sequence["Issue"], delta: Sequence["Issue"]) -> list["Issue"]:
+        """Observe every delta, including closures, before applying scope policy."""
+        merged = {issue.number: issue for issue in cached}
+        merged.update({issue.number: issue for issue in delta})
+        return self.replace_from_observations(IssueRefreshBatch(tuple(merged.values()), tuple(delta), None))
+
     def upsert_refreshed_issue(self, issue: "Issue") -> QueueMutationOutcome:
         """Upsert a refreshed issue while enforcing queue eligibility policy."""
+        self._observe_work_classifications([issue])
         was_present = any(cached.number == issue.number for cached in self._state.cached_queue_issues)
         self._state.cached_scope_issues = [
             cached for cached in self._state.cached_scope_issues if cached.number != issue.number
@@ -137,6 +160,7 @@ class QueueCache:
 
     def remove_issue(self, issue_number: int) -> None:
         """Remove issue from cached queue and refresh metadata."""
+        self._observe_work_classifications([])
         self._state.cached_scope_issues = [
             issue for issue in self._state.cached_scope_issues if issue.number != issue_number
         ]
@@ -202,6 +226,48 @@ class QueueCache:
         if (time.time() - self._state.ui_visible_updated_at) > _UI_VISIBILITY_STALENESS_SECONDS:
             return set()
         return set(self._state.ui_visible_issue_numbers)
+
+    def restore_snapshot(self) -> tuple[list["Issue"], str | None]:
+        """Restore warm queue facts and their longer-lived issue identities."""
+        if self._store is None:
+            raise RuntimeError("QueueCacheStore is required to restore queue cache snapshot")
+        self.restore_work_classifications()
+        issues = list(self._store.load_issues(self._config.repo or ""))
+        self._observe_work_classifications([], cached_issues=issues)
+        return issues, self._store.load_watermark()
+
+    def restore_work_classifications(self) -> None:
+        """Restore the identity index independently of the current queue scope."""
+        if self._store is not None:
+            self._state.issue_work_classifications.update(
+                self._store.load_work_classifications(self._config.repo or "")
+            )
+
+    def _observe_work_classifications(
+        self, issues: list["Issue"], *, cached_issues: Sequence["Issue"] = (),
+    ) -> None:
+        """Remember identities before eligibility filtering can discard them.
+
+        Historical and restored snapshot labels seed only unknown identity before
+        scope filtering, including snapshots predating the identity index. Retained
+        classifications outrank these cached labels; current observations can
+        explicitly remove a marker. Neither absence from a fetch nor closure is
+        evidence that an existing case file became coding work.
+        """
+        known = self._state.issue_work_classifications
+        resolved = resolve_work_classifications(
+            historical_labels=((entry.issue_number, entry.issue_labels) for entry in self._state.session_history),
+            active_labels=((session.issue.number, session.issue.labels) for session in self._state.active_sessions),
+            cached_labels=((issue.number, issue.labels) for issue in (
+                *self._state.cached_queue_issues, *self._state.cached_scope_issues, *cached_issues,
+            )),
+            retained=known,
+            observed_labels=((issue.number, issue.labels) for issue in issues),
+        )
+        updates = {number: kind for number, kind in resolved.items() if known.get(number) != kind}
+        if updates and self._store is not None:
+            self._store.record_work_classifications(self._config.repo or "", updates)
+        known.update(updates)
 
     def save_snapshot(self) -> None:
         """Persist the current in-scope queue snapshot for warm restarts.
