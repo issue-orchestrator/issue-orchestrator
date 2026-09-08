@@ -16,20 +16,19 @@ Principle: "No Nulls in Orchestrator"
 """
 
 import logging
-from pathlib import Path
 import os
 import time
 from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
 from ..control.background_job_supervisor import BackgroundJobSupervisor
-from ..ports.budgeted_validation import DisabledBudgetedValidation, DisabledBudgetedValidationReports, BudgetedValidationRuntime, BudgetedValidationReports
-from ..ports.command_runner import CommandRunner
-from ..ports.repository_host import RepositoryHost
-from ..control.budgeted_validation import BudgetedValidationCycle
-from .bootstrap_budgeted_validation import build_budgeted_validation_runtime, assemble_budgeted_validation_cycle
-from ..adapters.budgeted_validation_git import BudgetedValidationGit
-from ..adapters.budgeted_validation_store import FileBudgetedValidationStore
+from ..ports.budgeted_validation import (
+    DisabledBudgetedValidation, DisabledBudgetedValidationReports,
+)
+from .bootstrap_budgeted_validation import (
+    build_budgeted_validation_cycle as build_budgeted_validation_cycle,
+    build_budgeted_validation_services,
+)
 from ..infra.agent_callback_endpoint import RuntimeAgentCallbackEndpoint
 from .bootstrap_provider import (
     build_provider_circuit_store,
@@ -1313,39 +1312,3 @@ def build_orchestrator_for_testing(
     )
 
     return Orchestrator(config=config, deps=deps, state=runtime_state)
-
-
-def build_budgeted_validation_cycle(root: Path) -> tuple[BudgetedValidationCycle, FileBudgetedValidationStore]:
-    """Standalone worker/CLI composition of the same repository-wide owner."""
-    from ..execution.command_runner import LocalCommandRunner
-
-    git = BudgetedValidationGit(root, LocalCommandRunner())
-    directory = git.storage_directory()
-    store = FileBudgetedValidationStore(directory)
-    return assemble_budgeted_validation_cycle(git, git, store, directory), store
-
-
-def build_budgeted_validation_services(config: Config, command_runner: CommandRunner, repository: RepositoryHost) -> tuple[BudgetedValidationRuntime, BudgetedValidationReports]:
-    """Share one durable reporting owner with observation and application."""
-    from datetime import datetime, timezone
-    from ..control.budgeted_validation_reporting import BudgetedValidationReportOwner
-    from ..ports.budgeted_validation import (
-        DisabledBudgetedValidation, DisabledBudgetedValidationReports,
-    )
-
-    suites = tuple(config.validation.budgeted.values())
-    # A disabled feature must not add a Git requirement to embedding/test
-    # compositions. A real checkout is still inspected when configuration is
-    # empty because its common directory may retain a removed suite's work.
-    if not suites and not (config.repo_root / ".git").exists():
-        return DisabledBudgetedValidation(), DisabledBudgetedValidationReports()
-    directory = BudgetedValidationGit(config.repo_root, command_runner).storage_directory()
-    store = FileBudgetedValidationStore(directory)
-    return (
-        build_budgeted_validation_runtime(
-            config.repo_root, suites, directory,
-            has_recoverable_work=lambda: bool(store.pending()),
-        ),
-        BudgetedValidationReportOwner(suites=suites, store=store,
-            repository=repository, clock=lambda: datetime.now(timezone.utc)),
-    )

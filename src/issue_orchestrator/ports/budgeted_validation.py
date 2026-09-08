@@ -35,6 +35,10 @@ class BudgetedValidationJournal(Protocol):
 
 
 class BudgetedValidationStore(Protocol):
+    def pending(self) -> tuple[PendingBudgetedValidation, ...]:
+        """Return unfinished durable runs that must survive reconfiguration."""
+        ...
+
     def inventory(self) -> tuple[StoredBudgetedValidation, ...]:
         """Return exact durable suite histories, including removed configuration."""
         ...
