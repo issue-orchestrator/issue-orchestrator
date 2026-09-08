@@ -1393,8 +1393,6 @@ class Config(ConfigLaunchIdentity, RuntimeConfigReferenceOwner, TechLeadActivati
 
         Returns list of (agent_label, field_name, invalid_vars) tuples.
         """
-        import re
-
         # Valid variables for initial_prompt (before command rendering)
         VALID_INITIAL_PROMPT_VARS = {
             "issue_number",
