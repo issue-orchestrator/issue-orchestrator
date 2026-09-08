@@ -33,6 +33,7 @@ from issue_orchestrator.domain.review_artifacts import ReviewDecision
 from issue_orchestrator.domain.review_exchange import ReviewExchangeResponse
 from issue_orchestrator.domain.review_exchange_run import ReviewExchangeRun
 from issue_orchestrator.domain.review_exchange_summary import ReviewExchangeSummaryV1
+from issue_orchestrator.domain.review_validation import ReviewValidationEvidence
 from issue_orchestrator.domain.runtime_config import RuntimeConfigReference
 from issue_orchestrator.domain.repository_launch_selection import (
     RepositoryLaunchSelection,
@@ -50,6 +51,15 @@ from tests.callback_endpoint_helpers import ready_callback_endpoint
 # ---------------------------------------------------------------------------
 # Test helpers
 # ---------------------------------------------------------------------------
+
+
+def _review_validation_evidence(payload: dict[str, object]) -> ReviewValidationEvidence:
+    return ReviewValidationEvidence(json.dumps(payload).encode(), str(payload["head_sha"]),
+                                    payload["passed"] is True)
+
+
+def _review_validation_evidence_from(path: Path) -> ReviewValidationEvidence:
+    return _review_validation_evidence(json.loads(path.read_text(encoding="utf-8")))
 
 
 class ScriptedReceiptIntake:
@@ -1325,12 +1335,6 @@ class TestPairValidationMirror:
             json.dumps({"passed": True, "head_sha": "old-sha"}),
             encoding="utf-8",
         )
-        current_record = tmp_path / "current-validation-record.json"
-        current_record.write_text(
-            json.dumps({"passed": True, "head_sha": "new-sha"}),
-            encoding="utf-8",
-        )
-
         mirror = pse._PairValidationMirror(  # noqa: SLF001
             head_reader=pse.get_repo_head_sha,
             intake=RunCompletionExchangeIntake(
@@ -1340,7 +1344,9 @@ class TestPairValidationMirror:
             record_path=pair_record,
             coder_worktree_path=coder_wt,
         )
-        mirror.replace_from_initial(current_record)
+        mirror.replace_from_initial(
+            _review_validation_evidence({"passed": True, "head_sha": "new-sha"})
+        )
 
         assert json.loads(pair_record.read_text(encoding="utf-8")) == {
             "passed": True,
@@ -1362,9 +1368,6 @@ class TestPairValidationMirror:
             / "validation-record.json"
         )
         payload = {"passed": True, "head_sha": "new-sha"}
-        current_record = tmp_path / "current-validation-record.json"
-        current_record.write_text(json.dumps(payload), encoding="utf-8")
-
         mirror = pse._PairValidationMirror(  # noqa: SLF001
             head_reader=pse.get_repo_head_sha,
             intake=RunCompletionExchangeIntake(
@@ -1375,12 +1378,12 @@ class TestPairValidationMirror:
             coder_worktree_path=coder_wt,
             run_record_path=run_record,
         )
-        mirror.replace_from_initial(current_record)
+        mirror.replace_from_initial(_review_validation_evidence(payload))
 
         assert json.loads(pair_record.read_text(encoding="utf-8")) == payload
         assert json.loads(run_record.read_text(encoding="utf-8")) == payload
 
-    def test_missing_initial_validation_source_clears_stale_pair_and_run_records(
+    def test_missing_initial_validation_evidence_clears_stale_pair_and_run_records(
         self,
         tmp_path: Path,
     ) -> None:
@@ -1419,6 +1422,24 @@ class TestPairValidationMirror:
 
         assert not pair_record.exists()
         assert not run_record.exists()
+
+    def test_agent_writable_initial_projection_never_becomes_authority(
+        self, tmp_path: Path,
+    ) -> None:
+        coder_wt = tmp_path / "coder-wt"
+        pair_record = coder_wt / ".issue-orchestrator" / "pair" / "validation.json"
+        evidence = _review_validation_evidence({"passed": True, "head_sha": "head-a"})
+        mirror = pse._PairValidationMirror(  # noqa: SLF001
+            head_reader=lambda _: "head-b", intake=MagicMock(), pair_dir=pair_record.parent,
+            record_path=pair_record, coder_worktree_path=coder_wt,
+        )
+        mirror.replace_from_initial(evidence)
+        pair_record.write_text(json.dumps({"passed": True, "head_sha": "head-b"}),
+                               encoding="utf-8")
+
+        error = mirror.current_validation_error()
+        assert error is not None
+        assert "head-a" in error and "head-b" in error
 
     def test_authenticated_validation_bytes_replace_stale_pair_head(
         self,
@@ -3335,11 +3356,6 @@ class TestCallerHooks:
         coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
         session_output = FileSystemSessionOutput()
         validation_payload = {"passed": True, "head_sha": "head-a"}
-        current_record = tmp_path / "current-validation-record.json"
-        current_record.write_text(
-            json.dumps(validation_payload),
-            encoding="utf-8",
-        )
         monkeypatch.setattr(pse, "get_repo_head_sha", lambda _: "head-a")
 
         state = _patch_persistent_runner(
@@ -3381,7 +3397,7 @@ class TestCallerHooks:
             max_rounds=1,
             max_no_progress=2,
             require_validation=True,
-            initial_validation_record_path=current_record,
+            initial_validation_evidence=_review_validation_evidence(validation_payload),
         )
 
         assert outcome.status == "ok"
@@ -3405,6 +3421,47 @@ class TestCallerHooks:
         assert "review-exchange-turn-prompt.md" in reviewer_notice
         assert len(reviewer_notice) < 512
 
+    def test_initial_projection_cannot_replace_authenticated_review_subject(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+        authenticated = _review_validation_evidence(
+            {"passed": True, "head_sha": "head-a"}
+        )
+        monkeypatch.setattr(pse, "get_repo_head_sha", lambda _: "head-b")
+        state = _patch_persistent_runner(
+            monkeypatch,
+            response_script={
+                "reviewer": [{"response_type": "ok", "response_text": "lgtm",
+                              "getting_closer": True}],
+                "coder": [{"response_type": "ok", "response_text": "unchanged"}],
+            },
+        )
+        exchange_run = session_output.start_review_exchange_run(
+            coder_wt, issue_number=42, parent_session_name="coding-1",
+            agent_label="agent:backend",
+        )
+
+        outcome = pse.run_persistent_session_exchange(
+            completion_intake=state["intake"], completion_capability="test-run-capability",
+            exchange_run=exchange_run, session_output=session_output,
+            pair_registry=state["registry"], persistent_pair_root=tmp_path / "pairs",
+            coder_worktree_path=coder_wt, reviewer_worktree_factory=lambda: reviewer_wt,
+            issue_number=42, issue_title="Test", coder_label="agent:backend",
+            reviewer_label="agent:reviewer", coder_agent=_make_agent(prompt_path),
+            reviewer_agent=_make_agent(prompt_path), runtime_config=_runtime_config(tmp_path),
+            max_rounds=1, max_no_progress=2, require_validation=True,
+            initial_validation_evidence=authenticated,
+        )
+
+        assert outcome.status != "ok"
+        assert [role for role, _prompt, _notice in state["prompt_inboxes_seen"]] == [
+            "reviewer", "coder"
+        ]
+
     def test_coder_validation_refresh_updates_reviewer_run_record(
         self,
         tmp_path: Path,
@@ -3416,11 +3473,6 @@ class TestCallerHooks:
         session_output = FileSystemSessionOutput()
         initial_payload = {"passed": True, "head_sha": "head-a"}
         refreshed_payload = {"passed": True, "head_sha": "head-b"}
-        current_record = tmp_path / "current-validation-record.json"
-        current_record.write_text(
-            json.dumps(initial_payload),
-            encoding="utf-8",
-        )
         monkeypatch.setattr(pse, "get_repo_head_sha", lambda _: "head-b")
 
         state = _patch_persistent_runner(
@@ -3470,7 +3522,7 @@ class TestCallerHooks:
             max_rounds=2,
             max_no_progress=2,
             require_validation=True,
-            initial_validation_record_path=current_record,
+            initial_validation_evidence=_review_validation_evidence(initial_payload),
         )
 
         assert outcome.status == "ok"
@@ -7184,7 +7236,9 @@ class TestProductionLayoutCacheResolution:
             worktree=worktree,
             session_name="coding-1",
             require_validation=True,
-            current_validation_record_path=coder_run / "validation-record.json",
+            current_validation_evidence=_review_validation_evidence_from(
+                coder_run / "validation-record.json"
+            ),
         )
         assert resolution.decision is ResumeDecision.REUSE_APPROVAL
         assert isinstance(resolution, ReuseResumeResolution)
@@ -7217,7 +7271,9 @@ class TestProductionLayoutCacheResolution:
             worktree=worktree,
             session_name="coding-1",
             require_validation=True,
-            current_validation_record_path=coder_run / "validation-record.json",
+            current_validation_evidence=_review_validation_evidence_from(
+                coder_run / "validation-record.json"
+            ),
         )
         assert resolution.decision is ResumeDecision.IGNORE_STALE
 
@@ -7242,7 +7298,9 @@ class TestProductionLayoutCacheResolution:
             worktree=worktree,
             session_name="coding-1",
             require_validation=True,
-            current_validation_record_path=coder_run / "validation-record.json",
+            current_validation_evidence=_review_validation_evidence_from(
+                coder_run / "validation-record.json"
+            ),
         )
         assert resolution.decision is ResumeDecision.REUSE_HALT
 
@@ -7267,7 +7325,9 @@ class TestProductionLayoutCacheResolution:
             worktree=worktree,
             session_name="coding-1",
             require_validation=True,
-            current_validation_record_path=coder_run / "validation-record.json",
+            current_validation_evidence=_review_validation_evidence_from(
+                coder_run / "validation-record.json"
+            ),
         )
         assert resolution.decision is ResumeDecision.REUSE_HALT
 
@@ -7296,7 +7356,9 @@ class TestProductionLayoutCacheResolution:
             worktree=worktree,
             session_name="coding-1",
             require_validation=True,
-            current_validation_record_path=coder_run / "validation-record.json",
+            current_validation_evidence=_review_validation_evidence_from(
+                coder_run / "validation-record.json"
+            ),
         )
         assert resolution.decision is ResumeDecision.REUSE_HALT
 
@@ -7327,7 +7389,9 @@ class TestProductionLayoutCacheResolution:
             worktree=worktree,
             session_name="coding-1",
             require_validation=True,
-            current_validation_record_path=coder_run / "validation-record.json",
+            current_validation_evidence=_review_validation_evidence_from(
+                coder_run / "validation-record.json"
+            ),
         )
         assert resolution.decision is ResumeDecision.COUNT_NO_COMPLETION_AND_RETRY
         # Outcome NOT populated for retry paths — caller must spawn
@@ -7363,7 +7427,9 @@ class TestProductionLayoutCacheResolution:
             worktree=worktree,
             session_name="coding-1",
             require_validation=True,
-            current_validation_record_path=coder_run / "validation-record.json",
+            current_validation_evidence=_review_validation_evidence_from(
+                coder_run / "validation-record.json"
+            ),
         )
         assert resolution.decision is ResumeDecision.IGNORE_STALE
 
@@ -7393,7 +7459,7 @@ class TestProductionLayoutCacheResolution:
             worktree=worktree,
             session_name="coding-2",
             require_validation=True,
-            current_validation_record_path=(
+            current_validation_evidence=_review_validation_evidence_from(
                 worktree
                 / ".issue-orchestrator"
                 / "sessions"
