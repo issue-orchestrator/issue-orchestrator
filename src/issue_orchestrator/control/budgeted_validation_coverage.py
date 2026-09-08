@@ -62,8 +62,8 @@ class BudgetedValidationCoverageOwner:
             BudgetedValidationCoverageEntry(
                 item.suite,
                 item.history,
-                include_retained_verdicts
-                and (item.suite.enabled or item.history.recovery_pending),
+                item.history.recovery_pending
+                or (include_retained_verdicts and item.suite.enabled),
             )
             for key, item in retained.items()
             if key not in current_keys

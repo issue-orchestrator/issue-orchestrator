@@ -64,6 +64,24 @@ def test_changed_current_definition_cannot_inherit_old_green_coverage(tmp_path):
     assert [entry.counts_for_verdict for entry in snapshot.entries] == [True, False]
 
 
+def test_changed_disabled_definition_cannot_hide_old_pending_recovery(tmp_path):
+    old = parse_budgeted_validation({"agents": {"command": ["old"]}})["agents"]
+    current = replace(
+        parse_budgeted_validation({"agents": {"command": ["new"]}})["agents"],
+        enabled=False,
+    )
+    store = FileBudgetedValidationStore(tmp_path)
+    store.run_exclusive(lambda journal: journal.write(
+        old,
+        BudgetedValidationHistory(suite_identity(old)).append(_pending(old)),
+    ))
+
+    snapshot = BudgetedValidationCoverageOwner(store).snapshot((current,))
+
+    assert snapshot.outcomes == frozenset({BudgetedValidationOutcome.UNAVAILABLE})
+    assert [entry.counts_for_verdict for entry in snapshot.entries] == [False, True]
+
+
 def test_retained_name_filter_excludes_other_suite_history(tmp_path):
     suites = parse_budgeted_validation({
         "agents": {"command": ["test"]},
