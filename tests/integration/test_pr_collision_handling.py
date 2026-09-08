@@ -171,7 +171,15 @@ class TestPRAlreadyExistsHandling:
         """When no closed PR exists, PR creation succeeds."""
         mock_pr_adapter = MagicMock()
         mock_pr_adapter.create_pr = Mock(
-            return_value=MagicMock(number=42, url="https://github.com/owner/repo/pull/42")
+            return_value=PRInfo(
+                number=42,
+                title="Test PR",
+                url="https://github.com/owner/repo/pull/42",
+                branch="issue-123-r1",
+                body="Closes #123",
+                state="open",
+                labels=[],
+            )
         )
 
         session_output = FileSystemSessionOutput()
