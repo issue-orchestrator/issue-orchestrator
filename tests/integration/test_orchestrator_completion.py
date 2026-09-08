@@ -28,6 +28,7 @@ from issue_orchestrator.domain.models import (
     AgentConfig,
 )
 from issue_orchestrator.ports import TraceEvent, NullEventSink
+from issue_orchestrator.ports.pull_request_tracker import PRInfo
 from issue_orchestrator.control.session_controller import SessionController, SessionDecision
 from issue_orchestrator.control.completion_processor import CompletionProcessor
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
@@ -92,7 +93,10 @@ def mock_pr_adapter():
     adapter = MagicMock()
     adapter.get_prs_for_issue = Mock(return_value=[])
     adapter.get_prs_for_branch = Mock(return_value=[])
-    adapter.create_pr = Mock(return_value=MagicMock(number=42, url="https://github.com/owner/repo/pull/42"))
+    adapter.create_pr = Mock(return_value=PRInfo(
+        number=42, title="Test PR", url="https://github.com/owner/repo/pull/42",
+        branch="issue-123", body="Test body", state="open", labels=[],
+    ))
     adapter.add_comment = Mock()
     return adapter
 
