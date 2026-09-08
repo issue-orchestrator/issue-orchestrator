@@ -22,6 +22,17 @@ from issue_orchestrator.ports import NullEventSink, NullSessionRunner
 from issue_orchestrator.ports.claim_manager import NullClaimManager
 
 
+@pytest.fixture(autouse=True)
+def bootstrap_test_repositories(tmp_path):
+    """Startup custody scans need a real repository, including the isolated default."""
+    from issue_orchestrator.execution.command_runner import LocalCommandRunner
+    from issue_orchestrator.execution.git_tools import create_git
+    git = create_git(LocalCommandRunner())
+    for root in (tmp_path, tmp_path / "isolated-repo-root"):
+        root.mkdir(exist_ok=True)
+        git.run(root, ["init", "--initial-branch=main"])
+
+
 class TestRepoAutoDetection:
     """Tests for auto-detecting repo from git remote."""
 
@@ -937,6 +948,7 @@ class TestBuildOrchestrator:
     def minimal_config(self, tmp_path) -> Config:
         """Minimal valid config for testing."""
         config = Config()
+        config.validation.quick.cmd = "true"
         config.repo = "test/repo"
         config.repo_root = tmp_path
         config.worktree_base = tmp_path / "worktrees"
@@ -948,6 +960,7 @@ class TestBuildOrchestrator:
     def test_build_orchestrator_requires_repo(self) -> None:
         """Raises ValueError when repo cannot be determined."""
         config = Config()
+        config.validation.quick.cmd = "true"
         config.repo = None
         config.terminal_adapter = MagicMock()
         config.ui_mode = "normal"
@@ -980,6 +993,7 @@ class TestBuildOrchestrator:
     def test_build_orchestrator_auto_detects_repo_when_none(self) -> None:
         """Auto-detects repo from git when config.repo is None."""
         config = Config()
+        config.validation.quick.cmd = "true"
         config.repo = None
         config.terminal_adapter = MagicMock()
         config.ui_mode = "normal"
@@ -1123,6 +1137,7 @@ class TestClaimTestingWiring:
     def test_build_orchestrator_for_testing_uses_injected_claim_manager(self, tmp_path) -> None:
         """Testing bootstrap should allow claim-aware tests to opt out of NullClaimManager."""
         config = Config()
+        config.validation.quick.cmd = "true"
         config.repo = "owner/repo"
         config.repo_root = tmp_path
         config.worktree_base = tmp_path / "worktrees"
@@ -1145,6 +1160,7 @@ class TestClaimTestingWiring:
     def test_build_orchestrator_for_testing_wires_lease_lookup_from_active_sessions(self, tmp_path) -> None:
         """ActionApplier lease lookup should resolve lease IDs from orchestrator state."""
         config = Config()
+        config.validation.quick.cmd = "true"
         config.repo = "owner/repo"
         config.repo_root = tmp_path
         config.worktree_base = tmp_path / "worktrees"

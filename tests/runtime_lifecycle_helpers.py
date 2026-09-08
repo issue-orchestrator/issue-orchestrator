@@ -1,7 +1,7 @@
 """Explicit lifecycle bundle with controlled preservation-port responses for release tests."""
 
 from unittest.mock import Mock
-from issue_orchestrator.control.review_exchange_lifecycle import CoreIssueRuntimeOwners, IssueRuntimeLifecycleOwners
+from issue_orchestrator.control.review_exchange_lifecycle import CoreIssueRuntimeOwners, IssueRuntimeLifecycleOwners, ReviewExchangeCancellation
 from issue_orchestrator.domain.issue_run_evidence import IssueRunEvidence, IssueRunEvidenceOrigin, IssueRunEvidenceStatus
 from issue_orchestrator.domain.validated_work_commands import ValidatedWorkDispositionBatch
 from issue_orchestrator.ports.issue_run_evidence import IssueRunEvidenceSource
@@ -58,3 +58,7 @@ def bind_action_runtime(applier):
         pair_registry=applier.pair_registry, job_supervisor=applier.background_job_supervisor,
         publish_recovery=applier.publish_recovery, completion_intake=applier.completion_intake)
     return applier
+
+
+def cancel_empty_exchange(issue_number: int, reason: str) -> ReviewExchangeCancellation:
+    return ReviewExchangeCancellation(issue_number, (), ValidatedWorkDispositionBatch.no_work(issue_number, reason))

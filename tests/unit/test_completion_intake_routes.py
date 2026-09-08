@@ -181,7 +181,7 @@ def test_historical_endpoint_returns_real_failed_validation_then_parked_admissio
         Mock(spec=BackgroundJobRunner),
     )
     engine = Orchestrator(
-        existing.config, deps=replace(existing.deps, completion_intake=service)
+        existing.config, deps=replace(existing.deps, completion_intake=service), state=existing.state
     )
     deps = ControlApiIssueDependencies(
         get_orchestrator=lambda: engine, with_state_lock=lambda fn: fn()
@@ -256,7 +256,7 @@ def test_resume_requires_capability_bound_exact_receipt_and_ignores_canonical_fi
         event_bus=None,
     )
     engine = Orchestrator(
-        existing.config, deps=replace(existing.deps, completion_processor=processor)
+        existing.config, deps=replace(existing.deps, completion_processor=processor), state=existing.state
     )
     deps = ControlApiIssueDependencies(
         get_orchestrator=lambda: engine, with_state_lock=lambda fn: fn()

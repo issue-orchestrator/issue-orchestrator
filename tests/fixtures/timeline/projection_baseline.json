@@ -1043,6 +1043,12 @@
     "status": "completed",
     "step": "transition.rejected"
   },
+  "validated_work.disposition_observed": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "validated_work.disposition_observed"
+  },
   "validation.completed": {
     "level": "detail",
     "phase": "orchestrator",

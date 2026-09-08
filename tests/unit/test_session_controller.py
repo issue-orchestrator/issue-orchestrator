@@ -815,7 +815,9 @@ class TestSessionControllerTerminated:
             requested_actions=[RequestedAction.CREATE_PR],
         )
         processor.process_result.review_exchange_deferred = True
+        from tests.runtime_lifecycle_helpers import cancel_empty_exchange
         controller = SessionController(
+            review_exchange_canceller=cancel_empty_exchange,
             completion_processor=processor,
             events=NullEventSink(),
             session_output=FileSystemSessionOutput(),
