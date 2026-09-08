@@ -1,7 +1,7 @@
 """Project attested coder validation into pair and run views for an exchange."""
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from collections.abc import Callable
 from pathlib import Path
 
@@ -27,6 +27,7 @@ class PairValidationMirror:
     intake: CompletionExchangeIntake
     head_reader: Callable[[Path], str | None]
     run_record_path: Path | None = None
+    _authoritative_bytes: bytes | None = field(default=None, init=False, repr=False)
 
     def completion_error(
         self,
@@ -42,7 +43,10 @@ class PairValidationMirror:
         self._replace_bytes(evidence.validation_bytes)
         if not require_validation:
             return None
-        return self.current_validation_error()
+        return _validation_head_error(
+            evidence.validation.head_sha,
+            current_head_sha=self.head_reader(self.coder_worktree_path),
+        )
 
     def replace_from_initial(self, source: Path | None) -> None:
         """Mirror the caller's current validation source at exchange start.
@@ -54,8 +58,8 @@ class PairValidationMirror:
         self._replace_from(source)
 
     def current_validation_error(self) -> str | None:
-        return _validation_record_error(
-            self.record_path,
+        return _validation_bytes_error(
+            self._authoritative_bytes,
             current_head_sha=self.head_reader(self.coder_worktree_path),
         )
 
@@ -66,37 +70,47 @@ class PairValidationMirror:
         self._replace_bytes(source.read_bytes())
 
     def _replace_bytes(self, payload: bytes) -> None:
+        self._authoritative_bytes = payload
         self.pair_dir.mkdir(parents=True, exist_ok=True)
         _atomic_write_bytes(self.record_path, payload)
         if self.run_record_path is not None:
             _atomic_write_bytes(self.run_record_path, payload)
 
     def _clear(self) -> None:
+        self._authoritative_bytes = None
         self.record_path.unlink(missing_ok=True)
         if self.run_record_path is not None:
             self.run_record_path.unlink(missing_ok=True)
 
 
-def _validation_record_error(
-    record_path: Path,
+def _validation_bytes_error(
+    payload: bytes | None,
     *,
     current_head_sha: str | None,
 ) -> str | None:
-    if not record_path.exists():
+    if payload is None:
         return "validation-record.json missing"
     try:
-        data = json.loads(record_path.read_text())
-    except json.JSONDecodeError:
+        data = json.loads(payload)
+    except (json.JSONDecodeError, UnicodeDecodeError):
         return "validation-record.json is not valid JSON"
     if not isinstance(data, dict):
         return "validation-record.json must be a JSON object"
     if data.get("passed") is not True:
         return "validation-record.json did not pass"
-    if current_head_sha is None:
-        return "cannot determine current HEAD for validation-record.json"
     record_head_sha = data.get("head_sha")
     if not isinstance(record_head_sha, str) or not record_head_sha:
         return "validation-record.json missing head_sha"
+    return _validation_head_error(record_head_sha, current_head_sha=current_head_sha)
+
+
+def _validation_head_error(
+    record_head_sha: str,
+    *,
+    current_head_sha: str | None,
+) -> str | None:
+    if current_head_sha is None:
+        return "cannot determine current HEAD for validation-record.json"
     if record_head_sha != current_head_sha:
         return (
             "validation-record.json head "

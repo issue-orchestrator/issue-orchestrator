@@ -455,7 +455,12 @@ def create_test_orchestrator(
     """
     from tests.conftest import build_test_orchestrator_deps, MockEventSink, MockSessionRunner
 
-    repo_host = repository_host or MagicMock()
+    if repository_host is None:
+        repo_host = MagicMock()
+        repo_host.get_prs_for_branch.return_value = []
+        repo_host.get_pr.return_value = None
+    else:
+        repo_host = repository_host
     wt_manager = worktree_manager or MockWorktreeManager()
     if working_copy is None:
         wc = MagicMock()
