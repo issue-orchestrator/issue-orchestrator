@@ -26,7 +26,8 @@ def test_execenv_declares_every_contained_validation_identity_input() -> None:
     }
 
     assert configured["IO_EXECENV_CGROUP_CONTAINMENT"] == "True"
-    for name in ("SCHEDD_NAME", "COLLECTOR_HOST", "PER_JOB_HISTORY_DIR"):
+    assert configured["SCHEDD_NAME"] == "io-execenv@$(FULL_HOSTNAME)"
+    for name in ("COLLECTOR_HOST", "PER_JOB_HISTORY_DIR"):
         assert configured[name], f"execenv omits contained-validation {name}"
 
 
