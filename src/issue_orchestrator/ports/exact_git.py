@@ -31,7 +31,13 @@ class ExactGit(Protocol):
 
     def resolve_push_destination(
         self, repository: Path, *, remote: str
-    ) -> ExactPushDestination: ...
+    ) -> ExactPushDestination:
+        """Resolve one authenticated endpoint.
+
+        Raises ExactPushAuthenticationError when authentication context cannot
+        be prepared; callers may retry that failure without changing evidence.
+        """
+        ...
 
     def push_exact(
         self,

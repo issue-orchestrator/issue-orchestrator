@@ -9,13 +9,9 @@ from collections.abc import Mapping
 from urllib.parse import SplitResult, unquote, urlsplit
 
 from ..adapters.git.git_cli import GIT_ENV_STRIP
-from ..domain.exact_git import ExactPushDestination
+from ..domain.exact_git import ExactPushAuthenticationError, ExactPushDestination
 from ..ports.git import Git, GitError
 from .git_push_operations import GitAuthEnvProvider, prepare_git_auth_env
-
-
-class ExactPushAuthenticationError(ValueError):
-    """Authentication could not supply the effective execution context."""
 
 
 def require_remote(remote: str) -> None:
