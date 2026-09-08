@@ -24,6 +24,7 @@ from ..execution.session_output_adapter import FileSystemSessionOutput
 from ..infra import runtime_identity
 from ..control.completion_ports import LabelAdapter, PRAdapter
 from ..infra.config import Config
+from ..control.review_exchange_lifecycle import ReviewExchangeCancellation
 from ..ports import EventSink
 from ..ports.coder_prompt import (
     CoderPromptAddendumProvider,
@@ -33,6 +34,7 @@ from ..ports.coder_prompt import (
 if TYPE_CHECKING:
     from ..control.publish_recovery import PublishRecoveryService
     from ..control.action_applier import ActionApplier
+    from ..control.dependency_evaluator import DependencyEvaluator
     from ..ports.fresh_issue_reader import FreshIssueReader
     from ..control.needs_human_block import SharedNeedsHumanBlock
     from ..control.open_issue_corpus import OpenIssueCorpusManager
@@ -285,6 +287,28 @@ def build_completion_handler_factory(
     return factory
 
 
+
+def wire_stack_publish_gate(
+    completion_processor: "CompletionProcessor",
+    dependency_evaluator: "DependencyEvaluator",
+    github: "RepositoryHost",
+    command_runner: LocalCommandRunner,
+    config: Config,
+) -> None:
+    """Attach branch ancestry and stack-base policy to the completion owner."""
+    from ..control.stack_publish_gate import StackBaseGate
+    from ..execution.stack_branch_ancestry import GitStackBranchAncestry
+
+    dependency_evaluator.attach_branch_ancestry(GitStackBranchAncestry(command_runner))
+    completion_processor.attach_stack_publish_gate(
+        StackBaseGate(
+            evaluator=dependency_evaluator,
+            issue_reader=github,
+            configured_base_branch=config.worktree_base_branch_override,
+        )
+    )
+
+
 def build_publish_recovery(
     *,
     repository_host: "RepositoryHost",
@@ -295,19 +319,13 @@ def build_publish_recovery(
     config: Config,
     tech_lead_authority: "TechLeadAuthorityStore",
 ) -> "PublishRecoveryService":
-    """Wire the "Retry publish" owner: durable locator store + dedicated runner.
-
-    The republish runs on its own :class:`ThreadBackgroundJobRunner` (drained by
-    ``PublishRecoveryService.drain_completed_retries`` each tick), NOT the shared
-    completion/review-exchange runners — those are drained by other owners and
-    would steal or drop republish results.
-    """
-    from ..infra.repo_identity import state_dir
-    from ..execution.thread_background_job_runner import ThreadBackgroundJobRunner
+    """Wire the retry-publish owner with durable locators and its own runner."""
     from ..control.publish_recovery import PublishRecoveryService
     from ..execution.json_publish_retry_locator_store import (
         JsonPublishRetryLocatorStore,
     )
+    from ..execution.thread_background_job_runner import ThreadBackgroundJobRunner
+    from ..infra.repo_identity import state_dir
 
     locator_store = JsonPublishRetryLocatorStore(
         state_dir(config.repo_root) / "publish_retry_locators.json"
@@ -324,20 +342,26 @@ def build_publish_recovery(
         tech_lead_authority=tech_lead_authority,
     )
 
-from ..control.review_exchange_lifecycle import ReviewExchangeCancellation
-
 
 def build_manual_publisher(
-    *, completion_processor: "CompletionProcessor", completion_intake: CompletionIntakeRuntime,
-    working_copy: WorkingCopy, exact_git: ExactGit, remote: PublicationRemote, repo_slug: str,
+    *,
+    completion_processor: "CompletionProcessor",
+    completion_intake: CompletionIntakeRuntime,
+    working_copy: WorkingCopy,
+    exact_git: ExactGit,
+    remote: PublicationRemote,
+    repo_slug: str,
 ) -> ManualPublisher:
     from ..control.manual_completion_preparation import ManualCompletionPreparation
     from ..control.manual_publication import ManualCompletionPublisher
     from ..execution.git_validated_head_executor import GitValidatedHeadExecutor
 
     return ManualCompletionPublisher(
-        ManualCompletionPreparation(intake=completion_intake, completion=completion_processor,
-                                    working_copy=working_copy, repo_slug=repo_slug),
+        ManualCompletionPreparation(
+            intake=completion_intake,
+            completion=completion_processor,
+            working_copy=working_copy,
+            repo_slug=repo_slug,
+        ),
         GitValidatedHeadExecutor(exact_git, remote),
     )
-

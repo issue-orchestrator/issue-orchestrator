@@ -202,4 +202,29 @@ _Auto-generated from settings schema._
 | `worktrees.seed_ref` | string (optional) | `None` | Optional local ref used to seed fresh issue worktrees before review/PR creation | `HEAD`, `main`, `fc42d4c` | Use for local iteration when fresh issue worktrees should inherit a specific local ref. |
 | `worktrees.worktree_branch_on_recreate` | string | `delete` | What to do when recreating a worktree with existing branch | `delete`, `create_new_branch` | Use create_new_branch to keep the old branch intact. |
 | `worktrees.setup` | string | `` | Commands to run in each new worktree after creation (one per line) | `npm install`, `pip install -e '.[dev]'`, `make setup` | Each command runs in the worktree directory. Leave empty if no setup needed. The orchestrator's own setup (hooks, coding-done, reviewer-done, Claude settings) is automatic. |
+
+## Budgeted validation (YAML)
+
+Named suites live under `validation.budgeted.<suite>`. An empty mapping disables this workload. Each suite has its own cadence; either threshold makes changed code due. Only successful runs advance coverage. No bisection-depth setting is needed.
+
+The orchestrator stores each reserved run with its exact command, branch, and
+timeouts. A restart resumes that definition even if current configuration
+changes, disables, or removes the suite. A pending run reports unavailable
+coverage; an older pass cannot make it green. Completed diagnostic steps also
+resume from their durable boundary, and confirmed regressions remain visible to
+the tech lead after their suite is removed. Runtime requests, histories,
+reports, and run evidence use separate storage namespaces so one kind of file
+cannot be interpreted as another.
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | `True` | Enable automatic execution of this configured suite. |
+| `issue_agent_label` | `agent:backend` | Configured coding-agent label for regression issues; the tech lead champions completion. |
+| `branch` | `main` | Remote branch whose exact commits are tested and bisected. |
+| `command` | `required` | Test command as an argument list, executed in an isolated checkout. |
+| `setup_command` | `[]` | Optional dependency setup command, run in each isolated checkout before tests. |
+| `timeout_seconds` | `3600` | Deadline for one test command, including a bisection probe. |
+| `setup_timeout_seconds` | `900` | Deadline for dependency setup in one checkout. |
+| `cadence.max_merges_since_success` | `10` | Run when this many PRs have merged since the last successful suite run. |
+| `cadence.max_delay_hours` | `24` | Maximum hours since successful coverage before changed code is due, even below the merge threshold. |
 <!-- END AUTO-GENERATED CONFIG REFERENCE -->

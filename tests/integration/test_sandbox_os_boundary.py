@@ -132,7 +132,6 @@ from tests.sandbox_probe_retry import (
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.live,
-    pytest.mark.live_agent,
 ]
 
 # Substrings in claude's output that mean the sandbox could not initialize on
@@ -902,6 +901,7 @@ def _is_permission_denial(text: str) -> bool:
     sys.platform.startswith("win"),
     reason="claude sandbox is unsupported on native Windows (needs WSL2)",
 )
+@pytest.mark.live_agent
 def test_generated_sandbox_settings_enforced_by_os(tmp_path: Path) -> None:
     worktree = tmp_path / "worktree"
     worktree.mkdir()

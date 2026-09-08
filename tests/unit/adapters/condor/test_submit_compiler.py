@@ -260,6 +260,20 @@ def test_work_key_is_the_batch_name(tmp_path: Path) -> None:
     assert "batch_name = test-unit" in compiled.text
 
 
+def test_durable_operation_has_identity_and_scheduler_side_wall_bound(
+    tmp_path: Path,
+) -> None:
+    compiled = compile_submit_description(
+        _command(("/bin/true",)),
+        LaneResources(request_cpus=1),
+        tmp_path,
+        operation_identity="probe-123",
+        max_wall_seconds=720,
+    )
+    assert '+IssueOrchestratorOperationId = "probe-123"' in compiled.text
+    assert "(time() - QDate) > 720" in compiled.text
+
+
 def test_submitter_worktree_is_tagged_on_the_job(tmp_path: Path) -> None:
     """The pool is shared by every worktree on the machine and
     concurrent gates are normal; each job names its submitting

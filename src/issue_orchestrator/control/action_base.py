@@ -56,6 +56,7 @@ class ActionType(Enum):
 
     # Issue creation
     CREATE_TECH_LEAD_ISSUE = "create_tech_lead_issue"
+    REPORT_BUDGETED_VALIDATION = "report_budgeted_validation"
 
     # Gated act-level proposal issue: create + record the stored op (#6778)
     CREATE_TECH_LEAD_PROPOSAL_ISSUE = "create_tech_lead_proposal_issue"

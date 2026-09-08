@@ -56,7 +56,7 @@ Runs before `git commit`:
 ### `hooks/pre-push`
 Runs before `git push`:
 - dirty-tree guard via `issue_orchestrator.entrypoints.cli_tools.prepush_check --dirty-only`
-- `make validate-pr` - Required PR gate (`validate` + agent-backed simulated/integration slices)
+- `make validate-pr` - Required deterministic PR gate, including simulated/integration coverage without model calls. Configured budgeted validation owns periodic live-agent coverage; see `docs/development/budgeted-validation.md`.
 
 ### `src/issue_orchestrator/hooks/pre-push`
 Installed into orchestrator-created worktrees:

@@ -108,6 +108,7 @@ class TestClaudeExecution:
         assert result.returncode == 0
         assert "claude" in result.stdout.lower() or "Claude" in result.stdout
 
+    @pytest.mark.live_agent
     def test_claude_print_single_turn_token(self):
         """Run Claude with a deterministic token task to verify execution works.
 
@@ -135,6 +136,7 @@ class TestClaudeExecution:
             f"Expected {expected_token!r} in output: {result.stdout}"
         )
 
+    @pytest.mark.live_agent
     def test_claude_command_with_single_quotes(self):
         """Test that commands with single quotes work correctly via zsh -l -c wrapper.
 
@@ -155,6 +157,7 @@ class TestClaudeExecution:
         assert "hello" in result.stdout.lower(), f"Expected 'hello' in output: {result.stdout}"
 
 
+    @pytest.mark.live_agent
     def test_claude_read_file_with_bypass_permissions(self):
         """Test that Claude can read files when permissions are bypassed.
 
@@ -185,6 +188,7 @@ class TestClaudeExecution:
         finally:
             Path(test_file).unlink(missing_ok=True)
 
+    @pytest.mark.live_agent
     def test_claude_read_from_specific_directory(self):
         """Test reading from a subdirectory like docs/10-ai/.
 
@@ -227,6 +231,7 @@ class TestClaudeWithEnvironmentIsolation:
     subscription authentication while still preventing credential leakage.
     """
 
+    @pytest.mark.live_agent
     def test_claude_works_with_scrubbed_env(self):
         """Verify Claude authenticates when dangerous env vars are scrubbed.
 
@@ -257,6 +262,7 @@ class TestClaudeWithEnvironmentIsolation:
         assert result.returncode == 0, f"Claude failed: {result.stderr}"
         assert "working" in result.stdout.lower(), f"Unexpected output: {result.stdout}"
 
+    @pytest.mark.live_agent
     def test_claude_fails_with_isolated_home(self, tmp_path):
         """Document that HOME isolation breaks Claude subscription auth.
 
@@ -377,6 +383,7 @@ class TestClaudeViaAdapterPath:
     4. Run Claude and verify it authenticates via macOS Keychain
     """
 
+    @pytest.mark.live_agent
     def test_claude_via_adapter_isolation_path(self, tmp_path, require_claude):
         """Run Claude through the exact isolation path used by terminal adapters.
 
@@ -450,6 +457,7 @@ class TestClaudeViaAdapterPath:
         content = verify_file.read_text().strip()
         assert "VERIFIED" in content, f"Verification file has wrong content: {content}"
 
+    @pytest.mark.live_agent
     def test_claude_via_subprocess_backend(self, tmp_path, require_claude, monkeypatch):
         """Run Claude via subprocess backend in a real git worktree."""
         from issue_orchestrator.execution.terminal_subprocess import SubprocessPlugin
@@ -530,6 +538,7 @@ class TestClaudeViaAdapterPath:
                 text=True,
             )
 
+    @pytest.mark.live_agent
     def test_claude_via_adapter_path_with_home_isolation_fails(self, tmp_path):
         """Document that HOME isolation breaks Claude auth (the bug we fixed).
 
@@ -580,6 +589,7 @@ class TestAgentDoneInvocation:
     and write completion.json, which is how sessions signal completion.
     """
 
+    @pytest.mark.live_agent
     def test_agent_done_invocable_from_claude(self, tmp_path):
         """Verify Claude can invoke completion commands in worktree-like environment.
 
@@ -827,6 +837,7 @@ class TestAgentDoneInvocation:
 
 
 @pytest.mark.skipif(not is_claude_available(), reason="Claude CLI not installed")
+@pytest.mark.live_agent
 def test_ai_gate_production_path_works():
     """The production AI gate path must produce a pass/fail result.
 

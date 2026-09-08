@@ -883,6 +883,7 @@ def test_synthetic_raw_tui_review_exchange_suppresses_bootstrap_response(
 
 @pytest.mark.usefixtures("_require_codex")
 @pytest.mark.live_codex
+@pytest.mark.live_agent
 def test_real_interactive_codex_reviewer_round_trips_through_exchange(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

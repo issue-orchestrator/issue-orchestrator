@@ -66,6 +66,10 @@ cd /work
     -q -m "requires_infra and not requires_backoff_pool" -p no:cacheprovider \
     --rootdir=/repo -o addopts=
 
+say "budgeted validation survives coordinator death under cgroup ownership"
+"$PYTHON" -m pytest /repo/tests/integration/test_contained_validation_execenv.py \
+    -q -m requires_infra -p no:cacheprovider --rootdir=/repo -o addopts=
+
 # The allocation waits 10s before asking for memory: the starter
 # attaches the job to its limit-bearing cgroup shortly AFTER spawn,
 # and under emulation that window stretches to seconds. A workload

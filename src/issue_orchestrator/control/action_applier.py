@@ -30,6 +30,8 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional, Sequence, TypeVar
 
+from ..ports.budgeted_validation import BudgetedValidationReports, DisabledBudgetedValidationReports
+from .budgeted_validation_reporting import ReportBudgetedValidationAction
 from ..events import EventName
 from ..infra.logging_config import issue_log
 from ..ports import EventSink,  make_trace_event
@@ -174,6 +176,7 @@ class ActionApplier:
     # Shared background-job supervisor. Used with pair_registry to make
     # issue/rework cancellation a terminal review-exchange lifecycle event.
     background_job_supervisor: Optional["BackgroundJobSupervisor"] = None
+    budgeted_validation_reports: BudgetedValidationReports = field(default_factory=DisabledBudgetedValidationReports)
     # Publish-retry owner, abandoned at issue terminal boundaries via the shared
     # runtime terminator so a late republish cannot repopulate a terminated
     # issue. Wired post-construction (PublishRecoveryService needs this applier).
@@ -257,6 +260,7 @@ class ActionApplier:
         """Dispatch an action to the appropriate handler."""
         handlers: dict[ActionType, Callable[[Action], ActionResult]] = {
             ActionType.ADD_LABEL: self._apply_add_label,
+            ActionType.REPORT_BUDGETED_VALIDATION: self._apply_budgeted_validation_report,
             ActionType.REMOVE_LABEL: self._apply_remove_label,
             ActionType.SYNC_LABELS: self._apply_sync_labels,
             ActionType.APPLY_PROVIDER_IMPACT: self._apply_provider_impact,
@@ -1409,6 +1413,11 @@ class ActionApplier:
             pr_number=action.pr_number,
             issue_number=action.issue_number,
         )
+
+    def _apply_budgeted_validation_report(self, action: Action) -> ActionResult:
+        assert isinstance(action, ReportBudgetedValidationAction)
+        number = self.budgeted_validation_reports.publish(action.notice)
+        return ActionResult.ok(action, issue_number=number)
 
     def _apply_create_tech_lead_issue(self, action: Action) -> ActionResult:
         """Create a tech-lead-authored issue under whole-run coordination.

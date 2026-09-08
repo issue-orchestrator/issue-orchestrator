@@ -710,6 +710,7 @@ def test_foreign_repo_real_pty_agent_invocation(
     shutil.which("claude") is None,
     reason="Claude Code CLI not installed",
 )
+@pytest.mark.live_agent
 def test_foreign_repo_claude_code_agent_done(make_worktree) -> None:
     """Claude Code invokes coding-done in a foreign repo worktree."""
     handle = make_worktree(90, "claude-foreign-test")
@@ -770,6 +771,7 @@ def test_foreign_repo_claude_code_agent_done(make_worktree) -> None:
     shutil.which("codex") is None,
     reason="Codex CLI not installed",
 )
+@pytest.mark.live_agent
 def test_foreign_repo_codex_agent_done(make_worktree) -> None:
     """Codex invokes coding-done in a foreign repo worktree."""
     handle = make_worktree(91, "codex-foreign-test")
