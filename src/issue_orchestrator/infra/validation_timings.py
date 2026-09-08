@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -11,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ..ports.machine_state import MachineStateSampler
+from .jsonl_storage import append_jsonl as append_jsonl
 from .machine_state import default_machine_state_sampler, stamp_machine_state
 
 _CONFIG_KEY_PATTERN = r"[A-Za-z_][A-Za-z0-9_]*"
@@ -133,23 +132,6 @@ def get_shared_timings_file(worktree: Path) -> Path | None:
     if common_dir is None:
         return None
     return common_dir / "issue-orchestrator" / "validate-timings.jsonl"
-
-
-def append_jsonl(path: Path | None, record: dict[str, object]) -> None:
-    """Append one JSON object to a JSONL file, creating parents as needed."""
-    if path is None:
-        return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    line = (json.dumps(record, sort_keys=True) + "\n").encode("utf-8")
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
-    try:
-        # Use one O_APPEND write so concurrent validation gates cannot interleave
-        # JSONL fragments on local POSIX filesystems such as macOS APFS.
-        written = os.write(fd, line)
-        if written != len(line):
-            raise OSError(f"short JSONL write to {path}: {written} of {len(line)}")
-    finally:
-        os.close(fd)
 
 
 def build_timing_envelope(
