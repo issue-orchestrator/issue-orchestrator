@@ -10,6 +10,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Literal, Optional, TYPE_CHECKING, TypeAlias
 from unittest.mock import Mock
 
+from .issue_work_classification import IssueWorkClassification
 from .dependency_gates import DependencyGateSnapshot
 from .issue_key import IssueKey, GitHubIssueKey, parse_external_id
 from .session_key import SessionKey, TaskKind  # re-exported for callers
@@ -1952,6 +1953,7 @@ class OrchestratorState:
     in_flight_work: list["InFlightWork"] = field(default_factory=list)
     startup_status: str = "pending"  # "pending", "running", "complete"
     startup_message: str = ""  # Current startup task description
+    issue_work_classifications: dict[int, IssueWorkClassification] = field(default_factory=dict)  # QueueCache-owned latest observed identity, including historical/out-of-scope issues
     cached_scope_issues: list["IssueProtocol"] = field(default_factory=list)  # Cached full in-scope issue snapshot for dashboard/runtime recovery
     cached_queue_issues: list["IssueProtocol"] = field(default_factory=list)  # Cached runnable queue for instant pagination
     queue_last_refresh_at: float = 0.0  # Unix timestamp of last queue refresh

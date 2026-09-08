@@ -478,3 +478,31 @@ test('a refresh that changes the row SET rebuilds, and rows keep their identity'
     assert.equal(grown.rebuild, true);
     assert.match(grown.html, /data-tla-row="run-901::tech-lead-901"/);
 });
+
+test('delivery warnings stay visible with a closed panel and clear on recovery', () => {
+    const panel = { open: false };
+    const warning = { hidden: true, textContent: '' };
+    const context = loadModule({
+        techLeadActivityPanel: panel,
+        techLeadDeliveryWarning: warning,
+    });
+    for (const status of ['stalled', 'unknown']) {
+        const message = `${status}: inspect <the run> & its receipt`;
+        context.updateTechLeadActivityPanel({ entries: [], delivery: { status, message } });
+        assert.equal(warning.hidden, false);
+        assert.equal(warning.textContent, message); // text only, never raw HTML
+        assert.equal(panel.open, false);
+    }
+    context.updateTechLeadActivityPanel({
+        entries: [], delivery: { status: 'observing', message: '' },
+    });
+    assert.equal(warning.hidden, true);
+    assert.equal(warning.textContent, '');
+});
+
+test('delivery warning is a live status outside the native activity disclosure', () => {
+    const template = fs.readFileSync(path.join(__dirname,
+        '../../src/issue_orchestrator/templates/dashboard.html'), 'utf8');
+    assert.match(template, /<p[^>]+id="techLeadDeliveryWarning"[^>]+role="status"[^>]+hidden><\/p>\s*<details/);
+    assert.match(template, /<summary class="tla-summary">/);
+});

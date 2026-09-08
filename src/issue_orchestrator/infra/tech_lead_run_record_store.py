@@ -23,9 +23,19 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterator, Optional, Sequence
 
+from ..domain.tech_lead_delivery import (
+    DeliveryHistoryState,
+    TechLeadDeliveryEvidence,
+)
+from ..domain.tech_lead_receipt_time import parse_receipt_time, receipt_time
 from ..domain.tech_lead_run import TechLeadRunScopeKind
 from ..domain.tech_lead_run_artifacts import TechLeadRunArtifacts, kinds_from_values
-from ..domain.tech_lead_run_record import TechLeadRunPhase, TechLeadRunRecord
+from ..domain.tech_lead_run_record import (
+    TechLeadRunPhase,
+    TechLeadRunRecord,
+    TechLeadRunReceipt,
+    TechLeadDeliveryOutcome,
+)
 from ..domain.tech_lead_session import TechLeadSessionFlavor
 from .repo_identity import state_dir
 from .sqlite_connection import open_sqlite
@@ -65,7 +75,89 @@ _ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
     # (#6858 F4). Empty for a run whose artifacts were not preserved.
     ("artifact_dir", "TEXT NOT NULL DEFAULT ''"),
     ("artifact_kinds", "TEXT NOT NULL DEFAULT ''"),
+    ("delivery_outcome", "TEXT NOT NULL DEFAULT 'legacy'"),
 )
+
+
+# One statement/snapshot, scalar output, no display row or artifact hydration.
+# Fixed-width normalized ISO text sorts exactly at datetime's microsecond
+# precision. SQLite date functions would round the supported precision away.
+DELIVERY_EVIDENCE_SQL = """
+WITH receipts AS (
+    SELECT phase,
+        tech_lead_receipt_validity(run_id, session_name, run_key, scope_kind,
+            flavor, phase, started_at, ended_at, subject_issue_number,
+            subject_title, anchor_issue_number, findings, proposals, delivery_outcome) AS validity,
+        tech_lead_receipt_timestamp(started_at) AS start,
+        tech_lead_receipt_timestamp(ended_at) AS end
+    FROM tech_lead_run_records
+), delivery AS (
+    SELECT MAX(end) AS last_end FROM receipts WHERE validity = 2
+), launches AS (
+    SELECT start FROM receipts, delivery
+    WHERE phase != ? AND (last_end IS NULL OR start > last_end)
+)
+SELECT
+    (SELECT COUNT(*) FROM receipts WHERE validity = 0) AS invalid,
+    (SELECT last_end FROM delivery) AS delivered,
+    MIN(start) AS first_start,
+    MAX(start) AS latest_start,
+    COUNT(*) AS runs
+FROM launches
+"""
+
+
+def _sqlite_receipt_validity(
+    run_id: str,
+    session_name: str,
+    run_key: str,
+    scope_kind: str,
+    flavor: str,
+    phase: str,
+    started_at: str,
+    ended_at: str,
+    subject_issue_number: int,
+    subject_title: str,
+    anchor_issue_number: int,
+    findings: int,
+    proposals: int,
+    delivery_outcome: str,
+) -> int:
+    """Bounded receipt validation: 0 unknown, 1 undelivered, 2 delivered."""
+    try:
+        receipt = TechLeadRunReceipt(
+            run_id=run_id,
+            session_name=session_name,
+            run_key=run_key,
+            scope_kind=TechLeadRunScopeKind(scope_kind),
+            flavor=TechLeadSessionFlavor(flavor),
+            phase=TechLeadRunPhase(phase),
+            started_at=parse_receipt_time(started_at),
+            ended_at=None if ended_at == "" else parse_receipt_time(ended_at),
+            subject_issue_number=subject_issue_number,
+            subject_title=subject_title,
+            anchor_issue_number=anchor_issue_number,
+            findings=findings,
+            proposals=proposals,
+            delivery_outcome=TechLeadDeliveryOutcome(delivery_outcome),
+        )
+        return (2 if receipt.delivered else 1) if receipt.delivery_known else 0
+    except (ValueError, TypeError, OverflowError):
+        return 0
+
+
+def _sqlite_receipt_time(value: object) -> str | None:
+    """Scalar SQL adapter for the shared parser, with no retained row history."""
+    try:
+        return receipt_time(parse_receipt_time(value)).isoformat(
+            timespec="microseconds"
+        )
+    except (ValueError, OverflowError):
+        return None
+
+
+def _evidence_time(value: str | None) -> datetime | None:
+    return datetime.fromisoformat(value) if value is not None else None
 
 
 class SqliteTechLeadRunRecordStore:
@@ -75,6 +167,7 @@ class SqliteTechLeadRunRecordStore:
         self._db_path = db_path
         self._local = threading.local()
         self._write_lock = threading.Lock()
+        self._lost_receipt = threading.Event()
         self.initialize()
 
     @classmethod
@@ -123,8 +216,8 @@ class SqliteTechLeadRunRecordStore:
             " run_id, session_name, run_key, scope_kind, flavor, phase,"
             " started_at, ended_at, subject_issue_number, subject_title,"
             " anchor_issue_number, detail, findings, proposals,"
-            " artifact_dir, artifact_kinds"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " artifact_dir, artifact_kinds, delivery_outcome"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 record.run_id,
                 record.session_name,
@@ -141,6 +234,7 @@ class SqliteTechLeadRunRecordStore:
                 record.findings,
                 record.proposals,
                 *_artifact_columns(record.artifacts),
+                record.delivery_outcome.value,
             ),
             what=f"open run {record.run_key}",
         )
@@ -156,6 +250,7 @@ class SqliteTechLeadRunRecordStore:
         findings: int = 0,
         proposals: int = 0,
         artifacts: Optional[TechLeadRunArtifacts] = None,
+        delivery_outcome: TechLeadDeliveryOutcome = TechLeadDeliveryOutcome.LEGACY,
     ) -> None:
         """Close an open row. Silently no-ops when this engine opened none.
 
@@ -168,7 +263,7 @@ class SqliteTechLeadRunRecordStore:
         self._write(
             "UPDATE tech_lead_run_records SET phase = ?, ended_at = ?,"
             " detail = ?, findings = ?, proposals = ?,"
-            " artifact_dir = ?, artifact_kinds = ?"
+            " artifact_dir = ?, artifact_kinds = ?, delivery_outcome = ?"
             " WHERE run_id = ? AND session_name = ? AND phase = ?",
             (
                 phase.value,
@@ -178,6 +273,7 @@ class SqliteTechLeadRunRecordStore:
                 proposals,
                 artifact_dir,
                 artifact_kinds,
+                delivery_outcome.value,
                 run_id,
                 session_name,
                 TechLeadRunPhase.RUNNING.value,
@@ -208,15 +304,53 @@ class SqliteTechLeadRunRecordStore:
     # Reads
     # ------------------------------------------------------------------
 
+    def inspect_delivery_evidence(self) -> TechLeadDeliveryEvidence:
+        """One aggregate over durable receipts; no row hydration or UI limit.
+
+        Keep invalid receipts visible as unknown evidence instead of
+        dropping them as the best-effort display reader does. A failed receipt
+        write also makes this handle's evidence incomplete for its lifetime.
+        """
+        try:
+            row = (
+                self._get_connection()
+                .execute(
+                    DELIVERY_EVIDENCE_SQL,
+                    (TechLeadRunPhase.WITHDRAWN.value,),
+                )
+                .fetchone()
+            )
+            if row["invalid"] or self._lost_receipt.is_set():
+                return TechLeadDeliveryEvidence(
+                    history_state=DeliveryHistoryState.INCOMPLETE
+                )
+            return TechLeadDeliveryEvidence(
+                last_delivered_at=_evidence_time(row["delivered"]),
+                first_undelivered_at=_evidence_time(row["first_start"]),
+                latest_started_at=_evidence_time(row["latest_start"]),
+                runs_without_delivery=int(row["runs"]),
+            )
+        except (sqlite3.Error, OSError, ValueError, TypeError):
+            logger.warning(
+                "[TECH_LEAD_RUN] Delivery history evidence unavailable", exc_info=True
+            )
+            return TechLeadDeliveryEvidence(
+                history_state=DeliveryHistoryState.UNAVAILABLE
+            )
+
     def recent(self, *, limit: int) -> tuple[TechLeadRunRecord, ...]:
         """The newest ``limit`` runs, most recently started first."""
         try:
-            rows = self._get_connection().execute(
-                "SELECT * FROM tech_lead_run_records"
-                " ORDER BY started_at DESC LIMIT ?",
-                (max(0, limit),),
-            ).fetchall()
-        except sqlite3.Error:
+            rows = (
+                self._get_connection()
+                .execute(
+                    "SELECT * FROM tech_lead_run_records"
+                    " ORDER BY started_at DESC LIMIT ?",
+                    (max(0, limit),),
+                )
+                .fetchall()
+            )
+        except (sqlite3.Error, OSError):
             logger.warning(
                 "[TECH_LEAD_RUN] Could not read the local run history",
                 exc_info=True,
@@ -232,7 +366,8 @@ class SqliteTechLeadRunRecordStore:
         try:
             with self._transaction() as conn:
                 conn.execute(sql, params)
-        except sqlite3.Error:
+        except (sqlite3.Error, OSError):
+            self._lost_receipt.set()
             # Per the port contract: history is a receipt, so a store failure
             # is logged and dropped rather than propagated into the run.
             logger.warning(
@@ -245,6 +380,18 @@ class SqliteTechLeadRunRecordStore:
         conn = getattr(self._local, "conn", None)
         if conn is None:
             conn = open_sqlite(self._db_path, row_factory=sqlite3.Row)
+            conn.create_function(
+                "tech_lead_receipt_timestamp",
+                1,
+                _sqlite_receipt_time,
+                deterministic=True,
+            )
+            conn.create_function(
+                "tech_lead_receipt_validity",
+                14,
+                _sqlite_receipt_validity,
+                deterministic=True,
+            )
             self._local.conn = conn
         return conn
 
@@ -300,25 +447,26 @@ def _record_from_row(row: sqlite3.Row) -> Optional[TechLeadRunRecord]:
     cost of an unreadable row is one missing history entry.
     """
     try:
-        ended = str(row["ended_at"])
+        ended = row["ended_at"]
         return TechLeadRunRecord(
-            run_key=str(row["run_key"]),
-            scope_kind=TechLeadRunScopeKind(str(row["scope_kind"])),
-            flavor=TechLeadSessionFlavor(str(row["flavor"])),
-            phase=TechLeadRunPhase(str(row["phase"])),
-            started_at=datetime.fromisoformat(str(row["started_at"])),
-            run_id=str(row["run_id"]),
-            session_name=str(row["session_name"]),
-            subject_issue_number=int(row["subject_issue_number"]),
-            subject_title=str(row["subject_title"]),
-            anchor_issue_number=int(row["anchor_issue_number"]),
-            ended_at=datetime.fromisoformat(ended) if ended else None,
+            run_key=row["run_key"],
+            scope_kind=TechLeadRunScopeKind(row["scope_kind"]),
+            flavor=TechLeadSessionFlavor(row["flavor"]),
+            phase=TechLeadRunPhase(row["phase"]),
+            started_at=parse_receipt_time(row["started_at"]),
+            run_id=row["run_id"],
+            session_name=row["session_name"],
+            subject_issue_number=row["subject_issue_number"],
+            subject_title=row["subject_title"],
+            anchor_issue_number=row["anchor_issue_number"],
+            ended_at=None if ended == "" else parse_receipt_time(ended),
             detail=str(row["detail"]),
-            findings=int(row["findings"]),
-            proposals=int(row["proposals"]),
+            findings=row["findings"],
+            proposals=row["proposals"],
             artifacts=_artifacts_from_row(row),
+            delivery_outcome=TechLeadDeliveryOutcome(row["delivery_outcome"]),
         )
-    except (ValueError, TypeError, KeyError):
+    except (ValueError, TypeError, KeyError, OverflowError):
         logger.warning(
             "[TECH_LEAD_RUN] Dropping an unreadable local run-history row",
             exc_info=True,

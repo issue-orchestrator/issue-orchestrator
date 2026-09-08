@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from ..domain.budgeted_validation import BudgetedValidationNotice
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Optional, Sequence
 
@@ -116,6 +117,7 @@ class OrchestratorSnapshot:
     #   * e2e_due: the suite is due to run and no run is active, so the planner
     #     reserves one worker slot AFTER completion work but BEFORE new issues,
     #     letting a due suite beat new issues without preempting reviews/reworks.
+    budgeted_validation_notices: tuple[BudgetedValidationNotice, ...] = ()
     e2e_occupies_slot: bool = False
     e2e_due: bool = False
     # Provider launch eligibility, sampled once per tick BEFORE planning

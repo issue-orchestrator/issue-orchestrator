@@ -22,6 +22,7 @@ from ..domain.tech_lead_findings import (
     VALID_FINDING_PROMOTION_MODES,
 )
 from ..domain.tech_lead_naming import TECH_LEAD_DISPLAY_NAME
+from .budgeted_validation_config import budgeted_validation_reference
 from .config_models import (
     MERGE_QUEUE_PROVIDERS,
     TECH_LEAD_AUTHORITY_MODES,
@@ -2559,4 +2560,4 @@ def generate_config_reference() -> str:
 
     Returns a markdown string with tables for each tab.
     """
-    return generate_reference_markdown(TAB_DEFINITIONS)
+    return generate_reference_markdown(TAB_DEFINITIONS) + "\n" + budgeted_validation_reference()

@@ -21,9 +21,9 @@ Usage:
 """
 
 import logging
-import re
 import time
 from collections.abc import Mapping, Sequence
+from ..ports.budgeted_validation import BudgetedValidationReports, DisabledBudgetedValidationReports
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional, TYPE_CHECKING, cast
 
@@ -32,6 +32,8 @@ from ..events import EventName
 from ..ports.repository_host import RepositoryHost, RepositoryHostError
 from ..ports import EventSink,  make_trace_event
 from .provider_launch_readiness import ProviderLaunchReadiness
+from .issue_refresh_batch import IssueRefreshBatch
+from .issue_observation_fetcher import IssueObservationFetcher
 from .health_review_trigger import (
     classify_tech_lead_anchor_issues,
     discover_open_tech_lead_anchor_issues,
@@ -81,11 +83,7 @@ logger = logging.getLogger(__name__)
 
 
 
-def _pr_labels(pr: Any) -> list[str]:
-    labels = getattr(pr, "labels", None)
-    if labels is None and isinstance(pr, dict):
-        labels = pr.get("labels", [])
-    return labels or []
+from ..observation.pr_metadata import collect_pr_metadata, pr_labels as _pr_labels
 
 
 @dataclass
@@ -122,6 +120,7 @@ class FactGatherer:
     # tests need not wire it; without it (or with the flag off) both snapshot
     # facts stay False and the default scheduling path is unchanged.
     e2e_slot_reader: Optional[Callable[[], "E2ESlotSignals"]] = None
+    budgeted_validation_reports: BudgetedValidationReports = field(default_factory=DisabledBudgetedValidationReports)
     # Predicate answering "is this issue's provider circuit still open?" for the
     # stuck sweep's ownership check (#6824 F2): a provider-unavailable issue is
     # owned by the resilience manager WHILE its circuit is open. Optional so
@@ -143,61 +142,21 @@ class FactGatherer:
         required_stable_ids: set[str] | None = None,
         fetch_limit: int | None = None,
     ) -> list["Issue"]:
-        """Fetch all issues for configured agents from GitHub."""
-        milestones = self.config.get_filter_milestones() or [milestone]
-        limit = fetch_limit if fetch_limit is not None else self.config.filtering.fetch_limit
-        all_issues, seen, still_needed = [], set(), set(required_stable_ids) if required_stable_ids else None
+        """Return scoped candidates for callers that do not retain observations."""
+        return list(self.fetch_issue_batch(
+            labels_for_agent, milestone, required_stable_ids, fetch_limit,
+        ).issues)
 
-        for agent_label in self.config.agents.keys():
-            labels = list(labels_for_agent) + [agent_label]
-            for milestone_name in milestones:
-                issues = self.repository_host.list_issues(
-                    labels=labels, milestone=milestone_name,
-                    limit=limit, required_stable_ids=still_needed,
-                )
-                self._process_fetched_issues(issues, all_issues, seen, still_needed, agent_label, labels, milestone_name)
-
-        return self._apply_issue_filter(all_issues)
-
-    def _process_fetched_issues(
+    def fetch_issue_batch(
         self,
-        issues: list["Issue"],
-        all_issues: list["Issue"],
-        seen: set[int],
-        still_needed: set[str] | None,
-        agent_label: str,
-        labels: list[str],
-        milestone_name: str | None,
-    ) -> None:
-        """Process fetched issues and emit events."""
-        for issue in issues:
-            if issue.number in seen:
-                continue
-            seen.add(issue.number)
-            all_issues.append(issue)
-            if still_needed and issue.key.stable_id() in still_needed:
-                still_needed.discard(issue.key.stable_id())
-
-        if self.events is not None:
-            self._emit_issues_fetched_events(issues, agent_label, labels, milestone_name)
-
-    def _emit_issues_fetched_events(self, issues: list["Issue"], agent_label: str, labels: list[str], milestone_name: str | None) -> None:
-        """Emit events for fetched issues."""
-        self.events.publish(make_trace_event(EventName.ISSUES_FETCHED, {
-            "agent": agent_label, "labels": labels, "milestone": milestone_name,
-            "count": len(issues), "issue_numbers": [i.number for i in issues],
-        }))
-
-    def _apply_issue_filter(self, all_issues: list["Issue"]) -> list["Issue"]:
-        """Apply exclusion filter to issues."""
-        issue_filter = self.config.get_issue_filter()
-        if issue_filter.is_empty():
-            return all_issues
-        before_count = len(all_issues)
-        filtered = issue_filter.apply(all_issues)
-        if before_count != len(filtered):
-            logger.debug("Excluded %d issues via filter %s", before_count - len(filtered), issue_filter)
-        return filtered
+        labels_for_agent: list[str],
+        milestone: str | None = None,
+        required_stable_ids: set[str] | None = None,
+        fetch_limit: int | None = None,
+    ) -> IssueRefreshBatch:
+        return IssueObservationFetcher(self.config, self.repository_host, self.events).fetch(
+            labels_for_agent, milestone, required_stable_ids, fetch_limit,
+        )
 
     def create_snapshot(
         self,
@@ -276,6 +235,7 @@ class FactGatherer:
             session_history_issue_numbers=frozenset(e.issue_number for e in state.session_history),
             e2e_occupies_slot=e2e_occupies_slot,
             e2e_due=e2e_due,
+            budgeted_validation_notices=self.budgeted_validation_reports.pending(),
             provider_launch=provider_launch or ProviderLaunchReadiness.empty(),
         )
 
@@ -491,7 +451,7 @@ class FactGatherer:
             if batch_armed:
                 existing_tech_lead_issue = batch_anchor
         prs = self._fetch_tech_lead_prs(watch_label) if batch_armed else []
-        all_labels, source_milestones = self._collect_pr_metadata(prs)
+        all_labels, source_milestones = collect_pr_metadata(self.repository_host, prs)
 
         # A failed approval query may only cost this tick's OWN trigger.
         gated_proposals = observe_approval_backlog_or_none(
@@ -693,36 +653,6 @@ class FactGatherer:
             case_files,
             tuple(existing),
         )
-
-    def _collect_pr_metadata(self, prs: list[Any]) -> tuple[set[str], list[tuple[int, str]]]:
-        """Collect labels and milestones from PRs and their linked issues."""
-        all_labels: set[str] = set()
-        source_milestones: list[tuple[int, str]] = []
-
-        for pr in prs:
-            all_labels.update(_pr_labels(pr))
-            self._collect_linked_issue_metadata(pr, all_labels, source_milestones)
-
-        return all_labels, source_milestones
-
-    def _collect_linked_issue_metadata(
-        self,
-        pr: object,
-        all_labels: set[str],
-        source_milestones: list[tuple[int, str]],
-    ) -> None:
-        """Collect metadata from issues linked to a PR."""
-        matches = re.findall(r'#(\d+)', (getattr(pr, 'body', '') or "") + " " + pr.title)
-        for match in matches:
-            issue_num = int(match)
-            issue = self.repository_host.get_issue(issue_num)
-            if not issue:
-                continue
-            all_labels.update(issue.labels)
-            if issue.milestone and issue.milestone_number:
-                milestone_tuple = (issue.milestone_number, issue.milestone)
-                if milestone_tuple not in source_milestones:
-                    source_milestones.append(milestone_tuple)
 
     def gather_cleanup_facts(
         self,
