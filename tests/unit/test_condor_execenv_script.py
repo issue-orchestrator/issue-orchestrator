@@ -15,6 +15,19 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "condor-execenv.sh"
+POOL_CONFIG = REPO_ROOT / "docker" / "execenv" / "condor" / "00-io-execenv.config"
+
+
+def test_execenv_declares_every_contained_validation_identity_input() -> None:
+    configured = {
+        line.split("=", 1)[0].strip(): line.split("=", 1)[1].strip()
+        for line in POOL_CONFIG.read_text().splitlines()
+        if "=" in line and not line.lstrip().startswith("#")
+    }
+
+    assert configured["IO_EXECENV_CGROUP_CONTAINMENT"] == "True"
+    for name in ("SCHEDD_NAME", "COLLECTOR_HOST", "PER_JOB_HISTORY_DIR"):
+        assert configured[name], f"execenv omits contained-validation {name}"
 
 
 def _stub_bin(tmp_path: Path, docker_body: str) -> dict[str, str]:
