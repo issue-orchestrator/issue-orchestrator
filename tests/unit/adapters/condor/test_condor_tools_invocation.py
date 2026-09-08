@@ -152,6 +152,24 @@ def test_submit_can_use_an_explicit_filtered_environment(tmp_path: Path) -> None
     assert "IO_SENTINEL_FOR_TEST" not in seen
 
 
+def test_bound_invocation_scrubs_scheduler_routing_but_keeps_credentials(
+    tmp_path: Path,
+) -> None:
+    tools = _dumping_tools(tmp_path)
+    completed = tools.invoke_bound(
+        (str(tools.submit),),
+        environment={
+            "PROVIDER_TOKEN": "kept",
+            "_CONDOR_SCHEDD_HOST": "hostile.example",
+            "_condor_collector_host": "other.example",
+        },
+    )
+    seen = _parse(completed)
+    assert seen["PROVIDER_TOKEN"] == "kept"
+    assert "_CONDOR_SCHEDD_HOST" not in seen
+    assert "_condor_collector_host" not in seen
+
+
 def test_the_rest_of_the_environment_is_preserved(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

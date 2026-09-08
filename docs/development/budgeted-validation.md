@@ -40,6 +40,11 @@ the worker durably reserves the exact run identity and checkout. A restarted
 worker reconciles that identity instead of submitting again. The scheduler
 enforces both the active-runtime deadline and an absolute queue-to-cleanup
 bound.
+The reservation also owns the exact command, setup, branch, timeouts, and pool
+identity that were submitted. A config edit, disable, or removal affects later
+runs; it cannot rewrite or hide unfinished work. IO reconciles all unfinished
+reservations before it admits a replacement definition with the same suite
+name.
 The configured freshness bound requires an active engine and available test
 infrastructure. When those are unavailable, coverage remains overdue; it is
 never recorded as a pass. A stopped engine cannot promise a detection deadline.
@@ -53,6 +58,12 @@ may submit again. A terminal leader is insufficient for cleanup: IO retains the
 checkout until the job has left the queue and the pool has written its final
 per-job ClassAd, which is the scheduler's proof that the cgroup-owned family was
 reaped.
+The containment owner reads the pool's schedd and collector identity with
+per-process scheduler overrides removed, pins every submit and query to those
+names, and records that identity in the reservation. Each live-validation job
+also requires the execenv's cgroup attestation in the target slot ClassAd. A
+restart under a different pool refuses reconciliation rather than transferring
+authority to the new scheduler.
 
 ## Results and diagnosis
 
@@ -77,6 +88,10 @@ For N suspect integrations, at most `ceil(log2(N))` midpoint runs are needed;
 there is no configurable bisection depth. The two endpoint checks are additional.
 Unavailable results, changed failure identities, or a failing old baseline leave
 the diagnosis inconclusive and retain the original commit range.
+Every reproduction, baseline, and midpoint reservation is part of the same
+durable diagnostic sequence. If the coordinator exits, the next worker resumes
+the exact pending probe and continues at the next uncompleted step without
+replaying acknowledged probes or buying another scheduled run.
 
 Red or unavailable coverage does not cause a run on every engine tick. Retry
 spending is bounded by the same cadence, separately from the successful-coverage

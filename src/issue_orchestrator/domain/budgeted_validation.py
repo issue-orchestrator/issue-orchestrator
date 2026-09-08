@@ -130,6 +130,18 @@ class BudgetedValidationRun:
     finished_at: datetime | None
     probe: BudgetedValidationProbe
     purpose: str
+    suite: BudgetedValidationSuite
+
+
+@dataclass(frozen=True, slots=True)
+class PendingBudgetedValidation:
+    suite: BudgetedValidationSuite
+    history: "BudgetedValidationHistory"
+
+    def __post_init__(self) -> None:
+        latest = self.history.latest
+        if latest is None or latest.finished_at is not None or latest.suite != self.suite:
+            raise ValueError("pending validation must own its exact unfinished suite")
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,7 +206,7 @@ class BudgetedValidationHistory:
         from dataclasses import replace
 
         regression = self.regression
-        if regression is not None and self.last_scheduled is not None and regression.failed.id == self.last_scheduled.id:
+        if regression is not None:
             regression = replace(regression, diagnosis=detail, first_bad_commit=first_bad)
         return replace(self, diagnosis=detail, first_bad_commit=first_bad, regression=regression)
 
@@ -209,12 +221,16 @@ class BudgetedValidationHistory:
     def append(self, run: BudgetedValidationRun) -> "BudgetedValidationHistory":
         from dataclasses import replace
 
+        if run.finished_at is None:
+            if self.latest is not None and self.latest.finished_at is None:
+                raise ValueError("validation history already has an unfinished run")
+            return replace(self, latest=run, runs=(*self.runs[-99:], run))
         green = self.last_success
         regression = self.regression
-        if run.purpose == "scheduled" and run.finished_at is not None:
+        if run.purpose == "scheduled":
             if run.probe.is_success:
                 green, regression = run, None
-            elif run.probe.is_failure and regression is None:
+            elif run.probe.is_failure:
                 regression = BudgetedValidationRegression(
                     run, green.probe.commit if green else None
                 )
@@ -223,6 +239,25 @@ class BudgetedValidationHistory:
                        first_bad_commit=None if run.purpose == "scheduled" else self.first_bad_commit,
                        diagnosis="" if run.purpose == "scheduled" else self.diagnosis,
                        runs=(*self.runs[-99:], run))
+
+    def complete_latest(self, run: BudgetedValidationRun) -> "BudgetedValidationHistory":
+        """Atomically replace the durable reservation with its terminal result."""
+        from dataclasses import replace
+
+        pending = self.latest
+        if (pending is None or pending.finished_at is not None
+                or pending.id != run.id or pending.purpose != run.purpose
+                or pending.suite != run.suite or pending.probe.commit != run.probe.commit):
+            raise ValueError("completion does not match the latest unfinished validation")
+        if not self.runs or self.runs[-1] != pending:
+            raise ValueError("unfinished validation is not the history tail")
+        previous_runs = self.runs[:-1]
+        without_pending = replace(
+            self,
+            latest=previous_runs[-1] if previous_runs else None,
+            runs=previous_runs,
+        )
+        return without_pending.append(run)
 
 
 @dataclass(frozen=True, slots=True)

@@ -233,6 +233,27 @@ class CondorTools:
             environment=None,
         )
 
+    def invoke_bound(
+        self,
+        arguments: tuple[str, ...],
+        timeout_seconds: float = TOOL_TIMEOUT_SECONDS,
+        *,
+        environment: dict[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        """Run a scheduler command with ambient routing overrides removed.
+
+        Owners that first attest a specific scheduler use this path for every
+        later submit and query. The caller may still provide ordinary provider
+        credentials for ``getenv = true``; only per-process ``_CONDOR_*``
+        macros that could redirect or redefine the scheduler are removed.
+        """
+        return self._run(
+            arguments,
+            scrub_macro_overrides=True,
+            timeout_seconds=timeout_seconds,
+            environment=environment,
+        )
+
     def _run(
         self,
         arguments: tuple[str, ...],

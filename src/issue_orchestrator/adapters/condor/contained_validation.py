@@ -31,6 +31,8 @@ _RECEIPT = "containment.json"
 _CONTAINMENT = "contained-job"
 _ATTESTATION = "IO_EXECENV_CGROUP_CONTAINMENT"
 _HISTORY_DIRECTORY = "PER_JOB_HISTORY_DIR"
+_SCHEDD_NAME = "SCHEDD_NAME"
+_COLLECTOR_HOST = "COLLECTOR_HOST"
 _JOB_FROM_EVENT = re.compile(r"\((\d+)\.(\d+)\.\d+\)")
 _JOB_ID = re.compile(r"^\d+\.\d+$")
 _HISTORY_OPERATION = re.compile(
@@ -45,6 +47,7 @@ _SCHEDULER_SLACK_SECONDS = 120
 class _Reservation:
     operation_id: str
     fingerprint: str
+    pool_identity: str
     phase: str
     job_id: str | None = None
     result: dict[str, object] | None = None
@@ -72,19 +75,32 @@ class CondorContainedValidationRunner:
 
     def __init__(self, tools: CondorTools) -> None:
         self._tools = tools
-        attestation = tools.read_configuration(_ATTESTATION)
-        if attestation.returncode != 0 or attestation.stdout.rstrip("\r\n") != "True":
+        attestation = self._configuration_value(_ATTESTATION)
+        if attestation != "True":
             raise RuntimeError(
                 "budgeted live validation requires the Linux execenv cgroup pool"
             )
-        history = tools.read_configuration(_HISTORY_DIRECTORY)
-        if history.returncode != 0 or not history.stdout.rstrip("\r\n"):
-            raise RuntimeError(
-                "budgeted live validation requires per-job final ClassAds"
-            )
-        self._history_directory = Path(history.stdout.rstrip("\r\n"))
+        self._schedd_name = self._configuration_value(_SCHEDD_NAME)
+        self._collector_host = self._configuration_value(_COLLECTOR_HOST)
+        self._history_directory = Path(self._configuration_value(_HISTORY_DIRECTORY))
         if not self._history_directory.is_absolute():
             raise RuntimeError("per-job final ClassAd directory must be absolute")
+        self._pool_identity = hashlib.sha256(json.dumps({
+            "attestation": attestation,
+            "schedd_name": self._schedd_name,
+            "collector_host": self._collector_host,
+            "history_directory": str(self._history_directory),
+        }, sort_keys=True).encode()).hexdigest()
+
+    def _configuration_value(self, name: str) -> str:
+        configured = self._tools.read_configuration(name)
+        value = configured.stdout.rstrip("\r\n")
+        if configured.returncode != 0 or not value or "\n" in value or "\r" in value:
+            raise RuntimeError(f"budgeted live validation requires one configured {name}")
+        return value
+
+    def _target_arguments(self) -> tuple[str, ...]:
+        return ("-name", self._schedd_name, "-pool", self._collector_host)
 
     def reserved(self, evidence_directory: Path) -> bool:
         return (evidence_directory / _RECEIPT).is_file()
@@ -94,7 +110,9 @@ class CondorContainedValidationRunner:
         fingerprint = _fingerprint(command)
         if receipt_path.is_file():
             reservation = _read_reservation(receipt_path)
-            if reservation.operation_id != command.operation_id or reservation.fingerprint != fingerprint:
+            if (reservation.operation_id != command.operation_id
+                    or reservation.fingerprint != fingerprint
+                    or reservation.pool_identity != self._pool_identity):
                 raise RuntimeError("contained validation reservation does not match its request")
         else:
             reservation = self._prepare(command, fingerprint)
@@ -141,11 +159,14 @@ class CondorContainedValidationRunner:
                 + _QUEUE_ALLOWANCE_SECONDS
                 + _SCHEDULER_SLACK_SECONDS
             ),
+            target_requirements=(f"TARGET.{_ATTESTATION} =?= True",),
         )
         compiled.exec_script_path.write_text(compiled.exec_script_text, encoding="utf-8")
         compiled.exec_script_path.chmod(0o755)
         (run_directory / "lane.sub").write_text(compiled.text, encoding="utf-8")
-        reservation = _Reservation(command.operation_id, fingerprint, "prepared")
+        reservation = _Reservation(
+            command.operation_id, fingerprint, self._pool_identity, "prepared",
+        )
         _write_reservation(command.evidence_directory / _RECEIPT, reservation)
         return reservation
 
@@ -153,8 +174,9 @@ class CondorContainedValidationRunner:
                 reservation: _Reservation) -> _Reservation:
         submit_path = command.evidence_directory / _CONTAINMENT / "lane.sub"
         try:
-            completed = self._tools.invoke(
-                (str(self._tools.submit), "-terse", str(submit_path)),
+            completed = self._tools.invoke_bound(
+                (str(self._tools.submit), *self._target_arguments(),
+                 "-terse", str(submit_path)),
                 environment=command.environment,
             )
         except LaneExecutorError as error:
@@ -242,8 +264,9 @@ class CondorContainedValidationRunner:
     def _query_job_ids(self, operation_id: str) -> tuple[str, ...]:
         constraint = f'IssueOrchestratorOperationId == "{operation_id}"'
         try:
-            completed = self._tools.invoke((
-                str(self._tools.query), "-allusers", "-constraint", constraint,
+            completed = self._tools.invoke_bound((
+                str(self._tools.query), *self._target_arguments(),
+                "-allusers", "-constraint", constraint,
                 "-json", "-attributes", "ClusterId,ProcId",
             ))
         except LaneExecutorError as error:
@@ -280,7 +303,7 @@ def _fingerprint(command: ContainedValidationCommand) -> str:
 
 def _read_reservation(path: Path) -> _Reservation:
     raw = json.loads(path.read_text())
-    if raw.pop("version", None) != 1:
+    if raw.pop("version", None) != 2:
         raise ValueError("unrecognised contained validation reservation")
     return _Reservation(**raw)
 
@@ -294,7 +317,7 @@ def _replace_reservation(reservation: _Reservation, **changes: object) -> _Reser
 def _write_reservation(path: Path, reservation: _Reservation) -> None:
     temporary = path.with_suffix(".tmp")
     with temporary.open("w") as output:
-        json.dump({"version": 1, **asdict(reservation)}, output, indent=2)
+        json.dump({"version": 2, **asdict(reservation)}, output, indent=2)
         output.write("\n")
         output.flush()
         os.fsync(output.fileno())

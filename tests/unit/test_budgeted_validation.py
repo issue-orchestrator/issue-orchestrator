@@ -102,6 +102,13 @@ class MemoryBudgetedStore:
     def read(self, suite):
         return self.history
 
+    def pending(self):
+        from issue_orchestrator.domain.budgeted_validation import PendingBudgetedValidation
+        latest = self.history.latest
+        if latest is None or latest.finished_at is not None:
+            return ()
+        return (PendingBudgetedValidation(latest.suite, self.history),)
+
     def write(self, suite, history):
         self.history = history
 
@@ -215,6 +222,103 @@ def test_interrupted_contained_probe_resumes_without_duplicate_submission():
     assert executor.submissions == 1
     assert executor.resumptions == 1
     assert store.history.last_success.probe.commit == "0"
+
+
+@pytest.mark.parametrize("configured_after_restart", [False, True])
+def test_pending_run_owns_its_original_definition_across_config_changes(
+    tmp_path, configured_after_restart,
+):
+    from dataclasses import replace
+    from issue_orchestrator.adapters.budgeted_validation_store import FileBudgetedValidationStore
+    from issue_orchestrator.control.budgeted_validation import BudgetedValidationCycle
+    from issue_orchestrator.domain.budgeted_validation import BudgetedValidationProbe
+    from issue_orchestrator.ports.contained_validation import ContainedValidationPending
+
+    class Restartable:
+        def __init__(self):
+            self.probes = []
+            self.resumes = []
+
+        def probe(self, suite, commit, run_id):
+            self.probes.append(suite)
+            if len(self.probes) == 1:
+                raise ContainedValidationPending("scheduler owns original definition")
+            return BudgetedValidationProbe(commit, BudgetedValidationOutcome.PASSED, run_id)
+
+        def resume(self, suite, commit, run_id):
+            self.resumes.append(suite)
+            return BudgetedValidationProbe(commit, BudgetedValidationOutcome.PASSED, run_id)
+
+    original = parse_budgeted_validation({"agents": {
+        "command": ["old-test"], "timeout_seconds": 60, "branch": "main",
+    }})["agents"]
+    changed = replace(
+        original, command=("new-test",), timeout_seconds=61, branch="release",
+    )
+    store, repo, executor = FileBudgetedValidationStore(tmp_path), IntegrationHistory(), Restartable()
+    cycle = BudgetedValidationCycle(store=store, repository=repo, executor=executor, clock=lambda: NOW)
+    cycle.run((original,))
+
+    configured = (changed,) if configured_after_restart else ()
+    cycle.run(configured)
+    assert executor.resumes == [original]
+    assert executor.probes == [original]
+
+    if configured_after_restart:
+        cycle.run(configured)
+        assert executor.probes == [original, changed]
+
+
+@pytest.mark.parametrize("interrupted_call", [3, 4, 5])
+def test_restart_continues_each_diagnostic_stage_without_replaying_completed_steps(
+    interrupted_call,
+):
+    from issue_orchestrator.control.budgeted_validation import BudgetedValidationCycle
+    from issue_orchestrator.domain.budgeted_validation import BudgetedValidationProbe
+    from issue_orchestrator.ports.contained_validation import ContainedValidationPending
+
+    class InterruptingDiagnosis:
+        def __init__(self):
+            self.calls = []
+            self.resumes = []
+
+        @staticmethod
+        def result(commit, run_id):
+            outcome = (
+                BudgetedValidationOutcome.FAILED
+                if int(commit) >= 6 else BudgetedValidationOutcome.PASSED
+            )
+            return BudgetedValidationProbe(
+                commit, outcome, f"evidence/{run_id}",
+                "test-regression" if outcome is BudgetedValidationOutcome.FAILED else "",
+            )
+
+        def probe(self, suite, commit, run_id):
+            self.calls.append((commit, run_id))
+            if len(self.calls) == interrupted_call:
+                raise ContainedValidationPending("diagnostic job still owned")
+            return self.result(commit, run_id)
+
+        def resume(self, suite, commit, run_id):
+            self.resumes.append((commit, run_id))
+            return self.result(commit, run_id)
+
+    suite = parse_budgeted_validation({"agents": {"command": ["test"]}})["agents"]
+    store, repo, executor = MemoryBudgetedStore(), IntegrationHistory(), InterruptingDiagnosis()
+    cycle = BudgetedValidationCycle(store=store, repository=repo, executor=executor, clock=lambda: NOW)
+    cycle.run((suite,))
+    repo.current = 10
+    cycle.run((suite,))
+    assert store.history.latest.finished_at is None
+    pending_id = store.history.latest.id
+    calls_before_restart = tuple(executor.calls)
+
+    cycle.run((suite,))
+
+    assert executor.resumes == [(calls_before_restart[-1][0], pending_id)]
+    assert executor.calls[:len(calls_before_restart)] == list(calls_before_restart)
+    assert sum(run.id == pending_id for run in store.history.runs) == 1
+    assert store.history.first_bad_commit == "6"
 
 
 def test_busy_repository_coalesces_without_even_fetching_or_spending():
@@ -338,13 +442,14 @@ def test_unavailable_attempt_retries_at_either_configured_bound(outcome):
 def test_diagnostic_probe_does_not_shift_scheduled_retry_watermark():
     from datetime import timedelta
     from issue_orchestrator.domain.budgeted_validation import BudgetedValidationHistory, BudgetedValidationRun, BudgetedValidationProbe
+    suite = parse_budgeted_validation({"agents": {"command": ["test"]}})["agents"]
     history = BudgetedValidationHistory("suite")
     good = BudgetedValidationRun("good", NOW, NOW,
-        BudgetedValidationProbe("0", BudgetedValidationOutcome.PASSED, "evidence/good"), "scheduled")
+        BudgetedValidationProbe("0", BudgetedValidationOutcome.PASSED, "evidence/good"), "scheduled", suite)
     bad = BudgetedValidationRun("bad", NOW, NOW,
-        BudgetedValidationProbe("10", BudgetedValidationOutcome.FAILED, "evidence/bad", "failure"), "scheduled")
+        BudgetedValidationProbe("10", BudgetedValidationOutcome.FAILED, "evidence/bad", "failure"), "scheduled", suite)
     pending = BudgetedValidationRun("diagnosis", NOW + timedelta(hours=1), None,
-        BudgetedValidationProbe("10", BudgetedValidationOutcome.UNAVAILABLE, ""), "reproduce")
+        BudgetedValidationProbe("10", BudgetedValidationOutcome.UNAVAILABLE, ""), "reproduce", suite)
     history = history.append(good).append(bad).append(pending)
     assert history.scheduled_due(now=NOW + timedelta(hours=24), cadence=ValidationCadence(),
         head="10", integrations_since_attempt=0)

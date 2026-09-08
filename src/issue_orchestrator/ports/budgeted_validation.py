@@ -6,10 +6,15 @@ from typing import Protocol
 from ..domain.budgeted_validation import (
     BudgetedValidationHistory, BudgetedValidationProbe, BudgetedValidationSuite,
     BudgetedValidationNotice, BudgetedValidationReportReceipt,
+    PendingBudgetedValidation,
 )
 
 
 class BudgetedValidationJournal(Protocol):
+    def pending(self) -> tuple[PendingBudgetedValidation, ...]:
+        """Return every durable unfinished run with its original suite definition."""
+        ...
+
     def read_report(self, case_id: str) -> BudgetedValidationReportReceipt:
         ...
 

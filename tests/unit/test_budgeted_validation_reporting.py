@@ -25,7 +25,7 @@ def reporting(tmp_path):
     suite = parse_budgeted_validation({"agents": {"command": ["test"]}})["agents"]
     store = FileBudgetedValidationStore(tmp_path)
     bad = BudgetedValidationRun("run-1", NOW, NOW,
-        BudgetedValidationProbe("bad", BudgetedValidationOutcome.FAILED, "/evidence/run-1", "regression"), "scheduled")
+        BudgetedValidationProbe("bad", BudgetedValidationOutcome.FAILED, "/evidence/run-1", "regression"), "scheduled", suite)
     store.run_exclusive(lambda journal: journal.write(suite, replace(journal.read(suite).append(bad), diagnosis="Missing baseline")))
     host = MagicMock(spec=RepositoryHost)
     host.find_issue_by_marker.return_value = None
@@ -78,7 +78,7 @@ def test_a_green_run_between_plan_and_apply_cancels_stale_reporting(tmp_path):
     suite, store, host, owner = reporting(tmp_path)
     notice = owner.pending()[0]
     good = BudgetedValidationRun("run-2", NOW, NOW,
-        BudgetedValidationProbe("fixed", BudgetedValidationOutcome.PASSED, "/evidence/run-2"), "scheduled")
+        BudgetedValidationProbe("fixed", BudgetedValidationOutcome.PASSED, "/evidence/run-2"), "scheduled", suite)
     store.run_exclusive(lambda journal: journal.write(suite, journal.read(suite).append(good)))
     with pytest.raises(ValueError, match="stale"):
         owner.publish(notice)
@@ -99,7 +99,7 @@ def test_confirmed_failure_survives_interrupted_diagnosis_and_unavailable_retrie
     suite, store, host, owner = reporting(tmp_path)
     original = owner.pending()[0]
     pending = BudgetedValidationRun("interrupted", NOW, None,
-        BudgetedValidationProbe("bad", BudgetedValidationOutcome.UNAVAILABLE, ""), "reproduce")
+        BudgetedValidationProbe("bad", BudgetedValidationOutcome.UNAVAILABLE, ""), "reproduce", suite)
     store.run_exclusive(lambda journal: journal.write(suite, journal.read(suite).append(pending)))
     assert owner.pending() == (original,)
     # More than the bounded diagnostic history: the failure has its own durable
@@ -107,7 +107,7 @@ def test_confirmed_failure_survives_interrupted_diagnosis_and_unavailable_retrie
     for number in range(110):
         at = NOW + timedelta(hours=25 * (number + 1))
         unavailable = BudgetedValidationRun(f"retry-{number}", at, at,
-            BudgetedValidationProbe("bad", BudgetedValidationOutcome.UNAVAILABLE, f"evidence/{number}"), "scheduled")
+            BudgetedValidationProbe("bad", BudgetedValidationOutcome.UNAVAILABLE, f"evidence/{number}"), "scheduled", suite)
         store.run_exclusive(lambda journal: journal.write(suite, journal.read(suite).append(unavailable)))
     reopened = FileBudgetedValidationStore(tmp_path)
     owner = BudgetedValidationReportOwner(suites=(suite,), store=reopened, repository=host, clock=lambda: NOW)
@@ -131,7 +131,7 @@ def test_v1_history_migration_recovers_failure_behind_interrupted_diagnosis(tmp_
     import json
     suite, store, host, _owner = reporting(tmp_path)
     pending = BudgetedValidationRun("interrupted", NOW, None,
-        BudgetedValidationProbe("bad", BudgetedValidationOutcome.UNAVAILABLE, ""), "reproduce")
+        BudgetedValidationProbe("bad", BudgetedValidationOutcome.UNAVAILABLE, ""), "reproduce", suite)
     store.run_exclusive(lambda journal: journal.write(suite, journal.read(suite).append(pending)))
     path, = tmp_path.glob("agents-*.json")
     old = json.loads(path.read_text())
@@ -179,7 +179,7 @@ def test_cycle_restart_reports_original_failure_after_diagnosis_launch_error(tmp
                             clock=lambda: NOW + timedelta(hours=25)).run((suite,))
     history = restarted.read(suite)
     assert retry.calls == ["10"]
-    assert history.latest.probe.outcome is BudgetedValidationOutcome.UNAVAILABLE
+    assert history.latest.probe.outcome is BudgetedValidationOutcome.INCONCLUSIVE
     assert history.regression.failed == original
     reconciled = [run for run in history.runs if run.id == interrupted.latest.id
                   and run.finished_at is not None]

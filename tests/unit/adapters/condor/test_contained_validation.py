@@ -51,7 +51,13 @@ def _running_event() -> str:
 
 def _configure(monkeypatch, history: Path) -> None:
     def read_configuration(self, *query, timeout_seconds=30.0):
-        value = "True\n" if query == ("IO_EXECENV_CGROUP_CONTAINMENT",) else f"{history}\n"
+        values = {
+            "IO_EXECENV_CGROUP_CONTAINMENT": "True",
+            "PER_JOB_HISTORY_DIR": str(history),
+            "SCHEDD_NAME": "execenv-schedd",
+            "COLLECTOR_HOST": "execenv-collector:9618",
+        }
+        value = f"{values[query[0]]}\n"
         return subprocess.CompletedProcess(query, 0, value, "")
     monkeypatch.setattr(CondorTools, "read_configuration", read_configuration)
 
@@ -80,7 +86,7 @@ def test_lost_submit_ack_is_reconciled_by_identity_without_duplicate_submission(
             _finish(command, history)
             raise LaneExecutorError("reply lost")
         return subprocess.CompletedProcess(arguments, 0, "[]", "")
-    monkeypatch.setattr(CondorTools, "invoke", invoke)
+    monkeypatch.setattr(CondorTools, "invoke_bound", invoke)
 
     with pytest.raises(ContainedValidationPending):
         CondorContainedValidationRunner(tools).run(command)
@@ -105,7 +111,7 @@ def test_restart_resumes_a_known_job_after_coordinator_death(monkeypatch, tmp_pa
             (run / "lane.events").write_text(_running_event())
             return subprocess.CompletedProcess(arguments, 0, "1.0", "")
         return subprocess.CompletedProcess(arguments, 0, '[{"ClusterId":1,"ProcId":0}]', "")
-    monkeypatch.setattr(CondorTools, "invoke", invoke)
+    monkeypatch.setattr(CondorTools, "invoke_bound", invoke)
     monkeypatch.setattr("issue_orchestrator.adapters.condor.contained_validation.time.sleep",
                         lambda _: (_ for _ in ()).throw(SystemExit("coordinator killed")))
     with pytest.raises(SystemExit):
@@ -114,7 +120,7 @@ def test_restart_resumes_a_known_job_after_coordinator_death(monkeypatch, tmp_pa
 
     _finish(command, history)
     monkeypatch.setattr("issue_orchestrator.adapters.condor.contained_validation.time.sleep", lambda _: None)
-    monkeypatch.setattr(CondorTools, "invoke",
+    monkeypatch.setattr(CondorTools, "invoke_bound",
         lambda self, arguments, timeout_seconds=30.0, environment=None:
             subprocess.CompletedProcess(arguments, 0, "[]", ""))
     assert CondorContainedValidationRunner(tools).run(command).returncode == 0
@@ -136,7 +142,7 @@ def test_terminal_leader_does_not_release_until_scheduler_family_is_absent(monke
         queries += 1
         body = '[{"ClusterId":1,"ProcId":0}]' if queries == 1 else "[]"
         return subprocess.CompletedProcess(arguments, 0, body, "")
-    monkeypatch.setattr(CondorTools, "invoke", invoke)
+    monkeypatch.setattr(CondorTools, "invoke_bound", invoke)
     monkeypatch.setattr("issue_orchestrator.adapters.condor.contained_validation.time.sleep", lambda _: None)
     assert CondorContainedValidationRunner(tools).run(command).returncode == 0
     assert queries == 2
@@ -152,7 +158,7 @@ def test_unavailable_scheduler_preserves_ambiguous_reservation(monkeypatch, tmp_
         if arguments[0] == str(self.submit):
             raise LaneExecutorError("reply lost")
         raise LaneExecutorError("scheduler offline")
-    monkeypatch.setattr(CondorTools, "invoke", lost)
+    monkeypatch.setattr(CondorTools, "invoke_bound", lost)
     runner = CondorContainedValidationRunner(tools)
     with pytest.raises(ContainedValidationPending):
         runner.run(command)
@@ -160,3 +166,58 @@ def test_unavailable_scheduler_preserves_ambiguous_reservation(monkeypatch, tmp_
         CondorContainedValidationRunner(tools).run(command)
     assert runner.reserved(command.evidence_directory)
     assert command.working_directory.is_dir()
+
+
+def test_submission_and_queries_are_pinned_to_the_attested_pool(monkeypatch, tmp_path):
+    tools, command = _tools(), _command(tmp_path)
+    history = tmp_path / "history"
+    history.mkdir()
+    _configure(monkeypatch, history)
+    invocations = []
+
+    def invoke(self, arguments, timeout_seconds=30.0, *, environment=None):
+        invocations.append((arguments, environment))
+        if arguments[0] == str(self.submit):
+            _finish(command, history)
+            return subprocess.CompletedProcess(arguments, 0, "1.0", "")
+        return subprocess.CompletedProcess(arguments, 0, "[]", "")
+
+    monkeypatch.setattr(CondorTools, "invoke_bound", invoke)
+    result = CondorContainedValidationRunner(tools).run(command)
+    assert result.returncode == 0
+    assert len(invocations) == 2
+    for arguments, _environment in invocations:
+        assert arguments[1:5] == (
+            "-name", "execenv-schedd", "-pool", "execenv-collector:9618",
+        )
+    submit_text = (
+        command.evidence_directory / "contained-job" / "lane.sub"
+    ).read_text()
+    assert "requirements = (TARGET.IO_EXECENV_CGROUP_CONTAINMENT =?= True)" in submit_text
+
+
+def test_restart_refuses_to_reconcile_against_a_different_pool(monkeypatch, tmp_path):
+    tools, command = _tools(), _command(tmp_path)
+    history = tmp_path / "history"
+    history.mkdir()
+    _configure(monkeypatch, history)
+
+    def pending(self, arguments, timeout_seconds=30.0, *, environment=None):
+        if arguments[0] == str(self.submit):
+            raise LaneExecutorError("reply lost")
+        raise LaneExecutorError("scheduler offline")
+
+    monkeypatch.setattr(CondorTools, "invoke_bound", pending)
+    with pytest.raises(ContainedValidationPending):
+        CondorContainedValidationRunner(tools).run(command)
+
+    original = CondorTools.read_configuration
+
+    def changed(self, *query, timeout_seconds=30.0):
+        if query == ("COLLECTOR_HOST",):
+            return subprocess.CompletedProcess(query, 0, "other-pool:9618\n", "")
+        return original(self, *query, timeout_seconds=timeout_seconds)
+
+    monkeypatch.setattr(CondorTools, "read_configuration", changed)
+    with pytest.raises(RuntimeError, match="reservation does not match"):
+        CondorContainedValidationRunner(tools).run(command)

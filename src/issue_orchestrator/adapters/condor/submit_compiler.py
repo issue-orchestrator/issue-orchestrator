@@ -81,6 +81,7 @@ def compile_submit_description(
     *,
     operation_identity: str | None = None,
     max_wall_seconds: int | None = None,
+    target_requirements: tuple[str, ...] = (),
 ) -> CompiledSubmitDescription:
     """Compile one lane invocation into scheduler language.
 
@@ -94,6 +95,7 @@ def compile_submit_description(
         raise ValueError("compile_submit_description requires LaneResources")
     if not run_directory.is_absolute():
         raise ValueError("compile_submit_description run_directory must be absolute")
+    _validate_target_requirements(target_requirements)
     submitter = command.working_directory.name
     if any(character in submitter for character in ('"', "\\", "\n")):
         # ClassAd string literals would need escaping for these; no
@@ -149,6 +151,11 @@ def compile_submit_description(
     ]
     if operation_identity is not None:
         lines.append(f'+IssueOrchestratorOperationId = "{operation_identity}"')
+    if target_requirements:
+        lines.append(
+            "requirements = "
+            + " && ".join(f"({requirement})" for requirement in target_requirements)
+        )
     if resources.suspendability is LaneSuspendability.COOPERATIVE:
         # A cooperative lane starts UNSAFE and advertises safe windows
         # via chirp (WantIOProxy is the starter-side prerequisite).
@@ -179,6 +186,14 @@ def compile_submit_description(
         event_log_path=event_log_path,
         rusage_path=rusage_path,
     )
+
+
+def _validate_target_requirements(requirements: tuple[str, ...]) -> None:
+    if type(requirements) is not tuple or any(
+        type(requirement) is not str or not requirement or "\n" in requirement
+        for requirement in requirements
+    ):
+        raise ValueError("target_requirements must be nonempty single-line expressions")
 
 
 def _compile_exec_script(arguments: tuple[str, ...], rusage_path: Path) -> str:
