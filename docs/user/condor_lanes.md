@@ -531,6 +531,20 @@ their submitting worktree (`LaneSubmitter` in the queue), since the
 pool is shared and concurrent gates from different worktrees are
 normal.
 
+Journal writes and status snapshots coordinate through a publication lock on
+`lane-dispatch.jsonl`. Writers hold it through one complete append; readers hold
+it only to capture a stable byte extent, then release it before reading or
+parsing history. Either operation fails with a journal error if it cannot
+acquire the lock within five seconds. A failed short write or permanently
+truncated record remains an error; the reader does not discard incomplete rows.
+
+**Deployment requirement:** upgrade or stop every older worktree that writes
+this shared journal before relying on coordinated concurrent reads. Older
+writers do not take the publication lock. Existing records and schema skip
+rules are unchanged, and no data migration is needed. Do not replace or truncate
+the journal while gates or status reads are using it; stop those operations
+before manual maintenance.
+
 ## Forensics: what every record carries
 
 A duration on its own cannot be read. Two overlapping gates produce

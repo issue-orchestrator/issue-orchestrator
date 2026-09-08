@@ -14,6 +14,10 @@ exchange-loop policy on top of it.
 from __future__ import annotations
 
 from tests.run_allocation_helpers import make_completion_review_exchange
+from tests.unit.test_issue_run_evidence import run_record as make_intake_run_record
+from issue_orchestrator.control.completion_exchange_intake import (
+    RunCompletionExchangeIntake,
+)
 
 import json
 import os
@@ -46,6 +50,63 @@ from tests.callback_endpoint_helpers import ready_callback_endpoint
 # ---------------------------------------------------------------------------
 # Test helpers
 # ---------------------------------------------------------------------------
+
+
+class ScriptedReceiptIntake:
+    """Script the intake port for the existing exchange control-flow matrix.
+
+    Real custody/validator integration has separate adversarial owner tests.
+    The fake provider explicitly delivers a receipt; files alone mint nothing.
+    """
+
+    def __init__(self):
+        self.receipt = None
+        self.record = None
+        self.count = 0
+
+    def deliver(self, validation_path):
+        from issue_orchestrator.domain.completion_intake import CompletionIntakeReceipt
+        from issue_orchestrator.domain.models import (
+            CompletionRecord,
+            CompletionOutcome,
+            RequestedAction,
+        )
+
+        self.count += 1
+        self.receipt = CompletionIntakeReceipt(f"{self.count:064x}", "b" * 64)
+        self.record = CompletionRecord(
+            session_id="fixture",
+            timestamp="2026-09-06",
+            outcome=CompletionOutcome.COMPLETED,
+            summary="fixture submission",
+            requested_actions=[RequestedAction.PUSH_BRANCH],
+            validation_record_path=str(validation_path),
+        )
+
+    def bind_exchange(self, run):
+        return RunCompletionExchangeIntake(self, run)
+
+    def exchange_receipt(self, run):
+        return self.receipt
+
+    def receipt_for_run(self, run):
+        return self.receipt
+
+    def require_publication_ready(self, receipt, run):
+        assert receipt == self.receipt
+
+    def read_receipt(self, receipt, run):
+        assert receipt == self.receipt and self.record is not None
+        return self.record
+
+    def prepare_receipt(self, receipt, run):
+        assert receipt == self.receipt and self.record is not None
+        validation_path = self.record.validation_record_path
+        if validation_path is None:
+            from issue_orchestrator.domain.completion_intake import CompletionIntakeError
+
+            raise CompletionIntakeError("fixture has no authenticated validation")
+        return SimpleNamespace(validation_bytes=Path(validation_path).read_bytes())
 
 
 def _start_exchange_run(
@@ -330,7 +391,9 @@ def _patch_persistent_runner(
         "send_kwargs_seen": [],
         "run_dir": None,
         "registry": registry,
+        "intake": ScriptedReceiptIntake(),
     }
+    state["completion_delivery"] = state["intake"].deliver
     completion_script = (
         list(coder_completion_script) if coder_completion_script is not None else None
     )
@@ -476,6 +539,7 @@ def _patch_persistent_runner(
                 ),
                 encoding="utf-8",
             )
+            state["completion_delivery"](validation_record)
         if raise_after is not None:
             raise raise_after
         return head
@@ -673,6 +737,8 @@ class TestPersistentSessionExchangeHappyPath:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            completion_intake=state["intake"],
+            completion_capability="test-run-capability",
             exchange_run=_start_exchange_run(
                 session_output=session_output,
                 coder_worktree_path=coder_wt,
@@ -766,6 +832,8 @@ class TestPersistentSessionExchangeHappyPath:
         mailbox = MagicMock(name="turn_mailbox")
 
         outcome = pse.run_persistent_session_exchange(
+            completion_intake=state["intake"],
+            completion_capability="test-run-capability",
             exchange_run=_start_exchange_run(
                 session_output=session_output,
                 coder_worktree_path=coder_wt,
@@ -859,6 +927,8 @@ class TestPersistentSessionExchangeHappyPath:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            completion_intake=state["intake"],
+            completion_capability="test-run-capability",
             exchange_run=_start_exchange_run(
                 session_output=session_output,
                 coder_worktree_path=coder_wt,
@@ -961,6 +1031,8 @@ class TestPersistentSessionExchangeHappyPath:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            completion_intake=state["intake"],
+            completion_capability="test-run-capability",
             exchange_run=_start_exchange_run(
                 session_output=session_output,
                 coder_worktree_path=coder_wt,
@@ -1061,6 +1133,8 @@ class TestPersistentSessionExchangeHappyPath:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            completion_intake=state["intake"],
+            completion_capability="test-run-capability",
             exchange_run=_start_exchange_run(
                 session_output=session_output,
                 coder_worktree_path=coder_wt,
@@ -1141,6 +1215,8 @@ class TestPersistentSessionExchangeHappyPath:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            completion_intake=state["intake"],
+            completion_capability="test-run-capability",
             exchange_run=_start_exchange_run(
                 session_output=session_output,
                 coder_worktree_path=coder_wt,
@@ -1246,6 +1322,10 @@ class TestPairValidationMirror:
         )
 
         mirror = pse._PairValidationMirror(  # noqa: SLF001
+            head_reader=pse.get_repo_head_sha,
+            intake=RunCompletionExchangeIntake(
+                ScriptedReceiptIntake(), make_intake_run_record(tmp_path).run
+            ),
             pair_dir=pair_dir,
             record_path=pair_record,
             coder_worktree_path=coder_wt,
@@ -1276,6 +1356,10 @@ class TestPairValidationMirror:
         current_record.write_text(json.dumps(payload), encoding="utf-8")
 
         mirror = pse._PairValidationMirror(  # noqa: SLF001
+            head_reader=pse.get_repo_head_sha,
+            intake=RunCompletionExchangeIntake(
+                ScriptedReceiptIntake(), make_intake_run_record(tmp_path).run
+            ),
             pair_dir=pair_dir,
             record_path=pair_record,
             coder_worktree_path=coder_wt,
@@ -1311,6 +1395,10 @@ class TestPairValidationMirror:
             encoding="utf-8",
         )
         mirror = pse._PairValidationMirror(  # noqa: SLF001
+            head_reader=pse.get_repo_head_sha,
+            intake=RunCompletionExchangeIntake(
+                ScriptedReceiptIntake(), make_intake_run_record(tmp_path).run
+            ),
             pair_dir=pair_dir,
             record_path=pair_record,
             coder_worktree_path=coder_wt,
@@ -1322,176 +1410,119 @@ class TestPairValidationMirror:
         assert not pair_record.exists()
         assert not run_record.exists()
 
-    def test_completion_validation_record_replaces_stale_pair_head(
+    def test_authenticated_validation_bytes_replace_stale_pair_head(
         self,
         tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         coder_wt = tmp_path / "coder-wt"
         pair_dir = coder_wt / ".issue-orchestrator" / "persistent-pairs" / "issue-42"
         pair_record = pair_dir / "validation-record.json"
-        completion = pair_dir / "coder" / "completion-coder.json"
-        current_record = coder_wt / ".issue-orchestrator" / "validation" / "head-b.json"
         pair_record.parent.mkdir(parents=True)
-        completion.parent.mkdir(parents=True)
-        current_record.parent.mkdir(parents=True)
         pair_record.write_text(
             json.dumps({"passed": True, "head_sha": "head-a"}),
             encoding="utf-8",
         )
-        current_record.write_text(
-            json.dumps({"passed": True, "head_sha": "head-b"}),
-            encoding="utf-8",
+        validation = json.dumps({"passed": True, "head_sha": "head-b"}).encode()
+        intake = MagicMock()
+        intake.completion_evidence.return_value = SimpleNamespace(
+            validation_bytes=validation
         )
-        completion.write_text(
-            json.dumps(
-                {
-                    "outcome": "completed",
-                    "validation_record_path": str(current_record),
-                }
-            ),
-            encoding="utf-8",
-        )
-        monkeypatch.setattr(pse, "get_repo_head_sha", lambda _: "head-b")
         mirror = pse._PairValidationMirror(  # noqa: SLF001
+            head_reader=lambda _: "head-b",
+            intake=intake,
             pair_dir=pair_dir,
             record_path=pair_record,
             coder_worktree_path=coder_wt,
         )
 
-        error = pse._validate_coder_completion(  # noqa: SLF001
-            completion_path=completion,
-            pair_validation=mirror,
-            run_validation_record_path=tmp_path / "run" / "validation-record.json",
-            require_validation=True,
-        )
+        assert mirror.completion_error(require_validation=True) is None
+        assert pair_record.read_bytes() == validation
 
-        assert error is None
-        assert json.loads(pair_record.read_text(encoding="utf-8")) == {
-            "passed": True,
-            "head_sha": "head-b",
-        }
-
-    def test_stale_completion_validation_head_fails_current_head_check(
+    def test_authenticated_stale_validation_head_fails_current_head_check(
         self,
         tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         coder_wt = tmp_path / "coder-wt"
-        pair_dir = coder_wt / ".issue-orchestrator" / "persistent-pairs" / "issue-42"
-        pair_record = pair_dir / "validation-record.json"
-        completion = pair_dir / "coder" / "completion-coder.json"
-        stale_record = coder_wt / ".issue-orchestrator" / "validation" / "head-a.json"
-        completion.parent.mkdir(parents=True)
-        stale_record.parent.mkdir(parents=True)
-        stale_record.write_text(
-            json.dumps({"passed": True, "head_sha": "head-a"}),
-            encoding="utf-8",
+        pair_record = coder_wt / ".issue-orchestrator" / "pair" / "validation-record.json"
+        validation = json.dumps({"passed": True, "head_sha": "head-a"}).encode()
+        intake = MagicMock()
+        intake.completion_evidence.return_value = SimpleNamespace(
+            validation_bytes=validation
         )
-        completion.write_text(
-            json.dumps(
-                {
-                    "outcome": "completed",
-                    "validation_record_path": str(stale_record),
-                }
-            ),
-            encoding="utf-8",
-        )
-        monkeypatch.setattr(pse, "get_repo_head_sha", lambda _: "head-b")
         mirror = pse._PairValidationMirror(  # noqa: SLF001
-            pair_dir=pair_dir,
+            head_reader=lambda _: "head-b",
+            intake=intake,
+            pair_dir=pair_record.parent,
             record_path=pair_record,
             coder_worktree_path=coder_wt,
         )
 
-        error = pse._validate_coder_completion(  # noqa: SLF001
-            completion_path=completion,
-            pair_validation=mirror,
-            run_validation_record_path=tmp_path / "run" / "validation-record.json",
-            require_validation=True,
-        )
+        error = mirror.completion_error(require_validation=True)
 
         assert error is not None
         assert "does not match current HEAD" in error
-        assert (
-            json.loads(pair_record.read_text(encoding="utf-8"))["head_sha"] == "head-a"
-        )
+        assert pair_record.read_bytes() == validation
 
-    def test_completion_without_validation_source_clears_stale_pair_record(
+    def test_unavailable_authenticated_completion_clears_stale_pair_record(
         self,
         tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        from issue_orchestrator.domain.completion_intake import CompletionIntakeError
+
         coder_wt = tmp_path / "coder-wt"
-        pair_dir = coder_wt / ".issue-orchestrator" / "persistent-pairs" / "issue-42"
-        pair_record = pair_dir / "validation-record.json"
-        completion = pair_dir / "coder" / "completion-coder.json"
+        pair_record = coder_wt / ".issue-orchestrator" / "pair" / "validation-record.json"
         pair_record.parent.mkdir(parents=True)
-        completion.parent.mkdir(parents=True)
         pair_record.write_text(
-            json.dumps({"passed": True, "head_sha": "head-a"}),
-            encoding="utf-8",
+            json.dumps({"passed": True, "head_sha": "head-a"}), encoding="utf-8"
         )
-        completion.write_text(json.dumps({"outcome": "completed"}), encoding="utf-8")
-        monkeypatch.setattr(pse, "get_repo_head_sha", lambda _: "head-b")
+        intake = MagicMock()
+        intake.completion_evidence.side_effect = CompletionIntakeError("custody changed")
         mirror = pse._PairValidationMirror(  # noqa: SLF001
-            pair_dir=pair_dir,
+            head_reader=lambda _: "head-a",
+            intake=intake,
+            pair_dir=pair_record.parent,
             record_path=pair_record,
             coder_worktree_path=coder_wt,
         )
 
-        error = pse._validate_coder_completion(  # noqa: SLF001
-            completion_path=completion,
-            pair_validation=mirror,
-            run_validation_record_path=tmp_path / "run" / "validation-record.json",
-            require_validation=True,
-        )
+        error = mirror.completion_error(require_validation=True)
 
-        assert error == "validation-record.json missing"
+        assert error == (
+            "completion receipt unavailable or validation failed: custody changed"
+        )
         assert not pair_record.exists()
 
-    def test_completion_without_payload_uses_run_dir_validation_record(
+    def test_mutable_certified_copy_cannot_replace_authenticated_validation(
         self,
         tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         coder_wt = tmp_path / "coder-wt"
-        pair_dir = coder_wt / ".issue-orchestrator" / "persistent-pairs" / "issue-42"
-        pair_record = pair_dir / "validation-record.json"
-        completion = pair_dir / "coder" / "completion-coder.json"
-        run_record = (
-            coder_wt
-            / ".issue-orchestrator"
-            / "sessions"
-            / "run"
-            / "validation-record.json"
+        certified = coder_wt / ".issue-orchestrator" / "run" / "validation.json"
+        certified.parent.mkdir(parents=True)
+        certified.write_text(
+            json.dumps({"passed": True, "head_sha": "head-a"}), encoding="utf-8"
         )
-        completion.parent.mkdir(parents=True)
-        run_record.parent.mkdir(parents=True)
-        completion.write_text(json.dumps({"outcome": "completed"}), encoding="utf-8")
-        run_record.write_text(
-            json.dumps({"passed": True, "head_sha": "head-b"}),
-            encoding="utf-8",
-        )
-        monkeypatch.setattr(pse, "get_repo_head_sha", lambda _: "head-b")
+        authenticated = certified.read_bytes()
+        replacement = json.dumps({"passed": True, "head_sha": "head-b"}).encode()
+        intake = MagicMock()
+
+        def authenticated_evidence():
+            certified.write_bytes(replacement)
+            return SimpleNamespace(validation_bytes=authenticated)
+
+        intake.completion_evidence.side_effect = authenticated_evidence
+        pair_record = coder_wt / ".issue-orchestrator" / "pair" / "validation-record.json"
         mirror = pse._PairValidationMirror(  # noqa: SLF001
-            pair_dir=pair_dir,
+            head_reader=lambda _: "head-a",
+            intake=intake,
+            pair_dir=pair_record.parent,
             record_path=pair_record,
             coder_worktree_path=coder_wt,
         )
 
-        error = pse._validate_coder_completion(  # noqa: SLF001
-            completion_path=completion,
-            pair_validation=mirror,
-            run_validation_record_path=run_record,
-            require_validation=True,
-        )
-
-        assert error is None
-        assert json.loads(pair_record.read_text(encoding="utf-8")) == {
-            "passed": True,
-            "head_sha": "head-b",
-        }
+        assert mirror.completion_error(require_validation=True) is None
+        assert pair_record.read_bytes() == authenticated
+        assert certified.read_bytes() == replacement
 
 
 # ---------------------------------------------------------------------------
@@ -1560,6 +1591,8 @@ class TestTurnArtifactsPersisted:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            completion_intake=state["intake"],
+            completion_capability="test-run-capability",
             exchange_run=_start_exchange_run(
                 session_output=session_output,
                 coder_worktree_path=coder_wt,
@@ -1734,6 +1767,8 @@ class TestTurnArtifactsPersisted:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            completion_intake=state["intake"],
+            completion_capability="test-run-capability",
             exchange_run=_start_exchange_run(
                 session_output=session_output,
                 coder_worktree_path=coder_wt,
@@ -1839,6 +1874,8 @@ class TestTurnArtifactsPersisted:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            completion_intake=state["intake"],
+            completion_capability="test-run-capability",
             exchange_run=_start_exchange_run(
                 session_output=session_output,
                 coder_worktree_path=coder_wt,
@@ -1961,6 +1998,8 @@ class TestTurnArtifactsPersisted:
             return reviewer_wt
 
         outcome = pse.run_persistent_session_exchange(
+            completion_intake=state["intake"],
+            completion_capability="test-run-capability",
             exchange_run=_start_exchange_run(
                 session_output=session_output,
                 coder_worktree_path=coder_wt,
@@ -2088,6 +2127,8 @@ class TestTurnArtifactsPersisted:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            completion_intake=state["intake"],
+            completion_capability="test-run-capability",
             exchange_run=_start_exchange_run(
                 session_output=session_output,
                 coder_worktree_path=coder_wt,
@@ -2168,6 +2209,8 @@ class TestTurnArtifactsPersisted:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            completion_intake=state["intake"],
+            completion_capability="test-run-capability",
             exchange_run=_start_exchange_run(
                 session_output=session_output,
                 coder_worktree_path=coder_wt,
@@ -2235,6 +2278,8 @@ class TestTurnArtifactsPersisted:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            completion_intake=state["intake"],
+            completion_capability="test-run-capability",
             exchange_run=_start_exchange_run(
                 session_output=session_output,
                 coder_worktree_path=coder_wt,
@@ -2309,6 +2354,8 @@ class TestTurnArtifactsPersisted:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            completion_intake=state["intake"],
+            completion_capability="test-run-capability",
             exchange_run=_start_exchange_run(
                 session_output=session_output,
                 coder_worktree_path=coder_wt,
@@ -2381,6 +2428,8 @@ class TestTurnArtifactsPersisted:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            completion_intake=state["intake"],
+            completion_capability="test-run-capability",
             exchange_run=_start_exchange_run(
                 session_output=session_output,
                 coder_worktree_path=coder_wt,
@@ -2469,6 +2518,8 @@ class TestTurnArtifactsPersisted:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            completion_intake=state["intake"],
+            completion_capability="test-run-capability",
             exchange_run=_start_exchange_run(
                 session_output=session_output,
                 coder_worktree_path=coder_wt,
@@ -2547,6 +2598,8 @@ class TestExchangeTerminationConditions:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            completion_intake=state["intake"],
+            completion_capability="test-run-capability",
             exchange_run=_start_exchange_run(
                 session_output=session_output,
                 coder_worktree_path=coder_wt,
@@ -2627,6 +2680,8 @@ class TestExchangeTerminationConditions:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            completion_intake=state["intake"],
+            completion_capability="test-run-capability",
             exchange_run=_start_exchange_run(
                 session_output=session_output,
                 coder_worktree_path=coder_wt,
@@ -2682,6 +2737,8 @@ class TestExchangeTerminationConditions:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            completion_intake=state["intake"],
+            completion_capability="test-run-capability",
             exchange_run=_start_exchange_run(
                 session_output=session_output,
                 coder_worktree_path=coder_wt,
@@ -2744,6 +2801,8 @@ class TestExchangeTerminationConditions:
 
         with pytest.raises(RuntimeError, match="driver failed"):
             pse.run_persistent_session_exchange(
+                completion_intake=state["intake"],
+                completion_capability="test-run-capability",
                 exchange_run=_start_exchange_run(
                     session_output=session_output,
                     coder_worktree_path=coder_wt,
@@ -2812,6 +2871,8 @@ class TestChapterSidecarAndEvents:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            completion_intake=state["intake"],
+            completion_capability="test-run-capability",
             exchange_run=_start_exchange_run(
                 session_output=session_output,
                 coder_worktree_path=coder_wt,
@@ -2887,6 +2948,8 @@ class TestChapterSidecarAndEvents:
         )
 
         pse.run_persistent_session_exchange(
+            completion_intake=state["intake"],
+            completion_capability="test-run-capability",
             exchange_run=_start_exchange_run(
                 session_output=session_output,
                 coder_worktree_path=coder_wt,
@@ -3003,6 +3066,8 @@ class TestChapterSidecarAndEvents:
         )
 
         pse.run_persistent_session_exchange(
+            completion_intake=state["intake"],
+            completion_capability="test-run-capability",
             exchange_run=_start_exchange_run(
                 session_output=session_output,
                 coder_worktree_path=coder_wt,
@@ -3094,6 +3159,8 @@ class TestCallerHooks:
 
         round_invocations: list[int] = []
         pse.run_persistent_session_exchange(
+            completion_intake=state["intake"],
+            completion_capability="test-run-capability",
             exchange_run=_start_exchange_run(
                 session_output=session_output,
                 coder_worktree_path=coder_wt,
@@ -3151,6 +3218,8 @@ class TestCallerHooks:
             agent_label="agent:backend",
         )
         outcome = pse.run_persistent_session_exchange(
+            completion_intake=state["intake"],
+            completion_capability="test-run-capability",
             exchange_run=exchange_run,
             session_output=session_output,
             pair_registry=state["registry"],
@@ -3211,6 +3280,8 @@ class TestCallerHooks:
             agent_label="agent:backend",
         )
         outcome = pse.run_persistent_session_exchange(
+            completion_intake=state["intake"],
+            completion_capability="test-run-capability",
             exchange_run=exchange_run,
             session_output=session_output,
             pair_registry=state["registry"],
@@ -3298,6 +3369,8 @@ class TestCallerHooks:
             agent_label="agent:backend",
         )
         outcome = pse.run_persistent_session_exchange(
+            completion_intake=state["intake"],
+            completion_capability="test-run-capability",
             exchange_run=exchange_run,
             session_output=session_output,
             pair_registry=state["registry"],
@@ -3390,6 +3463,8 @@ class TestCoderProtocolGuardrail:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            completion_intake=state["intake"],
+            completion_capability="test-run-capability",
             exchange_run=_start_exchange_run(
                 session_output=session_output,
                 coder_worktree_path=coder_wt,
@@ -3513,6 +3588,8 @@ class TestCoderProtocolGuardrail:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            completion_intake=state["intake"],
+            completion_capability="test-run-capability",
             exchange_run=_start_exchange_run(
                 session_output=session_output,
                 coder_worktree_path=coder_wt,
@@ -3551,7 +3628,7 @@ class TestCoderProtocolGuardrail:
         attempt_1_prompt_text = attempt_1_prompt.read_text(encoding="utf-8")
         attempt_2_prompt_text = attempt_2_prompt.read_text(encoding="utf-8")
         assert attempt_1_prompt_text != attempt_2_prompt_text
-        assert "missing completion artifact" in attempt_2_prompt_text
+        assert "missing new registered completion receipt" in attempt_2_prompt_text
         assert "coding-done completed" in attempt_2_prompt_text
 
         attempt_1_result = ReviewExchangeTurnResult.from_manifest(
@@ -3611,6 +3688,7 @@ class TestCoderProtocolGuardrail:
             persistent_session_exchange as pse_mod,
         )
 
+        receipt_intake = ScriptedReceiptIntake()
         coder_call_count = {"n": 0}
 
         def _open(
@@ -3664,6 +3742,7 @@ class TestCoderProtocolGuardrail:
                         ),
                         encoding="utf-8",
                     )
+                    receipt_intake.deliver(validation_record)
                 # Round 2 and retries: do NOT write completion. The runner
                 # must have cleared the round-1 file before sending this
                 # prompt, so _validate_coder_completion will fail.
@@ -3700,6 +3779,8 @@ class TestCoderProtocolGuardrail:
         monkeypatch.setattr(pse_mod, "send_round", _send)
 
         outcome = pse_mod.run_persistent_session_exchange(
+            completion_intake=receipt_intake,
+            completion_capability="test-run-capability",
             exchange_run=_start_exchange_run(
                 session_output=session_output,
                 coder_worktree_path=coder_wt,
@@ -3766,6 +3847,8 @@ class TestCoderProtocolGuardrail:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            completion_intake=state["intake"],
+            completion_capability="test-run-capability",
             exchange_run=_start_exchange_run(
                 session_output=session_output,
                 coder_worktree_path=coder_wt,
@@ -3836,6 +3919,8 @@ class TestTerminalEventsOnError:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            completion_intake=state["intake"],
+            completion_capability="test-run-capability",
             exchange_run=_start_exchange_run(
                 session_output=session_output,
                 coder_worktree_path=coder_wt,
@@ -3910,6 +3995,8 @@ class TestTerminalEventsOnError:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            completion_intake=state["intake"],
+            completion_capability="test-run-capability",
             exchange_run=_start_exchange_run(
                 session_output=session_output,
                 coder_worktree_path=coder_wt,
@@ -3988,6 +4075,8 @@ class TestTerminalEventsOnError:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            completion_intake=state["intake"],
+            completion_capability="test-run-capability",
             exchange_run=_start_exchange_run(
                 session_output=session_output,
                 coder_worktree_path=coder_wt,
@@ -4053,6 +4142,8 @@ class TestRecordingContractFailLoud:
 
         with pytest.raises(RuntimeError, match="missing_file"):
             pse.run_persistent_session_exchange(
+                completion_intake=state["intake"],
+                completion_capability="test-run-capability",
                 exchange_run=_start_exchange_run(
                     session_output=session_output,
                     coder_worktree_path=coder_wt,
@@ -4132,6 +4223,8 @@ class TestAtomicSummaryWrite:
         monkeypatch.setattr(atomic_io.os, "replace", _capturing_replace)
 
         outcome = pse.run_persistent_session_exchange(
+            completion_intake=state["intake"],
+            completion_capability="test-run-capability",
             exchange_run=_start_exchange_run(
                 session_output=session_output,
                 coder_worktree_path=coder_wt,
@@ -4388,6 +4481,8 @@ class TestResponseFileInsideWorktree:
         monkeypatch.setattr(pse, "send_round", _send)
 
         pse.run_persistent_session_exchange(
+            completion_intake=ScriptedReceiptIntake(),
+            completion_capability="test-run-capability",
             exchange_run=_start_exchange_run(
                 session_output=session_output,
                 coder_worktree_path=coder_wt,
@@ -4477,6 +4572,8 @@ class TestResponseFileInsideWorktree:
         monkeypatch.setattr(pse, "send_round", _send)
 
         pse.run_persistent_session_exchange(
+            completion_intake=ScriptedReceiptIntake(),
+            completion_capability="test-run-capability",
             exchange_run=_start_exchange_run(
                 session_output=session_output,
                 coder_worktree_path=coder_wt,
@@ -4548,6 +4645,8 @@ class TestPerSessionRecordingMirror:
         )
 
         pse.run_persistent_session_exchange(
+            completion_intake=state["intake"],
+            completion_capability="test-run-capability",
             exchange_run=_start_exchange_run(
                 session_output=session_output,
                 coder_worktree_path=coder_wt,
@@ -4682,6 +4781,8 @@ class TestPerSessionRecordingMirror:
         registry = _StaleThenFreshRegistry()
 
         outcome = pse.run_persistent_session_exchange(
+            completion_intake=ScriptedReceiptIntake(),
+            completion_capability="test-run-capability",
             exchange_run=exchange_run,
             session_output=session_output,
             pair_registry=registry,
@@ -5013,6 +5114,8 @@ class TestPerSessionRecordingMirror:
 
         try:
             pse.run_persistent_session_exchange(
+                completion_intake=ScriptedReceiptIntake(),
+                completion_capability="test-run-capability",
                 exchange_run=_start_exchange_run(
                     session_output=session_output,
                     coder_worktree_path=coder_wt,
@@ -5152,6 +5255,8 @@ class TestEndToEndTimelineReadback:
 
         try:
             pse.run_persistent_session_exchange(
+                completion_intake=ScriptedReceiptIntake(),
+                completion_capability="test-run-capability",
                 exchange_run=_start_exchange_run(
                     session_output=session_output,
                     coder_worktree_path=coder_wt,
@@ -5236,6 +5341,8 @@ class TestEndToEndTimelineReadback:
         )
 
         pse.run_persistent_session_exchange(
+            completion_intake=state["intake"],
+            completion_capability="test-run-capability",
             exchange_run=_start_exchange_run(
                 session_output=session_output,
                 coder_worktree_path=coder_wt,
@@ -5362,6 +5469,8 @@ class TestAgentEnvPathIsolation:
         monkeypatch.setattr(pse, "send_round", _send)
 
         pse.run_persistent_session_exchange(
+            completion_intake=ScriptedReceiptIntake(),
+            completion_capability="test-run-capability",
             exchange_run=_start_exchange_run(
                 session_output=session_output,
                 coder_worktree_path=coder_wt,
@@ -5494,6 +5603,8 @@ class TestSliceIsolationAcrossExchanges:
             for n in (1, 2):
                 exchange_counter["n"] = n
                 pse.run_persistent_session_exchange(
+                    completion_intake=ScriptedReceiptIntake(),
+                    completion_capability="test-run-capability",
                     exchange_run=_start_exchange_run(
                         session_output=session_output,
                         coder_worktree_path=coder_wt,
@@ -5639,6 +5750,8 @@ class TestSliceIsolationAcrossExchanges:
 
         try:
             pse.run_persistent_session_exchange(
+                completion_intake=ScriptedReceiptIntake(),
+                completion_capability="test-run-capability",
                 exchange_run=_start_exchange_run(
                     session_output=session_output,
                     coder_worktree_path=coder_wt,
@@ -5756,6 +5869,8 @@ class TestSliceIsolationAcrossExchanges:
             for issue, (coder_wt, reviewer_wt) in worktrees.items():
                 active_issue["n"] = issue
                 pse.run_persistent_session_exchange(
+                    completion_intake=ScriptedReceiptIntake(),
+                    completion_capability="test-run-capability",
                     exchange_run=_start_exchange_run(
                         session_output=session_output,
                         coder_worktree_path=coder_wt,
@@ -6389,6 +6504,8 @@ class TestContinuousSliceMirroring:
 
         try:
             outcome = pse.run_persistent_session_exchange(
+                completion_intake=ScriptedReceiptIntake(),
+                completion_capability="test-run-capability",
                 exchange_run=_start_exchange_run(
                     session_output=session_output,
                     coder_worktree_path=coder_wt,
@@ -6522,6 +6639,8 @@ class TestContinuousSliceMirroring:
 
         with pytest.raises(OSError, match="simulated attach failure"):
             pse.run_persistent_session_exchange(
+                completion_intake=ScriptedReceiptIntake(),
+                completion_capability="test-run-capability",
                 exchange_run=_start_exchange_run(
                     session_output=session_output,
                     coder_worktree_path=coder_wt,
@@ -6597,6 +6716,8 @@ class TestContinuousSliceMirroring:
 
         with pytest.raises(RuntimeError, match="no_writer"):
             pse.run_persistent_session_exchange(
+                completion_intake=ScriptedReceiptIntake(),
+                completion_capability="test-run-capability",
                 exchange_run=_start_exchange_run(
                     session_output=session_output,
                     coder_worktree_path=coder_wt,
@@ -6694,6 +6815,8 @@ class TestContinuousSliceMirroring:
             for n in (1, 2):
                 exchange_n["n"] = n
                 pse.run_persistent_session_exchange(
+                    completion_intake=ScriptedReceiptIntake(),
+                    completion_capability="test-run-capability",
                     exchange_run=_start_exchange_run(
                         session_output=session_output,
                         coder_worktree_path=coder_wt,
@@ -7224,6 +7347,8 @@ class TestSessionCleanup:
 
         with pytest.raises(RuntimeError, match="unexpected"):
             pse.run_persistent_session_exchange(
+                completion_intake=state["intake"],
+                completion_capability="test-run-capability",
                 exchange_run=_start_exchange_run(
                     session_output=session_output,
                     coder_worktree_path=coder_wt,
@@ -7315,6 +7440,8 @@ class TestSpawnPartialConstructionCleanup:
         registry = _FakePairRegistry()
         with pytest.raises(RuntimeError, match="reviewer pty bring-up failed"):
             pse.run_persistent_session_exchange(
+                completion_intake=ScriptedReceiptIntake(),
+                completion_capability="test-run-capability",
                 exchange_run=_start_exchange_run(
                     session_output=session_output,
                     coder_worktree_path=coder_wt,
@@ -7440,6 +7567,8 @@ class TestRetainedKillEvidence:
             state["writers"]["reviewer"].write(tail_bytes)
 
         outcome = pse.run_persistent_session_exchange(
+            completion_intake=state["intake"],
+            completion_capability="test-run-capability",
             exchange_run=_start_exchange_run(
                 session_output=session_output,
                 coder_worktree_path=coder_wt,
@@ -7586,3 +7715,120 @@ class TestRetainedKillEvidence:
             if evt.event_type is EventName.REVIEW_EXCHANGE_ROLE_TIMEOUT
         ]
         assert timeouts[0].data["composer_state"] == "composer_emptied"
+
+
+@pytest.mark.parametrize(
+    ("configured_passed", "interruption"),
+    [(False, "none"), (True, "none"), (True, "driver"), (True, "custody")],
+)
+def test_persistent_coder_uses_real_receipts_and_closes_before_release(
+    tmp_path, monkeypatch, configured_passed, interruption
+):
+    from dataclasses import replace
+    from issue_orchestrator.domain.completion_intake import (
+        IntakeClosed,
+        CompletionIntakeError,
+    )
+    from issue_orchestrator.ports.command_runner import CommandResult
+    from tests.unit.test_completion_evidence_intake import setup, command, completion
+
+    ledger, first_run, _, intake, _, validation_runner = setup(
+        tmp_path / "intake-owner"
+    )
+    coder_wt = first_run.worktree_path
+    reviewer_wt = tmp_path / "reviewer-wt"
+    reviewer_wt.mkdir()
+    prompt = tmp_path / "prompt.md"
+    prompt.write_text("Hermetic test prompt")
+    output = FileSystemSessionOutput()
+    exchange = _start_exchange_run(
+        session_output=output,
+        coder_worktree_path=coder_wt,
+        issue_number=42,
+        coder_label="agent:backend",
+    )
+    ledger.record_run(
+        42, replace(make_intake_run_record(tmp_path), run=exchange.session_run)
+    )
+    capability = ledger.submission_capability(exchange.session_run)
+    state = _patch_persistent_runner(
+        monkeypatch,
+        response_script={
+            "reviewer": [
+                {"response_type": "changes_requested", "response_text": "Correct this"},
+                RuntimeError("driver failed")
+                if interruption == "driver"
+                else {"response_type": "ok", "response_text": "Approved"},
+            ],
+            "coder": [{"response_type": "ok", "response_text": "Done"}] * 3,
+        },
+    )
+    monkeypatch.setattr(pse, "get_repo_head_sha", lambda _: "a" * 40)
+    validation_runner.run.return_value = CommandResult(
+        returncode=0 if configured_passed else 1,
+        stdout="configured validator output",
+        stderr="",
+        timed_out=False,
+    )
+    receipts = []
+
+    def deliver(_agent_validation_path):
+        # The provider's passing sidecar is deliberately unrelated to the
+        # configured ValidationRunner result. Only these submitted bytes count.
+        receipts.append(
+            intake.submit(capability, command(completion(), str(len(receipts))))
+        )
+
+        if interruption == "custody":
+            ledger.entry_for_receipt(receipts[-1].entry_id).raw_path.write_bytes(
+                b"corrupt"
+            )
+
+    state["completion_delivery"] = deliver
+
+    def run_exchange():
+        return pse.run_persistent_session_exchange(
+            exchange_run=exchange,
+            completion_intake=intake,
+            completion_capability=capability,
+            session_output=output,
+            pair_registry=state["registry"],
+            persistent_pair_root=tmp_path / "persistent-pairs",
+            coder_worktree_path=coder_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
+            issue_number=42,
+            issue_title="test",
+            coder_label="agent:backend",
+            reviewer_label="agent:reviewer",
+            coder_agent=_make_agent(prompt),
+            reviewer_agent=_make_agent(prompt),
+            runtime_config=_runtime_config(tmp_path),
+            max_rounds=2,
+            max_no_progress=2,
+            require_validation=True,
+        )
+
+    if interruption == "custody":
+        with pytest.raises(CompletionIntakeError):
+            run_exchange()
+        assert state["registry"].released == []
+        assert receipts
+        # Corrupt custody aborts the entire closure transaction and release.
+        # Evidence/run remain available for repair; no processing ack is forged.
+        assert ledger.submission_capability(exchange.session_run) == capability
+        return
+    if interruption == "driver":
+        with pytest.raises(RuntimeError, match="driver failed"):
+            run_exchange()
+        assert state["registry"].released == [(42, "review-exchange-exception")]
+    else:
+        outcome = run_exchange()
+        assert (outcome.status == "ok") is configured_passed
+    assert receipts
+    assert ledger.pending_receipts() == ()
+    assert all(
+        ledger.validation_for_receipt(receipt.entry_id).passed is configured_passed
+        for receipt in receipts
+    )
+    with pytest.raises(IntakeClosed):
+        intake.submit(capability, command(completion(), "after-pair-release"))

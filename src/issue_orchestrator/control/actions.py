@@ -184,8 +184,9 @@ class CreateWorktreeAction(Action):
 
 @dataclass(frozen=True)
 class RemoveWorktreeAction(Action):
-    """Remove a git worktree."""
+    """Remove an explicitly issue-owned git worktree."""
 
+    issue_number: int = field(kw_only=True)
     worktree_path: str = ""
     action_type: ActionType = field(default=ActionType.REMOVE_WORKTREE, init=False)
 

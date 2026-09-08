@@ -33,7 +33,11 @@ class TestConfig:
         """Existing shipped configs must continue to load and validate."""
         repo_root = Path(__file__).resolve().parents[2]
         path = repo_root / config_path
-        if config_path.startswith("examples/"):
+        if config_path.startswith(
+            ("examples/", ".issue-orchestrator/config/maintenance/")
+        ):
+            # Load exact shipped bytes in a temporary installation: defaults may
+            # create sibling worktree directories and must not touch the checkout.
             example_data = yaml.safe_load(path.read_text(encoding="utf-8"))
             for agent_data in example_data.get("agents", {}).values():
                 prompt = agent_data.get("prompt")
@@ -41,13 +45,10 @@ class TestConfig:
                     prompt_path = tmp_path / prompt
                     prompt_path.parent.mkdir(parents=True, exist_ok=True)
                     prompt_path.write_text("Prompt\n", encoding="utf-8")
-            installed_path = (
-                tmp_path
-                / ".issue-orchestrator"
-                / "config"
-                / "modes"
-                / "default"
-                / "default.yaml"
+            installed_path = tmp_path / (
+                ".issue-orchestrator/config/modes/default/default.yaml"
+                if config_path.startswith("examples/")
+                else config_path
             )
             installed_path.parent.mkdir(parents=True, exist_ok=True)
             installed_path.write_text(

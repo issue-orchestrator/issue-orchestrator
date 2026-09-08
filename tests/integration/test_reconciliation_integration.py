@@ -5,6 +5,8 @@ with the ActionApplier and actual (mocked) adapters.
 """
 
 import pytest
+from tests.runtime_lifecycle_helpers import make_action_applier
+
 from unittest.mock import MagicMock, patch, call
 
 from issue_orchestrator.control.action_applier import ActionApplier
@@ -97,7 +99,7 @@ class TestReconciliationIntegration:
         self, label_set, session_manager, event_sink
     ):
         """Without reconciliation enabled, sync_labels proceeds normally."""
-        applier = ActionApplier(
+        applier = make_action_applier(
             labels=label_set,
             sessions=session_manager,
             events=event_sink,
@@ -123,7 +125,7 @@ class TestReconciliationIntegration:
         """With reconciliation enabled and state matching, sync_labels proceeds."""
         fresh_reader = MockFreshIssueReader({123: ["queued"]})
 
-        applier = ActionApplier(
+        applier = make_action_applier(
             labels=label_set,
             sessions=session_manager,
             events=event_sink,
@@ -154,7 +156,7 @@ class TestReconciliationIntegration:
         # Issue doesn't have "queued" label - it was removed externally
         fresh_reader = MockFreshIssueReader({123: ["other-label"]})
 
-        applier = ActionApplier(
+        applier = make_action_applier(
             labels=label_set,
             sessions=session_manager,
             events=event_sink,
@@ -187,7 +189,7 @@ class TestReconciliationIntegration:
         """Reconciliation check emits trace event for debugging."""
         fresh_reader = MockFreshIssueReader({456: ["queued", "agent:test"]})
 
-        applier = ActionApplier(
+        applier = make_action_applier(
             labels=label_set,
             sessions=session_manager,
             events=event_sink,
@@ -216,7 +218,7 @@ class TestReconciliationIntegration:
         self, label_set, session_manager, event_sink
     ):
         """If reconcile=True but no fresh_issue_reader, proceed with logged warning."""
-        applier = ActionApplier(
+        applier = make_action_applier(
             labels=label_set,
             sessions=session_manager,
             events=event_sink,
@@ -255,7 +257,7 @@ class TestReconciliationSimulatedRaceCondition:
         # Start with issue having "queued" label
         fresh_reader = MockFreshIssueReader({100: ["queued", "agent:test"]})
 
-        applier = ActionApplier(
+        applier = make_action_applier(
             labels=label_set,
             sessions=session_manager,
             events=event_sink,
@@ -299,7 +301,7 @@ class TestReconciliationSimulatedRaceCondition:
             3: ["in-progress"],
         })
 
-        applier = ActionApplier(
+        applier = make_action_applier(
             labels=label_set,
             sessions=session_manager,
             events=event_sink,
@@ -353,7 +355,7 @@ class TestReconciliationEventTracing:
         event_sink = MockEventSink()
         fresh_reader = MockFreshIssueReader({42: ["foo"]})
 
-        applier = ActionApplier(
+        applier = make_action_applier(
             labels=label_set,
             sessions=session_manager,
             events=event_sink,
@@ -405,7 +407,7 @@ class TestOrchestratorReconciliationCatch:
         # Issue currently has "blocked" label (would fail ExpectedState check)
         fresh_reader = MockFreshIssueReader({42: ["agent:web", "blocked"]})
 
-        applier = ActionApplier(
+        applier = make_action_applier(
             labels=label_set,
             sessions=session_manager,
             events=event_sink,
@@ -465,7 +467,7 @@ class TestOrchestratorReconciliationCatch:
         # Current state differs from expected
         fresh_reader = MockFreshIssueReader({99: ["old-label", "stale"]})
 
-        applier = ActionApplier(
+        applier = make_action_applier(
             labels=label_set,
             sessions=session_manager,
             events=event_sink,
@@ -508,7 +510,7 @@ class TestOrchestratorReconciliationCatch:
             2: ["ready"],
         })
 
-        applier = ActionApplier(
+        applier = make_action_applier(
             labels=label_set,
             sessions=session_manager,
             events=event_sink,

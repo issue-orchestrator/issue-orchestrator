@@ -31,7 +31,6 @@ from .governed_label_set import GovernedLabelError
 
 if TYPE_CHECKING:
     from ..domain.models import CompletionRecord
-    from ..ports.pull_request_tracker import PRInfo
     from .needs_human_block import SharedNeedsHumanBlock
 
 logger = logging.getLogger(__name__)
@@ -71,7 +70,7 @@ def reserved_pr_label_error(
 
 def apply_pr_labels(
     *,
-    pr: "PRInfo",
+    pr_number: int,
     record: "CompletionRecord",
     labels: _LabelWriter,
     actions_taken: list[str],
@@ -83,14 +82,11 @@ def apply_pr_labels(
     to fail with no "but the push worked" escape - see
     :mod:`.completion_result_artifacts`.
     """
-    actions_taken.append(f"Created PR #{pr.number}")
-    logger.info("Created PR #%d: %s", pr.number, pr.url)
-
     if not record.pr_labels:
         return True
-    if pr.number in _DRY_RUN_PR_NUMBERS:
+    if pr_number in _DRY_RUN_PR_NUMBERS:
         logger.info(
-            "[E2E_DRY_RUN] Skipping PR label addition for fake PR #%d", pr.number
+            "[E2E_DRY_RUN] Skipping PR label addition for fake PR #%d", pr_number
         )
         return True
 
@@ -98,18 +94,18 @@ def apply_pr_labels(
     refused: str | None = None
     for label in record.pr_labels:
         try:
-            labels.add_label(pr.number, label)
+            labels.add_label(pr_number, label)
         except GovernedLabelError:
             refused = (
                 f"{ERROR_PREFIX_GOVERNED_LABEL}: pr_labels entry {label!r} is the "
                 f"shared needs-human block, which is not the agent's to apply on "
-                f"PR #{pr.number}; use the needs_human completion outcome"
+                f"PR #{pr_number}; use the needs_human completion outcome"
             )
             logger.error("[COMPLETION] %s", refused)
             errors.append(refused)
             break
         applied.append(label)
-        logger.info("Added label '%s' to PR #%d", label, pr.number)
+        logger.info("Added label '%s' to PR #%d", label, pr_number)
     if applied:
         actions_taken.append(f"Added labels to PR: {applied}")
     return refused is None

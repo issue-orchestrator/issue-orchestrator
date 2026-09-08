@@ -21,6 +21,8 @@ import pytest
 from issue_orchestrator.control.actions import SyncLabelsAction
 from issue_orchestrator.control.label_sync import DesiredLabels
 from issue_orchestrator.entrypoints.bootstrap import build_orchestrator_for_testing
+from issue_orchestrator.execution.command_runner import LocalCommandRunner
+from issue_orchestrator.execution.git_tools import create_git
 from issue_orchestrator.execution import FileSystemSessionOutput
 from issue_orchestrator.infra.config import Config
 
@@ -33,6 +35,9 @@ ISSUE = 903
 
 @pytest.fixture
 def config(tmp_path) -> Config:
+    create_git(LocalCommandRunner()).run(
+        tmp_path, ["init", "--initial-branch=main"]
+    )
     config = Config()
     config.repo = "test/repo"
     config.repo_root = tmp_path

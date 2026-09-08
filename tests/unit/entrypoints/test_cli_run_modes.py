@@ -100,9 +100,10 @@ class TestDeclareNoControlApi:
         endpoint = orchestrator.deps.agent_callback_endpoint
         assert endpoint.is_ready() is False
 
-        declare_no_control_api(orchestrator, None)
+        with pytest.raises(ValueError, match="Completion intake requires"):
+            declare_no_control_api(orchestrator, None)
 
-        assert endpoint.is_ready() is True, "launches would defer forever"
+        assert endpoint.is_ready() is False
         assert endpoint.resolve_port(0) is None
 
     def test_stays_unresolved_when_an_api_port_is_requested(
@@ -180,14 +181,11 @@ def test_locked_cli_start_persists_exact_selection_after_lock_publication(
 class TestNoDashboardMode:
     """``--no-dashboard``: the path F7's probe originally exercised."""
 
-    def test_declares_and_runs_when_no_api_port(self, orchestrator) -> None:
-        asyncio.run(cli_run_modes.run_no_dashboard(orchestrator, None))
-
-        endpoint = orchestrator.deps.agent_callback_endpoint
-        assert endpoint.is_ready() is True
-        assert endpoint.resolve_port(0) is None
-        orchestrator.startup.assert_awaited_once()
-        orchestrator.run_loop.assert_awaited_once()
+    def test_missing_api_refuses_before_startup(self, orchestrator) -> None:
+        with pytest.raises(ValueError, match="Completion intake requires"):
+            asyncio.run(cli_run_modes.run_no_dashboard(orchestrator, None))
+        orchestrator.startup.assert_not_awaited()
+        orchestrator.run_loop.assert_not_awaited()
 
     def test_auto_assigned_port_is_published_and_server_stopped(
         self, orchestrator, fake_server
@@ -207,17 +205,17 @@ class TestNoDashboardMode:
         assert endpoint.resolve_port(0) == BOUND_PORT
         orchestrator.run_loop.assert_awaited_once()
 
-    def test_startup_failure_propagates(self, orchestrator) -> None:
+    def test_startup_failure_propagates(self, orchestrator, fake_server) -> None:
         """Failures must surface, not be swallowed by the test harness."""
         orchestrator.startup = AsyncMock(side_effect=RuntimeError("startup boom"))
 
         with pytest.raises(RuntimeError, match="startup boom"):
-            asyncio.run(cli_run_modes.run_no_dashboard(orchestrator, None))
+            asyncio.run(cli_run_modes.run_no_dashboard(orchestrator, 0))
 
 
 class TestTuiDashboardMode:
     def test_declares_and_runs_the_dashboard(
-        self, orchestrator, monkeypatch: pytest.MonkeyPatch
+        self, orchestrator, fake_server, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         dashboard = AsyncMock(return_value=True)
         # ``run_tui_dashboard`` imports this locally from .dashboard, so
@@ -227,7 +225,7 @@ class TestTuiDashboardMode:
         )
         config = MagicMock(ui_mode="tui")
 
-        result = asyncio.run(cli_run_modes.run_tui_dashboard(orchestrator, config, None))
+        result = asyncio.run(cli_run_modes.run_tui_dashboard(orchestrator, config, 0))
 
         assert result is True
         dashboard.assert_awaited_once()
@@ -252,7 +250,7 @@ class TestTuiDashboardMode:
 
 class TestWebDashboardMode:
     def test_declares_and_runs_the_web_dashboard(
-        self, orchestrator, monkeypatch: pytest.MonkeyPatch
+        self, orchestrator, fake_server, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         web_runner = AsyncMock(return_value=None)
         monkeypatch.setattr(
@@ -262,9 +260,7 @@ class TestWebDashboardMode:
         config = MagicMock(web_port=8080)
         args = MagicMock(port=8080)
 
-        asyncio.run(
-            cli_run_modes.run_web_dashboard_mode(orchestrator, config, args, None)
-        )
+        asyncio.run(cli_run_modes.run_web_dashboard_mode(orchestrator, config, args, 0))
 
         web_runner.assert_awaited_once()
         assert orchestrator.deps.agent_callback_endpoint.is_ready() is True

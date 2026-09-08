@@ -7,7 +7,6 @@ import pytest
 
 from issue_orchestrator.control.review_exchange_lifecycle import (
     GenerationTerminationPartialFailure,
-    terminate_issue_session_generation,
 )
 from issue_orchestrator.domain.session_key import TaskKind
 from issue_orchestrator.domain.tech_lead_session import TechLeadSessionGeneration
@@ -34,16 +33,7 @@ def _target(run_id: str = "RUN-14") -> TechLeadSessionGeneration:
 def _terminate(active_sessions, *, exists=True):
     kill_session = MagicMock()
     publish_recovery = MagicMock()
-    result = terminate_issue_session_generation(
-        target=_target(),
-        reason="test kill",
-        active_sessions=active_sessions,
-        session_exists=MagicMock(return_value=exists),
-        kill_session=kill_session,
-        pair_registry=None,
-        job_supervisor=None,
-        publish_recovery=publish_recovery,
-    )
+    result = runtime_owners(active_sessions=active_sessions, pair_registry=None, job_supervisor=None, publish_recovery=publish_recovery).terminate_generation(_target(), "test kill", session_exists=MagicMock(return_value=exists), kill_session=kill_session)
     return result, kill_session, publish_recovery
 
 
@@ -103,16 +93,7 @@ def test_pair_failure_attempts_all_hidden_owners_and_keeps_kill_retryable() -> N
     kill_session = MagicMock()
 
     with pytest.raises(RuntimeError, match="pair registry unavailable"):
-        terminate_issue_session_generation(
-            target=_target(),
-            reason="test kill",
-            active_sessions=active,
-            session_exists=MagicMock(return_value=True),
-            kill_session=kill_session,
-            pair_registry=pair_registry,
-            job_supervisor=job_supervisor,
-            publish_recovery=publish_recovery,
-        )
+        runtime_owners(active_sessions=active, pair_registry=pair_registry, job_supervisor=job_supervisor, publish_recovery=publish_recovery).terminate_generation(_target(), "test kill", session_exists=MagicMock(return_value=True), kill_session=kill_session)
 
     job_supervisor.cancel_matching.assert_called_once()
     publish_recovery.abandon_issue.assert_called_once_with(14)
@@ -131,16 +112,7 @@ def test_publish_failure_keeps_terminal_and_active_row_retryable() -> None:
     kill_session = MagicMock()
 
     with pytest.raises(RuntimeError, match="sqlite unavailable"):
-        terminate_issue_session_generation(
-            target=_target(),
-            reason="test kill",
-            active_sessions=active,
-            session_exists=MagicMock(return_value=True),
-            kill_session=kill_session,
-            pair_registry=pair_registry,
-            job_supervisor=job_supervisor,
-            publish_recovery=publish_recovery,
-        )
+        runtime_owners(active_sessions=active, pair_registry=pair_registry, job_supervisor=job_supervisor, publish_recovery=publish_recovery).terminate_generation(_target(), "test kill", session_exists=MagicMock(return_value=True), kill_session=kill_session)
 
     pair_registry.release.assert_called_once_with(14, reason="test kill")
     job_supervisor.cancel_matching.assert_called_once()
@@ -155,16 +127,7 @@ def test_terminal_stop_failure_retains_exact_active_row_for_retry() -> None:
     kill_session = MagicMock(side_effect=RuntimeError("terminal stop failed"))
 
     with pytest.raises(RuntimeError, match="terminal stop failed"):
-        terminate_issue_session_generation(
-            target=_target(),
-            reason="test kill",
-            active_sessions=active,
-            session_exists=MagicMock(return_value=True),
-            kill_session=kill_session,
-            pair_registry=None,
-            job_supervisor=None,
-            publish_recovery=publish_recovery,
-        )
+        runtime_owners(active_sessions=active, pair_registry=None, job_supervisor=None, publish_recovery=publish_recovery).terminate_generation(_target(), "test kill", session_exists=MagicMock(return_value=True), kill_session=kill_session)
 
     publish_recovery.abandon_issue.assert_called_once_with(14)
     kill_session.assert_called_once_with("issue-14")
@@ -187,16 +150,7 @@ def test_stop_then_raise_reconciles_exact_active_row_and_surfaces_partial_failur
         GenerationTerminationPartialFailure,
         match="stopped, but its stop owner raised after commit",
     ) as raised:
-        terminate_issue_session_generation(
-            target=_target(),
-            reason="test kill",
-            active_sessions=active,
-            session_exists=lambda _terminal_id: running,
-            kill_session=stop_then_raise,
-            pair_registry=None,
-            job_supervisor=None,
-            publish_recovery=MagicMock(),
-        )
+        runtime_owners(active_sessions=active, pair_registry=None, job_supervisor=None, publish_recovery=MagicMock()).terminate_generation(_target(), "test kill", session_exists=lambda _terminal_id: running, kill_session=stop_then_raise)
 
     assert raised.value.target == _target()
     assert isinstance(raised.value.__cause__, RuntimeError)
@@ -216,3 +170,5 @@ def test_multiple_killable_sessions_for_issue_are_ambiguous() -> None:
     kill_session.assert_not_called()
     publish_recovery.abandon_issue.assert_not_called()
     assert len(active) == 2
+
+from tests.runtime_lifecycle_helpers import runtime_owners

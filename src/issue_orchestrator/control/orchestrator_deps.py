@@ -21,6 +21,8 @@ if TYPE_CHECKING:
     from ..ports.session_launcher_factory import SessionLauncherFactory
     from ..ports.label_store import LabelStore
     from ..ports.pending_work_claim_store import PendingWorkClaimStore
+    from ..ports.completion_intake import CompletionIntakeRuntime
+    from .review_exchange_lifecycle import IssueRuntimeLifecycleOwners
     from ..ports.issue_run_evidence import IssueRunLedger
     from ..ports.issue_run_allocator import IssueRunAllocator
     from .claim_quarantine import ClaimQuarantineOwner
@@ -142,6 +144,8 @@ class OrchestratorDeps:
     # Orchestrator-owned, OUTSIDE every agent-writable worktree (#6999 F7): it
     # records which queued request each running session is carrying, and
     # restoration accepts it as authority.
+    completion_intake: "CompletionIntakeRuntime"
+    runtime_lifecycle: "IssueRuntimeLifecycleOwners"
     issue_run_ledger: "IssueRunLedger"
     issue_run_allocator: "IssueRunAllocator"
     pending_work_claims: "PendingWorkClaimStore"

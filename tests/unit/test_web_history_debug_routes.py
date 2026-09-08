@@ -12,38 +12,6 @@ globals().update(
 class TestHistoryEndpoints:
     """Test history management endpoints."""
 
-    def test_configured_attr_ignores_unconfigured_mock_children(self):
-        """Dependency probing must not treat MagicMock child mocks as wiring."""
-        from issue_orchestrator.entrypoints.web_retry_history_routes import _configured_attr
-
-        deps = MagicMock()
-
-        assert _configured_attr(deps, "session_manager") is None
-        _ = deps.session_manager
-        assert _configured_attr(deps, "session_manager") is None
-
-        session_manager = Mock()
-        deps.session_manager = session_manager
-
-        assert _configured_attr(deps, "session_manager") is session_manager
-
-    def test_configured_attr_supports_slotted_runtime_objects(self):
-        """Real slotted runtime collaborators still support explicit lookup."""
-        from issue_orchestrator.entrypoints.web_retry_history_routes import _configured_attr
-
-        class SlottedDeps:
-            __slots__ = ("session_manager",)
-
-            def __init__(self, session_manager):
-                self.session_manager = session_manager
-
-        session_manager = object()
-
-        assert (
-            _configured_attr(SlottedDeps(session_manager), "session_manager")
-            is session_manager
-        )
-
     def test_clear_history_success(self):
         """Test clearing all history."""
         from issue_orchestrator.entrypoints import web
@@ -287,6 +255,12 @@ class TestHistoryEndpoints:
             ),
         ]
 
+        from tests.runtime_lifecycle_helpers import runtime_owners
+        mock_orch.deps.runtime_lifecycle = runtime_owners(
+            session_manager=session_manager, active_sessions=mock_orch.state.active_sessions,
+            pair_registry=pair_registry, job_supervisor=job_supervisor,
+        )
+
         set_orchestrator(mock_orch)
 
         with patch("issue_orchestrator.control.maintenance.reset_issue") as reset_issue_mock:
@@ -392,6 +366,8 @@ class TestHistoryEndpoints:
         mock_orch.deps.events = MagicMock()
         publish_recovery = Mock()
         mock_orch.deps.publish_recovery = publish_recovery
+        from tests.runtime_lifecycle_helpers import runtime_owners
+        mock_orch.deps.runtime_lifecycle = runtime_owners(publish_recovery=publish_recovery)
         mock_orch.repository_host.get_issue_labels.return_value = [
             "agent:web",
             lm.publish_failed,

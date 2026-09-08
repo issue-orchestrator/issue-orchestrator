@@ -16,6 +16,7 @@ fast-forward at the start of every reviewer round, remove when the
 
 from __future__ import annotations
 
+from ..ports.completion_intake import CompletionIntakeRuntime
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -103,9 +104,11 @@ class PersistentReviewExchangeRunner:
         session_output: SessionOutput,
         pair_registry: InMemoryPersistentExchangePairRegistry,
         *,
+        completion_intake: CompletionIntakeRuntime,
         turn_mailbox: "TurnMailbox | None" = None,
         coder_prompt_addendum: CoderPromptAddendumProvider = NO_CODER_PROMPT_ADDENDUM,
     ) -> None:
+        self._completion_intake = completion_intake
         self._session_output = session_output
         self._pair_registry = pair_registry
         # Read off the registry rather than injected separately: the registry
@@ -137,6 +140,7 @@ class PersistentReviewExchangeRunner:
         self,
         *,
         exchange_run: ReviewExchangeRun,
+        completion_capability: str,
         coder_worktree: Path,
         issue_number: int,
         issue_title: str,
@@ -189,6 +193,8 @@ class PersistentReviewExchangeRunner:
 
         return run_persistent_session_exchange(
             exchange_run=exchange_run,
+            completion_capability=completion_capability,
+            completion_intake=self._completion_intake,
             session_output=self._session_output,
             pair_registry=self._pair_registry,
             kill_evidence=self._kill_evidence,

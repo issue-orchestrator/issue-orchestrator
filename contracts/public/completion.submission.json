@@ -1,0 +1,29 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "content_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Content Sha256",
+      "type": "string"
+    },
+    "raw_bytes": {
+      "format": "byte",
+      "maxLength": 2796204,
+      "title": "Raw Bytes",
+      "type": "string"
+    },
+    "submission_key": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Submission Key",
+      "type": "string"
+    }
+  },
+  "required": [
+    "raw_bytes",
+    "content_sha256",
+    "submission_key"
+  ],
+  "title": "CompletionSubmissionContract",
+  "type": "object"
+}

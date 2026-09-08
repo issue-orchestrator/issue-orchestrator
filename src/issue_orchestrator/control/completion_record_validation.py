@@ -8,7 +8,9 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
-from ..domain.models import COMPLETION_RECORD_PATH, CompletionRecord, RequestedAction, sanitize_agent_label
+from ..domain.registered_completion import CompletionRolePolicy, RegisteredCompletion, CompletionProcessingPolicy
+from ..domain.models import COMPLETION_RECORD_PATH, CompletionRecord, RequestedAction
+from ..domain.validated_head_publication import is_protected_publication_branch
 from ..domain.dirty_remediation import (
     DirtyTreeDisposition,
     blocked_reason,
@@ -252,29 +254,22 @@ class CompletionRecordValidator:
         record_path = worktree / (completion_path or COMPLETION_RECORD_PATH)
         return load_completion_record_result(record_path)
 
+    def _role_policy(self) -> CompletionRolePolicy:
+        return CompletionRolePolicy(
+            tuple(self._config.agents) if self._config else (),
+            self._config.tech_lead_review_agent if self._config else None,
+        )
+
     def resolve_agent_label_from_completion_path(
         self, completion_path: str | None
     ) -> tuple[str | None, str | None]:
-        if completion_path is None or self._config is None:
-            return None, None
-        filename = Path(completion_path).name
-        if not (filename.startswith("completion-") and filename.endswith(".json")):
-            return None, None
-        safe_name = filename[len("completion-"):-len(".json")]
-        matches = [
-            label
-            for label in self._config.agents.keys()
-            if sanitize_agent_label(label) == safe_name
-        ]
-        if not matches:
-            return None, None
-        if len(matches) > 1:
-            return (
-                None,
-                "Multiple agent labels map to completion file "
-                f"{filename}: {', '.join(matches)}",
-            )
-        return matches[0], None
+        return self._role_policy().legacy_label(completion_path)
+
+    def resolve_processing_policy(
+        self, context: RegisteredCompletion | None, issue_number: int,
+        supplied_label: str | None, completion_path: str | None,
+    ) -> CompletionProcessingPolicy:
+        return self._role_policy().processing_policy(context, issue_number, supplied_label, completion_path)
 
     def validate_worktree_state(
         self, worktree: Path, record: CompletionRecord
@@ -288,7 +283,7 @@ class CompletionRecordValidator:
             )
 
         if RequestedAction.PUSH_BRANCH in record.requested_actions:
-            if branch in ("main", "master"):
+            if is_protected_publication_branch(branch):
                 return WorktreeValidationResult.fail(
                     WorktreeValidationFailure.PROTECTED_BRANCH,
                     f"Cannot push: on protected branch '{branch}'",

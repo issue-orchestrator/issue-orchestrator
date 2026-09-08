@@ -300,6 +300,7 @@ These SSE events have a committed payload schema:
 | `history.reconciled` | `contracts/public/sse.history.reconciled.json` |
 | `startup_complete` | `contracts/public/sse.startup_complete.json` |
 | `shutdown_requested` | `contracts/public/sse.shutdown_requested.json` |
+| `validated_work.disposition_observed` | `contracts/public/sse.validated_work.disposition_observed.json` |
 
 Non-SSE payloads on the same tier: `dashboard.view_model`, `timeline.issue`, and
 `stack.dependency_gate_view`.
@@ -346,6 +347,9 @@ contracted route goes missing or stops using its generated response model.
 
 | Path | Scope |
 |---|---|
+| `/api/completion/submissions` | Repository Engine |
+| `/api/issues/{issue_number}/resume` | Repository Engine |
+| `/api/validated-work/intake` | Repository Engine |
 | `/api/dialog/blocked-issues` | Repository Engine |
 | `/api/dialog/config` | Repository Engine |
 | `/api/dialog/debug` | Repository Engine |

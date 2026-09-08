@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .session_run import SessionRunAssets
+from .completion_intake import CompletionIntakeReceipt
 
 
 @dataclass(frozen=True)
@@ -46,6 +47,7 @@ class PublishRetryLocators:
     skip_review: bool = False
     review_exchange_completed: bool = False
     review_exchange_halted: bool = False
+    intake_receipt: CompletionIntakeReceipt | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -56,6 +58,7 @@ class PublishRetryLocators:
             "branch_name": self.branch_name,
             "completion_path": self.completion_path,
             "run_assets": self.run_assets.to_dict(),
+            "intake_receipt": ({"entry_id": self.intake_receipt.entry_id, "content_sha256": self.intake_receipt.content_sha256} if self.intake_receipt else None),
             "agent_label": self.agent_label,
             "pr_number": self.pr_number,
             "skip_review": self.skip_review,
@@ -76,6 +79,7 @@ class PublishRetryLocators:
             branch_name=str(data["branch_name"]),
             completion_path=str(data["completion_path"]),
             run_assets=SessionRunAssets.from_dict(data["run_assets"]),
+            intake_receipt=(CompletionIntakeReceipt(**data["intake_receipt"]) if data.get("intake_receipt") is not None else None),
             agent_label=_optional_str(data.get("agent_label"), "agent_label"),
             pr_number=_optional_int(data.get("pr_number"), "pr_number"),
             skip_review=_require_bool(data.get("skip_review", False), "skip_review"),

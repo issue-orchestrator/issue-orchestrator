@@ -13,6 +13,9 @@ importantly — pin that the boundary has exactly ONE owner per concern:
 
 from __future__ import annotations
 
+from issue_orchestrator.domain.registered_completion import CompletionProcessingPolicy
+from tests.runtime_lifecycle_helpers import make_action_applier
+
 from tests.run_allocation_helpers import make_session_launcher
 
 import ast
@@ -1704,6 +1707,9 @@ def test_a_test_composition_never_shells_out_to_a_provider_cli(tmp_path: Path) -
         StaticProviderReadinessProbe,
     )
 
+    from issue_orchestrator.execution.git_tools import create_git
+    from issue_orchestrator.execution.command_runner import LocalCommandRunner
+    create_git(LocalCommandRunner()).run(tmp_path, ["init", "-b", "main"])
     orchestrator = build_orchestrator_for_testing(
         Config(repo="test/repo", repo_root=tmp_path), github=MagicMock()
     )
@@ -2403,7 +2409,7 @@ class TestLiveAuthFailureRoutesThroughTheImpactOwner:
             SessionStatus.BLOCKED,
             blocked_reason="not logged in",
             provider_error_type=ProviderErrorType.AUTH,
-        )
+         processing_policy=CompletionProcessingPolicy(None, None))
 
         impacts = [a for a in actions if isinstance(a, ApplyProviderImpactAction)]
         assert len(impacts) == 1
@@ -2426,7 +2432,7 @@ class TestLiveAuthFailureRoutesThroughTheImpactOwner:
             self._session(make_session, "issue-123"),
             SessionStatus.BLOCKED,
             provider_error_type=ProviderErrorType.AUTH,
-        )
+         processing_policy=CompletionProcessingPolicy(None, None))
 
         removed = {a.label for a in actions if isinstance(a, RemoveLabelAction)}
         assert LabelManager(sample_config).in_progress in removed
@@ -2447,7 +2453,7 @@ class TestLiveAuthFailureRoutesThroughTheImpactOwner:
             self._session(make_session, "issue-123"),
             SessionStatus.BLOCKED,
             provider_error_type=ProviderErrorType.TRANSIENT,
-        )
+         processing_policy=CompletionProcessingPolicy(None, None))
 
         assert any(isinstance(a, ApplyProviderImpactAction) for a in actions)
         assert not [a for a in actions if isinstance(a, AddLabelAction)]
@@ -2468,7 +2474,7 @@ class TestLiveAuthFailureRoutesThroughTheImpactOwner:
             SessionStatus.BLOCKED,
             blocked_label="blocked:needs-human",
             blocked_reason="I cannot find the spec",
-        )
+         processing_policy=CompletionProcessingPolicy(None, None))
 
         assert any(isinstance(a, AddLabelAction) for a in actions)
         assert not [a for a in actions if isinstance(a, ApplyProviderImpactAction)]
@@ -2489,7 +2495,7 @@ class TestLiveAuthFailureRoutesThroughTheImpactOwner:
             self._session(make_session, "issue-123"),
             SessionStatus.BLOCKED,
             provider_error_type=ProviderErrorType.AUTH,
-        )
+         processing_policy=CompletionProcessingPolicy(None, None))
         [impact] = [a for a in actions if isinstance(a, ApplyProviderImpactAction)]
         from issue_orchestrator.control.actions import ActionResult
         from issue_orchestrator.control.label_manager import LabelManager
@@ -2897,7 +2903,7 @@ class _ProductionTick:
                 self.launched.append(number)
             return result.session
 
-        self.applier = ActionApplier(
+        self.applier = make_action_applier(
             labels=self.github,
             sessions=MagicMock(),
             events=self.events,
@@ -3931,7 +3937,7 @@ def _complete_session(session, state, claims, *, provider_error_type):
         session_output=MagicMock(spec=SessionOutput),
         provider_error_type=provider_error_type,
         pending_work_claims=claims,
-    )
+     processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
 
 def test_completion_control_returns_the_work_on_a_provider_block(

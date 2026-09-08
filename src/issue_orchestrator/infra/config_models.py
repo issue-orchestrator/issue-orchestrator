@@ -3,6 +3,8 @@
 from dataclasses import dataclass, field
 from typing import Optional
 
+from ..domain.budgeted_validation import BudgetedValidationSuite
+
 # Tech-lead sub-models live in their own module for cohesion and line budget
 # (mirroring the ``config_sections_tech_lead`` parsing split). Re-exported here
 # so every existing ``from .config_models import TechLeadConfig`` keeps working.
@@ -113,6 +115,7 @@ class ValidationConfig:
     gate.
     """
 
+    budgeted: dict[str, BudgetedValidationSuite] = field(default_factory=dict)
     quick: ValidationCommandConfig = field(default_factory=ValidationCommandConfig)
     publish: PublishValidationConfig = field(default_factory=PublishValidationConfig)
     coverage_guardrail: CoverageGuardrailConfig = field(default_factory=CoverageGuardrailConfig)

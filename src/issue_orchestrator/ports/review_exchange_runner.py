@@ -39,6 +39,7 @@ class ReviewExchangeRunner(Protocol):
         self,
         *,
         exchange_run: "ReviewExchangeRun",
+        completion_capability: str,
         coder_worktree: Path,
         issue_number: int,
         issue_title: str,

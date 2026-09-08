@@ -62,10 +62,29 @@ export interface CompletedCodingAttemptPayload {
   validation: ValidationOutcomePayload;
 }
 
+export interface CompletionIntakeReceiptPayload {
+  content_sha256: string;
+  entry_id: string;
+}
+
 export interface CompletionRecordEvidencePayload {
   kind: "available";
   path: string;
   summary?: string | null;
+}
+
+export interface CompletionResumeOutcomePayload {
+  actions_taken: string[] | null;
+  errors: string[] | null;
+  message: string;
+  pr_url: string | null;
+  success: boolean;
+}
+
+export interface CompletionSubmissionPayload {
+  content_sha256: string;
+  raw_bytes: string;
+  submission_key: string;
 }
 
 export interface ConfigDialogPayload {
@@ -448,6 +467,35 @@ export interface FlowColumnPayload {
   session_scoped?: boolean;
   title: string;
   [key: string]: any;
+}
+
+export interface HistoricalIntakeCommandPayload {
+  actor: string;
+  branch_name: string;
+  candidate_path: string;
+  candidate_sha256: string;
+  issue_number: number;
+  reason: string;
+  repo_slug: string;
+  target_head_sha: string;
+}
+
+export interface HistoricalIntakeParkedPayload {
+  evidence_id: string;
+  record_id: string;
+  status: "parked";
+}
+
+export interface HistoricalIntakeRefusedPayload {
+  reason: "wrong_repository" | "candidate_changed" | "invalid_completion" | "invalid_selection" | "prerequisite_unavailable";
+  status: "refused";
+}
+
+export interface HistoricalIntakeValidationFailedPayload {
+  entry_id: string;
+  status: "validation_failed";
+  validation_path: string;
+  validation_sha256: string;
 }
 
 export interface InfoDialogPayload {
@@ -1382,6 +1430,8 @@ export type CodingAttemptPayload = RunningCodingAttemptPayload | CompletedCoding
 export type E2EFailureEvidencePayload = E2EFailureDetailsAvailablePayload | E2EFailureDetailsMissingPayload;
 
 export type E2ETestExecutionPayload = PassedE2ETestExecutionPayload | FailedE2ETestExecutionPayload | RunningE2ETestExecutionPayload | MissingE2ETestEvidencePayload;
+
+export type HistoricalIntakeOutcomePayload = HistoricalIntakeParkedPayload | HistoricalIntakeRefusedPayload | HistoricalIntakeValidationFailedPayload;
 
 export type LifecycleTimelineContainerPayload = DashboardTimelineContainerPayload | E2ESuiteTimelineContainerPayload;
 

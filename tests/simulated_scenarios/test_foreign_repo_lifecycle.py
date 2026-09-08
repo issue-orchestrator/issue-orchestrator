@@ -19,7 +19,7 @@ import shutil
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
@@ -33,6 +33,10 @@ from issue_orchestrator.execution.worktree_adapter import GitWorktreeManager
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.infra.env import ENV_PREFIX
 from tests.git_push_authorization import authorized_local_fixture_git_env
+from tests.integration.completion_intake_fixture import ExchangeIntakeFixture, TEST_CALLBACK_TOKEN
+from issue_orchestrator.domain.issue_run_allocation import IssueRunAllocation
+from issue_orchestrator.domain.issue_key import FakeIssueKey
+from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 
 from .conftest import (
     ScriptSessionRunner,
@@ -161,6 +165,8 @@ class ForeignSessionContract:
     completion_rel: str
     run_dir: Path
     worktree_path: Path
+    api_port: int
+    capability: str = field(repr=False)
 
 
 @pytest.fixture()
@@ -199,25 +205,26 @@ def make_worktree(foreign_repo: Path, tmp_path: Path):
     )
 
 
-def _coder_session_contract(
-    issue_number: int,
-    worktree_path: Path,
-    completion_rel: str = ".issue-orchestrator/completion.json",
-) -> ForeignSessionContract:
-    session_name = f"coder-{issue_number}"
-    # A managed CLI invocation receives the launcher-owned directory and its
-    # identity manifest, even when the target repo has no validation command.
-    run_assets = FileSystemSessionOutput().start_run(
-        worktree_path=worktree_path, session_name=session_name,
-        issue_number=issue_number, agent_label="agent:coder",
-    )
-    return ForeignSessionContract(
-        issue_number=issue_number,
-        session_name=session_name,
-        completion_rel=completion_rel,
-        run_dir=run_assets.run_dir,
-        worktree_path=worktree_path,
-    )
+@pytest.fixture()
+def coder_session_contract(tmp_path, monkeypatch):
+    """Allocate actual launcher authority and acknowledge CLI bytes durably."""
+    with ExchangeIntakeFixture(tmp_path, monkeypatch) as intake:
+        issues = set()
+        def allocate(issue_number, worktree_path, completion_rel=".issue-orchestrator/completion.json"):
+            session_name = f"coder-{issue_number}"
+            run = intake.allocator(FileSystemSessionOutput()).allocate(IssueRunAllocation(
+                terminal_id=session_name, worktree_path=worktree_path.resolve(),
+                session_name=session_name, issue_number=issue_number,
+                session_key=SessionKey(FakeIssueKey(str(issue_number), "example/repo"), TaskKind.CODE),
+                agent_label="agent:coder", backend="subprocess"))
+            issues.add(issue_number)
+            return ForeignSessionContract(issue_number, session_name, completion_rel,
+                run.run_dir, worktree_path, intake.server.server_port, intake.owner.submission_capability(run))
+        try:
+            yield allocate
+        finally:
+            for issue_number in issues:
+                intake.owner.close_and_drain(issue_number)
 
 
 def _build_session_exports(contract: ForeignSessionContract) -> str:
@@ -225,6 +232,9 @@ def _build_session_exports(contract: ForeignSessionContract) -> str:
     orch_bin = Path(sys.executable).parent
     return (
         f"export {ENV_PREFIX}COMPLETION_PATH='{contract.completion_rel}'"
+        f" {ENV_PREFIX}API_PORT='{contract.api_port}'"
+        f" {ENV_PREFIX}AGENT_CALLBACK_TOKEN='{TEST_CALLBACK_TOKEN}'"
+        f" {ENV_PREFIX}COMPLETION_CAPABILITY='{contract.capability}'"
         f" {ENV_PREFIX}SESSION_ID='{contract.session_name}'"
         f" {ENV_PREFIX}AGENT_LABEL='agent:coder'"
         f" {ENV_PREFIX}ISSUE_NUMBER='{contract.issue_number}'"
@@ -482,7 +492,7 @@ def test_foreign_repo_with_setup_commands(foreign_repo: Path, tmp_path: Path) ->
 
 
 @pytest.mark.integration
-def test_foreign_repo_real_path_chain_finds_coding_done(make_worktree) -> None:
+def test_foreign_repo_real_path_chain_finds_coding_done(make_worktree, coder_session_contract) -> None:
     """The full PATH chain (session_launcher + terminal_subprocess) finds coding-done."""
     handle = make_worktree(77, "path-chain-test")
     wt = handle.path
@@ -493,7 +503,7 @@ def test_foreign_repo_real_path_chain_finds_coding_done(make_worktree) -> None:
     assert not (wt / ".venv").exists()
 
     plugin = SubprocessPlugin()
-    exports = _build_session_exports(_coder_session_contract(77, wt))
+    exports = _build_session_exports(coder_session_contract(77, wt))
     full_cmd = plugin._build_process_command(  # noqa: SLF001
         f"{exports} && which coding-done", wt
     )
@@ -512,13 +522,13 @@ def test_foreign_repo_real_path_chain_finds_coding_done(make_worktree) -> None:
 
 
 @pytest.mark.integration
-def test_foreign_repo_real_path_chain_coding_done_executes(make_worktree) -> None:
+def test_foreign_repo_real_path_chain_coding_done_executes(make_worktree, coder_session_contract) -> None:
     """coding-done actually executes (not just findable) through the real PATH chain."""
     handle = make_worktree(78, "coding-done-exec-test")
     wt = handle.path
 
     plugin = SubprocessPlugin()
-    exports = _build_session_exports(_coder_session_contract(78, wt))
+    exports = _build_session_exports(coder_session_contract(78, wt))
     full_cmd = plugin._build_process_command(  # noqa: SLF001
         f"{exports} && coding-done --help", wt
     )
@@ -537,7 +547,7 @@ def test_foreign_repo_real_path_chain_coding_done_executes(make_worktree) -> Non
 
 
 @pytest.mark.integration
-def test_foreign_repo_real_path_chain_validation_runs(make_worktree) -> None:
+def test_foreign_repo_real_path_chain_validation_runs(make_worktree, coder_session_contract) -> None:
     """A validation command executes successfully through the real PATH chain."""
     handle = make_worktree(79, "validation-test")
     wt = handle.path
@@ -547,7 +557,7 @@ def test_foreign_repo_real_path_chain_validation_runs(make_worktree) -> None:
     val_script.chmod(0o755)
 
     plugin = SubprocessPlugin()
-    exports = _build_session_exports(_coder_session_contract(79, wt))
+    exports = _build_session_exports(coder_session_contract(79, wt))
     full_cmd = plugin._build_process_command(  # noqa: SLF001
         f"{exports} && ./validate.sh", wt
     )
@@ -569,7 +579,7 @@ def test_foreign_repo_real_path_chain_validation_runs(make_worktree) -> None:
 
 
 @pytest.mark.integration
-def test_foreign_repo_coding_done_writes_completion(make_worktree) -> None:
+def test_foreign_repo_coding_done_writes_completion(make_worktree, coder_session_contract) -> None:
     """coding-done completed writes a completion record in a foreign repo worktree."""
     handle = make_worktree(80, "coding-done-completion-test")
     wt = handle.path
@@ -584,7 +594,7 @@ def test_foreign_repo_coding_done_writes_completion(make_worktree) -> None:
          "commit", "-m", "worktree setup", "--allow-empty"], cwd=wt, capture_output=True, check=True,
     )
 
-    exports = _build_session_exports(_coder_session_contract(80, wt, completion_rel))
+    exports = _build_session_exports(coder_session_contract(80, wt, completion_rel))
     agent_cmd = (
         "coding-done completed"
         " --implementation 'Foreign repo test implementation'"
@@ -621,7 +631,7 @@ def test_foreign_repo_coding_done_writes_completion(make_worktree) -> None:
 @pytest.mark.integration
 @pytest.mark.xdist_group("pty")
 def test_foreign_repo_real_pty_agent_invocation(
-    make_worktree, monkeypatch: pytest.MonkeyPatch,
+    make_worktree, coder_session_contract, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A real PTY session (pexpect) runs coding-done in a foreign repo worktree."""
     handle = make_worktree(81, "pty-agent-test")
@@ -649,7 +659,7 @@ def test_foreign_repo_real_pty_agent_invocation(
          "commit", "-m", "worktree setup", "--allow-empty"], cwd=wt, capture_output=True, check=True,
     )
 
-    session_contract = _coder_session_contract(81, wt, completion_rel)
+    session_contract = coder_session_contract(81, wt, completion_rel)
     exports = _build_session_exports(session_contract)
     command = f"{exports} && ./test-agent.sh"
 
@@ -710,7 +720,8 @@ def test_foreign_repo_real_pty_agent_invocation(
     shutil.which("claude") is None,
     reason="Claude Code CLI not installed",
 )
-def test_foreign_repo_claude_code_agent_done(make_worktree) -> None:
+@pytest.mark.live_agent
+def test_foreign_repo_claude_code_agent_done(make_worktree, coder_session_contract) -> None:
     """Claude Code invokes coding-done in a foreign repo worktree."""
     handle = make_worktree(90, "claude-foreign-test")
     wt = handle.path
@@ -723,7 +734,7 @@ def test_foreign_repo_claude_code_agent_done(make_worktree) -> None:
          "commit", "-m", "setup", "--allow-empty"], cwd=wt, capture_output=True, check=True,
     )
 
-    exports = _build_session_exports(_coder_session_contract(90, wt, completion_rel))
+    exports = _build_session_exports(coder_session_contract(90, wt, completion_rel))
 
     prompt = (
         "You are in a test. Run this exact bash command and nothing else: "
@@ -770,7 +781,8 @@ def test_foreign_repo_claude_code_agent_done(make_worktree) -> None:
     shutil.which("codex") is None,
     reason="Codex CLI not installed",
 )
-def test_foreign_repo_codex_agent_done(make_worktree) -> None:
+@pytest.mark.live_agent
+def test_foreign_repo_codex_agent_done(make_worktree, coder_session_contract) -> None:
     """Codex invokes coding-done in a foreign repo worktree."""
     handle = make_worktree(91, "codex-foreign-test")
     wt = handle.path
@@ -783,7 +795,7 @@ def test_foreign_repo_codex_agent_done(make_worktree) -> None:
          "commit", "-m", "setup", "--allow-empty"], cwd=wt, capture_output=True, check=True,
     )
 
-    exports = _build_session_exports(_coder_session_contract(91, wt, completion_rel))
+    exports = _build_session_exports(coder_session_contract(91, wt, completion_rel))
 
     prompt = (
         "You are in a test. Run this exact bash command and nothing else: "

@@ -19,7 +19,21 @@ summary writes, chapter sidecars, reviewer-worktree lifecycle.
 
 from __future__ import annotations
 
-from tests.run_allocation_helpers import make_completion_review_exchange
+from tests.integration.completion_intake_fixture import (
+    exchange_intake_context,
+    serve_completion_submission,
+)
+from issue_orchestrator.domain.issue_run_allocation import IssueExchangeRunAllocation
+from issue_orchestrator.domain.issue_key import FakeIssueKey
+from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+
+
+def make_completion_review_exchange(**kwargs):
+    kwargs["issue_run_allocator"] = exchange_intake_context.get().allocator(
+        kwargs["session_output"]
+    )
+    return CompletionReviewExchange(**kwargs)
+
 
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -114,7 +128,11 @@ def _codex_ready() -> bool:
         return False
 
 
-_CODEX_READY = _codex_ready()
+@pytest.fixture
+def _require_codex():
+    # Only the explicitly selected live-provider test may probe provider auth.
+    if not _codex_ready():
+        pytest.skip("codex CLI not installed or not logged in")
 
 
 def _git(cwd: Path, *args: str) -> None:
@@ -193,6 +211,7 @@ def _make_review_exchange_runner(
     return PersistentReviewExchangeRunner(
         session_output,
         pair_registry or InMemoryPersistentExchangePairRegistry(),
+        completion_intake=exchange_intake_context.get().owner,
     )
 
 
@@ -208,11 +227,20 @@ def _run_review_exchange_for_test(
     events: object,
     event_context: object,
 ):
-    exchange_run = session_output.start_review_exchange_run(
-        worktree,
-        issue_number=issue_number,
-        parent_session_name=session_name,
-        agent_label=agent_label,
+    exchange_run = (
+        exchange_intake_context.get()
+        .allocator(session_output)
+        .allocate_exchange(
+            IssueExchangeRunAllocation(
+                worktree_path=worktree,
+                issue_number=issue_number,
+                session_key=SessionKey(
+                    FakeIssueKey(str(issue_number), "local/test"), TaskKind.REWORK
+                ),
+                parent_session_name=session_name,
+                agent_label=agent_label,
+            )
+        )
     )
     return cre.run_review_exchange_loop(
         exchange_run=exchange_run,
@@ -295,8 +323,12 @@ def _review_exchange_mailbox_server(
     class _Server(http.server.ThreadingHTTPServer):
         daemon_threads = True
 
+    completion_intake = exchange_intake_context.get().owner
+
     class _Handler(http.server.BaseHTTPRequestHandler):
         def do_POST(self) -> None:  # noqa: N802 - stdlib handler contract
+            if serve_completion_submission(self, completion_intake):
+                return
             if self.path != "/api/review-exchange/respond":
                 self.send_response(404)
                 self.end_headers()
@@ -338,13 +370,15 @@ def _review_exchange_mailbox_server(
 
 
 @pytest.fixture(autouse=True)
-def _clear_simulated_scenario_stubs(monkeypatch):
-    """Override the simulated-scenarios autouse stubs that bypass the
-    persistent runner. This integration test wants the REAL runner so we
-    can exercise the cutover end-to-end."""
-    # No-op: we live under tests/integration/, not tests/simulated_scenarios/,
-    # so the autouse fixture there isn't applied. This sentinel exists to
-    # document the intent and to give a hook if conftest evolves later.
+def _completion_intake_runtime(tmp_path, monkeypatch):
+    from tests.integration.completion_intake_fixture import ExchangeIntakeFixture
+
+    with ExchangeIntakeFixture(tmp_path, monkeypatch) as runtime:
+        token = exchange_intake_context.set(runtime)
+        try:
+            yield runtime
+        finally:
+            exchange_intake_context.reset(token)
 
 
 @pytest.fixture
@@ -847,8 +881,9 @@ def test_synthetic_raw_tui_review_exchange_suppresses_bootstrap_response(
     )
 
 
-@pytest.mark.skipif(not _CODEX_READY, reason="codex CLI not installed or not logged in")
+@pytest.mark.usefixtures("_require_codex")
 @pytest.mark.live_codex
+@pytest.mark.live_agent
 def test_real_interactive_codex_reviewer_round_trips_through_exchange(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -964,6 +999,7 @@ def test_real_interactive_codex_reviewer_round_trips_through_exchange(
                 session_output,
                 InMemoryPersistentExchangePairRegistry(),
                 turn_mailbox=mailbox,
+                completion_intake=exchange_intake_context.get().owner,
             ),
         )
 
@@ -1792,6 +1828,7 @@ def test_persistent_review_exchange_end_to_end_through_mailbox(
             session_output,
             InMemoryPersistentExchangePairRegistry(),
             turn_mailbox=mailbox,
+            completion_intake=exchange_intake_context.get().owner,
         )
         cre = make_completion_review_exchange(
             agent_callback_endpoint=published_callback_endpoint(port),

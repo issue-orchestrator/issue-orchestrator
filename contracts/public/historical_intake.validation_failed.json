@@ -1,0 +1,33 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "entry_id": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Entry Id",
+      "type": "string"
+    },
+    "status": {
+      "const": "validation_failed",
+      "title": "Status",
+      "type": "string"
+    },
+    "validation_path": {
+      "minLength": 1,
+      "title": "Validation Path",
+      "type": "string"
+    },
+    "validation_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Validation Sha256",
+      "type": "string"
+    }
+  },
+  "required": [
+    "status",
+    "entry_id",
+    "validation_sha256",
+    "validation_path"
+  ],
+  "title": "HistoricalIntakeValidationFailedContract",
+  "type": "object"
+}

@@ -1,0 +1,112 @@
+{
+  "$defs": {
+    "HistoricalIntakeParkedContract": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_id": {
+          "pattern": "^e1:[0-9a-f]{64}$",
+          "title": "Evidence Id",
+          "type": "string"
+        },
+        "record_id": {
+          "pattern": "^r1:[0-9a-f]{64}$",
+          "title": "Record Id",
+          "type": "string"
+        },
+        "status": {
+          "const": "parked",
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "record_id",
+        "evidence_id"
+      ],
+      "title": "HistoricalIntakeParkedContract",
+      "type": "object"
+    },
+    "HistoricalIntakeRefusedContract": {
+      "additionalProperties": false,
+      "properties": {
+        "reason": {
+          "enum": [
+            "wrong_repository",
+            "candidate_changed",
+            "invalid_completion",
+            "invalid_selection",
+            "prerequisite_unavailable"
+          ],
+          "title": "Reason",
+          "type": "string"
+        },
+        "status": {
+          "const": "refused",
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "reason"
+      ],
+      "title": "HistoricalIntakeRefusedContract",
+      "type": "object"
+    },
+    "HistoricalIntakeValidationFailedContract": {
+      "additionalProperties": false,
+      "properties": {
+        "entry_id": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Entry Id",
+          "type": "string"
+        },
+        "status": {
+          "const": "validation_failed",
+          "title": "Status",
+          "type": "string"
+        },
+        "validation_path": {
+          "minLength": 1,
+          "title": "Validation Path",
+          "type": "string"
+        },
+        "validation_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Validation Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "entry_id",
+        "validation_sha256",
+        "validation_path"
+      ],
+      "title": "HistoricalIntakeValidationFailedContract",
+      "type": "object"
+    }
+  },
+  "description": "Status determines the one permissible historical outcome payload.",
+  "discriminator": {
+    "mapping": {
+      "parked": "#/$defs/HistoricalIntakeParkedContract",
+      "refused": "#/$defs/HistoricalIntakeRefusedContract",
+      "validation_failed": "#/$defs/HistoricalIntakeValidationFailedContract"
+    },
+    "propertyName": "status"
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/HistoricalIntakeParkedContract"
+    },
+    {
+      "$ref": "#/$defs/HistoricalIntakeRefusedContract"
+    },
+    {
+      "$ref": "#/$defs/HistoricalIntakeValidationFailedContract"
+    }
+  ],
+  "title": "HistoricalIntakeOutcomeContract"
+}

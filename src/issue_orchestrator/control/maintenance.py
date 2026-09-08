@@ -321,6 +321,7 @@ def reset_issue(
     Returns:
         ResetResult with details of what was cleaned up
     """
+    action_applier.runtime_lifecycle.require_reset(issue_number, "maintenance-reset")
     deleted_worktree: str | None = None
     deleted_branches: list[str] = []
     superseded_prs: list[int] = []

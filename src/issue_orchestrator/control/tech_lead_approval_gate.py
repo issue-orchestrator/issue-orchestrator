@@ -13,7 +13,7 @@ from .tech_lead_completion import (
     load_validated_tech_lead_pair,
     resolve_tech_lead_launch_authority,
 )
-from .tech_lead_session_policy import is_tech_lead_session
+from ..domain.registered_completion import CompletionProcessingPolicy
 
 if TYPE_CHECKING:
     from ..infra.config import Config
@@ -55,16 +55,17 @@ class _RejectedTechLeadApprovalGate:
 def build_tech_lead_decision_approval_gate(
     config: Config | None,
     *,
-    tech_lead_agent: str | None,
-    agent_label: str | None,
+    processing_policy: CompletionProcessingPolicy,
     tech_lead_authority: TechLeadAuthorityStore,
     run_dir: Path,
     run_id: str,
     session_name: str,
 ) -> ReviewExchangeApprovalGate | None:
     """Build a fail-closed gate only for configured Tech Lead sessions."""
-    if config is None or not is_tech_lead_session(tech_lead_agent, agent_label):
+    if not processing_policy.is_tech_lead:
         return None
+    if config is None:
+        raise ValueError("Tech Lead processing requires configured launch policy")
     authority, tamper = resolve_tech_lead_launch_authority(
         tech_lead_authority,
         run_dir=run_dir,

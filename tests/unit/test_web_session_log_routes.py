@@ -23,6 +23,7 @@ class TestKillSessionEndpoint:
             return_value=ReviewExchangeCancellation(
                 issue_number=1,
                 cancelled_job_ids=("review-exchange:1:issue-1",),
+                validated_work=ValidatedWorkDispositionBatch.no_work(1, "fixture"),
             )
         )
 
@@ -1859,3 +1860,5 @@ class TestIssueSessionContextIsolation:
             assert ctx.session_name is None
         finally:
             set_orchestrator(None)
+
+from issue_orchestrator.domain.validated_work_commands import ValidatedWorkDispositionBatch

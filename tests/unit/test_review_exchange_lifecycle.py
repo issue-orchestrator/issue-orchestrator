@@ -7,9 +7,16 @@ from unittest.mock import Mock
 
 import pytest
 
-from issue_orchestrator.control.review_exchange_lifecycle import (
-    terminate_issue_runtime,
-)
+
+
+
+
+
+@pytest.fixture
+def completion_intake(completion_intake_fixture):
+    accepted = completion_intake_fixture.accept(230)
+    yield completion_intake_fixture.runtime
+    completion_intake_fixture.assert_closed_and_drained(accepted)
 
 
 class _FakeSessionManager:
@@ -37,34 +44,27 @@ class _FakePublishRetryAbandoner:
         self.abandoned.append(issue_number)
 
 
-def test_terminate_issue_runtime_abandons_publish_retry() -> None:
+def test_terminate_issue_runtime_abandons_publish_retry(completion_intake) -> None:
     """The shared boundary must also abandon in-flight publish retries."""
     publish_recovery = _FakePublishRetryAbandoner()
 
-    terminate_issue_runtime(
-        issue_number=230,
-        reason="issue-completed",
-        pair_registry=None,
-        job_supervisor=None,
-        publish_recovery=publish_recovery,
-    )
+    runtime_owners(completion_intake=completion_intake, pair_registry=None, job_supervisor=None, publish_recovery=publish_recovery).terminate(230, "issue-completed")
 
     assert publish_recovery.abandoned == [230]
 
 
-def test_terminate_issue_runtime_without_publish_recovery_is_noop() -> None:
+def test_terminate_issue_runtime_without_publish_recovery_is_noop(
+    completion_intake,
+) -> None:
     """Omitting the abandoner keeps the boundary working (backward compatible)."""
-    result = terminate_issue_runtime(
-        issue_number=230,
-        reason="issue-completed",
-        pair_registry=None,
-        job_supervisor=None,
-    )
+    result = runtime_owners(completion_intake=completion_intake, pair_registry=None, job_supervisor=None).terminate(230, "issue-completed")
 
     assert result.issue_number == 230
 
 
-def test_terminate_issue_runtime_stops_issue_rework_and_hidden_exchange() -> None:
+def test_terminate_issue_runtime_stops_issue_rework_and_hidden_exchange(
+    completion_intake,
+) -> None:
     pair_registry = Mock()
     job_supervisor = Mock()
     job_supervisor.cancel_matching.return_value = ["review-exchange:230:coding-1"]
@@ -76,14 +76,7 @@ def test_terminate_issue_runtime_stops_issue_rework_and_hidden_exchange() -> Non
         _active_session("issue-999"),
     ]
 
-    result = terminate_issue_runtime(
-        issue_number=230,
-        reason="reset-retry",
-        pair_registry=pair_registry,
-        job_supervisor=job_supervisor,
-        session_manager=session_manager,
-        active_sessions=active_sessions,
-    )
+    result = runtime_owners(completion_intake=completion_intake, pair_registry=pair_registry, job_supervisor=job_supervisor, session_manager=session_manager, active_sessions=active_sessions).terminate(230, "reset-retry")
 
     pair_registry.release.assert_called_once_with(230, reason="reset-retry")
     job_supervisor.cancel_matching.assert_called_once()
@@ -100,18 +93,13 @@ def test_terminate_issue_runtime_stops_issue_rework_and_hidden_exchange() -> Non
     ]
 
 
-def test_terminate_issue_runtime_clears_stale_active_session_records() -> None:
+def test_terminate_issue_runtime_clears_stale_active_session_records(
+    completion_intake,
+) -> None:
     session_manager = _FakeSessionManager(set())
     active_sessions = [_active_session("issue-230"), _active_session("issue-231")]
 
-    result = terminate_issue_runtime(
-        issue_number=230,
-        reason="issue-completed",
-        pair_registry=None,
-        job_supervisor=None,
-        session_manager=session_manager,
-        active_sessions=active_sessions,
-    )
+    result = runtime_owners(completion_intake=completion_intake, pair_registry=None, job_supervisor=None, session_manager=session_manager, active_sessions=active_sessions).terminate(230, "issue-completed")
 
     assert session_manager.stopped == []
     assert result.stopped_session_ids == ()
@@ -119,17 +107,14 @@ def test_terminate_issue_runtime_clears_stale_active_session_records() -> None:
     assert [session.terminal_id for session in active_sessions] == ["issue-231"]
 
 
-def test_terminate_issue_runtime_requires_session_manager_for_active_records() -> None:
+def test_terminate_issue_runtime_requires_session_manager_for_active_records(
+    completion_intake,
+) -> None:
     pair_registry = Mock()
 
     with pytest.raises(RuntimeError, match="without a SessionManager"):
-        terminate_issue_runtime(
-            issue_number=230,
-            reason="reset-retry",
-            pair_registry=pair_registry,
-            job_supervisor=None,
-            session_manager=None,
-            active_sessions=[_active_session("issue-230")],
-        )
+        runtime_owners(completion_intake=completion_intake, pair_registry=pair_registry, job_supervisor=None, session_manager=None, active_sessions=[_active_session("issue-230")]).terminate(230, "reset-retry")
 
     pair_registry.release.assert_not_called()
+
+from tests.runtime_lifecycle_helpers import runtime_owners

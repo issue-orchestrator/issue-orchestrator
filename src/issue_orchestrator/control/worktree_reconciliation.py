@@ -7,6 +7,7 @@ import re
 import stat
 from dataclasses import dataclass, replace
 from pathlib import Path
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from ..ports.worktree_manager import RegisteredWorktree, WORKTREE_ID_MARKER
@@ -16,6 +17,7 @@ if TYPE_CHECKING:
     from ..infra.config import Config
     from ..ports.worktree_manager import WorktreeManager
     from .cleanup_manager import CleanupManager
+    from .review_exchange_lifecycle import IssueRuntimeLifecycleOwners
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +28,11 @@ _REVIEW_ARTIFACTS = (
 _REVIEW_TIMESTAMP = r"\d{8}T\d{12}Z"
 
 
+class WorktreeCleanupAuthority(StrEnum):
+    RUN_CUSTODY_REQUIRED = "run_custody_required"
+    UNCHANGED_REVIEWER = "unchanged_reviewer"
+
+
 @dataclass(frozen=True)
 class WorktreeAuditEntry:
     """One registered worktree classified by the shared cleanup policy."""
@@ -34,6 +41,7 @@ class WorktreeAuditEntry:
     kind: str
     disposition: str
     reason: str
+    cleanup_authority: WorktreeCleanupAuthority = WorktreeCleanupAuthority.RUN_CUSTODY_REQUIRED
 
     def to_dict(self) -> dict[str, str]:
         return {
@@ -347,7 +355,11 @@ def apply_disposable_removal_safety(
                 )
             )
             continue
-        checked.append(entry)
+        if parent is not None and parent.branch is not None and worktree_manager.is_commit_retained_by_branch(entry.path, reviewer.head, parent.branch):
+            checked.append(replace(entry, cleanup_authority=WorktreeCleanupAuthority.UNCHANGED_REVIEWER))
+        else:
+            checked.append(replace(entry, disposition="retained",
+                reason="reviewer commit has no verified surviving parent branch"))
     return tuple(checked)
 
 
@@ -360,11 +372,13 @@ class StartupWorktreeReconciler:
         cleanup_manager: CleanupManager,
         worktree_manager: WorktreeManager,
         audit_owner: WorktreeAuditOwner,
+        runtime_lifecycle: IssueRuntimeLifecycleOwners,
     ) -> None:
         self._config = config
         self._cleanup_manager = cleanup_manager
         self._worktree_manager = worktree_manager
         self._audit_owner = audit_owner
+        self._runtime_lifecycle = runtime_lifecycle
 
     def audit(self, state: OrchestratorState) -> tuple[WorktreeAuditEntry, ...]:
         activity = WorktreeActivityEvidence.known(
@@ -385,6 +399,8 @@ class StartupWorktreeReconciler:
                 retained += 1
                 continue
             try:
+                if entry.cleanup_authority is WorktreeCleanupAuthority.RUN_CUSTODY_REQUIRED:
+                    self._runtime_lifecycle.preserve_worktree(entry.path, "startup-worktree-cleanup")
                 self._worktree_manager.remove_checkout_and_branch(
                     entry.path,
                     force=True,

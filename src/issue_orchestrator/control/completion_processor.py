@@ -16,6 +16,15 @@ as untrusted input.
 """
 
 from ..ports.issue_run_allocator import IssueRunAllocator
+from ..ports.completion_intake import CompletionIntakeRuntime
+from ..domain.completion_intake import CompletionIntakeReceipt, CompletionIntakeError
+from ..domain.registered_completion import CompletionProcessingPolicy
+from ..domain.prepared_completion import PreparedCompletionEvidence
+from ..domain.publication_remote import attributed_publication_body
+from ..domain.manual_publication import PreparedManualPublication
+from ..domain.validated_head_publication import PublishValidatedHeadOutcome
+from .completion_manual_settlement import settle_manual_publication
+from .completion_preparation import PreparedActionPlan, PreparedCompletion, PreparedPullRequest, record_from_prepared_evidence, context_from_prepared_evidence
 
 import json
 import logging
@@ -76,6 +85,7 @@ from ..ports.review_exchange_runner import (
 )
 from ..ports.session_output import SessionOutput, ValidationRecord
 from .validation import PublishGate, ValidationRecordStore
+from .completion_validation_artifacts import CompletionValidationArtifacts
 from .completion_pr_collision import (
     create_pr_with_collision_handling,
     get_open_pr_for_issue,
@@ -119,7 +129,7 @@ from .review_exchange_pr_comment import (
 from .test_skip_guard import added_test_paths, scan_added_test_skip_guards
 from .tech_lead_approval_gate import build_tech_lead_decision_approval_gate
 from .tech_lead_completion import tech_lead_decision_processing_error
-from .tech_lead_session_policy import is_benign_tech_lead_no_commits, is_tech_lead_session, resolve_tech_lead_completion_actions
+from .tech_lead_session_policy import is_benign_tech_lead_no_commits, resolve_tech_lead_completion_actions
 from .worktree_head import current_worktree_head_sha
 from ..ports.pull_request_tracker import PRInfo
 from ..ports.working_copy import PushResult
@@ -171,8 +181,6 @@ class _MissingTechLeadAuthorityStore:
 # owner module; the private aliases keep the processor's call sites stable.
 from .validation_record_containment import (
     contain_validation_record_path as _contain_validation_record_path,
-    copy_from_fd as _copy_from_fd,
-    open_contained_validation_record as _open_contained_validation_record,
 )
 
 # Completion actions that assert the shared needs-human block, and the cause
@@ -216,6 +224,7 @@ class CompletionProcessor:
         # anything back, so there is no sensible default to fall back to.
         agent_callback_endpoint: "AgentCallbackEndpoint",
         issue_run_allocator: IssueRunAllocator,
+        completion_intake: CompletionIntakeRuntime,
         review_artifact_reader: ReviewArtifactReader | None = None,
         runtime_identity: RuntimeIdentity | None = None,
         tech_lead_authority: "TechLeadAuthorityStore | None" = None,
@@ -255,6 +264,8 @@ class CompletionProcessor:
         self.pr_adapter = pr_adapter
         self.git_adapter = git_adapter
         self.session_output = session_output
+        self._validation_artifacts = CompletionValidationArtifacts(session_output)
+        self._completion_intake = completion_intake
         self.event_bus = event_bus
         self._trace_events: EventSink | None = None
         self._event_context: EventContext | None = None
@@ -368,6 +379,38 @@ class CompletionProcessor:
         )
         return resolved.branch
 
+    def process_registered_completion(
+        self,
+        receipt: CompletionIntakeReceipt,
+        run: SessionRunAssets,
+        issue_number: int,
+        issue_title: str,
+    ) -> ProcessingResult:
+        artifact = self._completion_intake.completion_artifact(receipt, run)
+        return self.process(
+            worktree=run.worktree_path,
+            issue_number=issue_number,
+            issue_title=issue_title,
+            completion_path=str(artifact.path),
+            run_assets=run,
+            intake_receipt=receipt,
+        )
+
+    def completion_receipt_for_run(
+        self, run: SessionRunAssets
+    ) -> CompletionIntakeReceipt | None:
+        return self._completion_intake.receipt_for_run(run)
+
+    def read_completion_receipt(
+        self, receipt: CompletionIntakeReceipt, run: SessionRunAssets
+    ) -> CompletionRecord:
+        return self._completion_intake.read_receipt(receipt, run)
+
+    def require_completion_receipt(
+        self, receipt: CompletionIntakeReceipt, run: SessionRunAssets
+    ) -> None:
+        self._completion_intake.require_publication_ready(receipt, run)
+
     def read_completion_record(
         self, worktree: Path, completion_path: str | None = None
     ) -> CompletionRecord | None:
@@ -386,11 +429,6 @@ class CompletionProcessor:
         return self._record_validator.resolve_agent_label_from_completion_path(
             completion_path
         )
-
-    def _is_tech_lead_session(self, agent_label: str | None) -> bool:
-        """Tech Lead identity via the ADR-0031 owner (config-declared tech lead agent)."""
-        tech_lead_agent = self._config.tech_lead_review_agent if self._config else None
-        return is_tech_lead_session(tech_lead_agent, agent_label)
 
     def validate_worktree_state(
         self, worktree: Path, record: CompletionRecord
@@ -652,18 +690,10 @@ class CompletionProcessor:
             logger.warning("Publish gate failed: %s", result.reason)
             return False, result.reason, result.record
 
-    @staticmethod
-    def _load_validation_record(record_path: Path) -> ValidationRecord | None:
-        try:
-            data = json.loads(record_path.read_text())
-        except OSError:
-            return None
-        except json.JSONDecodeError:
-            return None
-        try:
-            return ValidationRecord.from_dict(data)
-        except TypeError:
-            return None
+    _load_validation_record = staticmethod(CompletionValidationArtifacts.load)
+    _materialize_validation_record = staticmethod(
+        CompletionValidationArtifacts.materialize
+    )
 
     def _attach_validation_artifacts(
         self,
@@ -672,83 +702,9 @@ class CompletionProcessor:
         record: ValidationRecord | None = None,
         record_path: Path | None = None,
     ) -> None:
-        """Attach validation artifacts to session output.
-
-        Updates manifest with paths to validation files that should already exist
-        in the session output directory (written directly by validation).
-        """
-        run_dir = validation_artifacts.run_dir
-        if record_path is None and record is not None:
-            record_path = ValidationRecordStore(worktree).get_record_path(record.head_sha)
-        run_dir_record_path = validation_artifacts.record_path
-        effective_record_path = self._materialize_validation_record(
-            worktree=worktree,
-            record_path=record_path,
-            run_dir_record_path=run_dir_record_path,
+        self._validation_artifacts.attach(
+            worktree, validation_artifacts, record, record_path
         )
-        if effective_record_path is not None:
-            self.session_output.update_manifest(
-                run_dir,
-                {"validation_record_path": str(effective_record_path)},
-            )
-            try:
-                (run_dir / "validation-record.path").write_text(str(effective_record_path))
-            except OSError:
-                logger.debug("Failed to write validation pointer for %s", run_dir)
-
-        # Update manifest with validation output paths (files written by validation)
-        updates: dict[str, str] = {}
-        stdout_path = validation_artifacts.stdout_path
-        stderr_path = validation_artifacts.stderr_path
-
-        if stdout_path.exists():
-            updates["validation_stdout"] = str(stdout_path)
-        if stderr_path.exists():
-            updates["validation_stderr"] = str(stderr_path)
-
-        if updates:
-            self.session_output.update_manifest(run_dir, updates)
-
-    def _materialize_validation_record(
-        self,
-        *,
-        worktree: Path,
-        record_path: Path | None,
-        run_dir_record_path: Path,
-    ) -> Path | None:
-        """Resolve the run-dir record's authoritative content and return its path.
-
-        Precedence: when ``record_path`` is supplied, the caller is asking
-        the helper to publish that source as the run-dir's authoritative
-        record. Falls back to a pre-existing run-dir file ONLY when no
-        source was supplied — refusing the caller's source and silently
-        publishing a stale local snapshot would be the #6017 P2 path-leak
-        class in reverse. Returns ``None`` when nothing can be attached.
-        """
-        if record_path is None or not record_path.exists():
-            return run_dir_record_path if run_dir_record_path.exists() else None
-        # Source/destination identity check. ``_copy_from_fd`` opens
-        # ``dst`` with ``open(dst, "wb")`` which truncates the file
-        # before reading completes, so a same-file copy ends up as empty
-        # JSON. When the caller already wrote the authoritative record
-        # into run_dir (the common case post-PublishGate fix), there's
-        # nothing to copy — just attach.
-        try:
-            same_file = (
-                record_path.resolve(strict=False)
-                == run_dir_record_path.resolve(strict=False)
-            )
-        except OSError:
-            same_file = False
-        if same_file:
-            return run_dir_record_path
-        # Symlink-safe walk: opens the source under the worktree with
-        # O_NOFOLLOW on every path component (#6017 re-review-4 P2),
-        # never reopens by path string.
-        src_fd = _open_contained_validation_record(str(record_path), worktree)
-        if src_fd is not None and _copy_from_fd(src_fd, run_dir_record_path):
-            return run_dir_record_path
-        return None
 
     def process(
         self,
@@ -760,19 +716,14 @@ class CompletionProcessor:
         pr_number: int | None = None,
         completion_path: str | None = None,
         agent_label: str | None = None,
+        intake_receipt: CompletionIntakeReceipt | None = None,
     ) -> ProcessingResult:
-        """Process a completion record and execute actions.
+        """Process one run under a policy retained through terminal handling.
 
-        Args:
-            worktree: Path to the worktree containing the completion record.
-            issue_number: The GitHub issue number this work is for.
-            issue_title: The issue title (for PR creation).
-            pr_number: Optional PR number for review sessions. When provided,
-                label operations will target the PR instead of the issue.
-            completion_path: Relative path to completion file. If None, uses legacy path.
-
-        Returns:
-            ProcessingResult with success status and details.
+        A receipt supplies allocation-owned role and issue identity. Legacy
+        standalone callers use the explicit label/path policy. Select once,
+        before effects; every result carries that selection, including failure
+        and review deferral. A PR number targets review label operations.
         """
         start_time = time.monotonic()
         # For review sessions, label operations target the PR
@@ -782,112 +733,27 @@ class CompletionProcessor:
         error_details: list[dict[str, Any]] = []  # Full diagnostic info per error
         pr_url: str | None = None
 
-        # Read and validate completion record
-        record, session_name, error_result = self._read_and_validate_record(
-            worktree,
-            completion_path,
-            run_assets,
+        prepared = self.prepare_completion(
+            worktree, issue_number, issue_title, run_assets=run_assets,
+            completion_path=completion_path, agent_label=agent_label,
+            intake_receipt=intake_receipt, actions_taken=actions_taken, errors=errors,
         )
-        if error_result:
-            return error_result
-        assert record is not None  # Guaranteed if error_result is None
-
-        if agent_label is None:
-            agent_label, agent_error = self._resolve_agent_label_from_completion_path(
-                completion_path
+        if isinstance(prepared, ProcessingResult):
+            return prepared
+        record, session_name = prepared.record, prepared.session_name
+        branch, processing_policy = prepared.branch, prepared.processing_policy
+        preserved_completion_path = prepared.preserved_completion_path
+        review_exchange_completed = prepared.actions.review_exchange_completed
+        if not prepared.actions.halted:
+            branch, pr_url, review_exchange_completed = self._execute_planned_actions(
+                plan=prepared.actions.plan, worktree=worktree, record=record,
+                issue_number=issue_number, issue_title=issue_title, label_target=label_target,
+                branch=branch, session_name=session_name, processing_policy=processing_policy,
+                actions_taken=actions_taken, errors=errors, error_details=error_details,
+                exchange_mode=prepared.actions.exchange_mode,
+                exchange_result=prepared.actions.exchange_result,
+                review_exchange_completed=review_exchange_completed,
             )
-            if agent_error:
-                return ProcessingResult(
-                    success=False, message=agent_error, errors=[agent_error]
-                )
-        requested_actions = tuple(record.requested_actions)
-        running_query = ReviewExchangeRunningQuery(
-            issue_number=issue_number,
-            session_name=session_name,
-            requested_actions=requested_actions,
-            run_id=run_assets.run_id,
-        )
-        exchange_running = self._review_exchange.is_review_exchange_running_for_completion(
-            running_query
-        )
-        if record.outcome is CompletionOutcome.COMPLETED and exchange_running:
-            logger.info(
-                "Completion deferred before pre-action policies: issue=%d "
-                "session=%s reason=review exchange is already running",
-                issue_number,
-                session_name,
-            )
-            return ProcessingResult.for_review_exchange_deferred()
-
-        pre_action_failure = self._check_pre_action_policies(
-            worktree,
-            record,
-            session_name,
-            issue_number,
-            run_assets,
-            agent_label=agent_label,
-        )
-        if pre_action_failure:
-            return pre_action_failure
-
-        # Get branch name for PR operations
-        branch = self.git_adapter.get_current_branch(worktree)
-        logger.info(
-            "Completion worktree state: issue=%s branch=%s worktree=%s",
-            issue_number,
-            branch,
-            worktree,
-        )
-
-        # Log what actions were requested
-        logger.info(
-            "Processing completion for #%d: outcome=%s, requested_actions=%s",
-            issue_number,
-            record.outcome.value,
-            [a.value for a in record.requested_actions],
-        )
-
-        preserved_completion_path = preserve_completion_record(
-            session_output=self.session_output,
-            worktree=worktree,
-            completion_path=completion_path,
-            run_assets=run_assets,
-        )
-
-        # Execute requested actions in order.
-        (
-            branch,
-            pr_url,
-            review_exchange_completed,
-            deferred,
-            early_result,
-        ) = self._execute_actions(
-            worktree=worktree,
-            record=record,
-            issue_number=issue_number,
-            issue_title=issue_title,
-            label_target=label_target,
-            branch=branch,
-            session_name=session_name,
-            agent_label=agent_label,
-            actions_taken=actions_taken,
-            errors=errors,
-            error_details=error_details,
-            run_assets=run_assets,
-        )
-        if early_result is not None:
-            return early_result
-
-        if deferred:
-            # Review exchange is running in the background. Leave the completion
-            # record on disk so the next observation re-enters this pipeline,
-            # and skip result artifacts / cleanup that would imply completion.
-            logger.info(
-                "Completion deferred (review exchange running): issue=%d session=%s",
-                issue_number,
-                session_name,
-            )
-            return ProcessingResult.for_review_exchange_deferred()
 
         # Write reviewer feedback to session run directory for rework sessions to use
         # This is only relevant for review sessions (pr_number provided) with feedback
@@ -916,17 +782,132 @@ class CompletionProcessor:
             total_duration=total_duration,
             completion_path=completion_path,
             preserved_completion_path=preserved_completion_path,
+            intake_receipt=intake_receipt,
             run_assets=run_assets,
             emit_completion_event=self._emit,
             post_issue_comment=self._add_issue_comment,
             cleanup_completion_record_fn=self._cleanup_completion_record,
+        ).with_processing_policy(processing_policy)
+
+    def prepare_completion(
+        self, worktree: Path, issue_number: int, issue_title: str, *,
+        run_assets: SessionRunAssets, completion_path: str | None,
+        agent_label: str | None, intake_receipt: CompletionIntakeReceipt | None,
+        actions_taken: list[str], errors: list[str],
+        prepared_evidence: PreparedCompletionEvidence | None = None,
+    ) -> PreparedCompletion | ProcessingResult:
+        """One owner runs every policy phase before live or manual execution."""
+        try:
+            context = (
+                context_from_prepared_evidence(prepared_evidence, intake_receipt, run_assets)
+                if prepared_evidence is not None else
+                self._completion_intake.processing_context(intake_receipt, run_assets)
+                if intake_receipt is not None else None
+            )
+            processing_policy = self._record_validator.resolve_processing_policy(
+                context, issue_number, agent_label, completion_path
+            )
+        except CompletionIntakeError as exc:
+            return ProcessingResult.for_intake_refusal(exc)
+        # Read and validate completion record
+        record, session_name, error_result = self._read_and_validate_record(
+            worktree,
+            completion_path,
+            run_assets,
+            intake_receipt,
+            prepared_evidence,
+        )
+        if error_result:
+            return error_result.with_processing_policy(processing_policy)
+        assert record is not None  # Guaranteed if error_result is None
+
+        requested_actions = tuple(record.requested_actions)
+        running_query = ReviewExchangeRunningQuery(
+            issue_number=issue_number,
+            session_name=session_name,
+            requested_actions=requested_actions,
+            run_id=run_assets.run_id,
+        )
+        exchange_running = self._review_exchange.is_review_exchange_running_for_completion(
+            running_query
+        )
+        if record.outcome is CompletionOutcome.COMPLETED and exchange_running:
+            logger.info(
+                "Completion deferred before pre-action policies: issue=%d "
+                "session=%s reason=review exchange is already running",
+                issue_number,
+                session_name,
+            )
+            return ProcessingResult.for_review_exchange_deferred().with_processing_policy(processing_policy)
+
+        pre_action_failure = self._check_pre_action_policies(
+            worktree,
+            record,
+            session_name,
+            issue_number,
+            run_assets,
+            processing_policy=processing_policy,
+        )
+        if pre_action_failure:
+            return pre_action_failure.with_processing_policy(processing_policy)
+
+        # Get branch name for PR operations
+        branch = self.git_adapter.get_current_branch(worktree)
+        logger.info(
+            "Completion worktree state: issue=%s branch=%s worktree=%s",
+            issue_number,
+            branch,
+            worktree,
+        )
+
+        # Log what actions were requested
+        logger.info(
+            "Processing completion for #%d: outcome=%s, requested_actions=%s",
+            issue_number,
+            record.outcome.value,
+            [a.value for a in record.requested_actions],
+        )
+
+        preserved_completion_path = (
+            str(
+                self._completion_intake.completion_artifact(
+                    intake_receipt, run_assets
+                ).path
+            )
+            if intake_receipt is not None
+            else preserve_completion_record(
+                session_output=self.session_output,
+                worktree=worktree,
+                completion_path=completion_path,
+                run_assets=run_assets,
+            )
+        )
+
+        actions = self._prepare_actions(
+            worktree=worktree, record=record, issue_number=issue_number,
+            issue_title=issue_title, session_name=session_name, processing_policy=processing_policy,
+            actions_taken=actions_taken, errors=errors, run_assets=run_assets,
+        )
+        if isinstance(actions, ProcessingResult):
+            return actions.with_processing_policy(processing_policy)
+        return PreparedCompletion(record, session_name, processing_policy, branch,
+                                  preserved_completion_path, actions)
+
+    def settle_manual_publication(
+        self, prepared: PreparedManualPublication, publication: PublishValidatedHeadOutcome,
+    ) -> ProcessingResult:
+        return settle_manual_publication(
+            prepared, publication, session_output=self.session_output, labels=self.label_adapter,
+            finalize_review_exchange=self._finalize_review_exchange_pr,
+            execute_planned_actions=self._execute_planned_actions, emit_completion_event=self._emit,
+            post_issue_comment=self._add_issue_comment, cleanup_completion_record=self._cleanup_completion_record,
         )
 
     def _reject_tech_lead_completion_if_invalid(
         self,
         *,
         record: CompletionRecord,
-        agent_label: str | None,
+        processing_policy: CompletionProcessingPolicy,
         issue_number: int,
         run_assets: SessionRunAssets,
     ) -> ProcessingResult | None:
@@ -941,8 +922,10 @@ class CompletionProcessor:
         classified critical, so history records FAILED for every flavor and
         the tech_lead failure labeling path fires downstream.
         """
-        if self._config is None or not self._is_tech_lead_session(agent_label):
+        if not processing_policy.is_tech_lead:
             return None
+        if self._config is None:
+            raise CompletionIntakeError("Tech Lead processing requires configured launch policy")
         if record.outcome is not CompletionOutcome.COMPLETED:
             return None
         tech_lead_error = tech_lead_decision_processing_error(
@@ -968,16 +951,13 @@ class CompletionProcessor:
     def _review_exchange_approval_gate(
         self,
         *,
-        agent_label: str | None,
+        processing_policy: CompletionProcessingPolicy,
         run_assets: SessionRunAssets,
     ) -> "ReviewExchangeApprovalGate | None":
         """Build the artifact gate used at the terminal reviewer boundary."""
         return build_tech_lead_decision_approval_gate(
             self._config,
-            tech_lead_agent=(
-                self._config.tech_lead_review_agent if self._config else None
-            ),
-            agent_label=agent_label,
+            processing_policy=processing_policy,
             tech_lead_authority=self._tech_lead_authority,
             run_dir=run_assets.run_dir,
             run_id=run_assets.run_id,
@@ -992,7 +972,7 @@ class CompletionProcessor:
         issue_number: int,
         run_assets: SessionRunAssets,
         *,
-        agent_label: str | None,
+        processing_policy: CompletionProcessingPolicy,
     ) -> ProcessingResult | None:
         """Run completion policies that must pass before any action executes."""
         # First: tech_lead scope/decision authority (#6769 finding 1). Checked
@@ -1001,7 +981,7 @@ class CompletionProcessor:
         # diagnostic comments.
         tech_lead_rejection = self._reject_tech_lead_completion_if_invalid(
             record=record,
-            agent_label=agent_label,
+            processing_policy=processing_policy,
             issue_number=issue_number,
             run_assets=run_assets,
         )
@@ -1019,7 +999,7 @@ class CompletionProcessor:
                 run_assets,
             )
 
-        if self._is_tech_lead_session(agent_label):
+        if processing_policy.is_tech_lead:
             shaping_failure = resolve_tech_lead_completion_actions(
                 worktree=worktree, record=record, git_adapter=self.git_adapter,
                 base_branch=self._base_branch,
@@ -1059,6 +1039,8 @@ class CompletionProcessor:
         worktree: Path,
         completion_path: str | None,
         run_assets: SessionRunAssets,
+        intake_receipt: CompletionIntakeReceipt | None,
+        prepared_evidence: PreparedCompletionEvidence | None = None,
     ) -> tuple[CompletionRecord | None, str | None, ProcessingResult | None]:
         """Read completion record and attach validation artifacts.
 
@@ -1066,13 +1048,35 @@ class CompletionProcessor:
             Tuple of (record, session_name, error_result).
             If error_result is not None, caller should return it immediately.
         """
-        record = self.read_completion_record(worktree, completion_path)
+        record = (
+            record_from_prepared_evidence(prepared_evidence, intake_receipt, run_assets)
+            if prepared_evidence is not None else
+            self._completion_intake.read_receipt(intake_receipt, run_assets)
+            if intake_receipt is not None
+            else self.read_completion_record(worktree, completion_path)
+        )
         if not record:
             return None, None, ProcessingResult(
                 success=False,
                 message="No completion record found",
                 errors=["Completion record not found or invalid"],
             )
+        if intake_receipt is not None:
+            from ..domain.completion_intake import CompletionValidationFailed
+
+            try:
+                self.require_completion_receipt(intake_receipt, run_assets)
+            except CompletionValidationFailed as exc:
+                return (
+                    None,
+                    None,
+                    ProcessingResult(
+                        success=False,
+                        message=str(exc),
+                        errors=[str(exc)],
+                        failure_kind="validation_failed",
+                    ),
+                )
         # Rejected at the door, BEFORE any side effect (#6999 F2 round 5).
         # ``pr_labels`` is whatever the agent wrote, and the shared human-block
         # label is not among the things it may hand itself: applied, it would
@@ -1086,7 +1090,12 @@ class CompletionProcessor:
                 success=False, message=reserved, errors=[reserved]
             )
 
-        session_name = self.session_output.session_name_from_path(completion_path) or record.session_id
+        session_name = (
+            run_assets.session_name
+            if intake_receipt is not None
+            else self.session_output.session_name_from_path(completion_path)
+            or record.session_id
+        )
         if record.validation_record_path and session_name:
             contained = _contain_validation_record_path(
                 record.validation_record_path, worktree
@@ -1392,7 +1401,7 @@ class CompletionProcessor:
         record: CompletionRecord,
         issue_number: int,
         issue_title: str,
-        agent_label: str | None,
+        processing_policy: CompletionProcessingPolicy,
         actions_taken: list[str],
         errors: list[str],
         run_assets: SessionRunAssets,
@@ -1422,7 +1431,7 @@ class CompletionProcessor:
             issue_number=issue_number,
             issue_title=issue_title,
             session_name=gate_session_name,
-            agent_label=agent_label,
+            processing_policy=processing_policy,
             record=record,
             run_assets=run_assets,
         )
@@ -1445,11 +1454,11 @@ class CompletionProcessor:
         issue_number: int,
         issue_title: str,
         session_name: str | None,
-        agent_label: str | None,
+        processing_policy: CompletionProcessingPolicy,
         record: CompletionRecord,
         run_assets: SessionRunAssets,
     ) -> ProcessingResult | None:
-        if session_name is None or agent_label is None:
+        if session_name is None or processing_policy.agent_label is None:
             return None
         if RequestedAction.CREATE_PR not in record.requested_actions:
             return None
@@ -1490,7 +1499,10 @@ class CompletionProcessor:
             issue_title=issue_title,
             session_name=session_name,
             run_id=run_assets.run_id,
-            agent_label=agent_label,
+            agent_label=processing_policy.agent_label,
+            approval_gate=self._review_exchange_approval_gate(
+                processing_policy=processing_policy, run_assets=run_assets,
+            ),
             initial_validation_record_path=validation_record_path,
             current_head_sha=current_worktree_head_sha(
                 git_adapter=self.git_adapter,
@@ -1635,30 +1647,11 @@ class CompletionProcessor:
             stderr_path=str(artifacts.stderr_path),
         )
 
-    def _execute_actions(
-        self,
-        *,
-        worktree: Path,
-        record: CompletionRecord,
-        issue_number: int,
-        issue_title: str,
-        label_target: int,
-        branch: str | None,
-        session_name: str | None,
-        agent_label: str | None,
-        actions_taken: list[str],
-        errors: list[str],
-        error_details: list[dict[str, Any]],
-        run_assets: SessionRunAssets,
-    ) -> tuple[str | None, str | None, bool, bool, ProcessingResult | None]:
-        """Execute all requested actions from completion record.
-
-        Returns:
-            Tuple of (final_branch, pr_url, review_exchange_completed, deferred, early_result).
-            When ``deferred`` is True the review exchange is running in the
-            background — callers must NOT treat the completion as finished.
-        """
-        pr_url: str | None = None
+    def _prepare_actions(
+        self, *, worktree: Path, record: CompletionRecord, issue_number: int,
+        issue_title: str, session_name: str | None, processing_policy: CompletionProcessingPolicy,
+        actions_taken: list[str], errors: list[str], run_assets: SessionRunAssets,
+    ) -> PreparedActionPlan | ProcessingResult:
         requested_actions = tuple(record.requested_actions)
         cache_boundary_started_at = review_cache_boundary_started_at(
             session_output=self.session_output,
@@ -1678,7 +1671,7 @@ class CompletionProcessor:
             issue_title=issue_title,
             session_name=session_name,
             run_id=run_assets.run_id,
-            agent_label=agent_label,
+            agent_label=processing_policy.agent_label,
             record=record,
             review_cache_boundary_started_at=cache_boundary_started_at,
             current_head_sha=current_worktree_head_sha(
@@ -1689,14 +1682,14 @@ class CompletionProcessor:
             actions_taken=actions_taken,
             run_review_exchange_loop=self._run_review_exchange_loop,
             approval_gate=self._review_exchange_approval_gate(
-                agent_label=agent_label,
+                processing_policy=processing_policy,
                 run_assets=run_assets,
             ),
         )
         if deferred:
-            return branch, pr_url, review_exchange_completed, True, None
+            return ProcessingResult.for_review_exchange_deferred()
         if should_halt:
-            return branch, pr_url, review_exchange_completed, False, None
+            return PreparedActionPlan(plan, exchange_mode, exchange_result, review_exchange_completed, True)
 
         pre_publish_failure = self._run_pre_publish_gate_if_required(
             plan=plan,
@@ -1704,32 +1697,15 @@ class CompletionProcessor:
             record=record,
             issue_number=issue_number,
             issue_title=issue_title,
-            agent_label=agent_label,
+            processing_policy=processing_policy,
             actions_taken=actions_taken,
             errors=errors,
             run_assets=run_assets,
         )
         if pre_publish_failure is not None:
-            return branch, pr_url, review_exchange_completed, False, pre_publish_failure
+            return pre_publish_failure
 
-        branch, pr_url, review_exchange_completed = self._execute_planned_actions(
-            plan=plan,
-            worktree=worktree,
-            record=record,
-            issue_number=issue_number,
-            issue_title=issue_title,
-            label_target=label_target,
-            branch=branch,
-            session_name=session_name,
-            agent_label=agent_label,
-            actions_taken=actions_taken,
-            errors=errors,
-            error_details=error_details,
-            exchange_mode=exchange_mode,
-            exchange_result=exchange_result,
-            review_exchange_completed=review_exchange_completed,
-        )
-        return branch, pr_url, review_exchange_completed, False, None
+        return PreparedActionPlan(plan, exchange_mode, exchange_result, review_exchange_completed, False)
 
     def _execute_planned_actions(
         self,
@@ -1742,7 +1718,7 @@ class CompletionProcessor:
         label_target: int,
         branch: str | None,
         session_name: str | None,
-        agent_label: str | None,
+        processing_policy: CompletionProcessingPolicy,
         actions_taken: list[str],
         errors: list[str],
         error_details: list[dict[str, Any]],
@@ -1762,7 +1738,7 @@ class CompletionProcessor:
                 label_target=label_target,
                 branch=branch,
                 session_name=session_name,
-                agent_label=agent_label,
+                processing_policy=processing_policy,
                 actions_taken=actions_taken,
                 errors=errors,
                 error_details=error_details,
@@ -1798,7 +1774,7 @@ class CompletionProcessor:
         label_target: int,
         branch: str | None,
         session_name: str | None,
-        agent_label: str | None,
+        processing_policy: CompletionProcessingPolicy,
         actions_taken: list[str],
         errors: list[str],
         error_details: list[dict[str, Any]],
@@ -1825,7 +1801,7 @@ class CompletionProcessor:
                 label_target=label_target,
                 branch=branch,
                 session_name=session_name,
-                agent_label=agent_label,
+                agent_label=processing_policy.agent_label,
                 actions_taken=actions_taken,
                 errors=errors,
                 error_details=error_details,
@@ -1835,7 +1811,7 @@ class CompletionProcessor:
         except Exception as e:
             # A clean tech_lead audit has nothing to publish; that is success,
             # not publish-failure (ADR-0031 / #6768 B1).
-            if self._is_tech_lead_session(agent_label) and is_benign_tech_lead_no_commits(action, e):
+            if processing_policy.is_tech_lead and is_benign_tech_lead_no_commits(action, e):
                 logger.info("[tech_lead] clean audit, nothing to publish: issue=#%d", issue_number)
                 return self._ActionResult(branch=branch)
             logger.exception(
@@ -2263,6 +2239,46 @@ class CompletionProcessor:
             return False, (lambda: stacked_base), decision
         return False, self._base_branch, decision
 
+    def prepare_pull_request(
+        self, *, worktree: Path, record: CompletionRecord, issue_number: int,
+        issue_title: str, branch: str, agent_label: str | None, errors: list[str],
+        exchange_mode: str | None, exchange_result: Any | None,
+    ) -> PreparedPullRequest | None:
+        """Share stack, review authority and PR content across publication paths."""
+        # Stack publish gate (ADR-0029 / #6596): for a Stack-after: successor,
+        # base the PR on the predecessor branch and fail fast when the publish
+        # gate is blocked. Non-stack issues keep the default base selection.
+        halt, base_branch_resolver, stack_decision = self._resolve_publish_base(
+            issue_number, worktree, errors
+        )
+        if halt:
+            return None
+        # Resolve the base once: it is both the base a fresh PR is created on and
+        # the base an existing PR must already target before it can be reused.
+        expected_base = base_branch_resolver()
+
+        pr_title = f"#{issue_number}: {issue_title}"
+        pr_body = build_pr_body(
+            record,
+            issue_number,
+            runtime_identity=self._runtime_identity,
+        )
+        pr_body = attributed_publication_body(pr_body, issue_number, branch)
+        exchange_mode, exchange_resolution_failed = self._review_exchange.resolve_create_pr_exchange_mode(
+            exchange_mode=exchange_mode,
+            agent_label=agent_label,
+            errors=errors,
+        )
+        if exchange_resolution_failed:
+            return None
+        if self._review_exchange.missing_review_exchange_outcome(exchange_mode, exchange_result):
+            errors.append(
+                f"{REVIEW_EXCHANGE_ERROR_PREFIX} missing exchange outcome before PR creation"
+            )
+            return None
+
+        return PreparedPullRequest(pr_title, pr_body, expected_base, stack_decision, exchange_mode)
+
     def _execute_create_pr_action(
         self,
         *,
@@ -2284,37 +2300,17 @@ class CompletionProcessor:
             logger.error("Cannot create PR for #%d: no branch", issue_number)
             return self._ActionResult(skip_remaining=True)
 
-        # Stack publish gate (ADR-0029 / #6596): for a Stack-after: successor,
-        # base the PR on the predecessor branch and fail fast when the publish
-        # gate is blocked. Non-stack issues keep the default base selection.
-        halt, base_branch_resolver, stack_decision = self._resolve_publish_base(
-            issue_number, worktree, errors
+        publication = self.prepare_pull_request(
+            worktree=worktree, record=record, issue_number=issue_number,
+            issue_title=issue_title, branch=branch, agent_label=agent_label, errors=errors,
+            exchange_mode=exchange_mode, exchange_result=exchange_result,
         )
-        if halt:
+        if publication is None:
             return self._ActionResult(halt=True)
-        # Resolve the base once: it is both the base a fresh PR is created on and
-        # the base an existing PR must already target before it can be reused.
-        expected_base = base_branch_resolver()
-
+        expected_base, stack_decision = publication.base_branch, publication.stack_decision
+        exchange_mode = publication.exchange_mode
+        pr_title, pr_body = publication.title, publication.body
         skip_hooks = os.environ.get("E2E_SKIP_PUSH_HOOKS") == "1"
-        pr_title = f"#{issue_number}: {issue_title}"
-        pr_body = build_pr_body(
-            record,
-            issue_number,
-            runtime_identity=self._runtime_identity,
-        )
-        exchange_mode, exchange_resolution_failed = self._review_exchange.resolve_create_pr_exchange_mode(
-            exchange_mode=exchange_mode,
-            agent_label=agent_label,
-            errors=errors,
-        )
-        if exchange_resolution_failed:
-            return self._ActionResult(halt=True)
-        if self._review_exchange.missing_review_exchange_outcome(exchange_mode, exchange_result):
-            errors.append(
-                f"{REVIEW_EXCHANGE_ERROR_PREFIX} missing exchange outcome before PR creation"
-            )
-            return self._ActionResult(halt=True)
 
         # Check for existing PR to reuse after review exchange succeeds.
         reused = self._reuse_existing_pr_if_available(
@@ -2361,6 +2357,7 @@ class CompletionProcessor:
         )
 
         if pr:
+            branch = pr.branch
             settle_failure = self._settle_created_pr(
                 pr=pr,
                 record=record,
@@ -2650,8 +2647,10 @@ class CompletionProcessor:
         )
         if base_failure is not None:
             return base_failure
+        actions_taken.append(f"Created PR #{pr.number}")
+        logger.info("Created PR #%d: %s", pr.number, pr.url)
         if not apply_pr_labels(
-            pr=pr,
+            pr_number=pr.number,
             record=record,
             labels=self.label_adapter,
             actions_taken=actions_taken,

@@ -1,0 +1,21 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "content_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Content Sha256",
+      "type": "string"
+    },
+    "entry_id": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Entry Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "entry_id",
+    "content_sha256"
+  ],
+  "title": "CompletionIntakeReceiptContract",
+  "type": "object"
+}

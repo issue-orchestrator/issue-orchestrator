@@ -125,7 +125,7 @@ from .launch_guards import (
     callback_endpoint_not_ready,
     retrospective_session_conflict,
 )
-from .session_env import build_session_env_exports
+from .session_env import completion_capability_export, build_session_env_exports
 from .provider_command_wrapper import ProviderCommandWrapper
 from .session_worktree_briefing import (
     describe_worktree_state,
@@ -452,7 +452,7 @@ class SessionLauncher:
             run_dir=run_assets.run_dir,
             worktree_path=worktree_path,
             callback_endpoint=self._agent_callback_endpoint,
-        )
+        ) + completion_capability_export(self._issue_run_allocator, run_assets)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Phase helpers for launch_issue_session
@@ -584,6 +584,7 @@ class SessionLauncher:
         failure_stage: str,
     ) -> None:
         """Apply one ordinary-vs-disposable policy to failed launch cleanup."""
+        self._action_applier.runtime_lifecycle.preserve(issue_number, "failed-launch-cleanup")
         try:
             remove = self._worktree_manager.remove_checkout
             if disposable:

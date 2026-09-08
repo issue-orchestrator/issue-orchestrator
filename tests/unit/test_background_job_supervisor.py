@@ -340,7 +340,9 @@ def test_review_exchange_halts_when_supervisor_records_failure() -> None:
         def run(self, **_: object):  # type: ignore[no-untyped-def]
             raise AssertionError("runner must not be invoked on halt path")
 
+    from tests.runtime_lifecycle_helpers import cancel_empty_exchange
     review = make_completion_review_exchange(
+        review_exchange_canceller=cancel_empty_exchange,
         agent_callback_endpoint=ready_callback_endpoint(),
         config=cfg,
         session_output=_SessionOutput(Path("/tmp")),  # type: ignore[arg-type]

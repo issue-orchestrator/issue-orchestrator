@@ -27,6 +27,11 @@ from .validated_work_commands import (
 )
 
 
+class EvidenceAdmissionSelection(StrEnum):
+    CURRENT = "current"
+    RETAIN = "retain"
+
+
 class AdmissionStatus(StrEnum):
     ADMITTED = "admitted"
     CONVERGED = "converged"

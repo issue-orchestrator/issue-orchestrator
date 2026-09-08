@@ -149,6 +149,10 @@ class WorktreeManager(Protocol):
         """
         ...
 
+    def is_commit_retained_by_branch(self, worktree_path: Path, head_sha: str, branch: str) -> bool:
+        """Prove the exact commit is reachable from a surviving local branch."""
+        ...
+
     def read_reviewer_head_ownership(
         self, worktree_path: Path
     ) -> ReviewerHeadOwnership:

@@ -262,7 +262,7 @@ def test_dashboard_data_circuit_hidden_for_an_explicitly_empty_reader():
     DashboardDataContract.model_validate(view_model.dashboard_data())
 
 
-def test_orchestrator_exposes_its_resilience_owner_as_the_circuit_reader():
+def test_orchestrator_exposes_its_resilience_owner_as_the_circuit_reader(tmp_path):
     """The composition root wires the reader; the dashboard reads the facade.
 
     Proves the required facade property exists and returns the resilience owner,
@@ -274,8 +274,13 @@ def test_orchestrator_exposes_its_resilience_owner_as_the_circuit_reader():
 
     github = MagicMock()
     github.get_issue_labels.return_value = []
+    from issue_orchestrator.execution.command_runner import LocalCommandRunner
+    from issue_orchestrator.execution.git_tools import create_git
+    config = _config()
+    config.repo_root = tmp_path
+    create_git(LocalCommandRunner()).run(tmp_path, ["init", "--initial-branch=main"])
     with patch("issue_orchestrator.entrypoints.bootstrap.install_gh_guard"):
-        orchestrator = build_orchestrator_for_testing(config=_config(), github=github)
+        orchestrator = build_orchestrator_for_testing(config=config, github=github)
 
     assert orchestrator.provider_circuit is orchestrator.deps.provider_resilience
     # And it satisfies the narrow read port the projection depends on.

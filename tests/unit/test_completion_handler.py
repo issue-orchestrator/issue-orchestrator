@@ -11,6 +11,7 @@ Tests focus on invariant outcomes, state transitions, and business rules
 rather than implementation details.
 """
 
+from issue_orchestrator.domain.registered_completion import CompletionProcessingPolicy
 import pytest
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -236,11 +237,11 @@ class TestHistoryEntryCreation:
         pr_url = "https://github.com/owner/repo/pull/42"
 
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url=pr_url, number=42, labels=[])]
+            prs=[SimpleNamespace(branch="published-branch", url=pr_url, number=42, labels=[])]
         )
         handler = make_handler(config, repository_host=repository_host)
 
-        result = handler.process_completion(session, SessionStatus.COMPLETED)
+        result = handler.process_completion(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         assert result.history_entry.pr_url == pr_url
         assert result.history_entry.status == "completed"
@@ -254,7 +255,7 @@ class TestHistoryEntryCreation:
         session = create_test_session(issue, agent_config, tmp_worktree)
         handler = make_handler(config)
 
-        result = handler.process_completion(session, SessionStatus.FAILED)
+        result = handler.process_completion(session, SessionStatus.FAILED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         assert result.history_entry.pr_url is None
         assert result.history_entry.status == "failed"
@@ -269,7 +270,7 @@ class TestHistoryEntryCreation:
         session = create_test_session(issue, agent_config, tmp_worktree)
         handler = make_handler(config)
 
-        result = handler.process_completion(session, SessionStatus.TIMED_OUT)
+        result = handler.process_completion(session, SessionStatus.TIMED_OUT, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         assert result.history_entry.status == "timed_out"
         assert "30" in result.history_entry.status_reason
@@ -283,7 +284,7 @@ class TestHistoryEntryCreation:
         session = create_test_session(issue, agent_config, tmp_worktree)
         handler = make_handler(config)
 
-        result = handler.process_completion(session, SessionStatus.VALIDATION_FAILED)
+        result = handler.process_completion(session, SessionStatus.VALIDATION_FAILED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         assert result.history_entry.status == "validation_failed"
         assert "validation" in result.history_entry.status_reason.lower()
@@ -296,7 +297,7 @@ class TestHistoryEntryCreation:
         session = create_test_session(issue, agent_config, tmp_worktree)
         handler = make_handler(config)
 
-        result = handler.process_completion(session, SessionStatus.BLOCKED)
+        result = handler.process_completion(session, SessionStatus.BLOCKED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         assert result.history_entry.status == "blocked"
         assert "blocked" in result.history_entry.status_reason.lower()
@@ -309,7 +310,7 @@ class TestHistoryEntryCreation:
         session = create_test_session(issue, agent_config, tmp_worktree)
         handler = make_handler(config)
 
-        result = handler.process_completion(session, SessionStatus.NEEDS_HUMAN)
+        result = handler.process_completion(session, SessionStatus.NEEDS_HUMAN, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         assert result.history_entry.status == "needs_human"
         assert "human" in result.history_entry.status_reason.lower()
@@ -331,7 +332,7 @@ class TestHistoryEntryCreation:
             session,
             SessionStatus.COMPLETED,
             processing_errors=processing_errors,
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         # History should show FAILED, not COMPLETED
         assert result.history_entry.status == "failed"
@@ -360,7 +361,7 @@ class TestHistoryEntryCreation:
             session,
             SessionStatus.COMPLETED,
             processing_errors=processing_errors,
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         assert result.history_entry.status == "failed"
         assert (
@@ -376,12 +377,12 @@ class TestHistoryEntryCreation:
         session = create_test_session(issue, agent_config, tmp_worktree)
 
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url="http://pr/42", number=42, labels=[])]
+            prs=[SimpleNamespace(branch="published-branch", url="http://pr/42", number=42, labels=[])]
         )
         handler = make_handler(config, repository_host=repository_host)
 
         # No processing errors - successful completion
-        result = handler.process_completion(session, SessionStatus.COMPLETED)
+        result = handler.process_completion(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         assert result.history_entry.status == "completed"
         assert "PR created" in result.history_entry.status_reason
@@ -398,7 +399,7 @@ class TestHistoryEntryCreation:
         session = create_test_session(issue, agent_config, tmp_worktree)
         pr_url = "https://github.com/owner/repo/pull/42"
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url=pr_url, number=42, labels=[])]
+            prs=[SimpleNamespace(branch="published-branch", url=pr_url, number=42, labels=[])]
         )
         handler = make_handler(config, repository_host=repository_host)
 
@@ -406,7 +407,7 @@ class TestHistoryEntryCreation:
             session,
             SessionStatus.COMPLETED,
             processing_errors=[f"{ERROR_PREFIX_CREATE_PR}: GitHub request failed: 422"],
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         assert result.history_entry.status == "completed"
         assert result.history_entry.pr_url == pr_url
@@ -431,11 +432,11 @@ class TestEventEmission:
         pr_url = "https://github.com/owner/repo/pull/42"
 
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url=pr_url, number=42, labels=[])]
+            prs=[SimpleNamespace(branch="published-branch", url=pr_url, number=42, labels=[])]
         )
         handler = make_handler(config, events=events, repository_host=repository_host)
 
-        handler.process_completion(session, SessionStatus.COMPLETED)
+        handler.process_completion(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         assert events.has_event(str(EventName.SESSION_COMPLETED))
         event = events.last_event(str(EventName.SESSION_COMPLETED))
@@ -453,7 +454,7 @@ class TestEventEmission:
         session = create_test_session(issue, agent_config, tmp_worktree)
         handler = make_handler(config, events=events)
 
-        handler.process_completion(session, SessionStatus.FAILED)
+        handler.process_completion(session, SessionStatus.FAILED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         assert events.has_event(str(EventName.SESSION_FAILED))
         event = events.last_event(str(EventName.SESSION_FAILED))
@@ -481,7 +482,7 @@ class TestEventEmission:
         session_output = Mock(spec=SessionOutput)
         handler = make_handler(config, events=events, session_output=session_output)
 
-        handler.process_completion(session, SessionStatus.FAILED)
+        handler.process_completion(session, SessionStatus.FAILED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         event = events.last_event(str(EventName.SESSION_FAILED))
         assert event is not None
@@ -509,7 +510,7 @@ class TestEventEmission:
         session_output = Mock(spec=SessionOutput)
         handler = make_handler(config, events=events, session_output=session_output)
 
-        handler.process_completion(session, SessionStatus.FAILED)
+        handler.process_completion(session, SessionStatus.FAILED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         event = events.last_event(str(EventName.SESSION_FAILED))
         assert event is not None
@@ -525,7 +526,7 @@ class TestEventEmission:
         session = create_test_session(issue, agent_config, tmp_worktree)
         handler = make_handler(config, events=events)
 
-        handler.process_completion(session, SessionStatus.TIMED_OUT)
+        handler.process_completion(session, SessionStatus.TIMED_OUT, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         assert events.has_event(str(EventName.SESSION_FAILED))
 
@@ -538,7 +539,7 @@ class TestEventEmission:
         session = create_test_session(issue, agent_config, tmp_worktree)
         handler = make_handler(config, events=events)
 
-        handler.process_completion(session, SessionStatus.BLOCKED)
+        handler.process_completion(session, SessionStatus.BLOCKED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         assert events.has_event(str(EventName.ISSUE_BLOCKED))
         event = events.last_event(str(EventName.ISSUE_BLOCKED))
@@ -554,7 +555,7 @@ class TestEventEmission:
         session = create_test_session(issue, agent_config, tmp_worktree)
         handler = make_handler(config, events=events)
 
-        handler.process_completion(session, SessionStatus.NEEDS_HUMAN)
+        handler.process_completion(session, SessionStatus.NEEDS_HUMAN, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         assert events.has_event(str(EventName.ISSUE_NEEDS_HUMAN))
 
@@ -568,11 +569,11 @@ class TestEventEmission:
         pr_url = "https://github.com/owner/repo/pull/42"
 
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url=pr_url, number=42, labels=["some-label"])]
+            prs=[SimpleNamespace(branch="published-branch", url=pr_url, number=42, labels=["some-label"])]
         )
         handler = make_handler(config, events=events, repository_host=repository_host)
 
-        handler.process_completion(session, SessionStatus.COMPLETED)
+        handler.process_completion(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         assert events.has_event(str(EventName.PR_VIEW_CHANGED))
         event = events.last_event(str(EventName.PR_VIEW_CHANGED))
@@ -600,13 +601,13 @@ class TestStateMachineTransitions:
         )
 
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url="http://pr", number=42, labels=[])]
+            prs=[SimpleNamespace(url="http://pr", number=42, labels=[], branch="published-branch")]
         )
         handler = make_handler(
             config, repository_host=repository_host, issue_machine=issue_machine
         )
 
-        handler.process_completion(session, SessionStatus.COMPLETED)
+        handler.process_completion(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         assert issue_machine.get_state() == IssueState.PR_PENDING
 
@@ -621,13 +622,13 @@ class TestStateMachineTransitions:
         )
 
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url="http://pr", number=42, labels=[])]
+            prs=[SimpleNamespace(url="http://pr", number=42, labels=[], branch="published-branch")]
         )
         handler = make_handler(
             config, repository_host=repository_host, issue_machine=issue_machine
         )
 
-        handler.process_completion(session, SessionStatus.COMPLETED)
+        handler.process_completion(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         # State should remain PR_PENDING (no transition)
         assert issue_machine.get_state() == IssueState.PR_PENDING
@@ -647,13 +648,13 @@ class TestStateMachineTransitions:
         )
 
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url="http://pr", number=42, labels=[])]
+            prs=[SimpleNamespace(url="http://pr", number=42, labels=[], branch="published-branch")]
         )
         handler = make_handler(
             config, repository_host=repository_host, issue_machine=issue_machine
         )
 
-        handler.process_completion(session, SessionStatus.COMPLETED)
+        handler.process_completion(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         # Issue state should remain IN_PROGRESS (review sessions don't change it)
         assert issue_machine.get_state() == IssueState.IN_PROGRESS
@@ -668,7 +669,7 @@ class TestStateMachineTransitions:
 
         handler = make_handler(config, issue_machine=issue_machine)
 
-        handler.process_completion(session, SessionStatus.BLOCKED)
+        handler.process_completion(session, SessionStatus.BLOCKED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         assert issue_machine.get_state() == IssueState.BLOCKED
 
@@ -682,7 +683,7 @@ class TestStateMachineTransitions:
 
         handler = make_handler(config, issue_machine=issue_machine)
 
-        handler.process_completion(session, SessionStatus.NEEDS_HUMAN)
+        handler.process_completion(session, SessionStatus.NEEDS_HUMAN, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         assert issue_machine.get_state() == IssueState.NEEDS_HUMAN
 
@@ -702,7 +703,7 @@ class TestStateMachineTransitions:
 
         handler = make_handler(config, session_machine=session_machine)
 
-        handler.process_completion(session, SessionStatus.COMPLETED)
+        handler.process_completion(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         assert session_machine.get_state() == SessionState.COMPLETED
 
@@ -722,7 +723,7 @@ class TestStateMachineTransitions:
 
         handler = make_handler(config, session_machine=session_machine)
 
-        handler.process_completion(session, SessionStatus.FAILED)
+        handler.process_completion(session, SessionStatus.FAILED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         assert session_machine.get_state() == SessionState.FAILED
 
@@ -742,7 +743,7 @@ class TestStateMachineTransitions:
 
         handler = make_handler(config, session_machine=session_machine)
 
-        handler.process_completion(session, SessionStatus.TIMED_OUT)
+        handler.process_completion(session, SessionStatus.TIMED_OUT, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         assert session_machine.get_state() == SessionState.TIMED_OUT
 
@@ -775,6 +776,7 @@ class TestReviewMachineTransitions:
         )
 
         pr_info = SimpleNamespace(
+            branch="published-branch",
             number=42, labels=["code-reviewed"], url="http://pr", draft=True
         )
         repository_host = make_repository_host(
@@ -787,7 +789,7 @@ class TestReviewMachineTransitions:
             review_machine=review_machine,
         )
 
-        handler.process_completion(session, SessionStatus.COMPLETED)
+        handler.process_completion(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         assert review_machine.get_state() == ReviewState.APPROVED
         repository_host.set_pr_draft.assert_called_once_with(42, False)
@@ -811,7 +813,7 @@ class TestReviewMachineTransitions:
             initial_state=ReviewState.IN_REVIEW,
         )
 
-        pr_info = SimpleNamespace(number=42, labels=["needs-rework"], url="http://pr")
+        pr_info = SimpleNamespace(branch="published-branch", number=42, labels=["needs-rework"], url="http://pr")
         repository_host = make_repository_host(
             prs=[pr_info],
             pr_info=pr_info,
@@ -822,7 +824,7 @@ class TestReviewMachineTransitions:
             review_machine=review_machine,
         )
 
-        handler.process_completion(session, SessionStatus.COMPLETED)
+        handler.process_completion(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         # After request_changes and queue_rework
         assert review_machine.get_state() == ReviewState.REWORK_PENDING
@@ -841,7 +843,7 @@ class TestReviewMachineTransitions:
             task_kind=TaskKind.REVIEW,
         )
 
-        pr_info = SimpleNamespace(number=42, labels=["code-reviewed"], url="http://pr")
+        pr_info = SimpleNamespace(branch="published-branch", number=42, labels=["code-reviewed"], url="http://pr")
         repository_host = make_repository_host(
             prs=[pr_info],
             pr_info=pr_info,
@@ -850,7 +852,7 @@ class TestReviewMachineTransitions:
         handler = make_handler(config, repository_host=repository_host)
 
         # Should not raise
-        result = handler.process_completion(session, SessionStatus.COMPLETED)
+        result = handler.process_completion(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
         assert result is not None
 
 
@@ -870,11 +872,11 @@ class TestPRDetection:
         session = create_test_session(issue, agent_config, tmp_worktree)
 
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url="http://pr/123", number=123, labels=[])]
+            prs=[SimpleNamespace(branch="published-branch", url="http://pr/123", number=123, labels=[])]
         )
         handler = make_handler(config, repository_host=repository_host)
 
-        result = handler.process_completion(session, SessionStatus.COMPLETED)
+        result = handler.process_completion(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         assert result.pr_url == "http://pr/123"
         assert result.pr_number == 123
@@ -889,7 +891,7 @@ class TestPRDetection:
         repository_host = make_repository_host(prs=[])
         handler = make_handler(config, repository_host=repository_host)
 
-        result = handler.process_completion(session, SessionStatus.COMPLETED)
+        result = handler.process_completion(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         assert result.pr_url is None
         assert result.pr_number is None
@@ -908,7 +910,7 @@ class TestPRDetection:
         )
         handler = make_handler(config, repository_host=repository_host)
 
-        result = handler.process_completion(session, SessionStatus.FAILED)
+        result = handler.process_completion(session, SessionStatus.FAILED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         assert not fetch_called
         assert result.pr_url is None
@@ -922,13 +924,13 @@ class TestPRDetection:
 
         repository_host = make_repository_host(
             prs=[
-                SimpleNamespace(url="http://pr/1", number=1, labels=[]),
-                SimpleNamespace(url="http://pr/2", number=2, labels=[]),
+                SimpleNamespace(branch="published-branch", url="http://pr/1", number=1, labels=[]),
+                SimpleNamespace(branch="published-branch", url="http://pr/2", number=2, labels=[]),
             ]
         )
         handler = make_handler(config, repository_host=repository_host)
 
-        result = handler.process_completion(session, SessionStatus.COMPLETED)
+        result = handler.process_completion(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         assert result.pr_url == "http://pr/1"
         assert result.pr_number == 1
@@ -974,11 +976,11 @@ class TestCleanupStrategy:
         )
 
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url="http://pr", number=42, labels=[])]
+            prs=[SimpleNamespace(url="http://pr", number=42, labels=[], branch="published-branch")]
         )
         handler = make_handler(config, repository_host=repository_host)
 
-        result = handler.process_completion(session, SessionStatus.COMPLETED)
+        result = handler.process_completion(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         assert result.cleanup.disposition is expected_disposition
         if result.cleanup.pending_cleanup is not None:
@@ -1072,11 +1074,11 @@ class TestCleanupStrategy:
         )
 
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url="http://pr", number=42, labels=[])]
+            prs=[SimpleNamespace(url="http://pr", number=42, labels=[], branch="published-branch")]
         )
         handler = make_handler(config, repository_host=repository_host)
 
-        result = handler.process_completion(session, SessionStatus.COMPLETED)
+        result = handler.process_completion(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         assert result.cleanup.disposition is expected_disposition
 
@@ -1093,12 +1095,12 @@ class TestCleanupStrategy:
             issue, agent_config, tmp_worktree, terminal_id="issue-1"
         )
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url="http://pr", number=42, labels=[])]
+            prs=[SimpleNamespace(url="http://pr", number=42, labels=[], branch="published-branch")]
         )
 
         result = make_handler(
             config, repository_host=repository_host
-        ).process_completion(session, SessionStatus.COMPLETED)
+        ).process_completion(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
         assert result.cleanup.disposition is CleanupDisposition.DEFERRED
         assert result.cleanup.pending_cleanup is not None
@@ -1118,11 +1120,11 @@ class TestCleanupStrategy:
         )
 
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url="http://pr", number=42, labels=[])]
+            prs=[SimpleNamespace(url="http://pr", number=42, labels=[], branch="published-branch")]
         )
         handler = make_handler(config, repository_host=repository_host)
 
-        result = handler.process_completion(session, SessionStatus.COMPLETED)
+        result = handler.process_completion(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         assert result.cleanup.disposition is CleanupDisposition.IMMEDIATE
         assert result.cleanup.pending_cleanup is None
@@ -1142,11 +1144,11 @@ class TestCleanupStrategy:
         )
 
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url="http://pr", number=42, labels=[])]
+            prs=[SimpleNamespace(url="http://pr", number=42, labels=[], branch="published-branch")]
         )
         handler = make_handler(config, repository_host=repository_host)
 
-        result = handler.process_completion(session, SessionStatus.COMPLETED)
+        result = handler.process_completion(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         assert result.cleanup.disposition is CleanupDisposition.IMMEDIATE
 
@@ -1176,7 +1178,7 @@ class TestCleanupStrategy:
 
         handler = make_handler(config)
 
-        result = handler.process_completion(session, status)
+        result = handler.process_completion(session, status, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         assert result.cleanup.disposition is CleanupDisposition.IMMEDIATE
         assert result.cleanup.pending_cleanup is None
@@ -1197,11 +1199,11 @@ class TestCleanupStrategy:
 
         pr_url = "http://github.com/owner/repo/pull/456"
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url=pr_url, number=456, labels=[])]
+            prs=[SimpleNamespace(branch="published-branch", url=pr_url, number=456, labels=[])]
         )
         handler = make_handler(config, repository_host=repository_host)
 
-        result = handler.process_completion(session, SessionStatus.COMPLETED)
+        result = handler.process_completion(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         cleanup = result.cleanup.pending_cleanup
         assert cleanup is not None
@@ -1231,11 +1233,11 @@ class TestReviewQueueDecision:
         )
 
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url="http://pr", number=42, labels=[])]
+            prs=[SimpleNamespace(url="http://pr", number=42, labels=[], branch="published-branch")]
         )
         handler = make_handler(config, repository_host=repository_host)
 
-        result = handler.process_completion(session, SessionStatus.COMPLETED)
+        result = handler.process_completion(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         assert result.should_queue_review is True
 
@@ -1250,11 +1252,11 @@ class TestReviewQueueDecision:
         )
 
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url="http://pr", number=42, labels=[])]
+            prs=[SimpleNamespace(url="http://pr", number=42, labels=[], branch="published-branch")]
         )
         handler = make_handler(config, repository_host=repository_host)
 
-        result = handler.process_completion(session, SessionStatus.COMPLETED)
+        result = handler.process_completion(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         assert result.should_queue_review is False
 
@@ -1270,11 +1272,11 @@ class TestReviewQueueDecision:
         )
 
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url="http://pr", number=42, labels=[])]
+            prs=[SimpleNamespace(url="http://pr", number=42, labels=[], branch="published-branch")]
         )
         handler = make_handler(config, repository_host=repository_host)
 
-        result = handler.process_completion(session, SessionStatus.COMPLETED)
+        result = handler.process_completion(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         assert result.should_queue_review is False
 
@@ -1293,11 +1295,11 @@ class TestReviewQueueDecision:
         )
 
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url="http://pr", number=42, labels=[])]
+            prs=[SimpleNamespace(url="http://pr", number=42, labels=[], branch="published-branch")]
         )
         handler = make_handler(config, repository_host=repository_host)
 
-        result = handler.process_completion(session, SessionStatus.COMPLETED)
+        result = handler.process_completion(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         assert result.should_queue_review is False
 
@@ -1314,7 +1316,7 @@ class TestReviewQueueDecision:
         repository_host = make_repository_host(prs=[])
         handler = make_handler(config, repository_host=repository_host)
 
-        result = handler.process_completion(session, SessionStatus.COMPLETED)
+        result = handler.process_completion(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         assert result.should_queue_review is False
 
@@ -1331,7 +1333,7 @@ class TestReviewQueueDecision:
         )
 
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url="http://pr", number=42, labels=[])]
+            prs=[SimpleNamespace(url="http://pr", number=42, labels=[], branch="published-branch")]
         )
         handler = make_handler(config, repository_host=repository_host)
 
@@ -1339,7 +1341,7 @@ class TestReviewQueueDecision:
             session,
             SessionStatus.COMPLETED,
             review_exchange_completed=True,
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         assert result.should_queue_review is False
 
@@ -1354,7 +1356,7 @@ class TestReviewQueueDecision:
         )
 
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url="http://pr", number=42, labels=[])]
+            prs=[SimpleNamespace(url="http://pr", number=42, labels=[], branch="published-branch")]
         )
         handler = make_handler(config, repository_host=repository_host)
 
@@ -1364,7 +1366,7 @@ class TestReviewQueueDecision:
             processing_errors=[
                 "review_exchange: stopped (reviewer_reports_no_progress)"
             ],
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         assert result.should_queue_review is False
 
@@ -1379,7 +1381,7 @@ class TestReviewQueueDecision:
         )
 
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url="http://pr", number=42, labels=[])]
+            prs=[SimpleNamespace(url="http://pr", number=42, labels=[], branch="published-branch")]
         )
         handler = make_handler(config, repository_host=repository_host)
 
@@ -1389,7 +1391,7 @@ class TestReviewQueueDecision:
             processing_errors=[
                 "review_exchange: stopped (reviewer_reports_no_progress)"
             ],
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         add_labels = [a for a in result.actions if isinstance(a, AddLabelAction)]
         remove_labels = [a for a in result.actions if isinstance(a, RemoveLabelAction)]
@@ -1408,7 +1410,7 @@ class TestReviewQueueDecision:
         )
 
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url="http://pr", number=42, labels=[])]
+            prs=[SimpleNamespace(url="http://pr", number=42, labels=[], branch="published-branch")]
         )
         events = InMemoryEventSink()
         handler = make_handler(config, events=events, repository_host=repository_host)
@@ -1419,7 +1421,7 @@ class TestReviewQueueDecision:
             processing_errors=[
                 "review_exchange: stopped (reviewer_reports_no_progress)"
             ],
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         assert result.history_entry.status == SessionStatus.FAILED.value
         assert events.has_event(str(EventName.SESSION_FAILED))
@@ -1446,7 +1448,7 @@ class TestLabelActionGeneration:
         )
 
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url="http://pr", number=42, labels=[])]
+            prs=[SimpleNamespace(url="http://pr", number=42, labels=[], branch="published-branch")]
         )
         handler = make_handler(config, repository_host=repository_host)
 
@@ -1454,7 +1456,7 @@ class TestLabelActionGeneration:
             session,
             SessionStatus.COMPLETED,
             review_exchange_completed=True,
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         add_labels = [a for a in result.actions if isinstance(a, AddLabelAction)]
         assert any(action.label == "pr-pending" for action in add_labels)
@@ -1487,7 +1489,7 @@ class TestLabelActionGeneration:
             session,
             SessionStatus.COMPLETED,
             completion_detail={"outcome": "review_approved"},
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         removed = [a.label for a in result.actions if isinstance(a, RemoveLabelAction)]
         added = [a.label for a in result.actions if isinstance(a, AddLabelAction)]
@@ -1519,7 +1521,7 @@ class TestLabelActionGeneration:
             session,
             SessionStatus.COMPLETED,
             completion_detail={"outcome": "review_changes_requested"},
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         removed = [a.label for a in result.actions if isinstance(a, RemoveLabelAction)]
         added = [a.label for a in result.actions if isinstance(a, AddLabelAction)]
@@ -1558,7 +1560,7 @@ class TestLabelActionGeneration:
             session,
             SessionStatus.COMPLETED,
             completion_detail={"outcome": "review_changes_requested"},
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         added = [a.label for a in result.actions if isinstance(a, AddLabelAction)]
         removed = [a.label for a in result.actions if isinstance(a, RemoveLabelAction)]
@@ -1607,7 +1609,7 @@ class TestLabelActionGeneration:
             session,
             SessionStatus.COMPLETED,
             completion_detail={"outcome": "review_approved"},
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         removed = [a.label for a in result.actions if isinstance(a, RemoveLabelAction)]
         added = [a.label for a in result.actions if isinstance(a, AddLabelAction)]
@@ -1639,7 +1641,7 @@ class TestLabelActionGeneration:
             session,
             SessionStatus.COMPLETED,
             completion_detail={"outcome": "review_changes_requested"},
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         removed = [a.label for a in result.actions if isinstance(a, RemoveLabelAction)]
         added = [a.label for a in result.actions if isinstance(a, AddLabelAction)]
@@ -1680,7 +1682,7 @@ class TestLabelActionGeneration:
             session,
             SessionStatus.COMPLETED,
             completion_detail={"outcome": "review_changes_requested"},
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         removed = [a.label for a in result.actions if isinstance(a, RemoveLabelAction)]
         added = [a.label for a in result.actions if isinstance(a, AddLabelAction)]
@@ -1730,7 +1732,7 @@ class TestLabelActionGeneration:
             session_output=session_output,
         )
 
-        result = handler.process_completion(session, SessionStatus.COMPLETED)
+        result = handler.process_completion(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         remove_labels = [
             a.label for a in result.actions if isinstance(a, RemoveLabelAction)
@@ -1778,7 +1780,7 @@ class TestLabelActionGeneration:
             session_output=session_output,
         )
 
-        result = handler.process_completion(session, SessionStatus.COMPLETED)
+        result = handler.process_completion(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         assert not any(
             isinstance(action, (RemoveLabelAction, AddLabelAction))
@@ -1824,7 +1826,7 @@ class TestLabelActionGeneration:
             session_output=session_output,
         )
 
-        handler.process_completion(session, SessionStatus.COMPLETED)
+        handler.process_completion(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         manifest = session_output.read_manifest(run.run_dir)
         assert manifest is not None
@@ -1862,7 +1864,7 @@ class TestLabelActionGeneration:
             session_output=session_output,
         )
 
-        handler.process_completion(session, SessionStatus.TIMED_OUT)
+        handler.process_completion(session, SessionStatus.TIMED_OUT, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         manifest = session_output.read_manifest(run.run_dir)
         assert manifest is not None
@@ -1901,7 +1903,7 @@ class TestLabelActionGeneration:
             session_output=session_output,
         )
 
-        handler.process_completion(session, SessionStatus.TIMED_OUT)
+        handler.process_completion(session, SessionStatus.TIMED_OUT, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         manifest = session_output.read_manifest(run.run_dir)
         assert manifest is not None
@@ -1946,7 +1948,7 @@ class TestLabelActionGeneration:
             session_output=session_output,
         )
 
-        handler.process_completion(session, SessionStatus.TIMED_OUT)
+        handler.process_completion(session, SessionStatus.TIMED_OUT, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         manifest = session_output.read_manifest(run.run_dir)
         assert manifest is not None
@@ -1961,7 +1963,7 @@ class TestLabelActionGeneration:
         session = create_test_session(issue, agent_config, tmp_worktree)
         handler = make_handler(config)
 
-        result = handler.process_completion(session, SessionStatus.TIMED_OUT)
+        result = handler.process_completion(session, SessionStatus.TIMED_OUT, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         actions = result.actions
         assert len(actions) == 3
@@ -2002,7 +2004,7 @@ class TestLabelActionGeneration:
             processing_errors=[
                 f"{ERROR_PREFIX_PUBLISH_BLOCKED}: Working tree is dirty; commit the changes that belong in this push (stashing leaves HEAD stale) and revert, remove, or ignore the rest."
             ],
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         actions = result.actions
         assert any(
@@ -2035,7 +2037,7 @@ class TestLabelActionGeneration:
             session,
             SessionStatus.COMPLETED,
             processing_errors=[f"{ERROR_PREFIX_PUBLISH_BLOCKED}: push failed"],
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         actions = result.actions
         remove_rework = [
@@ -2057,7 +2059,7 @@ class TestLabelActionGeneration:
         session = create_test_session(issue, agent_config, tmp_worktree)
         pr_url = "https://github.com/owner/repo/pull/42"
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url=pr_url, number=42, labels=[])]
+            prs=[SimpleNamespace(branch="published-branch", url=pr_url, number=42, labels=[])]
         )
         handler = make_handler(config, repository_host=repository_host)
 
@@ -2065,7 +2067,7 @@ class TestLabelActionGeneration:
             session,
             SessionStatus.COMPLETED,
             processing_errors=[f"{ERROR_PREFIX_CREATE_PR}: GitHub request failed: 422"],
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         actions = result.actions
         assert not any(
@@ -2093,7 +2095,7 @@ class TestLabelActionGeneration:
             session,
             SessionStatus.COMPLETED,
             processing_errors=[f"{ERROR_PREFIX_PUBLISH_BLOCKED}: push failed"],
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         actions = result.actions
         assert any(
@@ -2117,7 +2119,7 @@ class TestLabelActionGeneration:
             session,
             SessionStatus.COMPLETED,
             processing_errors=[f"{ERROR_PREFIX_PUBLISH_BLOCKED}: push failed"],
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         actions = result.actions
         assert any(
@@ -2147,7 +2149,7 @@ class TestLabelActionGeneration:
             session,
             SessionStatus.COMPLETED,
             processing_errors=[f"{ERROR_PREFIX_PUBLISH_BLOCKED}: push failed"],
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         actions = result.actions
         # Should escalate to needs-human, NOT publish-failed
@@ -2172,7 +2174,7 @@ class TestLabelActionGeneration:
         session = create_test_session(issue, agent_config, tmp_worktree)
         handler = make_handler(config)
 
-        result = handler.process_completion(session, SessionStatus.FAILED)
+        result = handler.process_completion(session, SessionStatus.FAILED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         actions = result.actions
 
@@ -2229,7 +2231,7 @@ class TestLabelActionGeneration:
             SessionStatus.FAILED,
             diagnostic_path=str(diagnostic_path),
             completion_detail=detail,
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         assert result.history_entry.status == "failed"
         assert "Completion record rejected" in result.history_entry.status_reason
@@ -2281,7 +2283,7 @@ class TestLabelActionGeneration:
             session,
             SessionStatus.FAILED,
             completion_detail=detail,
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         add_labels = [a.label for a in result.actions if isinstance(a, AddLabelAction)]
         comment = next(a for a in result.actions if isinstance(a, AddCommentAction))
@@ -2318,7 +2320,7 @@ class TestLabelActionGeneration:
             session,
             SessionStatus.FAILED,
             completion_detail=detail,
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         add_labels = [a.label for a in result.actions if isinstance(a, AddLabelAction)]
         comment = next(a for a in result.actions if isinstance(a, AddCommentAction))
@@ -2349,7 +2351,7 @@ class TestLabelActionGeneration:
             session,
             SessionStatus.FAILED,
             completion_detail=detail,
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         comment = next(a for a in result.actions if isinstance(a, AddCommentAction))
 
@@ -2370,7 +2372,7 @@ class TestLabelActionGeneration:
         )
         handler = make_handler(config)
 
-        result = handler.process_completion(session, SessionStatus.FAILED)
+        result = handler.process_completion(session, SessionStatus.FAILED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         actions = result.actions
         assert any(isinstance(a, AddCommentAction) for a in actions)
@@ -2394,7 +2396,7 @@ class TestLabelActionGeneration:
         )
         handler = make_handler(config, repository_host=repository_host)
 
-        result = handler.process_completion(session, SessionStatus.FAILED)
+        result = handler.process_completion(session, SessionStatus.FAILED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         add_label = next(
             (a for a in result.actions if isinstance(a, AddLabelAction)), None
@@ -2432,7 +2434,7 @@ class TestLabelActionGeneration:
         )
         handler = make_handler(config, repository_host=repository_host)
 
-        result = handler.process_completion(session, SessionStatus.FAILED)
+        result = handler.process_completion(session, SessionStatus.FAILED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         add_labels = [a.label for a in result.actions if isinstance(a, AddLabelAction)]
         assert "needs-human" in add_labels
@@ -2456,7 +2458,7 @@ class TestLabelActionGeneration:
         )
         handler = make_handler(config, repository_host=repository_host)
 
-        result = handler.process_completion(session, SessionStatus.FAILED)
+        result = handler.process_completion(session, SessionStatus.FAILED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         add_label = next(
             (a for a in result.actions if isinstance(a, AddLabelAction)), None
@@ -2479,7 +2481,7 @@ class TestLabelActionGeneration:
         session = create_test_session(issue, agent_config, tmp_worktree)
         handler = make_handler(config)
 
-        result = handler.process_completion(session, SessionStatus.COMPLETED)
+        result = handler.process_completion(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         actions = result.actions
         assert len(actions) == 1
@@ -2500,7 +2502,7 @@ class TestLabelActionGeneration:
             session,
             SessionStatus.BLOCKED,
             blocked_reason="Waiting for API access",
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         # BLOCKED adds blocked label, posts reason, and releases in-progress claim
         assert len(result.actions) == 3
@@ -2529,7 +2531,7 @@ class TestLabelActionGeneration:
         )
         handler = make_handler(config)
 
-        result = handler.process_completion(session, SessionStatus.BLOCKED)
+        result = handler.process_completion(session, SessionStatus.BLOCKED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         # Review sessions don't get blocking labels - they just fail silently
         assert len(result.actions) == 0
@@ -2542,7 +2544,7 @@ class TestLabelActionGeneration:
         session = create_test_session(issue, agent_config, tmp_worktree)
         handler = make_handler(config)
 
-        result = handler.process_completion(session, SessionStatus.NEEDS_HUMAN)
+        result = handler.process_completion(session, SessionStatus.NEEDS_HUMAN, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         # NEEDS_HUMAN maintains ownership via in-progress label - no actions generated
         assert len(result.actions) == 0
@@ -2556,7 +2558,7 @@ class TestLabelActionGeneration:
         session = create_test_session(issue, agent_config, tmp_worktree)
         handler = make_handler(config)
 
-        result = handler.process_completion(session, SessionStatus.COMPLETED)
+        result = handler.process_completion(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         remove_label = result.actions[0]
         assert isinstance(remove_label, RemoveLabelAction)
@@ -2576,7 +2578,7 @@ class TestLabelActionGeneration:
         )
         handler = make_handler(config)
 
-        result = handler.process_completion(session, SessionStatus.TIMED_OUT)
+        result = handler.process_completion(session, SessionStatus.TIMED_OUT, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         actions = result.actions
         # Review sessions only get a comment, no labels
@@ -2602,7 +2604,7 @@ class TestLabelActionGeneration:
         )
         handler = make_handler(config)
 
-        result = handler.process_completion(session, SessionStatus.TIMED_OUT)
+        result = handler.process_completion(session, SessionStatus.TIMED_OUT, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         actions = result.actions
         assert len(actions) == 1
@@ -2619,7 +2621,7 @@ class TestLabelActionGeneration:
         session = create_test_session(issue, agent_config, tmp_worktree)
         handler = make_handler(config)
 
-        result = handler.process_completion(session, SessionStatus.BLOCKED)
+        result = handler.process_completion(session, SessionStatus.BLOCKED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         # Should have 3 actions: add blocked label, comment, remove in-progress
         assert len(result.actions) == 3
@@ -2651,7 +2653,7 @@ class TestLabelActionGeneration:
         )
         handler = make_handler(config)
 
-        result = handler.process_completion(session, SessionStatus.NEEDS_HUMAN)
+        result = handler.process_completion(session, SessionStatus.NEEDS_HUMAN, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         # No actions for review sessions
         assert len(result.actions) == 0
@@ -2686,7 +2688,7 @@ class TestStatusSessionTypeMatrix:
         )
         result = make_handler(config).process_completion(
             session, SessionStatus.COMPLETED
-        )
+        , processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
         assert len(result.actions) == 1
         assert isinstance(result.actions[0], RemoveLabelAction)
@@ -2701,7 +2703,7 @@ class TestStatusSessionTypeMatrix:
         )
         result = make_handler(config).process_completion(
             session, SessionStatus.COMPLETED
-        )
+        , processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
         # Review sessions don't have in-progress to remove, but the action is still generated
         assert len(result.actions) == 1
@@ -2716,7 +2718,7 @@ class TestStatusSessionTypeMatrix:
         )
         result = make_handler(config).process_completion(
             session, SessionStatus.COMPLETED
-        )
+        , processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
         assert len(result.actions) == 1
         assert isinstance(result.actions[0], RemoveLabelAction)
@@ -2730,7 +2732,7 @@ class TestStatusSessionTypeMatrix:
         session = create_test_session(
             make_issue(), agent_config, tmp_worktree, terminal_id="issue-1"
         )
-        result = make_handler(config).process_completion(session, SessionStatus.BLOCKED)
+        result = make_handler(config).process_completion(session, SessionStatus.BLOCKED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
         assert len(result.actions) == 3
         add_label = result.actions[0]
@@ -2752,7 +2754,7 @@ class TestStatusSessionTypeMatrix:
         session = create_test_session(
             make_issue(), agent_config, tmp_worktree, terminal_id="review-1"
         )
-        result = make_handler(config).process_completion(session, SessionStatus.BLOCKED)
+        result = make_handler(config).process_completion(session, SessionStatus.BLOCKED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
         assert len(result.actions) == 0
 
@@ -2763,7 +2765,7 @@ class TestStatusSessionTypeMatrix:
         session = create_test_session(
             make_issue(), agent_config, tmp_worktree, terminal_id="rework-1"
         )
-        result = make_handler(config).process_completion(session, SessionStatus.BLOCKED)
+        result = make_handler(config).process_completion(session, SessionStatus.BLOCKED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
         assert len(result.actions) == 0
 
@@ -2778,7 +2780,7 @@ class TestStatusSessionTypeMatrix:
         )
         result = make_handler(config).process_completion(
             session, SessionStatus.NEEDS_HUMAN
-        )
+        , processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
         assert len(result.actions) == 0
 
@@ -2791,7 +2793,7 @@ class TestStatusSessionTypeMatrix:
         )
         result = make_handler(config).process_completion(
             session, SessionStatus.NEEDS_HUMAN
-        )
+        , processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
         assert len(result.actions) == 0
 
@@ -2804,7 +2806,7 @@ class TestStatusSessionTypeMatrix:
         )
         result = make_handler(config).process_completion(
             session, SessionStatus.NEEDS_HUMAN
-        )
+        , processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
         assert len(result.actions) == 0
 
@@ -2818,7 +2820,7 @@ class TestStatusSessionTypeMatrix:
         session = create_test_session(
             make_issue(), agent_config, tmp_worktree, terminal_id="issue-1"
         )
-        result = make_handler(config).process_completion(session, SessionStatus.FAILED)
+        result = make_handler(config).process_completion(session, SessionStatus.FAILED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
         assert len(result.actions) == 3
         add_label = next(a for a in result.actions if isinstance(a, AddLabelAction))
@@ -2840,7 +2842,7 @@ class TestStatusSessionTypeMatrix:
         session = create_test_session(
             make_issue(), agent_config, tmp_worktree, terminal_id="review-1"
         )
-        result = make_handler(config).process_completion(session, SessionStatus.FAILED)
+        result = make_handler(config).process_completion(session, SessionStatus.FAILED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
         assert len(result.actions) == 1
         assert isinstance(result.actions[0], AddCommentAction)
@@ -2855,7 +2857,7 @@ class TestStatusSessionTypeMatrix:
         session = create_test_session(
             make_issue(), agent_config, tmp_worktree, terminal_id="rework-1"
         )
-        result = make_handler(config).process_completion(session, SessionStatus.FAILED)
+        result = make_handler(config).process_completion(session, SessionStatus.FAILED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
         assert len(result.actions) == 1
         assert isinstance(result.actions[0], AddCommentAction)
@@ -2873,7 +2875,7 @@ class TestStatusSessionTypeMatrix:
         )
         result = make_handler(config).process_completion(
             session, SessionStatus.TIMED_OUT
-        )
+        , processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
         assert len(result.actions) == 3
         add_label = next(a for a in result.actions if isinstance(a, AddLabelAction))
@@ -2896,7 +2898,7 @@ class TestStatusSessionTypeMatrix:
         )
         result = make_handler(config).process_completion(
             session, SessionStatus.TIMED_OUT
-        )
+        , processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
         assert len(result.actions) == 1
         assert isinstance(result.actions[0], AddCommentAction)
@@ -2912,7 +2914,7 @@ class TestStatusSessionTypeMatrix:
         )
         result = make_handler(config).process_completion(
             session, SessionStatus.TIMED_OUT
-        )
+        , processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
         assert len(result.actions) == 1
         assert isinstance(result.actions[0], AddCommentAction)
@@ -2939,7 +2941,7 @@ class TestEdgeCases:
         handler = make_handler(config)
 
         # Should not raise
-        result = handler.process_completion(session, SessionStatus.COMPLETED)
+        result = handler.process_completion(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
         assert result is not None
         assert result.history_entry is not None
 
@@ -2967,7 +2969,7 @@ class TestEdgeCases:
         handler = make_handler(config, repository_host=repository_host)
 
         # Should not raise
-        result = handler.process_completion(session, SessionStatus.COMPLETED)
+        result = handler.process_completion(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
         assert result is not None
 
     def test_non_review_terminal_id_patterns(
@@ -2985,7 +2987,7 @@ class TestEdgeCases:
         handler = make_handler(config)
 
         # Should not raise
-        result = handler.process_completion(session, SessionStatus.COMPLETED)
+        result = handler.process_completion(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
         assert result is not None
 
     def test_completion_result_has_all_fields(
@@ -2996,11 +2998,11 @@ class TestEdgeCases:
         session = create_test_session(issue, agent_config, tmp_worktree)
 
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url="http://pr", number=42, labels=[])]
+            prs=[SimpleNamespace(url="http://pr", number=42, labels=[], branch="published-branch")]
         )
         handler = make_handler(config, repository_host=repository_host)
 
-        result = handler.process_completion(session, SessionStatus.COMPLETED)
+        result = handler.process_completion(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         # Verify all fields are present and have sensible values
         assert result.history_entry is not None
@@ -3041,7 +3043,7 @@ class TestIntegrationBehaviors:
         )
 
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url="http://pr", number=42, labels=[])]
+            prs=[SimpleNamespace(url="http://pr", number=42, labels=[], branch="published-branch")]
         )
         handler = make_handler(
             config,
@@ -3051,7 +3053,7 @@ class TestIntegrationBehaviors:
             session_machine=session_machine,
         )
 
-        result = handler.process_completion(session, SessionStatus.COMPLETED)
+        result = handler.process_completion(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         # State machines updated
         assert issue_machine.get_state() == IssueState.PR_PENDING
@@ -3094,7 +3096,7 @@ class TestIntegrationBehaviors:
             session_machine=session_machine,
         )
 
-        result = handler.process_completion(session, SessionStatus.FAILED)
+        result = handler.process_completion(session, SessionStatus.FAILED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         # Session failed but issue stays in_progress (failed machine state)
         assert session_machine.get_state() == SessionState.FAILED
@@ -3139,12 +3141,12 @@ class TestReworkCyclePropagation:
 
         pr_url = "https://github.com/owner/repo/pull/42"
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url=pr_url, number=42, labels=[])]
+            prs=[SimpleNamespace(branch="published-branch", url=pr_url, number=42, labels=[])]
         )
         events = InMemoryEventSink()
         handler = make_handler(config, events=events, repository_host=repository_host)
 
-        handler.process_completion(session, SessionStatus.COMPLETED)
+        handler.process_completion(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         completed_events = events.get_events(str(EventName.SESSION_COMPLETED))
         assert len(completed_events) >= 1
@@ -3163,12 +3165,12 @@ class TestReworkCyclePropagation:
 
         pr_url = "https://github.com/owner/repo/pull/42"
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url=pr_url, number=42, labels=[])]
+            prs=[SimpleNamespace(branch="published-branch", url=pr_url, number=42, labels=[])]
         )
         events = InMemoryEventSink()
         handler = make_handler(config, events=events, repository_host=repository_host)
 
-        handler.process_completion(session, SessionStatus.COMPLETED)
+        handler.process_completion(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         completed_events = events.get_events(str(EventName.SESSION_COMPLETED))
         assert len(completed_events) >= 1
@@ -3185,7 +3187,7 @@ class TestReworkCyclePropagation:
         events = InMemoryEventSink()
         handler = make_handler(config, events=events)
 
-        handler.process_completion(session, SessionStatus.FAILED)
+        handler.process_completion(session, SessionStatus.FAILED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         failed_events = events.get_events(str(EventName.SESSION_FAILED))
         assert len(failed_events) >= 1
@@ -3202,7 +3204,7 @@ class TestReworkCyclePropagation:
         events = InMemoryEventSink()
         handler = make_handler(config, events=events)
 
-        handler.process_completion(session, SessionStatus.BLOCKED)
+        handler.process_completion(session, SessionStatus.BLOCKED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         blocked_events = events.get_events(str(EventName.ISSUE_BLOCKED))
         assert len(blocked_events) >= 1
@@ -3219,7 +3221,7 @@ class TestReworkCyclePropagation:
         events = InMemoryEventSink()
         handler = make_handler(config, events=events)
 
-        handler.process_completion(session, SessionStatus.NEEDS_HUMAN)
+        handler.process_completion(session, SessionStatus.NEEDS_HUMAN, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         needs_events = events.get_events(str(EventName.ISSUE_NEEDS_HUMAN))
         assert len(needs_events) >= 1
@@ -3236,12 +3238,12 @@ class TestReworkCyclePropagation:
 
         pr_url = "https://github.com/owner/repo/pull/42"
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url=pr_url, number=42, labels=[])]
+            prs=[SimpleNamespace(branch="published-branch", url=pr_url, number=42, labels=[])]
         )
         events = InMemoryEventSink()
         handler = make_handler(config, events=events, repository_host=repository_host)
 
-        handler.process_completion(session, SessionStatus.COMPLETED)
+        handler.process_completion(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         pr_events = events.get_events(str(EventName.ISSUE_PR_CREATED))
         assert len(pr_events) >= 1
@@ -3277,6 +3279,7 @@ class TestReviewOutcomeEventEmission:
 
         # PR has code-reviewed label
         pr_info = SimpleNamespace(
+            branch="published-branch",
             url="https://github.com/owner/repo/pull/42",
             number=42,
             labels=["code-reviewed"],
@@ -3297,7 +3300,7 @@ class TestReviewOutcomeEventEmission:
             review_machine=review_machine,
         )
 
-        handler.process_completion(session, SessionStatus.COMPLETED)
+        handler.process_completion(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         approved_events = events.get_events(str(EventName.REVIEW_APPROVED))
         assert len(approved_events) == 1
@@ -3325,6 +3328,7 @@ class TestReviewOutcomeEventEmission:
 
         # PR has needs-rework label (not code-reviewed)
         pr_info = SimpleNamespace(
+            branch="published-branch",
             url="https://github.com/owner/repo/pull/42",
             number=42,
             labels=["needs-rework"],
@@ -3348,7 +3352,7 @@ class TestReviewOutcomeEventEmission:
             review_machine=review_machine,
         )
 
-        handler.process_completion(session, SessionStatus.COMPLETED)
+        handler.process_completion(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         cr_events = events.get_events(str(EventName.REVIEW_CHANGES_REQUESTED))
         assert len(cr_events) == 1
@@ -3367,12 +3371,12 @@ class TestReviewOutcomeEventEmission:
 
         pr_url = "https://github.com/owner/repo/pull/42"
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url=pr_url, number=42, labels=[])]
+            prs=[SimpleNamespace(branch="published-branch", url=pr_url, number=42, labels=[])]
         )
         events = InMemoryEventSink()
         handler = make_handler(config, events=events, repository_host=repository_host)
 
-        handler.process_completion(session, SessionStatus.COMPLETED)
+        handler.process_completion(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         assert events.get_events(str(EventName.REVIEW_APPROVED)) == []
         assert events.get_events(str(EventName.REVIEW_CHANGES_REQUESTED)) == []
@@ -3463,7 +3467,7 @@ class TestTechLeadDecisionFailureTransition:
             session,
             SessionStatus.COMPLETED,
             processing_errors=[self.TECH_LEAD_ERROR],
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         assert result.history_entry.status == "failed"
         rejections = [
@@ -3527,7 +3531,7 @@ class TestTechLeadDecisionFailureTransition:
             session,
             SessionStatus.COMPLETED,
             processing_errors=[self.TECH_LEAD_ERROR],
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         assert result.history_entry.status == "failed"
         failed_labels = [
@@ -3605,9 +3609,9 @@ class TestTechLeadAuthorityRetention:
     ):
         session = self._armed_investigation(config, agent_config, tmp_worktree)
         handler = make_handler(config)
-        result = handler.process_completion(session, status, finalize_terminal=False)
+        result = handler.process_completion(session, status, finalize_terminal=False, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
         assert self._load_authority(config, session) is not None
-        handler.finalize_terminal_outcome(session, result.history_status, None, None)
+        handler.finalize_terminal_outcome(session, result.history_status, None, None, processing_policy=result.processing_policy)
         assert self._load_authority(config, session) is None
 
     def test_rejected_completion_discards_authority_row(
@@ -3621,7 +3625,7 @@ class TestTechLeadAuthorityRetention:
             session,
             SessionStatus.COMPLETED,
             processing_errors=[self.TECH_LEAD_ERROR],
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         assert self._load_authority(config, session) is None
 
@@ -3631,7 +3635,7 @@ class TestTechLeadAuthorityRetention:
         session = self._armed_investigation(config, agent_config, tmp_worktree)
         handler = make_handler(config)
 
-        handler.process_completion(session, SessionStatus.FAILED)
+        handler.process_completion(session, SessionStatus.FAILED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         assert self._load_authority(config, session) is None
 
@@ -3648,6 +3652,6 @@ class TestTechLeadAuthorityRetention:
             session,
             SessionStatus.COMPLETED,
             processing_errors=["push_branch: Push failed: remote rejected"],
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         assert self._load_authority(config, session) is not None

@@ -1,0 +1,88 @@
+{
+  "$defs": {
+    "ValidatedWorkDispositionMember": {
+      "additionalProperties": true,
+      "properties": {
+        "branch_name": {
+          "title": "Branch Name",
+          "type": "string"
+        },
+        "evidence_id": {
+          "title": "Evidence Id",
+          "type": "string"
+        },
+        "failure": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Failure"
+        },
+        "record_id": {
+          "title": "Record Id",
+          "type": "string"
+        },
+        "repo_slug": {
+          "title": "Repo Slug",
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "queued",
+            "parked",
+            "publishing",
+            "recovered",
+            "failed",
+            "abandoned"
+          ],
+          "title": "State",
+          "type": "string"
+        },
+        "validated_head_sha": {
+          "title": "Validated Head Sha",
+          "type": "string"
+        }
+      },
+      "required": [
+        "record_id",
+        "evidence_id",
+        "state",
+        "failure",
+        "branch_name",
+        "validated_head_sha",
+        "repo_slug"
+      ],
+      "title": "ValidatedWorkDispositionMember",
+      "type": "object"
+    }
+  },
+  "additionalProperties": true,
+  "properties": {
+    "dispositions": {
+      "items": {
+        "$ref": "#/$defs/ValidatedWorkDispositionMember"
+      },
+      "title": "Dispositions",
+      "type": "array"
+    },
+    "issue_number": {
+      "title": "Issue Number",
+      "type": "integer"
+    },
+    "reason": {
+      "title": "Reason",
+      "type": "string"
+    }
+  },
+  "required": [
+    "issue_number",
+    "reason",
+    "dispositions"
+  ],
+  "title": "ValidatedWorkDispositionObservedPayload",
+  "type": "object"
+}

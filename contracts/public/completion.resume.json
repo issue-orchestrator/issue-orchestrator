@@ -1,0 +1,61 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "actions_taken": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Actions Taken"
+    },
+    "errors": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Errors"
+    },
+    "message": {
+      "title": "Message",
+      "type": "string"
+    },
+    "pr_url": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Pr Url"
+    },
+    "success": {
+      "title": "Success",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "success",
+    "message",
+    "pr_url",
+    "actions_taken",
+    "errors"
+  ],
+  "title": "CompletionResumeOutcomeContract",
+  "type": "object"
+}

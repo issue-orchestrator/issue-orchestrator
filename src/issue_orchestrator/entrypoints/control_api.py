@@ -1165,6 +1165,9 @@ control_app.include_router(control_pause_router)
 control_app.include_router(control_orchestrator_router)
 control_app.include_router(control_shutdown_router)
 control_app.include_router(control_goal_pilot_router)
+from .completion_intake_routes import completion_intake_router
+
+control_app.include_router(completion_intake_router)
 control_app.include_router(control_issue_router)
 control_app.include_router(control_tools_router)
 control_app.include_router(control_repo_router)

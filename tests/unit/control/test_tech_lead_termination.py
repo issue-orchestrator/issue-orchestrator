@@ -47,6 +47,9 @@ from issue_orchestrator.domain.tech_lead_session import (
     TechLeadLaunchScope,
     TechLeadSessionFlavor,
 )
+from issue_orchestrator.domain.validated_work_commands import (
+    ValidatedWorkDispositionBatch,
+)
 from issue_orchestrator.infra.config import Config
 
 from .run_ledger_doubles import SharedRunLedger
@@ -192,6 +195,12 @@ class _Host:
     # -- TechLeadTerminationHost ----------------------------------------
     def kill_session(self, name: str) -> None:
         self.killed.append(name)
+
+    def preserve_issue_work(
+        self, issue_number: int, reason: str
+    ) -> ValidatedWorkDispositionBatch:
+        assert reason == "tech-lead-termination"
+        return ValidatedWorkDispositionBatch.no_work(issue_number, reason)
 
 
 def _queued(number: int, flavor: TechLeadSessionFlavor) -> PendingTechLeadReview:

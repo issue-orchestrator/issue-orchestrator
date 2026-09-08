@@ -17,6 +17,7 @@ from issue_orchestrator.domain.issue_run_evidence import (
     IssueRunEvidenceStatus,
     IssueRunEvidenceUnavailable,
     IssueRunRecord,
+    RunTerminalBinding,
 )
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.domain.session_run import SessionRunAssets
@@ -41,6 +42,10 @@ def run_record(tmp_path: Path, run_id: str = "run-1") -> IssueRunRecord:
             manifest_path=run_dir / "manifest.json",
         ),
         recorded_at=NOW,
+        branch_name="feature",
+        terminal_binding=RunTerminalBinding("issue-42"),
+        agent_label="agent:claude",
+        completion_task=TaskKind.CODE,
     )
 
 
@@ -66,6 +71,9 @@ def test_restart_retains_every_exact_run_without_worktree_discovery(tmp_path):
 def test_composed_engine_uses_registered_ledger_and_survives_recomposition(
     tmp_path, sample_config, mock_repository_host,
 ):
+    from issue_orchestrator.execution.git_tools import create_git
+    from issue_orchestrator.execution.command_runner import LocalCommandRunner
+    create_git(LocalCommandRunner()).run(sample_config.repo_root, ["init", "-b", "main"])
     engine = build_orchestrator_for_testing(sample_config, mock_repository_host)
     record = run_record(tmp_path)
     engine.deps.issue_run_ledger.record_run(42, record)
@@ -115,6 +123,8 @@ def test_repeated_registration_is_idempotent_but_cannot_rebind_a_run(tmp_path):
     assert ledger.recorded_runs(42) == (record,)
     for issue_number, conflict in (
         (43, record),
+        (42, replace(record, agent_label="agent:other")),
+        (42, replace(record, completion_task=TaskKind.TECH_LEAD)),
         (42, replace(record, session_key=SessionKey(record.session_key.issue, TaskKind.REWORK))),
         (42, replace(record, run=run_record(tmp_path / "other").run)),
     ):
@@ -286,3 +296,35 @@ def test_evidence_rejects_untyped_enum_values(field):
     )
     with pytest.raises(TypeError, match=f"{field} must be typed"):
         replace(evidence, **{field: str(getattr(evidence, field))})
+
+
+def test_old_ledger_reopens_without_inventing_branch_binding(tmp_path):
+    path = tmp_path / "runs.sqlite"
+    record = run_record(tmp_path)
+    ledger = SqliteIssueRunLedger(path)
+    ledger.record_run(42, record)
+    with sqlite3.connect(path) as conn:
+        conn.execute("ALTER TABLE issue_runs DROP COLUMN branch_name")
+    reopened = SqliteIssueRunLedger(path)
+    assert reopened.recorded_runs(42) == (replace(record, branch_name=None),)
+    with pytest.raises(IssueRunEvidenceUnavailable):
+        reopened.record_run(42, record)
+    assert SqliteIssueRunLedger(path).recorded_runs(42)[0].branch_name is None
+
+
+def test_legacy_terminal_binding_is_unknown_and_phase_is_not_a_terminal(tmp_path):
+    path = tmp_path / "runs.sqlite"
+    original = run_record(tmp_path)
+    ledger = SqliteIssueRunLedger(path)
+    ledger.record_run(42, original)
+    assert source(ledger).terminal_issues("issue-42") == (42,)
+    assert source(ledger).terminal_issues("coding-1") == ()
+    with sqlite3.connect(path) as conn:
+        conn.execute("ALTER TABLE issue_runs DROP COLUMN terminal_binding")
+    reopened = SqliteIssueRunLedger(path)
+    assert reopened.recorded_runs(42)[0].terminal_binding is None
+    with pytest.raises(IssueRunEvidenceUnavailable, match="terminal binding"):
+        source(reopened).terminal_issues("issue-42")
+    fresh = run_record(tmp_path, "new-run")
+    reopened.record_run(42, fresh)
+    assert fresh in SqliteIssueRunLedger(path).recorded_runs(42)

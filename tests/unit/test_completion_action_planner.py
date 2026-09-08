@@ -1,5 +1,10 @@
 """Direct tests for completion action planning policy."""
 
+from issue_orchestrator.domain.registered_completion import CompletionProcessingPolicy
+from tests.runtime_lifecycle_helpers import reset_snapshot
+
+from tests.runtime_lifecycle_helpers import make_action_applier
+
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -184,7 +189,7 @@ def test_timeout_issue_session_marks_blocked_failed_and_releases_claim(
     actions = make_planner(config).generate_completion_actions(
         make_session(tmp_path),
         SessionStatus.TIMED_OUT,
-    )
+     processing_policy=CompletionProcessingPolicy.for_unprocessed_session(make_session(tmp_path).issue.agent_type, config.tech_lead_review_agent))
 
     assert "blocked-failed" in added_labels(actions)
     assert "in-progress" in removed_labels(actions)
@@ -198,7 +203,7 @@ def test_failed_issue_session_without_retry_needs_human(tmp_path: Path) -> None:
     actions = make_planner(config).generate_completion_actions(
         make_session(tmp_path),
         SessionStatus.FAILED,
-    )
+     processing_policy=CompletionProcessingPolicy.for_unprocessed_session(make_session(tmp_path).issue.agent_type, config.tech_lead_review_agent))
 
     assert "needs-human" in added_labels(actions)
     assert "in-progress" in removed_labels(actions)
@@ -214,7 +219,7 @@ def test_blocked_issue_session_uses_reported_label_and_reason(tmp_path: Path) ->
         SessionStatus.BLOCKED,
         blocked_label="blocked-upstream",
         blocked_reason="Waiting on dependency",
-    )
+     processing_policy=CompletionProcessingPolicy.for_unprocessed_session(make_session(tmp_path).issue.agent_type, config.tech_lead_review_agent))
 
     assert "blocked-upstream" in added_labels(actions)
     assert "in-progress" in removed_labels(actions)
@@ -228,7 +233,7 @@ def test_completed_with_publish_error_tracks_publish_failure(tmp_path: Path) -> 
         SessionStatus.COMPLETED,
         processing_errors=[f"{ERROR_PREFIX_PUSH}: rejected"],
         diagnostic_path=".issue-orchestrator/diagnostics/publish.md",
-    )
+     processing_policy=CompletionProcessingPolicy.for_unprocessed_session(make_session(tmp_path).issue.agent_type, config.tech_lead_review_agent))
 
     assert {"publish-failed", "publish-fail-count-1"} <= added_labels(actions)
     assert {"in-progress", "needs-rework"} <= removed_labels(actions)
@@ -241,7 +246,7 @@ def test_review_exchange_halt_puts_issue_on_hold(tmp_path: Path) -> None:
         make_session(tmp_path),
         SessionStatus.COMPLETED,
         review_exchange_halted=True,
-    )
+     processing_policy=CompletionProcessingPolicy.for_unprocessed_session(make_session(tmp_path).issue.agent_type, config.tech_lead_review_agent))
 
     assert "blocked-failed" in added_labels(actions)
     assert "in-progress" in removed_labels(actions)
@@ -467,7 +472,7 @@ def test_completed_tech_lead_session_labels_manifest_prs_and_plans_decision(
     actions = make_planner(config).generate_completion_actions(
         session,
         SessionStatus.COMPLETED,
-    )
+     processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
     assert {action.issue_number for action in _tech_lead_labels(actions)} == {101, 102}
     assert "in-progress" in removed_labels(actions)
@@ -492,7 +497,7 @@ def test_completed_tech_lead_session_missing_pair_fails_labels_and_surfaces_reje
     actions = make_planner(config).generate_completion_actions(
         session,
         SessionStatus.COMPLETED,
-    )
+     processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
     failed_actions = [
         action
@@ -544,7 +549,7 @@ def test_tech_lead_manifest_in_sibling_run_dir_is_ignored(tmp_path: Path) -> Non
     actions = make_planner(config).generate_completion_actions(
         session,
         SessionStatus.COMPLETED,
-    )
+     processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
     tech_lead_label_targets = {
         action.issue_number
@@ -573,7 +578,7 @@ def test_completed_tech_lead_investigation_session_plans_decision_without_labels
     actions = make_planner(config).generate_completion_actions(
         session,
         SessionStatus.COMPLETED,
-    )
+     processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
     assert "tech-lead-reviewed" not in added_labels(actions)
     assert "tech-lead-failed" not in added_labels(actions)
@@ -594,7 +599,7 @@ def test_completed_non_tech_lead_session_is_unaffected(tmp_path: Path) -> None:
     actions = make_planner(config).generate_completion_actions(
         session,
         SessionStatus.COMPLETED,
-    )
+     processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
     assert not any(isinstance(a, SurfaceTechLeadProposalAction) for a in actions)
     assert added_labels(actions) == set()
@@ -630,7 +635,7 @@ def test_failed_batch_labels_prs_failed_and_closes_tracking_issue(
     actions = make_planner(config).generate_completion_actions(
         session,
         SessionStatus.FAILED,
-    )
+     processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
     assert {a.issue_number for a in _tech_lead_failed_labels(actions)} == {101, 102}
     (close,) = _close_actions(actions)
@@ -652,7 +657,7 @@ def test_timed_out_batch_labels_prs_failed_and_closes_tracking_issue(
     actions = make_planner(config).generate_completion_actions(
         session,
         SessionStatus.TIMED_OUT,
-    )
+     processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
     assert {a.issue_number for a in _tech_lead_failed_labels(actions)} == {101, 102}
     (close,) = _close_actions(actions)
@@ -674,7 +679,7 @@ def test_failure_investigation_failure_paths_preserve_source_issue(
     arm_investigation_session(config, session)
     plant_tech_lead_manifest(tmp_path, session)  # planted noise: must stay unread
 
-    actions = make_planner(config).generate_completion_actions(session, status)
+    actions = make_planner(config).generate_completion_actions(session, status, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
     assert _close_actions(actions) == []
     assert _tech_lead_failed_labels(actions) == []
@@ -693,7 +698,7 @@ def test_failure_investigation_tech_lead_session_never_labels_manifest_prs(
     actions = make_planner(config).generate_completion_actions(
         session,
         SessionStatus.COMPLETED,
-    )
+     processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
     assert _tech_lead_labels(actions) == []
     assert "in-progress" in removed_labels(actions)
@@ -717,7 +722,7 @@ def test_completed_health_review_plans_decision_and_closes_anchor(
     actions = make_planner(config).generate_completion_actions(
         session,
         SessionStatus.COMPLETED,
-    )
+     processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
     assert "tech-lead-reviewed" not in added_labels(actions)
     assert "tech-lead-failed" not in added_labels(actions)
@@ -748,7 +753,7 @@ def test_health_review_missing_pair_surfaces_rejection_and_keeps_anchor_open(
     actions = make_planner(config).generate_completion_actions(
         session,
         SessionStatus.COMPLETED,
-    )
+     processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
     rejections = [
         action
@@ -807,7 +812,7 @@ def test_health_review_decision_targeting_other_issue_is_rejected(
     actions = make_planner(config).generate_completion_actions(
         session,
         SessionStatus.COMPLETED,
-    )
+     processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
     rejections = [
         action
         for action in actions
@@ -880,7 +885,7 @@ def test_health_review_flag_pattern_is_scope_free_and_opens_case_file(
     actions = make_planner(config).generate_completion_actions(
         session,
         SessionStatus.COMPLETED,
-    )
+     processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
     [case_file] = [
         a for a in actions if isinstance(a, CreateTechLeadCaseFileIssueAction)
@@ -905,7 +910,7 @@ def test_failed_health_review_closes_anchor_without_labels(
     arm_health_review_session(config, session)
     plant_tech_lead_manifest(tmp_path, session)  # planted noise: must stay unread
 
-    actions = make_planner(config).generate_completion_actions(session, status)
+    actions = make_planner(config).generate_completion_actions(session, status, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
     (close,) = [a for a in actions if isinstance(a, CloseIssueAction)]
     assert close.issue_number == session.issue.number
@@ -931,7 +936,7 @@ def test_tech_lead_session_without_launch_authority_is_rejected(
     actions = make_planner(config).generate_completion_actions(
         session,
         SessionStatus.COMPLETED,
-    )
+     processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
     assert _tech_lead_labels(actions) == []
     rejections = [
@@ -977,7 +982,7 @@ def test_tech_lead_artifacts_in_sibling_run_dir_are_ignored(
     actions = make_planner(config).generate_completion_actions(
         session,
         SessionStatus.COMPLETED,
-    )
+     processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
     assert not any(
         isinstance(a, AddLabelAction) and a.label.startswith("tech-lead-")
@@ -1002,7 +1007,7 @@ def test_successful_batch_completion_closes_tracking_issue(tmp_path: Path) -> No
     actions = make_planner(config).generate_completion_actions(
         session,
         SessionStatus.COMPLETED,
-    )
+     processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
     closes = [a for a in actions if isinstance(a, CloseIssueAction)]
     assert [c.issue_number for c in closes] == [session.issue.number]
@@ -1026,7 +1031,7 @@ def test_batch_completion_with_rejected_pair_does_not_close_tracking_issue(
     actions = make_planner(config).generate_completion_actions(
         session,
         SessionStatus.COMPLETED,
-    )
+     processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
     assert not any(isinstance(a, CloseIssueAction) for a in actions)
 
@@ -1041,7 +1046,7 @@ def test_successful_batch_without_manifest_still_closes(tmp_path: Path) -> None:
     actions = make_planner(config).generate_completion_actions(
         session,
         SessionStatus.COMPLETED,
-    )
+     processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
     assert any(isinstance(a, CloseIssueAction) for a in actions)
 
@@ -1058,7 +1063,7 @@ def test_failure_investigation_completion_preserves_source_issue(
     actions = make_planner(config).generate_completion_actions(
         session,
         SessionStatus.COMPLETED,
-    )
+     processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
     assert not any(isinstance(a, CloseIssueAction) for a in actions)
     assert "tech-lead-reviewed" not in added_labels(actions)
@@ -1086,7 +1091,7 @@ class TestFailureInvestigationDiagnosisRequired:
 
         actions = make_planner(config).generate_completion_actions(
             session, SessionStatus.COMPLETED
-        )
+        , processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
         [rejection] = _rejections(actions)
         assert "originating issue #1" in rejection.body_preview
@@ -1099,7 +1104,7 @@ class TestFailureInvestigationDiagnosisRequired:
 
         actions = make_planner(config).generate_completion_actions(
             session, SessionStatus.COMPLETED
-        )
+        , processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
         [rejection] = _rejections(actions)
         assert "outside this session's launch scope" in rejection.body_preview
@@ -1113,7 +1118,7 @@ class TestFailureInvestigationDiagnosisRequired:
 
         actions = make_planner(config).generate_completion_actions(
             session, SessionStatus.COMPLETED
-        )
+        , processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
         assert _rejections(actions) == []
         diagnosis = [
@@ -1185,7 +1190,7 @@ class TestDecisionTargetScope:
 
         actions = make_planner(config).generate_completion_actions(
             session, SessionStatus.COMPLETED
-        )
+        , processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
         assert _rejections(actions) == []
         assert {a.issue_number for a in _tech_lead_labels(actions)} == {101, 102}
@@ -1207,7 +1212,7 @@ class TestDecisionTargetScope:
 
         actions = make_planner(config).generate_completion_actions(
             session, SessionStatus.COMPLETED
-        )
+        , processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
         [rejection] = _rejections(actions)
         assert "#999" in rejection.body_preview
@@ -1231,7 +1236,7 @@ class TestDecisionTargetScope:
 
         actions = make_planner(config).generate_completion_actions(
             session, SessionStatus.COMPLETED
-        )
+        , processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
         [rejection] = _rejections(actions)
         assert "outside this session's launch scope" in rejection.body_preview
@@ -1265,7 +1270,7 @@ class TestDecisionTargetScope:
 
         actions = make_planner(config).generate_completion_actions(
             session, SessionStatus.COMPLETED
-        )
+        , processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
         [rejection] = _rejections(actions)
         assert "outside this session's launch scope" in rejection.body_preview
@@ -1314,7 +1319,7 @@ class TestDecisionTargetScope:
         # terminalization (no close, no tech-lead-reviewed labels).
         actions = make_planner(config).generate_completion_actions(
             session, SessionStatus.COMPLETED
-        )
+        , processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
         [rejection] = _rejections(actions)
         assert "#101" in rejection.body_preview
         assert not any(isinstance(a, ResetRetryIssueAction) for a in actions)
@@ -1360,7 +1365,7 @@ class TestDecisionTargetScope:
 
         actions = make_planner(config).generate_completion_actions(
             session, SessionStatus.COMPLETED
-        )
+        , processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
         assert _rejections(actions) == []
         [reset] = [a for a in actions if isinstance(a, ResetRetryIssueAction)]
@@ -1555,7 +1560,7 @@ class TestDecisionTargetScope:
 
         actions = make_planner(config).generate_completion_actions(
             session, SessionStatus.COMPLETED
-        )
+        , processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
         [rejection] = _rejections(actions)
         assert "multiple act-level proposed actions" in rejection.body_preview
@@ -1606,7 +1611,7 @@ class TestResetRetryExecutionPipeline:
 
         actions = make_planner(config).generate_completion_actions(
             session, SessionStatus.COMPLETED
-        )
+        , processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
         assert _rejections(actions) == []
         [reset] = [a for a in actions if isinstance(a, ResetRetryIssueAction)]
@@ -1635,7 +1640,7 @@ class TestResetRetryExecutionPipeline:
 
         actions = make_planner(config).generate_completion_actions(
             session, SessionStatus.COMPLETED
-        )
+        , processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
         assert not any(type(a) is ResetRetryIssueAction for a in actions)
         assert not any(
@@ -1668,7 +1673,7 @@ class TestResetRetryExecutionPipeline:
         config, session = self._armed_investigation(tmp_path, authority_mode="execute")
         actions = make_planner(config).generate_completion_actions(
             session, SessionStatus.COMPLETED
-        )
+        , processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
         run_reset = MagicMock(
             return_value=ResetRetryRunOutcome(
@@ -1684,10 +1689,10 @@ class TestResetRetryExecutionPipeline:
                 labels=["agent:test", "blocked-failed"],
                 repo="owner/repo",
             ),
-            has_active_issue_runtime=lambda _number: False,
+            runtime_snapshot=reset_snapshot,
             run_reset=run_reset,
         )
-        applier = ActionApplier(
+        applier = make_action_applier(
             labels=MagicMock(),
             sessions=MagicMock(),
             events=MagicMock(),
@@ -1731,7 +1736,7 @@ class TestLaunchScopeTamperResistance:
 
         actions = make_planner(config).generate_completion_actions(
             session, SessionStatus.COMPLETED, processing_errors=[error]
-        )
+        , processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
         assert not any(isinstance(a, CloseIssueAction) for a in actions)
         assert "tech-lead-reviewed" not in added_labels(actions)
@@ -1788,7 +1793,7 @@ class TestLaunchScopeTamperResistance:
 
         actions = make_planner(config).generate_completion_actions(
             session, SessionStatus.COMPLETED, processing_errors=[error]
-        )
+        , processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
         assert not any(
             isinstance(a, AddLabelAction) and a.issue_number == 999 for a in actions
@@ -1841,7 +1846,7 @@ def test_protected_agent_label_on_create_issue_rejects_decision(
 
     actions = make_planner(config).generate_completion_actions(
         session, SessionStatus.COMPLETED
-    )
+    , processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
     [rejection] = _rejections(actions)
     assert "protected" in rejection.body_preview
@@ -1880,7 +1885,7 @@ class TestTechLeadDecisionFailureTransition:
             session,
             SessionStatus.COMPLETED,
             processing_errors=[self.ERROR],
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
         failed = [
             a
@@ -1911,7 +1916,7 @@ class TestTechLeadDecisionFailureTransition:
             session,
             SessionStatus.COMPLETED,
             processing_errors=[self.ERROR],
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
         assert "tech-lead-failed" not in added_labels(actions)
         assert "blocked-failed" in added_labels(actions)
@@ -1931,7 +1936,7 @@ def test_interrupted_retry_adds_guard_and_keeps_retry_loop_bounded(
     actions = make_planner(config).generate_completion_actions(
         make_session(tmp_path),
         SessionStatus.FAILED,
-    )
+     processing_policy=CompletionProcessingPolicy.for_unprocessed_session(make_session(tmp_path).issue.agent_type, config.tech_lead_review_agent))
 
     assert config.retry.interrupted_sessions.coding_guard_label in added_labels(actions)
     assert "in-progress" in removed_labels(actions)
@@ -2007,7 +2012,7 @@ class TestProductionOpenIssueDedupCorpus:
             config,
             repository_host=repository_host,
             open_issue_corpus_store=store,
-        ).generate_completion_actions(session, SessionStatus.COMPLETED)
+        ).generate_completion_actions(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
         repository_host.list_issues.assert_not_called()
         repository_host.list_issues_delta.assert_not_called()
@@ -2050,7 +2055,7 @@ class TestProductionOpenIssueDedupCorpus:
         actions = make_planner(
             config,
             open_issue_corpus_store=store,
-        ).generate_completion_actions(session, SessionStatus.COMPLETED)
+        ).generate_completion_actions(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
         [case_file] = [
             action
@@ -2126,7 +2131,7 @@ class TestMilestoneResolutionBoundary:
     def _completed_actions(self, config: Config, session: Session, host) -> tuple:
         return make_planner(
             config, repository_host=cast(RepositoryHost, host)
-        ).generate_completion_actions(session, SessionStatus.COMPLETED)
+        ).generate_completion_actions(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
     def test_gated_create_issue_with_explicit_milestone_makes_zero_reads(
         self, tmp_path: Path
@@ -2210,7 +2215,7 @@ def test_provider_blocked_rework_restores_its_needs_rework_trigger(
         session,
         SessionStatus.BLOCKED,
         provider_error_type=ProviderErrorType.AUTH,
-    )
+     processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
     restored = [
         action
@@ -2235,7 +2240,7 @@ def test_provider_blocked_issue_session_adds_no_rework_trigger(
         make_session(tmp_path, terminal_id="issue-1"),
         SessionStatus.BLOCKED,
         provider_error_type=ProviderErrorType.AUTH,
-    )
+     processing_policy=CompletionProcessingPolicy.for_unprocessed_session(make_session(tmp_path, terminal_id='issue-1').issue.agent_type, config.tech_lead_review_agent))
 
     assert LabelManager(config).needs_rework not in added_labels(actions)
     # The claim is still released, exactly as before.
@@ -2257,7 +2262,7 @@ def test_planned_investigation_kill_that_becomes_stale_withholds_success_effects
         {"id": "A1", "action_type": "post_comment", "target_number": 1, "body": "Diagnosis.", "finding_ids": ["T1"]},
         {"id": "A2", "action_type": "kill_hung_session", "target_number": 1, "body": "Hung worker.", "finding_ids": ["T1"]},
     ])
-    actions = make_planner(config).generate_completion_actions(session, SessionStatus.COMPLETED)
+    actions = make_planner(config).generate_completion_actions(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
     [kill] = [action for action in actions if isinstance(action, KillHungSessionAction)]
     assert kill.requires_effective_disposition and kill.target_session_id == "worker-run"
     host = MagicMock()
