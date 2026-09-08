@@ -1285,8 +1285,16 @@ def build_budgeted_validation_services(config: Config, command_runner: CommandRu
     """Share one durable reporting owner with observation and application."""
     from datetime import datetime, timezone
     from ..control.budgeted_validation_reporting import BudgetedValidationReportOwner
+    from ..ports.budgeted_validation import (
+        DisabledBudgetedValidation, DisabledBudgetedValidationReports,
+    )
 
     suites = tuple(config.validation.budgeted.values())
+    # A disabled feature must not add a Git requirement to embedding/test
+    # compositions. A real checkout is still inspected when configuration is
+    # empty because its common directory may retain a removed suite's work.
+    if not suites and not (config.repo_root / ".git").exists():
+        return DisabledBudgetedValidation(), DisabledBudgetedValidationReports()
     directory = BudgetedValidationGit(config.repo_root, command_runner).storage_directory()
     store = FileBudgetedValidationStore(directory)
     return (

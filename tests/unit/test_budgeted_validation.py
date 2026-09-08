@@ -426,6 +426,21 @@ def test_empty_runtime_configuration_still_composes_and_resumes_retained_work(
     assert len(starts) == 1
 
 
+def test_empty_runtime_outside_a_git_checkout_remains_a_noop(tmp_path):
+    from unittest.mock import MagicMock
+    from issue_orchestrator.entrypoints.bootstrap import build_budgeted_validation_services
+    from issue_orchestrator.ports.command_runner import CommandRunner
+    from issue_orchestrator.ports.repository_host import RepositoryHost
+
+    runner = MagicMock(spec=CommandRunner)
+    runtime, reports = build_budgeted_validation_services(
+        Config(repo_root=tmp_path), runner, MagicMock(spec=RepositoryHost),
+    )
+    runtime.tick()
+    assert reports.pending() == ()
+    runner.run.assert_not_called()
+
+
 def test_lightweight_validation_config_loader_preserves_named_suite_parameters():
     from issue_orchestrator.infra.validation_config_loader import extract_validation_config
     budgeted = {"agents": {"command": ["test"], "cadence": {"max_merges_since_success": 4, "max_delay_hours": 8}}}
