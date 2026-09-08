@@ -5,6 +5,7 @@ from dataclasses import asdict
 import json
 from pathlib import Path
 
+from ...control.budgeted_validation_coverage import BudgetedValidationCoverageOwner
 from ...domain.budgeted_validation import coverage_exit_code
 from ...infra.budgeted_validation_config import parse_budgeted_validation
 from ...infra.validation_config_loader import load_runtime_validation_config, load_validation_config_from_file
@@ -29,32 +30,21 @@ def main() -> int:
     if args.command != "status":
         acquired = cycle.run(tuple(suites.values()), force=args.command == "run")
     configured = tuple(suites.values())
-    stored = {
-        (item.suite.name, item.history.suite_identity): item
-        for item in store.inventory()
-        if args.suite is None or item.suite.name == args.suite
-    }
-    if not configured and not stored:
+    coverage = BudgetedValidationCoverageOwner(store).snapshot(
+        configured, retained_name=args.suite,
+    )
+    if not coverage.entries:
         print("No budgeted validation suites configured or retained.")
         return 0
-    outcomes = set()
-    configured_entries = tuple((suite, store.read(suite)) for suite in configured)
-    configured_keys = {
-        (suite.name, history.suite_identity)
-        for suite, history in configured_entries
-    }
-    entries = list(configured_entries)
-    entries.extend(
-        (item.suite, item.history) for key, item in stored.items()
-        if key not in configured_keys
-    )
-    verdict_keys = configured_keys or set(stored)
-    for suite, history in entries:
+    for entry in coverage.entries:
+        suite, history = entry.suite, entry.history
         print(json.dumps({"suite": suite.name, "coverage_outcome": history.coverage_outcome,
                           **asdict(history)}, default=str, indent=2))
-        if suite.enabled and (suite.name, history.suite_identity) in verdict_keys:
-            outcomes.add(history.coverage_outcome)
-    return coverage_exit_code(outcomes, inspect_only=args.command == "status", acquired=acquired)
+    return coverage_exit_code(
+        set(coverage.outcomes),
+        inspect_only=args.command == "status",
+        acquired=acquired,
+    )
 
 
 if __name__ == "__main__":
