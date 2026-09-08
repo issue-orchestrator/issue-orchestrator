@@ -42,6 +42,7 @@ from .config_models import (
     ValidationConfig,
 )
 from .config_identity import ConfigLaunchIdentity, RuntimeConfigReferenceOwner
+from .config_validated_work import validated_work_section
 from .config_paths import (
     CONFIG_DIR as CONFIG_DIR,
     DEFAULT_CONFIG_NAME as DEFAULT_CONFIG_NAME,
@@ -783,8 +784,6 @@ class Config(ConfigLaunchIdentity, RuntimeConfigReferenceOwner, TechLeadActivati
             observability_section,
             worktrees_section,
         )
-
-        from .config_validated_work import validated_work_section
 
         # Build agents section
         agents_dict = {}
