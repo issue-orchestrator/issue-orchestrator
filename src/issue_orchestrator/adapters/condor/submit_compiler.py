@@ -8,6 +8,7 @@ ClassAd expressions) is compiled here and nowhere else.
 from __future__ import annotations
 
 import math
+import re
 import shlex
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,6 +30,26 @@ _REMOVAL_GRACE_SECONDS = 10
 # HUP and INT are here because the rule is about the whole class of
 # catchable terminations, not the one signal that exposed it.
 _SOFT_KILL_SIGNALS = "TERM HUP INT"
+_OPERATION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
+def _runtime_removal(command: LaneCommand, operation_identity: str | None,
+                     max_wall_seconds: int | None) -> str:
+    if operation_identity is not None and _OPERATION_ID.fullmatch(operation_identity) is None:
+        raise ValueError("operation_identity must be a safe nonempty ClassAd token")
+    if max_wall_seconds is not None and (
+        type(max_wall_seconds) is not int or max_wall_seconds <= 0
+    ):
+        raise ValueError("max_wall_seconds must be a positive integer")
+    timeout = max(1, math.ceil(command.deadline.timeout_seconds))
+    removal = (
+        "(JobStatus == 2) && "
+        "((time() - JobCurrentStartDate - (CumulativeSuspensionTime ?: 0)) "
+        f"> {timeout})"
+    )
+    if max_wall_seconds is not None:
+        return f"({removal}) || ((time() - QDate) > {max_wall_seconds})"
+    return removal
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +78,9 @@ def compile_submit_description(
     command: LaneCommand,
     resources: LaneResources,
     run_directory: Path,
+    *,
+    operation_identity: str | None = None,
+    max_wall_seconds: int | None = None,
 ) -> CompiledSubmitDescription:
     """Compile one lane invocation into scheduler language.
 
@@ -85,7 +109,7 @@ def compile_submit_description(
     rusage_path = run_directory / RUSAGE_FILE_NAME
     # Ceiling, never floor: a floored deadline would let the scheduler
     # remove a lane before its promised budget elapsed.
-    timeout = max(1, math.ceil(command.deadline.timeout_seconds))
+    runtime_removal = _runtime_removal(command, operation_identity, max_wall_seconds)
     lines = [
         f"# lane: {command.work_key.value}",
         # The work key doubles as the job's batch name: queue tooling
@@ -108,9 +132,7 @@ def compile_submit_description(
         # load backoff freezing the job) must not burn the budget, or a
         # long freeze manufactures a timeout the lane never earned. The
         # ?: guard keeps the expression defined before any suspension.
-        "periodic_remove = (JobStatus == 2) && "
-        "((time() - JobCurrentStartDate - (CumulativeSuspensionTime ?: 0)) "
-        f"> {timeout})",
+        f"periodic_remove = {runtime_removal}",
         # Load-backoff eligibility is declared per lane, all three
         # classifications explicitly — policy-by-absence would let a
         # new live lane silently opt into freezing. The value is the
@@ -125,6 +147,8 @@ def compile_submit_description(
         # job means digging through Iwd paths after the fact.
         f'+LaneSubmitter = "{submitter}"',
     ]
+    if operation_identity is not None:
+        lines.append(f'+IssueOrchestratorOperationId = "{operation_identity}"')
     if resources.suspendability is LaneSuspendability.COOPERATIVE:
         # A cooperative lane starts UNSAFE and advertises safe windows
         # via chirp (WantIOProxy is the starter-side prerequisite).

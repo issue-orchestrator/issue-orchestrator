@@ -56,6 +56,10 @@ class BudgetedValidationExecutor(Protocol):
         """Test exactly commit in an owned isolated checkout with bounded processes."""
         ...
 
+    def resume(self, suite: BudgetedValidationSuite, commit: str, run_id: str) -> BudgetedValidationProbe:
+        """Resume an interrupted durable probe without submitting it twice."""
+        ...
+
 
 class BudgetedValidationRuntime(Protocol):
     def tick(self) -> None:

@@ -15,6 +15,7 @@ from issue_orchestrator.adapters.budgeted_validation_store import FileBudgetedVa
 from issue_orchestrator.control.budgeted_validation import BudgetedValidationCycle
 from issue_orchestrator.domain.budgeted_validation import BudgetedValidationOutcome
 from issue_orchestrator.execution.budgeted_validation_executor import BudgetedValidationCommandExecutor
+from issue_orchestrator.execution.local_contained_validation import LocalDeterministicValidationRunner
 from issue_orchestrator.execution.command_runner import LocalCommandRunner
 from issue_orchestrator.execution.process_group_command_runner import ProcessGroupCommandRunner
 from issue_orchestrator.infra.budgeted_validation_config import parse_budgeted_validation
@@ -77,7 +78,8 @@ def test_real_exact_commit_execution_and_bisection_preserve_the_callers_checkout
         "'status':'failed' if bad else 'passed','failed':['sentinel'] if bad else []})); sys.exit(1 if bad else 0)"
     )]
     suite = parse_budgeted_validation({"agents": {"command": command, "cadence": {"max_merges_since_success": 3}}})["agents"]
-    executor = BudgetedValidationCommandExecutor(checkouts=history, runner=ProcessGroupCommandRunner(),
+    executor = BudgetedValidationCommandExecutor(checkouts=history,
+        runner=LocalDeterministicValidationRunner(ProcessGroupCommandRunner()),
         directory=history.storage_directory(), environment=dict(os.environ))
     cycle = BudgetedValidationCycle(store=store, repository=history, executor=executor,
         clock=lambda: datetime(2026, 9, 7, 12, tzinfo=timezone.utc))

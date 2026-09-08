@@ -142,6 +142,16 @@ def test_the_submit_path_carries_the_caller_environment_unchanged(
     assert seen["IO_SENTINEL_FOR_TEST"] == "kept"
 
 
+def test_submit_can_use_an_explicit_filtered_environment(tmp_path: Path) -> None:
+    tools = _dumping_tools(tmp_path)
+    completed = tools.invoke(
+        (str(tools.submit),), environment={"ONLY_THIS": "kept"},
+    )
+    seen = _parse(completed)
+    assert seen["ONLY_THIS"] == "kept"
+    assert "IO_SENTINEL_FOR_TEST" not in seen
+
+
 def test_the_rest_of_the_environment_is_preserved(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

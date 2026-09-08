@@ -9,6 +9,7 @@ branch, in isolated checkouts, with separate coverage history.
 validation:
   budgeted:
     live-agents:
+      enabled: true
       command: [.venv/bin/python, -m, pytest, tests/integration, -m, live_agent, -p, scripts.agent_test_report]
       setup_command: [make, venv-fast]
       issue_agent_label: agent:backend
@@ -34,11 +35,24 @@ unusual merge messages may cause an early run rather than defer detection.
 
 The repository engine checks for due work asynchronously while running and
 unpaused. One process-held lease in the common Git directory coalesces all
-worktrees and config modes for that repository. The worker keeps ownership
-across an engine restart, and each command has a process-group deadline.
+worktrees and config modes for that repository. Before scheduler submission,
+the worker durably reserves the exact run identity and checkout. A restarted
+worker reconciles that identity instead of submitting again. The scheduler
+enforces both the active-runtime deadline and an absolute queue-to-cleanup
+bound.
 The configured freshness bound requires an active engine and available test
 infrastructure. When those are unavailable, coverage remains overdue; it is
 never recorded as a pass. A stopped engine cannot promise a detection deadline.
+
+Live suites run only through the Linux execenv's cgroup-attested HTCondor pool.
+Native macOS and ordinary process-group execution cannot contain a detached or
+double-forked agent process, so those hosts return unavailable before launching
+a provider. Loss of a submit acknowledgement leaves the reservation in place;
+the next worker queries by its stable ClassAd identity and never guesses that it
+may submit again. A terminal leader is insufficient for cleanup: IO retains the
+checkout until the job has left the queue and the pool has written its final
+per-job ClassAd, which is the scheduler's proof that the cgroup-owned family was
+reaped.
 
 ## Results and diagnosis
 
@@ -97,12 +111,14 @@ a busy worker; a successful midpoint cannot make those commands report green.
 for development; it does not create an IO successful-coverage receipt.
 
 History and evidence live under the repository's common Git directory in
-`io-budgeted-validation`. Successful and failed test commands leave logs and
-result JSON there; their temporary worktrees are removed after process cleanup.
+`io-budgeted-validation`. Successful and failed test commands leave logs,
+result JSON, and the durable containment receipt there; their temporary
+worktrees are removed only after the final scheduler containment proof.
 `make validate-pr` and its exact-HEAD cache remain exclusively deterministic.
 A green PR validation receipt is not a live-agent coverage receipt.
 
 Activation is a rollout step: merge this change, update/restart the executor's
-IO installation, and let the enabled suite establish its first baseline. Other
-repositories opt in by declaring their own suites. No provider credentials or
-runner configuration are installed by this feature.
+IO installation inside the Linux execenv, provision provider credentials under
+the execenv credential contract, and let the enabled suite establish its first
+baseline. Other repositories opt in by declaring their own suites. No provider
+credentials are installed by this feature.

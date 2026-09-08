@@ -10,7 +10,7 @@ from ..control.budgeted_validation_scheduler import BudgetedValidationScheduler
 from ..domain.budgeted_validation import BudgetedValidationSuite
 from ..execution.budgeted_validation_executor import BudgetedValidationCommandExecutor
 from ..execution.budgeted_validation_worker import BudgetedValidationWorkerProcess
-from ..execution.process_group_command_runner import ProcessGroupCommandRunner
+from ..execution.lane_backends import resolve_contained_validation_runner
 from ..ports.budgeted_validation import BudgetedValidationRuntime, DisabledBudgetedValidation
 from ..ports.budgeted_validation import BudgetedValidationRepository, BudgetedValidationStore
 from ..ports.budgeted_validation_checkout import BudgetedValidationCheckouts
@@ -30,7 +30,8 @@ def assemble_budgeted_validation_cycle(repository: BudgetedValidationRepository,
         "MAKEFLAGS", "MFLAGS", "PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV",
         "ISSUE_ORCHESTRATOR_PYTHON", "PYTEST_ADDOPTS", "CLAUDECODE",
     } and not key.startswith("GIT_")}
-    executor = BudgetedValidationCommandExecutor(checkouts=checkouts, runner=ProcessGroupCommandRunner(),
+    runner = resolve_contained_validation_runner()
+    executor = BudgetedValidationCommandExecutor(checkouts=checkouts, runner=runner,
                                                 directory=directory, environment=environment)
     return BudgetedValidationCycle(store=store, repository=repository, executor=executor,
                                    clock=lambda: datetime.now(timezone.utc))

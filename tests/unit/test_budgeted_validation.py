@@ -141,6 +141,9 @@ class RecordedProbe:
         outcome = self.overrides.get(commit, BudgetedValidationOutcome.FAILED if int(commit) >= 6 else BudgetedValidationOutcome.PASSED)
         return BudgetedValidationProbe(commit, outcome, f"evidence/{run_id}", "test-regression" if outcome is BudgetedValidationOutcome.FAILED else "")
 
+    def resume(self, suite, commit, run_id):
+        return self.probe(suite, commit, run_id)
+
 
 def test_cycle_uses_one_green_baseline_and_bisects_once_then_bounds_red_retries():
     from issue_orchestrator.control.budgeted_validation import BudgetedValidationCycle
@@ -179,6 +182,39 @@ def test_cycle_does_not_bisect_a_quota_failure_or_reset_success():
     assert executor.calls == ["0", "10"]
     assert store.history.last_success.probe.commit == "0"
     assert store.history.first_bad_commit is None
+
+
+def test_interrupted_contained_probe_resumes_without_duplicate_submission():
+    from issue_orchestrator.control.budgeted_validation import BudgetedValidationCycle
+    from issue_orchestrator.domain.budgeted_validation import BudgetedValidationProbe
+    from issue_orchestrator.ports.contained_validation import ContainedValidationPending
+
+    class RestartableProbe:
+        def __init__(self):
+            self.submissions = 0
+            self.resumptions = 0
+
+        def probe(self, suite, commit, run_id):
+            self.submissions += 1
+            raise ContainedValidationPending("scheduler owns it")
+
+        def resume(self, suite, commit, run_id):
+            self.resumptions += 1
+            return BudgetedValidationProbe(
+                commit, BudgetedValidationOutcome.PASSED, f"evidence/{run_id}",
+            )
+
+    suite = parse_budgeted_validation({"agents": {"command": ["test"]}})["agents"]
+    store, repo, executor = MemoryBudgetedStore(), IntegrationHistory(), RestartableProbe()
+    cycle = BudgetedValidationCycle(
+        store=store, repository=repo, executor=executor, clock=lambda: NOW,
+    )
+    cycle.run((suite,))
+    assert store.history.latest.finished_at is None
+    cycle.run((suite,))
+    assert executor.submissions == 1
+    assert executor.resumptions == 1
+    assert store.history.last_success.probe.commit == "0"
 
 
 def test_busy_repository_coalesces_without_even_fetching_or_spending():

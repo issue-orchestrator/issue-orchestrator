@@ -13,6 +13,7 @@ from ..ports.budgeted_validation import (
     BudgetedValidationExecutor, BudgetedValidationJournal, BudgetedValidationRepository,
     BudgetedValidationStore,
 )
+from ..ports.contained_validation import ContainedValidationPending
 
 
 class BudgetedValidationCycle:
@@ -38,10 +39,23 @@ class BudgetedValidationCycle:
                    head: str, *, force: bool) -> None:
         history = journal.read(suite)
         now = self._clock()
-        reconciled = history.reconcile_interruption(now)
-        if reconciled is not history:
-            journal.write(suite, reconciled)
-            history = reconciled
+        pending = history.latest
+        if pending is not None and pending.finished_at is None:
+            try:
+                probe = self._executor.resume(
+                    suite, pending.probe.commit, pending.id,
+                )
+            except ContainedValidationPending:
+                return
+            resumed = replace(pending, finished_at=now, probe=probe)
+            history = history.append(resumed)
+            journal.write(suite, history)
+            if resumed.purpose != "scheduled":
+                journal.write(suite, history.with_diagnosis(
+                    "Interrupted diagnosis was recovered without duplicate submission; "
+                    "the original regression remains for the next bounded diagnosis."
+                ))
+                return
         green = history.last_success
         watermark = history.scheduling_watermark
         since_attempt = self._repository.changes(watermark.probe.commit, head) if watermark else ()
@@ -54,6 +68,8 @@ class BudgetedValidationCycle:
         history = self._probe(journal, suite, history, head, "scheduled")
         if history.latest is None:
             raise RuntimeError("Executed probe produced no history")
+        if history.latest.finished_at is None:
+            return
         failure = history.latest.probe
         if not failure.is_failure:
             return
@@ -73,7 +89,10 @@ class BudgetedValidationCycle:
         pending = BudgetedValidationRun(run_id, started, None,
             BudgetedValidationProbe(commit, BudgetedValidationOutcome.UNAVAILABLE, ""), purpose)
         journal.write(suite, history.append(pending))
-        probe = self._executor.probe(suite, commit, run_id)
+        try:
+            probe = self._executor.probe(suite, commit, run_id)
+        except ContainedValidationPending:
+            return history.append(pending)
         if probe.commit != commit:
             raise ValueError("Validation result belongs to a different commit")
         complete = BudgetedValidationRun(run_id, started, self._clock(), probe, purpose)
@@ -85,11 +104,15 @@ class BudgetedValidationCycle:
                   history: BudgetedValidationHistory, commits: tuple[str, ...], failure: BudgetedValidationProbe) -> None:
         history = self._probe(journal, suite, history, failure.commit, "reproduce")
         repeated = history.latest
+        if repeated is not None and repeated.finished_at is None:
+            return
         if repeated is None or not repeated.probe.reproduces(failure):
             self._inconclusive(journal, suite, history, "Failure did not reproduce consistently; no commit accused.")
             return
         history = self._probe(journal, suite, history, commits[0], "verify-baseline")
         baseline = history.latest
+        if baseline is not None and baseline.finished_at is None:
+            return
         if baseline is None or not baseline.probe.is_success:
             self._inconclusive(journal, suite, history, "Previous green failed under the current test environment; no commit accused.")
             return
@@ -100,6 +123,8 @@ class BudgetedValidationCycle:
             result = history.latest
             if result is None:
                 raise RuntimeError("Bisection probe produced no result")
+            if result.finished_at is None:
+                return
             probe = result.probe
             if not probe.narrows(failure):
                 self._inconclusive(journal, suite, history, "Bisection encountered unavailable coverage or a different failure; original range retained.")

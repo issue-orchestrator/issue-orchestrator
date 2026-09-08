@@ -10,7 +10,10 @@ from issue_orchestrator.domain.budgeted_validation import BudgetedValidationOutc
 from issue_orchestrator.execution.budgeted_validation_executor import BudgetedValidationCommandExecutor
 from issue_orchestrator.infra.budgeted_validation_config import parse_budgeted_validation
 from issue_orchestrator.ports.budgeted_validation_checkout import BudgetedValidationCheckouts
-from issue_orchestrator.ports.command_runner import CommandResult, CommandRunner
+from issue_orchestrator.ports.command_runner import CommandResult
+from issue_orchestrator.ports.contained_validation import (
+    ContainedValidationPending, ContainedValidationRunner,
+)
 
 
 @pytest.mark.parametrize(("code", "timed_out", "report", "expected"), [
@@ -25,10 +28,12 @@ from issue_orchestrator.ports.command_runner import CommandResult, CommandRunner
 ])
 def test_executor_requires_consistent_exit_and_report_and_always_cleans_owned_checkout(tmp_path, code, timed_out, report, expected):
     suite = parse_budgeted_validation({"agents": {"command": ["test"]}})["agents"]
-    runner = MagicMock(spec=CommandRunner)
+    runner = MagicMock(spec=ContainedValidationRunner)
+    runner.reserved.return_value = False
     checkouts = MagicMock(spec=BudgetedValidationCheckouts)
-    def command(*args, **kwargs):
-        Path(kwargs["env"]["IO_BUDGETED_VALIDATION_RESULT"]).write_text(json.dumps(report))
+    def command(request):
+        Path(request.environment["IO_BUDGETED_VALIDATION_RESULT"]).write_text(json.dumps(report))
+        (request.evidence_directory / "tests.log").write_text("diagnostic output")
         return CommandResult(code, "diagnostic output", "", timed_out)
     runner.run.side_effect = command
     executor = BudgetedValidationCommandExecutor(checkouts=checkouts, runner=runner, directory=tmp_path, environment={})
@@ -41,3 +46,32 @@ def test_executor_requires_consistent_exit_and_report_and_always_cleans_owned_ch
         assert bool(probe.failure_signature) == (expected is BudgetedValidationOutcome.FAILED)
     checkouts.remove_checkout.assert_called_once_with(tmp_path / "runs/agents/run/worktree")
     assert (tmp_path / "runs/agents/run/tests.log").read_text() == "diagnostic output"
+
+
+def test_executor_keeps_checkout_when_scheduler_ownership_is_pending(tmp_path):
+    suite = parse_budgeted_validation({"agents": {"command": ["test"]}})["agents"]
+    runner = MagicMock(spec=ContainedValidationRunner)
+    runner.reserved.return_value = False
+    runner.run.side_effect = ContainedValidationPending("still owned")
+    checkouts = MagicMock(spec=BudgetedValidationCheckouts)
+    executor = BudgetedValidationCommandExecutor(
+        checkouts=checkouts, runner=runner, directory=tmp_path, environment={},
+    )
+    with pytest.raises(ContainedValidationPending):
+        executor.probe(suite, "commit", "run")
+    checkouts.remove_checkout.assert_not_called()
+
+
+def test_executor_does_not_recreate_a_missing_checkout_under_a_reservation(tmp_path):
+    suite = parse_budgeted_validation({"agents": {"command": ["test"]}})["agents"]
+    runner = MagicMock(spec=ContainedValidationRunner)
+    runner.reserved.return_value = True
+    runner.run.side_effect = ContainedValidationPending("still owned")
+    checkouts = MagicMock(spec=BudgetedValidationCheckouts)
+    executor = BudgetedValidationCommandExecutor(
+        checkouts=checkouts, runner=runner, directory=tmp_path, environment={},
+    )
+    with pytest.raises(ContainedValidationPending):
+        executor.resume(suite, "commit", "run")
+    checkouts.create_checkout.assert_not_called()
+    checkouts.remove_checkout.assert_not_called()
