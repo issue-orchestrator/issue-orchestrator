@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from .label_manager import LabelManager
 
 from ..domain.issue_key import StableIssueId
+from ..domain.completion_processing import CompletionPublication
 from ..domain.registered_completion import CompletionProcessingPolicy
 from ..domain.run_manifest import RunManifest
 from ..infra.config import Config
@@ -37,6 +38,7 @@ from ..domain.models import (
     SessionStatus,
     SessionHistoryEntry,
     PendingCleanup,
+    DiscoveredReview,
     session_history_status_from_session_status,
 )
 from ..domain.session_key import TaskKind
@@ -123,8 +125,12 @@ class CompletionResult:
     history_status: SessionStatus = SessionStatus.COMPLETED
     pr_url: Optional[str] = None
     pr_number: Optional[int] = None
-    should_queue_review: bool = False
+    review: DiscoveredReview | None = None
     actions: tuple[Action, ...] = ()
+
+    @property
+    def should_queue_review(self) -> bool:
+        return self.review is not None
 
 
 class CompletionHandler:
@@ -199,6 +205,7 @@ class CompletionHandler:
         session: Session,
         status: SessionStatus,
         pr_url_hint: Optional[str] = None,
+        publication_hint: CompletionPublication | None = None,
         processing_errors: Optional[list[str]] = None,
         diagnostic_path: Optional[str] = None,
         review_exchange_completed: bool = False,
@@ -234,7 +241,7 @@ class CompletionHandler:
         )
 
         # Fetch PR info if completed (or use hint from completion processor)
-        resolved_pr = self._pr_lookup.for_session(session, status, pr_url_hint=pr_url_hint)
+        resolved_pr = self._pr_lookup.for_session(session, status, pr_url_hint=pr_url_hint, publication_hint=publication_hint)
         pr_url, pr_number, pr_infos = (
             resolved_pr.url, resolved_pr.number, resolved_pr.pull_requests,
         )
@@ -251,6 +258,18 @@ class CompletionHandler:
                 issue_key=session.key.issue.stable_id(),
                 issue_number=session.issue.number,
             )
+
+        # Determine if we should queue code review
+        should_queue_review = self._should_queue_review(
+            session,
+            status,
+            pr_url,
+            pr_number,
+            review_exchange_completed=review_exchange_completed,
+            review_exchange_halted=review_exchange_halted,
+        )
+
+        review = resolved_pr.review_for(session) if should_queue_review else None
 
         # What history shows is a policy of its own (a failed push makes a
         # self-reported "completed" a red dot), owned next door.
@@ -284,16 +303,6 @@ class CompletionHandler:
 
         # Determine cleanup strategy
         cleanup = self._determine_cleanup_strategy(session, status, pr_url, pr_number)
-
-        # Determine if we should queue code review
-        should_queue_review = self._should_queue_review(
-            session,
-            status,
-            pr_url,
-            pr_number,
-            review_exchange_completed=review_exchange_completed,
-            review_exchange_halted=review_exchange_halted,
-        )
 
         # Generate actions for label/comment changes (policy logic)
         completion_actions = list(
@@ -374,7 +383,7 @@ class CompletionHandler:
             pr_url=pr_url,
             pr_number=pr_number,
             cleanup=cleanup,
-            should_queue_review=should_queue_review,
+            review=review,
             actions=completion_actions,
         )
         total_duration = time.monotonic() - start_time

@@ -37,8 +37,9 @@ def initialize_linked_scenario_checkout(repository: Path, worktree: Path, branch
     from issue_orchestrator.execution.command_runner import LocalCommandRunner
     git = create_git(LocalCommandRunner())
     if (worktree / ".git").exists():
-        if git.run(worktree, ["branch", "--show-current"]).stdout.strip() != branch:
-            raise ValueError("scenario checkout belongs to a different branch")
+        current = git.run(worktree, ["branch", "--show-current"]).stdout.strip()
+        if current != branch:
+            raise ValueError(f"scenario checkout {worktree} belongs to {current}, requested {branch}")
         return
     exists = git.run(repository, ["show-ref", "--verify", f"refs/heads/{branch}"], check=False).returncode == 0
     arguments = ["worktree", "add", "--force"]

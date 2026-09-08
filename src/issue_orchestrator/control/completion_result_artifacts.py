@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from ..domain.completion_intake import CompletionIntakeReceipt
+from ..domain.completion_processing import CompletionPublication
 from ..domain.events import SessionEvent
 from ..domain.models import COMPLETION_RECORD_PATH, CompletionRecord, RequestedAction
 from ..domain.runtime_identity import RuntimeIdentity
@@ -152,6 +153,7 @@ def build_processing_result(
         message=message,
         intake_receipt=intake_receipt,
         pr_url=pr_url,
+        publication=CompletionPublication.from_result(pr_url, branch),
         actions_taken=actions_taken if actions_taken else None,
         diagnostic_path=diagnostic_path,
         completion_record_path=preserved_completion_path,

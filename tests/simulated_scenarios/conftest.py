@@ -446,8 +446,18 @@ class TempWorktreeManager:
         worktree_name: str | None = None,
     ):
         worktree = (worktree_base or self.base) / (worktree_name or f"sim-wt-{issue_number}")
-        worktree.mkdir(parents=True, exist_ok=True)
         final_branch = branch_name or f"{issue_number}-sim"
+        # This fixture retains completed checkouts for artifact assertions.
+        # A later task on a different branch needs its own checkout; never
+        # relabel or reset the retained source merely to satisfy the request.
+        if worktree_name is None and (worktree / ".git").exists():
+            current = subprocess.run(["git", "branch", "--show-current"],
+                cwd=worktree, check=True, capture_output=True, text=True).stdout.strip()
+            if current != final_branch:
+                import hashlib
+                suffix = hashlib.sha256(final_branch.encode()).hexdigest()[:12]
+                worktree = worktree.with_name(f"{worktree.name}-{suffix}")
+        worktree.mkdir(parents=True, exist_ok=True)
         from tests.simulated_scenarios.git_workspace import initialize_linked_scenario_checkout
 
         initialize_linked_scenario_checkout(repo_root, worktree, final_branch)

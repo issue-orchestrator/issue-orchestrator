@@ -5,6 +5,26 @@ from .completion_intake import CompletionIntakeReceipt, CompletionIntakeError
 from .registered_completion import CompletionProcessingPolicy
 
 
+@dataclass(frozen=True, slots=True)
+class CompletionPublication:
+    """The URL and branch returned by the orchestrator's publication operation."""
+
+    url: str
+    branch: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.url, str) or not self.url.strip() or not isinstance(self.branch, str) or not self.branch.strip():
+            raise ValueError("publication requires its URL and branch")
+
+    @classmethod
+    def from_result(cls, url: str | None, branch: str | None) -> "CompletionPublication | None":
+        if url is None:
+            return None
+        if branch is None:
+            raise ValueError("published completion is missing its branch")
+        return cls(url, branch)
+
+
 @dataclass
 class ProcessingResult:
     """Result of processing a completion record."""
@@ -14,6 +34,7 @@ class ProcessingResult:
     processing_policy: CompletionProcessingPolicy | None = None
     failure_kind: str | None = None
     pr_url: str | None = None
+    publication: CompletionPublication | None = None
     actions_taken: list[str] | None = None
     diagnostic_path: str | None = None
     completion_record_path: str | None = None

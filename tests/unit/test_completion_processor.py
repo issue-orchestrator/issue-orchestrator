@@ -2564,6 +2564,9 @@ class TestCompletionProcessorPRActions:
 
         assert result.success
         assert result.pr_url == "https://github.com/owner/repo/pull/42"
+        assert result.publication is not None
+        assert result.publication.url == result.pr_url
+        assert result.publication.branch == mock_pr_adapter.create_pr.return_value.branch
         mock_pr_adapter.create_pr.assert_called_once()
         call_args = mock_pr_adapter.create_pr.call_args
         assert call_args.kwargs["title"] == "#123: Add feature"

@@ -2357,6 +2357,7 @@ class CompletionProcessor:
         )
 
         if pr:
+            branch = pr.branch
             settle_failure = self._settle_created_pr(
                 pr=pr,
                 record=record,

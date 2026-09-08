@@ -237,7 +237,7 @@ class TestHistoryEntryCreation:
         pr_url = "https://github.com/owner/repo/pull/42"
 
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url=pr_url, number=42, labels=[])]
+            prs=[SimpleNamespace(branch="published-branch", url=pr_url, number=42, labels=[])]
         )
         handler = make_handler(config, repository_host=repository_host)
 
@@ -377,7 +377,7 @@ class TestHistoryEntryCreation:
         session = create_test_session(issue, agent_config, tmp_worktree)
 
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url="http://pr/42", number=42, labels=[])]
+            prs=[SimpleNamespace(branch="published-branch", url="http://pr/42", number=42, labels=[])]
         )
         handler = make_handler(config, repository_host=repository_host)
 
@@ -399,7 +399,7 @@ class TestHistoryEntryCreation:
         session = create_test_session(issue, agent_config, tmp_worktree)
         pr_url = "https://github.com/owner/repo/pull/42"
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url=pr_url, number=42, labels=[])]
+            prs=[SimpleNamespace(branch="published-branch", url=pr_url, number=42, labels=[])]
         )
         handler = make_handler(config, repository_host=repository_host)
 
@@ -432,7 +432,7 @@ class TestEventEmission:
         pr_url = "https://github.com/owner/repo/pull/42"
 
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url=pr_url, number=42, labels=[])]
+            prs=[SimpleNamespace(branch="published-branch", url=pr_url, number=42, labels=[])]
         )
         handler = make_handler(config, events=events, repository_host=repository_host)
 
@@ -569,7 +569,7 @@ class TestEventEmission:
         pr_url = "https://github.com/owner/repo/pull/42"
 
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url=pr_url, number=42, labels=["some-label"])]
+            prs=[SimpleNamespace(branch="published-branch", url=pr_url, number=42, labels=["some-label"])]
         )
         handler = make_handler(config, events=events, repository_host=repository_host)
 
@@ -601,7 +601,7 @@ class TestStateMachineTransitions:
         )
 
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url="http://pr", number=42, labels=[])]
+            prs=[SimpleNamespace(url="http://pr", number=42, labels=[], branch="published-branch")]
         )
         handler = make_handler(
             config, repository_host=repository_host, issue_machine=issue_machine
@@ -622,7 +622,7 @@ class TestStateMachineTransitions:
         )
 
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url="http://pr", number=42, labels=[])]
+            prs=[SimpleNamespace(url="http://pr", number=42, labels=[], branch="published-branch")]
         )
         handler = make_handler(
             config, repository_host=repository_host, issue_machine=issue_machine
@@ -648,7 +648,7 @@ class TestStateMachineTransitions:
         )
 
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url="http://pr", number=42, labels=[])]
+            prs=[SimpleNamespace(url="http://pr", number=42, labels=[], branch="published-branch")]
         )
         handler = make_handler(
             config, repository_host=repository_host, issue_machine=issue_machine
@@ -776,6 +776,7 @@ class TestReviewMachineTransitions:
         )
 
         pr_info = SimpleNamespace(
+            branch="published-branch",
             number=42, labels=["code-reviewed"], url="http://pr", draft=True
         )
         repository_host = make_repository_host(
@@ -812,7 +813,7 @@ class TestReviewMachineTransitions:
             initial_state=ReviewState.IN_REVIEW,
         )
 
-        pr_info = SimpleNamespace(number=42, labels=["needs-rework"], url="http://pr")
+        pr_info = SimpleNamespace(branch="published-branch", number=42, labels=["needs-rework"], url="http://pr")
         repository_host = make_repository_host(
             prs=[pr_info],
             pr_info=pr_info,
@@ -842,7 +843,7 @@ class TestReviewMachineTransitions:
             task_kind=TaskKind.REVIEW,
         )
 
-        pr_info = SimpleNamespace(number=42, labels=["code-reviewed"], url="http://pr")
+        pr_info = SimpleNamespace(branch="published-branch", number=42, labels=["code-reviewed"], url="http://pr")
         repository_host = make_repository_host(
             prs=[pr_info],
             pr_info=pr_info,
@@ -871,7 +872,7 @@ class TestPRDetection:
         session = create_test_session(issue, agent_config, tmp_worktree)
 
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url="http://pr/123", number=123, labels=[])]
+            prs=[SimpleNamespace(branch="published-branch", url="http://pr/123", number=123, labels=[])]
         )
         handler = make_handler(config, repository_host=repository_host)
 
@@ -923,8 +924,8 @@ class TestPRDetection:
 
         repository_host = make_repository_host(
             prs=[
-                SimpleNamespace(url="http://pr/1", number=1, labels=[]),
-                SimpleNamespace(url="http://pr/2", number=2, labels=[]),
+                SimpleNamespace(branch="published-branch", url="http://pr/1", number=1, labels=[]),
+                SimpleNamespace(branch="published-branch", url="http://pr/2", number=2, labels=[]),
             ]
         )
         handler = make_handler(config, repository_host=repository_host)
@@ -975,7 +976,7 @@ class TestCleanupStrategy:
         )
 
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url="http://pr", number=42, labels=[])]
+            prs=[SimpleNamespace(url="http://pr", number=42, labels=[], branch="published-branch")]
         )
         handler = make_handler(config, repository_host=repository_host)
 
@@ -1073,7 +1074,7 @@ class TestCleanupStrategy:
         )
 
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url="http://pr", number=42, labels=[])]
+            prs=[SimpleNamespace(url="http://pr", number=42, labels=[], branch="published-branch")]
         )
         handler = make_handler(config, repository_host=repository_host)
 
@@ -1094,7 +1095,7 @@ class TestCleanupStrategy:
             issue, agent_config, tmp_worktree, terminal_id="issue-1"
         )
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url="http://pr", number=42, labels=[])]
+            prs=[SimpleNamespace(url="http://pr", number=42, labels=[], branch="published-branch")]
         )
 
         result = make_handler(
@@ -1119,7 +1120,7 @@ class TestCleanupStrategy:
         )
 
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url="http://pr", number=42, labels=[])]
+            prs=[SimpleNamespace(url="http://pr", number=42, labels=[], branch="published-branch")]
         )
         handler = make_handler(config, repository_host=repository_host)
 
@@ -1143,7 +1144,7 @@ class TestCleanupStrategy:
         )
 
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url="http://pr", number=42, labels=[])]
+            prs=[SimpleNamespace(url="http://pr", number=42, labels=[], branch="published-branch")]
         )
         handler = make_handler(config, repository_host=repository_host)
 
@@ -1198,7 +1199,7 @@ class TestCleanupStrategy:
 
         pr_url = "http://github.com/owner/repo/pull/456"
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url=pr_url, number=456, labels=[])]
+            prs=[SimpleNamespace(branch="published-branch", url=pr_url, number=456, labels=[])]
         )
         handler = make_handler(config, repository_host=repository_host)
 
@@ -1232,7 +1233,7 @@ class TestReviewQueueDecision:
         )
 
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url="http://pr", number=42, labels=[])]
+            prs=[SimpleNamespace(url="http://pr", number=42, labels=[], branch="published-branch")]
         )
         handler = make_handler(config, repository_host=repository_host)
 
@@ -1251,7 +1252,7 @@ class TestReviewQueueDecision:
         )
 
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url="http://pr", number=42, labels=[])]
+            prs=[SimpleNamespace(url="http://pr", number=42, labels=[], branch="published-branch")]
         )
         handler = make_handler(config, repository_host=repository_host)
 
@@ -1271,7 +1272,7 @@ class TestReviewQueueDecision:
         )
 
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url="http://pr", number=42, labels=[])]
+            prs=[SimpleNamespace(url="http://pr", number=42, labels=[], branch="published-branch")]
         )
         handler = make_handler(config, repository_host=repository_host)
 
@@ -1294,7 +1295,7 @@ class TestReviewQueueDecision:
         )
 
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url="http://pr", number=42, labels=[])]
+            prs=[SimpleNamespace(url="http://pr", number=42, labels=[], branch="published-branch")]
         )
         handler = make_handler(config, repository_host=repository_host)
 
@@ -1332,7 +1333,7 @@ class TestReviewQueueDecision:
         )
 
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url="http://pr", number=42, labels=[])]
+            prs=[SimpleNamespace(url="http://pr", number=42, labels=[], branch="published-branch")]
         )
         handler = make_handler(config, repository_host=repository_host)
 
@@ -1355,7 +1356,7 @@ class TestReviewQueueDecision:
         )
 
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url="http://pr", number=42, labels=[])]
+            prs=[SimpleNamespace(url="http://pr", number=42, labels=[], branch="published-branch")]
         )
         handler = make_handler(config, repository_host=repository_host)
 
@@ -1380,7 +1381,7 @@ class TestReviewQueueDecision:
         )
 
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url="http://pr", number=42, labels=[])]
+            prs=[SimpleNamespace(url="http://pr", number=42, labels=[], branch="published-branch")]
         )
         handler = make_handler(config, repository_host=repository_host)
 
@@ -1409,7 +1410,7 @@ class TestReviewQueueDecision:
         )
 
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url="http://pr", number=42, labels=[])]
+            prs=[SimpleNamespace(url="http://pr", number=42, labels=[], branch="published-branch")]
         )
         events = InMemoryEventSink()
         handler = make_handler(config, events=events, repository_host=repository_host)
@@ -1447,7 +1448,7 @@ class TestLabelActionGeneration:
         )
 
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url="http://pr", number=42, labels=[])]
+            prs=[SimpleNamespace(url="http://pr", number=42, labels=[], branch="published-branch")]
         )
         handler = make_handler(config, repository_host=repository_host)
 
@@ -2058,7 +2059,7 @@ class TestLabelActionGeneration:
         session = create_test_session(issue, agent_config, tmp_worktree)
         pr_url = "https://github.com/owner/repo/pull/42"
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url=pr_url, number=42, labels=[])]
+            prs=[SimpleNamespace(branch="published-branch", url=pr_url, number=42, labels=[])]
         )
         handler = make_handler(config, repository_host=repository_host)
 
@@ -2997,7 +2998,7 @@ class TestEdgeCases:
         session = create_test_session(issue, agent_config, tmp_worktree)
 
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url="http://pr", number=42, labels=[])]
+            prs=[SimpleNamespace(url="http://pr", number=42, labels=[], branch="published-branch")]
         )
         handler = make_handler(config, repository_host=repository_host)
 
@@ -3042,7 +3043,7 @@ class TestIntegrationBehaviors:
         )
 
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url="http://pr", number=42, labels=[])]
+            prs=[SimpleNamespace(url="http://pr", number=42, labels=[], branch="published-branch")]
         )
         handler = make_handler(
             config,
@@ -3140,7 +3141,7 @@ class TestReworkCyclePropagation:
 
         pr_url = "https://github.com/owner/repo/pull/42"
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url=pr_url, number=42, labels=[])]
+            prs=[SimpleNamespace(branch="published-branch", url=pr_url, number=42, labels=[])]
         )
         events = InMemoryEventSink()
         handler = make_handler(config, events=events, repository_host=repository_host)
@@ -3164,7 +3165,7 @@ class TestReworkCyclePropagation:
 
         pr_url = "https://github.com/owner/repo/pull/42"
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url=pr_url, number=42, labels=[])]
+            prs=[SimpleNamespace(branch="published-branch", url=pr_url, number=42, labels=[])]
         )
         events = InMemoryEventSink()
         handler = make_handler(config, events=events, repository_host=repository_host)
@@ -3237,7 +3238,7 @@ class TestReworkCyclePropagation:
 
         pr_url = "https://github.com/owner/repo/pull/42"
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url=pr_url, number=42, labels=[])]
+            prs=[SimpleNamespace(branch="published-branch", url=pr_url, number=42, labels=[])]
         )
         events = InMemoryEventSink()
         handler = make_handler(config, events=events, repository_host=repository_host)
@@ -3278,6 +3279,7 @@ class TestReviewOutcomeEventEmission:
 
         # PR has code-reviewed label
         pr_info = SimpleNamespace(
+            branch="published-branch",
             url="https://github.com/owner/repo/pull/42",
             number=42,
             labels=["code-reviewed"],
@@ -3326,6 +3328,7 @@ class TestReviewOutcomeEventEmission:
 
         # PR has needs-rework label (not code-reviewed)
         pr_info = SimpleNamespace(
+            branch="published-branch",
             url="https://github.com/owner/repo/pull/42",
             number=42,
             labels=["needs-rework"],
@@ -3368,7 +3371,7 @@ class TestReviewOutcomeEventEmission:
 
         pr_url = "https://github.com/owner/repo/pull/42"
         repository_host = make_repository_host(
-            prs=[SimpleNamespace(url=pr_url, number=42, labels=[])]
+            prs=[SimpleNamespace(branch="published-branch", url=pr_url, number=42, labels=[])]
         )
         events = InMemoryEventSink()
         handler = make_handler(config, events=events, repository_host=repository_host)

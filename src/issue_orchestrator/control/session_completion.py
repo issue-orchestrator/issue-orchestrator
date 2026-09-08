@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
+from ..domain.completion_processing import CompletionPublication
 from ..domain.completion_intake import CompletionIntakeReceipt
 from ..domain.issue_key import GitHubIssueKey, IssueKey
 from ..domain.models import (
@@ -250,6 +251,7 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
     pending_work_claims: PendingWorkClaimStore,
     processing_policy: CompletionProcessingPolicy,
     pr_url_hint: Optional[str] = None,
+    publication_hint: CompletionPublication | None = None,
     processing_errors: Optional[list[str]] = None,
     diagnostic_path: Optional[str] = None,
     validation_error: Optional[str] = None,
@@ -276,7 +278,7 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
     terminalization; the ONE effective outcome is finalized post-apply on every
     apply outcome (return or raise), then any apply error is re-raised (#6777).
     """
-    from ..domain.models import DiscoveredReview, PendingValidationRetry
+    from ..domain.models import PendingValidationRetry
 
     name = session.terminal_id
     entity = "retrospective-review" if is_retrospective_review_session(session) else "review" if name.startswith("review-") else "rework" if name.startswith("rework-") else "issue"
@@ -344,6 +346,7 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
             session,
             status,
             pr_url_hint=pr_url_hint,
+            publication_hint=publication_hint,
             processing_errors=processing_errors,
             diagnostic_path=diagnostic_path,
             review_exchange_completed=review_exchange_completed,
@@ -471,17 +474,10 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
     )
     CompletionCleanupStateOwner(state).record(result.cleanup, session, effective_status)
 
-    if result.should_queue_review and result.pr_url and result.pr_number:
-        state.record_discovered_review(
-            DiscoveredReview(
-                session.issue.number,
-                result.pr_number,
-                result.pr_url,
-                session.branch_name,
-                agent_label=session.agent_label,
-                issue_key=session.issue.key.stable_id(),
-            )
-        )
+    if result.should_queue_review:
+        if result.review is None:
+            raise ValueError("queued review requires its publication identity")
+        state.record_discovered_review(result.review)
     record_completed_session_problem(
         status=effective_status,
         session=session,
@@ -768,6 +764,7 @@ def _apply_completed_decision(
         config,
         session_output=session_output,
         pr_url_hint=pr_url_hint,
+        publication_hint=decision.processing_result.publication if decision.processing_result is not None else None,
         processing_errors=processing_errors,
         diagnostic_path=diagnostic_path,
         validation_error=validation_error,

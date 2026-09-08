@@ -18,7 +18,8 @@ import time
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from ..domain.models import Session, SessionStatus
+from ..domain.completion_processing import CompletionPublication
+from ..domain.models import DiscoveredReview, Session, SessionStatus
 from ..domain.session_key import TaskKind
 from ..infra.logging_config import log_context
 from ..ports import RepositoryHost
@@ -38,6 +39,15 @@ class ResolvedCompletionPr:
     url: Optional[str] = None
     number: Optional[int] = None
     pull_requests: Optional[list[Any]] = None
+    publication: CompletionPublication | None = None
+
+
+    def review_for(self, session: Session) -> DiscoveredReview:
+        """Carry the published PR branch across the completion/queue boundary."""
+        if self.publication is None or self.number is None or self.url != self.publication.url:
+            raise ValueError("review routing requires the publication identity")
+        return DiscoveredReview(session.issue.number, self.number, self.publication.url, self.publication.branch,
+            agent_label=session.agent_label, issue_key=session.issue.key.stable_id())
 
 
 #: The answer whenever a session produced no PR — not completed, a
@@ -57,6 +67,7 @@ class CompletionPrLookup:
         status: SessionStatus,
         *,
         pr_url_hint: Optional[str] = None,
+        publication_hint: CompletionPublication | None = None,
     ) -> ResolvedCompletionPr:
         """Resolve the PR for a completed session.
 
@@ -69,11 +80,14 @@ class CompletionPrLookup:
             return NO_COMPLETION_PR
 
         if pr_url_hint:
-            return self._from_hint(session, pr_url_hint)
+            return self._from_hint(session, pr_url_hint, publication_hint)
 
         return self._from_branch_or_review_fallback(session)
 
-    def _from_hint(self, session: Session, pr_url_hint: str) -> ResolvedCompletionPr:
+    def _from_hint(self, session: Session, pr_url_hint: str,
+                   publication: CompletionPublication | None) -> ResolvedCompletionPr:
+        if publication is not None and publication.url != pr_url_hint:
+            raise ValueError("publication hint differs from completion URL")
         pr_url = pr_url_hint
         pr_number: Optional[int] = None
         prs: Optional[list[Any]] = None
@@ -88,6 +102,7 @@ class CompletionPrLookup:
             else:
                 if pr_info:
                     prs = [pr_info]
+                    publication = CompletionPublication(pr_info.url, pr_info.branch)
 
         logger.info(
             "[PR_HINT] Using PR from completion processor: %s (number=%s)",
@@ -95,7 +110,7 @@ class CompletionPrLookup:
             pr_number,
             extra=log_context(issue_key=session.key.issue.stable_id(), session_id=session.terminal_id),
         )
-        return ResolvedCompletionPr(url=pr_url, number=pr_number, pull_requests=prs)
+        return ResolvedCompletionPr(url=pr_url, number=pr_number, pull_requests=prs, publication=publication)
 
     def _from_branch_or_review_fallback(self, session: Session) -> ResolvedCompletionPr:
         logger.debug("[ADAPTER] Using GitHubAdapter for get_prs_for_branch")
@@ -114,6 +129,7 @@ class CompletionPrLookup:
                 url=pr_infos[0].url,
                 number=pr_infos[0].number,
                 pull_requests=list(pr_infos),
+                publication=CompletionPublication(pr_infos[0].url, pr_infos[0].branch),
             )
 
         if session.pr_number is None:
@@ -131,7 +147,8 @@ class CompletionPrLookup:
 
         if review_pr:
             return ResolvedCompletionPr(
-                url=review_pr.url, number=review_pr.number, pull_requests=[review_pr]
+                url=review_pr.url, number=review_pr.number, pull_requests=[review_pr],
+                publication=CompletionPublication(review_pr.url, review_pr.branch)
             )
 
         return NO_COMPLETION_PR

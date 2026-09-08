@@ -13,6 +13,8 @@ Tests mock at port boundaries, not internal patches, following the hexagonal arc
 from issue_orchestrator.domain.registered_completion import CompletionProcessingPolicy
 from tests.run_allocation_helpers import make_session_launcher
 
+from issue_orchestrator.domain.models import DiscoveredReview
+
 import json
 import os
 import shlex
@@ -7174,6 +7176,7 @@ class TestHandleSessionCompletion:
             ),
             cleanup=CleanupDecision.immediate(),
             should_queue_review=True,
+            review=DiscoveredReview(123, 456, "https://github.com/test/repo/pull/456", "published-branch", agent_label="agent:web"),
             pr_url="https://github.com/test/repo/pull/456",
             pr_number=456,
         )

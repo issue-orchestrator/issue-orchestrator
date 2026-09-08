@@ -16,6 +16,8 @@ terminated immediately (before completing). This test ensures the happy path wor
 """
 
 from issue_orchestrator.domain.registered_completion import CompletionProcessingPolicy
+from issue_orchestrator.domain.models import DiscoveredReview
+
 import pytest
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -175,6 +177,7 @@ class TestReviewAfterCodingFlow:
             ),
             cleanup=CleanupDecision.immediate(),
             should_queue_review=True,
+            review=DiscoveredReview(123, 456, "https://github.com/test/repo/pull/456", "published-branch", agent_label="agent:web"),
             pr_url="https://github.com/test/repo/pull/456",
             pr_number=456,
         )
@@ -198,6 +201,7 @@ class TestReviewAfterCodingFlow:
         )
         assert state.discovered_reviews[0].pr_number == 456
         assert state.discovered_reviews[0].issue_number == 123
+        assert state.discovered_reviews[0].branch_name == "published-branch"
 
     def test_auto_mode_fallback_queues_review(self, sample_session):
         """Auto mode should still queue review when exchange doesn't run."""
@@ -210,7 +214,7 @@ class TestReviewAfterCodingFlow:
         repository_host = make_repository_host(
             prs=[
                 MagicMock(
-                    url="https://github.com/test/repo/pull/456", number=456, labels=[]
+                    url="https://github.com/test/repo/pull/456", number=456, labels=[], branch="published-branch"
                 )
             ]
         )
@@ -256,7 +260,7 @@ class TestReviewAfterCodingFlow:
         repository_host = make_repository_host(
             prs=[
                 MagicMock(
-                    url="https://github.com/test/repo/pull/456", number=456, labels=[]
+                    url="https://github.com/test/repo/pull/456", number=456, labels=[], branch="published-branch"
                 )
             ]
         )
