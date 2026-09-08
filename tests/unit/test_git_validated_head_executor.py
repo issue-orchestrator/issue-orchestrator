@@ -4,6 +4,7 @@ from dataclasses import replace
 
 import pytest
 
+from issue_orchestrator.domain.exact_git import ExactPushOutcome
 from issue_orchestrator.domain.publication_remote import (
     PublicationPullRequest,
     PublicationPrState,
@@ -23,6 +24,7 @@ from issue_orchestrator.domain.validated_work import (
 from issue_orchestrator.execution.git_validated_head_executor import (
     GitValidatedHeadExecutor,
 )
+from issue_orchestrator.execution.git_working_copy import GitWorkingCopy
 from .git_escrow_support import git_rig
 
 
@@ -164,6 +166,25 @@ def test_failed_read_is_never_absence(setup):
     outcome = executor.publish_or_reconcile(command)
     assert outcome.status is PublishValidatedHeadStatus.TRANSIENT_FAILURE
     assert outcome.push_outcome is None
+    assert remote.created == 0
+
+
+def test_auth_failure_during_destination_resolution_is_retryable_without_effect(setup):
+    rig, remote, _, command = setup
+
+    class BrokenAuth:
+        def git_env_overrides(self, *, remote):
+            raise RuntimeError("token unavailable")
+
+    executor = GitValidatedHeadExecutor(
+        GitWorkingCopy(git=rig.git, git_auth=BrokenAuth()), remote
+    )
+    outcome = executor.publish_or_reconcile(command)
+    assert outcome.status is PublishValidatedHeadStatus.TRANSIENT_FAILURE
+    assert outcome.failure is ValidatedWorkFailure.PUSH_FAILED
+    assert outcome.push_outcome is ExactPushOutcome.AUTH_FAILED
+    assert outcome.retryable is True
+    assert remote.read_branch(command) == rig.base
     assert remote.created == 0
 
 

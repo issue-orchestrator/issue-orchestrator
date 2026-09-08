@@ -1,6 +1,6 @@
 """Exact remote execution without admission, review, or lifecycle policy."""
 
-from ..domain.exact_git import ExactPushOutcome
+from ..domain.exact_git import ExactPushAuthenticationError, ExactPushOutcome
 from ..domain.publication_remote import (
     PublicationPullRequest,
     PublicationPrState,
@@ -47,14 +47,14 @@ class GitValidatedHeadExecutor:
                     ValidatedWorkFailure.WORKSPACE_INTEGRITY,
                     "Push destination does not match repository authority",
                 )
-        except (ValueError, GitError, OSError, PublicationRemoteError) as exc:
-            return BranchWriteOutcome(
-                BranchWriteStatus.REJECTED,
-                None,
-                None,
-                ValidatedWorkFailure.WORKSPACE_INTEGRITY,
-                str(exc),
-            )
+        except (
+            ExactPushAuthenticationError,
+            ValueError,
+            GitError,
+            OSError,
+            PublicationRemoteError,
+        ) as exc:
+            return self._destination_failure(exc)
         try:
             observed = self._remote.read_branch(command)
         except PublicationRemoteError as exc:
@@ -144,6 +144,21 @@ class GitValidatedHeadExecutor:
             if diverged
             else ValidatedWorkFailure.PUSH_FAILED,
             result.detail,
+        )
+
+    @staticmethod
+    def _destination_failure(exc: Exception) -> BranchWriteOutcome:
+        auth_failure = isinstance(exc, ExactPushAuthenticationError)
+        return BranchWriteOutcome(
+            BranchWriteStatus.TRANSIENT_FAILURE
+            if auth_failure
+            else BranchWriteStatus.REJECTED,
+            None,
+            ExactPushOutcome.AUTH_FAILED if auth_failure else None,
+            ValidatedWorkFailure.PUSH_FAILED
+            if auth_failure
+            else ValidatedWorkFailure.WORKSPACE_INTEGRITY,
+            str(exc),
         )
 
     def _branch_refusal(

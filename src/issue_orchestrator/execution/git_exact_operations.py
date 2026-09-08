@@ -6,6 +6,7 @@ from ..adapters.git.git_cli import GIT_ENV_STRIP
 from pathlib import Path
 
 from ..domain.exact_git import (
+    ExactPushAuthenticationError,
     ExactPushDestination,
     ExactPushOutcome,
     ExactPushResult,
@@ -16,7 +17,7 @@ from ..domain.validated_work import require_sha
 from ..domain.validated_work_store import AncestryRelation
 from ..ports.git import Git, GitError
 from .git_push_operations import GitAuthEnvProvider
-from .git_exact_context import ExactPushAuthenticationError, ExactPushContextOwner, require_remote
+from .git_exact_context import ExactPushContextOwner, require_remote
 
 _PREFIXES = ("refs/issue-orchestrator/validated/", "refs/issue-orchestrator/observed/")
 
