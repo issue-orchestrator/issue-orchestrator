@@ -1755,6 +1755,22 @@ class GoalPilotSettings(BaseModel):
     )
 
 
+class ValidatedWorkSettings(BaseModel):
+    """Settings for retained recovery evidence."""
+
+    validated_work_escrow_retention_days: int = Field(
+        30, ge=1, strict=True,
+        title="Evidence retention (days)",
+        description="Keep resolved recovery evidence for this many days; unresolved work is always retained.",
+        json_schema_extra={
+            "section": "Validated Work", "restart_required": True,
+            "config_attr": "validated_work.escrow_retention_days",
+            "yaml_path": "validated_work.escrow_retention_days",
+            "doc_examples": ["30", "90"],
+        },
+    )
+
+
 class MergeQueueSettings(BaseModel):
     """Settings for the Merge Queue tab."""
 
@@ -2412,6 +2428,7 @@ TAB_DEFINITIONS: list[dict[str, Any]] = [
     {"key": "milestones", "label": "Milestones", "model": MilestonesSettings},
     {"key": "review", "label": "Review", "model": ReviewSettings},
     {"key": "merge_queue", "label": "Merge Queue", "model": MergeQueueSettings},
+    {"key": "validated_work", "label": "Validated Work", "model": ValidatedWorkSettings},
     {"key": "goal_pilot", "label": "Goal Pilot", "model": GoalPilotSettings},
     {"key": "hooks", "label": "Hooks", "model": HooksSettings},
     {"key": "advanced", "label": "Advanced", "model": AdvancedSettings},

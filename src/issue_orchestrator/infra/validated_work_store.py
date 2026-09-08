@@ -11,6 +11,8 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
+from ..domain.retention_clock import retention_instant
+
 from ..domain.validated_work import (
     ResolutionKind,
     ValidatedWorkFailure,
@@ -46,6 +48,7 @@ from ..ports.validated_work_verification import (
     ValidatedWorkAncestry,
     ValidatedWorkArtifactVerifier,
 )
+from ..ports.validated_work_escrow import EvidenceReleaser
 from .validated_work_admission import EvidenceAdmissionWriter
 from .validated_work_attempts import PublishAttemptWriter
 from .validated_work_claims import ClaimAuthority, owner_identity
@@ -72,11 +75,13 @@ class SqliteValidatedWorkStore:
         ancestry: ValidatedWorkAncestry,
         artifacts: ValidatedWorkArtifactVerifier,
         liveness: OrchestratorLivenessPort,
+        retention: EvidenceReleaser,
     ) -> None:
-        if ancestry is None or artifacts is None or liveness is None:
+        if ancestry is None or artifacts is None or liveness is None or retention is None:
             raise ValueError(
-                "ancestry, artifact verification and liveness are required capabilities"
+                "ancestry, artifact verification, liveness and retention are required capabilities"
             )
+        self._retention = retention
         self._db = DispositionDatabase(db_path)
         self._lineage = LineageClassifier(ancestry, artifacts)
         self._claims = ClaimAuthority(liveness)
@@ -161,16 +166,41 @@ class SqliteValidatedWorkStore:
     def evidence_for_retention(
         self, *, released_before: str
     ) -> tuple[EvidenceRow, ...]:
+        cutoff = retention_instant(released_before)
         with self._db.transaction() as conn:
             return tuple(
-                retention_evidence_row(conn, row)
+                evidence
                 for row in conn.execute(
                     "SELECT e.* FROM validated_work_evidence e JOIN validated_work_records r USING(record_id) "
-                    "WHERE r.state IN ('recovered','abandoned') AND r.terminal_at!='' AND r.terminal_at<? "
+                    "WHERE r.state IN ('recovered','abandoned') "
                     "AND e.released_at='' ORDER BY e.admitted_at,e.evidence_id",
-                    (released_before,),
                 )
+                if (evidence := retention_evidence_row(conn, row, cutoff)) is not None
             )
+
+    def release_evidence_for_retention(
+        self, evidence_id: str, *, released_before: str, released_at: str,
+    ) -> bool:
+        # The write transaction is the admission/cleanup serialization boundary.
+        # An unresolved or still-owned record can never reach the filesystem call.
+        cutoff = retention_instant(released_before)
+        retention_instant(released_at)
+        with self._db.transaction(write=True) as conn:
+            row = conn.execute(
+                "SELECT e.* FROM validated_work_evidence e JOIN validated_work_records r USING(record_id) "
+                "WHERE e.evidence_id=? AND r.state IN ('recovered','abandoned') "
+                "AND e.released_at='' "
+                "AND r.owner_claim_hash='' AND r.stop_reservation_id=''",
+                (evidence_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            evidence = retention_evidence_row(conn, row, cutoff)
+            if evidence is None:
+                return False
+            self._retention.release(evidence)
+            conn.execute("UPDATE validated_work_evidence SET released_at=? WHERE evidence_id=?", (released_at, evidence_id))
+            return True
 
     def lineage_publication(self, lineage_key: str) -> LineagePublication | None:
         with self._db.transaction() as conn:

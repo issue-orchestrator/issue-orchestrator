@@ -58,6 +58,7 @@ from .bootstrap_completion import (
     create_completion_components,
 )
 from ..infra.config import Config
+from .bootstrap_validated_work import build_validated_work_escrow_maintenance as build_validated_work_escrow_maintenance
 from ..infra.env import ENV_PREFIX
 from ..adapters.github.repo import get_repo_from_git, GitRepoError
 from ..ports.event_sink import EventSink, NullEventSink

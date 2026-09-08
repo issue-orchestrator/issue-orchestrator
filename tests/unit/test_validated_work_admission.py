@@ -76,7 +76,7 @@ def test_new_evidence_supersedes_same_row_in_every_unresolved_resting_state(
     assert store.admit(old).status is Status.RETAINED
     assert store.get(old.evidence.record_id).evidence_id == new.evidence.evidence_id
     assert store.admit(new).status is Status.CONVERGED
-    assert store.evidence_for_retention(released_before="9999") == ()
+    assert store.evidence_for_retention(released_before="9999-01-01T00:00:00+00:00") == ()
 
 
 @pytest.mark.parametrize(
@@ -155,7 +155,7 @@ def test_recovered_drain_retires_all_attached_and_retains_new_evidence(tmp_path)
     new = capture(run="post-publication")
     assert store.admit(new).status is Status.ALREADY_RECOVERED
     assert store.admit(new).status is Status.RETAINED
-    assert len(store.evidence_for_retention(released_before="9999")) == 5
+    assert len(store.evidence_for_retention(released_before="9999-01-01T00:00:00+00:00")) == 5
     assert not store.has_unresolved_work(6914)
 
 
@@ -178,7 +178,7 @@ def test_reopening_abandoned_work_requires_new_evidence(tmp_path):
     assert result.status is Status.REOPENED
     assert result.disposition.state is State.PARKED
     assert result.disposition.resolution is None
-    assert store.evidence_for_retention(released_before="9999") == ()
+    assert store.evidence_for_retention(released_before="9999-01-01T00:00:00+00:00") == ()
     with closing(sqlite3.connect(rig.path)) as conn, conn:
         assert conn.execute(
             "SELECT abandon_authority_json,terminal_at FROM validated_work_records"

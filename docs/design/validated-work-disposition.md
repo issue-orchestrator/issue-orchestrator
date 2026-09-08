@@ -383,6 +383,12 @@ requires it to equal the directory name, and recomputes each artifact's sha256 a
 requires it to equal the envelope's. An envelope that fails either check is not
 repaired — it is reported, never guessed at.
 
+**Git ref spelling:** the logical ID remains `e1:<digest>` in the envelope,
+directory and database. Git forbids `:` in ref names, so the physical validated
+and observed refs use the lossless `e1-<digest>` spelling. The shared
+`evidence_pins()` contract owns this translation; callers never construct refs
+from a moving branch or HEAD.
+
 Steps 1 and 2 are content-addressed by `evidence_id`, so re-running them is a
 no-op rather than a duplicate. A crash between any two steps leaves an *orphan*
 escrow directory and/or ref with no row — inert, never admissible on its own, and

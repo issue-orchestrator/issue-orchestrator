@@ -415,17 +415,15 @@ class TestCreateWorktree:
         repo_root.mkdir()
         (repo_root / ".git").mkdir()
 
-        # Mock failed worktree add command
-        mock_run.side_effect = [
-            MagicMock(returncode=0, stderr=""),  # prune succeeds
-            MagicMock(returncode=0, stdout="", stderr=""),  # find_worktree_for_branch (no match)
-            MagicMock(returncode=1, stderr=""),  # branch doesn't exist
-            MagicMock(returncode=1, stderr=""),  # fetch fails (branch not on remote)
-            MagicMock(returncode=1, stderr=""),  # symbolic-ref fails (get_default_branch)
-            MagicMock(returncode=0, stderr=""),  # rev-parse main succeeds (get_default_branch)
-            MagicMock(returncode=0, stderr=""),  # fetch origin/main succeeds
-            MagicMock(returncode=1, stderr="fatal: invalid reference"),  # worktree create fails
-        ]
+        # Respond by command, so read-only safety probes cannot shift the failure.
+        def git_result(command, **kwargs):
+            if "worktree" in command and "add" in command:
+                return MagicMock(returncode=1, stdout="", stderr="fatal: invalid reference")
+            if "symbolic-ref" in command:
+                return MagicMock(returncode=0, stdout="refs/remotes/origin/main", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        mock_run.side_effect = git_result
 
         # Execute & Verify
         with pytest.raises(WorktreeError, match="Failed to create worktree"):
@@ -854,6 +852,7 @@ class TestCreateWorktree:
 
         # Mock: prune succeeds, find worktree (no match), then exception on branch check
         mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="", stderr=""),  # protected worktree inventory
             MagicMock(returncode=0, stderr=""),  # prune succeeds
             MagicMock(returncode=0, stdout="", stderr=""),  # find_worktree_for_branch (no match)
             OSError("Command not found"),  # exception on branch check

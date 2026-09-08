@@ -24,6 +24,7 @@ from .checks import (
     schema as schema_checks,
     tech_lead as tech_lead_checks,
     workspace,
+    validated_work,
 )
 
 
@@ -95,6 +96,7 @@ def run_doctor(
     result.checks.extend(_timed("worktree_hook_corruption", hooks.check_worktree_hook_corruption, config))
     result.checks.extend(_timed("agents", workspace.check_agents, config, runner))
 
+    result.checks.extend(_timed("validated_work", validated_work.check_validated_work, config, runner))
     result.checks.extend(_timed("schema_checks", schema_checks.run_schema_checks, config))
     result.checks.extend(_timed("code_review", review.check_code_review, config))
     result.checks.extend(_timed("tech_lead_labels", tech_lead_checks.check_tech_lead_labels, config))

@@ -19,6 +19,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from .exact_git import ExactGit
+
 
 @dataclass
 class CommitInfo:
@@ -113,7 +115,7 @@ class RebaseResult:
     aborted: bool = False
 
 
-class WorkingCopy(Protocol):
+class WorkingCopy(ExactGit, Protocol):
     """Protocol for local VCS operations in a worktree.
 
     This protocol defines the interface for git operations that the orchestrator

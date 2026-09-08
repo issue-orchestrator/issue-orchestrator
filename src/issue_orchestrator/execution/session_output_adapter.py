@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import Mock
 
+from ..domain.escrow_retention_boundary import is_escrow_path
 from ..contracts.run_manifest import validate_run_manifest_payload
 from ..domain.artifact_contracts import (
     RESERVED_VALIDATION_OUTCOME_FIELDS,
@@ -274,7 +275,7 @@ class FileSystemSessionOutput(RunDirectoryArtifacts):
         keep: int,
     ) -> list[Path]:
         """Delete old runs, keeping the last N."""
-        if keep <= 0:
+        if is_escrow_path(worktree_path) or keep <= 0:
             return []
 
         base_dir = self.sessions_base_dir(worktree_path)

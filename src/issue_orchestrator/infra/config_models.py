@@ -437,3 +437,14 @@ class MergeQueueConfig:
     provider: str = "github"  # see MERGE_QUEUE_PROVIDERS
     enqueue_after: str = "code-reviewed"  # orchestrator gate; see MERGE_QUEUE_GATES
     failure_action: str = "rework"  # rework | needs_human; see MERGE_QUEUE_FAILURE_ACTIONS
+
+
+@dataclass
+class ValidatedWorkConfig:
+    """Retention for evidence preserved outside disposable worktrees."""
+
+    escrow_retention_days: int = 30
+
+    def __post_init__(self) -> None:
+        if type(self.escrow_retention_days) is not int or self.escrow_retention_days < 1:
+            raise ValueError("validated_work.escrow_retention_days must be an integer >= 1")

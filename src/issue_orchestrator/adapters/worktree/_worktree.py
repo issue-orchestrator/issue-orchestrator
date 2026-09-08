@@ -9,6 +9,7 @@ import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from ...domain.escrow_retention_boundary import require_disposable_path
 from ...infra.runtime_artifacts import is_cleanup_safe_untracked_path
 from ...infra.logging_config import issue_log
 from ...ports.git import GitResult
@@ -566,6 +567,7 @@ def _resolve_repo_root_from_worktree(worktree_path: Path) -> Path | None:
 
 
 def _remove_existing_worktree_path(repo_root: Path, worktree_path: Path) -> None:
+    require_disposable_path(worktree_path)
     logger.info("Removing existing worktree path for fresh create: %s", worktree_path)
     result = _git_run(
         repo_root,
@@ -1214,6 +1216,7 @@ def _recover_stale_branch_worktree_registration(
 
 
 def _remove_worktree_path(repo_root: Path, worktree_path: Path, *, force: bool) -> None:
+    require_disposable_path(worktree_path)
     cmd = ["worktree", "remove"]
     if force:
         cmd.append("--force")
@@ -1237,6 +1240,7 @@ def _remove_worktree_path(repo_root: Path, worktree_path: Path, *, force: bool) 
 
 
 def _force_delete_worktree_path(worktree_path: Path) -> None:
+    require_disposable_path(worktree_path)
     if worktree_path.is_dir() and not worktree_path.is_symlink():
         shutil.rmtree(worktree_path, ignore_errors=True)
         return
@@ -1278,6 +1282,7 @@ def remove_worktree(
     Raises:
         WorktreeError: If removal fails
     """
+    require_disposable_path(worktree_path)
     worktree_path = Path(worktree_path)
     logger.info("Removing worktree: path=%s", worktree_path)
 

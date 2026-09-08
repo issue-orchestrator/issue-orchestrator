@@ -124,12 +124,12 @@ def test_typed_ports_have_no_caller_death_timer_or_transaction_parameter(tmp_pat
         )
 
 
-@pytest.mark.parametrize("missing", ["ancestry", "artifacts", "liveness"])
+@pytest.mark.parametrize("missing", ["ancestry", "artifacts", "liveness", "retention"])
 def test_constructor_requires_every_verification_capability_before_creating_db(
     tmp_path, missing
 ):
     rig = Rig(tmp_path / "work.sqlite")
-    args = {"ancestry": rig.graph, "artifacts": rig.artifacts, "liveness": rig.liveness}
+    args = {"ancestry": rig.graph, "artifacts": rig.artifacts, "retention": rig.artifacts, "liveness": rig.liveness}
     del args[missing]
     with pytest.raises(TypeError):
         SqliteValidatedWorkStore(rig.path, **args)
@@ -146,7 +146,7 @@ def test_boolean_ancestry_fact_is_not_a_typed_proof(tmp_path):
 
     rig = Rig(tmp_path / "work.sqlite")
     store = SqliteValidatedWorkStore(
-        rig.path, ancestry=BadAncestry(), artifacts=rig.artifacts, liveness=rig.liveness
+        rig.path, ancestry=BadAncestry(), artifacts=rig.artifacts, retention=rig.artifacts, liveness=rig.liveness
     )
     with pytest.raises(TypeError, match="typed relation"):
         store.admit(capture())
@@ -236,10 +236,10 @@ def test_retention_query_addresses_every_role_but_no_unresolved_work(tmp_path):
     attempt = begin(store, token)
     attached = capture(run="attached")
     store.admit(attached)
-    assert store.evidence_for_retention(released_before="9999") == ()
+    assert store.evidence_for_retention(released_before="9999-01-01T00:00:00+00:00") == ()
     finalize(store, token, attempt)
     assert {
-        row.evidence_id for row in store.evidence_for_retention(released_before="9999")
+        row.evidence_id for row in store.evidence_for_retention(released_before="9999-01-01T00:00:00+00:00")
     } == {a.evidence.evidence_id, attached.evidence.evidence_id}
 
 
@@ -265,7 +265,7 @@ def test_truthy_artifact_fact_cannot_begin_publication(tmp_path):
     store = SqliteValidatedWorkStore(
         rig.path,
         ancestry=rig.graph,
-        artifacts=UnverifiedArtifacts(),
+        artifacts=UnverifiedArtifacts(), retention=rig.artifacts,
         liveness=rig.liveness,
     )
     a = capture()
@@ -289,7 +289,7 @@ def test_retention_rejects_malformed_resolution_before_exposing_candidates(tmp_p
         )
     for current in (store, rig.open()):
         with pytest.raises(ValueError):
-            current.evidence_for_retention(released_before="9999")
+            current.evidence_for_retention(released_before="9999-01-01T00:00:00+00:00")
         with closing(sqlite3.connect(rig.path)) as conn:
             assert conn.execute(
                 "SELECT released_at FROM validated_work_evidence"

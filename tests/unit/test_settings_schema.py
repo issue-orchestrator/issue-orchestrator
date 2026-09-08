@@ -609,7 +609,8 @@ class TestFromConfig:
         """Default Config() should produce valid schema models."""
         cfg = Config()
         tabs = from_config(cfg)
-        assert len(tabs) == 10
+        assert len(tabs) == 11
+        assert tabs["validated_work"].validated_work_escrow_retention_days == 30
         assert "validation" in tabs
         assert "merge_queue" in tabs
         for key, model in tabs.items():
@@ -1478,3 +1479,12 @@ class TestDriftDetection:
             "Update settings_schema.py, then regenerate the reference and paste it "
             "between the AUTO-GENERATED markers in docs/user/configuration_reference.md."
         )
+
+
+@pytest.mark.parametrize("value", [0, -1, True, False, 1.5, "30", None])
+def test_validated_work_settings_rejects_non_positive_or_untyped_days(value):
+    from pydantic import ValidationError
+    from issue_orchestrator.infra.settings_schema import ValidatedWorkSettings
+
+    with pytest.raises(ValidationError):
+        ValidatedWorkSettings(validated_work_escrow_retention_days=value)

@@ -78,8 +78,12 @@ class GraphAncestry:
 
 @dataclass
 class ArtifactVerifier:
+    released: list[str] = field(default_factory=list)
     invalid: set[str] = field(default_factory=set)
     raise_on: set[str] = field(default_factory=set)
+
+    def release(self, evidence: EvidenceRow) -> None:
+        self.released.append(evidence.evidence_id)
 
     def verifies(self, evidence: EvidenceRow) -> bool:
         if evidence.record_id in self.raise_on:
@@ -113,6 +117,7 @@ class Rig:
             self.path,
             ancestry=self.graph,
             artifacts=self.artifacts,
+            retention=self.artifacts,
             liveness=self.liveness if liveness is None else liveness,
         )
 

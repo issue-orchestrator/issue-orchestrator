@@ -18,6 +18,7 @@ from .config_models import (
     HooksConfig,
     IsolationConfig,
     MergeQueueConfig,
+    ValidatedWorkConfig,
     ProviderResilienceConfig,
     RetryConfig,
     SchedulingConfig,
@@ -123,6 +124,7 @@ def allowed_config_shape() -> dict[str, ConfigShape]:
         "goal_pilot": dataclass_config_shape(GoalPilotConfig),
         "hooks": dataclass_config_shape(HooksConfig),
         "merge_queue": dataclass_config_shape(MergeQueueConfig),
+        "validated_work": dataclass_config_shape(ValidatedWorkConfig),
         "labels": _leaf_keys(
             "in_progress",
             "blocked",

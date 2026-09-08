@@ -50,6 +50,12 @@ class ValidatedWorkStore(Protocol):
         self, *, released_before: str
     ) -> tuple[EvidenceRow, ...]: ...
 
+    def release_evidence_for_retention(
+        self, evidence_id: str, *, released_before: str, released_at: str,
+    ) -> bool:
+        """Recheck resolved eligibility and serialize deletion against admission."""
+        ...
+
     def lineage_publication(self, lineage_key: str) -> LineagePublication | None: ...
 
     def acquire_claim(
