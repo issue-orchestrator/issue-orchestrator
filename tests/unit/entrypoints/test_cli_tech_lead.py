@@ -142,7 +142,7 @@ class TestCmdHealthReview:
             "issue_orchestrator.control.tech_lead_trigger.run_health_review",
             return_value=HealthReviewResult(
                 200, status=TechLeadOutcomeStatus.TIMED_OUT, detail="timed out",
-                termination=TechLeadTerminationOutcome(validated_work=ValidatedWorkDispositionBatch.no_work(1, "fixture"), 
+                termination=TechLeadTerminationOutcome(validated_work=ValidatedWorkDispositionBatch.no_work(1, "fixture"),
                     terminal_stopped=False, worktree_removed=False,
                     leaked_worktree="/wt/repo-tech-lead-200-abc",
                 ),

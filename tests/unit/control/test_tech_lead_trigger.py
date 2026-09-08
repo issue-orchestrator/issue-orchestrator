@@ -460,7 +460,7 @@ def test_unclean_facade_termination_survives_into_investigation_result() -> None
     # Producer-side: when the facade's terminate reports an INCOMPLETE cleanup
     # (leaked scratch worktree), that unclean outcome must survive the drive loop
     # into the command's InvestigationResult — not be flattened to a clean status.
-    leaked = TechLeadTerminationOutcome(validated_work=ValidatedWorkDispositionBatch.no_work(1, "fixture"), 
+    leaked = TechLeadTerminationOutcome(validated_work=ValidatedWorkDispositionBatch.no_work(1, "fixture"),
         worktree_removed=False, leaked_worktree="/wt/repo-tech-lead-5980-abc"
     )
     host = _FakeHost(
@@ -480,7 +480,7 @@ def test_unclean_facade_termination_survives_into_investigation_result() -> None
 
 def test_unclean_facade_termination_survives_into_health_review_result() -> None:
     # Producer-side, health-review counterpart.
-    leaked = TechLeadTerminationOutcome(validated_work=ValidatedWorkDispositionBatch.no_work(1, "fixture"), 
+    leaked = TechLeadTerminationOutcome(validated_work=ValidatedWorkDispositionBatch.no_work(1, "fixture"),
         terminal_stopped=False, worktree_removed=False,
         leaked_worktree="/wt/repo-tech-lead-200-xyz",
     )
