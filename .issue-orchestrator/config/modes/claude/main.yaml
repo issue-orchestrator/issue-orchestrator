@@ -148,6 +148,9 @@ validation:
   # Real model calls are an IO-owned periodic workload, outside the PR gate.
   budgeted:
     live-agents:
+      # Re-enable after provider capacity returns; without a prior scheduled
+      # attempt the first enabled scheduler check is immediately due.
+      enabled: false
       command:
         - .venv/bin/python
         - -m
