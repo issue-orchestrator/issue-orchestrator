@@ -37,7 +37,9 @@ class BudgetedValidationWorkerProcess:
         if self.running():
             raise RuntimeError("Budgeted validation worker is already running")
         self._directory.mkdir(parents=True, exist_ok=True)
-        request = self._directory / f"request-{uuid.uuid4().hex}.json"
+        requests = self._directory / "requests"
+        requests.mkdir(exist_ok=True)
+        request = requests / f"{uuid.uuid4().hex}.json"
         request.write_text(json.dumps({
             "repo_root": str(self._repo_root),
             "suites": {suite.name: {key: value for key, value in asdict(suite).items() if key != "name"} for suite in self._suites},

@@ -75,3 +75,19 @@ def test_executor_does_not_recreate_a_missing_checkout_under_a_reservation(tmp_p
         executor.resume(suite, "commit", "run")
     checkouts.create_checkout.assert_not_called()
     checkouts.remove_checkout.assert_not_called()
+
+
+def test_reservation_command_does_not_bind_the_engine_interpreter_path(tmp_path):
+    suite = parse_budgeted_validation({"agents": {"command": ["test"]}})["agents"]
+    runner = MagicMock(spec=ContainedValidationRunner)
+    runner.reserved.return_value = False
+    runner.run.side_effect = ContainedValidationPending("retained")
+    executor = BudgetedValidationCommandExecutor(
+        checkouts=MagicMock(spec=BudgetedValidationCheckouts), runner=runner,
+        directory=tmp_path, environment={},
+    )
+    with pytest.raises(ContainedValidationPending):
+        executor.probe(suite, "commit", "run")
+    command = runner.run.call_args.args[0]
+    assert command.arguments[:2] == ("/usr/bin/env", "python3")
+    assert command.arguments[2].endswith("/runs/agents/run/validation.py")

@@ -1,6 +1,7 @@
 """Composition of budgeted validation's runtime and isolated execution worker."""
 
 from datetime import datetime, timezone
+from collections.abc import Callable
 import os
 from pathlib import Path
 import time
@@ -11,18 +12,22 @@ from ..domain.budgeted_validation import BudgetedValidationSuite
 from ..execution.budgeted_validation_executor import BudgetedValidationCommandExecutor
 from ..execution.budgeted_validation_worker import BudgetedValidationWorkerProcess
 from ..execution.lane_backends import resolve_contained_validation_runner
-from ..ports.budgeted_validation import BudgetedValidationRuntime, DisabledBudgetedValidation
+from ..ports.budgeted_validation import BudgetedValidationRuntime
 from ..ports.budgeted_validation import BudgetedValidationRepository, BudgetedValidationStore
 from ..ports.budgeted_validation_checkout import BudgetedValidationCheckouts
 
 
-def build_budgeted_validation_runtime(root: Path, suites: tuple[BudgetedValidationSuite, ...], directory: Path) -> BudgetedValidationRuntime:
-    if not any(suite.enabled for suite in suites):
-        return DisabledBudgetedValidation()
+def build_budgeted_validation_runtime(
+    root: Path, suites: tuple[BudgetedValidationSuite, ...], directory: Path,
+    *, has_recoverable_work: Callable[[], bool],
+) -> BudgetedValidationRuntime:
     worker = BudgetedValidationWorkerProcess(repo_root=root, directory=directory, suites=suites)
     # Observation throttling is cheap infrastructure work, not the live-test
     # cadence. Every run decision is still made from each suite's YAML values.
-    return BudgetedValidationScheduler(worker, clock=time.monotonic, check_interval_seconds=60)
+    return BudgetedValidationScheduler(
+        worker, clock=time.monotonic, check_interval_seconds=60,
+        should_start=lambda: any(suite.enabled for suite in suites) or has_recoverable_work(),
+    )
 
 
 def assemble_budgeted_validation_cycle(repository: BudgetedValidationRepository, checkouts: BudgetedValidationCheckouts, store: BudgetedValidationStore, directory: Path) -> BudgetedValidationCycle:

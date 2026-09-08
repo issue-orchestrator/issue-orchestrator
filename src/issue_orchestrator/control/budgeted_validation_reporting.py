@@ -29,8 +29,17 @@ class BudgetedValidationReportOwner:
 
     def pending(self) -> tuple[BudgetedValidationNotice, ...]:
         notices: list[BudgetedValidationNotice] = []
+        candidates = {
+            (item.suite.name, item.history.suite_identity): (item.suite, item.history)
+            for item in self._store.inventory()
+        }
         for suite in self._suites.values():
-            notice = _notice(suite, self._store.read(suite))
+            history = self._store.read(suite)
+            candidates.setdefault(
+                (suite.name, history.suite_identity), (suite, history),
+            )
+        for suite, history in candidates.values():
+            notice = _notice(suite, history)
             if notice is None:
                 continue
             receipt = self._store.read_report(notice.case_id)
@@ -42,7 +51,14 @@ class BudgetedValidationReportOwner:
     def publish(self, notice: BudgetedValidationNotice) -> int:
         result: list[int] = []
         def apply(journal: BudgetedValidationJournal) -> None:
-            suite = self._suites[notice.suite_name]
+            suite = next(
+                (item.suite for item in journal.inventory()
+                 if item.suite.name == notice.suite_name
+                 and item.history.suite_identity == notice.suite_identity),
+                self._suites.get(notice.suite_name),
+            )
+            if suite is None:
+                raise ValueError("Regression suite definition is no longer available")
             current = journal.read(suite)
             if _notice(suite, current) != notice:
                 raise ValueError("Regression report became stale before application")

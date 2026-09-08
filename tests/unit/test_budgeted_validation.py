@@ -104,9 +104,10 @@ class MemoryBudgetedStore:
 
     def pending(self):
         from issue_orchestrator.domain.budgeted_validation import PendingBudgetedValidation
-        latest = self.history.latest
-        if latest is None or latest.finished_at is not None:
+        if not self.history.recovery_pending:
             return ()
+        latest = self.history.latest
+        assert latest is not None
         return (PendingBudgetedValidation(latest.suite, self.history),)
 
     def write(self, suite, history):
@@ -368,6 +369,63 @@ def test_runtime_observes_periodically_and_never_starts_a_second_local_worker():
     assert worker.start.call_count == 2
 
 
+def test_scheduler_only_starts_removed_configuration_to_resume_durable_work():
+    from unittest.mock import MagicMock
+    from issue_orchestrator.control.budgeted_validation_scheduler import BudgetedValidationScheduler
+    from issue_orchestrator.ports.budgeted_validation_worker import BudgetedValidationWorker
+    worker = MagicMock(spec=BudgetedValidationWorker)
+    worker.running.return_value = False
+    recoverable = [False]
+    clock = [0.0]
+    scheduler = BudgetedValidationScheduler(
+        worker, clock=lambda: clock[0], check_interval_seconds=60,
+        should_start=lambda: recoverable[0],
+    )
+    scheduler.tick()
+    worker.start.assert_not_called()
+    recoverable[0] = True
+    clock[0] = 60
+    scheduler.tick()
+    worker.start.assert_called_once()
+
+
+def test_empty_runtime_configuration_still_composes_and_resumes_retained_work(
+    monkeypatch, tmp_path,
+):
+    from issue_orchestrator.adapters.budgeted_validation_git import BudgetedValidationGit
+    from issue_orchestrator.adapters.budgeted_validation_store import (
+        FileBudgetedValidationStore, suite_identity,
+    )
+    from issue_orchestrator.domain.budgeted_validation import (
+        BudgetedValidationHistory, BudgetedValidationProbe, BudgetedValidationRun,
+    )
+    from issue_orchestrator.entrypoints.bootstrap import build_budgeted_validation_services
+    from issue_orchestrator.execution.budgeted_validation_worker import BudgetedValidationWorkerProcess
+    from issue_orchestrator.execution.command_runner import LocalCommandRunner
+    from issue_orchestrator.ports.repository_host import RepositoryHost
+    from unittest.mock import MagicMock
+
+    runner = LocalCommandRunner()
+    runner.run(["git", "init", "-b", "main"], cwd=tmp_path, timeout_seconds=30)
+    directory = BudgetedValidationGit(tmp_path, runner).storage_directory()
+    suite = parse_budgeted_validation({"removed": {"command": ["test"]}})["removed"]
+    pending = BudgetedValidationRun("pending", NOW, None,
+        BudgetedValidationProbe("a" * 40, BudgetedValidationOutcome.UNAVAILABLE, ""),
+        "scheduled", suite)
+    store = FileBudgetedValidationStore(directory)
+    store.run_exclusive(lambda journal: journal.write(
+        suite, BudgetedValidationHistory(suite_identity(suite)).append(pending)
+    ))
+    starts = []
+    monkeypatch.setattr(BudgetedValidationWorkerProcess, "start", lambda self: starts.append(self))
+    config = Config(repo_root=tmp_path)
+    runtime, _reports = build_budgeted_validation_services(
+        config, runner, MagicMock(spec=RepositoryHost),
+    )
+    runtime.tick()
+    assert len(starts) == 1
+
+
 def test_lightweight_validation_config_loader_preserves_named_suite_parameters():
     from issue_orchestrator.infra.validation_config_loader import extract_validation_config
     budgeted = {"agents": {"command": ["test"], "cadence": {"max_merges_since_success": 4, "max_delay_hours": 8}}}
@@ -457,3 +515,152 @@ def test_diagnostic_probe_does_not_shift_scheduled_retry_watermark():
         head="10", integrations_since_attempt=9)
     assert history.scheduled_due(now=NOW + timedelta(hours=23), cadence=ValidationCadence(),
         head="20", integrations_since_attempt=10)
+
+
+def test_new_pending_scheduled_run_makes_prior_green_coverage_unavailable():
+    from issue_orchestrator.domain.budgeted_validation import (
+        BudgetedValidationHistory, BudgetedValidationProbe, BudgetedValidationRun,
+        coverage_exit_code,
+    )
+    suite = parse_budgeted_validation({"agents": {"command": ["test"]}})["agents"]
+    green = BudgetedValidationRun("green", NOW, NOW,
+        BudgetedValidationProbe("old", BudgetedValidationOutcome.PASSED, "green"),
+        "scheduled", suite)
+    pending = BudgetedValidationRun("pending", NOW, None,
+        BudgetedValidationProbe("new", BudgetedValidationOutcome.UNAVAILABLE, ""),
+        "scheduled", suite)
+    history = BudgetedValidationHistory("suite").append(green).append(pending)
+    assert history.scheduling_watermark == green
+    assert history.coverage_outcome is BudgetedValidationOutcome.UNAVAILABLE
+    assert coverage_exit_code({history.coverage_outcome}, inspect_only=False, acquired=True) == 75
+
+
+def test_cli_check_returns_temporary_failure_while_new_head_is_pending(
+    monkeypatch, tmp_path,
+):
+    import sys
+    from issue_orchestrator.adapters.budgeted_validation_store import (
+        FileBudgetedValidationStore, suite_identity,
+    )
+    from issue_orchestrator.domain.budgeted_validation import (
+        BudgetedValidationHistory, BudgetedValidationProbe, BudgetedValidationRun,
+    )
+    from issue_orchestrator.entrypoints.cli_tools import budgeted_validation as cli
+
+    suite = parse_budgeted_validation({"agents": {"command": ["test"]}})["agents"]
+    store = FileBudgetedValidationStore(tmp_path)
+
+    class PendingCycle:
+        def run(self, suites, *, force=False):
+            green = BudgetedValidationRun("green", NOW, NOW,
+                BudgetedValidationProbe("old", BudgetedValidationOutcome.PASSED, "green"),
+                "scheduled", suite)
+            pending = BudgetedValidationRun("pending", NOW, None,
+                BudgetedValidationProbe("new", BudgetedValidationOutcome.UNAVAILABLE, ""),
+                "scheduled", suite)
+            store.run_exclusive(lambda journal: journal.write(
+                suite, BudgetedValidationHistory(suite_identity(suite)).append(green).append(pending)
+            ))
+            return True
+
+    monkeypatch.setattr(cli, "load_runtime_validation_config", lambda root: {
+        "budgeted": {"agents": {"command": ["test"]}},
+    })
+    monkeypatch.setattr(cli, "build_budgeted_validation_cycle", lambda root: (PendingCycle(), store))
+    monkeypatch.setattr(sys, "argv", ["budgeted-validation", "check"])
+    assert cli.main() == 75
+
+
+def test_worker_request_round_trip_stays_out_of_history_inventory(monkeypatch, tmp_path):
+    import sys
+    from unittest.mock import MagicMock
+    from issue_orchestrator.adapters.budgeted_validation_store import FileBudgetedValidationStore
+    from issue_orchestrator.entrypoints import budgeted_validation_worker as worker_entrypoint
+    from issue_orchestrator.execution.budgeted_validation_worker import BudgetedValidationWorkerProcess
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    suite = parse_budgeted_validation({"agents": {"command": ["test"]}})["agents"]
+    launched = MagicMock()
+    launched.poll.return_value = None
+    monkeypatch.setattr("issue_orchestrator.execution.budgeted_validation_worker.subprocess.Popen",
+                        lambda *args, **kwargs: launched)
+    worker = BudgetedValidationWorkerProcess(repo_root=repo, directory=tmp_path, suites=(suite,))
+    worker.start()
+    request, = (tmp_path / "requests").glob("*.json")
+    store = FileBudgetedValidationStore(tmp_path)
+    assert store.run_exclusive(lambda journal: None)
+    assert store.pending() == ()
+
+    cycle = MagicMock()
+    cycle.run.return_value = True
+    monkeypatch.setattr(worker_entrypoint, "build_budgeted_validation_cycle",
+                        lambda root: (cycle, store))
+    monkeypatch.setattr(sys, "argv", ["budgeted-validation-worker", "--request", str(request)])
+    assert worker_entrypoint.main() == 0
+    called_suites, = cycle.run.call_args.args
+    assert called_suites == (suite,)
+    assert not request.exists()
+
+
+def test_pre_namespace_history_remains_readable_and_recoverable(tmp_path):
+    from issue_orchestrator.adapters.budgeted_validation_store import (
+        FileBudgetedValidationStore, suite_identity,
+    )
+    from issue_orchestrator.domain.budgeted_validation import (
+        BudgetedValidationHistory, BudgetedValidationProbe, BudgetedValidationRun,
+    )
+
+    suite = parse_budgeted_validation({"agents": {"command": ["test"]}})["agents"]
+    store = FileBudgetedValidationStore(tmp_path)
+    pending = BudgetedValidationRun(
+        "pending", NOW, None,
+        BudgetedValidationProbe("head", BudgetedValidationOutcome.UNAVAILABLE, ""),
+        "scheduled", suite,
+    )
+    store.run_exclusive(lambda journal: journal.write(
+        suite, BudgetedValidationHistory(suite_identity(suite)).append(pending),
+    ))
+    namespaced, = (tmp_path / "histories").glob("*.json")
+    legacy = tmp_path / namespaced.name
+    namespaced.replace(legacy)
+
+    reopened = FileBudgetedValidationStore(tmp_path)
+    assert reopened.read(suite).latest == pending
+    retained, = reopened.pending()
+    assert retained.suite == suite
+    assert retained.history.latest == pending
+
+
+@pytest.mark.parametrize("crash_after", ["scheduled", "reproduce", "verify-baseline", "bisect"])
+def test_restart_continues_diagnosis_after_each_completed_step_boundary(crash_after):
+    from issue_orchestrator.control.budgeted_validation import BudgetedValidationCycle
+
+    class CrashAfterCompletedStep(MemoryBudgetedStore):
+        def __init__(self):
+            super().__init__()
+            self.armed = False
+            self.crashed = False
+
+        def write(self, suite, history):
+            self.history = history
+            latest = history.latest
+            if (self.armed and not self.crashed and latest is not None
+                    and latest.finished_at is not None and latest.purpose == crash_after
+                    and (crash_after != "scheduled" or latest.probe.is_failure)):
+                self.crashed = True
+                raise RuntimeError("simulated process death after durable completion")
+
+    suite = parse_budgeted_validation({"agents": {"command": ["test"]}})["agents"]
+    store, repo, executor = CrashAfterCompletedStep(), IntegrationHistory(), RecordedProbe()
+    cycle = BudgetedValidationCycle(store=store, repository=repo, executor=executor, clock=lambda: NOW)
+    cycle.run((suite,))
+    repo.current = 10
+    store.armed = True
+    with pytest.raises(RuntimeError, match="simulated process death"):
+        cycle.run((suite,))
+    assert store.history.recovery_pending
+    cycle.run(())
+    assert store.history.first_bad_commit == "6"
+    assert not store.history.recovery_pending
+    assert len(executor.calls) == 7

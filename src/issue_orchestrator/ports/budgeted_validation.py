@@ -6,11 +6,15 @@ from typing import Protocol
 from ..domain.budgeted_validation import (
     BudgetedValidationHistory, BudgetedValidationProbe, BudgetedValidationSuite,
     BudgetedValidationNotice, BudgetedValidationReportReceipt,
-    PendingBudgetedValidation,
+    PendingBudgetedValidation, StoredBudgetedValidation,
 )
 
 
 class BudgetedValidationJournal(Protocol):
+    def inventory(self) -> tuple[StoredBudgetedValidation, ...]:
+        """Return exact durable suite histories in this repository namespace."""
+        ...
+
     def pending(self) -> tuple[PendingBudgetedValidation, ...]:
         """Return every durable unfinished run with its original suite definition."""
         ...
@@ -31,6 +35,10 @@ class BudgetedValidationJournal(Protocol):
 
 
 class BudgetedValidationStore(Protocol):
+    def inventory(self) -> tuple[StoredBudgetedValidation, ...]:
+        """Return exact durable suite histories, including removed configuration."""
+        ...
+
     def read_report(self, case_id: str) -> BudgetedValidationReportReceipt:
         ...
 

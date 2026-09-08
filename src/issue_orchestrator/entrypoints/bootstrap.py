@@ -1285,14 +1285,15 @@ def build_budgeted_validation_services(config: Config, command_runner: CommandRu
     """Share one durable reporting owner with observation and application."""
     from datetime import datetime, timezone
     from ..control.budgeted_validation_reporting import BudgetedValidationReportOwner
-    from ..ports.budgeted_validation import DisabledBudgetedValidationReports
 
     suites = tuple(config.validation.budgeted.values())
-    if not any(suite.enabled for suite in suites):
-        return DisabledBudgetedValidation(), DisabledBudgetedValidationReports()
     directory = BudgetedValidationGit(config.repo_root, command_runner).storage_directory()
+    store = FileBudgetedValidationStore(directory)
     return (
-        build_budgeted_validation_runtime(config.repo_root, suites, directory),
-        BudgetedValidationReportOwner(suites=suites, store=FileBudgetedValidationStore(directory),
+        build_budgeted_validation_runtime(
+            config.repo_root, suites, directory,
+            has_recoverable_work=lambda: bool(store.pending()),
+        ),
+        BudgetedValidationReportOwner(suites=suites, store=store,
             repository=repository, clock=lambda: datetime.now(timezone.utc)),
     )

@@ -4,7 +4,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import sys
 
 from ..domain.budgeted_validation import (
     BudgetedValidationOutcome, BudgetedValidationProbe, BudgetedValidationSuite,
@@ -60,7 +59,10 @@ class BudgetedValidationCommandExecutor:
         environment["IO_BUDGETED_VALIDATION_RESULT"] = str(result_path)
         command = ContainedValidationCommand(
             operation_id=run_id,
-            arguments=(sys.executable, str(script)),
+            # Keep reservation identity stable across engine/venv upgrades.
+            # PATH selects the checkout's interpreter when the job first runs;
+            # an existing scheduler reservation is only observed, never rebound.
+            arguments=("/usr/bin/env", "python3", str(script)),
             working_directory=workspace,
             evidence_directory=evidence,
             environment=environment,

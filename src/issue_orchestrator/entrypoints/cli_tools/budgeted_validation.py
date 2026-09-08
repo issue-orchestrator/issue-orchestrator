@@ -24,16 +24,23 @@ def main() -> int:
         if args.suite not in suites:
             parser.error(f"Unknown budgeted suite {args.suite!r}")
         suites = {args.suite: suites[args.suite]}
-    if not suites:
-        print("No budgeted validation suites configured.")
-        return 0
     cycle, store = build_budgeted_validation_cycle(root)
     acquired = True
     if args.command != "status":
         acquired = cycle.run(tuple(suites.values()), force=args.command == "run")
+    configured = tuple(suites.values())
+    stored = {(item.suite.name, item.history.suite_identity): item for item in store.inventory()}
+    if not configured and not stored:
+        print("No budgeted validation suites configured or retained.")
+        return 0
     outcomes = set()
-    for suite in suites.values():
-        history = store.read(suite)
+    entries = [(item.suite, item.history) for item in stored.values()]
+    stored_names = {suite.name for suite, _history in entries}
+    entries.extend(
+        (suite, store.read(suite)) for suite in configured
+        if suite.name not in stored_names
+    )
+    for suite, history in entries:
         print(json.dumps({"suite": suite.name, "coverage_outcome": history.coverage_outcome,
                           **asdict(history)}, default=str, indent=2))
         if suite.enabled:

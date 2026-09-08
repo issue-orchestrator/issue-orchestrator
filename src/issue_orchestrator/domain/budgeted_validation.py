@@ -5,6 +5,9 @@ from datetime import datetime, timedelta
 from enum import Enum
 
 
+PENDING_DIAGNOSIS = "Confirmed failure; diagnosis is pending or was interrupted."
+
+
 @dataclass(frozen=True, slots=True)
 class ValidationCadence:
     max_merges_since_success: int = 10
@@ -139,9 +142,22 @@ class PendingBudgetedValidation:
     history: "BudgetedValidationHistory"
 
     def __post_init__(self) -> None:
+        if not self.history.recovery_pending:
+            raise ValueError("pending validation must own recoverable work")
         latest = self.history.latest
-        if latest is None or latest.finished_at is not None or latest.suite != self.suite:
-            raise ValueError("pending validation must own its exact unfinished suite")
+        if latest is None or latest.suite != self.suite:
+            raise ValueError("pending validation must own its exact suite")
+
+
+@dataclass(frozen=True, slots=True)
+class StoredBudgetedValidation:
+    suite: BudgetedValidationSuite
+    history: "BudgetedValidationHistory"
+
+    def __post_init__(self) -> None:
+        latest = self.history.latest
+        if latest is None or latest.suite != self.suite:
+            raise ValueError("stored validation must own its exact suite")
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,7 +167,8 @@ class BudgetedValidationRegression:
     failed: BudgetedValidationRun
     last_green_commit: str | None
     first_bad_commit: str | None = None
-    diagnosis: str = "Confirmed failure; diagnosis is pending or was interrupted."
+    diagnosis: str = PENDING_DIAGNOSIS
+    diagnosis_complete: bool = False
 
     def __post_init__(self) -> None:
         if self.failed.finished_at is None or not self.failed.probe.is_failure:
@@ -169,6 +186,14 @@ class BudgetedValidationHistory:
     diagnosis: str = ""
 
     regression: BudgetedValidationRegression | None = None
+
+    @property
+    def recovery_pending(self) -> bool:
+        """Whether a worker must resume execution or finish durable diagnosis."""
+        return bool(
+            (self.latest is not None and self.latest.finished_at is None)
+            or (self.regression is not None and not self.regression.diagnosis_complete)
+        )
 
     @property
     def scheduling_watermark(self) -> BudgetedValidationRun | None:
@@ -207,12 +232,18 @@ class BudgetedValidationHistory:
 
         regression = self.regression
         if regression is not None:
-            regression = replace(regression, diagnosis=detail, first_bad_commit=first_bad)
+            regression = replace(
+                regression, diagnosis=detail, first_bad_commit=first_bad,
+                diagnosis_complete=True,
+            )
         return replace(self, diagnosis=detail, first_bad_commit=first_bad, regression=regression)
 
     @property
     def coverage_outcome(self) -> BudgetedValidationOutcome:
         """A passing diagnosis probe cannot turn the scheduled result green."""
+        if (self.latest is not None and self.latest.finished_at is None
+                and self.latest.purpose == "scheduled"):
+            return BudgetedValidationOutcome.UNAVAILABLE
         scheduled = self.last_scheduled
         if scheduled is None or scheduled.finished_at is None:
             return BudgetedValidationOutcome.UNAVAILABLE

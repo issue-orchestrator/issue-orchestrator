@@ -58,6 +58,18 @@ def test_failure_is_observed_planned_and_applied_once(tmp_path):
     assert store.read_report(reports[0].notice.case_id).issue_number == 42
 
 
+def test_removed_suite_keeps_its_confirmed_regression_reportable(tmp_path):
+    suite, store, host, _owner = reporting(tmp_path)
+    owner = BudgetedValidationReportOwner(
+        suites=(), store=store, repository=host, clock=lambda: NOW,
+    )
+    notice, = owner.pending()
+    assert notice.suite_name == suite.name
+    assert owner.publish(notice) == 42
+    host.create_issue.assert_called_once()
+    assert store.read_report(notice.case_id).issue_number == 42
+
+
 def test_ambiguous_create_never_reposts_and_recovers_a_late_marker(tmp_path):
     _, store, host, owner = reporting(tmp_path)
     notice = owner.pending()[0]
@@ -72,6 +84,22 @@ def test_ambiguous_create_never_reposts_and_recovers_a_late_marker(tmp_path):
     assert owner.publish(notice) == 42
     host.create_issue.assert_called_once()
     assert owner.pending() == ()
+
+
+def test_pre_namespace_report_receipt_prevents_duplicate_issue_creation(tmp_path):
+    _, store, host, owner = reporting(tmp_path)
+    notice = owner.pending()[0]
+    assert owner.publish(notice) == 42
+    receipt, = (tmp_path / "reports").glob("*.json")
+    receipt.replace(tmp_path / f"report-{receipt.name}")
+
+    reopened = FileBudgetedValidationStore(tmp_path)
+    restarted = BudgetedValidationReportOwner(
+        suites=(), store=reopened, repository=host, clock=lambda: NOW,
+    )
+    assert restarted.pending() == ()
+    assert restarted.publish(notice) == 42
+    host.create_issue.assert_called_once()
 
 
 def test_a_green_run_between_plan_and_apply_cancels_stale_reporting(tmp_path):
@@ -133,7 +161,7 @@ def test_v1_history_migration_recovers_failure_behind_interrupted_diagnosis(tmp_
     pending = BudgetedValidationRun("interrupted", NOW, None,
         BudgetedValidationProbe("bad", BudgetedValidationOutcome.UNAVAILABLE, ""), "reproduce", suite)
     store.run_exclusive(lambda journal: journal.write(suite, journal.read(suite).append(pending)))
-    path, = tmp_path.glob("agents-*.json")
+    path, = (tmp_path / "histories").glob("agents-*.json")
     old = json.loads(path.read_text())
     old["version"] = 1
     old.pop("regression")

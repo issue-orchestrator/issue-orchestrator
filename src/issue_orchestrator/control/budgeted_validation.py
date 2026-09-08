@@ -31,7 +31,7 @@ class BudgetedValidationCycle:
             pending_names: set[str] = set()
             for pending in journal.pending():
                 pending_names.add(pending.suite.name)
-                self._resume_pending(journal, pending.suite, pending.history)
+                self._resume_recovery(journal, pending.suite, pending.history)
             for suite in suites:
                 if suite.enabled and suite.name not in pending_names:
                     if suite.branch not in heads:
@@ -82,6 +82,23 @@ class BudgetedValidationCycle:
                 self._start_diagnosis(journal, suite, history)
             return
         self._continue_diagnosis(journal, suite, history)
+
+    def _resume_recovery(self, journal: BudgetedValidationJournal,
+                         suite: BudgetedValidationSuite,
+                         history: BudgetedValidationHistory) -> None:
+        latest = history.latest
+        if latest is None:
+            raise ValueError("recoverable validation has no latest run")
+        if latest.finished_at is None:
+            self._resume_pending(journal, suite, history)
+            return
+        regression = history.regression
+        if regression is None or regression.diagnosis_complete:
+            raise ValueError("validation is not recoverable")
+        if latest.id == regression.failed.id:
+            self._start_diagnosis(journal, suite, history)
+        else:
+            self._continue_diagnosis(journal, suite, history)
 
     def _start_diagnosis(self, journal: BudgetedValidationJournal,
                          suite: BudgetedValidationSuite,

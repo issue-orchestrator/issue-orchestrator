@@ -13,7 +13,8 @@ from ..domain.budgeted_validation import (
     BudgetedValidationHistory, BudgetedValidationOutcome, BudgetedValidationProbe,
     BudgetedValidationRun, BudgetedValidationSuite, BudgetedValidationReportReceipt,
     BudgetedValidationRegression,
-    PendingBudgetedValidation, ValidationCadence,
+    PendingBudgetedValidation, PENDING_DIAGNOSIS, StoredBudgetedValidation,
+    ValidationCadence,
 )
 from ..ports.budgeted_validation import BudgetedValidationJournal
 
@@ -62,10 +63,14 @@ def _require_legacy_suite(suite: BudgetedValidationSuite | None) -> BudgetedVali
 class FileBudgetedValidationStore:
     def __init__(self, directory: Path) -> None:
         self._directory = directory
+        self._histories = directory / "histories"
+        self._reports = directory / "reports"
         self._leased = False
 
     def run_exclusive(self, operation: Callable[[BudgetedValidationJournal], None]) -> bool:
         self._directory.mkdir(parents=True, exist_ok=True)
+        self._histories.mkdir(exist_ok=True)
+        self._reports.mkdir(exist_ok=True)
         with (self._directory / "run.lock").open("a") as lock:
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -80,35 +85,59 @@ class FileBudgetedValidationStore:
         return True
 
     def _path(self, suite: BudgetedValidationSuite) -> Path:
+        return self._histories / f"{suite.name}-{suite_identity(suite)}.json"
+
+    def _legacy_path(self, suite: BudgetedValidationSuite) -> Path:
         return self._directory / f"{suite.name}-{suite_identity(suite)}.json"
 
-    def pending(self) -> tuple[PendingBudgetedValidation, ...]:
-        pending: list[PendingBudgetedValidation] = []
+    def _history_documents(self) -> tuple[tuple[Path, dict], ...]:
+        """Read old and namespaced histories while excluding worker requests."""
+        documents: dict[str, tuple[Path, dict]] = {}
         for path in sorted(self._directory.glob("*.json")):
-            if path.name.startswith("report-"):
-                continue
             data = json.loads(path.read_text())
+            if {"suite_identity", "runs", "latest"}.issubset(data):
+                documents[path.name] = (path, data)
+        for path in sorted(self._histories.glob("*.json")):
+            documents[path.name] = (path, json.loads(path.read_text()))
+        return tuple(documents.values())
+
+    def pending(self) -> tuple[PendingBudgetedValidation, ...]:
+        pending = tuple(
+            PendingBudgetedValidation(item.suite, item.history)
+            for item in self.inventory() if item.history.recovery_pending
+        )
+        names = [item.suite.name for item in pending]
+        if len(names) != len(set(names)):
+            raise ValueError("multiple recoverable definitions share one suite name")
+        return pending
+
+    def inventory(self) -> tuple[StoredBudgetedValidation, ...]:
+        stored: list[StoredBudgetedValidation] = []
+        for path, data in self._history_documents():
             if data.get("version") in {1, 2}:
                 latest = data.get("latest")
-                if latest is not None and latest.get("finished_at") is None:
+                exact_definition = latest is not None and "suite" in latest
+                if latest is not None and latest.get("finished_at") is None and not exact_definition:
                     raise ValueError(
                         "legacy unfinished validation lacks an exact suite definition; "
                         "reservation retained and new work refused"
                     )
-                continue
+                if not exact_definition:
+                    continue
             if data.get("version") != 3:
-                raise ValueError(f"unrecognised validation history: {path.name}")
+                if data.get("version") not in {1, 2}:
+                    raise ValueError(f"unrecognised validation history: {path.name}")
             history = self._decode_history(data, None)
             latest = history.latest
-            if latest is not None and latest.finished_at is None:
-                pending.append(PendingBudgetedValidation(latest.suite, history))
-        names = [item.suite.name for item in pending]
-        if len(names) != len(set(names)):
-            raise ValueError("multiple unfinished definitions share one suite name")
-        return tuple(pending)
+            if latest is None:
+                continue
+            stored.append(StoredBudgetedValidation(latest.suite, history))
+        return tuple(stored)
 
     def read(self, suite: BudgetedValidationSuite) -> BudgetedValidationHistory:
         path = self._path(suite)
+        if not path.exists():
+            path = self._legacy_path(suite)
         identity = suite_identity(suite)
         if not path.exists():
             return BudgetedValidationHistory(identity)
@@ -138,7 +167,10 @@ class FileBudgetedValidationStore:
         return history
 
     def read_report(self, case_id: str) -> BudgetedValidationReportReceipt:
-        path = self._directory / f"report-{hashlib.sha256(case_id.encode()).hexdigest()}.json"
+        digest = hashlib.sha256(case_id.encode()).hexdigest()
+        path = self._reports / f"{digest}.json"
+        if not path.exists():
+            path = self._directory / f"report-{digest}.json"
         if not path.exists():
             return BudgetedValidationReportReceipt()
         data = json.loads(path.read_text())
@@ -153,12 +185,14 @@ class FileBudgetedValidationStore:
     def write_report(self, case_id: str, receipt: BudgetedValidationReportReceipt) -> None:
         if not self._leased:
             raise RuntimeError("Report writes require the repository lease")
-        path = self._directory / f"report-{hashlib.sha256(case_id.encode()).hexdigest()}.json"
+        self._reports.mkdir(parents=True, exist_ok=True)
+        path = self._reports / f"{hashlib.sha256(case_id.encode()).hexdigest()}.json"
         self._write_json(path, {"version": 1, **asdict(receipt)})
 
     def write(self, suite: BudgetedValidationSuite, history: BudgetedValidationHistory) -> None:
         if not self._leased or history.suite_identity != suite_identity(suite):
             raise RuntimeError("History writes require the matching suite and repository lease")
+        self._histories.mkdir(parents=True, exist_ok=True)
         self._write_json(self._path(suite), {"version": 3, **asdict(history)})
 
     def _write_json(self, path: Path, data: dict) -> None:
@@ -169,7 +203,7 @@ class FileBudgetedValidationStore:
             output.flush()
             os.fsync(output.fileno())
         temporary.replace(path)
-        directory_fd = os.open(self._directory, os.O_RDONLY)
+        directory_fd = os.open(path.parent, os.O_RDONLY)
         try:
             os.fsync(directory_fd)
         finally:
@@ -202,5 +236,9 @@ def _decode_regression(data: dict, legacy_suite: BudgetedValidationSuite | None)
     failed = _decode_run(raw["failed"], legacy_suite)
     if failed is None:
         raise ValueError("regression lacks a failed run")
-    return BudgetedValidationRegression(failed, raw["last_green_commit"],
-        raw["first_bad_commit"], raw["diagnosis"])
+    return BudgetedValidationRegression(
+        failed, raw["last_green_commit"], raw["first_bad_commit"],
+        raw["diagnosis"], raw.get(
+            "diagnosis_complete", raw["diagnosis"] != PENDING_DIAGNOSIS,
+        ),
+    )

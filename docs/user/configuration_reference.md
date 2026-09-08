@@ -202,6 +202,15 @@ _Auto-generated from settings schema._
 
 Named suites live under `validation.budgeted.<suite>`. An empty mapping disables this workload. Each suite has its own cadence; either threshold makes changed code due. Only successful runs advance coverage. No bisection-depth setting is needed.
 
+The orchestrator stores each reserved run with its exact command, branch, and
+timeouts. A restart resumes that definition even if current configuration
+changes, disables, or removes the suite. A pending run reports unavailable
+coverage; an older pass cannot make it green. Completed diagnostic steps also
+resume from their durable boundary, and confirmed regressions remain visible to
+the tech lead after their suite is removed. Runtime requests, histories,
+reports, and run evidence use separate storage namespaces so one kind of file
+cannot be interpreted as another.
+
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `enabled` | `True` | Enable automatic execution of this configured suite. |
