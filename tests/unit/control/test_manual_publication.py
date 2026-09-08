@@ -17,6 +17,7 @@ from issue_orchestrator.domain.registered_completion import CompletionProcessing
 from issue_orchestrator.domain.session_key import TaskKind
 from issue_orchestrator.domain.validated_head_publication import (
     BranchWriteOutcome, BranchWriteStatus, PrEnsureOutcome, PrEnsureStatus,
+    PullRequestAttribution,
     PublicationContent, PublishValidatedHeadCommand, RemoteHeadExpectation,
     SupersededStage,
 )
@@ -46,7 +47,8 @@ def rig(tmp_path):
     executor.push_validated_head.return_value = BranchWriteOutcome(
         BranchWriteStatus.PUSHED, command.target_head_sha, ExactPushOutcome.PUSHED, None, "Pushed")
     executor.ensure_pull_request.return_value = PrEnsureOutcome(
-        PrEnsureStatus.CREATED, 2, "https://github.com/owner/repo/pull/2", command.target_head_sha, None, "Created")
+        PrEnsureStatus.CREATED, 2, "https://github.com/owner/repo/pull/2",
+        command.target_head_sha, None, "Created", PullRequestAttribution.CREATED)
     return locators, prepared, preparation, executor
 
 

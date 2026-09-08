@@ -60,3 +60,9 @@ class ManualPublicationResult:
                 raise ValueError("manual success requires a successful exact publication")
             if not self.publication.pr_url or self.processing.pr_url != self.publication.pr_url:
                 raise ValueError("manual success must preserve the observed PR identity")
+
+    @property
+    def attributable_pr_number(self) -> int | None:
+        if self.publication is None:
+            return None
+        return self.publication.attributable_pr_number

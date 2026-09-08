@@ -113,6 +113,31 @@ def test_review_that_changes_head_cannot_replace_validated_target(rig):
     assert "changed the validated source" in result.message
 
 
+def test_create_pr_only_intent_cannot_make_manual_recovery_push_a_protected_branch(rig):
+    custody, evidence, locators, shared, _ = rig
+    protected_run = replace(evidence.run, branch_name="master")
+    protected_evidence = replace(evidence, run=protected_run)
+    intake = Mock(wraps=custody.intake)
+    intake.prepare_receipt_for_issue.return_value = protected_evidence
+    working_copy = Mock(wraps=custody.wc)
+    working_copy.get_current_branch.return_value = "master"
+    prepared = shared.prepare_completion.return_value
+    shared.prepare_completion.return_value = replace(prepared, branch="master")
+    owner = ManualCompletionPreparation(
+        intake=intake,
+        completion=shared,
+        working_copy=working_copy,
+        repo_slug="owner/repo",
+    )
+    result = owner.prepare_manual_publication(
+        replace(locators, branch_name="master"), "Feature"
+    )
+
+    assert isinstance(result, ProcessingResult) and not result.success
+    assert "protected branch" in result.message
+    shared.prepare_completion.assert_not_called()
+
+
 @pytest.mark.parametrize("phase", ["review", "stack"])
 def test_shared_policy_refusal_never_builds_a_publication_command(rig, phase):
     _, _, locators, shared, owner = rig

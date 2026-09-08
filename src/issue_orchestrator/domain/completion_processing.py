@@ -13,7 +13,12 @@ class CompletionPublication:
     branch: str
 
     def __post_init__(self) -> None:
-        if not isinstance(self.url, str) or not self.url.strip() or not isinstance(self.branch, str) or not self.branch.strip():
+        if (
+            type(self.url) is not str
+            or not self.url.strip()
+            or type(self.branch) is not str
+            or not self.branch.strip()
+        ):
             raise ValueError("publication requires its URL and branch")
 
     @classmethod

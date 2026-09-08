@@ -4,7 +4,6 @@ import json
 from dataclasses import dataclass
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
 
 from ..domain.completion_intake import CompletionIntakeError
 from ..ports.completion_intake import CompletionExchangeIntake
@@ -32,23 +31,18 @@ class PairValidationMirror:
     def completion_error(
         self,
         *,
-        run_validation_record_path: Path,
         require_validation: bool,
     ) -> str | None:
-        """Read attested intent, refresh its view, and enforce optional HEAD freshness."""
+        """Mirror authenticated validation bytes and enforce optional HEAD freshness."""
         try:
-            record = self.intake.completion_record()
+            evidence = self.intake.completion_evidence()
         except (CompletionIntakeError, OSError) as exc:
+            self._clear()
             return f"completion receipt unavailable or validation failed: {exc}"
-        validation_source_error = self.refresh_from_completion(
-            record.to_dict(),
-            run_validation_record_path=run_validation_record_path,
-        )
+        self._replace_bytes(evidence.validation_bytes)
         if not require_validation:
             return None
-        # All source errors below are non-empty. Preserve the first failure and
-        # inspect HEAD only after the source was copied successfully.
-        return validation_source_error or self.current_validation_error()
+        return self.current_validation_error()
 
     def replace_from_initial(self, source: Path | None) -> None:
         """Mirror the caller's current validation source at exchange start.
@@ -59,72 +53,20 @@ class PairValidationMirror:
         """
         self._replace_from(source)
 
-    def refresh_from_completion(
-        self,
-        payload: dict[str, Any],
-        *,
-        run_validation_record_path: Path,
-    ) -> str | None:
-        """Mirror validation evidence produced by this coder turn."""
-        source, error = self._completion_validation_source(
-            payload,
-            run_validation_record_path=run_validation_record_path,
-        )
-        if error is not None:
-            self._clear()
-            return error
-        self._replace_from(source)
-        return None
-
     def current_validation_error(self) -> str | None:
         return _validation_record_error(
             self.record_path,
             current_head_sha=self.head_reader(self.coder_worktree_path),
         )
 
-    def _completion_validation_source(
-        self,
-        payload: dict[str, Any],
-        *,
-        run_validation_record_path: Path,
-    ) -> tuple[Path | None, str | None]:
-        raw_path = payload.get("validation_record_path")
-        if raw_path is not None:
-            if not isinstance(raw_path, str) or not raw_path.strip():
-                return (
-                    None,
-                    "completion validation_record_path must be a non-empty string",
-                )
-            return self._validated_worktree_path(raw_path)
-        if run_validation_record_path.exists():
-            return run_validation_record_path, None
-        return None, None
-
-    def _validated_worktree_path(self, raw_path: str) -> tuple[Path | None, str | None]:
-        candidate = Path(raw_path)
-        if not candidate.is_absolute():
-            candidate = self.coder_worktree_path / candidate
-        try:
-            resolved = candidate.resolve()
-            worktree = self.coder_worktree_path.resolve()
-            if resolved != self.record_path.resolve():
-                resolved.relative_to(worktree)
-        except (OSError, ValueError):
-            return None, (
-                "completion validation_record_path must stay under the coder worktree"
-            )
-        if not resolved.exists():
-            return None, f"completion validation_record_path does not exist: {resolved}"
-        if not resolved.is_file():
-            return None, f"completion validation_record_path is not a file: {resolved}"
-        return resolved, None
-
     def _replace_from(self, source: Path | None) -> None:
         if source is None or not source.exists():
             self._clear()
             return
+        self._replace_bytes(source.read_bytes())
+
+    def _replace_bytes(self, payload: bytes) -> None:
         self.pair_dir.mkdir(parents=True, exist_ok=True)
-        payload = source.read_bytes()
         _atomic_write_bytes(self.record_path, payload)
         if self.run_record_path is not None:
             _atomic_write_bytes(self.run_record_path, payload)
@@ -168,11 +110,9 @@ def validate_coder_completion(
     *,
     completion_path: Path,
     pair_validation: PairValidationMirror,
-    run_validation_record_path: Path,
     require_validation: bool,
 ) -> str | None:
     """Compatibility entry point; the candidate filename is never authority."""
     return pair_validation.completion_error(
-        run_validation_record_path=run_validation_record_path,
         require_validation=require_validation,
     )

@@ -13,7 +13,7 @@ from issue_orchestrator.domain.exact_git import ExactPushOutcome
 from issue_orchestrator.domain.manual_publication import PreparedManualPublication
 from issue_orchestrator.domain.registered_completion import CompletionProcessingPolicy
 from issue_orchestrator.domain.session_key import TaskKind
-from issue_orchestrator.domain.validated_head_publication import BranchWriteOutcome, BranchWriteStatus, PrEnsureOutcome, PrEnsureStatus
+from issue_orchestrator.domain.validated_head_publication import BranchWriteOutcome, BranchWriteStatus, PrEnsureOutcome, PrEnsureStatus, PullRequestAttribution
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.ports.validated_head_publication import ValidatedHeadExecutor
@@ -68,7 +68,8 @@ def test_new_and_existing_manual_prs_use_shared_policy_and_preserve_requested_ef
     executor.push_validated_head.side_effect = push
     executor.ensure_pull_request.return_value = PrEnsureOutcome(
         PrEnsureStatus.ADOPTED if existing_pr else PrEnsureStatus.CREATED,
-        number, f"https://github.com/owner/repo/pull/{number}", target, None, "Published")
+        number, f"https://github.com/owner/repo/pull/{number}", target, None, "Published",
+        PullRequestAttribution.RECORDED if existing_pr else PullRequestAttribution.CREATED)
     (custody.worktree / ".issue-orchestrator/completion.json").write_text('{"outcome":"blocked"}')
     result = ManualCompletionPublisher(owner, executor).publish(locators, "Feature", lambda: True)
     assert result.processing.success, result.processing.errors

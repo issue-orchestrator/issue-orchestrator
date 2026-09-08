@@ -1997,7 +1997,6 @@ def _enforce_coder_protocol(
     protocol_error = _validate_coder_completion(
         completion_path=coder_completion_path,
         pair_validation=pair_validation,
-        run_validation_record_path=run_dir / "validation-record.json",
         require_validation=require_validation,
     )
     next_attempt_index = 2
@@ -2117,7 +2116,6 @@ def _enforce_coder_protocol(
         protocol_error = _validate_coder_completion(
             completion_path=coder_completion_path,
             pair_validation=pair_validation,
-            run_validation_record_path=run_dir / "validation-record.json",
             require_validation=require_validation,
         )
     if protocol_error is not None:

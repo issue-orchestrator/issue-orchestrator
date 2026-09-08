@@ -471,7 +471,7 @@ class PublishRecoveryService:
                 job.error,
             )
             return
-        pr_number = result.publication.pr_number if result and result.publication else None
+        pr_number = result.attributable_pr_number if result else None
         if pr_number is None:
             logger.info(
                 "[publish-retry] Abandoned republish for issue=%s produced no "

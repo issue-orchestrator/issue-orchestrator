@@ -12,6 +12,34 @@ from .validated_work import (
     require_sha,
 )
 
+PROTECTED_PUBLICATION_BRANCHES = frozenset({"main", "master"})
+
+
+def is_protected_publication_branch(branch: str) -> bool:
+    """Return whether exact publication must never write this branch."""
+    return branch in PROTECTED_PUBLICATION_BRANCHES
+
+
+def require_publication_branch_name(branch: str, *, target: bool) -> None:
+    """Validate a short publication ref and protect branch-write targets."""
+    if (
+        type(branch) is not str
+        or not branch
+        or branch == "@"
+        or branch.startswith(("-", "refs/"))
+        or branch.endswith((".", "/"))
+        or any(char.isspace() or ord(char) < 32 or char in "~^:?*[\\" for char in branch)
+        or ".." in branch
+        or "@{" in branch
+        or any(
+            not part or part.startswith(".") or part.endswith(".lock")
+            for part in branch.split("/")
+        )
+    ):
+        raise ValueError("publication requires valid short branch names")
+    if target and is_protected_publication_branch(branch):
+        raise ValueError("publication target branch is protected")
+
 
 class RemoteHeadExpectation(StrEnum):
     EXACT = "exact"
@@ -64,25 +92,8 @@ class PublishValidatedHeadCommand:
             require_positive(self.pr_number, "pr_number")
         if len(self.repo_slug.split("/")) != 2 or not all(self.repo_slug.split("/")):
             raise ValueError("repository must be owner/name")
-        for branch in (self.branch_name, self.pr_base_branch):
-            if (
-                type(branch) is not str
-                or not branch
-                or branch == "@"
-                or branch.startswith(("-", "refs/"))
-                or branch.endswith((".", "/"))
-                or any(
-                    char.isspace() or ord(char) < 32 or char in "~^:?*[\\"
-                    for char in branch
-                )
-                or ".." in branch
-                or "@{" in branch
-                or any(
-                    not part or part.startswith(".") or part.endswith(".lock")
-                    for part in branch.split("/")
-                )
-            ):
-                raise ValueError("publication requires valid short branch names")
+        require_publication_branch_name(self.branch_name, target=True)
+        require_publication_branch_name(self.pr_base_branch, target=False)
 
 
 class BranchWriteStatus(StrEnum):
@@ -162,6 +173,15 @@ class PrEnsureStatus(StrEnum):
     TRANSIENT_FAILURE = "transient_failure"
 
 
+class PullRequestAttribution(StrEnum):
+    """Why a publication attempt has authority over an observed pull request."""
+
+    NONE = "none"
+    RECORDED = "recorded"
+    OPERATION_MARKER = "operation_marker"
+    CREATED = "created"
+
+
 @dataclass(frozen=True, slots=True)
 class PrEnsureOutcome:
     status: PrEnsureStatus
@@ -170,10 +190,17 @@ class PrEnsureOutcome:
     pr_head_sha: str | None
     failure: ValidatedWorkFailure | None
     message: str
+    attribution: PullRequestAttribution
 
     def __post_init__(self) -> None:
         if type(self.status) is not PrEnsureStatus:
             raise ValueError("PR status must be typed")
+        if type(self.attribution) is not PullRequestAttribution:
+            raise ValueError("PR attribution must be typed")
+        self._validate_observed_metadata()
+        self._validate_status_contract()
+
+    def _validate_observed_metadata(self) -> None:
         metadata = (self.pr_number, self.pr_url, self.pr_head_sha)
         if any(value is not None for value in metadata):
             if any(value is None for value in metadata):
@@ -183,6 +210,10 @@ class PrEnsureOutcome:
             require_sha(self.pr_head_sha)
             if type(self.pr_url) is not str or not self.pr_url:
                 raise ValueError("observed PR URL must be nonempty")
+        elif self.attribution is not PullRequestAttribution.NONE:
+            raise ValueError("PR attribution requires observed PR metadata")
+
+    def _validate_status_contract(self) -> None:
         success = self.status not in {
             PrEnsureStatus.REFUSED,
             PrEnsureStatus.TRANSIENT_FAILURE,
@@ -200,8 +231,16 @@ class PrEnsureOutcome:
             require_sha(self.pr_head_sha)
             if self.failure is not None:
                 raise ValueError("successful PR stage cannot carry failure")
+            if self.attribution is PullRequestAttribution.NONE:
+                raise ValueError("successful PR stage requires attribution")
         elif type(self.failure) is not ValidatedWorkFailure:
             raise ValueError("unsuccessful PR stage requires typed failure")
+
+    @property
+    def attributable_pr_number(self) -> int | None:
+        if self.attribution is PullRequestAttribution.NONE:
+            return None
+        return self.pr_number
 
 
 class SupersededStage(StrEnum):
@@ -219,11 +258,24 @@ class PublishValidatedHeadOutcome:
     push_outcome: ExactPushOutcome | None
     failure: ValidatedWorkFailure | None
     message: str
+    pr_attribution: PullRequestAttribution
     superseded_stage: SupersededStage | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.pr_attribution) is not PullRequestAttribution:
+            raise ValueError("PR attribution must be typed")
+        if self.pr_number is None and self.pr_attribution is not PullRequestAttribution.NONE:
+            raise ValueError("PR attribution requires observed PR metadata")
 
     @property
     def retryable(self) -> bool:
         return self.status is PublishValidatedHeadStatus.TRANSIENT_FAILURE
+
+    @property
+    def attributable_pr_number(self) -> int | None:
+        if self.pr_attribution is PullRequestAttribution.NONE:
+            return None
+        return self.pr_number
 
 
 def compose_publication_outcome(
@@ -267,6 +319,7 @@ def compose_publication_outcome(
         branch.push_outcome,
         failure,
         message,
+        pr.attribution if pr else PullRequestAttribution.NONE,
     )
 
 
@@ -292,5 +345,6 @@ def superseded_outcome(
         branch.push_outcome if branch else None,
         None,
         "Publication authority superseded",
+        PullRequestAttribution.NONE,
         stage,
     )

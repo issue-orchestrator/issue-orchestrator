@@ -11,6 +11,7 @@ from issue_orchestrator.domain.validated_head_publication import (
     BranchWriteStatus,
     PrEnsureOutcome,
     PrEnsureStatus,
+    PullRequestAttribution,
     PublishValidatedHeadCommand,
     PublicationContent,
     RemoteHeadExpectation,
@@ -61,6 +62,7 @@ def pr_result(status):
         SHA,
         ValidatedWorkFailure.REMOTE_UNREADABLE if failure else None,
         "pr",
+        PullRequestAttribution.CREATED,
     )
 
 
@@ -79,6 +81,9 @@ def test_total_composition_matrix(branch_status, pr_status):
     assert outcome.pr_number == (pr.pr_number if pr else None)
     assert outcome.pr_url == (pr.pr_url if pr else None)
     assert outcome.pr_head_sha == (pr.pr_head_sha if pr else None)
+    assert outcome.pr_attribution is (
+        pr.attribution if pr else PullRequestAttribution.NONE
+    )
     if pr_status is PrEnsureStatus.REFUSED:
         expected = PublishValidatedHeadStatus.REJECTED
     elif pr_status is PrEnsureStatus.TRANSIENT_FAILURE:
@@ -110,6 +115,28 @@ def test_supersession_stage_matrix(stage, branch_status):
     assert outcome.push_outcome is (branch.push_outcome if branch else None)
     assert outcome.observed_remote_head_sha == (SHA if branch else None)
     assert outcome.pr_number is outcome.pr_url is outcome.pr_head_sha is None
+    assert outcome.pr_attribution is PullRequestAttribution.NONE
+    assert outcome.attributable_pr_number is None
+
+
+def test_observed_only_pr_is_not_attributable_for_cleanup():
+    pr = replace(
+        pr_result(PrEnsureStatus.REFUSED),
+        attribution=PullRequestAttribution.NONE,
+    )
+    outcome = compose_publication_outcome(
+        branch_result(BranchWriteStatus.PUSHED), pr
+    )
+    assert outcome.pr_number == 3
+    assert outcome.attributable_pr_number is None
+
+
+def test_successful_pr_requires_attribution():
+    with pytest.raises(ValueError, match="requires attribution"):
+        replace(
+            pr_result(PrEnsureStatus.CREATED),
+            attribution=PullRequestAttribution.NONE,
+        )
 
 
 @pytest.mark.parametrize("expectation", list(RemoteHeadExpectation))
@@ -123,6 +150,16 @@ def test_expectation_contract(expectation, expected):
             replace(
                 command(), expectation=expectation, expected_remote_head_sha=expected
             )
+
+
+@pytest.mark.parametrize("protected", ["main", "master"])
+def test_publication_command_refuses_protected_target_branch(protected):
+    with pytest.raises(ValueError, match="target branch is protected"):
+        replace(command(), branch_name=protected)
+
+
+def test_publication_command_allows_protected_base_branch():
+    assert replace(command(), pr_base_branch="master").pr_base_branch == "master"
 
 
 def test_successful_stages_cannot_name_different_commits():

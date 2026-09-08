@@ -18,6 +18,7 @@ from issue_orchestrator.control.actions import (
 )
 from issue_orchestrator.control.completion_types import ProcessingResult
 from issue_orchestrator.domain.completion_intake import CompletionIntakeReceipt
+from issue_orchestrator.domain.validated_head_publication import PullRequestAttribution
 from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.ports.tech_lead_authority import (
     InMemoryTechLeadAuthorityStore,
@@ -91,6 +92,7 @@ class _Repo:
 @dataclass
 class _ManualPublisher:
     result: ProcessingResult
+    pr_attribution: PullRequestAttribution = PullRequestAttribution.CREATED
     calls: list[dict] = field(default_factory=list)
 
     def publish(self, locators, issue_title, is_current):
@@ -111,7 +113,8 @@ class _ManualPublisher:
                 PublishValidatedHeadStatus.PUBLISHED if processing.success else PublishValidatedHeadStatus.TRANSIENT_FAILURE,
                 "a" * 40, int(processing.pr_url.rsplit("/", 1)[-1]), processing.pr_url,
                 "a" * 40, ExactPushOutcome.PUSHED,
-                None if processing.success else ValidatedWorkFailure.REMOTE_UNREADABLE, processing.message)
+                None if processing.success else ValidatedWorkFailure.REMOTE_UNREADABLE,
+                processing.message, self.pr_attribution)
         return ManualPublicationResult(processing, publication, locators.agent_label)
 
 
@@ -232,11 +235,13 @@ def _service(
     action_applier: _ActionApplier | None = None,
     code_review_agent_configured: bool = False,
     tech_lead_authority: InMemoryTechLeadAuthorityStore | None = None,
+    pr_attribution: PullRequestAttribution = PullRequestAttribution.CREATED,
 ) -> tuple[PublishRecoveryService, JsonPublishRetryLocatorStore, Any]:
     store = JsonPublishRetryLocatorStore(tmp_path / "publish_retry_locators.json")
     runner = runner or _RecordingRunner()
     processor = _ManualPublisher(
-        result or ProcessingResult(success=True, message="ok", pr_url=PR_URL)
+        result or ProcessingResult(success=True, message="ok", pr_url=PR_URL),
+        pr_attribution=pr_attribution,
     )
     service = PublishRecoveryService(
         repository_host=repo,
@@ -701,6 +706,49 @@ def test_abandon_issue_supersedes_late_retry_and_skips_reconcile(
     assert not any(entry.issue_number == 4057 for entry in state.session_history)
     assert 4057 not in state.completed_today
     assert store.get(4057) is None
+
+
+def test_abandon_issue_does_not_supersede_observed_unattributed_pr(
+    make_session, tmp_path
+) -> None:
+    """A refused racing PR remains observable without becoming cleanup authority."""
+    lm = LabelManager(_config(tmp_path))
+    repo = _Repo(issue=_issue(lm), labels=list(_issue(lm).labels))
+    service, store, runner = _service(
+        tmp_path,
+        repo,
+        lm,
+        result=ProcessingResult(
+            False,
+            "Unrecorded PR lacks this operation's exact marker",
+            pr_url=PR_URL,
+        ),
+        pr_attribution=PullRequestAttribution.NONE,
+    )
+    _record_failure(service, make_session, tmp_path)
+    state = OrchestratorState()
+
+    assert service.retry_publish(4057, state).status == "submitted"
+    service.abandon_issue(4057)
+    repo.prs = [
+        PRInfo(
+            number=5453,
+            title="Operator PR",
+            url=PR_URL,
+            branch=BRANCH,
+            body="Created by someone else",
+            state="open",
+            labels=[],
+        )
+    ]
+    runner.run_all()
+    service.drain_completed_retries(state)
+
+    assert repo.superseded == []
+    assert [pr.number for pr in repo.prs] == [5453]
+    assert store.get(4057) is None
+    assert repo.added == [] and repo.removed == []
+    assert state.session_history == []
 
 
 def test_abandon_issue_without_inflight_does_not_block_a_later_retry(

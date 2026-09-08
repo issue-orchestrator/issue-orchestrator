@@ -12,6 +12,7 @@ from issue_orchestrator.domain.publication_remote import (
     publication_marker,
 )
 from issue_orchestrator.domain.validated_head_publication import (
+    PullRequestAttribution,
     PublishValidatedHeadCommand,
     PublicationContent,
     RemoteHeadExpectation,
@@ -236,6 +237,8 @@ def test_lost_create_response_recovers_attributable_pr(setup):
     remote.lost_create = True
     outcome = executor.publish_or_reconcile(command)
     assert outcome.status is PublishValidatedHeadStatus.PUBLISHED
+    assert outcome.pr_attribution is PullRequestAttribution.OPERATION_MARKER
+    assert outcome.attributable_pr_number == outcome.pr_number
     assert remote.created == 1
     assert executor.publish_or_reconcile(command).pr_number == outcome.pr_number
     assert remote.created == 1
@@ -262,7 +265,12 @@ def test_split_and_combined_results_share_composer(setup):
     expected = compose_publication_outcome(branch, pr)
     assert expected.status is PublishValidatedHeadStatus.PUBLISHED
     combined = executor.publish_or_reconcile(command)
-    assert replace(expected, status=combined.status, push_outcome=None) == combined
+    assert replace(
+        expected,
+        status=combined.status,
+        push_outcome=None,
+        pr_attribution=combined.pr_attribution,
+    ) == combined
 
 
 @pytest.mark.parametrize("target,success", [("target", True), ("divergent", False)])
@@ -316,6 +324,8 @@ def test_lost_create_response_cannot_adopt_unattributable_racing_pr(setup):
     outcome = executor.publish_or_reconcile(command)
     assert outcome.status is PublishValidatedHeadStatus.REJECTED
     assert outcome.pr_number == 1
+    assert outcome.pr_attribution is PullRequestAttribution.NONE
+    assert outcome.attributable_pr_number is None
     assert outcome.observed_remote_head_sha == rig.target
     assert (
         executor.publish_or_reconcile(command).status
@@ -363,6 +373,12 @@ def test_failed_read_keeps_already_observed_pr_facts(setup, after_create):
     assert outcome.pr_url == "https://example/pull/1"
     assert outcome.pr_head_sha == rig.target
     assert outcome.observed_remote_head_sha == rig.target
+    assert outcome.pr_attribution is (
+        PullRequestAttribution.CREATED
+        if after_create
+        else PullRequestAttribution.OPERATION_MARKER
+    )
+    assert outcome.attributable_pr_number == 1
 
 
 def test_wrong_issue_marker_is_refused_on_every_retry(setup):
@@ -380,6 +396,7 @@ def test_recorded_pr_has_explicit_authority_without_marker(setup):
     pr = remote.add_pr(command, body="Unmarked but explicitly recorded")
     outcome = executor.publish_or_reconcile(replace(command, pr_number=pr.number))
     assert outcome.status is PublishValidatedHeadStatus.PUBLISHED
+    assert outcome.pr_attribution is PullRequestAttribution.RECORDED
 
 
 @pytest.mark.parametrize("already_target", [False, True])

@@ -99,6 +99,15 @@ class ScriptedReceiptIntake:
         assert receipt == self.receipt and self.record is not None
         return self.record
 
+    def prepare_receipt(self, receipt, run):
+        assert receipt == self.receipt and self.record is not None
+        validation_path = self.record.validation_record_path
+        if validation_path is None:
+            from issue_orchestrator.domain.completion_intake import CompletionIntakeError
+
+            raise CompletionIntakeError("fixture has no authenticated validation")
+        return SimpleNamespace(validation_bytes=Path(validation_path).read_bytes())
+
 
 def _start_exchange_run(
     *,
@@ -1401,196 +1410,119 @@ class TestPairValidationMirror:
         assert not pair_record.exists()
         assert not run_record.exists()
 
-    def test_completion_validation_record_replaces_stale_pair_head(
+    def test_authenticated_validation_bytes_replace_stale_pair_head(
         self,
         tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         coder_wt = tmp_path / "coder-wt"
         pair_dir = coder_wt / ".issue-orchestrator" / "persistent-pairs" / "issue-42"
         pair_record = pair_dir / "validation-record.json"
-        completion = pair_dir / "coder" / "completion-coder.json"
-        current_record = coder_wt / ".issue-orchestrator" / "validation" / "head-b.json"
         pair_record.parent.mkdir(parents=True)
-        completion.parent.mkdir(parents=True)
-        current_record.parent.mkdir(parents=True)
         pair_record.write_text(
             json.dumps({"passed": True, "head_sha": "head-a"}),
             encoding="utf-8",
         )
-        current_record.write_text(
-            json.dumps({"passed": True, "head_sha": "head-b"}),
-            encoding="utf-8",
+        validation = json.dumps({"passed": True, "head_sha": "head-b"}).encode()
+        intake = MagicMock()
+        intake.completion_evidence.return_value = SimpleNamespace(
+            validation_bytes=validation
         )
-        completion.write_text(
-            json.dumps(
-                {
-                    "outcome": "completed",
-                    "validation_record_path": str(current_record),
-                }
-            ),
-            encoding="utf-8",
-        )
-        monkeypatch.setattr(pse, "get_repo_head_sha", lambda _: "head-b")
         mirror = pse._PairValidationMirror(  # noqa: SLF001
-            head_reader=pse.get_repo_head_sha,
-            intake=RunCompletionExchangeIntake(
-                ScriptedReceiptIntake(), make_intake_run_record(tmp_path).run
-            ),
+            head_reader=lambda _: "head-b",
+            intake=intake,
             pair_dir=pair_dir,
             record_path=pair_record,
             coder_worktree_path=coder_wt,
         )
 
-        error = (
-            mirror.refresh_from_completion(
-                json.loads(completion.read_text()),
-                run_validation_record_path=tmp_path / "run" / "validation-record.json",
-            )
-            or mirror.current_validation_error()
-        )
+        assert mirror.completion_error(require_validation=True) is None
+        assert pair_record.read_bytes() == validation
 
-        assert error is None
-        assert json.loads(pair_record.read_text(encoding="utf-8")) == {
-            "passed": True,
-            "head_sha": "head-b",
-        }
-
-    def test_stale_completion_validation_head_fails_current_head_check(
+    def test_authenticated_stale_validation_head_fails_current_head_check(
         self,
         tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         coder_wt = tmp_path / "coder-wt"
-        pair_dir = coder_wt / ".issue-orchestrator" / "persistent-pairs" / "issue-42"
-        pair_record = pair_dir / "validation-record.json"
-        completion = pair_dir / "coder" / "completion-coder.json"
-        stale_record = coder_wt / ".issue-orchestrator" / "validation" / "head-a.json"
-        completion.parent.mkdir(parents=True)
-        stale_record.parent.mkdir(parents=True)
-        stale_record.write_text(
-            json.dumps({"passed": True, "head_sha": "head-a"}),
-            encoding="utf-8",
+        pair_record = coder_wt / ".issue-orchestrator" / "pair" / "validation-record.json"
+        validation = json.dumps({"passed": True, "head_sha": "head-a"}).encode()
+        intake = MagicMock()
+        intake.completion_evidence.return_value = SimpleNamespace(
+            validation_bytes=validation
         )
-        completion.write_text(
-            json.dumps(
-                {
-                    "outcome": "completed",
-                    "validation_record_path": str(stale_record),
-                }
-            ),
-            encoding="utf-8",
-        )
-        monkeypatch.setattr(pse, "get_repo_head_sha", lambda _: "head-b")
         mirror = pse._PairValidationMirror(  # noqa: SLF001
-            head_reader=pse.get_repo_head_sha,
-            intake=RunCompletionExchangeIntake(
-                ScriptedReceiptIntake(), make_intake_run_record(tmp_path).run
-            ),
-            pair_dir=pair_dir,
+            head_reader=lambda _: "head-b",
+            intake=intake,
+            pair_dir=pair_record.parent,
             record_path=pair_record,
             coder_worktree_path=coder_wt,
         )
 
-        error = (
-            mirror.refresh_from_completion(
-                json.loads(completion.read_text()),
-                run_validation_record_path=tmp_path / "run" / "validation-record.json",
-            )
-            or mirror.current_validation_error()
-        )
+        error = mirror.completion_error(require_validation=True)
 
         assert error is not None
         assert "does not match current HEAD" in error
-        assert (
-            json.loads(pair_record.read_text(encoding="utf-8"))["head_sha"] == "head-a"
-        )
+        assert pair_record.read_bytes() == validation
 
-    def test_completion_without_validation_source_clears_stale_pair_record(
+    def test_unavailable_authenticated_completion_clears_stale_pair_record(
         self,
         tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        from issue_orchestrator.domain.completion_intake import CompletionIntakeError
+
         coder_wt = tmp_path / "coder-wt"
-        pair_dir = coder_wt / ".issue-orchestrator" / "persistent-pairs" / "issue-42"
-        pair_record = pair_dir / "validation-record.json"
-        completion = pair_dir / "coder" / "completion-coder.json"
+        pair_record = coder_wt / ".issue-orchestrator" / "pair" / "validation-record.json"
         pair_record.parent.mkdir(parents=True)
-        completion.parent.mkdir(parents=True)
         pair_record.write_text(
-            json.dumps({"passed": True, "head_sha": "head-a"}),
-            encoding="utf-8",
+            json.dumps({"passed": True, "head_sha": "head-a"}), encoding="utf-8"
         )
-        completion.write_text(json.dumps({"outcome": "completed"}), encoding="utf-8")
-        monkeypatch.setattr(pse, "get_repo_head_sha", lambda _: "head-b")
+        intake = MagicMock()
+        intake.completion_evidence.side_effect = CompletionIntakeError("custody changed")
         mirror = pse._PairValidationMirror(  # noqa: SLF001
-            head_reader=pse.get_repo_head_sha,
-            intake=RunCompletionExchangeIntake(
-                ScriptedReceiptIntake(), make_intake_run_record(tmp_path).run
-            ),
-            pair_dir=pair_dir,
+            head_reader=lambda _: "head-a",
+            intake=intake,
+            pair_dir=pair_record.parent,
             record_path=pair_record,
             coder_worktree_path=coder_wt,
         )
 
-        error = (
-            mirror.refresh_from_completion(
-                json.loads(completion.read_text()),
-                run_validation_record_path=tmp_path / "run" / "validation-record.json",
-            )
-            or mirror.current_validation_error()
-        )
+        error = mirror.completion_error(require_validation=True)
 
-        assert error == "validation-record.json missing"
+        assert error == (
+            "completion receipt unavailable or validation failed: custody changed"
+        )
         assert not pair_record.exists()
 
-    def test_completion_without_payload_uses_run_dir_validation_record(
+    def test_mutable_certified_copy_cannot_replace_authenticated_validation(
         self,
         tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         coder_wt = tmp_path / "coder-wt"
-        pair_dir = coder_wt / ".issue-orchestrator" / "persistent-pairs" / "issue-42"
-        pair_record = pair_dir / "validation-record.json"
-        completion = pair_dir / "coder" / "completion-coder.json"
-        run_record = (
-            coder_wt
-            / ".issue-orchestrator"
-            / "sessions"
-            / "run"
-            / "validation-record.json"
+        certified = coder_wt / ".issue-orchestrator" / "run" / "validation.json"
+        certified.parent.mkdir(parents=True)
+        certified.write_text(
+            json.dumps({"passed": True, "head_sha": "head-a"}), encoding="utf-8"
         )
-        completion.parent.mkdir(parents=True)
-        run_record.parent.mkdir(parents=True)
-        completion.write_text(json.dumps({"outcome": "completed"}), encoding="utf-8")
-        run_record.write_text(
-            json.dumps({"passed": True, "head_sha": "head-b"}),
-            encoding="utf-8",
-        )
-        monkeypatch.setattr(pse, "get_repo_head_sha", lambda _: "head-b")
+        authenticated = certified.read_bytes()
+        replacement = json.dumps({"passed": True, "head_sha": "head-b"}).encode()
+        intake = MagicMock()
+
+        def authenticated_evidence():
+            certified.write_bytes(replacement)
+            return SimpleNamespace(validation_bytes=authenticated)
+
+        intake.completion_evidence.side_effect = authenticated_evidence
+        pair_record = coder_wt / ".issue-orchestrator" / "pair" / "validation-record.json"
         mirror = pse._PairValidationMirror(  # noqa: SLF001
-            head_reader=pse.get_repo_head_sha,
-            intake=RunCompletionExchangeIntake(
-                ScriptedReceiptIntake(), make_intake_run_record(tmp_path).run
-            ),
-            pair_dir=pair_dir,
+            head_reader=lambda _: "head-a",
+            intake=intake,
+            pair_dir=pair_record.parent,
             record_path=pair_record,
             coder_worktree_path=coder_wt,
         )
 
-        error = (
-            mirror.refresh_from_completion(
-                json.loads(completion.read_text()),
-                run_validation_record_path=run_record,
-            )
-            or mirror.current_validation_error()
-        )
-
-        assert error is None
-        assert json.loads(pair_record.read_text(encoding="utf-8")) == {
-            "passed": True,
-            "head_sha": "head-b",
-        }
+        assert mirror.completion_error(require_validation=True) is None
+        assert pair_record.read_bytes() == authenticated
+        assert certified.read_bytes() == replacement
 
 
 # ---------------------------------------------------------------------------

@@ -51,7 +51,7 @@ def scripted_coder_attempts(
         )
         if result.returncode != 0 or result.timed_out:
             raise AssertionError("scripted coder did not finish its submission")
-        intake.completion_record()
+        intake.completion_evidence()
 
     try:
         yield attempt

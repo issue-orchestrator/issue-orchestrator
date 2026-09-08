@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from ..domain.registered_completion import CompletionRolePolicy, RegisteredCompletion, CompletionProcessingPolicy
 from ..domain.models import COMPLETION_RECORD_PATH, CompletionRecord, RequestedAction
+from ..domain.validated_head_publication import is_protected_publication_branch
 from ..domain.dirty_remediation import (
     DirtyTreeDisposition,
     blocked_reason,
@@ -282,7 +283,7 @@ class CompletionRecordValidator:
             )
 
         if RequestedAction.PUSH_BRANCH in record.requested_actions:
-            if branch in ("main", "master"):
+            if is_protected_publication_branch(branch):
                 return WorktreeValidationResult.fail(
                     WorktreeValidationFailure.PROTECTED_BRANCH,
                     f"Cannot push: on protected branch '{branch}'",

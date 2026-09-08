@@ -5965,9 +5965,11 @@ def test_manual_settlement_preserves_requested_effects_without_generic_publish(
         exchange_mode=None, exchange_result=None, review_exchange_completed=False,
         review_exchange_halted=False,
     )
+    from issue_orchestrator.domain.validated_head_publication import PullRequestAttribution
     publication = PublishValidatedHeadOutcome(PublishValidatedHeadStatus.PUBLISHED,
         command.target_head_sha, 42, "https://github.com/owner/repo/pull/42",
-        command.target_head_sha, ExactPushOutcome.PUSHED, None, "Published")
+        command.target_head_sha, ExactPushOutcome.PUSHED, None, "Published",
+        PullRequestAttribution.CREATED)
     result = processor.settle_manual_publication(prepared, publication)
     assert result.success
     assert result.pr_url == publication.pr_url

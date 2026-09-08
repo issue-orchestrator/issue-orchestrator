@@ -10,7 +10,7 @@ from ..domain.models import CompletionOutcome, RequestedAction
 from ..domain.publish_retry import PublishRetryLocators
 from ..domain.validated_head_publication import (
     PublicationContent, PublishValidatedHeadCommand, PublishValidatedHeadOutcome,
-    RemoteHeadExpectation,
+    RemoteHeadExpectation, is_protected_publication_branch,
 )
 from ..ports.completion_intake import CompletionIntakeRuntime
 from ..ports.working_copy import WorkingCopy
@@ -40,8 +40,11 @@ class ManualCompletionPreparation:
         if (evidence.run.session_key.stable_id() != locators.session_key
                 or evidence.run.session_key.issue.scope() != self._repo_slug
                 or worktree != Path(locators.worktree_path)
-                or branch != locators.branch_name or branch is None):
-            return replace(self._refusal("Retry locators differ from the allocated run and branch"), intake_receipt=receipt)
+                or branch != locators.branch_name or branch is None
+                or is_protected_publication_branch(branch)):
+            return replace(self._refusal(
+                "Retry locators differ from the allocated run and branch, or target a protected branch"
+            ), intake_receipt=receipt)
         target = evidence.validation.head_sha
         if not self._source_matches(worktree, branch, target):
             return replace(self._refusal("Retry source must be clean and remain at the validated head and allocated branch"), intake_receipt=receipt)
