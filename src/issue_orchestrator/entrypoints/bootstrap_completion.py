@@ -26,6 +26,8 @@ from ..ports.coder_prompt import (
 )
 
 if TYPE_CHECKING:
+    from ..ports.fresh_issue_reader import FreshIssueReader
+    from ..control.publish_recovery import PublishRecoveryService
     from ..control.needs_human_block import SharedNeedsHumanBlock
     from ..control.open_issue_corpus import OpenIssueCorpusManager
     from ..ports.completion_handler_factory import CompletionHandlerFactory
@@ -288,3 +290,75 @@ def build_completion_handler_factory(
         )
 
     return factory
+
+
+# Publication and recovery share the completion owner assembled above.
+from ..control.dependency_evaluator import DependencyEvaluator
+from ..control.action_applier import ActionApplier
+from ..ports.repository_host import RepositoryHost
+from ..infra.repo_identity import state_dir
+from ..execution.thread_background_job_runner import ThreadBackgroundJobRunner
+
+def wire_stack_publish_gate(
+    completion_processor: "CompletionProcessor",
+    dependency_evaluator: DependencyEvaluator,
+    github: RepositoryHost,
+    command_runner: "LocalCommandRunner",
+    config: Config,
+) -> None:
+    """Wire the stack publish-gate + branch ancestry (ADR-0029 / #6596).
+
+    Attaches the git ancestry checker to the single dependency-gate evaluator
+    and gives the completion processor a :class:`StackPublishGate` so a
+    Stack-after: successor's PR is based on its predecessor branch and a blocked
+    publish gate fails fast. The root supplies the complete composition.
+    """
+    from ..control.stack_publish_gate import StackBaseGate
+    from ..execution.stack_branch_ancestry import GitStackBranchAncestry
+
+    dependency_evaluator.attach_branch_ancestry(GitStackBranchAncestry(command_runner))
+    completion_processor.attach_stack_publish_gate(
+        StackBaseGate(
+            evaluator=dependency_evaluator,
+            issue_reader=github,
+            configured_base_branch=config.worktree_base_branch_override,
+        )
+    )
+
+
+def build_publish_recovery(
+    *,
+    repository_host: "RepositoryHost",
+    completion_processor: "CompletionProcessor",
+    label_manager: "LabelManager",
+    fresh_issue_reader: "FreshIssueReader",
+    action_applier: "ActionApplier",
+    config: Config,
+    tech_lead_authority: "TechLeadAuthorityStore",
+) -> "PublishRecoveryService":
+    """Wire the "Retry publish" owner: durable locator store + dedicated runner.
+
+    The republish runs on its own :class:`ThreadBackgroundJobRunner` (drained by
+    ``PublishRecoveryService.drain_completed_retries`` each tick), NOT the shared
+    completion/review-exchange runners — those are drained by other owners and
+    would steal or drop republish results.
+    """
+    from ..control.publish_recovery import PublishRecoveryService
+    from ..execution.json_publish_retry_locator_store import (
+        JsonPublishRetryLocatorStore,
+    )
+
+    locator_store = JsonPublishRetryLocatorStore(
+        state_dir(config.repo_root) / "publish_retry_locators.json"
+    )
+    return PublishRecoveryService(
+        repository_host=repository_host,
+        completion_processor=completion_processor,
+        locator_store=locator_store,
+        runner=ThreadBackgroundJobRunner(),
+        label_manager=label_manager,
+        fresh_issue_reader=fresh_issue_reader,
+        action_applier=action_applier,
+        code_review_agent_configured=bool(config.code_review_agent),
+        tech_lead_authority=tech_lead_authority,
+    )

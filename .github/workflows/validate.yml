@@ -127,10 +127,9 @@ jobs:
           uv sync --frozen --all-extras
           make semgrep-venv
 
-      - name: Run agent-backed validate
+      - name: Verify budgeted validation and PR test selection
         run: |
-          make test-simulated-agent
-          make test-integration-agent
+          .venv/bin/pytest tests/unit/test_budgeted_validation.py tests/unit/test_makefile_validation_phases.py tests/unit/test_validate_gate_lane_coverage.py -q
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

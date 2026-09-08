@@ -21,9 +21,9 @@ Usage:
 """
 
 import logging
-import re
 import time
 from collections.abc import Mapping, Sequence
+from ..ports.budgeted_validation import BudgetedValidationReports, DisabledBudgetedValidationReports
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional, TYPE_CHECKING, cast
 
@@ -81,11 +81,7 @@ logger = logging.getLogger(__name__)
 
 
 
-def _pr_labels(pr: Any) -> list[str]:
-    labels = getattr(pr, "labels", None)
-    if labels is None and isinstance(pr, dict):
-        labels = pr.get("labels", [])
-    return labels or []
+from ..observation.pr_metadata import collect_pr_metadata, pr_labels as _pr_labels
 
 
 @dataclass
@@ -122,6 +118,7 @@ class FactGatherer:
     # tests need not wire it; without it (or with the flag off) both snapshot
     # facts stay False and the default scheduling path is unchanged.
     e2e_slot_reader: Optional[Callable[[], "E2ESlotSignals"]] = None
+    budgeted_validation_reports: BudgetedValidationReports = field(default_factory=DisabledBudgetedValidationReports)
     # Predicate answering "is this issue's provider circuit still open?" for the
     # stuck sweep's ownership check (#6824 F2): a provider-unavailable issue is
     # owned by the resilience manager WHILE its circuit is open. Optional so
@@ -276,6 +273,7 @@ class FactGatherer:
             session_history_issue_numbers=frozenset(e.issue_number for e in state.session_history),
             e2e_occupies_slot=e2e_occupies_slot,
             e2e_due=e2e_due,
+            budgeted_validation_notices=self.budgeted_validation_reports.pending(),
             provider_launch=provider_launch or ProviderLaunchReadiness.empty(),
         )
 
@@ -491,7 +489,7 @@ class FactGatherer:
             if batch_armed:
                 existing_tech_lead_issue = batch_anchor
         prs = self._fetch_tech_lead_prs(watch_label) if batch_armed else []
-        all_labels, source_milestones = self._collect_pr_metadata(prs)
+        all_labels, source_milestones = collect_pr_metadata(self.repository_host, prs)
 
         # A failed approval query may only cost this tick's OWN trigger.
         gated_proposals = observe_approval_backlog_or_none(
@@ -693,36 +691,6 @@ class FactGatherer:
             case_files,
             tuple(existing),
         )
-
-    def _collect_pr_metadata(self, prs: list[Any]) -> tuple[set[str], list[tuple[int, str]]]:
-        """Collect labels and milestones from PRs and their linked issues."""
-        all_labels: set[str] = set()
-        source_milestones: list[tuple[int, str]] = []
-
-        for pr in prs:
-            all_labels.update(_pr_labels(pr))
-            self._collect_linked_issue_metadata(pr, all_labels, source_milestones)
-
-        return all_labels, source_milestones
-
-    def _collect_linked_issue_metadata(
-        self,
-        pr: object,
-        all_labels: set[str],
-        source_milestones: list[tuple[int, str]],
-    ) -> None:
-        """Collect metadata from issues linked to a PR."""
-        matches = re.findall(r'#(\d+)', (getattr(pr, 'body', '') or "") + " " + pr.title)
-        for match in matches:
-            issue_num = int(match)
-            issue = self.repository_host.get_issue(issue_num)
-            if not issue:
-                continue
-            all_labels.update(issue.labels)
-            if issue.milestone and issue.milestone_number:
-                milestone_tuple = (issue.milestone_number, issue.milestone)
-                if milestone_tuple not in source_milestones:
-                    source_milestones.append(milestone_tuple)
 
     def gather_cleanup_facts(
         self,

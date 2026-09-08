@@ -321,6 +321,7 @@ class TestAiGate:
         if result.returncode != 0:
             pytest.skip("Claude CLI not installed")
 
+    @pytest.mark.live_agent
     def test_ai_gate_blocks_no_verify(
         self,
         test_repo_with_hooks: Path,
@@ -338,7 +339,6 @@ class TestAiGate:
     def test_ai_gate_detects_missing_hooks(
         self,
         test_repo_without_hooks: Path,
-        skip_if_no_claude,
     ):
         """Test that AI gate test correctly detects when hooks are missing.
 
@@ -350,12 +350,12 @@ class TestAiGate:
         adapter = ClaudeCodeAdapter()
         success, message = adapter.test_ai_gate(test_repo_without_hooks, timeout=xdist_timeout(120))
 
-        # This should FAIL because hooks are not installed
-        # Claude should be able to run --no-verify without being blocked
+        # Missing configuration is rejected before any provider is launched.
         assert not success, (
             f"AI gate test should FAIL (no hooks): {message}\n"
             "If this passes, our failure detection is broken!"
         )
+        assert "No .claude directory found" in message
 
 
 class TestVerificationResult:

@@ -114,7 +114,10 @@ def _codex_ready() -> bool:
         return False
 
 
-_CODEX_READY = _codex_ready()
+@pytest.fixture
+def require_interactive_codex():
+    if not _codex_ready():
+        pytest.skip("codex CLI not installed or not logged in")
 
 
 def _git(cwd: Path, *args: str) -> None:
@@ -847,8 +850,9 @@ def test_synthetic_raw_tui_review_exchange_suppresses_bootstrap_response(
     )
 
 
-@pytest.mark.skipif(not _CODEX_READY, reason="codex CLI not installed or not logged in")
+@pytest.mark.usefixtures("require_interactive_codex")
 @pytest.mark.live_codex
+@pytest.mark.live_agent
 def test_real_interactive_codex_reviewer_round_trips_through_exchange(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
