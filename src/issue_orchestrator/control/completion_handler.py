@@ -61,6 +61,7 @@ from .completion_action_planner import (
 from .tech_lead_completion import discard_tech_lead_authority_after_completion
 from .invalid_record_actions import failure_event_reason, invalid_record_event_fields
 from .reconciliation import build_expected_for_mutation
+from ..domain.tech_lead_run_record import TechLeadDeliveryOutcome
 from .completion_history_status import resolve_history_status
 from .retrospective_review_completion import retrospective_review_completion_actions
 from .review_routing import should_queue_pr_review
@@ -548,6 +549,7 @@ class CompletionHandler:
         pr_url: Optional[str],
         pr_number: Optional[int],
         *,
+        delivery_outcome: TechLeadDeliveryOutcome,
         blocked_reason: Optional[str] = None,
         completion_detail: Optional[dict[str, Any]] = None,
         processing_errors: Optional[list[str]] = None,
@@ -573,6 +575,7 @@ class CompletionHandler:
         self._update_state_machines(session, effective_status, pr_url)
         self._tech_lead_run_activity.note_concluded(
             session, effective_status, processing_errors=processing_errors,
+            delivery_outcome=delivery_outcome,
         )
         # Required disposition commands revalidate immutable authority at apply
         # time. Retention belongs after those effects, beside the terminal

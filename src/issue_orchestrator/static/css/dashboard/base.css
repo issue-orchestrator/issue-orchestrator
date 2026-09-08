@@ -1050,3 +1050,16 @@ html[data-embedded="true"] .embedded-sep {
     color: var(--text-muted);
     font-size: 11px;
 }
+
+/* Delivery diagnostics stay visible even when the run disclosure is closed. */
+.tla-delivery-warning {
+    margin: 12px 0 0;
+    padding: 10px 12px;
+    border: 2px solid var(--text-muted);
+    border-radius: 8px;
+    background: var(--bg-panel);
+    color: var(--text);
+    overflow-wrap: anywhere;
+    line-height: 1.5;
+}
+.tla-delivery-warning[hidden] { display: none; }

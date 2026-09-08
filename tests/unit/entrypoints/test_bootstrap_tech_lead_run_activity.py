@@ -18,7 +18,9 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
+from issue_orchestrator.domain.tech_lead_run_record import TechLeadDeliveryOutcome
 from issue_orchestrator.domain.models import SessionStatus
+from issue_orchestrator.domain.tech_lead_delivery import DeliveryHistoryState
 from issue_orchestrator.domain.tech_lead_run_record import TechLeadRunPhase
 from issue_orchestrator.domain.tech_lead_session import (
     TechLeadLaunchScope,
@@ -56,16 +58,17 @@ def _session(worktree: Path) -> SimpleNamespace:
         started_at=STARTED,
         run_dir=assets.run_dir,
         run_assets=assets,
-        tech_lead_scope=TechLeadLaunchScope(
-            flavor=TechLeadSessionFlavor.HEALTH_REVIEW
-        ),
+        tech_lead_scope=TechLeadLaunchScope(flavor=TechLeadSessionFlavor.HEALTH_REVIEW),
     )
 
 
 def _records_a_run(activity, worktree: Path) -> TechLeadRunPhase:
     session = _session(worktree)
     activity.note_started(session)
-    activity.note_concluded(session, SessionStatus.COMPLETED)
+    activity.note_concluded(
+        session, SessionStatus.COMPLETED,
+        delivery_outcome=TechLeadDeliveryOutcome.NOT_DELIVERED,
+    )
     (record,) = activity.recent(limit=5)
     return record.phase
 
@@ -88,6 +91,10 @@ def test_an_unwritable_state_directory_still_composes_an_engine(tmp_path):
     # The engine composes, and runs are still recorded — in memory, for the life
     # of this process, which is what the warning in the log says.
     assert _records_a_run(activity, tmp_path / "worktree") is TechLeadRunPhase.COMPLETED
+    assert (
+        activity.inspect_delivery_evidence().history_state
+        is DeliveryHistoryState.INCOMPLETE
+    )
 
 
 def test_a_corrupt_history_database_still_composes_an_engine(tmp_path):
@@ -99,3 +106,8 @@ def test_a_corrupt_history_database_still_composes_an_engine(tmp_path):
     activity = create_tech_lead_run_activity(_config(tmp_path))
 
     assert _records_a_run(activity, tmp_path / "worktree") is TechLeadRunPhase.COMPLETED
+
+    assert (
+        activity.inspect_delivery_evidence().history_state
+        is DeliveryHistoryState.INCOMPLETE
+    )
