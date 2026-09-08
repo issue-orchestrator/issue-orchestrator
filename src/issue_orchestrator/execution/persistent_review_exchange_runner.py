@@ -24,6 +24,7 @@ from ..domain.models import AgentConfig
 from ..domain.review_exchange import ReviewExchangeOutcome
 from ..domain.review_exchange_run import ReviewExchangeRun
 from ..domain.runtime_config import RuntimeConfigReference
+from ..domain.review_validation import ReviewValidationEvidence
 from ..events import EventContext
 from ..ports.event_sink import EventSink
 from ..ports.review_exchange_approval_gate import ReviewExchangeApprovalGate
@@ -153,7 +154,7 @@ class PersistentReviewExchangeRunner:
         max_no_progress: int,
         require_validation: bool,
         nit_policy: str = "surface",
-        initial_validation_record_path: Path | None = None,
+        initial_validation_evidence: ReviewValidationEvidence | None = None,
         approval_gate: ReviewExchangeApprovalGate | None = None,
         web_port: int | None = None,
         events: EventSink | None = None,
@@ -213,7 +214,7 @@ class PersistentReviewExchangeRunner:
             max_no_progress=max_no_progress,
             require_validation=require_validation,
             nit_policy=nit_policy,
-            initial_validation_record_path=initial_validation_record_path,
+            initial_validation_evidence=initial_validation_evidence,
             approval_gate=approval_gate,
             web_port=web_port,
             events=events,

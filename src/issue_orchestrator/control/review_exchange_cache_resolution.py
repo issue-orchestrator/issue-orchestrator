@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -16,21 +15,12 @@ from ..domain.review_exchange_resume import (
 )
 from ..domain.review_exchange_run import ReviewExchangeRunAssets
 from ..ports.session_output import ReviewExchangeSummary, SessionOutput
+from ..domain.review_validation import ReviewValidationEvidence, evidence_subject
 
 if TYPE_CHECKING:
     from ..domain.review_exchange import ReviewExchangeOutcome
 
 logger = logging.getLogger(__name__)
-
-
-def _cached_validation_result(
-    cached: ReviewExchangeSummary,
-    cached_validation_passed: Callable[[Path | None], bool],
-) -> bool | None:
-    if cached.summary.validation_passed is not None:
-        return cached.summary.validation_passed
-    record_path = cached.validation_record_path
-    return cached_validation_passed(record_path) if record_path.exists() else None
 
 
 @dataclass(frozen=True)
@@ -80,9 +70,6 @@ class ReviewExchangeCacheResolver:
     """Owns review-exchange cache reuse decisions and outcome reconstruction."""
 
     session_output: SessionOutput
-    validation_head_sha: Callable[[Path | None], str | None]
-    current_validation_failed: Callable[[Path | None], bool]
-    cached_validation_passed: Callable[[Path | None], bool]
 
     def decide_review_exchange_resumption(
         self,
@@ -90,7 +77,7 @@ class ReviewExchangeCacheResolver:
         session_name: str | None,
         *,
         require_validation: bool,
-        current_validation_record_path: Path | None = None,
+        current_validation_evidence: ReviewValidationEvidence | None = None,
         current_head_sha: str | None = None,
         not_before_started_at: str | None = None,
     ) -> ResumeResolution:
@@ -104,7 +91,7 @@ class ReviewExchangeCacheResolver:
         )
         facts, cache_metadata = self._build_resume_facts(
             cached=cached,
-            current_validation_record_path=current_validation_record_path,
+            current_validation_evidence=current_validation_evidence,
             current_head_sha=current_head_sha,
             require_validation=require_validation,
         )
@@ -156,13 +143,13 @@ class ReviewExchangeCacheResolver:
         self,
         *,
         cached: ReviewExchangeSummary | None,
-        current_validation_record_path: Path | None,
+        current_validation_evidence: ReviewValidationEvidence | None,
         current_head_sha: str | None,
         require_validation: bool,
     ) -> tuple[ResumeFacts, ReviewExchangeCacheMetadata | None]:
         current_subject = self._resolve_current_review_subject(
             current_head_sha=current_head_sha,
-            current_validation_record_path=current_validation_record_path,
+            current_validation_evidence=current_validation_evidence,
         )
         if cached is None:
             return (
@@ -180,14 +167,8 @@ class ReviewExchangeCacheResolver:
             )
         cached_status = cached.summary.status
         cached_reason = cached.summary.reason
-        if cached.summary.head_sha:
-            cached_head_sha: str | None = cached.summary.head_sha
-        else:
-            cached_head_sha = self.validation_head_sha(cached.validation_record_path)
-        cached_validation_passed = _cached_validation_result(
-            cached,
-            self.cached_validation_passed,
-        )
+        cached_head_sha = cached.summary.head_sha
+        cached_validation_passed = cached.summary.validation_passed
         cache_metadata = ReviewExchangeCacheMetadata(
             summary_path=cached.summary_path,
             validation_record_path=cached.validation_record_path,
@@ -211,11 +192,10 @@ class ReviewExchangeCacheResolver:
         self,
         *,
         current_head_sha: str | None,
-        current_validation_record_path: Path | None,
+        current_validation_evidence: ReviewValidationEvidence | None,
     ) -> CurrentReviewSubject:
         explicit_head_sha = self._normalize_head_sha(current_head_sha)
-        record_head_sha = self.validation_head_sha(current_validation_record_path)
-        record_failed = self.current_validation_failed(current_validation_record_path)
+        record_head_sha, record_failed = evidence_subject(current_validation_evidence)
         if explicit_head_sha:
             return CurrentReviewSubject(
                 head_sha=explicit_head_sha,

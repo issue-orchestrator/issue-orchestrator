@@ -6,6 +6,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from ..domain.completion_intake import CompletionIntakeError
+from ..domain.review_validation import ReviewValidationEvidence
 from ..ports.completion_intake import CompletionExchangeIntake
 from ..infra.atomic_io import atomic_write_bytes as _atomic_write_bytes
 
@@ -48,26 +49,23 @@ class PairValidationMirror:
             current_head_sha=self.head_reader(self.coder_worktree_path),
         )
 
-    def replace_from_initial(self, source: Path | None) -> None:
-        """Mirror the caller's current validation source at exchange start.
+    def replace_from_initial(self, evidence: ReviewValidationEvidence | None) -> None:
+        """Project the caller's owner-held validation at exchange start.
 
         A missing source clears any prior pair record. That is
         intentional: an exchange without current validation evidence
         must not inherit the last exchange's passing record.
         """
-        self._replace_from(source)
+        if evidence is None:
+            self._clear()
+            return
+        self._replace_bytes(evidence.result_bytes)
 
     def current_validation_error(self) -> str | None:
         return _validation_bytes_error(
             self._authoritative_bytes,
             current_head_sha=self.head_reader(self.coder_worktree_path),
         )
-
-    def _replace_from(self, source: Path | None) -> None:
-        if source is None or not source.exists():
-            self._clear()
-            return
-        self._replace_bytes(source.read_bytes())
 
     def _replace_bytes(self, payload: bytes) -> None:
         self._authoritative_bytes = payload

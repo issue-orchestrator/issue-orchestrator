@@ -5,6 +5,7 @@ from .completion_intake import CompletionIntakeEntry, CompletionValidationAttest
 from .issue_run_evidence import IssueRunRecord
 from .models import RequestedAction
 from .registered_completion import CompletionRunRole
+from .review_validation import ReviewValidationEvidence
 
 
 @dataclass(frozen=True, slots=True)
@@ -16,6 +17,11 @@ class PreparedCompletionEvidence:
     completion_bytes: bytes
     validation_bytes: bytes
     requested_actions: tuple[RequestedAction, ...]
+
+    @property
+    def review_validation(self) -> ReviewValidationEvidence:
+        return ReviewValidationEvidence(self.validation_bytes, self.validation.head_sha,
+                                        self.validation.passed)
 
 
 from hashlib import sha256

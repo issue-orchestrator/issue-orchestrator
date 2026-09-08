@@ -92,6 +92,7 @@ from ..ports.turn_mailbox import TurnMailbox
 from ..domain.review_exchange_run import ReviewExchangeRun, ReviewExchangeRunAssets
 from ..domain.review_exchange_summary import ReviewExchangeReason, ReviewExchangeStatus, ReviewExchangeSummaryArtifactRef, ReviewExchangeSummaryV1, ReviewExchangeTerminalState
 from ..domain.runtime_config import RuntimeConfigReference
+from ..domain.review_validation import ReviewValidationEvidence
 from ..domain import review_exchange_turn_artifacts as turn_artifacts
 from ..events import EventContext, EventName
 from ..infra.env import ENV_PREFIX
@@ -289,7 +290,7 @@ def run_persistent_session_exchange(  # noqa: PLR0913
     max_no_progress: int,
     require_validation: bool,
     nit_policy: str = "surface",
-    initial_validation_record_path: Path | None = None,
+    initial_validation_evidence: ReviewValidationEvidence | None = None,
     approval_gate: ReviewExchangeApprovalGate | None = None,
     web_port: int | None = None,
     events: EventSink | None = None,
@@ -417,7 +418,7 @@ def run_persistent_session_exchange(  # noqa: PLR0913
         run_record_path=run_validation_record_path,
         intake=exchange_intake,
     )
-    pair_validation.replace_from_initial(initial_validation_record_path)
+    pair_validation.replace_from_initial(initial_validation_evidence)
 
     spawned_for_run = False
 

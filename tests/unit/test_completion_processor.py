@@ -49,6 +49,7 @@ from issue_orchestrator.domain.review_exchange_run import (
     ReviewExchangeRunAssets,
 )
 from issue_orchestrator.domain.review_exchange_summary import ReviewExchangeSummaryV1
+from issue_orchestrator.domain.review_validation import ReviewValidationEvidence
 from issue_orchestrator.domain.runtime_config import RuntimeConfigReference
 from tests.callback_endpoint_helpers import ready_callback_endpoint
 from issue_orchestrator.control.completion_processor import (
@@ -89,6 +90,10 @@ from tests.unit.session_run_helpers import make_session_run_assets
 
 
 # ==================== Fixtures ====================
+
+
+def _failed_review_validation(head_sha: str) -> ReviewValidationEvidence:
+    return ReviewValidationEvidence.from_mapping({"passed": False, "head_sha": head_sha})
 
 
 def _write_test_config(tmp_path: Path) -> Path:
@@ -1747,6 +1752,7 @@ class TestReviewExchangeExecution:
         event_bus,
         monkeypatch,
     ) -> None:
+        mock_git_adapter.get_head_sha.return_value = "same-sha"
         config = self._make_config(tmp_path)
         processor = make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
@@ -1789,6 +1795,8 @@ class TestReviewExchangeExecution:
                     "reason": "reviewer_ok",
                     "response_text": "Looks good",
                     "timestamp": "2026-02-01T00:00:00Z",
+                    "head_sha": "same-sha",
+                    "validation_passed": True,
                 }
             )
         )
@@ -1850,6 +1858,7 @@ class TestReviewExchangeExecution:
         event_bus,
         monkeypatch,
     ) -> None:
+        mock_git_adapter.get_head_sha.return_value = "same-sha"
         # Symmetric to test_exchange_uses_cached_summary_after_restart but for
         # the non-ok branch: if a prior run persisted a changes_requested
         # outcome, the replay must also be tagged cached=True so the timeline
@@ -1975,6 +1984,7 @@ class TestReviewExchangeExecution:
         event_bus,
         monkeypatch,
     ) -> None:
+        mock_git_adapter.get_head_sha.return_value = "same-sha"
         # Second matrix point: a cached ``max_rounds_exceeded`` halt
         # surfaces the real reason in the emitted summary and recorded
         # errors. The earlier ``coder_protocol_error`` test pins one
@@ -2156,6 +2166,7 @@ class TestReviewExchangeExecution:
         event_bus,
         monkeypatch,
     ) -> None:
+        mock_git_adapter.get_head_sha.return_value = "same-sha"
         config = self._make_config(tmp_path)
         session_output = FileSystemSessionOutput()
         processor = make_completion_processor(
@@ -2199,6 +2210,8 @@ class TestReviewExchangeExecution:
                     "reason": "reviewer_ok",
                     "response_text": "Looks good",
                     "timestamp": "2026-02-01T00:00:00Z",
+                    "head_sha": "same-sha",
+                    "validation_passed": True,
                 }
             )
         )
@@ -4954,11 +4967,10 @@ class TestCompletionProcessorPublishGate:
         mock_git_adapter.push.assert_not_called()
         mock_label_adapter.add_label.assert_not_called()
         mock_pr_adapter.add_comment.assert_not_called()
-        validation_record_path = processor._run_review_exchange_loop.call_args.kwargs[  # noqa: SLF001
-            "initial_validation_record_path"
+        validation_evidence = processor._run_review_exchange_loop.call_args.kwargs[  # noqa: SLF001
+            "initial_validation_evidence"
         ]
-        assert validation_record_path.exists()
-        record_data = json.loads(validation_record_path.read_text())
+        record_data = json.loads(validation_evidence.result_bytes)
         assert record_data["passed"] is False
         assert record_data["command"] == "/tmp/hooks/pre-push"
 
@@ -5104,6 +5116,7 @@ class TestCompletionProcessorPublishGate:
             ),
             record=record,
             run_assets=make_session_run_assets(tmp_path),
+            validation_evidence=_failed_review_validation("head-a"),
         )
 
         assert result is None
@@ -5143,6 +5156,7 @@ class TestCompletionProcessorPublishGate:
         validation_record.write_text(
             json.dumps({"passed": False, "head_sha": "deadbeef" * 5})
         )
+        validation_evidence = _failed_review_validation("deadbeef" * 5)
 
         record = make_record(
             outcome=CompletionOutcome.COMPLETED,
@@ -5171,6 +5185,7 @@ class TestCompletionProcessorPublishGate:
                 ),
                 record=record,
                 run_assets=run,
+                validation_evidence=validation_evidence,
             )
             assert result is not None
             assert result.success is True
@@ -5187,6 +5202,7 @@ class TestCompletionProcessorPublishGate:
             ),
             record=record,
             run_assets=run,
+            validation_evidence=validation_evidence,
         )
         assert result is not None
         assert result.success is False
@@ -5239,6 +5255,7 @@ class TestCompletionProcessorPublishGate:
         run = processor.session_output.start_run(worktree, "issue-1", issue_number=1)
         validation_record = run.run_dir / "validation-record.json"
         validation_record.write_text(json.dumps({"passed": False, "head_sha": "aaa"}))
+        validation_evidence = _failed_review_validation("aaa")
 
         record = make_record(
             outcome=CompletionOutcome.COMPLETED,
@@ -5262,6 +5279,7 @@ class TestCompletionProcessorPublishGate:
                 ),
                 record=record,
                 run_assets=run,
+                validation_evidence=validation_evidence,
             )
             assert result is not None
             assert result.success is True
@@ -5303,6 +5321,7 @@ class TestCompletionProcessorPublishGate:
 
         # Two attempts on SHA "aaa" — within budget.
         validation_record.write_text(json.dumps({"passed": False, "head_sha": "aaa"}))
+        validation_evidence = _failed_review_validation("aaa")
         for _ in range(2):
             result = processor._reroute_pre_publish_validation_failure_if_possible(  # noqa: SLF001
                 worktree=worktree,
@@ -5314,11 +5333,13 @@ class TestCompletionProcessorPublishGate:
                 ),
                 record=record,
                 run_assets=run,
+                validation_evidence=validation_evidence,
             )
             assert result is not None and result.success is True
 
         # SHA advances. Budget should reset, so two more attempts succeed.
         validation_record.write_text(json.dumps({"passed": False, "head_sha": "bbb"}))
+        validation_evidence = _failed_review_validation("bbb")
         for _ in range(2):
             result = processor._reroute_pre_publish_validation_failure_if_possible(  # noqa: SLF001
                 worktree=worktree,
@@ -5330,6 +5351,7 @@ class TestCompletionProcessorPublishGate:
                 ),
                 record=record,
                 run_assets=run,
+                validation_evidence=validation_evidence,
             )
             assert result is not None and result.success is True
 
@@ -5344,6 +5366,7 @@ class TestCompletionProcessorPublishGate:
             ),
             record=record,
             run_assets=run,
+            validation_evidence=validation_evidence,
         )
         assert result is not None
         assert result.success is False

@@ -94,7 +94,7 @@ def build_scripted_review_runner(
         max_rounds,
         max_no_progress,
         require_validation,
-        initial_validation_record_path=None,
+        initial_validation_evidence=None,
         approval_gate=None,
         web_port=None,
         nit_policy="surface",
@@ -123,12 +123,11 @@ def build_scripted_review_runner(
             # (cache_requires_validation, cache_invalid_validation_reruns)
             # silently fall through the production path they claim to test.
             if (
-                initial_validation_record_path is not None
-                and initial_validation_record_path.exists()
+                initial_validation_evidence is not None
             ):
                 seed_target = run_dir / "validation-record.json"
                 if not seed_target.exists():
-                    seed_target.write_bytes(initial_validation_record_path.read_bytes())
+                    seed_target.write_bytes(initial_validation_evidence.result_bytes)
 
             if write_validation_record_passed:
                 (run_dir / "validation-record.json").write_text(

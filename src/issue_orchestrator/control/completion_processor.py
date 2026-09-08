@@ -20,13 +20,13 @@ from ..ports.completion_intake import CompletionIntakeRuntime
 from ..domain.completion_intake import CompletionIntakeReceipt, CompletionIntakeError
 from ..domain.registered_completion import CompletionProcessingPolicy
 from ..domain.prepared_completion import PreparedCompletionEvidence
+from ..domain.review_validation import ReviewValidationEvidence
 from ..domain.publication_remote import attributed_publication_body
 from ..domain.manual_publication import PreparedManualPublication
 from ..domain.validated_head_publication import PublishValidatedHeadOutcome
 from .completion_manual_settlement import settle_manual_publication
 from .completion_preparation import PreparedActionPlan, PreparedCompletion, PreparedPullRequest, record_from_prepared_evidence, context_from_prepared_evidence
 
-import json
 import logging
 import os
 import time
@@ -387,6 +387,12 @@ class CompletionProcessor:
         issue_title: str,
     ) -> ProcessingResult:
         artifact = self._completion_intake.completion_artifact(receipt, run)
+        evidence = None
+        if self._completion_intake.read_receipt(receipt, run).requests_publication:
+            try:
+                evidence = self._completion_intake.prepare_receipt_for_issue(receipt, run, issue_number)
+            except CompletionIntakeError as exc:
+                return ProcessingResult.for_intake_refusal(exc)
         return self.process(
             worktree=run.worktree_path,
             issue_number=issue_number,
@@ -394,6 +400,7 @@ class CompletionProcessor:
             completion_path=str(artifact.path),
             run_assets=run,
             intake_receipt=receipt,
+            prepared_evidence=evidence,
         )
 
     def completion_receipt_for_run(
@@ -717,6 +724,7 @@ class CompletionProcessor:
         completion_path: str | None = None,
         agent_label: str | None = None,
         intake_receipt: CompletionIntakeReceipt | None = None,
+        prepared_evidence: PreparedCompletionEvidence | None = None,
     ) -> ProcessingResult:
         """Process one run under a policy retained through terminal handling.
 
@@ -737,6 +745,7 @@ class CompletionProcessor:
             worktree, issue_number, issue_title, run_assets=run_assets,
             completion_path=completion_path, agent_label=agent_label,
             intake_receipt=intake_receipt, actions_taken=actions_taken, errors=errors,
+            prepared_evidence=prepared_evidence,
         )
         if isinstance(prepared, ProcessingResult):
             return prepared
@@ -887,6 +896,8 @@ class CompletionProcessor:
             worktree=worktree, record=record, issue_number=issue_number,
             issue_title=issue_title, session_name=session_name, processing_policy=processing_policy,
             actions_taken=actions_taken, errors=errors, run_assets=run_assets,
+            initial_validation_evidence=(prepared_evidence.review_validation
+                                         if prepared_evidence is not None else None),
         )
         if isinstance(actions, ProcessingResult):
             return actions.with_processing_policy(processing_policy)
@@ -1422,10 +1433,10 @@ class CompletionProcessor:
         if result.allowed:
             return None
 
-        self._persist_pre_publish_failure_artifacts(
-            run_assets=run_assets,
-            result=result,
-        )
+        validation_record = self._pre_publish_validation_record(run_assets, result)
+        validation_evidence = ReviewValidationEvidence.from_mapping(validation_record.to_dict())
+        self._persist_pre_publish_failure_artifacts(run_assets=run_assets, result=result,
+                                                    evidence=validation_evidence)
         rerouted = self._reroute_pre_publish_validation_failure_if_possible(
             worktree=worktree,
             issue_number=issue_number,
@@ -1434,6 +1445,7 @@ class CompletionProcessor:
             processing_policy=processing_policy,
             record=record,
             run_assets=run_assets,
+            validation_evidence=validation_evidence,
         )
         if rerouted is not None:
             return rerouted
@@ -1457,14 +1469,11 @@ class CompletionProcessor:
         processing_policy: CompletionProcessingPolicy,
         record: CompletionRecord,
         run_assets: SessionRunAssets,
+        validation_evidence: ReviewValidationEvidence,
     ) -> ProcessingResult | None:
         if session_name is None or processing_policy.agent_label is None:
             return None
         if RequestedAction.CREATE_PR not in record.requested_actions:
-            return None
-
-        validation_record_path = run_assets.validation_artifacts.record_path
-        if not validation_record_path.exists():
             return None
 
         # Catch-all: bound consecutive reroutes per (session, head_sha) so a
@@ -1481,7 +1490,7 @@ class CompletionProcessor:
         ):
             budget_exhausted_result = self._consume_validation_reroute_budget(
                 session_name=session_name,
-                validation_record_path=validation_record_path,
+                validation_evidence=validation_evidence,
             )
             if budget_exhausted_result is not None:
                 return budget_exhausted_result
@@ -1503,7 +1512,7 @@ class CompletionProcessor:
             approval_gate=self._review_exchange_approval_gate(
                 processing_policy=processing_policy, run_assets=run_assets,
             ),
-            initial_validation_record_path=validation_record_path,
+            initial_validation_evidence=validation_evidence,
             current_head_sha=current_worktree_head_sha(
                 git_adapter=self.git_adapter,
                 worktree=worktree,
@@ -1551,19 +1560,14 @@ class CompletionProcessor:
         self,
         *,
         session_name: str,
-        validation_record_path: Path,
+        validation_evidence: ReviewValidationEvidence,
     ) -> ProcessingResult | None:
         """Increment the per-(session, head_sha) reroute count and halt if exhausted.
 
         Returns a halting :class:`ProcessingResult` when the budget is spent,
         otherwise ``None`` to let the caller proceed.
         """
-        head_sha = self._read_validation_head_sha(validation_record_path)
-        if not head_sha:
-            # No SHA on the failing record — can't key the counter, can't
-            # safely bound the loop. Don't escalate from here; the in-loop
-            # bounds (max_rounds / max_no_progress) still apply.
-            return None
+        head_sha = validation_evidence.head_sha
         max_attempts = (
             self._config.review_exchange_max_rounds if self._config is not None else 10
         )
@@ -1594,20 +1598,12 @@ class CompletionProcessor:
             )
         return None
 
-    @staticmethod
-    def _read_validation_head_sha(record_path: Path) -> str | None:
-        try:
-            data = json.loads(record_path.read_text())
-        except (OSError, json.JSONDecodeError):
-            return None
-        head_sha = data.get("head_sha")
-        return head_sha if isinstance(head_sha, str) and head_sha else None
-
     def _persist_pre_publish_failure_artifacts(
         self,
         *,
         run_assets: SessionRunAssets,
         result: PrePublishGateResult,
+        evidence: ReviewValidationEvidence,
     ) -> None:
         artifacts = run_assets.validation_artifacts
         run_dir = run_assets.run_dir
@@ -1615,9 +1611,8 @@ class CompletionProcessor:
         stderr_path = artifacts.stderr_path
         stdout_path.write_text(result.stdout)
         stderr_path.write_text(result.stderr)
-        record = self._pre_publish_validation_record(run_assets, result)
         record_path = artifacts.record_path
-        record_path.write_text(json.dumps(record.to_dict(), indent=2) + "\n")
+        record_path.write_bytes(evidence.result_bytes)
         self.session_output.update_manifest(
             run_dir,
             {
@@ -1651,6 +1646,7 @@ class CompletionProcessor:
         self, *, worktree: Path, record: CompletionRecord, issue_number: int,
         issue_title: str, session_name: str | None, processing_policy: CompletionProcessingPolicy,
         actions_taken: list[str], errors: list[str], run_assets: SessionRunAssets,
+        initial_validation_evidence: ReviewValidationEvidence | None,
     ) -> PreparedActionPlan | ProcessingResult:
         requested_actions = tuple(record.requested_actions)
         cache_boundary_started_at = review_cache_boundary_started_at(
@@ -1673,6 +1669,7 @@ class CompletionProcessor:
             run_id=run_assets.run_id,
             agent_label=processing_policy.agent_label,
             record=record,
+            initial_validation_evidence=initial_validation_evidence,
             review_cache_boundary_started_at=cache_boundary_started_at,
             current_head_sha=current_worktree_head_sha(
                 git_adapter=self.git_adapter,
@@ -2597,7 +2594,7 @@ class CompletionProcessor:
         issue_title: str,
         session_name: str | None,
         agent_label: str | None,
-        initial_validation_record_path: Path | None = None,
+        initial_validation_evidence: ReviewValidationEvidence | None = None,
         approval_gate: "ReviewExchangeApprovalGate | None" = None,
     ) -> Any:
         return self._review_exchange.run_review_exchange_loop(
@@ -2607,7 +2604,7 @@ class CompletionProcessor:
             issue_title=issue_title,
             session_name=session_name,
             agent_label=agent_label,
-            initial_validation_record_path=initial_validation_record_path,
+            initial_validation_evidence=initial_validation_evidence,
             approval_gate=approval_gate,
             events=self._trace_events,
             event_context=self._event_context,
