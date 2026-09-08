@@ -586,6 +586,52 @@ def test_cli_check_returns_temporary_failure_while_new_head_is_pending(
     assert cli.main() == 75
 
 
+def test_cli_uses_exact_requested_definition_for_coverage_and_output(
+    monkeypatch, tmp_path, capsys,
+):
+    import sys
+    from unittest.mock import MagicMock
+    from issue_orchestrator.adapters.budgeted_validation_store import (
+        FileBudgetedValidationStore, suite_identity,
+    )
+    from issue_orchestrator.domain.budgeted_validation import (
+        BudgetedValidationHistory, BudgetedValidationProbe, BudgetedValidationRun,
+    )
+    from issue_orchestrator.entrypoints.cli_tools import budgeted_validation as cli
+
+    configured = parse_budgeted_validation({
+        "agents": {"command": ["new-test"]},
+        "other": {"command": ["other-test"]},
+    })
+    old = parse_budgeted_validation({"agents": {"command": ["old-test"]}})["agents"]
+    store = FileBudgetedValidationStore(tmp_path)
+    green = BudgetedValidationRun(
+        "old-green", NOW, NOW,
+        BudgetedValidationProbe("old-head", BudgetedValidationOutcome.PASSED, "evidence"),
+        "scheduled", old,
+    )
+    store.run_exclusive(lambda journal: journal.write(
+        old, BudgetedValidationHistory(suite_identity(old)).append(green),
+    ))
+    cycle = MagicMock()
+    cycle.run.return_value = True
+    monkeypatch.setattr(cli, "load_runtime_validation_config", lambda root: {
+        "budgeted": {
+            name: {"command": list(suite.command)}
+            for name, suite in configured.items()
+        },
+    })
+    monkeypatch.setattr(cli, "build_budgeted_validation_cycle", lambda root: (cycle, store))
+    monkeypatch.setattr(sys, "argv", ["budgeted-validation", "check", "--suite", "agents"])
+
+    assert cli.main() == 75
+    requested, = cycle.run.call_args.args
+    assert requested == (configured["agents"],)
+    output = capsys.readouterr().out
+    assert '"suite": "agents"' in output
+    assert '"suite": "other"' not in output
+
+
 def test_worker_request_round_trip_stays_out_of_history_inventory(monkeypatch, tmp_path):
     import sys
     from unittest.mock import MagicMock
@@ -645,6 +691,34 @@ def test_pre_namespace_history_remains_readable_and_recoverable(tmp_path):
     retained, = reopened.pending()
     assert retained.suite == suite
     assert retained.history.latest == pending
+
+
+def test_malformed_pre_namespace_worker_request_cannot_block_history_inventory(tmp_path):
+    from issue_orchestrator.adapters.budgeted_validation_store import (
+        FileBudgetedValidationStore, suite_identity,
+    )
+    from issue_orchestrator.domain.budgeted_validation import (
+        BudgetedValidationHistory, BudgetedValidationProbe, BudgetedValidationRun,
+    )
+
+    suite = parse_budgeted_validation({"agents": {"command": ["test"]}})["agents"]
+    store = FileBudgetedValidationStore(tmp_path)
+    completed = BudgetedValidationRun(
+        "green", NOW, NOW,
+        BudgetedValidationProbe("head", BudgetedValidationOutcome.PASSED, "evidence"),
+        "scheduled", suite,
+    )
+    store.run_exclusive(lambda journal: journal.write(
+        suite, BudgetedValidationHistory(suite_identity(suite)).append(completed),
+    ))
+    namespaced, = (tmp_path / "histories").glob("*.json")
+    namespaced.replace(tmp_path / namespaced.name)
+    (tmp_path / f"request-{'a' * 32}.json").write_text("{")
+    (tmp_path / "report-not-a-history.json").write_text("{}")
+
+    retained, = FileBudgetedValidationStore(tmp_path).inventory()
+    assert retained.suite == suite
+    assert retained.history.latest == completed
 
 
 @pytest.mark.parametrize("crash_after", ["scheduled", "reproduce", "verify-baseline", "bisect"])

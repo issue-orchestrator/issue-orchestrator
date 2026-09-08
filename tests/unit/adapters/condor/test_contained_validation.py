@@ -1,5 +1,6 @@
 """Durable scheduler ownership tests; no providers or live pool required."""
 
+from dataclasses import replace
 import json
 from pathlib import Path
 import subprocess
@@ -124,6 +125,96 @@ def test_restart_resumes_a_known_job_after_coordinator_death(monkeypatch, tmp_pa
         lambda self, arguments, timeout_seconds=30.0, environment=None:
             subprocess.CompletedProcess(arguments, 0, "[]", ""))
     assert CondorContainedValidationRunner(tools).run(command).returncode == 0
+    assert submissions == 1
+
+
+def test_restart_observes_submitted_job_after_launcher_identity_changes(
+    monkeypatch, tmp_path,
+):
+    tools, original = _tools(), _command(tmp_path)
+    history = tmp_path / "history"
+    history.mkdir()
+    _configure(monkeypatch, history)
+    submissions = 0
+
+    def invoke(self, arguments, timeout_seconds=30.0, *, environment=None):
+        nonlocal submissions
+        if arguments[0] == str(self.submit):
+            submissions += 1
+            run = original.evidence_directory / "contained-job"
+            (run / "lane.events").write_text(_running_event())
+            return subprocess.CompletedProcess(arguments, 0, "1.0", "")
+        return subprocess.CompletedProcess(arguments, 0, '[{"ClusterId":1,"ProcId":0}]', "")
+
+    monkeypatch.setattr(CondorTools, "invoke_bound", invoke)
+    monkeypatch.setattr(
+        "issue_orchestrator.adapters.condor.contained_validation.time.sleep",
+        lambda _: (_ for _ in ()).throw(SystemExit("coordinator killed")),
+    )
+    with pytest.raises(SystemExit):
+        CondorContainedValidationRunner(tools).run(original)
+    _finish(original, history)
+    rebound = replace(
+        original,
+        arguments=("/usr/bin/env", "python3", str(original.evidence_directory / "validation.py")),
+    )
+    monkeypatch.setattr(
+        "issue_orchestrator.adapters.condor.contained_validation.time.sleep", lambda _: None,
+    )
+    monkeypatch.setattr(
+        CondorTools, "invoke_bound",
+        lambda self, arguments, timeout_seconds=30.0, environment=None:
+            subprocess.CompletedProcess(arguments, 0, "[]", ""),
+    )
+
+    assert CondorContainedValidationRunner(tools).run(rebound).returncode == 0
+    assert submissions == 1
+
+
+def test_pre_submit_reservation_recompiles_after_launcher_identity_changes(
+    monkeypatch, tmp_path,
+):
+    from issue_orchestrator.adapters.condor import contained_validation
+
+    tools, original = _tools(), _command(tmp_path)
+    history = tmp_path / "history"
+    history.mkdir()
+    _configure(monkeypatch, history)
+    write_reservation = contained_validation._write_reservation  # noqa: SLF001
+    crashed = False
+
+    def crash_after_prepare(path, reservation):
+        nonlocal crashed
+        write_reservation(path, reservation)
+        if reservation.phase == "prepared" and not crashed:
+            crashed = True
+            raise SystemExit("coordinator killed before submit intent")
+
+    monkeypatch.setattr(contained_validation, "_write_reservation", crash_after_prepare)
+    with pytest.raises(SystemExit):
+        CondorContainedValidationRunner(tools).run(original)
+    assert json.loads(
+        (original.evidence_directory / "containment.json").read_text()
+    )["phase"] == "prepared"
+
+    monkeypatch.setattr(contained_validation, "_write_reservation", write_reservation)
+    rebound = replace(original, arguments=("/usr/bin/env", "python3", "validation.py"))
+    submissions = 0
+
+    def invoke(self, arguments, timeout_seconds=30.0, *, environment=None):
+        nonlocal submissions
+        if arguments[0] == str(self.submit):
+            submissions += 1
+            _finish(rebound, history)
+            return subprocess.CompletedProcess(arguments, 0, "1.0", "")
+        return subprocess.CompletedProcess(arguments, 0, "[]", "")
+
+    monkeypatch.setattr(CondorTools, "invoke_bound", invoke)
+    assert CondorContainedValidationRunner(tools).run(rebound).returncode == 0
+    executable = (
+        rebound.evidence_directory / "contained-job" / "lane.exec"
+    ).read_text()
+    assert "python3" in executable and "/bin/true" not in executable
     assert submissions == 1
 
 

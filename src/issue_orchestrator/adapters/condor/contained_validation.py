@@ -111,9 +111,20 @@ class CondorContainedValidationRunner:
         if receipt_path.is_file():
             reservation = _read_reservation(receipt_path)
             if (reservation.operation_id != command.operation_id
-                    or reservation.fingerprint != fingerprint
                     or reservation.pool_identity != self._pool_identity):
                 raise RuntimeError("contained validation reservation does not match its request")
+            if reservation.fingerprint != fingerprint:
+                if reservation.phase == "prepared":
+                    # No submission was attempted. Recompile under the current
+                    # stable launcher identity instead of stranding a receipt
+                    # written by an older engine interpreter.
+                    receipt_path.unlink()
+                    reservation = self._prepare(command, fingerprint)
+                else:
+                    # Once submission may have happened, the persisted job is
+                    # authoritative. The current command is used only to locate
+                    # and observe it; this path never submits or replaces it.
+                    pass
         else:
             reservation = self._prepare(command, fingerprint)
         if reservation.phase == "finished":

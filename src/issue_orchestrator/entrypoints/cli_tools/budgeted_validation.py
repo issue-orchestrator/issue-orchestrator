@@ -29,21 +29,30 @@ def main() -> int:
     if args.command != "status":
         acquired = cycle.run(tuple(suites.values()), force=args.command == "run")
     configured = tuple(suites.values())
-    stored = {(item.suite.name, item.history.suite_identity): item for item in store.inventory()}
+    stored = {
+        (item.suite.name, item.history.suite_identity): item
+        for item in store.inventory()
+        if args.suite is None or item.suite.name == args.suite
+    }
     if not configured and not stored:
         print("No budgeted validation suites configured or retained.")
         return 0
     outcomes = set()
-    entries = [(item.suite, item.history) for item in stored.values()]
-    stored_names = {suite.name for suite, _history in entries}
+    configured_entries = tuple((suite, store.read(suite)) for suite in configured)
+    configured_keys = {
+        (suite.name, history.suite_identity)
+        for suite, history in configured_entries
+    }
+    entries = list(configured_entries)
     entries.extend(
-        (suite, store.read(suite)) for suite in configured
-        if suite.name not in stored_names
+        (item.suite, item.history) for key, item in stored.items()
+        if key not in configured_keys
     )
+    verdict_keys = configured_keys or set(stored)
     for suite, history in entries:
         print(json.dumps({"suite": suite.name, "coverage_outcome": history.coverage_outcome,
                           **asdict(history)}, default=str, indent=2))
-        if suite.enabled:
+        if suite.enabled and (suite.name, history.suite_identity) in verdict_keys:
             outcomes.add(history.coverage_outcome)
     return coverage_exit_code(outcomes, inspect_only=args.command == "status", acquired=acquired)
 

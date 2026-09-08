@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 
 from ..domain.budgeted_validation import (
     BudgetedValidationHistory, BudgetedValidationOutcome, BudgetedValidationProbe,
@@ -17,6 +18,8 @@ from ..domain.budgeted_validation import (
     ValidationCadence,
 )
 from ..ports.budgeted_validation import BudgetedValidationJournal
+
+_LEGACY_HISTORY_NAME = re.compile(r"[a-z][a-z0-9_-]{0,63}-[0-9a-f]{64}\.json")
 
 
 def suite_identity(suite: BudgetedValidationSuite) -> str:
@@ -94,6 +97,8 @@ class FileBudgetedValidationStore:
         """Read old and namespaced histories while excluding worker requests."""
         documents: dict[str, tuple[Path, dict]] = {}
         for path in sorted(self._directory.glob("*.json")):
+            if _LEGACY_HISTORY_NAME.fullmatch(path.name) is None:
+                continue
             data = json.loads(path.read_text())
             if {"suite_identity", "runs", "latest"}.issubset(data):
                 documents[path.name] = (path, data)
