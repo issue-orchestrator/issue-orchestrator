@@ -823,6 +823,7 @@ class CompletionProcessor:
             return error_result.with_processing_policy(processing_policy)
         assert record is not None  # Guaranteed if error_result is None
         if (prepared_evidence is None and intake_receipt is not None
+                and record.outcome is CompletionOutcome.COMPLETED
                 and record.requests_publication):
             try:
                 prepared_evidence = self._completion_intake.prepare_receipt_for_issue(
