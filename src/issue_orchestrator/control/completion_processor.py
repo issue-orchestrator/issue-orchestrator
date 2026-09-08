@@ -387,12 +387,6 @@ class CompletionProcessor:
         issue_title: str,
     ) -> ProcessingResult:
         artifact = self._completion_intake.completion_artifact(receipt, run)
-        evidence = None
-        if self._completion_intake.read_receipt(receipt, run).requests_publication:
-            try:
-                evidence = self._completion_intake.prepare_receipt_for_issue(receipt, run, issue_number)
-            except CompletionIntakeError as exc:
-                return ProcessingResult.for_intake_refusal(exc)
         return self.process(
             worktree=run.worktree_path,
             issue_number=issue_number,
@@ -400,7 +394,6 @@ class CompletionProcessor:
             completion_path=str(artifact.path),
             run_assets=run,
             intake_receipt=receipt,
-            prepared_evidence=evidence,
         )
 
     def completion_receipt_for_run(
@@ -829,6 +822,14 @@ class CompletionProcessor:
         if error_result:
             return error_result.with_processing_policy(processing_policy)
         assert record is not None  # Guaranteed if error_result is None
+        if (prepared_evidence is None and intake_receipt is not None
+                and record.requests_publication):
+            try:
+                prepared_evidence = self._completion_intake.prepare_receipt_for_issue(
+                    intake_receipt, run_assets, issue_number)
+            except CompletionIntakeError as exc:
+                return ProcessingResult.for_intake_refusal(exc).with_processing_policy(processing_policy)
+            record = record_from_prepared_evidence(prepared_evidence, intake_receipt, run_assets)
 
         requested_actions = tuple(record.requested_actions)
         running_query = ReviewExchangeRunningQuery(

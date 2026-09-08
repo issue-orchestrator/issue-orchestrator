@@ -891,6 +891,46 @@ class TestReviewExchangeExecution:
             config=config,
         )
 
+    def test_receipt_process_supplies_owner_validation_to_first_review(
+        self, tmp_path, mock_label_adapter, mock_pr_adapter, mock_git_adapter,
+        event_bus,
+    ) -> None:
+        from tests.unit.test_completion_evidence_intake import command, completion, setup
+
+        ledger, run, capability, intake, working_copy, _ = setup(tmp_path)
+        raw = json.loads(completion())
+        raw["requested_actions"] = ["push_branch", "create_pr"]
+        receipt = intake.submit(
+            capability, command(json.dumps(raw).encode(), "normal-process")
+        )
+        intake.drain()
+        config = self._make_config(tmp_path)
+        config.repo = "example/repo"
+        config.agents["agent:claude"] = config.agents.pop("agent:coder")
+        mock_git_adapter.get_head_sha.return_value = working_copy.get_head_sha(
+            run.worktree_path
+        )
+        review_runner = _CapturingReviewExchangeRunner()
+        processor = make_completion_processor(
+            agent_callback_endpoint=ready_callback_endpoint(),
+            label_adapter=mock_label_adapter, pr_adapter=mock_pr_adapter,
+            git_adapter=mock_git_adapter, session_output=FileSystemSessionOutput(),
+            review_exchange_runner=review_runner, event_bus=event_bus,
+            config=config, completion_intake=intake,
+        )
+
+        result = processor.process(
+            run.worktree_path, 42, "Feature", run_assets=run,
+            intake_receipt=receipt,
+        )
+
+        assert result.success
+        evidence = review_runner.calls[0]["initial_validation_evidence"]
+        assert isinstance(evidence, ReviewValidationEvidence)
+        attestation = ledger.validation_for_receipt(receipt.entry_id)
+        assert evidence.head_sha == attestation.head_sha
+        assert evidence.passed is True
+
     def test_exchange_failure_halts_before_pr_creation(
         self,
         tmp_path,
