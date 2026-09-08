@@ -123,7 +123,7 @@ def test_fail_once_validation_state_survives_separate_isolated_attempts(scenario
     assert state.exists() and not state.is_relative_to(run.worktree_path)
 
 
-def test_scenario_checkout_reuse_preserves_history_and_rejects_other_branch(
+def test_scenario_checkout_reuse_preserves_history_and_isolates_other_branch(
     scenario_repo,
 ):
     manager = TempWorktreeManager(scenario_repo)
@@ -135,9 +135,14 @@ def test_scenario_checkout_reuse_preserves_history_and_rejects_other_branch(
     assert second == first
     assert GitWorkingCopy().get_head_sha(second.path) == head
     assert operator_file.read_text() == "preserve this"
-    with pytest.raises(ValueError, match="different branch"):
-        manager.create(scenario_repo, 1, "mismatch", branch_name="other")
+    other = manager.create(scenario_repo, 1, "other task", branch_name="other")
+    assert other.path != first.path
+    assert GitWorkingCopy().get_current_branch(other.path) == "other"
+    assert GitWorkingCopy().get_current_branch(first.path) == first.branch_name
+    with pytest.raises(ValueError, match="belongs to"):
+        manager.create(scenario_repo, 1, "explicit mismatch", branch_name="other", worktree_name=first.path.name)
     assert operator_file.read_text() == "preserve this"
+    assert not (other.path / operator_file.name).exists()
 
 
 @pytest.mark.parametrize("interrupted", [False, True])
