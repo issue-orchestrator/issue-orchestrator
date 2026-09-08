@@ -106,7 +106,17 @@ class ScriptedReceiptIntake:
             from issue_orchestrator.domain.completion_intake import CompletionIntakeError
 
             raise CompletionIntakeError("fixture has no authenticated validation")
-        return SimpleNamespace(validation_bytes=Path(validation_path).read_bytes())
+        validation_bytes = Path(validation_path).read_bytes()
+        payload = json.loads(validation_bytes)
+        validation = SimpleNamespace(
+            head_sha=payload.get("head_sha")
+            or pse.get_repo_head_sha(run.worktree_path)
+            or "",
+        )
+        return SimpleNamespace(
+            validation_bytes=validation_bytes,
+            validation=validation,
+        )
 
 
 def _start_exchange_run(
@@ -1425,7 +1435,8 @@ class TestPairValidationMirror:
         validation = json.dumps({"passed": True, "head_sha": "head-b"}).encode()
         intake = MagicMock()
         intake.completion_evidence.return_value = SimpleNamespace(
-            validation_bytes=validation
+            validation_bytes=validation,
+            validation=SimpleNamespace(head_sha="head-b"),
         )
         mirror = pse._PairValidationMirror(  # noqa: SLF001
             head_reader=lambda _: "head-b",
@@ -1447,7 +1458,8 @@ class TestPairValidationMirror:
         validation = json.dumps({"passed": True, "head_sha": "head-a"}).encode()
         intake = MagicMock()
         intake.completion_evidence.return_value = SimpleNamespace(
-            validation_bytes=validation
+            validation_bytes=validation,
+            validation=SimpleNamespace(head_sha="head-a"),
         )
         mirror = pse._PairValidationMirror(  # noqa: SLF001
             head_reader=lambda _: "head-b",
@@ -1508,7 +1520,10 @@ class TestPairValidationMirror:
 
         def authenticated_evidence():
             certified.write_bytes(replacement)
-            return SimpleNamespace(validation_bytes=authenticated)
+            return SimpleNamespace(
+                validation_bytes=authenticated,
+                validation=SimpleNamespace(head_sha="head-a"),
+            )
 
         intake.completion_evidence.side_effect = authenticated_evidence
         pair_record = coder_wt / ".issue-orchestrator" / "pair" / "validation-record.json"
@@ -1523,6 +1538,74 @@ class TestPairValidationMirror:
         assert mirror.completion_error(require_validation=True) is None
         assert pair_record.read_bytes() == authenticated
         assert certified.read_bytes() == replacement
+
+    def test_agent_writable_mirror_cannot_replace_authenticated_head_during_check(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        coder_wt = tmp_path / "coder-wt"
+        pair_record = (
+            coder_wt / ".issue-orchestrator" / "pair" / "validation-record.json"
+        )
+        authenticated = json.dumps(
+            {"passed": True, "head_sha": "head-a"}
+        ).encode()
+        replacement = json.dumps({"passed": True, "head_sha": "head-b"}).encode()
+        intake = MagicMock()
+        intake.completion_evidence.return_value = SimpleNamespace(
+            validation_bytes=authenticated,
+            validation=SimpleNamespace(head_sha="head-a"),
+        )
+
+        def replace_mirror_before_returning_head(_):
+            pair_record.write_bytes(replacement)
+            return "head-b"
+
+        mirror = pse._PairValidationMirror(  # noqa: SLF001
+            head_reader=replace_mirror_before_returning_head,
+            intake=intake,
+            pair_dir=pair_record.parent,
+            record_path=pair_record,
+            coder_worktree_path=coder_wt,
+        )
+
+        error = mirror.completion_error(require_validation=True)
+
+        assert error is not None
+        assert "head-a" in error and "head-b" in error
+        assert pair_record.read_bytes() == replacement
+
+    def test_reviewer_turn_mirror_replacement_cannot_change_final_freshness(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        coder_wt = tmp_path / "coder-wt"
+        pair_record = (
+            coder_wt / ".issue-orchestrator" / "pair" / "validation-record.json"
+        )
+        authenticated = json.dumps(
+            {"passed": True, "head_sha": "head-a"}
+        ).encode()
+        intake = MagicMock()
+        intake.completion_evidence.return_value = SimpleNamespace(
+            validation_bytes=authenticated,
+            validation=SimpleNamespace(head_sha="head-a"),
+        )
+        mirror = pse._PairValidationMirror(  # noqa: SLF001
+            head_reader=lambda _: "head-a",
+            intake=intake,
+            pair_dir=pair_record.parent,
+            record_path=pair_record,
+            coder_worktree_path=coder_wt,
+        )
+        assert mirror.completion_error(require_validation=True) is None
+
+        pair_record.write_text(
+            json.dumps({"passed": False, "head_sha": "head-b"}),
+            encoding="utf-8",
+        )
+
+        assert mirror.current_validation_error() is None
 
 
 # ---------------------------------------------------------------------------
