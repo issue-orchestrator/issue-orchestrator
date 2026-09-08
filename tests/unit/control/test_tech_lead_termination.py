@@ -199,6 +199,7 @@ class _Host:
     def preserve_issue_work(
         self, issue_number: int, reason: str
     ) -> ValidatedWorkDispositionBatch:
+        assert reason == "tech-lead-termination"
         return ValidatedWorkDispositionBatch.no_work(issue_number, reason)
 
 

@@ -54,6 +54,29 @@ from issue_orchestrator.domain.models import (
 from issue_orchestrator.ports.session_output import ValidationRecord
 
 
+@pytest.fixture(autouse=True)
+def completion_owner_transport(monkeypatch):
+    """Exercise candidate serialization and receipt checking at the HTTP boundary."""
+    from issue_orchestrator.contracts.ui_openapi_models import (
+        CompletionIntakeReceiptPayload,
+        CompletionSubmissionPayload,
+    )
+
+    def post(route, payload, *, timeout):
+        assert route == "/api/completion/submissions"
+        assert timeout == 30
+        submitted = CompletionSubmissionPayload.model_validate_json(payload)
+        return CompletionIntakeReceiptPayload(
+            entry_id="a" * 64,
+            content_sha256=submitted.content_sha256,
+        ).model_dump_json().encode()
+
+    monkeypatch.setattr(
+        "issue_orchestrator.entrypoints.cli_tools.completion_submit.post_completion_command",
+        post,
+    )
+
+
 def _orchestrator_env(run_dir: Path, *, session_id: str = "test-123") -> dict[str, str]:
     return {
         f"{ENV_PREFIX}SESSION_ID": session_id,
