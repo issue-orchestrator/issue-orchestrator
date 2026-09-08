@@ -90,6 +90,7 @@ from .config_review_projection import (
     runtime_run_audit_dict,
     serialized_internal_review_dict,
 )
+from .budgeted_validation_config import serialize_budgeted_validation, validate_budgeted_validation_agents
 from .validation_config_loader import (
     load_validation_config as load_validation_config,
     load_validation_config_from_file as load_validation_config_from_file,
@@ -630,6 +631,7 @@ class Config(ConfigLaunchIdentity, RuntimeConfigReferenceOwner, TechLeadActivati
             },
             "validation": {
                 "enabled": self.is_validation_enabled(),
+                "budgeted": serialize_budgeted_validation(self.validation.budgeted),
                 "quick": {
                     "cmd": self.validation.quick.cmd,
                     "timeout_seconds": self.validation.quick.timeout_seconds,
@@ -1092,6 +1094,7 @@ class Config(ConfigLaunchIdentity, RuntimeConfigReferenceOwner, TechLeadActivati
 
         # Validation section
         validation_dict: dict = {}
+        _put_if_truthy(validation_dict, "budgeted", serialize_budgeted_validation(self.validation.budgeted))
         quick_dict: dict = {}
         if self.validation.quick.cmd:
             quick_dict["cmd"] = self.validation.quick.cmd
@@ -1358,6 +1361,7 @@ class Config(ConfigLaunchIdentity, RuntimeConfigReferenceOwner, TechLeadActivati
                 "provider_resilience.circuit_breaker.auth_cooldown_seconds must be "
                 f"between 60 and 604800, got {circuit.auth_cooldown_seconds}"
             )
+        errors.extend(validate_budgeted_validation_agents(self.validation.budgeted, set(self.agents)))
         if self.validation.publish.dirty_check not in {"tracked", "unstaged", "all", "off"}:
             errors.append(
                 "validation.publish.dirty_check must be one of: tracked, unstaged, all, off"
@@ -1389,8 +1393,6 @@ class Config(ConfigLaunchIdentity, RuntimeConfigReferenceOwner, TechLeadActivati
 
         Returns list of (agent_label, field_name, invalid_vars) tuples.
         """
-        import re
-
         # Valid variables for initial_prompt (before command rendering)
         VALID_INITIAL_PROMPT_VARS = {
             "issue_number",

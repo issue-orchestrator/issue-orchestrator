@@ -33,6 +33,7 @@ from issue_orchestrator.control.tech_lead_run_ownership import (
     TechLeadRunOwnership,
 )
 from issue_orchestrator.ports.pause_journal import NullPauseJournal
+from issue_orchestrator.ports.budgeted_validation import DisabledBudgetedValidation
 from issue_orchestrator.ports.run_ledger_store import (
     SingleInstanceRunLedgerStore,
 )
@@ -1122,6 +1123,7 @@ def build_test_orchestrator_deps(
     readiness_probe = provider_readiness_probe or NO_PROVIDER_READINESS_PROBE
 
     infra_services = InfraServices(
+        budgeted_validation=DisabledBudgetedValidation(),
         # Explicitly null: a test that pauses must never write through a
         # production filesystem adapter.
         pause_journal=NullPauseJournal(),

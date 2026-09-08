@@ -125,27 +125,21 @@ def test_validate_impl_runs_core_phases_with_separate_job_caps():
     )
     live_web_index = _find_line(
         lines,
-        "validate-live-web-phase",
-        "test-integration-core-live-codex",
+        "validate-web-phase",
         "test-web",
     )
 
     _assert_job_count(lines[static_index], 10)
     _assert_job_count(lines[core_tests_index], 1)
-    _assert_job_count(lines[live_web_index], 2)
+    _assert_job_count(lines[live_web_index], 1)
 
     assert static_index < core_tests_index < live_web_index
 
 
-def test_validate_pr_impl_runs_agent_phase_after_validate_phase():
+def test_validate_pr_impl_keeps_live_agent_calls_outside_every_pr_gate():
     lines = _dry_run("_validate-pr-impl")
-
-    validate_index = _find_line(lines, "validate-main-phase", "_validate-impl")
-    agent_index = _find_line(lines, "validate-agent-phase", "_validate-agent-impl")
-
-    _assert_job_count(lines[agent_index], 1)
-
-    assert validate_index < agent_index
+    _find_line(lines, "validate-main-phase", "_validate-impl")
+    assert all("validate-agent-phase" not in line for line in lines)
 
 
 def test_validate_full_impl_runs_e2e_after_pr_phase():
@@ -205,29 +199,12 @@ def test_agent_validation_targets_emit_timing_markers():
     assert all("live_codex" not in line for line in integration_lines)
 
 
-def test_core_validation_runs_live_codex_marker_serially():
+def test_core_validation_excludes_model_calls_but_keeps_mixed_test_files():
     lines = _dry_run("test-integration-core", INTEGRATION_PARALLEL="0")
-
-    starts = _matching_indexes(lines, "[validate-timing] START target=$target")
-    ends = _matching_indexes(lines, "[validate-timing] END target=$target")
-    assert len(starts) == 2
-    assert len(ends) == 2
-
-    core_index = _find_line(lines, 'target="test-integration-core"')
-    live_codex_index = _find_line(lines, 'target="test-integration-core-live-codex"')
-    non_live_marker_index = _find_line(
-        lines,
-        '-m "not requires_infra and not live_codex"',
-    )
-    live_marker_index = _find_line(lines, '-m "live_codex and not requires_infra"')
-
-    assert core_index < live_codex_index
-    assert non_live_marker_index == core_index
-    assert live_marker_index == live_codex_index
-    assert all(
-        "::test_real_interactive_codex_reviewer_round_trips_through_exchange" not in line
-        for line in lines
-    )
+    core = _find_line(lines, 'target="test-integration-core"')
+    assert '-m "not requires_infra and not live_agent and not live_codex"' in lines[core]
+    assert "--ignore=tests/integration/test_claude_execution.py" not in lines[core]
+    assert all('target="test-integration-core-live-codex"' not in line for line in lines)
 
 
 def _wrapped_command(recipe_line: str) -> str:

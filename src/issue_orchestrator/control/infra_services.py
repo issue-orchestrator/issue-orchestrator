@@ -17,6 +17,7 @@ from ..ports.provider_readiness import (
 )
 
 if TYPE_CHECKING:
+    from ..ports.budgeted_validation import BudgetedValidationRuntime
     from ..ports.pause_journal import PauseJournal
     from ..ports.label_store import LabelStore
     from ..ports.queue_cache_store import QueueCacheStore
@@ -84,6 +85,7 @@ class InfraServices:
     # test pauses at a production path. Production picks ``JsonlPauseJournal``;
     # bounded compositions pick ``NullPauseJournal`` and say so.
     pause_journal: "PauseJournal"
+    budgeted_validation: "BudgetedValidationRuntime"
     # The typed provider-readiness/auth-failure boundary (#6999). Shared by the
     # launch gate and the live-session observer so both consume one probe (and
     # one short-lived result cache) rather than each spawning their own.
@@ -100,3 +102,11 @@ class InfraServices:
     background_job_supervisor: "BackgroundJobSupervisor | None" = None
     instance_id: str = ""
     state_health_check: Callable[[], None] = field(default=_noop_health_check)
+
+    def tick_before_planning(self, *, paused: bool, shutdown_requested: bool) -> None:
+        """Drain completed work before planning; start periodic work only while active."""
+        self.state_health_check()
+        if self.background_job_supervisor is not None:
+            self.background_job_supervisor.tick()
+        if not paused and not shutdown_requested:
+            self.budgeted_validation.tick()

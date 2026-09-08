@@ -171,6 +171,8 @@ class CondorTools:
         self,
         arguments: tuple[str, ...],
         timeout_seconds: float = TOOL_TIMEOUT_SECONDS,
+        *,
+        environment: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         """Run one scheduler tool against this pool, bounded in time.
 
@@ -187,6 +189,10 @@ class CondorTools:
         not an oversight, and quietly deleting a category of variables
         from it would surprise whoever set them.
 
+        ``environment`` lets an owner pass a deliberately filtered environment
+        for one submission. It is still carried unchanged; this boundary adds
+        only ``CONDOR_CONFIG`` when the resolved personal pool requires it.
+
         A non-zero return code is the caller's to interpret — tools use
         it for ordinary answers as well as failures. Only an
         invocation that never produced one (missing binary, hung tool)
@@ -196,6 +202,7 @@ class CondorTools:
             arguments,
             scrub_macro_overrides=False,
             timeout_seconds=timeout_seconds,
+            environment=environment,
         )
 
     def read_configuration(
@@ -223,6 +230,28 @@ class CondorTools:
             (str(self.config_query), *query),
             scrub_macro_overrides=True,
             timeout_seconds=timeout_seconds,
+            environment=None,
+        )
+
+    def invoke_bound(
+        self,
+        arguments: tuple[str, ...],
+        timeout_seconds: float = TOOL_TIMEOUT_SECONDS,
+        *,
+        environment: dict[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        """Run a scheduler command with ambient routing overrides removed.
+
+        Owners that first attest a specific scheduler use this path for every
+        later submit and query. The caller may still provide ordinary provider
+        credentials for ``getenv = true``; only per-process ``_CONDOR_*``
+        macros that could redirect or redefine the scheduler are removed.
+        """
+        return self._run(
+            arguments,
+            scrub_macro_overrides=True,
+            timeout_seconds=timeout_seconds,
+            environment=environment,
         )
 
     def _run(
@@ -231,13 +260,14 @@ class CondorTools:
         *,
         scrub_macro_overrides: bool,
         timeout_seconds: float,
+        environment: dict[str, str] | None,
     ) -> subprocess.CompletedProcess[str]:
         # A non-positive timeout is not clamped away: it means the
         # caller's budget is already spent, and subprocess raises
         # TimeoutExpired promptly, which becomes the LaneExecutorError
         # the caller already reports. Silently granting more time would
         # be the fallback that made the bound a lie.
-        environment = dict(os.environ)
+        environment = dict(os.environ if environment is None else environment)
         if scrub_macro_overrides:
             environment = {
                 key: value

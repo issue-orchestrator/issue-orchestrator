@@ -38,12 +38,34 @@ from ..domain.lane_execution import LaneExecutorUnavailableError
 from ..ports.executor_pool import ExecutorPoolInspector
 from ..ports.lane_executor import LaneExecutor
 from ..ports.lane_policy_check import LanePolicyCheck
+from ..ports.contained_validation import ContainedValidationRunner
 
 BACKEND_ENVIRONMENT_VARIABLE = "ISSUE_ORCHESTRATOR_LANE_EXECUTOR"
 DIRECT_BACKEND = "direct"
 CONDOR_BACKEND = "condor"
 
 _DIRECT_GRACEFUL_SHUTDOWN_SECONDS = 10.0
+
+
+def resolve_contained_validation_runner() -> ContainedValidationRunner:
+    """Build live validation containment or a provider-free unavailable adapter."""
+    import sys
+
+    from ..adapters.condor import CondorTools
+    from ..adapters.condor.contained_validation import (
+        CondorContainedValidationRunner, UnavailableContainedValidationRunner,
+    )
+
+    if not sys.platform.startswith("linux"):
+        return UnavailableContainedValidationRunner(
+            "live validation requires the Linux cgroup execenv; no provider was launched"
+        )
+    try:
+        return CondorContainedValidationRunner(CondorTools.resolve())
+    except (LaneExecutorUnavailableError, RuntimeError) as error:
+        return UnavailableContainedValidationRunner(
+            f"verified scheduler containment unavailable: {error}; no provider was launched"
+        )
 
 
 @dataclass(frozen=True, slots=True)

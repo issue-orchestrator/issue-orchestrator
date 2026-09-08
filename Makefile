@@ -1,4 +1,4 @@
-.PHONY: help venv venv-fast semgrep-venv worktree-create worktree-setup install upgrade-deps deps-batch release release-pr prepare-release preview-readme typecheck lint-arch lint-complexity quality-guardrails quality-guardrails-stale lane-preflight sync-deps test test-unit test-unit-cov test-unit-cov-html test-integration test-integration-core test-integration-core-local test-integration-core-live-codex test-integration-agent test-simulated test-simulated-core test-simulated-agent test-e2e test-e2e-heavy test-e2e-onboarding-live test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-real-gh-plus-e2e test-real-gh-plus-e2e-subprocess test-web test-web-headed test-vscode install-vscode-extensions playwright-install validate validate-raw validate-pr validate-pr-raw validate-quick validate-full verify-hooks-all _validate-impl _validate-static-impl _validate-core-tests-impl _validate-pr-impl _validate-agent-impl _validate-full-impl _validate-pr-flat-impl FORCE ensure-uv test-integration-agent-claude test-integration-agent-codex test-integration-agent-chain clean demo issues-validate issues-fix issues-fix-dry-run issues-create
+.PHONY: test-agent-live agent-test-status agent-test-check help venv venv-fast semgrep-venv worktree-create worktree-setup install upgrade-deps deps-batch release release-pr prepare-release preview-readme typecheck lint-arch lint-complexity quality-guardrails quality-guardrails-stale lane-preflight sync-deps test test-unit test-unit-cov test-unit-cov-html test-integration test-integration-core test-integration-core-local test-integration-core-live-codex test-integration-agent test-simulated test-simulated-core test-simulated-agent test-e2e test-e2e-heavy test-e2e-onboarding-live test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-real-gh-plus-e2e test-real-gh-plus-e2e-subprocess test-web test-web-headed test-vscode install-vscode-extensions playwright-install validate validate-raw validate-pr validate-pr-raw validate-quick validate-full verify-hooks-all _validate-impl _validate-static-impl _validate-core-tests-impl _validate-pr-impl _validate-agent-impl _validate-full-impl _validate-pr-flat-impl FORCE ensure-uv test-integration-agent-claude test-integration-agent-codex test-integration-agent-chain clean demo issues-validate issues-fix issues-fix-dry-run issues-create
 
 # GNU make detection - required for parallel validation with grouped output
 # On macOS: brew install make (provides gmake)
@@ -278,13 +278,10 @@ endif
 	@$(GMAKE) --no-print-directory semgrep-venv
 	@touch .venv/.deps-synced
 	@echo ""
-	@echo "==> Verifying with the full required suite (agent lane + test-vscode)..."
-	@# validate-pr-raw, not validate: `validate` stops at _validate-impl and omits
-	@# _validate-agent-impl, so it would skip the live claude/codex lane -- exactly
-	@# the lane CI already cannot run. That lane is the whole reason this batch is
-	@# verified locally, so skipping it here would leave pexpect-class dependencies
-	@# (agent spawning) covered by nothing at all. -raw avoids seeding the
-	@# SHA-keyed pre-push cache from an uncommitted tree.
+	@echo "==> Verifying with the required deterministic suite (including test-vscode)..."
+	@# The dependency batch has an uncommitted tree, so its internal raw target
+	@# must not seed the SHA-keyed pre-push receipt. Configured budgeted suites
+	@# cover real agent execution on their normal cadence.
 	@$(GMAKE) --no-print-directory validate-pr-raw
 	@echo ""
 	@echo "==> Upgraded manifests:"
@@ -526,7 +523,7 @@ SLICE_DURATIONS_PLUGIN := issue_orchestrator.infra.pytest_file_durations
 # -j) hands every slice the same one, and the condor wrapper carries it
 # into the job so both modes pin identically.
 SLICE_WEIGHTS_EPOCH := $(shell date -u +%Y%m%dT%H%M%SZ)
-INTEGRATION_CORE_FILES = $(filter-out $(INTEGRATION_AGENT_FILES),$(wildcard tests/integration/test_*.py))
+INTEGRATION_CORE_FILES = $(wildcard tests/integration/test_*.py)
 # Default to the declared lane width so both modes run the same
 # shape, but keep the documented overrides working: an explicit
 # PARALLEL=N (0 disables xdist) or UNIT_PARALLEL=N wins (B1 round two,
@@ -538,9 +535,7 @@ INTEGRATION_PARALLEL ?= $(PARALLEL)
 # provider account state. Run them serially unless explicitly overridden.
 INTEGRATION_AGENT_PARALLEL ?= 0
 INTEGRATION_AGENT_FILES := tests/integration/test_claude_execution.py tests/integration/test_codex_execution.py tests/integration/test_live_agent_chain.py
-# Keep this list in sync with the -k exclusion in test-simulated-core.
-# New agent-backed tests added to test_foreign_repo_lifecycle.py must be listed here
-# so they move to test-simulated-agent instead of staying in the fast local slice.
+# Explicit convenience targets. PR selection uses live_agent markers, not filenames.
 SIMULATED_AGENT_FILES := tests/simulated_scenarios/test_foreign_repo_lifecycle.py::test_foreign_repo_claude_code_agent_done tests/simulated_scenarios/test_foreign_repo_lifecycle.py::test_foreign_repo_codex_agent_done
 
 # Python interpreter for dependency checks
@@ -575,10 +570,10 @@ ifeq ($(LANE_EXECUTOR),condor)
 			$(GMAKE) test-unit LANE_EXECUTOR=direct UNIT_PARALLEL=$(UNIT_PARALLEL))
 else ifeq ($(UNIT_PARALLEL),0)
 	$(call TIMED_RUN,test-unit,\
-		$(PYTEST) tests/unit packages/agent_runner/tests -x -q --tb=short $(PYTEST_TIMINGS))
+		$(PYTEST) tests/unit packages/agent_runner/tests -m "not live_agent and not live_codex" -x -q --tb=short $(PYTEST_TIMINGS))
 else
 	$(call TIMED_RUN,test-unit,\
-		$(PYTEST) tests/unit packages/agent_runner/tests -x -q --tb=short -n $(UNIT_PARALLEL) --dist=loadgroup $(PYTEST_TIMINGS))
+		$(PYTEST) tests/unit packages/agent_runner/tests -m "not live_agent and not live_codex" -x -q --tb=short -n $(UNIT_PARALLEL) --dist=loadgroup $(PYTEST_TIMINGS))
 endif
 
 test-simulated: sync-deps
@@ -597,20 +592,13 @@ ifeq ($(LANE_EXECUTOR),condor)
 else ifeq ($(SIMULATED_PARALLEL),0)
 	$(call TIMED_RUN,test-simulated-core,\
 		$(PYTEST) tests/simulated_scenarios -x -q --tb=short \
-			--ignore=tests/simulated_scenarios/test_foreign_repo_lifecycle.py \
-			$(PYTEST_TIMINGS) && \
-		$(PYTEST) tests/simulated_scenarios/test_foreign_repo_lifecycle.py -x -q --tb=short \
-			-k "not test_foreign_repo_claude_code_agent_done and not test_foreign_repo_codex_agent_done" \
-			$(PYTEST_TIMINGS))
+			-m "not live_agent and not live_codex" $(PYTEST_TIMINGS))
 else
 	$(call TIMED_RUN,test-simulated-core,\
 		$(PYTEST) tests/simulated_scenarios -x -q --tb=short -n $(SIMULATED_PARALLEL) --dist=loadgroup \
-			--ignore=tests/simulated_scenarios/test_foreign_repo_lifecycle.py \
-			$(PYTEST_TIMINGS) && \
-		$(PYTEST) tests/simulated_scenarios/test_foreign_repo_lifecycle.py -x -q --tb=short -n $(SIMULATED_PARALLEL) --dist=loadgroup \
-			-k "not test_foreign_repo_claude_code_agent_done and not test_foreign_repo_codex_agent_done" \
-			$(PYTEST_TIMINGS))
+			-m "not live_agent and not live_codex" $(PYTEST_TIMINGS))
 endif
+
 
 test-simulated-agent: sync-deps
 ifeq ($(LANE_EXECUTOR),condor)
@@ -638,7 +626,7 @@ test-integration: sync-deps
 
 # Integration tests excluding those that require external infrastructure (GitHub token, etc.)
 # Used in pre-push validation where full infra may not be available
-test-integration-core: test-integration-core-local test-integration-core-live-codex
+test-integration-core: test-integration-core-local
 
 test-integration-core-local: sync-deps
 ifeq ($(LANE_EXECUTOR),condor)
@@ -648,17 +636,11 @@ ifeq ($(LANE_EXECUTOR),condor)
 			$(GMAKE) test-integration-core-local LANE_EXECUTOR=direct)
 else ifeq ($(INTEGRATION_PARALLEL),0)
 	$(call TIMED_RUN,test-integration-core,\
-		$(PYTEST) tests/integration -x -q --tb=short -m "not requires_infra and not live_codex" \
-			--ignore=tests/integration/test_claude_execution.py \
-			--ignore=tests/integration/test_codex_execution.py \
-			--ignore=tests/integration/test_live_agent_chain.py \
+		$(PYTEST) tests/integration -x -q --tb=short -m "not requires_infra and not live_agent and not live_codex" \
 			$(PYTEST_TIMINGS))
 else
 	$(call TIMED_RUN,test-integration-core,\
-		$(PYTEST) tests/integration -x -q --tb=short -m "not requires_infra and not live_codex" -n $(INTEGRATION_PARALLEL) --dist=loadgroup \
-			--ignore=tests/integration/test_claude_execution.py \
-			--ignore=tests/integration/test_codex_execution.py \
-			--ignore=tests/integration/test_live_agent_chain.py \
+		$(PYTEST) tests/integration -x -q --tb=short -m "not requires_infra and not live_agent and not live_codex" -n $(INTEGRATION_PARALLEL) --dist=loadgroup \
 			$(PYTEST_TIMINGS))
 endif
 
@@ -702,7 +684,7 @@ else
 		if [ -z "$$targets" ]; then \
 			echo "lane_slices: slice $* selects no tests"; \
 		else \
-			$(PYTEST) $$targets -x -q --tb=short -m "not requires_infra and not live_codex" \
+			$(PYTEST) $$targets -x -q --tb=short -m "not requires_infra and not live_agent and not live_codex" \
 				-p $(SLICE_DURATIONS_PLUGIN) \
 				-n $(LANE_WORKERS_INTEGRATION_SLICE) --dist=loadgroup $(PYTEST_TIMINGS); \
 		fi)
@@ -905,8 +887,8 @@ _validate-impl:
 		$(GMAKE) -j$(VALIDATE_STATIC_JOBS) --output-sync=target _validate-static-impl)
 	$(call TIMED_RUN,validate-core-tests-phase,\
 		$(GMAKE) -j$(VALIDATE_TEST_JOBS) --output-sync=target _validate-core-tests-impl)
-	$(call TIMED_RUN,validate-live-web-phase,\
-		$(GMAKE) -j$(VALIDATE_LIVE_WEB_JOBS) --output-sync=target test-integration-core-live-codex test-web)
+	$(call TIMED_RUN,validate-web-phase,\
+		$(GMAKE) -j$(VALIDATE_WEB_JOBS) --output-sync=target test-web)
 
 _validate-static-impl: typecheck lint-arch lint-complexity
 
@@ -958,8 +940,6 @@ ifeq ($(LANE_EXECUTOR),condor)
 else
 	$(call TIMED_RUN,validate-main-phase,\
 		$(GMAKE) --output-sync=target _validate-impl)
-	$(call TIMED_RUN,validate-agent-phase,\
-		$(GMAKE) -j$(VALIDATE_AGENT_JOBS) --output-sync=target _validate-agent-impl)
 endif
 
 # Flat condor-mode gate: ordering between lanes is scheduling, not
@@ -970,10 +950,9 @@ endif
 # AND the exported LANE_VERDICT_LANES - a command-line assignment
 # would narrow all three (a shrunken fan is a vacuous suite green).
 override _VALIDATE_PR_FLAT_TARGETS := typecheck lint-arch lint-complexity test-unit \
-	test-simulated-core test-simulated-agent \
+	test-simulated-core \
 	test-integration-core-slice-1 test-integration-core-slice-2 test-integration-core-slice-3 \
-	test-integration-agent-claude test-integration-agent-codex test-integration-agent-chain \
-	test-integration-core-live-codex test-web test-vscode
+	test-web test-vscode
 
 _validate-pr-flat-impl: $(_VALIDATE_PR_FLAT_TARGETS)
 
@@ -988,6 +967,7 @@ validate-full:
 
 _validate-full-impl:
 	@$(GMAKE) --output-sync=target _validate-pr-impl
+	@$(GMAKE) test-agent-live
 	@$(GMAKE) -j$(VALIDATE_E2E_JOBS) --output-sync=target test-e2e
 
 verify-hooks-all:
@@ -1014,3 +994,16 @@ issues-create:
 
 # Unconditional prerequisite for pattern-rule lanes (they cannot be .PHONY).
 FORCE:
+
+# Real model coverage is coordinated separately from exact-HEAD deterministic receipts.
+# The coordinator owns serialization across worktrees, cadence, and live verdicts.
+test-agent-live: sync-deps
+	$(PYTEST) tests/unit packages/agent_runner/tests tests/integration tests/simulated_scenarios \
+		-m "(live_agent or live_codex) and not requires_infra" -x -q --tb=short \
+		-p scripts.agent_test_report
+
+agent-test-status:
+	@$(PYTHON) -m issue_orchestrator.entrypoints.cli_tools.budgeted_validation status
+
+agent-test-check:
+	@$(PYTHON) -m issue_orchestrator.entrypoints.cli_tools.budgeted_validation check

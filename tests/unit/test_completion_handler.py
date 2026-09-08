@@ -3599,6 +3599,17 @@ class TestTechLeadAuthorityRetention:
         )
         return session
 
+    @pytest.mark.parametrize("status", [SessionStatus.COMPLETED, SessionStatus.FAILED])
+    def test_deferred_finalization_retains_authority_until_after_apply(
+        self, config, agent_config, tmp_worktree, status
+    ):
+        session = self._armed_investigation(config, agent_config, tmp_worktree)
+        handler = make_handler(config)
+        result = handler.process_completion(session, status, finalize_terminal=False)
+        assert self._load_authority(config, session) is not None
+        handler.finalize_terminal_outcome(session, result.history_status, None, None)
+        assert self._load_authority(config, session) is None
+
     def test_rejected_completion_discards_authority_row(
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
     ) -> None:

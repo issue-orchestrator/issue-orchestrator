@@ -2986,6 +2986,8 @@ class TestClaimGateAudit:
     #   evidence comment targets that orchestrator-owned case file, never a
     #   claimed coding issue
     # - SURFACE_TECH_LEAD_PROPOSAL: emits a trace event only, no GitHub calls
+    # - REQUIRE_TECH_LEAD_INVESTIGATION: carries a trusted completion contract;
+    #   its acknowledgement has no reads or writes. The aggregate verdict checks effects.
     # - RESET_RETRY_ISSUE: owner command (#6764) - every GitHub write it
     #   triggers is delegated to the reset owner, which routes label/PR
     #   mutations back through this applier's claim-verified handlers
@@ -3017,10 +3019,16 @@ class TestClaimGateAudit:
     #   case file and writes the local shipped-fix + promotion ledger rows
     #   (#6957); like APPEND_PATTERN_OBSERVATION the only GitHub target is a
     #   case file, which is never claimed.
+    # - RECORD_TECH_LEAD_DISPOSITION: owns explanation plus ledger commit;
+    #   its remote write delegates through the claim-verified comment handler,
+    #   and it revalidates the claim before activating the binding.
     # - CLEANUP_SESSION: post-completion cleanup
     # - RECONCILE_HISTORY_ENTRY: local session history mutation + event only
     # - CREATE_PR: not implemented in action_applier
     EXEMPT_ACTIONS = {
+        # Creates a new regression issue; never mutates an existing claimed
+        # issue. The reporting owner verifies its durable run and create lease.
+        ActionType.REPORT_BUDGETED_VALIDATION,
         ActionType.APPLY_PROVIDER_IMPACT,
         ActionType.APPEND_PATTERN_OBSERVATION,
         ActionType.PROMOTE_TECH_LEAD_FINDING,
@@ -3041,9 +3049,13 @@ class TestClaimGateAudit:
         ActionType.CREATE_TECH_LEAD_PROPOSAL_ISSUE,
         ActionType.CREATE_TECH_LEAD_CASE_FILE_ISSUE,
         ActionType.SURFACE_TECH_LEAD_PROPOSAL,
+        ActionType.REQUIRE_TECH_LEAD_INVESTIGATION,
         ActionType.RESET_RETRY_ISSUE,
         ActionType.KILL_HUNG_SESSION,
         ActionType.DISCARD_TERMINAL_TECH_LEAD_PROPOSAL_OPS,
+        ActionType.RECORD_TECH_LEAD_DISPOSITION,
+        # Human outcome delegates every write through guarded label/comment handlers.
+        ActionType.ESCALATE_TECH_LEAD_DISPOSITION,
         ActionType.CLEANUP_SESSION,
         ActionType.RECONCILE_HISTORY_ENTRY,
         ActionType.CREATE_PR,
