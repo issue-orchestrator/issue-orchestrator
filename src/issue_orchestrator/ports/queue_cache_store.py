@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Protocol, Sequence
+from typing import TYPE_CHECKING, Mapping, Protocol, Sequence
+
+from ..domain.issue_work_classification import IssueWorkClassification
 
 if TYPE_CHECKING:
     from .issue import Issue
@@ -11,6 +13,10 @@ if TYPE_CHECKING:
 class QueueCacheStore(Protocol):
     """Persists the in-scope issue snapshot across restarts."""
 
+    def load_work_classifications(self, repo: str) -> dict[int, IssueWorkClassification]: ...
+    def record_work_classifications(
+        self, repo: str, classifications: Mapping[int, IssueWorkClassification],
+    ) -> None: ...
     def load_issues(self, repo: str) -> Sequence["Issue"]: ...
     def load_watermark(self) -> str | None: ...
     def load_last_health_review_at(self) -> float: ...
