@@ -9,7 +9,6 @@ path rules those globs must obey — see
 [Client Test Integrations](test-integrations.md).
 
 <!-- BEGIN AUTO-GENERATED CONFIG REFERENCE — regenerate via: pytest tests/unit/test_settings_schema.py::TestDriftDetection::test_config_reference_not_stale -->
-
 # Settings Reference
 
 _Auto-generated from settings schema._
@@ -222,5 +221,4 @@ cannot be interpreted as another.
 | `setup_timeout_seconds` | `900` | Deadline for dependency setup in one checkout. |
 | `cadence.max_merges_since_success` | `10` | Run when this many PRs have merged since the last successful suite run. |
 | `cadence.max_delay_hours` | `24` | Maximum hours since successful coverage before changed code is due, even below the merge threshold. |
-
 <!-- END AUTO-GENERATED CONFIG REFERENCE -->
