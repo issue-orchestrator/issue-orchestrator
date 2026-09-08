@@ -170,12 +170,14 @@ class TestPRAlreadyExistsHandling:
     ):
         """When no closed PR exists, PR creation succeeds."""
         mock_pr_adapter = MagicMock()
+        mock_pr_adapter.get_prs_for_issue = Mock(return_value=[])
+        mock_pr_adapter.get_prs_for_branch = Mock(return_value=[])
         mock_pr_adapter.create_pr = Mock(
             return_value=PRInfo(
                 number=42,
                 title="Test PR",
                 url="https://github.com/owner/repo/pull/42",
-                branch="issue-123-r1",
+                branch="issue-123",
                 body="Closes #123",
                 state="open",
                 labels=[],
@@ -209,6 +211,9 @@ class TestPRAlreadyExistsHandling:
             issue_title="Test Issue",
         )
 
+        mock_git_adapter.push.assert_called_once()
+        mock_git_adapter.create_branch_from_current.assert_not_called()
+        assert mock_pr_adapter.create_pr.call_args.kwargs["head"] == "issue-123"
         assert result.success is True
         assert result.pr_url == "https://github.com/owner/repo/pull/42"
         assert result.errors is None
