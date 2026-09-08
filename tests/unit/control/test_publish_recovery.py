@@ -767,7 +767,7 @@ def test_retry_after_live_cleanup_uses_receipt_without_restoring_agent_record(
 
     Recording locators from that production shape (original gone, run-scoped
     durable copy present) must still let retry_publish submit, and the worker
-    must restore the durable record so the processor reads a real input.
+    must consume the immutable intake receipt without restoring agent input.
     """
     lm = LabelManager(_config(tmp_path))
     repo = _Repo(issue=_issue(lm), labels=list(_issue(lm).labels))
