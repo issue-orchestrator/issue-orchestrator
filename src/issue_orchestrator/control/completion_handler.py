@@ -63,7 +63,7 @@ from .tech_lead_completion import discard_tech_lead_authority_after_completion
 from .reconciliation import build_expected_for_mutation
 from ..domain.tech_lead_run_record import TechLeadDeliveryOutcome
 from .completion_history_status import resolve_history_status
-from .completion_terminal_events import CompletionTerminalEventPublisher
+from ..events.completion_terminal_events import CompletionTerminalEventPublisher
 from .retrospective_review_completion import retrospective_review_completion_actions
 from .review_routing import should_queue_pr_review
 from .session_run_resolution import resolve_session_run_dir

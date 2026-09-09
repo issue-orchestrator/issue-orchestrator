@@ -1,10 +1,11 @@
 """Publish terminal session events from one completion-owned boundary."""
 
+from collections.abc import Mapping
 from typing import Any
 
 from ..domain.models import Session, SessionStatus
 from ..domain.session_key import TaskKind
-from ..events import EventName
+from .catalog import EventName
 from ..ports import (
     EventSink,
     make_session_completed_event,
@@ -12,8 +13,11 @@ from ..ports import (
     make_trace_event,
 )
 from ..ports.session_output import SessionOutput
-from .invalid_record_actions import failure_event_reason, invalid_record_event_fields
-from .session_run_resolution import resolve_session_run_dir
+from ..control.invalid_record_actions import (
+    failure_event_reason,
+    invalid_record_event_fields,
+)
+from ..control.session_run_resolution import resolve_session_run_dir
 
 
 class CompletionTerminalEventPublisher:
@@ -31,7 +35,7 @@ class CompletionTerminalEventPublisher:
         pr_number: int | None,
         *,
         blocked_reason: str | None = None,
-        completion_detail: dict[str, Any] | None = None,
+        completion_detail: Mapping[str, Any] | None = None,
     ) -> None:
         """Publish the terminal event selected by the effective outcome."""
         detail = completion_detail or {}
@@ -49,7 +53,7 @@ class CompletionTerminalEventPublisher:
         session: Session,
         pr_url: str | None,
         pr_number: int | None,
-        detail: dict[str, Any],
+        detail: Mapping[str, Any],
     ) -> None:
         if session.key.task in {TaskKind.REVIEW, TaskKind.RETROSPECTIVE_REVIEW}:
             return
@@ -91,14 +95,14 @@ class CompletionTerminalEventPublisher:
             )
 
     @staticmethod
-    def _completion_path(session: Session, detail: dict[str, Any]) -> str:
+    def _completion_path(session: Session, detail: Mapping[str, Any]) -> str:
         supplied = detail.get("completion_path_absolute")
         if isinstance(supplied, str) and supplied.strip():
             return supplied
         return str((session.worktree_path / session.completion_path).resolve())
 
     def _publish_failure(
-        self, session: Session, status: SessionStatus, detail: dict[str, Any]
+        self, session: Session, status: SessionStatus, detail: Mapping[str, Any]
     ) -> None:
         payload: dict[str, Any] = {
             "issue_number": session.issue.number,
@@ -119,7 +123,10 @@ class CompletionTerminalEventPublisher:
         self._events.publish(make_session_failed_event(payload))
 
     def _publish_blocked(
-        self, session: Session, blocked_reason: str | None, detail: dict[str, Any]
+        self,
+        session: Session,
+        blocked_reason: str | None,
+        detail: Mapping[str, Any],
     ) -> None:
         payload: dict[str, Any] = {
             "issue_number": session.issue.number,
@@ -134,7 +141,10 @@ class CompletionTerminalEventPublisher:
         self._events.publish(make_trace_event(EventName.ISSUE_BLOCKED, payload))
 
     def _publish_needs_human(
-        self, session: Session, blocked_reason: str | None, detail: dict[str, Any]
+        self,
+        session: Session,
+        blocked_reason: str | None,
+        detail: Mapping[str, Any],
     ) -> None:
         payload: dict[str, Any] = {
             "issue_number": session.issue.number,
