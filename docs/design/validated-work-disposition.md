@@ -4203,7 +4203,6 @@ class RepositoryEngineLifecycle(Protocol):
     """The targeted-stop boundary this design adds. Not a universal one:
     the pre-existing stop surfaces are untouched (see the scope note below)."""
     def stop_engine(self, command: StopEngineCommand) -> StopEngineOutcome: ...
-    def engines(self) -> tuple[EngineIdentity, ...]: ...
     def stop_availability(self, engine: EngineIdentity) -> EngineStopAvailability: ...
 
 
@@ -4219,6 +4218,11 @@ which is a **new** supervisor capability required by this slice, and calls
 ```python
 incarnation_stop.stop_expected(command)  # includes repo, instance, process and stop policy
 ```
+
+Engine inventory remains the separate `supervisor_status` collaborator shown in
+the Control Center composition below. Putting `engines()` on this mutation owner
+would couple process discovery to a capability whose only job is exact stopping,
+and no caller in this design needs that method.
 
 **A reusable instance name is not a process target.** The existing
 `SupervisorOps.stop()` reads the current lock advertisement and returns a Boolean;
@@ -4245,6 +4249,12 @@ accepted, the expected process exiting is `STOPPED` even if a replacement now
 exists: no further effect can reach that replacement. A read of pid/start time
 followed by an ordinary signal is **not** a lifetime pin. The Linux backend requires
 real-process tests, including replacement before force escalation.
+
+On Linux, the historically named `ProcessIdentity.started_at` field carries a
+versioned process-incarnation token containing the kernel boot id and exact
+`/proc/<pid>/stat` start tick. Existing second-resolution identities cannot prove
+an exact incarnation and therefore report `EXACT_TARGET_UNAVAILABLE`; they are
+never used to authorize a signal.
 
 **macOS, and Linux without usable pidfd support, have no guarded automatic stop in
 this design.** No macOS lifetime-pinning implementation is claimed or left as an

@@ -12,6 +12,8 @@ from .validated_work import ValidatedWorkState, require_positive, require_text
 
 @dataclass(frozen=True, slots=True)
 class ProcessIdentity:
+    """Process identity; ``started_at`` may carry an OS incarnation token."""
+
     host: str
     pid: int
     started_at: str

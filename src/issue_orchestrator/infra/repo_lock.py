@@ -23,6 +23,7 @@ from typing import Any
 from ..domain.validated_work_claim import ProcessIdentity
 from ..ports.command_runner import CommandRunner
 from .process_table import ps_command, ps_env
+from .process_incarnation import strongest_process_incarnation
 from .repo_lock_capability import HeldStartupGate, _issue_gate
 from .repo_identity import lock_file, locks_dir, normalize_repo_root, state_dir
 
@@ -47,9 +48,11 @@ def held_startup_gate(
 ) -> HeldStartupGate:
     """Issue a capability only for this process's successful, still-held startup.
 
-    ps exposes process birth at second precision. Ambiguous identities sharing
-    our PID are never considered dead. Start time is not the advertisement's
-    acquisition timestamp and is never itself used as positive death evidence.
+    Linux adds kernel boot identity and exact start ticks to the historical
+    second-resolution ``ps`` value. Hosts without that stronger proof remain
+    valid liveness owners but cannot use automatic exact-process stop. Process
+    identity is not the advertisement's acquisition timestamp and is never
+    itself used as positive death evidence.
     """
     if not _in_startup_process():
         raise RuntimeError("startup gate registry cannot cross a process boundary")
@@ -67,8 +70,11 @@ def held_startup_gate(
         if result.returncode != 0 or result.timed_out:
             raise RuntimeError("cannot read current process start time")
         started = datetime.strptime(result.stdout.strip(), "%a %b %d %H:%M:%S %Y")
+        # Restricted/non-Linux hosts retain the historical identity. Exact
+        # automatic stop advertises unavailable for those claims.
+        started_at = strongest_process_incarnation(startup[0], started.isoformat())
         identity = ProcessIdentity(
-            socket.gethostname(), startup[0], started.isoformat(), instance_id
+            socket.gethostname(), startup[0], started_at, instance_id
         )
 
         def current() -> ProcessIdentity:
