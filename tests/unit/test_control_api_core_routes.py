@@ -764,7 +764,6 @@ class TestControlReposDashboardUrl:
         monkeypatch: pytest.MonkeyPatch,
         mock_supervisor: MagicMock,
     ) -> None:
-        from issue_orchestrator.entrypoints import control_api
         from issue_orchestrator.execution import control_center_repo_status
         from issue_orchestrator.infra import repo_registry
 
@@ -785,7 +784,7 @@ class TestControlReposDashboardUrl:
             ],
         )
         monkeypatch.setattr(repo_registry, "add_repo", lambda path: None)
-        monkeypatch.setattr(control_api, "_preferred_repo_root", lambda: None)
+        monkeypatch.delenv("ISSUE_ORCHESTRATOR_CC_REPO_ROOT", raising=False)
         monkeypatch.setattr(
             control_center_repo_status,
             "detect_repository_orchestrators",
@@ -820,7 +819,6 @@ class TestControlReposDashboardUrl:
         monkeypatch: pytest.MonkeyPatch,
         mock_supervisor: MagicMock,
     ) -> None:
-        from issue_orchestrator.entrypoints import control_api
         from issue_orchestrator.execution import control_center_repo_status
         from issue_orchestrator.infra import repo_registry
 
@@ -838,7 +836,7 @@ class TestControlReposDashboardUrl:
             ],
         )
         monkeypatch.setattr(repo_registry, "add_repo", lambda path: None)
-        monkeypatch.setattr(control_api, "_preferred_repo_root", lambda: None)
+        monkeypatch.delenv("ISSUE_ORCHESTRATOR_CC_REPO_ROOT", raising=False)
         monkeypatch.setattr(
             control_center_repo_status,
             "enrich_runtime_health",
@@ -893,7 +891,6 @@ class TestControlReposDashboardUrl:
         monkeypatch: pytest.MonkeyPatch,
         mock_supervisor: MagicMock,
     ) -> None:
-        from issue_orchestrator.entrypoints import control_api
         from issue_orchestrator.execution import control_center_repo_status
         from issue_orchestrator.infra import repo_registry
 
@@ -911,7 +908,7 @@ class TestControlReposDashboardUrl:
             ],
         )
         monkeypatch.setattr(repo_registry, "add_repo", lambda path: None)
-        monkeypatch.setattr(control_api, "_preferred_repo_root", lambda: None)
+        monkeypatch.delenv("ISSUE_ORCHESTRATOR_CC_REPO_ROOT", raising=False)
         monkeypatch.setattr(
             control_center_repo_status,
             "enrich_runtime_health",
@@ -978,7 +975,6 @@ class TestControlReposDashboardUrl:
         monkeypatch: pytest.MonkeyPatch,
         mock_supervisor: MagicMock,
     ) -> None:
-        from issue_orchestrator.entrypoints import control_api
         from issue_orchestrator.infra import repo_registry
 
         repo = tmp_path / "repo"
@@ -999,7 +995,7 @@ class TestControlReposDashboardUrl:
             ],
         )
         monkeypatch.setattr(repo_registry, "add_repo", lambda path: None)
-        monkeypatch.setattr(control_api, "_preferred_repo_root", lambda: None)
+        monkeypatch.delenv("ISSUE_ORCHESTRATOR_CC_REPO_ROOT", raising=False)
         monkeypatch.setenv("CODESPACE_NAME", "octo-space")
         monkeypatch.setenv("GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN", "app.github.dev")
         monkeypatch.setattr(
@@ -1029,7 +1025,6 @@ class TestControlReposDashboardUrl:
         monkeypatch: pytest.MonkeyPatch,
         mock_supervisor: MagicMock,
     ) -> None:
-        from issue_orchestrator.entrypoints import control_api
         from issue_orchestrator.infra import repo_registry
 
         repo = tmp_path / "repo"
@@ -1050,7 +1045,7 @@ class TestControlReposDashboardUrl:
             ],
         )
         monkeypatch.setattr(repo_registry, "add_repo", lambda path: None)
-        monkeypatch.setattr(control_api, "_preferred_repo_root", lambda: None)
+        monkeypatch.delenv("ISSUE_ORCHESTRATOR_CC_REPO_ROOT", raising=False)
 
         mock_supervisor.status.return_value = SupervisorStatus(
             state="running",

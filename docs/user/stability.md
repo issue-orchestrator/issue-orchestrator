@@ -327,9 +327,10 @@ detectable by a client at runtime. That is why these are `Contracted` and not
 Two HTTP scopes exist, and they are not the same thing:
 
 - **Control Center** — the local UI shell that manages repository engines.
-  Listens on `:19080` by default and serves the `/control/*` routes.
+  Listens on `:19080` by default and serves the `/control/*` routes plus the
+  authenticated `/api/control-center/*` namespace.
 - **Repository Engine** — one long-lived runtime per repository, serving its own
-  browser dashboard and the `/api/*` routes. Its ports come from `ui.web_port`
+  browser dashboard and the remaining `/api/*` routes. Its ports come from `ui.web_port`
   and `ui.control_api_port` (`0` = auto-assign a free port), so do not hardcode
   them; ask the CLI (`issue-orchestrator status`) or the
   `orchestrator.urls` MCP tool. Each engine dashboard also mounts the
@@ -348,6 +349,7 @@ contracted route goes missing or stops using its generated response model.
 | Path | Scope |
 |---|---|
 | `/api/completion/submissions` | Repository Engine |
+| `/api/control-center/repositories/{repo_key}/validated-work` | Control Center |
 | `/api/issues/{issue_number}/resume` | Repository Engine |
 | `/api/validated-work/intake` | Repository Engine |
 | `/api/dialog/blocked-issues` | Repository Engine |

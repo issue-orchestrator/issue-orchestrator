@@ -62,6 +62,7 @@ from ..ports.repository_engine_supervisor import SupervisorOps
 from ..ports import RepositoryHost
 from ..control.goal_pilot import GoalPilot
 from ..execution.control_center_actions import ControlCenterActions
+from ..execution.control_center_recovery import build_control_center_recovery_queries
 from ..execution.repository_setup_validation import (
     RepositorySetupValidationDetectorAdapter,
 )
@@ -100,6 +101,7 @@ from .control_api_repo_routes import control_repo_router
 from .control_api_repo_support import (
     ControlApiRepoDependencies,
     install_control_api_repo_dependencies,
+    preferred_repo_root,
 )
 from .control_api_setup_routes import control_setup_router
 from .control_api_setup_support import (
@@ -142,7 +144,6 @@ if TYPE_CHECKING:
     from ..ports.repository_setup import RepositorySetupGitHubVerification
 
 logger = logging.getLogger(__name__)
-_PREFERRED_REPO_ROOT_ENV = "ISSUE_ORCHESTRATOR_CC_REPO_ROOT"
 
 
 def _load_config_selection(
@@ -358,20 +359,6 @@ def set_control_actions(actions: ControlCenterActions) -> None:
 def get_control_actions() -> ControlCenterActions:
     """Get the control-center action service."""
     return _control_actions
-
-
-def _preferred_repo_root() -> Path | None:
-    """Resolve preferred repo root for this Control Center process."""
-    raw = os.environ.get(_PREFERRED_REPO_ROOT_ENV, "").strip()
-    if not raw:
-        return None
-    try:
-        root = Path(raw).resolve()
-    except (OSError, ValueError):
-        return None
-    if not root.exists() or not root.is_dir():
-        return None
-    return root
 
 
 # Track orchestrator child PIDs for zombie reaping (used by control_center).
@@ -1139,13 +1126,16 @@ install_control_api_repo_dependencies(
         get_supervisor=get_supervisor,
         get_control_actions=get_control_actions,
         validate_repo_root=_validate_repo_root,
-        get_preferred_repo_root=_preferred_repo_root,
+        get_preferred_repo_root=preferred_repo_root,
         get_expected_engine_identity_raw=lambda: (
             os.environ.get(
                 "ISSUE_ORCHESTRATOR_EXPECTED_IDENTITY",
                 "",
             ).strip()
             or None
+        ),
+        get_recovery_queries=lambda: build_control_center_recovery_queries(
+            get_supervisor()
         ),
     ),
 )

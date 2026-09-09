@@ -24,7 +24,11 @@ from pathlib import Path
 import pytest
 
 from issue_orchestrator.entrypoints.cli_parser import CLI_COMMAND_SURFACE
-from issue_orchestrator.entrypoints.mcp_server import MCP_TOOL_NAMES, McpApp, McpSettings
+from issue_orchestrator.entrypoints.mcp_server import (
+    MCP_TOOL_NAMES,
+    McpApp,
+    McpSettings,
+)
 from issue_orchestrator.events.sse_envelope import SSE_SCHEMA_FIELD
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -117,9 +121,7 @@ def test_console_script_inventory_uses_defined_tiers() -> None:
     documented = _inventory_table(_stability_doc_text(), "console-scripts")
     tiers = _declared_tiers()
 
-    undefined = sorted(
-        {row[-1] for row in documented.values()} - tiers
-    )
+    undefined = sorted({row[-1] for row in documented.values()} - tiers)
     assert not undefined, (
         f"Console-script rows use tiers that the tiers table does not define: {undefined}."
     )
@@ -246,7 +248,11 @@ def test_http_route_inventory_assigns_each_route_the_right_scope() -> None:
     documented = _inventory_table(_stability_doc_text(), "http-routes")
 
     expected_scope = {
-        path: "Control Center" if path.startswith("/control/") else "Repository Engine"
+        path: (
+            "Control Center"
+            if path.startswith(("/control/", "/api/control-center/"))
+            else "Repository Engine"
+        )
         for path in documented
     }
     mismatched = sorted(
@@ -267,9 +273,7 @@ def test_every_contracted_route_is_under_a_classified_prefix() -> None:
     contracted table and the internal remainder, so it must fail here.
     """
     unclassified = sorted(
-        path
-        for path in _openapi_paths()
-        if not path.startswith(("/api/", "/control/"))
+        path for path in _openapi_paths() if not path.startswith(("/api/", "/control/"))
     )
 
     assert not unclassified, (
@@ -298,7 +302,9 @@ def _fake_doc(anchor: str, rows: list[tuple[str, ...]], *, preamble: str = "") -
 
 def test_a_removed_but_still_documented_console_script_fails() -> None:
     documented = _inventory_table(
-        _fake_doc("console-scripts", [("coding-done", "Supported"), ("gone", "Supported")]),
+        _fake_doc(
+            "console-scripts", [("coding-done", "Supported"), ("gone", "Supported")]
+        ),
         "console-scripts",
     )
 
@@ -437,9 +443,7 @@ def _is_contract_version_field(name: str) -> bool:
     return lowered == SSE_SCHEMA_FIELD or "version" in lowered
 
 
-def _surface_wide_version_fields(
-    schemas: dict, response_models: set[str]
-) -> list[str]:
+def _surface_wide_version_fields(schemas: dict, response_models: set[str]) -> list[str]:
     """Version fields carried by *every* response model, i.e. by the surface.
 
     A version on one payload is a per-payload detail. A version on all of them
@@ -452,7 +456,9 @@ def _surface_wide_version_fields(
         set(schemas.get(name, {}).get("properties", {})) for name in response_models
     ]
     common_properties = set.intersection(*property_sets)
-    return sorted(name for name in common_properties if _is_contract_version_field(name))
+    return sorted(
+        name for name in common_properties if _is_contract_version_field(name)
+    )
 
 
 def test_http_surface_has_no_surface_wide_response_version() -> None:
@@ -518,7 +524,9 @@ def test_http_surface_has_no_surface_wide_response_version() -> None:
         ),
     ],
 )
-def test_surface_wide_version_detection(case: str, schemas: dict, expected: list) -> None:
+def test_surface_wide_version_detection(
+    case: str, schemas: dict, expected: list
+) -> None:
     """Prove both sides of the Contracted-versus-Versioned distinction."""
     assert _surface_wide_version_fields(schemas, set(schemas)) == expected, case
 
@@ -695,7 +703,9 @@ def test_uncontracted_sse_events_are_not_claimed_as_contracted() -> None:
     uncontracted = {event.value for event in EventName} - contracted
 
     assert uncontracted, "every event is contracted - update the doc's claim"
-    assert "Every other event on the stream is `Experimental`." in _stability_doc_text(), (
+    assert (
+        "Every other event on the stream is `Experimental`." in _stability_doc_text()
+    ), (
         f"{len(uncontracted)} of {len(EventName)} events have no committed payload "
         f"schema, so {STABILITY_DOC.name} must classify the remainder explicitly "
         "instead of implying the whole stream is Contracted."

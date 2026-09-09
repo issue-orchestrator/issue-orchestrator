@@ -864,6 +864,39 @@
           }
         }
       }
+    },
+    "/api/control-center/repositories/{repo_key}/validated-work": {
+      "get": {
+        "operationId": "getControlCenterValidatedWork",
+        "summary": "Read retained validated work for one configured repository",
+        "parameters": [
+          {
+            "name": "repo_key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^repo-[0-9a-f]{64}$"
+            },
+            "description": "Opaque key issued by the configured repository registry"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Cold retained-work discovery result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ControlCenterRecoveryRowsPayload"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Configured repository key was not found"
+          }
+        }
+      }
     }
   },
   "components": {

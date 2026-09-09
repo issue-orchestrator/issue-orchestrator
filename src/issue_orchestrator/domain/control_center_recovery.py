@@ -20,6 +20,8 @@ from .validated_work import (
 from .validated_work_commands import ValidatedWorkAuthoritySnapshot
 from .validated_work_discovery import ClaimOwnerFact
 
+CONFIGURED_REPOSITORY_KEY_PATTERN = r"^repo-[0-9a-f]{64}$"
+
 
 class RecoveryRowsStatus(StrEnum):
     AVAILABLE = "available"

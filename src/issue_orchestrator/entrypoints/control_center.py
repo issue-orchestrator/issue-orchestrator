@@ -152,7 +152,8 @@ def _start_tray_icon(url: str) -> Any | None:
             return _TrayProcessHandle(process)
 
         from .tray import start_tray
-        from .control_api import get_supervisor, _preferred_repo_root
+        from .control_api import get_supervisor
+        from .control_api_repo_support import preferred_repo_root
         from ..execution.control_center_repo_status import build_repos_status
 
         def _get_engine_status() -> list[tuple[str, str]]:
@@ -161,7 +162,7 @@ def _start_tray_icon(url: str) -> Any | None:
                     (r["name"], r.get("status", {}).get("state", "unknown"))
                     for r in build_repos_status(
                         supervisor=get_supervisor(),
-                        preferred_repo_root=_preferred_repo_root(),
+                        preferred_repo_root=preferred_repo_root(),
                     )
                 ]
             except Exception:

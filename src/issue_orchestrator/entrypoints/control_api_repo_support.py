@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Callable
@@ -11,6 +12,7 @@ from fastapi import Depends, FastAPI, Request
 _REPO_DEPENDENCIES_STATE_KEY = "control_api_repo_dependencies"
 
 if TYPE_CHECKING:
+    from ..control.control_center_recovery_queries import ControlCenterRecoveryQueries
     from ..execution.control_center_actions import ControlCenterActions
     from ..ports.repository_engine_supervisor import SupervisorOps
 
@@ -24,6 +26,19 @@ class ControlApiRepoDependencies:
     validate_repo_root: Callable[[str | None], Path | None]
     get_preferred_repo_root: Callable[[], Path | None]
     get_expected_engine_identity_raw: Callable[[], str | None]
+    get_recovery_queries: Callable[[], ControlCenterRecoveryQueries]
+
+
+def preferred_repo_root() -> Path | None:
+    """Resolve the repository preferred by this Control Center process."""
+    raw = os.environ.get("ISSUE_ORCHESTRATOR_CC_REPO_ROOT", "").strip()
+    if not raw:
+        return None
+    try:
+        root = Path(raw).resolve()
+    except (OSError, ValueError):
+        return None
+    return root if root.exists() and root.is_dir() else None
 
 
 def install_control_api_repo_dependencies(
@@ -53,4 +68,5 @@ __all__ = [
     "ControlApiRepoDependencies",
     "get_control_api_repo_dependencies",
     "install_control_api_repo_dependencies",
+    "preferred_repo_root",
 ]
