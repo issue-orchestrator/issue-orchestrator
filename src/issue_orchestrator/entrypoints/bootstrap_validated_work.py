@@ -217,6 +217,7 @@ def build_validated_work_recovery(
     from ..control.recovery_publication_cleanup import RecoveryPublicationCleanup
     from ..control.recovery_publication_completion import RecoveryPublicationCompletion
     from ..control.recovery_record_operation import RecoveryRecordOperation
+    from ..control.remote_authority_refresh import RemoteAuthorityRefreshOperation
     from ..control.retained_completion_preparation import RetainedCompletionPreparation
     from ..control.retry_review_routing import RetryReviewPolicy
     from ..control.review_exchange_lifecycle import OtherRuntimeActivity
@@ -288,6 +289,12 @@ def build_validated_work_recovery(
     return RecoveryDrain(
         queue=owners.records,
         operation=operation,
+        authority_refresh=RemoteAuthorityRefreshOperation(
+            execution=owners.execution,
+            effects=owners.effects,
+            store=owners.records,
+            observer=owners.capture_observer,
+        ),
         batch_size=config.validated_work.drain_batch_size,
         interval_seconds=config.validated_work.drain_interval_seconds,
     )

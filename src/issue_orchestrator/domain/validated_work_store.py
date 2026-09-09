@@ -45,7 +45,7 @@ class AdmissionStatus(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class EvidenceAdmission:
-    """Already-attested capture and its permanent admission gate (slice 1c producer)."""
+    """Already-attested capture and its immutable admission audit (slice 1c producer)."""
 
     evidence: ValidatedWorkEvidence
     initial_state: ValidatedWorkState
@@ -99,6 +99,9 @@ class EvidenceAdmission:
 @dataclass(frozen=True, slots=True)
 class EvidenceRow:
     admission: EvidenceAdmission
+    base_state: ValidatedWorkState
+    base_failure: ValidatedWorkFailure | None
+    base_reason: str
     role: EvidenceRole
     observation_revision: int
     role_changed_at: str
@@ -108,8 +111,20 @@ class EvidenceRow:
         if (
             type(self.admission) is not EvidenceAdmission
             or type(self.role) is not EvidenceRole
+            or type(self.base_state) is not ValidatedWorkState
         ):
             raise ValueError("evidence row requires typed admission and role")
+        if self.base_state not in {
+            ValidatedWorkState.QUEUED,
+            ValidatedWorkState.PARKED,
+            ValidatedWorkState.FAILED,
+        }:
+            raise ValueError("evidence base gate must precede publication")
+        if self.base_failure is not None and type(self.base_failure) is not ValidatedWorkFailure:
+            raise ValueError("evidence base failure must be typed")
+        if self.base_state is ValidatedWorkState.FAILED and self.base_failure is None:
+            raise ValueError("failed evidence base gate requires a failure")
+        require_text(self.base_reason, "evidence base reason")
         require_positive(self.observation_revision, "observation_revision", minimum=0)
         require_text(self.role_changed_at, "role_changed_at")
 
@@ -212,10 +227,13 @@ class PublishAttempt:
         }
 
     def succeeded_for(self, authority: ValidatedWorkAuthoritySnapshot) -> bool:
-        """A valid success only proves the exact evidence/target/baseline it names.
+        """A valid success proves exact work, or a freshly observed equivalent.
 
         The current owner may be a successor; its fence is not part of this
-        durable publication fact's binding.
+        durable publication fact's binding. A migrated or initially unobserved
+        baseline cannot match a later authority refresh byte-for-byte. Fresh
+        exact target-and-PR observation makes that baseline difference harmless:
+        publication already succeeded and finalization is the only allowed work.
         """
         if not self.succeeded:
             return False
@@ -223,12 +241,21 @@ class PublishAttempt:
             self.record_id != authority.record_id
             or self.evidence_id != authority.evidence_id
             or self.target_head_sha != authority.validated_head_sha
-            or self.expected_remote_head != (authority.expected_remote_head_sha or "")
         ):
             raise ValueError(
                 "successful attempt does not match current publication evidence"
             )
-        return True
+        if self.expected_remote_head == (authority.expected_remote_head_sha or ""):
+            return True
+        if (
+            authority.remote_baseline_status is RemoteBaselineStatus.OBSERVED
+            and authority.expected_remote_head_sha == authority.validated_head_sha
+            and authority.pr_number is not None
+        ):
+            return True
+        raise ValueError(
+            "successful attempt does not match current publication evidence"
+        )
 
     def __post_init__(self) -> None:
         require_text(self.started_at, "started_at")

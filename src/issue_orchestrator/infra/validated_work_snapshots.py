@@ -1,10 +1,21 @@
 """One typed snapshot reader for full and admission-only store compositions."""
 
 from ..domain.recovery_entry import RecoveryRecordRequest
-from ..domain.validated_work import require_positive
+from ..domain.validated_work import (
+    RemoteBaselineStatus,
+    ValidatedWorkState,
+    require_positive,
+)
+from ..domain.validated_work_remote_authority import RemoteAuthorityRefreshRequest
+from ..ports.validated_work_drain import ValidatedWorkDrainRequest
 from ..domain.validated_work_commands import ValidatedWorkDispositionBatch
 from ..domain.validated_work_store import EvidenceLookup, EvidenceRow
-from .validated_work_rows import DispositionDatabase, disposition, evidence_row
+from .validated_work_rows import (
+    DispositionDatabase,
+    current_evidence,
+    disposition,
+    evidence_row,
+)
 
 
 class DispositionSnapshots:
@@ -49,14 +60,40 @@ class DispositionSnapshots:
                 "SELECT e.* FROM validated_work_evidence e JOIN validated_work_records r USING(record_id) "
                 "WHERE r.issue_number=? AND e.released_at='' ORDER BY e.evidence_id", (issue_number,)))
 
-    def recovery_requests(self, *, after_record_id: str, limit: int) -> tuple[RecoveryRecordRequest, ...]:
+    def drain_requests(self, *, after_record_id: str, limit: int) -> tuple[ValidatedWorkDrainRequest, ...]:
         require_positive(limit, "recovery batch size")
         with self._db.transaction() as conn:
             rows = conn.execute(
                 "SELECT r.record_id, e.evidence_id FROM validated_work_records r "
                 "JOIN validated_work_evidence e ON e.record_id=r.record_id "
                 "WHERE r.record_id>? AND e.role='current' AND e.released_at='' "
-                "AND ((r.state='queued' AND r.lineage_role='head') OR r.state='publishing') "
+                "AND ((r.state='queued' AND r.lineage_role='head') OR r.state='publishing' "
+                "OR (r.state='parked' AND r.failure='remote_unreadable' AND r.lineage_role='head')) "
                 "ORDER BY r.record_id LIMIT ?", (after_record_id, limit),
             ).fetchall()
-            return tuple(RecoveryRecordRequest(row["record_id"], row["evidence_id"]) for row in rows)
+            requests: list[ValidatedWorkDrainRequest] = []
+            for row in rows:
+                evidence = current_evidence(conn, row["record_id"])
+                current = disposition(conn, row["record_id"])
+                if evidence.evidence_id != row["evidence_id"]:
+                    raise ValueError("drain selection changed inside read transaction")
+                unobserved = (
+                    evidence.authority.remote_baseline_status
+                    is RemoteBaselineStatus.UNOBSERVED
+                )
+                if current.state is ValidatedWorkState.PARKED and not unobserved:
+                    raise ValueError(
+                        "remote-unreadable parked work already carries observed authority"
+                    )
+                if (
+                    current.state is ValidatedWorkState.PARKED
+                    or (current.state is ValidatedWorkState.PUBLISHING and unobserved)
+                ):
+                    requests.append(
+                        RemoteAuthorityRefreshRequest(
+                            evidence.authority, current.state, current.failure
+                        )
+                    )
+                else:
+                    requests.append(RecoveryRecordRequest(row["record_id"], row["evidence_id"]))
+            return tuple(requests)

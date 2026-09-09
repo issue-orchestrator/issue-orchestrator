@@ -63,6 +63,9 @@ CREATE TABLE IF NOT EXISTS validated_work_evidence (
     initial_state         TEXT NOT NULL,              -- ValidatedWorkState (any admitted state)
     initial_failure       TEXT NOT NULL DEFAULT '',   -- ValidatedWorkFailure, e.g. WORKTREE_AHEAD_OF_VALIDATION
     initial_reason        TEXT NOT NULL DEFAULT '',
+    base_state            TEXT NOT NULL,              -- durable recovery gate beneath lineage restrictions
+    base_failure          TEXT NOT NULL DEFAULT '',
+    base_reason           TEXT NOT NULL DEFAULT '',
     admitted_at           TEXT NOT NULL,
     role_changed_at       TEXT NOT NULL,
     released_at           TEXT NOT NULL DEFAULT ''    -- retention release (§6)

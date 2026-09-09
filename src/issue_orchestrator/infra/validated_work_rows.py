@@ -34,7 +34,10 @@ from ..domain.validated_work_store import (
 from .sqlite_connection import open_sqlite
 from .validated_work_codec import decode_evidence
 from .validated_work_schema import SCHEMA
-from .validated_work_migrations import migrate_remote_baseline_authority
+from .validated_work_migrations import (
+    migrate_evidence_base_gate,
+    migrate_remote_baseline_authority,
+)
 
 
 class DispositionDatabase:
@@ -45,6 +48,12 @@ class DispositionDatabase:
         path.parent.mkdir(parents=True, exist_ok=True)
         with closing(open_sqlite(path, row_factory=sqlite3.Row)) as conn:
             conn.executescript(SCHEMA)
+            # Schema inspection and every migration write are one serialized
+            # decision. Without acquiring the writer slot first, two startup
+            # processes can both observe a missing column and race the ALTER.
+            conn.execute("BEGIN IMMEDIATE")
+            with conn:
+                migrate_evidence_base_gate(conn)
             migrate_remote_baseline_authority(conn)
             if conn.execute("PRAGMA quick_check").fetchone()[0] != "ok":
                 raise sqlite3.DatabaseError(
@@ -97,6 +106,9 @@ def evidence_row(row: sqlite3.Row) -> EvidenceRow:
     )
     return EvidenceRow(
         admission,
+        ValidatedWorkState(row["base_state"]),
+        ValidatedWorkFailure(row["base_failure"]) if row["base_failure"] else None,
+        row["base_reason"],
         EvidenceRole(row["role"]),
         row["observation_revision"],
         row["role_changed_at"],
@@ -104,9 +116,7 @@ def evidence_row(row: sqlite3.Row) -> EvidenceRow:
     )
 
 
-def retention_evidence_row(
-    conn: sqlite3.Connection, row: sqlite3.Row, cutoff: datetime
-) -> EvidenceRow | None:
+def retention_evidence_row(conn: sqlite3.Connection, row: sqlite3.Row, cutoff: datetime) -> EvidenceRow | None:
     """Validate the owning disposition and its clock before testing eligibility."""
     evidence = evidence_row(row)
     disposition(conn, evidence.record_id)
