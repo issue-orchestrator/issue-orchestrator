@@ -39,7 +39,12 @@ class EvidenceAdmissionWriter:
             self._insert_evidence(conn, admission, EvidenceRole.CURRENT)
             self._classify(conn, admission)
             return AdmissionStatus.ADMITTED
-        if row["state"] == "publishing":
+        if row["state"] == "publishing" or (
+            row["owner_claim_hash"] and row["state"] in {"queued", "parked", "failed"}
+        ):
+            # Admission carries evidence, never the owner's private claim. A
+            # resting record can still have an in-flight recovery or maintenance
+            # owner; preserve its CURRENT evidence until that owner drains it.
             self._insert_evidence(conn, admission, EvidenceRole.ATTACHED)
             return AdmissionStatus.ATTACHED
         if row["state"] == "recovered":
@@ -83,7 +88,7 @@ class EvidenceAdmissionWriter:
         if role is EvidenceRole.SUPERSEDED:
             return AdmissionStatus.RETAINED
         row = record_row(conn, known["record_id"])
-        if row["state"] in {"queued", "parked", "failed"}:
+        if not row["owner_claim_hash"] and row["state"] in {"queued", "parked", "failed"}:
             refresh_observations(
                 conn, known["evidence_id"], admission.evidence.observations
             )

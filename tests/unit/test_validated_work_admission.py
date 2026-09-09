@@ -269,7 +269,11 @@ def test_new_evidence_after_postpush_failure_can_begin_without_erasing_attempt_h
         failed_at=LATER,
     )
     newer = capture(run="new")
-    store.admit(newer)
+    assert store.admit(newer).status is Status.ATTACHED
+    # The still-active owner explicitly drains the new evidence before reuse.
+    assert store.resolve_attached_evidence(
+        token, record_id=token.record_id, resolved_at=LATER
+    ).evidence_id == newer.evidence.evidence_id
     retry = begin(store, token)
     assert retry is not None and retry.attempt_no == 2
     assert retry.evidence_id == newer.evidence.evidence_id

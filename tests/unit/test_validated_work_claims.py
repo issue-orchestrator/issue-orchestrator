@@ -384,8 +384,11 @@ def test_parked_publication_requires_exact_unchanged_authority(tmp_path, change)
     authority = store.evidence_for_id(a.evidence.evidence_id).evidence.authority
     token = claim(store, a)
     assert begin(store, token) is None
+    # Only unowned observations may change between approval and acquisition.
+    assert store.relinquish_claim(token)
     store.admit(changed_observations(a, **change))
     now = store.evidence_for_id(a.evidence.evidence_id).evidence.authority
+    token = claim(store, a)
     assert (
         store.begin_publish_attempt(
             token,
@@ -602,8 +605,11 @@ def test_explicit_failure_survives_reclassification_replay_and_reopen(
         assert current.publish_attempts(token.record_id) == ()
     # A distinct accepted evidence item can establish a new admission gate.
     replacement = capture(run="new-capture")
+    assert store.relinquish_claim(token)
     store.admit(replacement)
     assert store.get(token.record_id).state is State.QUEUED
+    assert begin(store, token) is None
+    token = claim(store, replacement)
     assert begin(store, token) is not None
 
 

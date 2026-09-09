@@ -3806,6 +3806,32 @@ recording/withdrawing `VALIDATED_WORK_DISPOSITION` cannot clear a separate cause
 Other captured blockers are retained while another unresolved disposition still
 holds the issue; clearing is deferred to the aggregate's final release.
 
+Captured failure-label cleanup records a per-label intent against the exact
+record/evidence/attempt generations **before** calling the remote remover.
+Completion acknowledgement follows observed absence. A restart with an existing
+intent may observe absence and continue, but it cannot repeat removal of a
+currently present label: the previous call may have committed and a human may
+have re-added the label. Such ambiguity preserves both the current label and
+`recovery-pending`, returning a diagnostic retry/refusal until the label's owner
+resolves it. A transport exception is not proof that the removal did not commit.
+Completed cleanup generations never authorize removal of later operator labels.
+
+The shared needs-human owner also holds a nonblocking, same-host kernel gate
+associated with its cause database across each complete label/provenance command.
+All lifecycle callers and effect-scoped views share it, including reads that can
+prune stale causes. Contention causes no mutation and reports failure or a
+conservative hold. This gate is acquired after the disposition issue gate and
+released before it; no SQL transaction is held across remote effects. This closes
+the separate race where a new lifecycle acquires a cause after a last-holder
+check but before the old owner removes the shared label and clears provenance.
+The shared owner also journals removal intent before deleting `needs-human`.
+After a crash, an ambiguous present label is preserved, even if its old cause row
+survived. Only observed absence allows retirement of that intent and old causes.
+Clear/restart update both atomically, so a subsequent acquisition on an absent
+label starts a fresh generation; joining a present label cannot erase ambiguity.
+
+
+
 | Transition point | Effect that must succeed first | Labels |
 |---|---|---|
 | Evidence recorded (`QUEUED`/`PARKED`) | durable record + escrow committed | add `recovery-pending` (new, `LabelCategory.BLOCKING`). Existing blocking label is **kept** — the issue is not unblocked by being owned. |

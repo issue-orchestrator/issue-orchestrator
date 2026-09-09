@@ -34,7 +34,9 @@ import logging
 import os
 import sqlite3
 import threading
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
+from ..adapters.human_block_gate import FileHumanBlockMutationGate
+from ..domain.issue_disposition_gate import IssueDispositionGateStatus
 from pathlib import Path
 from typing import Iterator
 
@@ -103,6 +105,11 @@ CREATE TABLE IF NOT EXISTS pending_work_claim_quarantine (
 -- meaningful only while the label is present and are dropped with it, so a
 -- stale one can never strand an issue in needs-human.
 -- NOTE: no semicolons in this comment - the schema is split on them.
+-- An unacknowledged removal may have committed remotely. Preserve a present
+-- label on replay until absence proves the old generation has ended.
+CREATE TABLE IF NOT EXISTS needs_human_removal_intent (
+    issue_number INTEGER PRIMARY KEY CHECK (issue_number > 0)
+);
 CREATE TABLE IF NOT EXISTS needs_human_cause (
     issue_number INTEGER NOT NULL,
     cause TEXT NOT NULL,
@@ -179,6 +186,7 @@ class SqlitePendingWorkClaimStore:
 
     def __init__(self, db_path: Path) -> None:
         self._db_path = db_path
+        self._human_block_gate = FileHumanBlockMutationGate(db_path)
         self._local = threading.local()
         self._write_lock = threading.Lock()
         self.initialize()
@@ -525,6 +533,19 @@ class SqlitePendingWorkClaimStore:
 
     # -- shared needs-human provenance -------------------------------------
 
+    def mutate_needs_human(
+        self, issue_number: int
+    ) -> AbstractContextManager[IssueDispositionGateStatus]:
+        return self._human_block_gate.try_acquire(issue_number)
+
+    def begin_needs_human_removal(self, issue_number: int) -> bool:
+        with self._write_lock, self._transaction() as conn:
+            cursor = conn.execute(
+                "INSERT OR IGNORE INTO needs_human_removal_intent(issue_number) VALUES (?)",
+                (issue_number,),
+            )
+            return cursor.rowcount == 1
+
     def record_needs_human_cause(
         self, issue_number: int, cause: str, *, reason: str
     ) -> None:
@@ -544,6 +565,10 @@ class SqlitePendingWorkClaimStore:
         with self._write_lock, self._transaction() as conn:
             conn.execute(
                 "DELETE FROM needs_human_cause WHERE issue_number = ?",
+                (issue_number,),
+            )
+            conn.execute(
+                "DELETE FROM needs_human_removal_intent WHERE issue_number = ?",
                 (issue_number,),
             )
             conn.execute(
@@ -573,6 +598,10 @@ class SqlitePendingWorkClaimStore:
         with self._write_lock, self._transaction() as conn:
             conn.execute(
                 "DELETE FROM needs_human_cause WHERE issue_number = ?",
+                (issue_number,),
+            )
+            conn.execute(
+                "DELETE FROM needs_human_removal_intent WHERE issue_number = ?",
                 (issue_number,),
             )
 

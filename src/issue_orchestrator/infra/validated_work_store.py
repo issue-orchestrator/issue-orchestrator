@@ -12,6 +12,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from ..domain.retention_clock import retention_instant
+from ..domain.recovery_block import RecoveryBlockSnapshot, RecoveryCleanupKey
 from ..domain.published_work_finalization import FinalizationCheckpoint, PublishedWorkTarget
 
 from ..domain.validated_work import (
@@ -34,6 +35,7 @@ from ..domain.validated_work_store import (
     AdmissionOutcome,
     DispositionPhase,
     EvidenceAdmission,
+    EvidenceAdmissionSelection,
     EvidenceLookup,
     EvidenceRow,
     FinalizationPhase,
@@ -52,6 +54,7 @@ from ..ports.validated_work_verification import (
 from ..ports.validated_work_escrow import EvidenceReleaser
 from .validated_work_admission import EvidenceAdmissionWriter
 from .validated_work_snapshots import DispositionSnapshots
+from .validated_work_recovery_blocks import RecoveryBlockPersistence
 from .validated_work_attempts import PublishAttemptWriter
 from .validated_work_claims import ClaimAuthority, owner_identity
 from .validated_work_lineage import LineageClassifier
@@ -86,6 +89,7 @@ class SqliteValidatedWorkStore:
         self._retention = retention
         self._db = DispositionDatabase(db_path)
         self._snapshots = DispositionSnapshots(self._db)
+        self._recovery_blocks = RecoveryBlockPersistence(self._db)
         self._lineage = LineageClassifier(ancestry, artifacts)
         self._claims = ClaimAuthority(liveness)
         self._admission = EvidenceAdmissionWriter(self._lineage)
@@ -97,6 +101,25 @@ class SqliteValidatedWorkStore:
             status = self._admission.admit(conn, admission)
             return AdmissionOutcome(
                 status, disposition(conn, admission.evidence.record_id)
+            )
+
+    def admit_selected(
+        self,
+        admission: EvidenceAdmission,
+        expected_current: str | None,
+        selection: EvidenceAdmissionSelection,
+    ) -> AdmissionOutcome | None:
+        """Apply the receipt owner's selection in the claim store transaction."""
+        with self._db.transaction(write=True) as conn:
+            status = self._admission.admit_selected(
+                conn, admission, expected_current, selection
+            )
+            return (
+                None
+                if status is None
+                else AdmissionOutcome(
+                    status, disposition(conn, admission.evidence.record_id)
+                )
             )
 
     def get(self, record_id: str) -> ValidatedWorkDisposition:
@@ -127,6 +150,17 @@ class SqliteValidatedWorkStore:
 
     def for_issue(self, issue_number: int) -> ValidatedWorkDispositionBatch:
         return self._snapshots.for_issue(issue_number)
+
+    def recovery_block_snapshot(self, repo_slug: str, issue_number: int) -> RecoveryBlockSnapshot:
+        return self._recovery_blocks.snapshot(repo_slug, issue_number)
+
+    def begin_block_label_cleanup(
+        self, keys: tuple[RecoveryCleanupKey, ...], label: str
+    ) -> bool:
+        return self._recovery_blocks.begin_label_cleanup(keys, label)
+
+    def acknowledge_block_cleanup(self, keys: tuple[RecoveryCleanupKey, ...]) -> bool:
+        return self._recovery_blocks.acknowledge(keys)
 
     def has_unresolved_work(self, issue_number: int) -> bool:
         return self._snapshots.has_unresolved_work(issue_number)
