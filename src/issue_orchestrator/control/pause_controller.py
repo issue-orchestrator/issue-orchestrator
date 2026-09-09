@@ -20,7 +20,8 @@ from __future__ import annotations
 
 import logging
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Generator
+from contextlib import contextmanager
 from typing import Protocol
 from datetime import datetime, timedelta, timezone
 
@@ -115,6 +116,10 @@ class PauseController:
         self._auto_resume_at: datetime | None = None
         self._incident_streak = 0
         self._consecutive_tick_errors = 0
+        # A public pause announces intent before waiting for the orchestrator
+        # state lock. Count callers so one completion cannot hide another
+        # request that is still waiting for shared-state custody.
+        self._pending_pause_requests = 0
 
     @property
     def state(self) -> PauseState:
@@ -124,6 +129,23 @@ class PauseController:
     @property
     def paused(self) -> bool:
         return self.state.paused
+
+    @property
+    def pause_requested(self) -> bool:
+        """Whether a public pause is waiting to commit under the state lock."""
+        with self._lock:
+            return self._pending_pause_requests > 0
+
+    @contextmanager
+    def pending_pause_request(self) -> Generator[None]:
+        """Expose pause intent while the facade waits for shared-state custody."""
+        with self._lock:
+            self._pending_pause_requests += 1
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._pending_pause_requests -= 1
 
     def pause(
         self,

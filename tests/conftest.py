@@ -1256,6 +1256,10 @@ def build_test_orchestrator_deps(
     )
     _action_applier.runtime_lifecycle = runtime_lifecycle
 
+    from issue_orchestrator.ports.validated_work_drain import (
+        NullValidatedWorkRecoveryDrain,
+    )
+
     return OrchestratorDeps(
         runtime_lifecycle=runtime_lifecycle,
         events=events,
@@ -1365,6 +1369,7 @@ def build_test_orchestrator_deps(
             renew_before_expiry_seconds=300,
         ),
         publish_recovery=publish_recovery,
+        validated_work_recovery=NullValidatedWorkRecoveryDrain(),
         services=infra_services,
     )
 

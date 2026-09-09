@@ -437,8 +437,12 @@ def _apply_advise_only_authority(args: argparse.Namespace, config: "Config") -> 
 
 def _build_orchestrator(config: "Config") -> "Orchestrator":
     from .bootstrap import build_orchestrator
+    from .bootstrap_liveness import held_repo_validated_work_liveness
 
-    return build_orchestrator(config=config)
+    return build_orchestrator(
+        config=config,
+        validated_work_liveness=held_repo_validated_work_liveness(config),
+    )
 
 
 def _release(orchestrator: "Orchestrator") -> None:

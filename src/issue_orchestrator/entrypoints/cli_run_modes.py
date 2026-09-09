@@ -312,7 +312,12 @@ def run_locked_cli_engine(
     try:
         _publish_cli_engine_ownership(config, ports.advertised)
         lock_acquired = True
-        orchestrator = build_orchestrator(config=config)
+        from .bootstrap_liveness import held_repo_validated_work_liveness
+
+        orchestrator = build_orchestrator(
+            config=config,
+            validated_work_liveness=held_repo_validated_work_liveness(config),
+        )
         operation = _cli_engine_operation(args, config, orchestrator, ports)
         asyncio.run(_run_with_repo_lock_heartbeat(config.repo_root, operation))
     except KeyboardInterrupt:
