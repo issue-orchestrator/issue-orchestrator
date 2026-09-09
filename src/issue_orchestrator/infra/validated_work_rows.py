@@ -34,6 +34,7 @@ from ..domain.validated_work_store import (
 from .sqlite_connection import open_sqlite
 from .validated_work_codec import decode_evidence
 from .validated_work_schema import SCHEMA
+from .validated_work_migrations import migrate_remote_baseline_authority
 
 
 class DispositionDatabase:
@@ -42,8 +43,9 @@ class DispositionDatabase:
     def __init__(self, path: Path) -> None:
         self._path = path
         path.parent.mkdir(parents=True, exist_ok=True)
-        with closing(open_sqlite(path)) as conn:
+        with closing(open_sqlite(path, row_factory=sqlite3.Row)) as conn:
             conn.executescript(SCHEMA)
+            migrate_remote_baseline_authority(conn)
             if conn.execute("PRAGMA quick_check").fetchone()[0] != "ok":
                 raise sqlite3.DatabaseError(
                     "validated-work database integrity check failed"
@@ -102,7 +104,9 @@ def evidence_row(row: sqlite3.Row) -> EvidenceRow:
     )
 
 
-def retention_evidence_row(conn: sqlite3.Connection, row: sqlite3.Row, cutoff: datetime) -> EvidenceRow | None:
+def retention_evidence_row(
+    conn: sqlite3.Connection, row: sqlite3.Row, cutoff: datetime
+) -> EvidenceRow | None:
     """Validate the owning disposition and its clock before testing eligibility."""
     evidence = evidence_row(row)
     disposition(conn, evidence.record_id)

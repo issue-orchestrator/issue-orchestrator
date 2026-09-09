@@ -17,6 +17,9 @@ from ..ports.validated_work_effects import ValidatedWorkEffectAuthority
 from ..ports.validated_work_escrow import ValidatedWorkEscrow
 from ..ports.validated_work_execution import ValidatedWorkExecutionOwner
 from ..ports.validated_work_verification import OrchestratorLivenessPort
+from ..ports.validated_work_capture_observer import (
+    UnavailableValidatedWorkCaptureObserver, ValidatedWorkCaptureObserver,
+)
 
 if TYPE_CHECKING:
     from ..control.action_applier import ActionApplier
@@ -57,7 +60,7 @@ def build_validated_work_escrow_maintenance(
     )
 
 
-from ..control.validated_work_capture import ParkedEvidenceCustody
+from ..control.validated_work_capture import ValidatedWorkCustody
 from ..control.validated_work_escrow import EscrowReconciliation
 from ..ports.validated_work_preservation import ValidatedWorkAdmissionStore
 
@@ -65,8 +68,9 @@ from ..ports.validated_work_preservation import ValidatedWorkAdmissionStore
 @dataclass(frozen=True, slots=True)
 class ValidatedWorkAdmissionOwners:
     store: ValidatedWorkAdmissionStore
-    custody: ParkedEvidenceCustody
+    custody: ValidatedWorkCustody
     repair: EscrowReconciliation
+    capture_observer: ValidatedWorkCaptureObserver
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,7 +101,11 @@ def build_validated_work_admission(config: Config, working_copy: ExactGit, intak
     escrow = FilesystemValidatedWorkEscrow(root / "validated-work", repository=config.repo_root, repo_slug=config.repo, git=working_copy)
     ancestry = GitValidatedWorkAncestry(repository=config.repo_root, repo_slug=config.repo, git=working_copy)
     store = RankedEvidenceAdmission(SqliteValidatedWorkIntakeStore(root / "validated_work.sqlite", ancestry, escrow), intake)
-    return ValidatedWorkAdmissionOwners(store, ParkedEvidenceCustody(escrow, store), EscrowReconciliation(escrow=escrow, store=store))
+    return ValidatedWorkAdmissionOwners(
+        store, ValidatedWorkCustody(escrow, store),
+        EscrowReconciliation(escrow=escrow, store=store),
+        UnavailableValidatedWorkCaptureObserver(),
+    )
 
 
 def build_validated_work_runtime(
@@ -163,7 +171,7 @@ def build_validated_work_runtime(
         applier=action_applier,
         human_block=human_block,
     )
-    custody = ParkedEvidenceCustody(escrow, blocks)
+    custody = ValidatedWorkCustody(escrow, blocks)
     repair = EscrowReconciliation(escrow=escrow, store=blocks)
     workspaces = EscrowPublicationWorkspaces(
         root=escrow.root,
@@ -185,6 +193,7 @@ def build_validated_work_runtime(
         blocks=blocks,
         workspaces=workspaces,
         remote=external.remote,
+        capture_observer=external.capture_observer,
         issues=external.issues,
     )
 

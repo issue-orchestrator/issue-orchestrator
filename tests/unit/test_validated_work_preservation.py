@@ -20,15 +20,21 @@ from issue_orchestrator.control.review_exchange_lifecycle import (
     CoreIssueRuntimeOwners, IssueRuntimeLifecycleOwners, OtherRuntimeActivity,
     IssueRuntimeOwnerKind, UnresolvedValidatedWork,
 )
-from issue_orchestrator.control.validated_work_capture import ParkedEvidenceCustody
+from issue_orchestrator.control.validated_work_capture import ValidatedWorkCustody
 from issue_orchestrator.control.validated_work_escrow import EscrowReconciliation
 from issue_orchestrator.control.validated_work_preservation import ValidatedWorkPreservationService
 from issue_orchestrator.domain.completion_intake import CompletionIntakeError, IntakeClosed
 from issue_orchestrator.domain.issue_key import GitHubIssueKey
 from issue_orchestrator.domain.issue_run_allocation import IssueRunAllocation
 from issue_orchestrator.domain.issue_run_evidence import IssueRunEvidenceUnavailable, RunTerminalBinding
+from issue_orchestrator.domain.publication_remote import (
+    PublicationPullRequest, PublicationPrState, PublicationRemoteError,
+)
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
-from issue_orchestrator.domain.validated_work import ValidatedWorkFailure, ValidatedWorkState
+from issue_orchestrator.domain.validated_work import (
+    RemoteBaselineStatus, ValidatedWorkFailure, ValidatedWorkState,
+)
+from issue_orchestrator.domain.validated_work_capture import ValidatedWorkRemoteFacts
 from issue_orchestrator.domain.tech_lead_session import TechLeadSessionGeneration
 from issue_orchestrator.execution.command_runner import LocalCommandRunner
 from issue_orchestrator.execution.git_tools import create_git
@@ -38,10 +44,12 @@ from issue_orchestrator.execution.issue_run_ledger import SqliteIssueRunLedger
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 from issue_orchestrator.execution.validated_work_ancestry import GitValidatedWorkAncestry
 from issue_orchestrator.infra.validated_work_escrow import FilesystemValidatedWorkEscrow
-from issue_orchestrator.infra.validated_work_intake_store import SqliteValidatedWorkIntakeStore
+from issue_orchestrator.infra.validated_work_store import SqliteValidatedWorkStore
 from issue_orchestrator.ports.background_job import BackgroundJobRunner
 from issue_orchestrator.ports.historical_intake import HistoricalIntakeHandler
+from issue_orchestrator.ports.validated_work_capture_observer import ValidatedWorkCaptureObserver
 from tests.unit.test_completion_evidence_intake import completion, command
+from tests.unit.validated_work_support import Liveness
 
 
 @pytest.fixture
@@ -67,12 +75,18 @@ def custody(tmp_path):
         IsolatedCompletionValidationWorkspace(state, git), command="true", timeout_seconds=30)
     intake = CompletionEvidenceIntakeService(ledger, validator, Mock(spec=HistoricalIntakeHandler), Mock(spec=BackgroundJobRunner))
     escrow = FilesystemValidatedWorkEscrow(state / "validated-work", repository=repo, repo_slug="owner/repo", git=wc)
-    store = SqliteValidatedWorkIntakeStore(state / "work.sqlite",
-        GitValidatedWorkAncestry(repository=repo, repo_slug="owner/repo", git=wc), escrow)
+    store = SqliteValidatedWorkStore(
+        state / "work.sqlite",
+        ancestry=GitValidatedWorkAncestry(repository=repo, repo_slug="owner/repo", git=wc),
+        artifacts=escrow, liveness=Liveness(), retention=escrow,
+    )
     store = RankedEvidenceAdmission(store, ledger)
     repair = EscrowReconciliation(escrow=escrow, store=store)
+    observer = Mock(spec=ValidatedWorkCaptureObserver)
+    observer.observe.return_value = ValidatedWorkRemoteFacts(None, ())
     preservation = ValidatedWorkPreservationService(intake=intake, store=store,
-        custody=ParkedEvidenceCustody(escrow, store), repair=repair, working_copy=wc)
+        custody=ValidatedWorkCustody(escrow, store), repair=repair, working_copy=wc,
+        observer=observer)
     source = IssueRunEvidenceService(ledger, live_runs=lambda issue: (), now=lambda: "2026-09-07T00:00:00Z")
     sessions = Mock()
     sessions.exists.return_value = False
@@ -83,7 +97,7 @@ def custody(tmp_path):
     return SimpleNamespace(repo=repo, git=git, worktree=worktree, ledger=ledger, run=run,
         capability=ledger.submission_capability(run), intake=intake, escrow=escrow,
         store=store, lifecycle=lifecycle, state=state, wc=wc, repair=repair,
-        pair=pair, jobs=jobs, retry=retry, sessions=sessions)
+        pair=pair, jobs=jobs, retry=retry, sessions=sessions, observer=observer)
 
 
 def submit(rig, key):
@@ -114,8 +128,15 @@ def test_distinct_validated_heads_survive_and_newest_only_within_key(custody):
         custody.ledger.entry_for_receipt(newest.entry_id).normalized_sha256,
     }
     assert custody.ledger.entry_for_receipt(second.entry_id).normalized_sha256 not in {r.admission.evidence.identity.completion_artifact.sha256 for r in rows}
-    assert all(row.admission.initial_state is ValidatedWorkState.PARKED for row in rows)
+    assert {
+        row.admission.evidence.identity.key.validated_head_sha: row.admission.initial_state
+        for row in rows
+    } == {
+        old_head: ValidatedWorkState.PARKED,
+        custody.git.head_sha(custody.worktree): ValidatedWorkState.QUEUED,
+    }
     assert all(custody.escrow.verifies(row) for row in rows)
+    custody.observer.observe.assert_called_once()
 
 
 def test_advance_pins_validated_and_observed_separately_and_retry_preserves_observations(custody):
@@ -142,6 +163,53 @@ def test_detached_keeps_exact_head_and_requires_approval(custody):
     assert not row.admission.evidence.identity.branch_binding_verified
     assert row.admission.evidence.identity.key.branch_name == "feature"
     assert row.admission.initial_failure is ValidatedWorkFailure.WORKSPACE_INTEGRITY
+
+
+def test_unreadable_remote_parks_without_inventing_branch_absence(custody):
+    submit(custody, "first")
+    custody.observer.observe.side_effect = PublicationRemoteError("quota or auth unavailable")
+    custody.lifecycle.terminate(42, "stop")
+    row = custody.store.retained_evidence(42)[0]
+    observations = row.admission.evidence.observations
+    assert row.admission.initial_state is ValidatedWorkState.PARKED
+    assert row.admission.initial_failure is ValidatedWorkFailure.REMOTE_UNREADABLE
+    assert observations.remote_baseline_status is RemoteBaselineStatus.UNOBSERVED
+    assert observations.expected_remote_head_sha is None
+    assert observations.pr_number is None
+
+
+def test_observed_branch_and_single_matching_pr_become_automatic_authority(custody):
+    receipt = submit(custody, "first")
+    head = custody.ledger.validation_for_receipt(receipt.entry_id).head_sha
+    pr = PublicationPullRequest(
+        91, "https://github.com/owner/repo/pull/91", "owner/repo", "owner/repo",
+        "feature", "main", head, PublicationPrState.OPEN, "existing PR",
+    )
+    custody.observer.observe.return_value = ValidatedWorkRemoteFacts(head, (pr,))
+    custody.lifecycle.terminate(42, "stop")
+    row = custody.store.retained_evidence(42)[0]
+    observations = row.admission.evidence.observations
+    assert row.admission.initial_state is ValidatedWorkState.QUEUED
+    assert observations.remote_baseline_status is RemoteBaselineStatus.OBSERVED
+    assert observations.expected_remote_head_sha == head
+    assert observations.pr_number == 91
+
+
+def test_multiple_open_prs_park_instead_of_guessing(custody):
+    receipt = submit(custody, "first")
+    head = custody.ledger.validation_for_receipt(receipt.entry_id).head_sha
+    def pr(number):
+        return PublicationPullRequest(
+            number, f"https://github.com/owner/repo/pull/{number}",
+            "owner/repo", "owner/repo", "feature", "main", head,
+            PublicationPrState.OPEN, "candidate",
+        )
+    custody.observer.observe.return_value = ValidatedWorkRemoteFacts(head, (pr(91), pr(92)))
+    custody.lifecycle.terminate(42, "stop")
+    row = custody.store.retained_evidence(42)[0]
+    assert row.admission.initial_state is ValidatedWorkState.PARKED
+    assert row.admission.initial_failure is ValidatedWorkFailure.DUPLICATE_OPEN_PR
+    assert row.admission.evidence.observations.pr_number is None
 
 
 @pytest.mark.parametrize("damage", ["raw", "normalized", "validation", "ledger", "escrow", "pin"])
@@ -186,7 +254,7 @@ def test_partial_batch_admission_retry_converges(custody):
     submit(custody, "second")
     with sqlite3.connect(custody.state / "work.sqlite") as conn:
         conn.execute("CREATE TRIGGER interrupt_second BEFORE INSERT ON validated_work_records WHEN (SELECT COUNT(*) FROM validated_work_records)=1 BEGIN SELECT RAISE(ABORT, 'interrupted'); END")
-    with pytest.raises(CompletionIntakeError):
+    with pytest.raises((CompletionIntakeError, sqlite3.IntegrityError)):
         custody.lifecycle.terminate(42, "stop")
     assert len(custody.store.for_issue(42).dispositions) == 1
     custody.pair.release.assert_not_called()
@@ -407,10 +475,15 @@ def retained_receipt_pair(custody):
         key=lambda admission: custody.ledger.evidence_receive_sequence(admission.evidence)))
 
 
-def independent_ranked_store(custody, database_name, backend_type=SqliteValidatedWorkIntakeStore):
+def independent_ranked_store(custody, database_name, backend_type=SqliteValidatedWorkStore):
     ledger = SqliteIssueRunLedger(custody.state / "runs.sqlite")
-    backend = backend_type(custody.state / database_name,
-        GitValidatedWorkAncestry(repository=custody.repo, repo_slug="owner/repo", git=custody.wc), custody.escrow)
+    ancestry = GitValidatedWorkAncestry(
+        repository=custody.repo, repo_slug="owner/repo", git=custody.wc,
+    )
+    backend = backend_type(
+        custody.state / database_name, ancestry=ancestry, artifacts=custody.escrow,
+        liveness=Liveness(), retention=custody.escrow,
+    )
     return RankedEvidenceAdmission(backend, ledger)
 
 
@@ -419,7 +492,7 @@ def test_independent_instances_reselect_after_atomic_admission_conflict(custody)
     from threading import Barrier
     admissions = retained_receipt_pair(custody)
     barrier = Barrier(2)
-    class ConcurrentBackend(SqliteValidatedWorkIntakeStore):
+    class ConcurrentBackend(SqliteValidatedWorkStore):
         def admit_selected(self, admission, expected_current, selection):
             if expected_current is None:
                 barrier.wait(timeout=10)

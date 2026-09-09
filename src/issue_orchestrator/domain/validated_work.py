@@ -85,6 +85,13 @@ class ValidatedWorkState(StrEnum):
     ABANDONED = "abandoned"  # operator explicitly accepted the loss; resolved
 
 
+class RemoteBaselineStatus(StrEnum):
+    """Whether a missing remote SHA is authoritative absence or missing evidence."""
+
+    OBSERVED = "observed"
+    UNOBSERVED = "unobserved"
+
+
 # Two DIFFERENT state sets. Conflating "resting" with "resolved" is the bug.
 
 UNRESOLVED_STATES = frozenset(
@@ -342,16 +349,24 @@ class ValidatedWorkObservations:
 
     captured_at: str  # ISO-8601 UTC
     worktree_head_sha: str  # issue worktree HEAD at capture; may move
-    expected_remote_head_sha: str | None  # remote branch head at capture; None = absent
+    expected_remote_head_sha: str | None  # None means absent only when observed
     pr_number: int | None
     observed_blocking_labels: tuple[str, ...]  # exactly what this op may later clear
     admitted_from_paths: Mapping[ArtifactSlot, str]  # audit only, never re-read
+    remote_baseline_status: RemoteBaselineStatus = RemoteBaselineStatus.UNOBSERVED
 
     def __post_init__(self) -> None:
         require_text(self.captured_at, "captured_at")
         require_sha(self.worktree_head_sha)
         if self.expected_remote_head_sha is not None:
             require_sha(self.expected_remote_head_sha)
+        if type(self.remote_baseline_status) is not RemoteBaselineStatus:
+            raise ValueError("remote baseline status must be typed")
+        if (
+            self.remote_baseline_status is RemoteBaselineStatus.UNOBSERVED
+            and (self.expected_remote_head_sha is not None or self.pr_number is not None)
+        ):
+            raise ValueError("unobserved remote state cannot carry branch or PR authority")
         if self.pr_number is not None:
             require_positive(self.pr_number, "pr_number")
         if type(self.observed_blocking_labels) is not tuple:

@@ -28,6 +28,7 @@ def build_issue_runtime(*, state: OrchestratorState, ledger: IssueRunLedger,
 
     evidence = IssueRunEvidenceService(ledger, live_runs=live_runs, now=lambda: datetime.now(timezone.utc).isoformat())
     preservation = ValidatedWorkPreservationService(intake=intake, store=validated_work.store,
-        custody=validated_work.custody, repair=validated_work.repair, working_copy=working_copy)
+        custody=validated_work.custody, repair=validated_work.repair, working_copy=working_copy,
+        observer=validated_work.capture_observer)
     return IssueRuntimeLifecycleOwners(CoreIssueRuntimeOwners(sessions, state.active_sessions,
         pair_registry, supervisor, publish_recovery), preservation, evidence, events)

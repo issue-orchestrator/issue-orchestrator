@@ -2,7 +2,9 @@
 
 from copy import copy, deepcopy
 from dataclasses import replace
+import json
 import pickle
+import sqlite3
 
 import pytest
 
@@ -13,9 +15,15 @@ from issue_orchestrator.domain.validated_work import (
     RESOLVED_STATES,
     UNRESOLVED_STATES,
     ReviewDisposition,
+    RemoteBaselineStatus,
     ValidatedWorkFailure,
     ValidatedWorkState,
     canonical_json,
+)
+from issue_orchestrator.infra.validated_work_codec import decode_evidence
+from issue_orchestrator.infra.sqlite_connection import open_sqlite
+from issue_orchestrator.infra.validated_work_migrations import (
+    migrate_remote_baseline_authority,
 )
 from issue_orchestrator.domain.validated_work_claim import (
     ClaimSecret,
@@ -100,6 +108,126 @@ def test_work_and_evidence_identity_are_separate_and_canonical():
             "café"
         )
         > 0
+    )
+
+
+def test_legacy_observations_decode_as_unobserved_remote_authority():
+    evidence = capture().evidence
+    observations = json.loads(canonical_json(evidence.observations))
+    observations.pop("remote_baseline_status")
+    decoded = decode_evidence(
+        canonical_json(evidence.identity),
+        json.dumps(observations),
+    )
+    assert (
+        decoded.observations.remote_baseline_status is RemoteBaselineStatus.UNOBSERVED
+    )
+    assert decoded.observations.expected_remote_head_sha is None
+    assert decoded.observations.pr_number is None
+
+
+def test_store_migrates_legacy_queued_remote_authority_to_parked(tmp_path):
+    rig = Rig(tmp_path / "work.sqlite")
+    admission = capture()
+    rig.open().admit(admission)
+    with sqlite3.connect(rig.path) as conn:
+        observations = json.loads(canonical_json(admission.evidence.observations))
+        observations.pop("remote_baseline_status")
+        conn.execute(
+            "UPDATE validated_work_evidence SET observations=? WHERE evidence_id=?",
+            (canonical_json(observations), admission.evidence.evidence_id),
+        )
+
+    reopened = rig.open()
+    disposition = reopened.get(admission.evidence.record_id)
+    (row,) = reopened.retained_evidence(admission.evidence.identity.key.issue_number)
+    assert disposition.state is ValidatedWorkState.PARKED
+    assert disposition.failure is ValidatedWorkFailure.REMOTE_UNREADABLE
+    assert row.admission.initial_state is ValidatedWorkState.PARKED
+    assert row.admission.initial_failure is ValidatedWorkFailure.REMOTE_UNREADABLE
+    assert row.observation_revision == 1
+    assert (
+        row.admission.evidence.observations.remote_baseline_status
+        is RemoteBaselineStatus.UNOBSERVED
+    )
+    assert row.admission.evidence.observations.expected_remote_head_sha is None
+    assert row.admission.evidence.observations.pr_number is None
+    with sqlite3.connect(rig.path) as conn:
+        expected, pr = conn.execute(
+            "SELECT expected_remote_head,pr_number FROM validated_work_evidence"
+        ).fetchone()
+    assert expected == "" and pr is None
+
+
+def test_legacy_migration_preserves_ambiguous_publishing_lifecycle(tmp_path):
+    rig = Rig(tmp_path / "work.sqlite")
+    admission = capture()
+    rig.open().admit(admission)
+    with sqlite3.connect(rig.path) as conn:
+        observations = json.loads(canonical_json(admission.evidence.observations))
+        observations.pop("remote_baseline_status")
+        conn.execute(
+            "UPDATE validated_work_evidence SET observations=? WHERE evidence_id=?",
+            (canonical_json(observations), admission.evidence.evidence_id),
+        )
+        conn.execute(
+            "UPDATE validated_work_records SET state='publishing' WHERE record_id=?",
+            (admission.evidence.record_id,),
+        )
+
+    reopened = rig.open()
+    assert (
+        reopened.get(admission.evidence.record_id).state
+        is ValidatedWorkState.PUBLISHING
+    )
+    (row,) = reopened.retained_evidence(admission.evidence.identity.key.issue_number)
+    assert row.admission.initial_state is ValidatedWorkState.PARKED
+    assert (
+        row.admission.evidence.observations.remote_baseline_status
+        is RemoteBaselineStatus.UNOBSERVED
+    )
+
+
+def test_legacy_migration_reserves_write_authority_before_inspection(tmp_path):
+    rig = Rig(tmp_path / "work.sqlite")
+    admission = capture(state=ValidatedWorkState.PARKED)
+    rig.open().admit(admission)
+    with sqlite3.connect(rig.path) as conn:
+        observations = json.loads(canonical_json(admission.evidence.observations))
+        observations.pop("remote_baseline_status")
+        conn.execute(
+            "UPDATE validated_work_evidence SET observations=? WHERE evidence_id=?",
+            (canonical_json(observations), admission.evidence.evidence_id),
+        )
+
+    owner = open_sqlite(rig.path, row_factory=sqlite3.Row)
+    contender = sqlite3.connect(rig.path, timeout=0)
+    contender.execute("PRAGMA busy_timeout = 0")
+    contender_outcomes = []
+
+    def contend_during_inspection(statement):
+        if not statement.startswith("SELECT evidence_id"):
+            return
+        try:
+            contender.execute("BEGIN IMMEDIATE")
+        except sqlite3.OperationalError as exc:
+            contender_outcomes.append(str(exc))
+        else:
+            contender_outcomes.append("acquired")
+
+    owner.set_trace_callback(contend_during_inspection)
+    try:
+        migrate_remote_baseline_authority(owner)
+    finally:
+        owner.close()
+        contender.close()
+
+    assert contender_outcomes == ["database is locked"]
+    reopened = rig.open()
+    (row,) = reopened.retained_evidence(6914)
+    assert (
+        row.admission.evidence.observations.remote_baseline_status
+        is RemoteBaselineStatus.UNOBSERVED
     )
 
 

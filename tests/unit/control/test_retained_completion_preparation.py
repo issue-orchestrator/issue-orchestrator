@@ -13,7 +13,9 @@ from issue_orchestrator.domain.completion_intake import CompletionIntakeError
 from issue_orchestrator.domain.completion_processing import ProcessingResult
 from issue_orchestrator.domain.recovery_publication import PreparedRecoveryPublication
 from issue_orchestrator.domain.session_key import TaskKind
-from issue_orchestrator.domain.validated_work import EvidenceRole, ReviewDisposition
+from issue_orchestrator.domain.validated_work import (
+    EvidenceRole, RemoteBaselineStatus, ReviewDisposition,
+)
 from issue_orchestrator.execution.publication_workspace import EscrowPublicationWorkspaces
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 from issue_orchestrator.infra.config import Config
@@ -109,6 +111,21 @@ def test_changed_publication_source_cannot_be_prepared(retained):
     with pytest.raises(CompletionIntakeError, match="differs from its validated head"):
         rig.owner.prepare(rig.row, rig.workspace, "Retained feature")
     assert (rig.workspace.checkout / "content").read_text() == "operator work"
+    assert_no_effects(rig)
+
+
+def test_unobserved_legacy_remote_state_cannot_be_reinterpreted_as_absence(retained):
+    rig = prepare(retained)
+    observations = replace(
+        rig.row.admission.evidence.observations,
+        expected_remote_head_sha=None,
+        pr_number=None,
+        remote_baseline_status=RemoteBaselineStatus.UNOBSERVED,
+    )
+    evidence = replace(rig.row.admission.evidence, observations=observations)
+    row = replace(rig.row, admission=replace(rig.row.admission, evidence=evidence))
+    with pytest.raises(CompletionIntakeError, match="observed remote branch baseline"):
+        rig.owner.prepare(row, rig.workspace, "Retained feature")
     assert_no_effects(rig)
 
 

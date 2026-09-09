@@ -12,6 +12,7 @@ from .validated_work import (
     DispositionPhase as DispositionPhase,
     PublishValidatedHeadStatus as PublishValidatedHeadStatus,
     ResolutionKind,
+    RemoteBaselineStatus,
     ValidatedWorkEvidence,
     ValidatedWorkFailure,
     ValidatedWorkKey,
@@ -90,6 +91,7 @@ class EvidenceAdmission:
                 self.initial_failure is not None
                 or not identity.branch_binding_verified
                 or observations.worktree_head_sha != identity.key.validated_head_sha
+                or observations.remote_baseline_status is not RemoteBaselineStatus.OBSERVED
             ):
                 raise ValueError("approval-required evidence cannot be queued")
 
@@ -133,6 +135,7 @@ class EvidenceRow:
             key.issue_number,
             obs.pr_number,
             obs.expected_remote_head_sha,
+            obs.remote_baseline_status,
         )
 
 
