@@ -32,6 +32,8 @@ recorded field fails closed rather than reading as "no claim".
 
 from __future__ import annotations
 
+from contextlib import AbstractContextManager
+from ..domain.issue_disposition_gate import IssueDispositionGateStatus
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -410,6 +412,29 @@ class NeedsHumanCauseStore(Protocol):
     anywhere an agent can write.
     """
 
+    def mutate_needs_human(
+        self, issue_number: int
+    ) -> AbstractContextManager[IssueDispositionGateStatus]:
+        """Nonblocking shared-owner gate, retained across label AND cause effects.
+
+        Same database handles share a kernel gate; BUSY authorizes no effects.
+        Order: disposition gate, then this gate. No record claim or disposition
+        gate may be acquired while holding this gate. No SQL transaction is
+        held across remote calls. All owner paths, including stale-row pruning,
+        enter here; nested private policy calls use the already held scope.
+        """
+        ...
+
+    def begin_needs_human_removal(self, issue_number: int) -> bool:
+        """Write ahead of remote removal under mutate_needs_human; True once.
+
+        False denotes an ambiguous prior removal. Only observed absence may
+        retire it. Clear/restart end the old generation and this intent in one
+        transaction. Acquiring another cause while the label is present does
+        not erase the pending intent or authorize a repeated removal.
+        """
+        ...
+
     def record_needs_human_cause(
         self, issue_number: int, cause: str, *, reason: str
     ) -> None:
@@ -417,6 +442,10 @@ class NeedsHumanCauseStore(Protocol):
 
         Idempotent: a lifecycle that re-asserts the same cause on every tick
         must not accumulate rows.
+
+        ``cause`` is the typed request's serialized cause key. Ordinary causes
+        retain their existing keys; validated-work keys include the record ID
+        so withdrawing one failed record cannot withdraw a sibling's source.
         """
         ...
 

@@ -42,6 +42,7 @@ class LabelEntry:
     description: str  # Human-readable: "failed run"
     pattern: bool = False  # True for rework-cycle-{N}
     raw: bool = False  # True for tech-lead-subsystem labels that never take a prefix
+    shed_on_terminal_recovery: bool = True
 
 
 # Legacy labels that predated the blocked-* convention
@@ -124,6 +125,16 @@ class LabelManager:
         self._resolved_folded: frozenset[str] = frozenset(
             value.casefold() for value in self._resolved_set
         )
+        self._retained_on_recovery = frozenset(
+            self._resolved[entry.key].casefold()
+            for entry in self._entries.values()
+            if not entry.pattern and not entry.shed_on_terminal_recovery
+        )
+        self._blocking_folded = frozenset(
+            self._resolved[entry.key].casefold()
+            for entry in self._entries.values()
+            if entry.category is LabelCategory.BLOCKING and not entry.pattern
+        )
 
     # ------------------------------------------------------------------
     # Registry construction
@@ -161,6 +172,7 @@ class LabelManager:
             LabelEntry("blocked", config.label_blocked, LabelCategory.BLOCKING, "Blocked"),
             LabelEntry("blocked_failed", "blocked-failed", LabelCategory.BLOCKING, "Failed run"),
             LabelEntry("publish_failed", "publish-failed", LabelCategory.BLOCKING, "Publishing failed"),
+            LabelEntry("recovery_pending", "recovery-pending", LabelCategory.BLOCKING, "Preserved work awaiting disposition", shed_on_terminal_recovery=False),
             LabelEntry("blocked_needs_human", config.label_needs_human, LabelCategory.BLOCKING, "Needs human"),
             LabelEntry(
                 "tech_lead_needs_human",
@@ -253,6 +265,10 @@ class LabelManager:
     @property
     def publish_failed(self) -> str:
         return self._resolved["publish_failed"]
+
+    @property
+    def recovery_pending(self) -> str:
+        return self._resolved["recovery_pending"]
 
     @property
     def needs_human(self) -> str:
@@ -406,17 +422,14 @@ class LabelManager:
         pattern case files are evidence ledgers, never agent work items.
         """
         base = self._strip_prefix(label)
-        if (
-            base == "blocked"
-            or base.startswith("blocked-")
-            or base.startswith("blocked:")
+        return (
+            label.casefold() in self._blocking_folded
+            or base == "blocked"
+            or base.startswith(("blocked-", "blocked:"))
             or is_proposed_tech_lead_gate(base)
             or base.casefold() == self._resolved["tech_lead_observation"].casefold()
-        ):
-            return True
-        if base in _LEGACY_BLOCKING:
-            return True
-        return False
+            or base in _LEGACY_BLOCKING
+        )
 
     def is_blocking_any(self, labels: Sequence[str]) -> bool:
         return any(self.is_blocking(l) for l in labels)
@@ -465,7 +478,9 @@ class LabelManager:
         describe an in-flight or failed workflow state that no longer applies
         after recovery.
         """
-        return (
+        # Only the aggregate disposition owner can release this interest: a
+        # landed PR does not settle another retained record on the same issue.
+        return label.casefold() not in self._retained_on_recovery and (
             label == self.pr_pending
             or label == self.tech_lead_needs_human
             or self.is_blocking(label)

@@ -1727,6 +1727,12 @@ class TestTheOwnerSurvivesAHalfWrittenTransition:
             def __init__(self) -> None:
                 self.refuse = False
 
+            def mutate_needs_human(self, issue_number):
+                return real.mutate_needs_human(issue_number)
+
+            def begin_needs_human_removal(self, issue_number):
+                return real.begin_needs_human_removal(issue_number)
+
             def record_needs_human_cause(self, issue_number, cause, *, reason):
                 real.record_needs_human_cause(issue_number, cause, reason=reason)
 
@@ -1782,6 +1788,12 @@ class TestTheOwnerSurvivesAHalfWrittenTransition:
         real = SqlitePendingWorkClaimStore.for_repo(tmp_path)
 
         class _RefusingWithdraw:
+            def mutate_needs_human(self, issue_number):
+                return real.mutate_needs_human(issue_number)
+
+            def begin_needs_human_removal(self, issue_number):
+                return real.begin_needs_human_removal(issue_number)
+
             def record_needs_human_cause(self, issue_number, cause, *, reason):
                 real.record_needs_human_cause(issue_number, cause, reason=reason)
 
@@ -1838,6 +1850,12 @@ class TestTheOwnerSurvivesAHalfWrittenTransition:
         real = SqlitePendingWorkClaimStore.for_repo(tmp_path)
 
         class _RefusingClear:
+            def mutate_needs_human(self, issue_number):
+                return real.mutate_needs_human(issue_number)
+
+            def begin_needs_human_removal(self, issue_number):
+                return real.begin_needs_human_removal(issue_number)
+
             def record_needs_human_cause(self, issue_number, cause, *, reason):
                 real.record_needs_human_cause(issue_number, cause, reason=reason)
 

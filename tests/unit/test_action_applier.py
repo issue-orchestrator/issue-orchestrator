@@ -2543,7 +2543,7 @@ class TestRecoverTerminalIssueAction:
             real_label_manager,
             github_labels=[
                 "pr-pending", "publish-failed", "publish-fail-count-2",
-                "blocked:pr-closed", "agent:backend", "bug",
+                "blocked:pr-closed", "agent:backend", "bug", "recovery-pending",
             ],
             history_entry=entry,
         )
@@ -2568,6 +2568,7 @@ class TestRecoverTerminalIssueAction:
         # Non-transient labels must never be touched.
         assert "agent:backend" not in removed
         assert "bug" not in removed
+        assert "recovery-pending" not in removed
         assert entry.status == "merged"
 
     def test_cleans_label_store_mirror(

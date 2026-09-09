@@ -124,4 +124,22 @@ CREATE INDEX IF NOT EXISTS ix_validated_work_waiters
 
 CREATE INDEX IF NOT EXISTS ix_validated_work_issue
     ON validated_work_records (issue_number, state);
+
+-- Captured failure labels are a one-time cleanup right, not permission to
+-- remove a newly operator-added label on every subsequent reconciliation.
+CREATE TABLE IF NOT EXISTS validated_work_block_cleanup (
+    record_id TEXT NOT NULL REFERENCES validated_work_records(record_id),
+    evidence_id TEXT NOT NULL REFERENCES validated_work_evidence(evidence_id),
+    attempt_no INTEGER NOT NULL CHECK (attempt_no >= 0),
+    PRIMARY KEY (record_id, evidence_id, attempt_no)
+);
+-- Write-ahead intent: a replay must never mistake a later human label for
+-- the captured generation after an unacknowledged remote removal.
+CREATE TABLE IF NOT EXISTS validated_work_block_cleanup_intent (
+    record_id TEXT NOT NULL REFERENCES validated_work_records(record_id),
+    evidence_id TEXT NOT NULL REFERENCES validated_work_evidence(evidence_id),
+    attempt_no INTEGER NOT NULL CHECK (attempt_no >= 0),
+    label TEXT NOT NULL CHECK (length(label) > 0),
+    PRIMARY KEY (record_id, evidence_id, attempt_no, label)
+);
 """

@@ -173,7 +173,7 @@ def test_spawned_processes_share_unique_admission_and_cannot_copy_owner(tmp_path
     assert store.owner_of(capture().evidence.record_id).pid != os.getpid()
 
 
-def test_four_table_indexes_and_registry_are_durable(tmp_path):
+def test_tables_indexes_and_registry_are_durable(tmp_path):
     rig = Rig(tmp_path / "work.sqlite")
     rig.open().admit(capture())
     with closing(sqlite3.connect(rig.path)) as conn, conn:
@@ -186,6 +186,8 @@ def test_four_table_indexes_and_registry_are_durable(tmp_path):
             "validated_work_evidence",
             "validated_work_publish_attempts",
             "validated_work_lineage",
+            "validated_work_block_cleanup",
+            "validated_work_block_cleanup_intent",
         }
         assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
         assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
@@ -199,3 +201,20 @@ def test_four_table_indexes_and_registry_are_durable(tmp_path):
     )
     assert entry.backup and entry.enforce_pragmas and entry.enabled_fn(config)
     assert entry.path_fn(config).name == "validated_work.sqlite"
+
+
+def test_existing_store_adds_cleanup_receipts_without_changing_retained_work(tmp_path):
+    rig = Rig(tmp_path / "work.sqlite")
+    admission = capture(state=State.PARKED)
+    store = rig.open()
+    before = store.admit(admission).disposition
+    # Recreate the previous four-table schema using this test-owned database.
+    with closing(sqlite3.connect(rig.path)) as conn, conn:
+        conn.execute("DROP TABLE validated_work_block_cleanup_intent")
+        conn.execute("DROP TABLE validated_work_block_cleanup")
+    reopened = rig.open()
+    assert reopened.get(before.record_id) == before
+    snapshot = reopened.recovery_block_snapshot("owner/repo", before.key.issue_number)
+    assert len(snapshot.interests) == 1
+    assert not snapshot.interests[0].cleanup_acknowledged
+    assert snapshot.interests[0].holds_recovery

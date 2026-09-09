@@ -165,6 +165,13 @@ class RecoveryBlockReleaseRequest:
         require_text(self.recovery_label, "recovery_label")
         _labels(self.observed_blocking_labels)
 
+    def require_context(self, repo_slug: str, recovery_label: str) -> None:
+        if (
+            self.target.key.repo_slug != repo_slug
+            or self.recovery_label != recovery_label
+        ):
+            raise ValueError("release names another repository or recovery label")
+
 
 class RecoveryBlockReleaseStatus(StrEnum):
     RELEASED = "released"  # own interest released; siblings may still hold labels

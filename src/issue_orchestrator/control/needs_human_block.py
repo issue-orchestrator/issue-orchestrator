@@ -36,6 +36,16 @@ it", so the moment the label goes — removed by an owner here, or by a human ou
 of band — every row for that issue goes with it. That is what stops a stale row
 stranding an issue in ``needs-human`` forever, which is the failure mode a
 provenance ledger invites if it is allowed to outlive what it describes.
+
+Validated-work failures use record-scoped keys within this same registry. Their
+retained FAILED dispositions remain the recovery owner's authority to reassert
+the label after a generation ends. A release names one record, and an ordinary
+force-clear cannot settle that disposition. The aggregate recovery owner must
+serialize these calls with sibling admission under its issue mutation gate.
+Within that scope, this owner holds its own cause-database gate across the full
+label/provenance operation. Every lifecycle uses it, including scoped views and
+reads that prune old causes; contention reports failure or a conservative hold.
+The order is disposition gate then shared-block gate, never the reverse.
 """
 
 from __future__ import annotations
@@ -43,10 +53,20 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from enum import Enum
-from typing import Protocol
+from typing import Protocol, TypeVar
 
+from ..domain.issue_disposition_gate import IssueDispositionGateStatus
+from ..domain.human_block import (
+    BlockOutcome as BlockOutcome,
+    HumanBlockRequest as HumanBlockRequest,
+    NeedsHumanCause as NeedsHumanCause,
+    ValidatedWorkBlockSource as ValidatedWorkBlockSource,
+)
 from ..ports.pending_work_claim_store import NeedsHumanCauseStore
+from ..ports.synchronous_effects import SynchronousEffectScope
+from .scoped_human_block import scoped_human_block
+
+T = TypeVar("T")
 
 logger = logging.getLogger(__name__)
 
@@ -58,78 +78,6 @@ UNCAUSED_BLOCK_MUTATION = (
     "shared needs-human block mutated without a NeedsHumanCause; route it "
     "through the shared-block owner"
 )
-
-
-class NeedsHumanCause(Enum):
-    """One durable, independently recorded cause of the shared block.
-
-    Enumerated rather than passed as free text: every owner that may remove the
-    label has to be able to name the ones it is NOT, and a cause added without
-    an entry here would simply be invisible to the others.
-    """
-
-    #: A tech-lead investigation that exhausted its bounded launch budget.
-    #: Recorded as the tech-lead marker label on the issue.
-    TECH_LEAD_ESCALATION = "tech_lead_escalation"
-    #: A run whose pending-work claim could not be read or rebuilt. Recorded as
-    #: a non-releasing row in the quarantine ledger.
-    CLAIM_QUARANTINE = "claim_quarantine"
-    #: An AGENT asked for it, through ``coding-done needs_human`` /
-    #: ``reviewer-done``. Its own cause because it is the one assertion that
-    #: arrives from outside the orchestrator's own planning, on the completion
-    #: path rather than through an action (#6999 F2 round 3).
-    AGENT_COMPLETION = "agent_completion"
-    #: A PR escalated out of the merge/awaiting-merge lifecycle. Its own cause
-    #: because it is the one SESSION-side assertion that is targetedly
-    #: released again - by the post-publish "now reworkable" clear - so sharing
-    #: a token with anything else would let that clear erase another block.
-    MERGE_ESCALATION = "merge_escalation"
-    #: Every other orchestrator escalation the planners raise: a session that
-    #: ended without a completion record, publish failures past their bound, an
-    #: invalid completion record, a stuck sweep, a failed rework worktree, a
-    #: retrospective review, an uncommitted mandated reset. They share ONE token
-    #: because none of them is ever released on its own terms: each ends when a
-    #: human clears the label, or when an operator/terminal force-clear ends
-    #: every cause at once. A lifecycle that gains a targeted release must take
-    #: its own cause rather than joining this one.
-    SESSION_LIFECYCLE = "session_lifecycle"
-
-
-@dataclass(frozen=True, slots=True)
-class HumanBlockRequest:
-    """One lifecycle asserting or withdrawing the shared block (#6999 F2 r3).
-
-    ``target`` is the number ACTUALLY mutated, which is not always an issue: a
-    merge escalation blocks the PR. Carrying it explicitly is what stops a
-    caller recording provenance against an issue while labelling a pull
-    request, after which no remover can find the cause it is standing on.
-    """
-
-    target: int
-    cause: NeedsHumanCause
-    reason: str
-
-
-class BlockOutcome(Enum):
-    """What a command did to the shared label."""
-
-    #: The label is on the target and this cause is recorded against it.
-    HELD = "held"
-    #: This cause is withdrawn and the label came off with it.
-    CLEARED = "cleared"
-    #: This cause is withdrawn, but the label stays: another cause needs it.
-    HELD_BY_ANOTHER_CAUSE = "held_by_another_cause"
-    #: The label write did not commit. The caller retries; nothing is assumed.
-    FAILED = "failed"
-    #: No owner governs this label in this composition, so NOTHING happened and
-    #: the caller must do its own write. Distinct from ``FAILED`` on purpose: a
-    #: null owner that reported success turned real mutations into silent
-    #: no-ops, which is a worse bug than the bypass it was closing.
-    UNGOVERNED = "ungoverned"
-
-    @property
-    def committed(self) -> bool:
-        return self in {BlockOutcome.HELD, BlockOutcome.CLEARED}
 
 
 class BlockLabelWriter(Protocol):
@@ -150,6 +98,16 @@ class SharedNeedsHumanBlock(Protocol):
     its own block back, and an operator or terminal recovery overriding every
     cause at once.
     """
+
+    def with_effects(self, scope: SynchronousEffectScope) -> "SharedNeedsHumanBlock":
+        """Same policy/store with authority checked before each boundary operation."""
+        ...
+
+    def recorded_sources(
+        self, issue_number: int
+    ) -> frozenset[ValidatedWorkBlockSource]:
+        """Recorded disposition sources, without claiming the label is present."""
+        ...
 
     def owns(self, label: str) -> bool:
         """Whether ``label`` is the shared block this owner governs."""
@@ -193,13 +151,28 @@ _SELF_RECORDING_CAUSES = frozenset(
 )
 
 #: ...and because their records live in their own lifecycles, they are also the
-#: causes a force-clear CANNOT settle (#6999 F3 round 4). Both re-assert the
+#: causes a force-clear CANNOT settle (#6999 F3 round 4). They re-assert the
 #: block on their next pass, so clearing the label around them would be undone
 #: within a tick - after an operator had been told the issue was unblocked.
+#: Disposition sources are recorded here, but only their recovery owner can
+#: settle the underlying retained record and prevent its next projection.
 _UNSETTLEABLE_BY_FORCE = (
     NeedsHumanCause.CLAIM_QUARANTINE,
     NeedsHumanCause.TECH_LEAD_ESCALATION,
+    NeedsHumanCause.VALIDATED_WORK_DISPOSITION,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class _ScopedLabels:
+    labels: "BlockLabelWriter"
+    scope: SynchronousEffectScope
+
+    def add_label(self, issue_number: int, label: str) -> None:
+        self.scope.perform(lambda: self.labels.add_label(issue_number, label))
+
+    def remove_label(self, issue_number: int, label: str) -> None:
+        self.scope.perform(lambda: self.labels.remove_label(issue_number, label))
 
 
 @dataclass(frozen=True, slots=True)
@@ -229,10 +202,28 @@ class NeedsHumanBlock:
     #: Durable rows for the causes that keep their provenance nowhere else.
     causes: NeedsHumanCauseStore
 
+    def with_effects(self, scope: SynchronousEffectScope) -> SharedNeedsHumanBlock:
+        return scoped_human_block(self, scope, _ScopedLabels(self.labels, scope))
+
+    def recorded_sources(
+        self, issue_number: int
+    ) -> frozenset[ValidatedWorkBlockSource]:
+        prefix = f"{NeedsHumanCause.VALIDATED_WORK_DISPOSITION.value}:"
+        return frozenset(
+            ValidatedWorkBlockSource(key[len(prefix) :])
+            for key in self.causes.needs_human_causes(issue_number)
+            if key.startswith(prefix)
+        )
+
     def owns(self, label: str) -> bool:
         return label == self.needs_human_label
 
     def acquire(self, request: HumanBlockRequest) -> BlockOutcome:
+        return self._mutate(
+            request.target, lambda: self._acquire(request), busy=BlockOutcome.FAILED
+        )
+
+    def _acquire(self, request: HumanBlockRequest) -> BlockOutcome:
         """Assert the shared block for one cause, and record that it did.
 
         The ONE way the governed label goes on. Applying the label and
@@ -280,6 +271,11 @@ class NeedsHumanBlock:
         return BlockOutcome.HELD
 
     def release(self, request: HumanBlockRequest) -> BlockOutcome:
+        return self._mutate(
+            request.target, lambda: self._release(request), busy=BlockOutcome.FAILED
+        )
+
+    def _release(self, request: HumanBlockRequest) -> BlockOutcome:
         """Withdraw one cause; take the label off only if it was the last.
 
         The ONE way an orchestrator lifecycle gives its own block back.
@@ -288,7 +284,16 @@ class NeedsHumanBlock:
         this owner closes, and it now holds for every remover rather than for
         the two that remembered to ask.
         """
-        if self.held_by_another_cause(request.target, excluding=request.cause):
+        if request.source is not None:
+            refusal = self._scoped_release_refusal(request)
+            if refusal is not None:
+                return refusal
+        if self._held_by_another_cause(request.target, excluding=request.cause) or (
+            request.source is not None
+            and self._recorded_cause_holds(
+                request.cause, request.target, excluding_key=request.cause_key
+            )
+        ):
             # Asked BEFORE withdrawing, because the question is about the other
             # causes and this one does not count itself. Only then is this
             # cause discharged - the label stays for whoever else needs it.
@@ -308,6 +313,11 @@ class NeedsHumanBlock:
         return self._take_label_off(request.target, request.reason)
 
     def force_clear(self, target: int, reason: str) -> BlockOutcome:
+        return self._mutate(
+            target, lambda: self._force_clear(target, reason), busy=BlockOutcome.FAILED
+        )
+
+    def _force_clear(self, target: int, reason: str) -> BlockOutcome:
         """End every cause this owner can settle, or REFUSE (#6999 F3 round 4).
 
         Operator and terminal-recovery intent: it overrides the causes recorded
@@ -330,7 +340,7 @@ class NeedsHumanBlock:
         operator learns the issue is still blocked and why, instead of being
         told it was cleared by a command that could not clear it.
         """
-        held = self.unsettleable_holders(target)
+        held = self._unsettleable_holders(target)
         if held:
             logger.warning(
                 "[BLOCK] Refusing to force-clear needs-human on #%d (%s): %s "
@@ -345,6 +355,15 @@ class NeedsHumanBlock:
     def held_by_another_cause(
         self, issue_number: int, *, excluding: NeedsHumanCause
     ) -> bool:
+        return self._mutate(
+            issue_number,
+            lambda: self._held_by_another_cause(issue_number, excluding=excluding),
+            busy=True,
+        )
+
+    def _held_by_another_cause(
+        self, issue_number: int, *, excluding: NeedsHumanCause
+    ) -> bool:
         return any(
             self._holds(cause, issue_number)
             for cause in NeedsHumanCause
@@ -352,6 +371,12 @@ class NeedsHumanBlock:
         )
 
     def unsettleable_holders(self, issue_number: int) -> tuple[NeedsHumanCause, ...]:
+        return self._mutate(
+            issue_number, lambda: self._unsettleable_holders(issue_number),
+            busy=_UNSETTLEABLE_BY_FORCE,
+        )
+
+    def _unsettleable_holders(self, issue_number: int) -> tuple[NeedsHumanCause, ...]:
         """Which of the causes this owner cannot settle are holding the block.
 
         Named for the operator: a refusal that cannot say WHICH lifecycle is
@@ -363,12 +388,22 @@ class NeedsHumanBlock:
             if self._holds(cause, issue_number)
         )
 
-    def forget(self, target: int) -> None:
+    def _forget(self, target: int) -> None:
         self.causes.clear_needs_human_causes(target)
+
+    def _mutate(self, target: int, operation: Callable[[], T], *, busy: T) -> T:
+        """One complete owner operation; scoped views retain this same gate."""
+        with self.causes.mutate_needs_human(target) as status:
+            if status is IssueDispositionGateStatus.BUSY:
+                return busy
+            return operation()
 
     # -- internals ---------------------------------------------------------
 
     def _take_label_off(self, target: int, reason: str) -> BlockOutcome:
+        first = self.causes.begin_needs_human_removal(target)
+        if not first:
+            return self._finish_removal(target)
         try:
             self.labels.remove_label(target, self.needs_human_label)
         except Exception:
@@ -379,10 +414,19 @@ class NeedsHumanBlock:
                 reason,
             )
             return BlockOutcome.FAILED
-        # The label WAS the record every cause stood on, so with it gone they
-        # are all stale. Leaving one behind is how a bypassing removal let a
-        # later re-added label inherit a cause nothing was asserting.
-        self.forget(target)
+        return self._finish_removal(target)
+
+    def _finish_removal(self, target: int) -> BlockOutcome:
+        # Intent survives a crash after remote deletion. Present or unreadable
+        # may be a new operator generation, so neither permits another removal.
+        observed = self._label_present_now(target)
+        if observed is not False:
+            logger.warning(
+                "[BLOCK] Ambiguous shared-block removal on #%d; preserving "
+                "current label and provenance until its owner resolves it", target,
+            )
+            return BlockOutcome.FAILED
+        self._forget(target)
         return BlockOutcome.CLEARED
 
     def _recorded(self, request: HumanBlockRequest) -> bool:
@@ -411,13 +455,13 @@ class NeedsHumanBlock:
         try:
             if present:
                 self.causes.record_needs_human_cause(
-                    request.target, request.cause.value, reason=request.reason
+                    request.target, request.cause_key, reason=request.reason
                 )
             elif self_recording:
                 self.causes.clear_needs_human_causes(request.target)
             else:
                 self.causes.restart_needs_human_causes(
-                    request.target, request.cause.value, reason=request.reason
+                    request.target, request.cause_key, reason=request.reason
                 )
         except Exception:
             logger.exception(
@@ -457,9 +501,28 @@ class NeedsHumanBlock:
 
     def _withdraw(self, request: HumanBlockRequest) -> None:
         if request.cause not in _SELF_RECORDING_CAUSES:
-            self.causes.withdraw_needs_human_cause(
-                request.target, request.cause.value
+            self.causes.withdraw_needs_human_cause(request.target, request.cause_key)
+
+    def _scoped_release_refusal(
+        self, request: HumanBlockRequest
+    ) -> BlockOutcome | None:
+        """A lost source is not permission to erase a newly operator-added label."""
+        present = self._label_present_now(request.target)
+        if present is None:
+            return BlockOutcome.FAILED
+        if not present:
+            self._forget(request.target)
+            return BlockOutcome.CLEARED
+        try:
+            recorded = self.causes.needs_human_causes(request.target)
+        except Exception:
+            logger.exception(
+                "[BLOCK] Cannot verify scoped release for #%d", request.target
             )
+            return BlockOutcome.FAILED
+        if request.cause_key not in recorded:
+            return BlockOutcome.HELD_BY_ANOTHER_CAUSE
+        return None
 
     def _holds(self, cause: NeedsHumanCause, issue_number: int) -> bool:
         if cause is NeedsHumanCause.CLAIM_QUARANTINE:
@@ -480,7 +543,7 @@ class NeedsHumanBlock:
             return True
 
     def _recorded_cause_holds(
-        self, cause: NeedsHumanCause, issue_number: int
+        self, cause: NeedsHumanCause, issue_number: int, *, excluding_key: str = ""
     ) -> bool:
         """A recorded cause, reconciled against the live label.
 
@@ -498,10 +561,10 @@ class NeedsHumanBlock:
                 issue_number,
             )
             return True
-        if cause.value not in recorded:
+        if not any(cause.matches_key(key) and key != excluding_key for key in recorded):
             return False
         if self.needs_human_label not in self._live_labels(issue_number):
-            self.forget(issue_number)
+            self._forget(issue_number)
             return False
         return True
 
@@ -535,6 +598,16 @@ class _NoOtherCauses:
     every caller would have to re-check. ``owns`` answers False for every
     label, so nothing routes a mutation into it by accident.
     """
+
+    def with_effects(self, scope: SynchronousEffectScope) -> SharedNeedsHumanBlock:
+        del scope
+        return self
+
+    def recorded_sources(
+        self, issue_number: int
+    ) -> frozenset[ValidatedWorkBlockSource]:
+        del issue_number
+        return frozenset()
 
     def owns(self, label: str) -> bool:
         del label
@@ -575,4 +648,5 @@ __all__ = [
     "NeedsHumanBlock",
     "NeedsHumanCause",
     "SharedNeedsHumanBlock",
+    "ValidatedWorkBlockSource",
 ]
