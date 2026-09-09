@@ -13,7 +13,9 @@ VSCODE_PACKAGE_JSON = REPO_ROOT / "packages/vscode/package.json"
 
 
 def test_validate_workflow_runs_required_checks_for_merge_queue() -> None:
-    workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/validate.yml").read_text())
+    workflow = yaml.safe_load(
+        (REPO_ROOT / ".github/workflows/validate.yml").read_text()
+    )
 
     triggers = workflow[True]  # PyYAML treats the YAML 1.1 "on" key as True.
     assert "merge_group" in triggers
@@ -32,6 +34,36 @@ def test_validate_workflow_runs_required_checks_for_merge_queue() -> None:
         )
 
 
+def test_validate_fast_defers_only_the_expensive_steps_for_stack_layers() -> None:
+    workflow = yaml.safe_load(
+        (REPO_ROOT / ".github/workflows/validate.yml").read_text()
+    )
+    steps = workflow["jobs"]["validate-fast"]["steps"]
+    coverage = next(
+        step
+        for step in steps
+        if step.get("name") == "Decide native-stack validation coverage"
+    )
+    assert coverage["id"] == "stack-coverage"
+    assert coverage["run"] == "python3 scripts/stack_ci_validation.py"
+
+    expensive_steps = {
+        "Set up Python",
+        "Install uv",
+        "Install dependencies",
+        "Install Playwright browsers",
+        "Run fast validate",
+    }
+    selected = {
+        step["name"]: step for step in steps if step.get("name") in expensive_steps
+    }
+    assert set(selected) == expensive_steps
+    assert all(
+        step["if"] == "steps.stack-coverage.outputs.run_full == 'true'"
+        for step in selected.values()
+    )
+
+
 def test_validate_vscode_is_merge_group_aware() -> None:
     """validate-vscode must run in the merge queue and on node-path changes.
 
@@ -40,13 +72,14 @@ def test_validate_vscode_is_merge_group_aware() -> None:
     arm, a required check could pass at PR time but never re-run against the
     real merge result.
     """
-    workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/validate.yml").read_text())
+    workflow = yaml.safe_load(
+        (REPO_ROOT / ".github/workflows/validate.yml").read_text()
+    )
     jobs = workflow["jobs"]
 
     assert "node" in jobs["changes"]["outputs"]
     assert jobs["validate-vscode"]["if"] == (
-        "github.event_name == 'merge_group' || "
-        "needs.changes.outputs.node == 'true'"
+        "github.event_name == 'merge_group' || needs.changes.outputs.node == 'true'"
     )
 
 
