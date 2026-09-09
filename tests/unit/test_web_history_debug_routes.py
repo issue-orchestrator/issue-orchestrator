@@ -243,15 +243,15 @@ class TestHistoryEndpoints:
         mock_orch.state.active_sessions = [
             SimpleNamespace(
                 terminal_id="issue-4057",
-                issue=SimpleNamespace(number=4057),
+                issue=create_issue(4057),
             ),
             SimpleNamespace(
                 terminal_id="rework-4057",
-                issue=SimpleNamespace(number=4057),
+                issue=create_issue(4057),
             ),
             SimpleNamespace(
                 terminal_id="issue-999",
-                issue=SimpleNamespace(number=999),
+                issue=create_issue(999),
             ),
         ]
 

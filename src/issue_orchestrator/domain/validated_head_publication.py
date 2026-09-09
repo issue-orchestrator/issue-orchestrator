@@ -28,7 +28,9 @@ def require_publication_branch_name(branch: str, *, target: bool) -> None:
         or branch == "@"
         or branch.startswith(("-", "refs/"))
         or branch.endswith((".", "/"))
-        or any(char.isspace() or ord(char) < 32 or char in "~^:?*[\\" for char in branch)
+        or any(
+            char.isspace() or ord(char) < 32 or char in "~^:?*[\\" for char in branch
+        )
         or ".." in branch
         or "@{" in branch
         or any(
@@ -57,7 +59,9 @@ class PublicationContent:
         if type(self.title) is not str or not self.title.strip():
             raise ValueError("publication title must be nonempty")
         if type(self.body) is not str or type(self.draft) is not bool:
-            raise ValueError("publication content must have a body and typed draft state")
+            raise ValueError(
+                "publication content must have a body and typed draft state"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -264,7 +268,10 @@ class PublishValidatedHeadOutcome:
     def __post_init__(self) -> None:
         if type(self.pr_attribution) is not PullRequestAttribution:
             raise ValueError("PR attribution must be typed")
-        if self.pr_number is None and self.pr_attribution is not PullRequestAttribution.NONE:
+        if (
+            self.pr_number is None
+            and self.pr_attribution is not PullRequestAttribution.NONE
+        ):
             raise ValueError("PR attribution requires observed PR metadata")
 
     @property

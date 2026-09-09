@@ -14,10 +14,16 @@ the run's own identity, because on a client's board that issue belongs to them.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import TYPE_CHECKING, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from ..domain.tech_lead_delivery import (
+    DEFAULT_TECH_LEAD_DELIVERY_POLICY,
+    TechLeadDeliveryPolicy,
+    TechLeadDeliveryStatus,
+)
 from ..domain.tech_lead_run_artifacts import TechLeadRunArtifactKind
 from ..domain.tech_lead_run_record import TechLeadRunPhase, TechLeadRunSubjectKind
 from ..domain.tech_lead_session import TechLeadSessionFlavor
@@ -143,12 +149,21 @@ class TechLeadRunActivityEntry(BaseModel):
     artifacts_note: str = Field(serialization_alias="artifactsNote")
 
 
+class TechLeadDeliveryView(BaseModel):
+    """A shared-policy diagnostic; the browser only renders the message."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
+    status: TechLeadDeliveryStatus = TechLeadDeliveryStatus.OBSERVING
+    message: str = ""
+
+
 class TechLeadActivityView(BaseModel):
     """The dashboard's tech-lead activity panel."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
 
     entries: tuple[TechLeadRunActivityEntry, ...]
+    delivery: TechLeadDeliveryView = Field(default_factory=TechLeadDeliveryView)
     # The sentence shown when there are none. Published rather than hardcoded in
     # the browser: "nothing has run yet" and "this engine has no history" read
     # the same to the UI but not to an operator.
@@ -163,11 +178,36 @@ EMPTY_MESSAGE = "No tech-lead runs recorded yet."
 
 
 def read_tech_lead_activity(
-    history: "TechLeadRunHistoryReader", *, limit: int = ACTIVITY_LIMIT
+    history: "TechLeadRunHistoryReader",
+    *,
+    limit: int = ACTIVITY_LIMIT,
+    now: datetime | None = None,
+    policy: TechLeadDeliveryPolicy = DEFAULT_TECH_LEAD_DELIVERY_POLICY,
 ) -> TechLeadActivityView:
     """Project the local run history onto the activity panel."""
     entries = tuple(_entry(record) for record in history.recent(limit=limit))
-    return TechLeadActivityView(entries=entries, empty_message=EMPTY_MESSAGE)
+    evidence = history.inspect_delivery_evidence()
+    status = policy.evaluate(evidence, now=now if now is not None else datetime.now())
+    message = ""
+    if status is TechLeadDeliveryStatus.STALLED:
+        hours = policy.silence.total_seconds() / 3600
+        message = (
+            f"Tech lead delivery warning: {evidence.runs_without_delivery} runs started "
+            f"without a successful delivered conclusion for at least {hours:g} hours, "
+            "and launches are continuing. Inspect the recent runs. "
+            "Delivered proposals awaiting approval, valid no-op decisions, and human "
+            "escalations count as successful delivery."
+        )
+    elif status is TechLeadDeliveryStatus.UNKNOWN:
+        message = (
+            "Tech lead delivery status unknown: run history is unavailable or incomplete. "
+            "Delivery cannot be assessed from the displayed runs."
+        )
+    return TechLeadActivityView(
+        entries=entries,
+        empty_message=EMPTY_MESSAGE,
+        delivery=TechLeadDeliveryView(status=status, message=message),
+    )
 
 
 def _entry(record: "TechLeadRunRecord") -> TechLeadRunActivityEntry:
@@ -268,9 +308,7 @@ def _artifacts_note(
 ) -> str:
     if commands:
         return ""
-    return (
-        ARTIFACTS_ABSENT_NOTE if record.phase.is_terminal else ARTIFACTS_PENDING_NOTE
-    )
+    return ARTIFACTS_ABSENT_NOTE if record.phase.is_terminal else ARTIFACTS_PENDING_NOTE
 
 
 __all__ = [

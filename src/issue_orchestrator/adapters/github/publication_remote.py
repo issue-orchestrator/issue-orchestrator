@@ -135,7 +135,9 @@ class GitHubPublicationRemote:
         try:
             raw = self._client.create_pr(
                 title=command.content.title,
-                body=attributed_publication_body(command.content.body, command.issue_number, command.branch_name),
+                body=attributed_publication_body(
+                    command.content.body, command.issue_number, command.branch_name
+                ),
                 head=command.branch_name,
                 base=command.pr_base_branch,
                 draft=command.content.draft,

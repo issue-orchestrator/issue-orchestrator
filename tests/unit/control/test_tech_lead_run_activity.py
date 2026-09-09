@@ -22,6 +22,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from issue_orchestrator.domain.tech_lead_run_record import TechLeadDeliveryOutcome
 from issue_orchestrator.control.completion_types import ERROR_PREFIX_PUSH
 from issue_orchestrator.control.tech_lead_run_activity import TechLeadRunActivity
 from issue_orchestrator.domain.models import SessionStatus
@@ -239,7 +240,10 @@ class TestARunIsConcluded:
         activity = _activity(store)
         activity.note_started(session)
 
-        activity.note_concluded(session, SessionStatus.COMPLETED)
+        activity.note_concluded(
+            session, SessionStatus.COMPLETED,
+            delivery_outcome=TechLeadDeliveryOutcome.NOT_DELIVERED,
+        )
 
         (record,) = store.recent(limit=10)
         assert record.phase is TechLeadRunPhase.COMPLETED
@@ -261,6 +265,7 @@ class TestARunIsConcluded:
         activity.note_concluded(
             session,
             SessionStatus.COMPLETED,
+            delivery_outcome=TechLeadDeliveryOutcome.NOT_DELIVERED,
             processing_errors=["tech_lead decision contract violation"],
         )
 
@@ -284,7 +289,10 @@ class TestARunIsConcluded:
         activity = _activity(store)
         activity.note_started(session)
 
-        activity.note_concluded(session, status)
+        activity.note_concluded(
+            session, status,
+            delivery_outcome=TechLeadDeliveryOutcome.NOT_DELIVERED,
+        )
 
         (record,) = store.recent(limit=10)
         assert record.phase is phase
@@ -295,7 +303,10 @@ class TestARunIsConcluded:
         activity = _activity(store)
         activity.note_started(session)
 
-        activity.note_concluded(session, SessionStatus.NEEDS_VALIDATION_RETRY)
+        activity.note_concluded(
+            session, SessionStatus.NEEDS_VALIDATION_RETRY,
+            delivery_outcome=TechLeadDeliveryOutcome.NOT_DELIVERED,
+        )
 
         (record,) = store.recent(limit=10)
         assert record.phase is TechLeadRunPhase.RUNNING
@@ -306,7 +317,10 @@ class TestARunIsConcluded:
         store = InMemoryTechLeadRunRecordStore()
         session = _session(tmp_path, 42, None)
 
-        _activity(store).note_concluded(session, SessionStatus.COMPLETED)
+        _activity(store).note_concluded(
+            session, SessionStatus.COMPLETED,
+            delivery_outcome=TechLeadDeliveryOutcome.NOT_DELIVERED,
+        )
 
         assert store.recent(limit=10) == ()
 
@@ -320,7 +334,10 @@ class TestARunIsConcluded:
         activity.note_started(session)
         session.issue.agent_type = "agent:some-other-lead"
 
-        activity.note_concluded(session, SessionStatus.COMPLETED)
+        activity.note_concluded(
+            session, SessionStatus.COMPLETED,
+            delivery_outcome=TechLeadDeliveryOutcome.NOT_DELIVERED,
+        )
 
         (record,) = store.recent(limit=10)
         assert record.phase is TechLeadRunPhase.COMPLETED
@@ -347,7 +364,10 @@ class TestTheHistorySurvivesRestart:
         session = _session(tmp_path, 900, TechLeadSessionFlavor.HEALTH_REVIEW)
         first = _activity(SqliteTechLeadRunRecordStore(db))
         first.note_started(session)
-        first.note_concluded(session, SessionStatus.COMPLETED)
+        first.note_concluded(
+            session, SessionStatus.COMPLETED,
+            delivery_outcome=TechLeadDeliveryOutcome.NOT_DELIVERED,
+        )
 
         reopened = SqliteTechLeadRunRecordStore(db)
 
@@ -361,9 +381,15 @@ class TestTheHistorySurvivesRestart:
         session = _session(tmp_path, 42, TechLeadSessionFlavor.FAILURE_INVESTIGATION)
         activity = _activity(store)
         activity.note_started(session)
-        activity.note_concluded(session, SessionStatus.COMPLETED)
+        activity.note_concluded(
+            session, SessionStatus.COMPLETED,
+            delivery_outcome=TechLeadDeliveryOutcome.NOT_DELIVERED,
+        )
 
-        activity.note_concluded(session, SessionStatus.FAILED)
+        activity.note_concluded(
+            session, SessionStatus.FAILED,
+            delivery_outcome=TechLeadDeliveryOutcome.NOT_DELIVERED,
+        )
 
         (record,) = store.recent(limit=10)
         assert record.phase is TechLeadRunPhase.COMPLETED
@@ -430,6 +456,7 @@ class TestPublishFailuresAreNotConclusions:
         activity.note_concluded(
             session,
             SessionStatus.FAILED,
+            delivery_outcome=TechLeadDeliveryOutcome.NOT_DELIVERED,
             processing_errors=[f"{ERROR_PREFIX_PUSH}: remote rejected"],
         )
 
@@ -463,7 +490,10 @@ class TestTheRunsEvidenceOutlivesItsWorktree:
         activity = _activity(store, archive)
         activity.note_started(session)
 
-        activity.note_concluded(session, SessionStatus.COMPLETED)
+        activity.note_concluded(
+            session, SessionStatus.COMPLETED,
+            delivery_outcome=TechLeadDeliveryOutcome.NOT_DELIVERED,
+        )
         # The scratch worktree is removed by the cleanup this same completion
         # plans. Everything the operator was promised must survive it.
         shutil.rmtree(session.run_dir)
@@ -486,7 +516,10 @@ class TestTheRunsEvidenceOutlivesItsWorktree:
         activity = _activity(store, archive)
         activity.note_started(session)
 
-        activity.note_concluded(session, SessionStatus.COMPLETED)
+        activity.note_concluded(
+            session, SessionStatus.COMPLETED,
+            delivery_outcome=TechLeadDeliveryOutcome.NOT_DELIVERED,
+        )
 
         (record,) = store.recent(limit=10)
         assert record.artifacts is not None
@@ -501,7 +534,10 @@ class TestTheRunsEvidenceOutlivesItsWorktree:
         activity = _activity(store, archive)
         activity.note_started(session)
 
-        activity.note_concluded(session, SessionStatus.FAILED)
+        activity.note_concluded(
+            session, SessionStatus.FAILED,
+            delivery_outcome=TechLeadDeliveryOutcome.NOT_DELIVERED,
+        )
 
         (record,) = store.recent(limit=10)
         assert record.artifacts is None
@@ -516,7 +552,10 @@ class TestTheRunsEvidenceOutlivesItsWorktree:
         activity = _activity(store, archive)
         activity.note_started(session)
 
-        activity.note_concluded(session, SessionStatus.COMPLETED)
+        activity.note_concluded(
+            session, SessionStatus.COMPLETED,
+            delivery_outcome=TechLeadDeliveryOutcome.NOT_DELIVERED,
+        )
 
         (record,) = store.recent(limit=10)
         assert record.phase is TechLeadRunPhase.COMPLETED
@@ -542,7 +581,10 @@ class TestTheRunsEvidenceOutlivesItsWorktree:
         session = self._run_dir_with_artifacts(tmp_path)
         first = _activity(SqliteTechLeadRunRecordStore(db), archive)
         first.note_started(session)
-        first.note_concluded(session, SessionStatus.COMPLETED)
+        first.note_concluded(
+            session, SessionStatus.COMPLETED,
+            delivery_outcome=TechLeadDeliveryOutcome.NOT_DELIVERED,
+        )
 
         (record,) = SqliteTechLeadRunRecordStore(db).recent(limit=10)
 
@@ -577,7 +619,10 @@ class TestRetentionAndTheRowsThatAdvertiseIt:
             run_assets=assets,
         )
         activity.note_started(session)
-        activity.note_concluded(session, SessionStatus.COMPLETED)
+        activity.note_concluded(
+            session, SessionStatus.COMPLETED,
+            delivery_outcome=TechLeadDeliveryOutcome.NOT_DELIVERED,
+        )
         # Explicit mtime so "newest" is a fact rather than a race. Deliberately
         # in the past: the run being concluded next is the newest one, and each
         # finished run is stamped older than the one after it.

@@ -38,7 +38,9 @@ class EscrowInspection:
 
 
 class EscrowReconciliation:
-    def __init__(self, *, escrow: ValidatedWorkEscrow, store: ValidatedWorkAdmissionStore) -> None:
+    def __init__(
+        self, *, escrow: ValidatedWorkEscrow, store: ValidatedWorkAdmissionStore
+    ) -> None:
         self._escrow = escrow
         self._store = store
 

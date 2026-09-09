@@ -124,9 +124,7 @@ def test_observed_only_pr_is_not_attributable_for_cleanup():
         pr_result(PrEnsureStatus.REFUSED),
         attribution=PullRequestAttribution.NONE,
     )
-    outcome = compose_publication_outcome(
-        branch_result(BranchWriteStatus.PUSHED), pr
-    )
+    outcome = compose_publication_outcome(branch_result(BranchWriteStatus.PUSHED), pr)
     assert outcome.pr_number == 3
     assert outcome.attributable_pr_number is None
 
