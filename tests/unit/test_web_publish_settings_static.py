@@ -73,7 +73,11 @@ class TestSettingsEndpoints:
                 "advanced",
                 "goal_pilot",
             }
-            assert data["validated_work"] == {"validated_work_escrow_retention_days": 41}
+            assert data["validated_work"] == {
+                "validated_work_escrow_retention_days": 41,
+                "validated_work_drain_batch_size": 5,
+                "validated_work_drain_interval_seconds": 60,
+            }
         finally:
             web._orchestrator = None
 

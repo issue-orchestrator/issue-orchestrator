@@ -444,7 +444,11 @@ class ValidatedWorkConfig:
     """Retention for evidence preserved outside disposable worktrees."""
 
     escrow_retention_days: int = 30
+    drain_batch_size: int = 5
+    drain_interval_seconds: int = 60
 
     def __post_init__(self) -> None:
-        if type(self.escrow_retention_days) is not int or self.escrow_retention_days < 1:
-            raise ValueError("validated_work.escrow_retention_days must be an integer >= 1")
+        for name in ("escrow_retention_days", "drain_batch_size", "drain_interval_seconds"):
+            value = getattr(self, name)
+            if type(value) is not int or value < 1:
+                raise ValueError(f"validated_work.{name} must be an integer >= 1")

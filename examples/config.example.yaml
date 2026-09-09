@@ -571,3 +571,5 @@ state:
 # Retained recovery evidence is stored outside disposable worktrees.
 validated_work:
   escrow_retention_days: 30  # Resolved work only; unresolved evidence is always retained.
+  drain_batch_size: 5       # Maximum retained records considered per batch.
+  drain_interval_seconds: 60  # Minimum interval after a recovery batch finishes.

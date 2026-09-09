@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
+from ..domain.recovery_entry import RecoveryRecordRequest
 from ..domain.retention_clock import retention_instant
 from ..domain.recovery_block import RecoveryBlockSnapshot, RecoveryCleanupKey
 from ..domain.published_work_finalization import FinalizationCheckpoint, PublishedWorkTarget
@@ -121,6 +122,9 @@ class SqliteValidatedWorkStore:
                     status, disposition(conn, admission.evidence.record_id)
                 )
             )
+
+    def recovery_requests(self, *, after_record_id: str, limit: int) -> tuple[RecoveryRecordRequest, ...]:
+        return self._snapshots.recovery_requests(after_record_id=after_record_id, limit=limit)
 
     def get(self, record_id: str) -> ValidatedWorkDisposition:
         with self._db.transaction() as conn:

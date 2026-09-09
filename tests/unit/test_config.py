@@ -4972,7 +4972,7 @@ class TestValidatedWorkRetention:
         path.write_text(f"repo:\n  name: owner/repo\nvalidated_work:\n  escrow_retention_days: {days}\n")
         config = Config.load(path)
         assert config.validated_work.escrow_retention_days == days
-        assert config.to_event_dict()["validated_work"] == {"escrow_retention_days": days}
+        assert config.to_event_dict()["validated_work"] == {"escrow_retention_days": days, "drain_batch_size": 5, "drain_interval_seconds": 60}
         serialized = config.to_dict()
         assert serialized.get("validated_work", {}) == ({} if days == 30 else {"escrow_retention_days": days})
         path.write_text(yaml.safe_dump(serialized))
@@ -4995,3 +4995,28 @@ class TestValidatedWorkRetention:
         config = Config.load(path)
         assert any("validated_work.escrow_retenton_days" in field
                    for field, _ in config.validate_unknown_fields())
+
+
+@pytest.mark.parametrize("name", ["drain_batch_size", "drain_interval_seconds"])
+@pytest.mark.parametrize("value", [1, 17])
+def test_validated_work_drain_numbers_round_trip(tmp_path, name, value):
+    path = tmp_path / ".issue-orchestrator/config/modes/default/default.yaml"
+    path.parent.mkdir(parents=True)
+    path.write_text(f"repo:\n  name: owner/repo\nvalidated_work:\n  {name}: {value}\n")
+    config = Config.load(path)
+    assert getattr(config.validated_work, name) == value
+    assert config.to_event_dict()["validated_work"][name] == value
+    serialized = config.to_dict()
+    assert serialized["validated_work"][name] == value
+    path.write_text(yaml.safe_dump(serialized))
+    assert getattr(Config.load(path).validated_work, name) == value
+
+
+@pytest.mark.parametrize("name", ["drain_batch_size", "drain_interval_seconds"])
+@pytest.mark.parametrize("value", ["0", "-1", "true", "false", "1.5", "'30'", "null"])
+def test_validated_work_drain_rejects_invalid_numbers(tmp_path, name, value):
+    path = tmp_path / ".issue-orchestrator/config/modes/default/default.yaml"
+    path.parent.mkdir(parents=True)
+    path.write_text(f"repo:\n  name: owner/repo\nvalidated_work:\n  {name}: {value}\n")
+    with pytest.raises(ValueError, match=f"validated_work.{name}"):
+        Config.load(path)

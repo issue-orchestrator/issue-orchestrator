@@ -1770,6 +1770,30 @@ class ValidatedWorkSettings(BaseModel):
         },
     )
 
+    validated_work_drain_batch_size: int = Field(
+        5, ge=1, strict=True,
+        title="Recovery records per batch",
+        description="Maximum retained records considered per recovery batch. Stalled records do not prevent later records from being considered.",
+        json_schema_extra={
+            "section": "Validated Work", "restart_required": True,
+            "config_attr": "validated_work.drain_batch_size",
+            "yaml_path": "validated_work.drain_batch_size",
+            "doc_examples": ["5", "1"],
+        },
+    )
+
+    validated_work_drain_interval_seconds: int = Field(
+        60, ge=1, strict=True,
+        title="Recovery interval (seconds)",
+        description="Minimum time between completed recovery batches, bounding repeated checks during outages.",
+        json_schema_extra={
+            "section": "Validated Work", "restart_required": True,
+            "config_attr": "validated_work.drain_interval_seconds",
+            "yaml_path": "validated_work.drain_interval_seconds",
+            "doc_examples": ["60", "300"],
+        },
+    )
+
 
 class MergeQueueSettings(BaseModel):
     """Settings for the Merge Queue tab."""
