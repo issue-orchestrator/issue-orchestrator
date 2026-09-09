@@ -10,10 +10,14 @@ if TYPE_CHECKING:
 
 def parse_validated_work_config(data: dict) -> ValidatedWorkConfig:
     return ValidatedWorkConfig(
-        escrow_retention_days=data.get("escrow_retention_days", 30)
+        escrow_retention_days=data.get("escrow_retention_days", 30),
+        drain_batch_size=data.get("drain_batch_size", 5),
+        drain_interval_seconds=data.get("drain_interval_seconds", 60)
     )
 
 
 def validated_work_section(config: "Config") -> dict:
-    days = config.validated_work.escrow_retention_days
-    return {} if days == 30 else {"escrow_retention_days": days}
+    values = config.validated_work
+    return {name: getattr(values, name) for name, default in
+        (("escrow_retention_days", 30), ("drain_batch_size", 5), ("drain_interval_seconds", 60))
+        if getattr(values, name) != default}

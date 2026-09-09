@@ -1,7 +1,7 @@
 """Configuration loading and management."""
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
@@ -751,7 +751,7 @@ class Config(ConfigLaunchIdentity, RuntimeConfigReferenceOwner, TechLeadActivati
                         "dangerous_allow_failure": self.hooks.ai_gate.dangerous_allow_failure,
                     },
             },
-            "validated_work": {"escrow_retention_days": self.validated_work.escrow_retention_days},
+            "validated_work": asdict(self.validated_work),
             "merge_queue": {
                 "enabled": self.merge_queue.enabled,
                 "provider": self.merge_queue.provider,

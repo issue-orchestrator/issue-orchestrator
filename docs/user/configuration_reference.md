@@ -148,6 +148,8 @@ _Auto-generated from settings schema._
 | Field | Type | Default | Description | Examples | Notes |
 |-------|------|---------|-------------|----------|-------|
 | `validated_work.escrow_retention_days` | integer | `30` | Keep resolved recovery evidence for this many days; unresolved work is always retained. | `30`, `90` |  |
+| `validated_work.drain_batch_size` | integer | `5` | Maximum retained records considered per recovery batch. Stalled records do not prevent later records from being considered. | `5`, `1` |  |
+| `validated_work.drain_interval_seconds` | integer | `60` | Minimum time between completed recovery batches, bounding repeated checks during outages. | `60`, `300` |  |
 
 ## Goal Pilot
 

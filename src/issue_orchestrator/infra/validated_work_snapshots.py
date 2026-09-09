@@ -1,5 +1,7 @@
 """One typed snapshot reader for full and admission-only store compositions."""
 
+from ..domain.recovery_entry import RecoveryRecordRequest
+from ..domain.validated_work import require_positive
 from ..domain.validated_work_commands import ValidatedWorkDispositionBatch
 from ..domain.validated_work_store import EvidenceLookup, EvidenceRow
 from .validated_work_rows import DispositionDatabase, disposition, evidence_row
@@ -46,3 +48,15 @@ class DispositionSnapshots:
             return tuple(evidence_row(row) for row in conn.execute(
                 "SELECT e.* FROM validated_work_evidence e JOIN validated_work_records r USING(record_id) "
                 "WHERE r.issue_number=? AND e.released_at='' ORDER BY e.evidence_id", (issue_number,)))
+
+    def recovery_requests(self, *, after_record_id: str, limit: int) -> tuple[RecoveryRecordRequest, ...]:
+        require_positive(limit, "recovery batch size")
+        with self._db.transaction() as conn:
+            rows = conn.execute(
+                "SELECT r.record_id, e.evidence_id FROM validated_work_records r "
+                "JOIN validated_work_evidence e ON e.record_id=r.record_id "
+                "WHERE r.record_id>? AND e.role='current' AND e.released_at='' "
+                "AND ((r.state='queued' AND r.lineage_role='head') OR r.state='publishing') "
+                "ORDER BY r.record_id LIMIT ?", (after_record_id, limit),
+            ).fetchall()
+            return tuple(RecoveryRecordRequest(row["record_id"], row["evidence_id"]) for row in rows)
