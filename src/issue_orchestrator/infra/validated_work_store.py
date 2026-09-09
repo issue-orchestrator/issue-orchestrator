@@ -260,23 +260,18 @@ class SqliteValidatedWorkStore:
     def retained_claims(
         self, states: frozenset[ValidatedWorkState]
     ) -> tuple[RetainedClaim, ...]:
+        from .validated_work_retained_claims import retained_claims
+
         with self._db.transaction() as conn:
-            candidates = []
-            for row in conn.execute(
-                "SELECT * FROM validated_work_records WHERE owner_claim_hash!='' ORDER BY record_id"
-            ):
-                if row["state"] in states:
-                    owner = owner_identity(row)
-                    assert owner is not None
-                    candidates.append(
-                        RetainedClaim(
-                            row["record_id"],
-                            current_evidence(conn, row["record_id"]).evidence_id,
-                            ValidatedWorkState(row["state"]),
-                            owner,
-                        )
-                    )
-            return tuple(candidates)
+            return retained_claims(conn, states)
+
+    def retained_claim(
+        self, record_id: str, states: frozenset[ValidatedWorkState]
+    ) -> RetainedClaim | None:
+        from .validated_work_retained_claims import retained_claim
+
+        with self._db.transaction() as conn:
+            return retained_claim(conn, record_id, states)
 
     def refresh_remote_authority(
         self,

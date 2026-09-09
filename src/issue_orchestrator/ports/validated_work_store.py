@@ -99,6 +99,10 @@ class ValidatedWorkStore(Protocol):
         self, states: frozenset[ValidatedWorkState]
     ) -> tuple[RetainedClaim, ...]: ...
 
+    def retained_claim(
+        self, record_id: str, states: frozenset[ValidatedWorkState]
+    ) -> RetainedClaim | None: ...
+
     def refresh_remote_authority(
         self,
         claim: ValidatedWorkClaim,
