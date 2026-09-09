@@ -38,6 +38,7 @@ from issue_orchestrator.infra.config import Config
 from issue_orchestrator.control.scheduler import Scheduler
 from issue_orchestrator.observation.observer import SessionObserver
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
+from issue_orchestrator.ports.recovery_block import NullRecoveryBlockSweep
 from issue_orchestrator.ports.worktree_manager import (
     RegisteredWorktree,
     WorktreeInfo,
@@ -288,6 +289,7 @@ def test_public_pause_requested_during_recovery_stops_the_next_record(
             queue=queue,
             operation=operation,
             authority_refresh=MagicMock(),
+            block_sweep=NullRecoveryBlockSweep(),
             batch_size=2,
             interval_seconds=60,
         ),
