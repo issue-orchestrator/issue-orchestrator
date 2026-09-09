@@ -219,12 +219,6 @@ function updateTechLeadActivityPanel(activity) {
     if (!panel || !activity) {
         return;
     }
-    const warning = document.getElementById('techLeadDeliveryWarning');
-    if (warning) {
-        const message = activity.delivery ? activity.delivery.message : '';
-        if (warning.textContent !== message) warning.textContent = message;
-        warning.hidden = !message;
-    }
     const list = document.getElementById('techLeadActivityList');
     if (list) {
         const focused = techLeadActivityFocusedAction(document.activeElement || null);

@@ -12,6 +12,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from ..domain.retention_clock import retention_instant
+from ..domain.published_work_finalization import FinalizationCheckpoint, PublishedWorkTarget
 
 from ..domain.validated_work import (
     ResolutionKind,
@@ -289,6 +290,12 @@ class SqliteValidatedWorkStore:
                 failure=failure,
                 finished_at=finished_at,
             )
+
+    def read_finalization_checkpoint(
+        self, claim: ValidatedWorkClaim, target: PublishedWorkTarget
+    ) -> FinalizationCheckpoint | None:
+        with self._db.transaction() as conn:
+            return self._attempts.read_finalization(conn, claim, target)
 
     def record_finalization_phase(
         self, claim: ValidatedWorkClaim, *, phase: FinalizationPhase, recorded_at: str

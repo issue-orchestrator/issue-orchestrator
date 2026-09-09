@@ -209,22 +209,13 @@ def test_enterprise_endpoint_requires_effective_configured_port(
 
 
 @pytest.mark.parametrize("already_attributed", [False, True])
-def test_create_preserves_prepared_content_and_adds_attribution(
-    remote_factory, already_attributed
-):
+def test_create_preserves_prepared_content_and_adds_attribution(remote_factory, already_attributed):
     import json
     from issue_orchestrator.domain.publication_remote import publication_marker
 
     marker = publication_marker(1, "feature")
-    candidate = replace(
-        COMMAND,
-        content=replace(
-            COMMAND.content,
-            body=COMMAND.content.body + "\n\n" + marker
-            if already_attributed
-            else COMMAND.content.body,
-        ),
-    )
+    candidate = replace(COMMAND, content=replace(COMMAND.content,
+        body=COMMAND.content.body + "\n\n" + marker if already_attributed else COMMAND.content.body))
     requests = []
 
     def handle(request):

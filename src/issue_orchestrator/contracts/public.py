@@ -161,11 +161,6 @@ class TechLeadRunActivityEntryContract(ContractBase):
     artifactsNote: str = ""
 
 
-class TechLeadDeliveryContract(ContractBase):
-    status: Literal["observing", "stalled", "unknown"] = "observing"
-    message: str = ""
-
-
 class TechLeadActivityContract(ContractBase):
     """The local tech-lead run history the dashboard shows (ADR-0033 / #6858).
 
@@ -175,7 +170,6 @@ class TechLeadActivityContract(ContractBase):
     """
 
     entries: list[TechLeadRunActivityEntryContract] = Field(default_factory=list)
-    delivery: TechLeadDeliveryContract = Field(default_factory=TechLeadDeliveryContract)
     emptyMessage: str
 
 

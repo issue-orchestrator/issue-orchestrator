@@ -6,32 +6,10 @@ an effective investigation remedy from a safe but ineffective stale skip.
 """
 from __future__ import annotations
 from dataclasses import dataclass
-from enum import Enum
 from typing import Sequence, TYPE_CHECKING
-from ..domain.models import SessionStatus
-from ..ports.provider_resilience import ProviderErrorType
-from ..domain.tech_lead_run_record import TechLeadDeliveryOutcome
-from .tech_lead_actions import EscalateTechLeadDispositionAction
 if TYPE_CHECKING:
     from .tech_lead_actions import RequireTechLeadInvestigationAction
 from .actions import Action, ActionResult, ActionResultType, ResetRetryIssueAction, KillHungSessionAction
-
-
-class TechLeadHandoffStatus(str, Enum):
-    """Whether typed handoff effects proved successful application."""
-
-    ABSENT = "absent"
-    APPLIED = "applied"
-    UNAPPLIED = "unapplied"
-
-
-# Explicit terminal proof matrix: every other combination is undelivered.
-_DELIVERY_BY_TERMINAL_PROOF = {
-    (TechLeadHandoffStatus.ABSENT, SessionStatus.COMPLETED): TechLeadDeliveryOutcome.COMPLETED,
-    (TechLeadHandoffStatus.APPLIED, SessionStatus.COMPLETED): TechLeadDeliveryOutcome.HUMAN_HANDOFF,
-    (TechLeadHandoffStatus.APPLIED, SessionStatus.BLOCKED): TechLeadDeliveryOutcome.HUMAN_HANDOFF,
-    (TechLeadHandoffStatus.APPLIED, SessionStatus.NEEDS_HUMAN): TechLeadDeliveryOutcome.HUMAN_HANDOFF,
-}
 
 
 @dataclass(frozen=True)
@@ -52,26 +30,9 @@ class RequiredActLevelOutcome:
     """
 
     committed: bool
-    human_handoff: TechLeadHandoffStatus = TechLeadHandoffStatus.ABSENT
     failures: tuple[str, ...] = ()
     failed_actions: tuple[Action, ...] = ()
     pending_dispositions: tuple[Action, ...] = ()
-
-    def delivery_outcome(
-        self, status: SessionStatus, *,
-        provider_error_type: ProviderErrorType | None,
-        processing_failed: bool,
-    ) -> TechLeadDeliveryOutcome:
-        """Preserve terminal provenance before status becomes a display phase.
-
-        A blocked process is never itself a delivery. Only a successfully
-        applied typed handoff or a clean completed outcome proves delivery.
-        """
-        if self.failed or processing_failed or provider_error_type is not None:
-            return TechLeadDeliveryOutcome.NOT_DELIVERED
-        return _DELIVERY_BY_TERMINAL_PROOF.get(
-            (self.human_handoff, status), TechLeadDeliveryOutcome.NOT_DELIVERED
-        )
 
     @property
     def failed(self) -> bool:
@@ -166,21 +127,8 @@ def evaluate_required_act_level_outcome(
     )
     return RequiredActLevelOutcome(
         committed=not failures,
-        human_handoff=_human_handoff_status(applied),
         failures=failures,
         failed_actions=tuple(result.action for result in failed_results),
         pending_dispositions=tuple(result.action for result in failed_results
             if result.details.get("pending_disposition") is True),
     )
-
-
-def _human_handoff_status(applied: Sequence[ActionResult]) -> TechLeadHandoffStatus:
-    handoffs = [
-        result for result in applied
-        if isinstance(result.action, EscalateTechLeadDispositionAction)
-    ]
-    if not handoffs:
-        return TechLeadHandoffStatus.ABSENT
-    if all(result.result_type is ActionResultType.SUCCESS for result in handoffs):
-        return TechLeadHandoffStatus.APPLIED
-    return TechLeadHandoffStatus.UNAPPLIED

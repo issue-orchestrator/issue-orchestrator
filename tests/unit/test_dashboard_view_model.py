@@ -401,7 +401,7 @@ def test_view_model_queue_and_blocked_items():
     assert view_model.blocked_count == 1
 
 
-def test_tech_lead_observation_is_evidence_without_consuming_work_columns_or_counts():
+def test_tech_lead_observation_is_blocked_without_consuming_queue_position():
     config = _make_config()
     observation = Issue(
         number=39,
@@ -427,10 +427,8 @@ def test_tech_lead_observation_is_evidence_without_consuming_work_columns_or_cou
 
     assert [item["issue_number"] for item in view_model.queue_items] == [45]
     assert view_model.queue_items[0]["queue_wait_reason"] == "Waiting: next scheduler tick"
-    assert view_model.blocked_items == []
-    assert view_model.blocked_count == 0
-    assert view_model.queue_total == 1
-    assert view_model.scope_summary["in_scope_total"] == 1
+    blocked_item = next(item for item in view_model.blocked_items if item["issue_number"] == 39)
+    assert blocked_item["blocked_summary"] == "Pattern case file (tech_lead observation ledger)"
 
 
 def test_large_queue_counts_use_full_queue_not_preview_page():

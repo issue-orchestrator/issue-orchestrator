@@ -42,10 +42,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Callable, Optional
 
 from ..domain.models import SessionStatus
-from ..domain.tech_lead_delivery import TechLeadDeliveryEvidence
-from ..domain.tech_lead_run_record import (
-    TechLeadDeliveryOutcome, TechLeadRunPhase, TechLeadRunRecord,
-)
+from ..domain.tech_lead_run_record import TechLeadRunPhase, TechLeadRunRecord
 from .publish_recovery import is_publish_failure
 from .tech_lead_run_admission import scope_of_session
 
@@ -144,7 +141,6 @@ class TechLeadRunActivity:
         session: "Session",
         effective_status: SessionStatus,
         *,
-        delivery_outcome: TechLeadDeliveryOutcome,
         processing_errors: Optional[list[str]] = None,
     ) -> None:
         """Close the record for a finishing tech-lead session.
@@ -155,10 +151,6 @@ class TechLeadRunActivity:
         apply that raises) makes the effective outcome FAILED regardless of the
         agent's intent, and the record has to agree with the surfaces beside it
         (#6858 round 1 F3).
-
-        ``delivery_outcome`` preserves the terminal owner's typed apply proof.
-        This recorder passes it through; neither the display phase nor the
-        decision summary can establish whether delivery succeeded.
 
         A COMPLETED session that failed contract processing is recorded as
         FAILED, not completed: the orchestrator rejected its decision, so the
@@ -188,7 +180,6 @@ class TechLeadRunActivity:
             run_id=session.run_assets.run_id,
             session_name=session.run_assets.session_name,
             phase=phase,
-            delivery_outcome=delivery_outcome,
             ended_at=self._now(),
             detail=outcome.detail or _PHASE_DETAIL[phase],
             findings=outcome.findings,
@@ -216,7 +207,6 @@ class TechLeadRunActivity:
             run_id=session.run_assets.run_id,
             session_name=session.run_assets.session_name,
             phase=TechLeadRunPhase.WITHDRAWN,
-            delivery_outcome=TechLeadDeliveryOutcome.NOT_DELIVERED,
             ended_at=self._now(),
             detail=_PHASE_DETAIL[TechLeadRunPhase.WITHDRAWN],
             artifacts=self._preserve_artifacts(session),
@@ -225,10 +215,6 @@ class TechLeadRunActivity:
     # ------------------------------------------------------------------
     # Reading
     # ------------------------------------------------------------------
-
-    def inspect_delivery_evidence(self) -> TechLeadDeliveryEvidence:
-        """Read aggregate receipts through the narrow inspection port."""
-        return self._store.inspect_delivery_evidence()
 
     def recent(self, *, limit: int) -> tuple[TechLeadRunRecord, ...]:
         """The newest runs this engine executed, most recently started first.
@@ -324,7 +310,7 @@ def in_memory_run_activity() -> TechLeadRunActivity:
     from ..ports.tech_lead_run_record_store import InMemoryTechLeadRunRecordStore
 
     return TechLeadRunActivity(
-        InMemoryTechLeadRunRecordStore(history_complete=False), DiscardedTechLeadRunArtifacts()
+        InMemoryTechLeadRunRecordStore(), DiscardedTechLeadRunArtifacts()
     )
 
 

@@ -32,7 +32,6 @@ from ..domain.models import (
     DependencyProblem,
 )
 from ..ports import EventSink, make_trace_event, RepositoryHost
-from .issue_refresh_batch import IssueRefreshBatch
 from .awaiting_merge_reconciler import AwaitingMergeReconciler
 from .merge_queue_coordinator import MergeQueueCoordinator
 from .retrospective_review import discover_retrospective_review_issues
@@ -59,7 +58,7 @@ class GitHubWorkflow:
         self,
         milestone_filter: str | None,
         required_stable_ids: set[str] | None = None,
-    ) -> IssueRefreshBatch:
+    ) -> list["Issue"]:
         """Fetch all issues from GitHub - delegates to FactGatherer.
 
         Args:
@@ -68,7 +67,7 @@ class GitHubWorkflow:
                 If provided and missing after cached fetch, retry without cache.
         """
         base_labels = [self.config.filtering.label] if self.config.filtering.label else []
-        return self.fact_gatherer.fetch_issue_batch(
+        return self.fact_gatherer.fetch_issues(
             base_labels, milestone_filter, required_stable_ids=required_stable_ids
         )
 
@@ -76,10 +75,10 @@ class GitHubWorkflow:
         self,
         milestone_filter: str | None,
         fetch_limit: int,
-    ) -> IssueRefreshBatch:
+    ) -> list["Issue"]:
         """Fetch a bounded issue set for incremental discovery."""
         base_labels = [self.config.filtering.label] if self.config.filtering.label else []
-        return self.fact_gatherer.fetch_issue_batch(
+        return self.fact_gatherer.fetch_issues(
             base_labels,
             milestone_filter,
             fetch_limit=fetch_limit,

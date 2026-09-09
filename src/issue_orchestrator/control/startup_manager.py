@@ -844,8 +844,9 @@ class StartupManager:
             return
 
         state.startup_message = "Restoring queue cache..."
+        cached_issues = store.load_issues(self.config.repo or "")
+        cached_watermark = store.load_watermark()
         queue_cache = QueueCache(self.config, state, store)
-        cached_issues, cached_watermark = queue_cache.restore_snapshot()
 
         try:
             # Guard *only* the issue-list fetch. A persistent repo-not-found or
@@ -862,7 +863,7 @@ class StartupManager:
             # let the main loop re-sync. Persist nothing so the good snapshot
             # stays intact, and let the remaining startup phases still run.
             if cached_issues:
-                queue_cache.replace_from_cache(list(cached_issues))
+                queue_cache.replace_from_refresh(list(cached_issues))
                 state.queue_delta_watermark = cached_watermark
             self._note_degraded_queue_fetch(exc, state)
             return
@@ -910,7 +911,16 @@ class StartupManager:
             delta_issues, next_watermark = self.repository_host.list_issues_delta(
                 since=cached_watermark, limit=200,
             )
-            queue_cache.replace_from_delta(cached_issues, delta_issues)
+            # Merge: start from cached, apply deltas
+            issue_map: dict[int, Issue] = {i.number: i for i in cached_issues}
+            for issue in delta_issues:
+                if issue.state.lower() == "open":
+                    issue_map[issue.number] = issue
+                else:
+                    issue_map.pop(issue.number, None)
+
+            # Apply eligibility policy (scope + exclusion filters)
+            queue_cache.replace_from_refresh(list(issue_map.values()))
             state.queue_delta_watermark = next_watermark or cached_watermark
             logger.info(
                 "[STARTUP] Delta sync: %d delta issues, %d in queue after filter",

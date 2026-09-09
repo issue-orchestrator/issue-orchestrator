@@ -1330,14 +1330,8 @@ class SwitchE2ETimelineViewCommandPayload(BaseModel):
 
 class TechLeadActivityPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    delivery: TechLeadDeliveryPayload | None = None
     emptyMessage: str
     entries: list[TechLeadRunActivityEntryPayload]
-
-class TechLeadDeliveryPayload(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    message: str
-    status: Literal['observing', 'stalled', 'unknown']
 
 class TechLeadGlobalHealthReviewScopePayload(BaseModel):
     model_config = ConfigDict(extra="forbid")

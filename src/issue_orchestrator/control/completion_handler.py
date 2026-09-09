@@ -46,6 +46,8 @@ from ..ports import (
     EventSink,
     Issue,
     RepositoryHost,
+    make_session_completed_event,
+    make_session_failed_event,
     make_trace_event,
 )
 from ..ports.session_output import SessionOutput
@@ -60,10 +62,9 @@ from .completion_action_planner import (
     has_review_exchange_errors,
 )
 from .tech_lead_completion import discard_tech_lead_authority_after_completion
+from .invalid_record_actions import failure_event_reason, invalid_record_event_fields
 from .reconciliation import build_expected_for_mutation
-from ..domain.tech_lead_run_record import TechLeadDeliveryOutcome
 from .completion_history_status import resolve_history_status
-from ..events.completion_terminal_events import CompletionTerminalEventPublisher
 from .retrospective_review_completion import retrospective_review_completion_actions
 from .review_routing import should_queue_pr_review
 from .session_run_resolution import resolve_session_run_dir
@@ -99,9 +100,7 @@ class CleanupDecision:
     def __post_init__(self) -> None:
         has_pending_cleanup = self.pending_cleanup is not None
         if has_pending_cleanup != (self.disposition is CleanupDisposition.DEFERRED):
-            raise ValueError(
-                "pending_cleanup must be present only for deferred cleanup"
-            )
+            raise ValueError("pending_cleanup must be present only for deferred cleanup")
 
     @classmethod
     def deferred(cls, pending_cleanup: PendingCleanup) -> "CleanupDecision":
@@ -165,7 +164,6 @@ class CompletionHandler:
         self._get_session_machine = get_session_machine_fn
         self._get_review_machine = get_review_machine_fn
         self._session_output = session_output
-        self._terminal_events = CompletionTerminalEventPublisher(events, session_output)
         self._tech_lead_authority = tech_lead_authority
         self._tech_lead_run_activity = tech_lead_run_activity
         self._remove_session_machine = remove_session_machine_fn
@@ -217,8 +215,7 @@ class CompletionHandler:
         completion_detail: Optional[dict[str, Any]] = None,
         finalize_terminal: bool = True,
         provider_error_type: "ProviderErrorType | None" = None,
-        *,
-        processing_policy: CompletionProcessingPolicy,
+        *, processing_policy: CompletionProcessingPolicy,
     ) -> CompletionResult:
         """Process a session completion and update all state machines.
 
@@ -244,13 +241,9 @@ class CompletionHandler:
         )
 
         # Fetch PR info if completed (or use hint from completion processor)
-        resolved_pr = self._pr_lookup.for_session(
-            session, status, pr_url_hint=pr_url_hint, publication_hint=publication_hint
-        )
+        resolved_pr = self._pr_lookup.for_session(session, status, pr_url_hint=pr_url_hint, publication_hint=publication_hint)
         pr_url, pr_number, pr_infos = (
-            resolved_pr.url,
-            resolved_pr.number,
-            resolved_pr.pull_requests,
+            resolved_pr.url, resolved_pr.number, resolved_pr.pull_requests,
         )
         if pr_infos:
             self._emit_pr_view_changed(
@@ -329,9 +322,7 @@ class CompletionHandler:
         )
         completion_actions.extend(
             self._review_exchange_completion_actions(
-                session,
-                pr_url=pr_url,
-                review_exchange_completed=review_exchange_completed,
+                session, pr_url=pr_url, review_exchange_completed=review_exchange_completed
             )
         )
         completion_actions.extend(
@@ -377,10 +368,7 @@ class CompletionHandler:
         # seam; publish-stage failures keep the row for Retry Publish.
         if finalize_terminal:
             discard_tech_lead_authority_after_completion(
-                self.config,
-                self._tech_lead_authority,
-                session,
-                processing_errors=processing_errors,
+                self.config, self._tech_lead_authority, session, processing_errors=processing_errors,
                 processing_policy=processing_policy,
             )
         # ADR-0033's run record is NOT closed here: the authoritative terminal
@@ -423,9 +411,7 @@ class CompletionHandler:
         labels = self._fetch_issue_labels_for_audit(session.issue.number)
         run_dir = self._resolve_session_run_dir(session)
 
-        trigger = self._resolve_run_audit_trigger(
-            session.issue.number, status, run_dir, labels
-        )
+        trigger = self._resolve_run_audit_trigger(session.issue.number, status, run_dir, labels)
         if trigger is None:
             return ()
 
@@ -447,9 +433,7 @@ class CompletionHandler:
                 ),
                 processing_errors=processing_errors,
             )
-            self._session_output.update_manifest(
-                run_dir, {"run_audit_path": str(audit.path)}
-            )
+            self._session_output.update_manifest(run_dir, {"run_audit_path": str(audit.path)})
         except Exception:
             logger.warning(
                 "[RUN_AUDIT] Failed for issue #%d run_dir=%s",
@@ -500,16 +484,10 @@ class CompletionHandler:
         if manifest.run_audit_path and manifest.run_audit_path.strip():
             return None
 
-        if (
-            self._lm.run_audit_requested in labels
-            and self._lm.run_audit_completed not in labels
-        ):
+        if self._lm.run_audit_requested in labels and self._lm.run_audit_completed not in labels:
             return RunAuditTrigger.LABEL
 
-        if (
-            status is SessionStatus.TIMED_OUT
-            and self.config.review_run_audit_on_timeout
-        ):
+        if status is SessionStatus.TIMED_OUT and self.config.review_run_audit_on_timeout:
             return RunAuditTrigger.TIMEOUT
 
         threshold_minutes = self.config.review_run_audit_min_runtime_minutes
@@ -536,11 +514,7 @@ class CompletionHandler:
         try:
             labels = self.repository_host.get_issue_labels_fresh(issue_number)
         except Exception as exc:
-            logger.warning(
-                "[RUN_AUDIT] Fresh label read failed for issue #%d: %s",
-                issue_number,
-                exc,
-            )
+            logger.warning("[RUN_AUDIT] Fresh label read failed for issue #%d: %s", issue_number, exc)
             return []
         return [str(label) for label in labels]
 
@@ -590,7 +564,6 @@ class CompletionHandler:
         pr_number: Optional[int],
         *,
         processing_policy: CompletionProcessingPolicy,
-        delivery_outcome: TechLeadDeliveryOutcome,
         blocked_reason: Optional[str] = None,
         completion_detail: Optional[dict[str, Any]] = None,
         processing_errors: Optional[list[str]] = None,
@@ -615,18 +588,13 @@ class CompletionHandler:
         )
         self._update_state_machines(session, effective_status, pr_url)
         self._tech_lead_run_activity.note_concluded(
-            session,
-            effective_status,
-            processing_errors=processing_errors,
-            delivery_outcome=delivery_outcome,
+            session, effective_status, processing_errors=processing_errors,
         )
         # Required disposition commands revalidate immutable authority at apply
         # time. Retention belongs after those effects, beside the terminal
         # verdict, rather than while their command list is merely being built.
         discard_tech_lead_authority_after_completion(
-            self.config,
-            self._tech_lead_authority,
-            session,
+            self.config, self._tech_lead_authority, session,
             processing_errors=processing_errors,
             processing_policy=processing_policy,
         )
@@ -646,14 +614,126 @@ class CompletionHandler:
         Public so ``finalize_terminal_outcome`` drives it post-apply from the
         EFFECTIVE status (#6777).
         """
-        self._terminal_events.publish(
-            session,
-            status,
-            pr_url,
-            pr_number,
-            blocked_reason=blocked_reason,
-            completion_detail=completion_detail,
+        detail = completion_detail or {}
+
+        if status == SessionStatus.COMPLETED:
+            self._emit_completed_events(session, pr_url, pr_number, detail)
+        elif status in (SessionStatus.FAILED, SessionStatus.TIMED_OUT):
+            self._emit_failure_event(session, status, detail)
+        elif status == SessionStatus.BLOCKED:
+            self._emit_blocked_event(session, blocked_reason, detail)
+        elif status == SessionStatus.NEEDS_HUMAN:
+            self._emit_needs_human_event(session, blocked_reason, detail)
+
+    def _emit_completed_events(
+        self,
+        session: Session,
+        pr_url: Optional[str],
+        pr_number: Optional[int],
+        detail: dict[str, Any],
+    ) -> None:
+        """Emit events for a completed session (coding/rework only)."""
+        # Review sessions get their events from _publish_review_outcome().
+        # Retrospective review sessions complete through label/state actions.
+        if session.key.task in {TaskKind.REVIEW, TaskKind.RETROSPECTIVE_REVIEW}:
+            return
+
+        agent = session.agent_label
+        task = session.key.task.value if session.key else None
+        rework_cycle = session.rework_cycle
+
+        payload: dict[str, Any] = {
+            "issue_number": session.issue.number,
+            "session_id": session.terminal_id,
+            "agent": agent,
+            "task": task,
+            "rework_cycle": rework_cycle,
+            "pr_url": pr_url,
+            "runtime_minutes": session.runtime_minutes,
+        }
+        completion_path_absolute = detail.get("completion_path_absolute")
+        if isinstance(completion_path_absolute, str) and completion_path_absolute.strip():
+            payload["completion_path_absolute"] = completion_path_absolute
+        else:
+            payload["completion_path_absolute"] = str(
+                (session.worktree_path / session.completion_path).resolve()
+            )
+        run_dir = self._resolve_session_run_dir(session)
+        payload["run_dir"] = str(run_dir)
+        for key in ("implementation", "problems", "review_summary", "review_issues", "risk_level"):
+            if detail.get(key):
+                payload[key] = detail[key]
+        self.events.publish(make_session_completed_event(payload))
+
+        if pr_url and pr_number is not None:
+            self.events.publish(
+                make_trace_event(
+                    EventName.ISSUE_PR_CREATED,
+                    {
+                        "issue_number": session.issue.number,
+                        "pr_url": pr_url,
+                        "pr_number": pr_number,
+                        "agent": agent,
+                        "task": task,
+                        "rework_cycle": rework_cycle,
+                    },
+                )
+            )
+
+    def _emit_failure_event(
+        self, session: Session, status: SessionStatus, detail: dict[str, Any]
+    ) -> None:
+        """Emit SESSION_FAILED event for failed or timed-out sessions."""
+        reason = failure_event_reason(
+            expired=status == SessionStatus.TIMED_OUT,
+            timeout_minutes=session.agent_config.timeout_minutes,
+            detail=detail,
         )
+        payload: dict[str, Any] = {
+            "issue_number": session.issue.number,
+            "session_id": session.terminal_id,
+            "agent": session.agent_label,
+            "task": session.key.task.value if session.key else None,
+            "rework_cycle": session.rework_cycle,
+            "error": reason,
+            "runtime_minutes": session.runtime_minutes,
+            "timeout_minutes": session.agent_config.timeout_minutes if session.agent_config else None,
+        }
+        payload.update(invalid_record_event_fields(detail))
+        run_dir = self._resolve_session_run_dir(session)
+        payload["run_dir"] = str(run_dir)
+        self.events.publish(make_session_failed_event(payload))
+
+    def _emit_blocked_event(
+        self, session: Session, blocked_reason: Optional[str], detail: dict[str, Any]
+    ) -> None:
+        """Emit ISSUE_BLOCKED event."""
+        payload: dict[str, Any] = {
+            "issue_number": session.issue.number,
+            "agent": session.agent_label,
+            "task": session.key.task.value if session.key else None,
+            "rework_cycle": session.rework_cycle,
+            "reason": blocked_reason or "Agent marked issue as blocked",
+        }
+        for key in ("attempted", "blocked_by"):
+            if detail.get(key):
+                payload[key] = detail[key]
+        self.events.publish(make_trace_event(EventName.ISSUE_BLOCKED, payload))
+
+    def _emit_needs_human_event(
+        self, session: Session, blocked_reason: Optional[str], detail: dict[str, Any]
+    ) -> None:
+        """Emit ISSUE_NEEDS_HUMAN event."""
+        payload: dict[str, Any] = {
+            "issue_number": session.issue.number,
+            "agent": session.agent_label,
+            "task": session.key.task.value if session.key else None,
+            "rework_cycle": session.rework_cycle,
+            "reason": blocked_reason or "Agent requested human input",
+        }
+        if detail.get("question"):
+            payload["question"] = detail["question"]
+        self.events.publish(make_trace_event(EventName.ISSUE_NEEDS_HUMAN, payload))
 
     def _update_state_machines(
         self, session: Session, status: SessionStatus, pr_url: Optional[str]
@@ -667,9 +747,7 @@ class CompletionHandler:
             SessionStatus.FAILED: "Session ended without PR or status update",
         }.get(status, "Unknown")
 
-        logger.debug(
-            f"[STATE_MACHINE] Triggering transitions for session {session.terminal_id}"
-        )
+        logger.debug(f"[STATE_MACHINE] Triggering transitions for session {session.terminal_id}")
 
         # 1. Update session state machine
         self._update_session_machine(session, status, status_reason)
@@ -691,13 +769,9 @@ class CompletionHandler:
         """Update the session state machine."""
         session_machine = self._get_session_machine(session.terminal_id)
         if session_machine:
-            logger.debug(
-                f"[STATE_MACHINE] Found session machine for {session.terminal_id}"
-            )
+            logger.debug(f"[STATE_MACHINE] Found session machine for {session.terminal_id}")
             if status == SessionStatus.COMPLETED:
-                logger.info(
-                    f"[STATE_MACHINE] Session {session.terminal_id}: RUNNING -> COMPLETED"
-                )
+                logger.info(f"[STATE_MACHINE] Session {session.terminal_id}: RUNNING -> COMPLETED")
                 session_machine.complete()  # type: ignore[attr-defined]
             elif status == SessionStatus.FAILED:
                 logger.info(
@@ -705,19 +779,13 @@ class CompletionHandler:
                 )
                 session_machine.fail(data={"reason": status_reason})  # type: ignore[attr-defined]
             elif status == SessionStatus.TIMED_OUT:
-                logger.info(
-                    f"[STATE_MACHINE] Session {session.terminal_id}: RUNNING -> TIMED_OUT"
-                )
+                logger.info(f"[STATE_MACHINE] Session {session.terminal_id}: RUNNING -> TIMED_OUT")
                 session_machine.timeout()  # type: ignore[attr-defined]
             elif status == SessionStatus.BLOCKED:
-                logger.info(
-                    f"[STATE_MACHINE] Session {session.terminal_id}: RUNNING -> BLOCKED"
-                )
+                logger.info(f"[STATE_MACHINE] Session {session.terminal_id}: RUNNING -> BLOCKED")
                 session_machine.block()  # type: ignore[attr-defined]
             elif status == SessionStatus.NEEDS_HUMAN:
-                logger.info(
-                    f"[STATE_MACHINE] Session {session.terminal_id}: RUNNING -> NEEDS_HUMAN"
-                )
+                logger.info(f"[STATE_MACHINE] Session {session.terminal_id}: RUNNING -> NEEDS_HUMAN")
                 session_machine.needs_human()  # type: ignore[attr-defined]
         else:
             logger.debug(
@@ -730,9 +798,7 @@ class CompletionHandler:
         """Update the issue state machine."""
         issue_machine = self._get_issue_machine(session.issue)
         if issue_machine:
-            logger.debug(
-                f"[STATE_MACHINE] Found issue machine for issue #{session.issue.number}"
-            )
+            logger.debug(f"[STATE_MACHINE] Found issue machine for issue #{session.issue.number}")
             # Only trigger pr_created for issue sessions (not review/rework sessions)
             # Review/rework sessions work on issues that already have PRs
             is_issue_session = session.terminal_id.startswith("issue-")
@@ -751,9 +817,7 @@ class CompletionHandler:
                         issue_machine.get_state().value,
                     )
             elif status == SessionStatus.BLOCKED:
-                logger.info(
-                    f"[STATE_MACHINE] Issue #{session.issue.number}: IN_PROGRESS -> BLOCKED"
-                )
+                logger.info(f"[STATE_MACHINE] Issue #{session.issue.number}: IN_PROGRESS -> BLOCKED")
                 issue_machine.block()  # type: ignore[attr-defined]
             elif status == SessionStatus.NEEDS_HUMAN:
                 logger.info(
@@ -774,9 +838,7 @@ class CompletionHandler:
         pr_number_review = int(match.group(1))
         review_machine = self._get_review_machine(pr_number_review)
         if not review_machine:
-            logger.debug(
-                f"[STATE_MACHINE] No review machine found for PR #{pr_number_review}"
-            )
+            logger.debug(f"[STATE_MACHINE] No review machine found for PR #{pr_number_review}")
             return
 
         logger.debug(f"[STATE_MACHINE] Found review machine for PR #{pr_number_review}")
@@ -830,20 +892,13 @@ class CompletionHandler:
 
         # Transition through start_rework and complete_rework
         if review_machine.can_transition("start_rework"):
-            logger.info(
-                "[STATE_MACHINE] PR #%d: REWORK_PENDING -> REWORK_IN_PROGRESS",
-                pr_number,
-            )
+            logger.info("[STATE_MACHINE] PR #%d: REWORK_PENDING -> REWORK_IN_PROGRESS", pr_number)
             review_machine.start_rework()  # type: ignore[attr-defined]
         if review_machine.can_transition("complete_rework"):
-            logger.info(
-                "[STATE_MACHINE] PR #%d: REWORK_IN_PROGRESS -> IN_REVIEW", pr_number
-            )
+            logger.info("[STATE_MACHINE] PR #%d: REWORK_IN_PROGRESS -> IN_REVIEW", pr_number)
             review_machine.complete_rework()  # type: ignore[attr-defined]
 
-    def _publish_review_outcome(
-        self, review_machine: Any, session: Session, pr_number: int
-    ) -> None:
+    def _publish_review_outcome(self, review_machine: Any, session: Session, pr_number: int) -> None:
         """Publish review.approved or review.changes_requested events.
 
         These events are defined in EventName but were never emitted.
@@ -866,22 +921,15 @@ class CompletionHandler:
         }
         self.events.publish(make_trace_event(EventName(tr.event_name), payload))
 
-    def _process_review_outcome(
-        self, pr_info: Any, pr_number: int, review_machine: Any
-    ) -> None:
+    def _process_review_outcome(self, pr_info: Any, pr_number: int, review_machine: Any) -> None:
         """Process review outcome based on PR labels."""
         labels = pr_info.labels
-        if (
-            self.config.code_reviewed_label
-            and self.config.code_reviewed_label in labels
-        ):
+        if self.config.code_reviewed_label and self.config.code_reviewed_label in labels:
             self._handle_review_approved(pr_info, pr_number, review_machine)
         elif self._lm.needs_rework in labels:
             self._handle_changes_requested(pr_number, review_machine)
 
-    def _handle_review_approved(
-        self, pr_info: Any, pr_number: int, review_machine: Any
-    ) -> None:
+    def _handle_review_approved(self, pr_info: Any, pr_number: int, review_machine: Any) -> None:
         """Handle approved review outcome."""
         logger.info(f"[STATE_MACHINE] PR #{pr_number}: IN_REVIEW -> APPROVED")
         if getattr(pr_info, "draft", None) is True:
@@ -889,9 +937,7 @@ class CompletionHandler:
                 self.repository_host.set_pr_draft(pr_number, False)
                 logger.info("[STATE_MACHINE] PR #%d marked ready for review", pr_number)
             except Exception as e:
-                logger.warning(
-                    "Failed to mark PR #%d ready for review: %s", pr_number, e
-                )
+                logger.warning("Failed to mark PR #%d ready for review: %s", pr_number, e)
         self._try_transition(review_machine, "approve", pr_number)
 
     def _handle_changes_requested(self, pr_number: int, review_machine: Any) -> None:
@@ -899,9 +945,7 @@ class CompletionHandler:
         logger.info(f"[STATE_MACHINE] PR #{pr_number}: IN_REVIEW -> CHANGES_REQUESTED")
         self._try_transition(review_machine, "request_changes", pr_number)
         if review_machine.can_transition("queue_rework"):
-            logger.info(
-                f"[STATE_MACHINE] PR #{pr_number}: CHANGES_REQUESTED -> REWORK_PENDING"
-            )
+            logger.info(f"[STATE_MACHINE] PR #{pr_number}: CHANGES_REQUESTED -> REWORK_PENDING")
             review_machine.queue_rework()  # type: ignore[attr-defined]
         else:
             logger.warning(
@@ -949,11 +993,7 @@ class CompletionHandler:
         self.events.publish(make_trace_event(EventName.PR_VIEW_CHANGED, payload))
 
     def _determine_cleanup_strategy(
-        self,
-        session: Session,
-        status: SessionStatus,
-        pr_url: Optional[str],
-        pr_number: Optional[int],
+        self, session: Session, status: SessionStatus, pr_url: Optional[str], pr_number: Optional[int]
     ) -> CleanupDecision:
         """Select deferred, immediate, or no cleanup for this completion."""
         if status != SessionStatus.COMPLETED or session.scratch_worktree:
@@ -968,12 +1008,7 @@ class CompletionHandler:
             TaskKind.REWORK,
         }
 
-        if (
-            is_work_session
-            and pr_url
-            and pr_number
-            and self._should_wait_for_review_before_cleanup()
-        ):
+        if is_work_session and pr_url and pr_number and self._should_wait_for_review_before_cleanup():
             pending_cleanup = PendingCleanup(
                 issue=session.issue,
                 pr_number=pr_number,
@@ -1019,10 +1054,7 @@ class CompletionHandler:
         Note: This returns True even for dry-run PRs (so pr-pending label gets added).
         The actual review queuing is controlled by the planner, which skips dry-run PRs.
         """
-        is_review_session = session.key.task in {
-            TaskKind.REVIEW,
-            TaskKind.RETROSPECTIVE_REVIEW,
-        }
+        is_review_session = session.key.task in {TaskKind.REVIEW, TaskKind.RETROSPECTIVE_REVIEW}
         should_queue = should_queue_pr_review(
             has_pr=bool(pr_url),
             code_review_agent_configured=bool(self.config.code_review_agent),
@@ -1052,9 +1084,7 @@ class CompletionHandler:
                 f"[REVIEW] Session #{session.issue.number} skipping review (skip_review=true)"
             )
         elif not pr_url:
-            logger.info(
-                f"[REVIEW] Session #{session.issue.number} completed but no PR found"
-            )
+            logger.info(f"[REVIEW] Session #{session.issue.number} completed but no PR found")
 
         return should_queue
 
@@ -1087,9 +1117,7 @@ class CompletionHandler:
         try:
             manifest = RunManifest.load(run_dir)
         except Exception as exc:
-            logger.warning(
-                "[MANIFEST] Failed to load manifest for runtime enrichment: %s", exc
-            )
+            logger.warning("[MANIFEST] Failed to load manifest for runtime enrichment: %s", exc)
             return
 
         manifest.runtime_minutes = session.runtime_minutes
@@ -1150,9 +1178,7 @@ def get_review_machine(
 def launch_tech_lead_by_number(
     n: int,
     pending_tech_lead_reviews: list["PendingTechLeadReview"],
-    launch_tech_lead_session_fn: Callable[
-        ["PendingTechLeadReview"], Optional["Session"]
-    ],
+    launch_tech_lead_session_fn: Callable[["PendingTechLeadReview"], Optional["Session"]],
 ) -> Optional["Session"]:
     """Launch tech_lead session by number - moved per method table.
 

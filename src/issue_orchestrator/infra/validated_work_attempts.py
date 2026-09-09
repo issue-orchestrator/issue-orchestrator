@@ -12,6 +12,7 @@ from ..domain.validated_work import (
     require_positive,
     require_sha,
 )
+from ..domain.published_work_finalization import FinalizationCheckpoint, PublishedWorkTarget
 from ..domain.validated_work_claim import ValidatedWorkClaim
 from ..domain.validated_work_commands import ValidatedWorkAuthoritySnapshot
 from ..domain.validated_work_store import (
@@ -209,6 +210,34 @@ class PublishAttemptWriter:
         )
         self._lineage.classify(conn, row["lineage_key"], at)
         return True
+
+    def read_finalization(
+        self, conn: sqlite3.Connection, claim: ValidatedWorkClaim,
+        target: PublishedWorkTarget,
+    ) -> FinalizationCheckpoint | None:
+        if not self._claims.holds(conn, claim) or claim.record_id != target.key.record_id:
+            return None
+        row = record_row(conn, claim.record_id)
+        evidence = current_evidence(conn, claim.record_id)
+        identity = evidence.admission.evidence.identity
+        if (
+            identity.key != target.key
+            or identity.review_disposition is not target.review_disposition
+            or evidence.admission.evidence.observations.pr_number != target.pr_number
+            or row["state"] not in {"publishing", "recovered", "failed"}
+            or not has_successful_attempt(conn, claim.record_id)
+        ):
+            return None
+        phase = FinalizationPhase(row["finalization_phase"])
+        if row["state"] == "recovered" and phase is not FinalizationPhase.COMPLETE:
+            return None
+        if row["state"] == "publishing" and phase is FinalizationPhase.COMPLETE:
+            return None
+        if row["state"] == "failed":
+            if row["failure"] != Failure.REVIEW_ROUTING_FAILED.value or phase is not FinalizationPhase.NOT_STARTED:
+                return None
+            return FinalizationCheckpoint(phase, Failure.REVIEW_ROUTING_FAILED, row["reason"])
+        return FinalizationCheckpoint(phase, None, "publication finalization admitted")
 
     def finalization(
         self,

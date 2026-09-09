@@ -1235,14 +1235,8 @@ export interface SwitchE2ETimelineViewCommandPayload {
 }
 
 export interface TechLeadActivityPayload {
-  delivery?: TechLeadDeliveryPayload;
   emptyMessage: string;
   entries: TechLeadRunActivityEntryPayload[];
-}
-
-export interface TechLeadDeliveryPayload {
-  message: string;
-  status: "observing" | "stalled" | "unknown";
 }
 
 export interface TechLeadGlobalHealthReviewScopePayload {

@@ -251,9 +251,6 @@
       "additionalProperties": true,
       "description": "The local tech-lead run history the dashboard shows (ADR-0033 / #6858).\n\nLocal by design: the run's existence and detail belong on the tool's own\ndashboard, while only the run's OUTPUT (its proposals) reaches the client's\nGitHub board.",
       "properties": {
-        "delivery": {
-          "$ref": "#/$defs/TechLeadDeliveryContract"
-        },
         "emptyMessage": {
           "title": "Emptymessage",
           "type": "string"
@@ -270,28 +267,6 @@
         "emptyMessage"
       ],
       "title": "TechLeadActivityContract",
-      "type": "object"
-    },
-    "TechLeadDeliveryContract": {
-      "additionalProperties": true,
-      "properties": {
-        "message": {
-          "default": "",
-          "title": "Message",
-          "type": "string"
-        },
-        "status": {
-          "default": "observing",
-          "enum": [
-            "observing",
-            "stalled",
-            "unknown"
-          ],
-          "title": "Status",
-          "type": "string"
-        }
-      },
-      "title": "TechLeadDeliveryContract",
       "type": "object"
     },
     "TechLeadRunActionsContract": {

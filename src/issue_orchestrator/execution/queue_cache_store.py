@@ -9,9 +9,7 @@ import threading
 import traceback
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterator, Mapping, Sequence
-
-from ..domain.issue_work_classification import IssueWorkClassification
+from typing import TYPE_CHECKING, Iterator, Sequence
 
 from ..adapters.github.github_issue import GitHubIssue
 from ..infra.sqlite_connection import open_sqlite
@@ -32,13 +30,6 @@ CREATE TABLE IF NOT EXISTS queue_issues (
     milestone TEXT,
     milestone_number INTEGER,
     milestone_due_on TEXT
-);
-
-CREATE TABLE IF NOT EXISTS issue_work_classifications (
-    repo TEXT NOT NULL,
-    number INTEGER NOT NULL,
-    classification TEXT NOT NULL CHECK (classification IN ('work', 'evidence')),
-    PRIMARY KEY (repo, number)
 );
 
 CREATE TABLE IF NOT EXISTS meta (
@@ -79,24 +70,6 @@ class QueueCacheStore:
             except Exception:
                 conn.rollback()
                 raise
-
-    def load_work_classifications(self, repo: str) -> dict[int, IssueWorkClassification]:
-        rows = self._get_connection().execute(
-            "SELECT number, classification FROM issue_work_classifications WHERE repo = ?",
-            (repo,),
-        )
-        return {row["number"]: IssueWorkClassification(row["classification"]) for row in rows}
-
-    def record_work_classifications(
-        self, repo: str, classifications: Mapping[int, IssueWorkClassification],
-    ) -> None:
-        """Retain latest known identities even after queue eviction or closure."""
-        with self._transaction() as tx:
-            tx.executemany(
-                "INSERT INTO issue_work_classifications (repo, number, classification) VALUES (?, ?, ?) "
-                "ON CONFLICT(repo, number) DO UPDATE SET classification=excluded.classification",
-                [(repo, number, classification.value) for number, classification in classifications.items()],
-            )
 
     def load_issues(self, repo: str) -> list[GitHubIssue]:
         """Load all cached issues, reconstructing GitHubIssue objects."""
@@ -337,4 +310,3 @@ class QueueCacheStore:
                 )
             tx.execute("DELETE FROM queue_issues")
             tx.execute("DELETE FROM meta")
-            tx.execute("DELETE FROM issue_work_classifications")

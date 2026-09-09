@@ -7,7 +7,7 @@ The Orchestrator delegates to this class for support operations.
 import logging
 import time
 from datetime import datetime, timezone
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Optional, Callable, cast
 
 if TYPE_CHECKING:
@@ -35,7 +35,6 @@ from ..events import EventName, EventContext
 from ..ports import EventSink, make_trace_event, RepositoryHost
 from .actions import AddLabelAction
 from .stale_detection import _detect_stale_claims, _detect_stale_in_progress
-from .issue_refresh_batch import IssueRefreshBatch
 from .queue_cache import (
     QueueCache,
     queue_shrink_confirmation_due,
@@ -662,12 +661,26 @@ def _fetch_issue_list(
     required_stable_ids: set[str] | None,
     sync_plan: "_SelectiveSyncPlan",
     full_scan: bool,
-) -> IssueRefreshBatch:
-    """Fetch facts without conflating fresh observations with cached projections."""
+) -> tuple[list["Issue"], set[int], str | None]:
+    """Obtain the issue payload + next watermark from the repository host.
+
+    This is the single repository-host *issue-list fetch* the resilience policy
+    guards. It performs no queue mutation, PR/dependency scan, or persistence —
+    those are downstream of the guarded boundary in ``_fetch_and_update_queue``.
+    """
     if full_scan:
-        batch = github_workflow.fetch_all_issues(config.filtering.milestone, required_stable_ids)
-        return replace(batch, watermark=_iso_now_utc())
-    return _fetch_incremental_issues(config, state, github_workflow, required_stable_ids, sync_plan)
+        all_issues = github_workflow.fetch_all_issues(config.filtering.milestone, required_stable_ids)
+        refreshed_numbers = {issue.number for issue in all_issues}
+        next_watermark: str | None = _iso_now_utc()
+    else:
+        all_issues, refreshed_numbers, next_watermark = _fetch_incremental_issues(
+            config,
+            state,
+            github_workflow,
+            required_stable_ids,
+            sync_plan,
+        )
+    return all_issues, refreshed_numbers, next_watermark
 
 
 def _fetch_and_update_queue(
@@ -714,7 +727,7 @@ def _fetch_and_update_queue(
         sync_plan = _build_selective_sync_plan(config, state, manual_refresh, full_scan)
         # Guard the GitHub issue reads; downstream queue mutation stays outside.
         with gh_audit.context(reason=reason, scope=scope):
-            fetched = issue_fetch_resilience.guard(
+            all_issues, refreshed_numbers, next_watermark = issue_fetch_resilience.guard(
                 lambda: _fetch_issue_list(
                     config, state, github_workflow, required_stable_ids, sync_plan, full_scan,
                 )
@@ -722,8 +735,6 @@ def _fetch_and_update_queue(
             if open_issue_corpus is not None:
                 issue_fetch_resilience.guard(open_issue_corpus.sync)
 
-        all_issues = list(fetched.issues)
-        refreshed_numbers, next_watermark = fetched.refreshed_numbers, fetched.watermark
         refreshed_at = time.time()
         _process_inflight_ids(required_stable_ids, all_issues, inflight_stable_ids)
         _update_label_cache(repository_host, all_issues)
@@ -754,7 +765,7 @@ def _fetch_and_update_queue(
         old_key_by_number = {i.number: i.key.stable_id() for i in state.cached_queue_issues}
 
         queue_cache = QueueCache(config, state, queue_cache_store)
-        new_queue = queue_cache.replace_from_observations(fetched)
+        new_queue = queue_cache.replace_from_refresh(all_issues)
         shrink_confirmation_pending = queue_shrink_confirmation_pending(state)
 
         new_numbers = {i.number for i in new_queue}
@@ -914,7 +925,7 @@ def _fetch_incremental_issues(
     github_workflow: object,
     required_stable_ids: set[str] | None,
     sync_plan: _SelectiveSyncPlan,
-) -> IssueRefreshBatch:
+) -> tuple[list["Issue"], set[int], str | None]:
     issue_map = {issue.number: issue for issue in state.cached_queue_issues}
     pending_shrink_due = queue_shrink_confirmation_due(state, time.time())
     hot_issue_numbers = _select_hot_issue_numbers(
@@ -925,7 +936,7 @@ def _fetch_incremental_issues(
     )
     _log_pending_shrink_confirmation(state, hot_issue_numbers, pending_shrink_due)
     refreshed = github_workflow.refresh_issues(hot_issue_numbers)
-    observed = list(refreshed)
+    refreshed_numbers: set[int] = {issue.number for issue in refreshed}
     for issue in refreshed:
         issue_map[issue.number] = issue
 
@@ -945,25 +956,25 @@ def _fetch_incremental_issues(
                     issue_map[issue.number] = issue
                 elif currently_tracked:
                     issue_map.pop(issue.number, None)
-                observed.append(issue)
+                refreshed_numbers.add(issue.number)
         else:
             discovered = github_workflow.fetch_discovery_issues(
                 config.filtering.milestone,
                 config.fetch_layer_discovery_limit,
             )
             next_watermark = _iso_now_utc()
-            for issue in discovered.issues:
+            for issue in discovered:
                 issue_map[issue.number] = issue
-            observed.extend(discovered.observed_issues)
+                refreshed_numbers.add(issue.number)
 
     # Ensure required IDs can still be discovered even if they were not in hot/discovery subsets.
     if required_stable_ids:
         fallback = github_workflow.fetch_all_issues(config.filtering.milestone, required_stable_ids)
-        for issue in fallback.issues:
+        for issue in fallback:
             issue_map[issue.number] = issue
-        observed.extend(fallback.observed_issues)
+            refreshed_numbers.add(issue.number)
 
-    return IssueRefreshBatch(tuple(issue_map.values()), tuple(observed), next_watermark)
+    return list(issue_map.values()), refreshed_numbers, next_watermark
 
 
 def _log_pending_shrink_confirmation(

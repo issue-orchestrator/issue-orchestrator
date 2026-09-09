@@ -265,15 +265,12 @@ def test_split_and_combined_results_share_composer(setup):
     expected = compose_publication_outcome(branch, pr)
     assert expected.status is PublishValidatedHeadStatus.PUBLISHED
     combined = executor.publish_or_reconcile(command)
-    assert (
-        replace(
-            expected,
-            status=combined.status,
-            push_outcome=None,
-            pr_attribution=combined.pr_attribution,
-        )
-        == combined
-    )
+    assert replace(
+        expected,
+        status=combined.status,
+        push_outcome=None,
+        pr_attribution=combined.pr_attribution,
+    ) == combined
 
 
 @pytest.mark.parametrize("target,success", [("target", True), ("divergent", False)])
