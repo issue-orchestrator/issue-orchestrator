@@ -487,7 +487,7 @@ def test_apply_proposal_creation_records_op_and_links_anchor() -> None:
 
     result = apply_create_tech_lead_issue(
         action,
-        before_case_file_write=lambda *args: None, repository_host=host,
+        proposal_guard=lambda *args: None, before_case_file_write=lambda *args: None, repository_host=host,
         events=MagicMock(),
         ops=ops,
         add_comment=host.add_comment,
@@ -512,7 +512,7 @@ def test_apply_proposal_creation_fails_when_gate_not_provisioned() -> None:
 
     result = apply_create_tech_lead_issue(
         _proposal_action(),
-        before_case_file_write=lambda *args: None, repository_host=host,
+        proposal_guard=lambda *args: None, before_case_file_write=lambda *args: None, repository_host=host,
         events=MagicMock(),
         ops=ops,
         add_comment=host.add_comment,
@@ -529,7 +529,7 @@ def test_apply_proposal_creation_without_store_fails_loudly() -> None:
     host = _host()
     result = apply_create_tech_lead_issue(
         _proposal_action(),
-        before_case_file_write=lambda *args: None, repository_host=host,
+        proposal_guard=lambda *args: None, before_case_file_write=lambda *args: None, repository_host=host,
         events=MagicMock(),
         ops=None,
         add_comment=host.add_comment,
@@ -594,7 +594,7 @@ def test_apply_case_file_creation_records_pattern_ledger() -> None:
 
     result = apply_create_tech_lead_issue(
         _case_file_action("db-timeout"),
-        before_case_file_write=lambda *args: None, repository_host=host,
+        proposal_guard=lambda *args: None, before_case_file_write=lambda *args: None, repository_host=host,
         events=MagicMock(),
         ops=ops,
         add_comment=host.add_comment,
@@ -621,7 +621,7 @@ def test_apply_case_file_missing_observation_label_creates_no_orphan() -> None:
 
     result = apply_create_tech_lead_issue(
         _case_file_action("db-timeout"),
-        before_case_file_write=lambda *args: None, repository_host=host,
+        proposal_guard=lambda *args: None, before_case_file_write=lambda *args: None, repository_host=host,
         events=MagicMock(),
         ops=ops,
         add_comment=host.add_comment,
@@ -642,7 +642,7 @@ def test_apply_case_file_missing_area_label_creates_no_orphan() -> None:
 
     result = apply_create_tech_lead_issue(
         _case_file_action("db-timeout", area="database"),
-        before_case_file_write=lambda *args: None, repository_host=host,
+        proposal_guard=lambda *args: None, before_case_file_write=lambda *args: None, repository_host=host,
         events=MagicMock(),
         ops=ops,
         add_comment=host.add_comment,
@@ -664,7 +664,7 @@ def test_apply_case_file_provisions_labels_before_blocking_area_tagged_issue() -
 
     result = apply_create_tech_lead_issue(
         action,
-        before_case_file_write=lambda *args: None, repository_host=host,
+        proposal_guard=lambda *args: None, before_case_file_write=lambda *args: None, repository_host=host,
         events=MagicMock(),
         ops=ops,
         add_comment=host.add_comment,
@@ -708,7 +708,7 @@ def test_apply_case_file_creation_without_store_fails_loudly() -> None:
     host = _host()
     result = apply_create_tech_lead_issue(
         _case_file_action(),
-        before_case_file_write=lambda *args: None, repository_host=host,
+        proposal_guard=lambda *args: None, before_case_file_write=lambda *args: None, repository_host=host,
         events=MagicMock(),
         ops=None,
         add_comment=host.add_comment,
@@ -724,7 +724,7 @@ def test_apply_case_file_creation_posts_same_decision_observations() -> None:
     ops = InMemoryTechLeadAuthorityStore()
     result = apply_create_tech_lead_issue(
         _case_file_action("db-timeout", additional_comments=("second observation",)),
-        before_case_file_write=lambda *args: None, repository_host=host,
+        proposal_guard=lambda *args: None, before_case_file_write=lambda *args: None, repository_host=host,
         events=MagicMock(),
         ops=ops,
         add_comment=host.add_comment,
@@ -742,7 +742,7 @@ def test_apply_case_file_rechecks_ledger_and_comments_inflight_duplicate() -> No
     )
     result = apply_create_tech_lead_issue(
         _case_file_action("db-timeout", additional_comments=("follow-up",)),
-        before_case_file_write=lambda *args: None, repository_host=host,
+        proposal_guard=lambda *args: None, before_case_file_write=lambda *args: None, repository_host=host,
         events=MagicMock(),
         ops=ops,
         add_comment=host.add_comment,
@@ -770,7 +770,7 @@ def test_apply_case_file_rechecks_ledger_and_comments_inflight_duplicate() -> No
 def _apply_case_file(action, *, ops, host):
     return apply_create_tech_lead_issue(
         action,
-        before_case_file_write=lambda *args: None, repository_host=host,
+        proposal_guard=lambda *args: None, before_case_file_write=lambda *args: None, repository_host=host,
         events=MagicMock(),
         ops=ops,
         add_comment=host.add_comment,
@@ -1176,7 +1176,7 @@ def test_apply_plain_tech_lead_issue_records_no_op() -> None:
             pr_count=2,
             origin=TechLeadCreationOrigin.authors_anchor(),
         ),
-        before_case_file_write=lambda *args: None, repository_host=host,
+        proposal_guard=lambda *args: None, before_case_file_write=lambda *args: None, repository_host=host,
         events=MagicMock(),
         ops=ops,
         add_comment=host.add_comment,
@@ -1200,7 +1200,7 @@ def test_body_tamper_has_zero_effect_on_execution() -> None:
     action = _proposal_action(target=13)
     apply_create_tech_lead_issue(
         action,
-        before_case_file_write=lambda *args: None, repository_host=host,
+        proposal_guard=lambda *args: None, before_case_file_write=lambda *args: None, repository_host=host,
         events=MagicMock(),
         ops=ops,
         add_comment=host.add_comment,
@@ -1855,3 +1855,53 @@ class TestTheAuthoritativeQueryDecidesMembership:
         )
 
         assert [p.issue_number for p in observed] == [9001]
+
+
+@pytest.mark.parametrize("fault", ["record", "ambiguous_response"])
+def test_proposal_creation_recovers_original_durable_intent(tmp_path, monkeypatch, fault):
+    from dataclasses import replace
+    from issue_orchestrator.infra.tech_lead_authority_store import SqliteTechLeadAuthorityStore
+    from issue_orchestrator.domain.tech_lead_proposal_creation import proposal_creation_key
+    host = _host(500)
+    database = tmp_path / "authority.sqlite"
+    store = SqliteTechLeadAuthorityStore(database)
+    action = _proposal_action()
+    remote = {}
+    def find(*, title, marker, authoritative):
+        assert authoritative
+        return next((n for n, body in remote.items() if marker in body), None)
+    host.find_issue_by_marker.side_effect = find
+    def create(**payload):
+        remote[500] = payload["body"]
+        if fault == "ambiguous_response":
+            raise TimeoutError("GitHub accepted the create; response lost")
+        return {"number": 500}
+    host.create_issue.side_effect = create
+    if fault == "record":
+        monkeypatch.setattr(store, "record_op", lambda **_: (_ for _ in ()).throw(OSError("local write unavailable")))
+    def apply(ops, candidate):
+        return apply_create_tech_lead_issue(candidate, repository_host=host, events=MagicMock(),
+            ops=ops, add_comment=host.add_comment, emit_labels_changed=lambda *_: None,
+            proposal_guard=lambda *args: None, before_case_file_write=lambda: None)
+    assert not apply(store, action).success
+    assert len(remote) == 1
+    recovered = SqliteTechLeadAuthorityStore(database)
+    pending = recovered.load_pending_proposal(proposal_creation_key(action.op))
+    assert pending is not None and pending.op == action.op
+    retry = replace(action, title="Changed retry title", body="Changed retry instructions")
+    assert apply(recovered, retry).success
+    host.create_issue.assert_called_once()
+    assert recovered.load_op(issue_number=500) == action.op
+    assert recovered.load_pending_proposal(pending.key) is None
+    assert pending.marker in remote[500]
+
+
+def test_proposal_intent_store_failure_prevents_remote_create(monkeypatch):
+    store = InMemoryTechLeadAuthorityStore()
+    host = _host(500)
+    monkeypatch.setattr(store, "record_pending_proposal", lambda _: (_ for _ in ()).throw(OSError("unwritable")))
+    result = apply_create_tech_lead_issue(_proposal_action(), repository_host=host, events=MagicMock(),
+        ops=store, add_comment=host.add_comment, emit_labels_changed=lambda *_: None,
+        proposal_guard=lambda *args: None, before_case_file_write=lambda: None)
+    assert not result.success
+    host.create_issue.assert_not_called()

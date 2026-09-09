@@ -728,7 +728,9 @@ def recover_pending_tech_lead_anchors(
         if tech_lead_authority is not None
         else {}
     )
-    reconciled = reconcile_tech_lead_proposals(issues, ops=ops)
+    reconciled = reconcile_tech_lead_proposals(issues, ops=ops,
+        pending_markers=tuple(item.marker for item in tech_lead_authority.list_pending_proposals())
+        if tech_lead_authority is not None else ())
     proposal_skipped = len(issues) - len(reconciled.anchor_candidate_issues)
     anchors, case_files = split_tech_lead_case_file_issues(
         reconciled.anchor_candidate_issues

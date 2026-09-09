@@ -53,6 +53,7 @@ class TechLeadArtifactLoadResult:
     decision: TechLeadDecision | None = None
     failure: TechLeadDecisionLoadFailure | None = None
     detail: str = ""
+    report_text: str = ""
 
     @property
     def ok(self) -> bool:
@@ -151,4 +152,4 @@ def load_tech_lead_artifact_pair(
         len(decision.proposed_actions),
         decision_path,
     )
-    return TechLeadArtifactLoadResult(decision=decision)
+    return TechLeadArtifactLoadResult(decision=decision, report_text=report_text)

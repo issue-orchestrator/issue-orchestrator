@@ -98,6 +98,7 @@ class TechLeadManifestBuilder:
                 title=pr.title,
                 url=pr.url,
                 branch=pr.branch,
+                head_sha=pr.head_sha or "",
                 files=PRFiles(),
             )
             for pr in prs

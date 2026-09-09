@@ -20,6 +20,7 @@ class MockPR:
     labels: list[str]
     body: Optional[str] = None
     state: str = "open"
+    head_sha: str | None = None
 
 
 class MockRepositoryHost:

@@ -73,6 +73,10 @@ class WorkDisposal(Enum):
 class LaunchWorkClaim(Protocol):
     """The durable claim a launch takes BEFORE it spawns anything (#6999 A2)."""
 
+    def can_reclaim_deferred(self) -> bool:
+        """Whether the durable ledger returned this exact request to its queue."""
+        ...
+
     def hold_before_spawn(
         self, run: SessionRunAssets, *, issue_number: int
     ) -> LaunchResult | None:
@@ -126,6 +130,10 @@ class PendingWorkLaunchClaim:
 
     claim: PendingWorkClaim
     claims: PendingWorkClaimStore
+
+    def can_reclaim_deferred(self) -> bool:
+        from .pending_work_successors import PendingWorkSuccessors
+        return PendingWorkSuccessors(self.claims).retains_exact(self.claim)
 
     def hold_before_spawn(
         self, run: SessionRunAssets, *, issue_number: int
@@ -245,6 +253,9 @@ class _ClaimlessLaunch:
     An explicit null object rather than an optional every launch path would have
     to re-check before touching (#6999 A2).
     """
+
+    def can_reclaim_deferred(self) -> bool:
+        return False
 
     def hold_before_spawn(
         self, run: SessionRunAssets, *, issue_number: int

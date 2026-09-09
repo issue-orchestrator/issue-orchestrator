@@ -59,6 +59,7 @@ from .tech_lead_actions import (
     CreateTechLeadProposalIssueAction as CreateTechLeadProposalIssueAction,
     DiscardTerminalTechLeadProposalOpsAction as DiscardTerminalTechLeadProposalOpsAction,
     KillHungSessionAction as KillHungSessionAction,
+    RequestReworkAction as RequestReworkAction,
     PromoteTechLeadFindingAction as PromoteTechLeadFindingAction,
     RecordTechLeadDispositionAction as RecordTechLeadDispositionAction,
     EscalateTechLeadDispositionAction as EscalateTechLeadDispositionAction,
@@ -232,6 +233,7 @@ class QueueReworkAction(Action):
     rework_cycle: int = 1
     source: str = "review_label"
     feedback: str | None = None
+    scoped_request_keys: tuple[str, ...] = ()
     action_type: ActionType = field(default=ActionType.QUEUE_REWORK, init=False)
 
 

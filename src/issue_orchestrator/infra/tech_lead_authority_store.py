@@ -30,6 +30,10 @@ Why not the existing stores:
 
 from __future__ import annotations
 
+from . import tech_lead_proposal_sql
+from ..domain.tech_lead_proposal_creation import PendingTechLeadProposal
+from .scoped_rework_receipts import load_receipt, save_receipt, list_receipts
+
 import json
 import logging
 import sqlite3
@@ -40,6 +44,7 @@ from pathlib import Path
 from typing import ContextManager, Iterator
 
 from ..domain.models import DiscoveredFailure
+from ..domain.scoped_rework import ReworkReceipt
 from ..domain.tech_lead_findings import (
     VALID_PROMOTION_STATES,
     CaseFileClassification,
@@ -57,7 +62,7 @@ from ..domain.tech_lead_session import (
 )
 from ..ports.tech_lead_authority import (
     TechLeadAuthorityConflictError,
-    TechLeadOpConflictError,
+    TechLeadOpConflictError as TechLeadOpConflictError,
     TechLeadPatternConflictError,
     TechLeadPromotionConflictError,
     TechLeadStormCohortConflictError,
@@ -240,40 +245,41 @@ class SqliteTechLeadAuthorityStore:
                 session_name,
             )
 
+    def load_rework_receipt(self, key: str) -> ReworkReceipt | None:
+        return load_receipt(self._get_connection(), key)
+
+    def save_rework_receipt(self, receipt: ReworkReceipt) -> None:
+        with self._transaction() as tx:
+            save_receipt(tx, receipt)
+
+    def save_rework_receipts(self, receipts: tuple[ReworkReceipt, ...]) -> None:
+        with self._transaction() as tx:
+            for receipt in receipts:
+                save_receipt(tx, receipt)
+
+    def list_rework_receipts(self) -> tuple[ReworkReceipt, ...]:
+        return list_receipts(self._get_connection())
+
     # -- Gated proposal ops (#6778, ADR-0031 §2 amendment) -----------------
 
-    def record_op(self, *, issue_number: int, op: StoredTechLeadOp) -> None:
-        """Persist a proposal issue's executable op (create-once).
+    def list_pending_proposals(self) -> tuple[PendingTechLeadProposal, ...]:
+        return tech_lead_proposal_sql.list_pending(self._get_connection())
 
-        Identical payload for an existing key: no-op. Different payload:
-        :class:`TechLeadOpConflictError` — the approver's consent binds to
-        exactly one recorded payload, which must never silently change.
-        """
-        payload = json.dumps(op.to_dict(), sort_keys=True)
+    def load_pending_proposal(self, key: str) -> PendingTechLeadProposal | None:
+        return tech_lead_proposal_sql.load_pending(self._get_connection(), key)
+
+    def record_pending_proposal(self, intent: PendingTechLeadProposal) -> None:
         with self._transaction() as tx:
-            row = tx.execute(
-                "SELECT op FROM tech_lead_proposal_ops WHERE issue_number = ?",
-                (issue_number,),
-            ).fetchone()
-            if row is not None:
-                if json.dumps(json.loads(row[0]), sort_keys=True) == payload:
-                    return
-                raise TechLeadOpConflictError(
-                    f"a different tech_lead op is already recorded for proposal"
-                    f" issue #{issue_number}"
-                )
-            tx.execute(
-                "INSERT INTO tech_lead_proposal_ops (issue_number, op, recorded_at)"
-                " VALUES (?, ?, ?)",
-                (issue_number, payload, datetime.now(timezone.utc).isoformat()),
-            )
-        logger.info(
-            "[tech_lead] Recorded proposal op: issue=#%d op=%s target=#%d action=%s",
-            issue_number,
-            op.op_type,
-            op.target_issue_number,
-            op.source_action_id,
-        )
+            tech_lead_proposal_sql.record_pending(tx, intent)
+
+    def discard_pending_proposal(self, key: str) -> None:
+        with self._transaction() as tx:
+            tx.execute("DELETE FROM tech_lead_pending_proposals WHERE creation_key = ?", (key,))
+
+    def record_op(self, *, issue_number: int, op: StoredTechLeadOp) -> None:
+        """Create-once immutable authority; compatible old records compare by value."""
+        with self._transaction() as tx:
+            tech_lead_proposal_sql.record_op(tx, issue_number, op)
 
     def load_op(self, *, issue_number: int) -> StoredTechLeadOp | None:
         """Load a proposal issue's op, or None when absent.

@@ -2126,6 +2126,7 @@ class SessionLauncher:
         """Launch a rework session to fix issues found in review."""
         if result := callback_endpoint_not_ready(self._agent_callback_endpoint):
             return result
+        from .scoped_rework_launch import ScopedReworkLaunch
         deps = ReworkLaunchDependencies(
             command_runner=self._command_runner,
             config=self.config,
@@ -2149,6 +2150,7 @@ class SessionLauncher:
             check_provider_ready=self._check_provider_ready,
             resolve_stack_decision=self._dependency_gate.stack_base_decision_for_issue,
             coder_prompt_addendum=self._coder_prompt_addendum,
+            scoped_rework=ScopedReworkLaunch(self._tech_lead_authority, self.repository_host, self._apply_actions),
         )
         return launch_rework_flow(
             rework, active_sessions, deps, work_claim=work_claim

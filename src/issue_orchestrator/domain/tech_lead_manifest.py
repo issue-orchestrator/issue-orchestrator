@@ -16,7 +16,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TypedDict
+from typing import TypedDict, NotRequired
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +36,7 @@ class PRToReviewDict(TypedDict):
     url: str
     branch: str
     files: PRFilesDict
+    head_sha: NotRequired[str]
 
 
 class TechLeadManifestDict(TypedDict):
@@ -66,6 +67,16 @@ class PRToReview:
     url: str
     branch: str
     files: PRFiles = field(default_factory=PRFiles)
+    head_sha: str = ""
+
+    def to_dict(self) -> PRToReviewDict:
+        data: PRToReviewDict = {
+            "number": self.number, "title": self.title, "url": self.url,
+            "branch": self.branch, "files": {"diff": self.files.diff, "metadata": self.files.metadata},
+        }
+        if self.head_sha:
+            data["head_sha"] = self.head_sha
+        return data
 
 
 @dataclass
@@ -85,19 +96,7 @@ class TechLeadManifest:
             "session_type": self.session_type,
             "generated_at": self.generated_at or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "data_dir": self.data_dir,
-            "prs": [
-                {
-                    "number": pr.number,
-                    "title": pr.title,
-                    "url": pr.url,
-                    "branch": pr.branch,
-                    "files": {
-                        "diff": pr.files.diff,
-                        "metadata": pr.files.metadata,
-                    }
-                }
-                for pr in self.prs
-            ]
+            "prs": [pr.to_dict() for pr in self.prs]
         }
 
     @classmethod
@@ -111,6 +110,7 @@ class TechLeadManifest:
                 title=pr_data["title"],
                 url=pr_data["url"],
                 branch=pr_data["branch"],
+                head_sha=pr_data.get("head_sha", ""),
                 files=PRFiles(
                     diff=files_data.get("diff", ""),
                     metadata=files_data.get("metadata", ""),

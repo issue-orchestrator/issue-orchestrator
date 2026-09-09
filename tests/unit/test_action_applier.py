@@ -2986,6 +2986,7 @@ class TestClaimGateAudit:
 
     # Action types that write to GitHub on a CLAIMED issue and must verify ownership
     GITHUB_WRITE_ACTIONS = {
+        ActionType.REQUEST_REWORK,
         ActionType.ADD_LABEL,
         ActionType.REMOVE_LABEL,
         ActionType.SYNC_LABELS,
@@ -3029,6 +3030,9 @@ class TestClaimGateAudit:
     #   (#6779 R7/R10) - confirms each absent proposal with a targeted READ
     #   (get_issue_state) and discards only the local authority-store op row;
     #   it never writes GitHub state and never touches a claimed coding issue.
+    # - RECOVER_TECH_LEAD_PROPOSAL: the proposal-creation owner revalidates the
+    #   original anchor, target issue, scoped PR, and recovered proposal through
+    #   the injected mutation-authority guard before each resumed write.
     # - APPLY_PROVIDER_IMPACT: owner command (#5980) - its only GitHub write is
     #   the provider-blocked label, dispatched back through this applier's
     #   claim-verified AddLabel/RemoveLabel handlers (same delegation shape as
@@ -3081,6 +3085,7 @@ class TestClaimGateAudit:
         ActionType.REQUIRE_TECH_LEAD_INVESTIGATION,
         ActionType.RESET_RETRY_ISSUE,
         ActionType.KILL_HUNG_SESSION,
+        ActionType.RECOVER_TECH_LEAD_PROPOSAL,
         ActionType.DISCARD_TERMINAL_TECH_LEAD_PROPOSAL_OPS,
         ActionType.RECORD_TECH_LEAD_DISPOSITION,
         # Human outcome delegates every write through guarded label/comment handlers.
@@ -3109,6 +3114,7 @@ class TestClaimGateAudit:
 
         # Map action types to handler method names
         handler_map = {
+            ActionType.REQUEST_REWORK: "_apply_request_rework",
             ActionType.ADD_LABEL: "_apply_add_label",
             ActionType.REMOVE_LABEL: "_apply_remove_label",
             ActionType.SYNC_LABELS: "_apply_sync_labels",
@@ -3600,6 +3606,51 @@ class TestTechLeadIssueCreationCrossesTheReconciliationGate:
             with pytest.raises(TypeError, match="origin"):
                 command(title="t", body="b", labels=("agent:backend",))  # type: ignore[call-arg]
 
+
+@pytest.mark.parametrize("number", [123, 456])
+@pytest.mark.parametrize("mutation", [
+    AddCommentAction(number=456, comment="report", is_pr=True),
+    RemoveLabelAction(issue_number=456, label="code-reviewed"),
+    AddLabelAction(issue_number=456, label="needs-rework"),
+])
+def test_scoped_write_capability_rechecks_issue_and_pr_claims(
+    applier, mock_labels, mock_repository_host, mock_events, number, mutation,
+):
+    from issue_orchestrator.control.actions import RequestReworkAction
+    from issue_orchestrator.domain.scoped_rework import ReworkRequest, ReworkTarget
+    parent = RequestReworkAction(proposal_id="finding", request=ReworkRequest(
+        ReworkTarget("test/repo", 456, 123, "a" * 40, "123-fix", (), ()),
+        "finding", "report", "feedback"))
+    manager = MagicMock(spec=ClaimManager)
+    manager.check_winner.side_effect = lambda target, lease: target != number
+    applier.claim_gate = ClaimGate(manager, mock_events)
+    applier.lease_id_lookup = lambda target: f"lease-{target}"
+    with pytest.raises(ClaimLostError):
+        applier.apply_scoped_rework_mutation(parent, mutation)
+    mock_repository_host.add_comment.assert_not_called()
+    mock_labels.add_label.assert_not_called()
+    mock_labels.remove_label.assert_not_called()
+
+
+@pytest.mark.parametrize("blocked_number", [123, 456])
+def test_scoped_write_capability_rechecks_parent_expectations(
+    applier, mock_fresh_issue_reader, mock_repository_host, blocked_number,
+):
+    from dataclasses import replace
+    from issue_orchestrator.control.actions import RequestReworkAction
+    from issue_orchestrator.control.reconciliation import ExpectedState, ReconciliationRequired
+    from issue_orchestrator.domain.scoped_rework import ReworkRequest, ReworkTarget
+    parent = RequestReworkAction(proposal_id="finding", request=ReworkRequest(
+        ReworkTarget("test/repo", 456, 123, "a" * 40, "123-fix", (), ()),
+        "finding", "report", "feedback"),
+        expected=ExpectedState.with_labels(forbidden={"do-not-touch"}))
+    guarded = replace(applier, reconcile=True)
+    mock_fresh_issue_reader.read_issue_labels.side_effect = lambda number: (
+        ["do-not-touch"] if number == blocked_number else []
+    )
+    with pytest.raises(ReconciliationRequired):
+        guarded.apply_scoped_rework_mutation(parent, AddCommentAction(number=456, comment="report"))
+    mock_repository_host.add_comment.assert_not_called()
 
 @pytest.mark.parametrize("failure", ["comment_read", "comment_before", "comment_after", "close"])
 def test_case_file_fold_records_explanation_before_close_and_recovers_on_retry(

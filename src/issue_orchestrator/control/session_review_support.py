@@ -262,3 +262,8 @@ def format_reviewer_feedback(
         lines.append(body)
 
     return "\n".join(lines)
+
+
+def combine_rework_feedback(*sections: str | None) -> str:
+    """Preserve review and scoped instructions, without repeating cached copies."""
+    return "\n\n".join(dict.fromkeys(section for section in sections if section))

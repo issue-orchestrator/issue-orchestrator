@@ -486,6 +486,35 @@ def test_completed_tech_lead_session_labels_manifest_prs_and_plans_decision(
     assert "ADR-0031" in decision_comments[0].comment
 
 
+def test_scoped_rework_never_reapplies_batch_review_approval(tmp_path: Path) -> None:
+    from issue_orchestrator.domain.scoped_rework import ReworkTarget
+    from issue_orchestrator.control.actions import CreateTechLeadProposalIssueAction
+
+    config = make_tech_lead_config(tmp_path)
+    session = make_tech_lead_session(tmp_path)
+    plant_tech_lead_assignment(session, TechLeadAssignment(flavor=TechLeadSessionFlavor.BATCH_REVIEW))
+    plant_tech_lead_manifest(tmp_path, session)
+    target = ReworkTarget("test/repo", 101, 5, "a" * 40, "b1", ("code-reviewed",), ())
+    record_authority(config, session, TechLeadLaunchAuthority(
+        flavor=TechLeadSessionFlavor.BATCH_REVIEW, anchor_issue_number=session.issue.number,
+        manifest_pr_numbers=(101, 102), observed_rework_targets=(target,),
+    ))
+    plant_tech_lead_decision_pair(session)
+    path = session.run_dir / "tech-lead-data" / "tech-lead-decision.json"
+    decision = json.loads(path.read_text())
+    decision["proposed_actions"][0].update(action_type="request_rework", target_is_pr=True)
+    path.write_text(json.dumps(decision))
+    actions = make_planner(config).generate_completion_actions(
+        session,
+        SessionStatus.COMPLETED,
+        processing_policy=CompletionProcessingPolicy.for_unprocessed_session(
+            session.issue.agent_type, config.tech_lead_review_agent
+        ),
+    )
+    assert {action.issue_number for action in _tech_lead_labels(actions)} == {102}
+    assert any(isinstance(action, CreateTechLeadProposalIssueAction) for action in actions)
+
+
 def test_completed_tech_lead_session_missing_pair_fails_labels_and_surfaces_rejection(
     tmp_path: Path,
 ) -> None:

@@ -111,6 +111,7 @@ class GitHubAdapterCacheSupport:
             "state": pr_info.state,
             "base_branch": pr_info.base_branch,
             "merged_at": pr_info.merged_at,
+            "head_sha": pr_info.head_sha,
             "issue_number": issue_number,
         }
         if issue_number is not None:
@@ -137,6 +138,7 @@ class GitHubAdapterCacheSupport:
             labels=cached.get("labels", []),
             base_branch=cached.get("base_branch"),
             merged_at=cached.get("merged_at"),
+            head_sha=cached.get("head_sha"),
         )
 
     @staticmethod

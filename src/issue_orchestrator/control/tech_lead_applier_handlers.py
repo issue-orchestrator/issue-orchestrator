@@ -59,6 +59,7 @@ from .tech_lead_finding_promotion import (
     apply_settle_tech_lead_promotion,
 )
 from .tech_lead_proposals import apply_discard_terminal_tech_lead_proposal_ops
+from .tech_lead_proposal_creation import apply_recover_tech_lead_proposal
 
 if TYPE_CHECKING:
     from ..ports import RepositoryHost, EventSink
@@ -81,6 +82,8 @@ TECH_LEAD_MUTATING_ACTION_TYPES: frozenset[ActionType] = (
         {
             ActionType.RESET_RETRY_ISSUE,
             ActionType.KILL_HUNG_SESSION,
+            ActionType.REQUEST_REWORK,
+            ActionType.RECOVER_TECH_LEAD_PROPOSAL,
             ActionType.DISCARD_TERMINAL_TECH_LEAD_PROPOSAL_OPS,
             ActionType.APPEND_PATTERN_OBSERVATION,
             ActionType.RECORD_TECH_LEAD_DISPOSITION,
@@ -137,6 +140,7 @@ def tech_lead_action_handlers(
     surface_proposal: ActionHandler,
     reset_retry: ActionHandler,
     kill_hung_session: ActionHandler,
+    request_rework: ActionHandler,
     events: "EventSink",
     label_manager: "LabelManager | None",
     needs_human_block: "SharedNeedsHumanBlock",
@@ -159,6 +163,9 @@ def tech_lead_action_handlers(
         # Act-level execution via the reset (#6764) / termination (#6778) owners.
         ActionType.RESET_RETRY_ISSUE: reset_retry,
         ActionType.KILL_HUNG_SESSION: kill_hung_session,
+        ActionType.REQUEST_REWORK: request_rework,
+        ActionType.RECOVER_TECH_LEAD_PROPOSAL: lambda action: apply_recover_tech_lead_proposal(
+            action, authority=authority, repository=repository_host, guard=require_mutation_authority),
         ActionType.ESCALATE_TECH_LEAD_DISPOSITION: lambda action: apply_human_disposition(
             action, host=repository_host, labels=label_manager, events=events,
             apply_action=apply_action, needs_human_block=needs_human_block),

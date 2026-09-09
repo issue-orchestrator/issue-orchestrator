@@ -64,6 +64,7 @@ from .completion_action_planner import (
 from .tech_lead_completion import discard_tech_lead_authority_after_completion
 from .invalid_record_actions import failure_event_reason, invalid_record_event_fields
 from .reconciliation import build_expected_for_mutation
+from .in_flight_work import SettlementOutcome
 from .completion_history_status import resolve_history_status
 from .retrospective_review_completion import retrospective_review_completion_actions
 from .review_routing import should_queue_pr_review
@@ -563,6 +564,7 @@ class CompletionHandler:
         pr_url: Optional[str],
         pr_number: Optional[int],
         *,
+        work_outcome: SettlementOutcome,
         processing_policy: CompletionProcessingPolicy,
         blocked_reason: Optional[str] = None,
         completion_detail: Optional[dict[str, Any]] = None,
@@ -587,6 +589,8 @@ class CompletionHandler:
             completion_detail=completion_detail,
         )
         self._update_state_machines(session, effective_status, pr_url)
+        from .scoped_rework import note_scoped_rework_finished
+        note_scoped_rework_finished(self._tech_lead_authority, session.run_assets.identity, effective_status == SessionStatus.COMPLETED, work_outcome=work_outcome)
         self._tech_lead_run_activity.note_concluded(
             session, effective_status, processing_errors=processing_errors,
         )

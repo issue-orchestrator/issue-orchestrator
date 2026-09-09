@@ -859,7 +859,7 @@ class Planner:
                     branch_name=rework.branch_name,
                     rework_cycle=rework.rework_cycle,
                     source=rework.source,
-                    feedback=rework.feedback,
+                    feedback=rework.feedback, scoped_request_keys=rework.scoped_request_keys,
                     reason=f"scan found PR needing rework (cycle {rework.rework_cycle})",
                 ))
                 logger.debug("Planner: queuing rework for issue #%d (cycle %d)",

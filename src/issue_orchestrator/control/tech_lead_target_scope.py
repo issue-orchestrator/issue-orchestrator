@@ -93,6 +93,10 @@ def target_scope_violation(
     allowed = authority.allowed_targets()
     act_allowed = authority.allowed_act_level_targets()
     for action in decision.proposed_actions:
+        if action.action_type == "request_rework":
+            if action.target_number is None or authority.observed_rework_target(action.target_number) is None:
+                return f"proposed action {action.id} targets a PR outside the immutable scoped rework facts"
+            continue
         if action.action_type in ACT_LEVEL_TECH_LEAD_ACTIONS:
             if action.target_number not in act_allowed:
                 return (

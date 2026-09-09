@@ -22,10 +22,11 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
 from pathlib import Path
-from typing import Collection, cast
+from typing import Any, Collection, cast
 
 from .session_key import TaskKind
 from .tech_lead_artifacts import ACT_LEVEL_TECH_LEAD_ACTIONS
+from .scoped_rework import ReworkRequest, ReworkTarget
 
 TECH_LEAD_ASSIGNMENT_FILENAME = "tech-lead-assignment.json"
 
@@ -462,6 +463,7 @@ class TechLeadLaunchAuthority:
     # direct and gated kill commands bind to it rather than to live state at
     # completion time.
     observed_session_generations: tuple[TechLeadSessionGeneration, ...] = ()
+    observed_rework_targets: tuple[ReworkTarget, ...] = ()
     recovery_tracker_numbers: tuple[int, ...] = ()
     schema_version: int = _SCHEMA_VERSION
 
@@ -508,6 +510,7 @@ class TechLeadLaunchAuthority:
                 "TechLeadLaunchAuthority problem_issue_numbers must be sorted "
                 "and unique"
             )
+        _validate_rework_targets(self)
         _validate_recovery_tracker_grants(self)
         if self.observed_session_generations != tuple(
             sorted(
@@ -567,6 +570,9 @@ class TechLeadLaunchAuthority:
             and assignment.focus_issue_number == self.focus_issue_number
         )
 
+    def observed_rework_target(self, pr_number: int) -> ReworkTarget | None:
+        return next((target for target in self.observed_rework_targets if target.pr_number == pr_number), None)
+
     def observed_kill_target(
         self, issue_number: int
     ) -> TechLeadSessionGeneration | None:
@@ -591,6 +597,7 @@ class TechLeadLaunchAuthority:
             "anchor_issue_number": self.anchor_issue_number,
             "focus_issue_number": self.focus_issue_number,
             "manifest_pr_numbers": list(self.manifest_pr_numbers),
+            "observed_rework_targets": [target.to_dict() for target in self.observed_rework_targets],
             "problem_issue_numbers": list(self.problem_issue_numbers),
             "recovery_tracker_numbers": list(self.recovery_tracker_numbers),
             "observed_session_generations": [
@@ -660,6 +667,7 @@ class TechLeadLaunchAuthority:
             anchor_issue_number=anchor,
             focus_issue_number=focus,
             manifest_pr_numbers=tuple(raw_prs),
+            observed_rework_targets=tuple(ReworkTarget.from_dict(item) for item in cast(list[dict[str, Any]], data.get("observed_rework_targets", []))),
             problem_issue_numbers=tuple(raw_problems),
             recovery_tracker_numbers=tuple(raw_trackers),
             observed_session_generations=tuple(
@@ -667,6 +675,21 @@ class TechLeadLaunchAuthority:
             ),
             schema_version=raw_schema,
         )
+
+
+def _validate_rework_targets(authority: TechLeadLaunchAuthority) -> None:
+    targets = cast(object, authority.observed_rework_targets)
+    if not isinstance(targets, tuple) or any(not isinstance(target, ReworkTarget) for target in targets):
+        raise ValueError("Observed rework targets must be typed immutable facts")
+    if len({target.pr_number for target in targets}) != len(targets):
+        raise ValueError("Observed rework targets must have unique PR identities")
+    if len({target.repository for target in targets}) > 1:
+        raise ValueError("A scoped rework grant cannot span repositories")
+    for target in targets:
+        if authority.flavor is TechLeadSessionFlavor.BATCH_REVIEW and target.pr_number not in authority.manifest_pr_numbers:
+            raise ValueError("Batch scoped rework targets must belong to its PR manifest")
+        if authority.flavor is TechLeadSessionFlavor.FAILURE_INVESTIGATION and target.issue_number != authority.focus_issue_number:
+            raise ValueError("Failure scoped rework targets must link its focus issue")
 
 
 def _validate_recovery_tracker_grants(authority: TechLeadLaunchAuthority) -> None:
@@ -709,6 +732,7 @@ class StoredTechLeadOp:
     # The decision findings the approver saw for this op (#6779 R6): forwarded
     # into ``TECH_LEAD_ACTION_EXECUTED`` so execution correlates to those findings.
     finding_ids: tuple[str, ...] = ()
+    rework_request: ReworkRequest | None = None
     schema_version: int = _SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -747,6 +771,10 @@ class StoredTechLeadOp:
                 f"StoredTechLeadOp rationale must be a string, got {rationale!r}"
             )
         _validate_stored_op_session_fields(self)
+        if (self.op_type == "request_rework") != isinstance(self.rework_request, ReworkRequest):
+            raise ValueError("Only request_rework requires a bound ReworkRequest")
+        if self.rework_request is not None and self.target_issue_number != self.rework_request.target.issue_number:
+            raise ValueError("Stored rework target issue must match its request")
         findings = cast(object, self.finding_ids)
         if not isinstance(findings, tuple) or any(
             not isinstance(item, str) for item in findings
@@ -770,6 +798,7 @@ class StoredTechLeadOp:
             "target_terminal_id": self.target_terminal_id,
             "target_session_type": self.target_session_type,
             "finding_ids": list(self.finding_ids),
+            "rework_request": self.rework_request.to_dict() if self.rework_request else None,
         }
 
     @classmethod
@@ -801,6 +830,7 @@ class StoredTechLeadOp:
             target_terminal_id=str(data.get("target_terminal_id", "")),
             target_session_type=str(data.get("target_session_type", "")),
             finding_ids=tuple(str(item) for item in raw_findings),
+            rework_request=ReworkRequest.from_dict(cast(dict[str, Any], data["rework_request"])) if data.get("rework_request") is not None else None,
             schema_version=raw_schema,
         )
 
@@ -817,7 +847,7 @@ def _validate_stored_op_session_fields(op: StoredTechLeadOp) -> None:
             raise ValueError(
                 f"StoredTechLeadOp {field_name} must be a string, got {value!r}"
             )
-    if op.op_type == "reset_retry" and any(
+    if op.op_type != "kill_hung_session" and any(
         cast(str, value).strip() for value in session_fields.values()
     ):
         raise ValueError(

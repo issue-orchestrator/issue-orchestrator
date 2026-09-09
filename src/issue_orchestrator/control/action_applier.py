@@ -56,6 +56,7 @@ if TYPE_CHECKING:
     from .retry_history_state import ExpediteLane
     from .session_history import SessionHistoryOwner
     from .tech_lead_kill_session import TechLeadKillSessionExecutor
+    from .scoped_rework import RequestReworkExecutor
     from .tech_lead_reset_retry import TechLeadResetRetryExecutor
     from .tech_lead_run_ownership import TechLeadRunOwnership
 
@@ -98,6 +99,7 @@ from .actions import (
     SetIssueStateAction,
     CreateTechLeadIssueAction,
     KillHungSessionAction,
+    RequestReworkAction,
     SurfaceTechLeadProposalAction,
     CleanupSessionAction,
     RemoveWorktreeAction,
@@ -127,7 +129,7 @@ ValidationRetryLauncherCallback = Callable[[int], Optional[Session]]
 # Takes issue_number and returns lease_id if active session exists
 LeaseIdLookup = Callable[[int], str | None]
 # Act-level tech_lead op actions share one dispatch shape (#6764/#6778).
-_TechLeadOpAction = TypeVar("_TechLeadOpAction", ResetRetryIssueAction, KillHungSessionAction)
+_TechLeadOpAction = TypeVar("_TechLeadOpAction", ResetRetryIssueAction, KillHungSessionAction, RequestReworkAction)
 @dataclass
 class ActionApplier:
     """Applies actions via ports/adapters.
@@ -195,6 +197,7 @@ class ActionApplier:
     # state); unwired means the actions fail loudly instead of no-oping.
     tech_lead_reset_retry: Optional["TechLeadResetRetryExecutor"] = None
     tech_lead_kill_session: Optional["TechLeadKillSessionExecutor"] = None
+    request_rework: Optional["RequestReworkExecutor"] = None
     tech_lead_ops: Optional["TechLeadAuthorityStore"] = None
     # Cross-repo filing seam for the finding-promotion lane (#6957). Unwired
     # means promotion actions fail loudly instead of silently no-oping — the
@@ -287,6 +290,7 @@ class ActionApplier:
                 surface_proposal=self._apply_surface_tech_lead_proposal,
                 reset_retry=self._apply_reset_retry_issue,
                 kill_hung_session=self._apply_kill_hung_session,
+                request_rework=self._apply_request_rework,
                 events=self.events, label_manager=self.label_manager, needs_human_block=self.needs_human_block,
                 apply_action=self.apply, verify_claim=self._verify_claim_before_write,
                 require_expected=self._require_expected,
@@ -551,7 +555,7 @@ class ActionApplier:
             post_comment=self.repository_host.add_comment,
             require_expected=self._require_expected, verify_claim=self._verify_claim_before_write,
             events=self.events, authority=self.tech_lead_ops,
-            reset=self.tech_lead_reset_retry, kill=self.tech_lead_kill_session)
+            reset=self.tech_lead_reset_retry, kill=self.tech_lead_kill_session, rework=self.request_rework)
 
     def _apply_supersede_pr(self, action: Action) -> ActionResult:
         """Comment on and close a PR that has been superseded by a reset."""
@@ -1452,6 +1456,7 @@ class ActionApplier:
             add_comment=self.repository_host.add_comment,
             emit_labels_changed=self._emit_issue_labels_changed,
             before_case_file_write=lambda: self._require_mutation_authority(action, reconciliation_subject_for(action)),
+            proposal_guard=self._require_mutation_authority,
             expedite_lane=self.expedite_lane,
         )
 
@@ -1465,15 +1470,29 @@ class ActionApplier:
         return apply_surface_tech_lead_proposal(action, self.events)
 
     def _apply_reset_retry_issue(self, action: Action) -> ActionResult:
-        """Execute a tech_lead reset_retry proposal via the injected owner (#6764).
-
-        Precondition re-validation, stale downgrade, and the reset itself are
-        owned by TechLeadResetRetryExecutor; approved gated proposals (#6778)
-        are finalized by the tech_lead_proposals owner.
-        """
+        """Delegate reset preconditions and execution to its injected owner."""
         assert isinstance(action, ResetRetryIssueAction)
         executor = self.tech_lead_reset_retry
         return self._apply_tech_lead_op(action, executor.apply if executor else None, "reset_retry")
+
+    def apply_scoped_rework_mutation(
+        self, parent: RequestReworkAction, mutation: Action
+    ) -> ActionResult:
+        """Recheck both scoped authorities before each normal typed mutation."""
+        self.require_scoped_rework_authority(parent)
+        return self.apply(mutation)
+
+    def require_scoped_rework_authority(self, parent: RequestReworkAction) -> None:
+        """Capability shared by typed mutations and owner-governed effects."""
+        for number in (parent.issue_number, parent.request.target.pr_number):
+            self._require_mutation_authority(parent, number)
+
+    def _apply_request_rework(self, action: Action) -> ActionResult:
+        assert isinstance(action, RequestReworkAction)
+        self._verify_claim_before_write(action, action.issue_number)
+        self._verify_claim_before_write(action, action.request.target.pr_number)
+        executor = self.request_rework
+        return self._apply_tech_lead_op(action, executor.apply if executor else None, "request_rework")
 
     def _apply_kill_hung_session(self, action: Action) -> ActionResult:
         """Execute an APPROVED kill_hung_session op via the injected owner
@@ -1489,14 +1508,8 @@ class ActionApplier:
         apply_fn: "Callable[[_TechLeadOpAction], ActionResult] | None",
         op_type: str,
     ) -> ActionResult:
-        # NO reconciliation gate here. Every mutating tech-lead command now
-        # crosses it in exactly one place — the typed dispatch wrapper in
-        # ``tech_lead_applier_handlers`` — which reads this same subject
-        # (``ResetRetryIssueAction``/``KillHungSessionAction`` name
-        # ``issue_number``). Keeping the old call as well made an allowed
-        # reset/kill perform TWO cache-bypassing GitHub reads per dispatch and
-        # left mutation policy owned in two places (#6957 round-2 review F5/A5).
-        # This executor owns operation-specific preconditions and execution only.
+        # The typed dispatch owner checks reconciliation once for every mutation.
+        # This common boundary executes the op and finalizes its stored proposal.
         if apply_fn is None:
             return ActionResult.fail(
                 action,
@@ -1508,6 +1521,8 @@ class ActionApplier:
             apply_fn,
             repository_host=self.repository_host,
             ops=self.tech_lead_ops,
+            before_finalize_write=(lambda: self.require_scoped_rework_authority(action))
+            if isinstance(action, RequestReworkAction) else None,
         )
 
     def _apply_cleanup_session(self, action: Action) -> ActionResult:

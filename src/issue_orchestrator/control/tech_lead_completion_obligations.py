@@ -9,7 +9,7 @@ from .required_issue_comment import RequiredTechLeadDiagnosisAction, ReuseTechLe
 from .tech_lead_actions import (
     RequireTechLeadInvestigationAction, RecordTechLeadDispositionAction,
     EscalateTechLeadDispositionAction, ResetRetryIssueAction, KillHungSessionAction,
-    CreateTechLeadProposalIssueAction,
+    CreateTechLeadProposalIssueAction, RequestReworkAction,
 )
 
 
@@ -25,7 +25,7 @@ def build_investigation_obligation(decision: TechLeadDecision, *,
 
 def is_focus_terminal_remedy(action: Action, focus: int) -> bool:
     """One identity rule for the remedies that can satisfy the trusted focus."""
-    if isinstance(action, (ResetRetryIssueAction, KillHungSessionAction, EscalateTechLeadDispositionAction)):
+    if isinstance(action, (ResetRetryIssueAction, KillHungSessionAction, EscalateTechLeadDispositionAction, RequestReworkAction)):
         return action.issue_number == focus
     if isinstance(action, RecordTechLeadDispositionAction):
         return action.disposition is not None and action.disposition.issue_number == focus
@@ -36,7 +36,22 @@ def is_focus_terminal_remedy(action: Action, focus: int) -> bool:
     return False
 
 
+def scoped_rework_effect_committed(result: ActionResult) -> bool:
+    """The scoped executor must attest an effective receipt for this exact target."""
+    action = result.action
+    if not isinstance(action, RequestReworkAction):
+        return False
+    request = action.request
+    return (result.success
+        and result.details.get("rework_status") in {"queued", "active", "completed", "forward_fix"}
+        and result.details.get("request_key") == request.key
+        and result.details.get("pr_number") == request.target.pr_number
+        and result.details.get("head_sha") == request.target.head_sha)
+
+
 def _effective(result: ActionResult) -> bool:
+    if isinstance(result.action, RequestReworkAction):
+        return scoped_rework_effect_committed(result)
     return result.success or (result.result_type is ActionResultType.SKIPPED
         and result.details.get("terminal_disposition_satisfied") is True)
 

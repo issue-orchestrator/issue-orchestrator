@@ -75,6 +75,7 @@ class PRScanner:
         events: EventSink,
         label_manager: "LabelManager | None" = None,
         issue_branches_fn: Callable[[], dict[int, str]] | None = None,
+        rework_request_keys: Callable[[int], tuple[str, ...]] | None = None,
     ):
         """Initialize the scanner.
 
@@ -84,6 +85,7 @@ class PRScanner:
             events: EventSink for trace events
             label_manager: Label registry for prefix-aware queries.
         """
+        self._rework_request_keys = rework_request_keys or (lambda _: ())
         self.config = config
         self.repository = repository
         self.events = events
@@ -284,6 +286,7 @@ class PRScanner:
                     rework_cycle=decision.rework_cycle,
                     issue_number=decision.issue_number,
                     pr_number=pr.number,
+                    scoped_request_keys=self._rework_request_keys(pr.number),
                 )
             )
             logger.info("[SCANNER] Found PR #%d for rework (cycle %d)", pr.number, decision.rework_cycle)

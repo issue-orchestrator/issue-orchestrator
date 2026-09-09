@@ -18,6 +18,7 @@ from ..domain.tech_lead_session import (
 from ..events import EventName
 from ..ports import make_trace_event
 from .actions import (
+    Action,
     ActionResult,
     CreateTechLeadCaseFileIssueAction,
     CreateTechLeadIssueAction,
@@ -25,7 +26,8 @@ from .actions import (
 )
 from .claim_gate import ClaimLostError
 from .reconciliation import ReconciliationRequired
-from .label_manager import tech_lead_issue_label_metadata
+from .tech_lead_issue_labels import required_label_provisioning_error
+from .tech_lead_proposal_creation import TechLeadProposalCreation
 from .tech_lead_case_file_owner import CaseFileState, PatternCaseFileOwner
 from .tech_lead_issue_policy import resolve_tech_lead_milestone_number
 
@@ -36,72 +38,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-
-def _required_label_provisioning_error(
-    action: CreateTechLeadProposalIssueAction | CreateTechLeadCaseFileIssueAction,
-    *,
-    repository_host: "RepositoryHost",
-    before_case_file_write: Callable[[], None],
-) -> str | None:
-    """Guarantee action labels before issue creation, or return the reason."""
-    try:
-        existing = {
-            name.casefold()
-            for entry in repository_host.list_labels()
-            if isinstance(entry, dict)
-            and isinstance((name := entry.get("name")), str)
-        }
-    except Exception as exc:
-        if isinstance(action, CreateTechLeadProposalIssueAction):
-            return (
-                f"could not verify the {PROPOSED_TECH_LEAD_LABEL!r} gate label is"
-                f" provisioned; refusing to create an ungated proposal: {exc}"
-            )
-        return (
-            "could not verify required pattern case-file labels; refusing to"
-            f" create an issue: {exc}"
-        )
-
-    if (
-        isinstance(action, CreateTechLeadProposalIssueAction)
-        and PROPOSED_TECH_LEAD_LABEL.casefold() not in existing
-    ):
-        return (
-            f"the {PROPOSED_TECH_LEAD_LABEL!r} gate label is not provisioned in"
-            " this repository; run `issue-orchestrator init` to create it."
-            " Refusing to create an ungated tech_lead proposal (#6779 R3)"
-        )
-
-    for label in action.labels:
-        folded = label.casefold()
-        if folded in existing:
-            continue
-        color, description = tech_lead_issue_label_metadata(label)
-        try:
-            # RepositoryHost.create_label verifies the write. Doing this before
-            # create_issue prevents GitHub from silently dropping an unknown
-            # label and leaving an orphaned, schedulable issue.
-            if isinstance(action, CreateTechLeadCaseFileIssueAction):
-                before_case_file_write()
-            repository_host.create_label(
-                label,
-                color=color,
-                description=description,
-            )
-        except (ReconciliationRequired, ClaimLostError):
-            raise
-        except Exception as exc:
-            issue_kind = (
-                "tech_lead proposal"
-                if isinstance(action, CreateTechLeadProposalIssueAction)
-                else "pattern case file"
-            )
-            return (
-                f"could not provision required label {label!r} for {issue_kind};"
-                f" refusing to create an issue: {exc}"
-            )
-        existing.add(folded)
-    return None
 
 def _proposal_link_comment(
     action: CreateTechLeadProposalIssueAction, issue_number: int
@@ -161,15 +97,15 @@ def _creation_preflight(
                 "Failed to reconcile pattern ledger before case-file creation"
             )
             return ActionResult.fail(action, str(exc))
-    if is_proposal or is_case_file:
+    if is_case_file:
         assert isinstance(
             action,
             (CreateTechLeadProposalIssueAction, CreateTechLeadCaseFileIssueAction),
         )
-        label_error = _required_label_provisioning_error(
+        label_error = required_label_provisioning_error(
             action,
             repository_host=repository_host,
-            before_case_file_write=before_case_file_write,
+            before_write=before_case_file_write,
         )
         if label_error is not None:
             logger.error("[APPLIER] %s", label_error)
@@ -186,6 +122,7 @@ def apply_create_tech_lead_issue(
     add_comment: Callable[[int, str], str],
     emit_labels_changed: Callable[[int, list[str], list[str]], None],
     before_case_file_write: Callable[[], None],
+    proposal_guard: Callable[[Action, int], None],
     expedite_lane: "ExpediteLane | None" = None,
 ) -> ActionResult:
     """Create a tech_lead issue and finalize its optional authority ledger."""
@@ -222,12 +159,15 @@ def apply_create_tech_lead_issue(
             assert case_files is not None
             case_files.begin(action)
             before_case_file_write()
-        result = repository_host.create_issue(
-            title=action.title,
-            body=action.body,
-            labels=list(action.labels),
-            milestone=milestone,
-        )
+        if isinstance(action, CreateTechLeadProposalIssueAction):
+            assert ops is not None
+            number = TechLeadProposalCreation(ops, repository_host).create(action, milestone, guard=proposal_guard)
+            result = {"number": number}
+        else:
+            result = repository_host.create_issue(
+                title=action.title, body=action.body,
+                labels=list(action.labels), milestone=milestone,
+            )
     except (ReconciliationRequired, ClaimLostError):
         raise
     except Exception as exc:
@@ -322,7 +262,6 @@ def _finalize_ledger_backed_creation(
     try:
         if isinstance(action, CreateTechLeadProposalIssueAction):
             assert ops is not None
-            ops.record_op(issue_number=issue_number, op=action.op)
             add_comment(
                 action.anchor_issue_number,
                 _proposal_link_comment(action, issue_number),

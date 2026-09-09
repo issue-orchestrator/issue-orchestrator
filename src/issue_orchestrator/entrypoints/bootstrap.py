@@ -15,6 +15,7 @@ Principle: "No Nulls in Orchestrator"
            - Tests explicitly pass fakes/nulls
 """
 
+
 import logging
 import os
 import time
@@ -133,10 +134,10 @@ from ..control.completion_dispatcher import (
 )
 from ..control.dependency_evaluator import DependencyEvaluator
 from ..control.workflows import ReviewWorkflow, RetrospectiveReviewWorkflow, ReworkWorkflow, TechLeadWorkflow
-from ..control.worktree_manager import extract_issue_branches
 from ..infra import gh_audit, runtime_identity
 from .bootstrap_tech_lead import (
     create_board_snapshot_builder,
+    create_rework_scanner,
     create_tech_lead_composition,
     wire_tech_lead_act_executors,
 )
@@ -429,7 +430,6 @@ def build_orchestrator(
         Fully configured Orchestrator instance
     """
     from ..infra.orchestrator import Orchestrator
-    from ..control.pr_scanner import PRScanner
     from ..control.session_restorer import SessionRestorer
     from ..control.state_machine_manager import StateMachineManager
     from ..adapters.github.fresh_issue_reader import GitHubFreshIssueReader
@@ -583,12 +583,7 @@ def build_orchestrator(
 
     # Create PR scanner and session restorer
     pr_scanner = (
-        PRScanner(
-            config=config,
-            repository=github,
-            events=events,
-            issue_branches_fn=lambda: extract_issue_branches(working_copy, config.repo_root),
-        )
+        create_rework_scanner(config, github, events, working_copy, tech_lead_authority)
         if github
         else None
     )
@@ -1031,12 +1026,8 @@ def build_orchestrator_for_testing(
     )
 
     # Create PRScanner for testing
-    from ..control.pr_scanner import PRScanner
-    pr_scanner = PRScanner(
-        config=config,
-        repository=github,
-        events=events,
-        issue_branches_fn=lambda: extract_issue_branches(working_copy, config.repo_root),
+    pr_scanner = create_rework_scanner(
+        config, github, events, working_copy, tech_lead_authority_for_testing,
     )
 
     # Create SessionRestorer for testing

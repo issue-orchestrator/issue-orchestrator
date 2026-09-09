@@ -30,7 +30,7 @@ from .tech_lead_disposition_ledger import (
 
 
 if TYPE_CHECKING:
-    from ..domain.tech_lead_artifacts import TechLeadDecision
+    from ..domain.tech_lead_artifacts import TechLeadDecision, ProposedTechLeadAction
     from ..domain.tech_lead_session import TechLeadDisposition, TechLeadLaunchAuthority
     from ..ports import RepositoryHost
     from ..ports.issue import Issue
@@ -44,6 +44,7 @@ TERMINAL_INVESTIGATION_ACTIONS = frozenset(
         "escalate_to_human",
         "reset_retry",
         "kill_hung_session",
+        "request_rework",
     }
 )
 
@@ -81,14 +82,21 @@ def investigation_disposition_violation(
             a
             for a in decision.proposed_actions
             if a.action_type in TERMINAL_INVESTIGATION_ACTIONS
-            and a.target_number == authority.focus_issue_number
+            and _targets_focus(a, authority)
         ]
         if len(terminal) != 1:
-            return "failure investigation requires exactly one terminal disposition for the focus issue: defer_to_tracker, escalate_to_human, reset_retry, or kill_hung_session"
+            return "failure investigation requires exactly one terminal disposition for the focus issue: defer_to_tracker, escalate_to_human, reset_retry, kill_hung_session, or request_rework"
         assert authority.focus_issue_number is not None
         if terminal[0].action_type == "kill_hung_session" and authority.observed_kill_target(authority.focus_issue_number) is None:
             return "kill_hung_session requires a launch-observed worker generation"
     return None
+
+
+def _targets_focus(action: "ProposedTechLeadAction", authority: "TechLeadLaunchAuthority") -> bool:
+    if action.action_type == "request_rework":
+        target = authority.observed_rework_target(action.target_number or 0)
+        return target is not None and target.issue_number == authority.focus_issue_number
+    return action.target_number == authority.focus_issue_number
 
 
 def disposition_marker(disposition: "TechLeadDisposition") -> str:

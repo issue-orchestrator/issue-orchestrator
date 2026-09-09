@@ -166,6 +166,7 @@ def _encode_rework(request: PendingWorkRequest) -> dict[str, Any]:
         "pr_number": request.pr_number,
         "source": request.source,
         "feedback": request.feedback,
+        "scoped_request_keys": list(request.scoped_request_keys),
     }
 
 
@@ -178,6 +179,7 @@ def _decode_rework(payload: dict[str, Any]) -> PendingRework:
         pr_number=payload["pr_number"],
         source=str(payload["source"]),
         feedback=payload["feedback"],
+        scoped_request_keys=tuple(payload.get("scoped_request_keys", ())),
     )
 
 

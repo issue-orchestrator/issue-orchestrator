@@ -15,6 +15,8 @@ implementation lives in ``infra/tech_lead_authority_store.py``.
 
 from __future__ import annotations
 
+from ..domain.scoped_rework import ReworkReceipt
+from ..domain.tech_lead_proposal_creation import PendingTechLeadProposal
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from threading import Lock
@@ -110,6 +112,38 @@ class TechLeadAuthorityStore(Protocol):
     # documentation); discarded after terminal handling so ops run at most
     # once. ``list_ops`` is the ledger read: proposal dedup per (op, target)
     # and the fact gatherer's approval classification both consult it.
+
+    def load_rework_receipt(self, key: str) -> ReworkReceipt | None:
+        """Load the durable execution state; survives proposal finalization."""
+        ...
+
+    def save_rework_receipt(self, receipt: ReworkReceipt) -> None:
+        """Persist progress without changing the original approved instruction."""
+        ...
+
+    def save_rework_receipts(self, receipts: tuple[ReworkReceipt, ...]) -> None:
+        """Atomically bind or compensate every request consumed by one launch."""
+        ...
+
+    def list_rework_receipts(self) -> tuple[ReworkReceipt, ...]:
+        """Read instructions for normal rework discovery and operator outcomes."""
+        ...
+
+    def list_pending_proposals(self) -> tuple[PendingTechLeadProposal, ...]:
+        """Enumerate original creation intents for normal tick recovery."""
+        ...
+
+    def load_pending_proposal(self, key: str) -> PendingTechLeadProposal | None:
+        """Read original pre-create authority after an interrupted remote write."""
+        ...
+
+    def record_pending_proposal(self, intent: PendingTechLeadProposal) -> None:
+        """Create once before remote creation; never replace its instruction."""
+        ...
+
+    def discard_pending_proposal(self, key: str) -> None:
+        """Retire creation intent only after the existing stored op commits."""
+        ...
 
     def record_op(self, *, issue_number: int, op: "StoredTechLeadOp") -> None:
         """Persist the op for one proposal issue (create-once).
@@ -451,6 +485,8 @@ class InMemoryTechLeadAuthorityStore:
     def __init__(self) -> None:
         self._rows: dict[tuple[str, str], "TechLeadLaunchAuthority"] = {}
         self._ops: dict[int, "StoredTechLeadOp"] = {}
+        self._pending_proposals: dict[str, PendingTechLeadProposal] = {}
+        self._rework_receipts: dict[str, ReworkReceipt] = {}
         self._patterns: dict[str, int] = {}
         self._evidence: dict[str, "PatternEvidence"] = {}
         # signature -> the observation identities already counted (create-once).
@@ -483,6 +519,41 @@ class InMemoryTechLeadAuthorityStore:
 
     def discard(self, *, run_id: str, session_name: str) -> None:
         self._rows.pop((run_id, session_name), None)
+
+    def load_rework_receipt(self, key: str) -> ReworkReceipt | None:
+        return self._rework_receipts.get(key)
+
+    def save_rework_receipt(self, receipt: ReworkReceipt) -> None:
+        existing = self.load_rework_receipt(receipt.request.key)
+        if existing is not None and existing.request != receipt.request:
+            raise TechLeadOpConflictError("Cannot replace approved rework instruction")
+        self._rework_receipts[receipt.request.key] = receipt
+
+    def save_rework_receipts(self, receipts: tuple[ReworkReceipt, ...]) -> None:
+        for receipt in receipts:
+            existing = self.load_rework_receipt(receipt.request.key)
+            if existing is not None and existing.request != receipt.request:
+                raise TechLeadOpConflictError("Cannot replace approved rework instruction")
+        self._rework_receipts.update((item.request.key, item) for item in receipts)
+
+    def list_rework_receipts(self) -> tuple[ReworkReceipt, ...]:
+        return tuple(self._rework_receipts.values())
+
+    def list_pending_proposals(self) -> tuple[PendingTechLeadProposal, ...]:
+        """Enumerate original creation intents for normal tick recovery."""
+        return tuple(self._pending_proposals.values())
+
+    def load_pending_proposal(self, key: str) -> PendingTechLeadProposal | None:
+        return self._pending_proposals.get(key)
+
+    def record_pending_proposal(self, intent: PendingTechLeadProposal) -> None:
+        existing = self.load_pending_proposal(intent.key)
+        if existing is not None and existing != intent:
+            raise TechLeadOpConflictError("Cannot replace a pending proposal creation")
+        self._pending_proposals[intent.key] = intent
+
+    def discard_pending_proposal(self, key: str) -> None:
+        self._pending_proposals.pop(key, None)
 
     def record_op(self, *, issue_number: int, op: "StoredTechLeadOp") -> None:
         existing = self._ops.get(issue_number)

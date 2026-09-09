@@ -164,6 +164,7 @@ class GitHubWorkflow:
                     "",
                     r.agent_type,
                     r.rework_cycle,
+                    feedback=r.feedback, scoped_request_keys=r.scoped_request_keys,
                 )
             )
 

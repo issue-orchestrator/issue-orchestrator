@@ -39,6 +39,7 @@ from ..domain.tech_lead_session import (
     TechLeadSessionFlavor,
 )
 from .completion_pr_collision import NoCommitsBetweenError
+from .scoped_rework_observation import observe_rework_targets
 from .completion_types import ERROR_PREFIX_PUBLISH_BLOCKED, ProcessingResult
 from .tech_lead_evidence import build_evidence_map, write_evidence_map
 from .tech_lead_dispositions import recovery_tracker_grants
@@ -254,7 +255,10 @@ def prepare_tech_lead_manifest(
         logger.info("[tech_lead] No PRs need tech_lead review")
         return None
 
+    expected_heads = {pr.number: pr.head_sha for pr in manifest.prs}
     manifest = manifest_downloader.download(manifest, worktree_path)
+    for pr in manifest.prs:
+        pr.head_sha = expected_heads[pr.number]
 
     manifest_path = worktree_path / data_dir / "manifest.json"
     manifest.write(manifest_path)
@@ -390,6 +394,20 @@ def prepare_tech_lead_session_data(
             key=TechLeadSessionGeneration.sort_key,
         )
     )
+    rework_issue_numbers = (
+        (issue.number,) if focused else tuple(sorted(set(problem_issue_numbers) | {
+            item.issue_number for item in board_snapshot.blocked_issues
+        } | {item.issue_number for item in board_snapshot.recent_failures}))
+    ) if flavor is not TechLeadSessionFlavor.BATCH_REVIEW else ()
+    rework_targets = observe_rework_targets(
+        repository_host,
+        pr_numbers=tuple(pr.number for pr in tech_lead_manifest.prs) if tech_lead_manifest else (),
+        issue_numbers=rework_issue_numbers,
+        expected_heads={pr.number: pr.head_sha for pr in tech_lead_manifest.prs} if tech_lead_manifest else None,
+    )
+    (run_dir / "tech-lead-data" / "scoped-rework-targets.json").write_text(
+        json.dumps([target.to_dict() for target in rework_targets], indent=2), encoding="utf-8"
+    )
     previous_disposition = tech_lead_authority.load_disposition(issue_number=issue.number) if focused else None
     if previous_disposition is not None and previous_disposition.phase == "recovered":
         previous_disposition = None
@@ -416,6 +434,7 @@ def prepare_tech_lead_session_data(
             else (),
             problem_issue_numbers=problem_issue_numbers,
             observed_session_generations=observed_session_generations,
+            observed_rework_targets=rework_targets,
             recovery_tracker_numbers=tracker_grants,
         ),
     )

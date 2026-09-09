@@ -1,0 +1,10 @@
+.rework-proposals { margin: 1rem 0; padding: 1rem; border: 1px solid currentColor; border-radius: .4rem; }
+.rework-proposals summary { cursor: pointer; }
+.rework-proposals ul { list-style: none; padding: 0; }
+.rework-proposal { margin: 1rem 0; padding: .8rem; border: 1px solid currentColor; border-radius: .3rem; overflow-wrap: anywhere; }
+.rework-proposal pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
+.rework-proposal dd { margin-left: 1rem; }
+.rework-proposal-actions { display: flex; flex-wrap: wrap; gap: .75rem; margin-top: 1rem; }
+.rework-proposals button { padding: .5rem .75rem; color: inherit; background: transparent; border: 1px solid currentColor; border-radius: .3rem; cursor: pointer; }
+.rework-proposals button:disabled { cursor: default; opacity: .6; }
+.rework-proposals :is(button, summary):focus-visible { outline: 3px solid currentColor; outline-offset: 3px; }

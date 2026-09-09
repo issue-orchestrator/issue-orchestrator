@@ -449,6 +449,7 @@ tech_lead:
   #   flag_pattern: "execute"       # execute | propose
   #   reset_retry: "propose"        # execute | propose
   #   kill_hung_session: "propose"  # execute | propose
+  #   request_rework: "propose"     # Gated scoped rework; preserves the PR branch
   # Health reviews (ADR-0031 §4 + reaction-model amendment): the interval is
   # the periodic floor. A storm of K recent blocked/failed problem issues
   # creates one immediate health review instead of K investigations. The

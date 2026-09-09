@@ -121,6 +121,12 @@ class SharedNeedsHumanBlock(Protocol):
         """Withdraw ``request.cause``; take the label off only if it was last."""
         ...
 
+    def clear_observed_operator_block(
+        self, target: int, reason: str, *, before_write: Callable[[], None]
+    ) -> BlockOutcome:
+        """Clear an approved operator block, preserving every recorded cause."""
+        ...
+
     def force_clear(self, target: int, reason: str) -> BlockOutcome:
         """Override the causes this owner records and take the label off.
 
@@ -311,6 +317,26 @@ class NeedsHumanBlock:
         # issue and its last cause already erased - the unowned live block this
         # owner exists to make impossible.
         return self._take_label_off(request.target, request.reason)
+
+    def clear_observed_operator_block(
+        self, target: int, reason: str, *, before_write: Callable[[], None]
+    ) -> BlockOutcome:
+        """An approval of an observed label does not discharge other lifecycles."""
+        return self._mutate(
+            target,
+            lambda: self._clear_observed_operator_block(
+                target, reason, before_write=before_write
+            ),
+            busy=BlockOutcome.FAILED,
+        )
+
+    def _clear_observed_operator_block(
+        self, target: int, reason: str, *, before_write: Callable[[], None]
+    ) -> BlockOutcome:
+        if any(self._holds(cause, target) for cause in NeedsHumanCause):
+            return BlockOutcome.HELD_BY_ANOTHER_CAUSE
+        before_write()
+        return self._take_label_off(target, reason)
 
     def force_clear(self, target: int, reason: str) -> BlockOutcome:
         return self._mutate(
@@ -619,6 +645,12 @@ class _NoOtherCauses:
 
     def release(self, request: HumanBlockRequest) -> BlockOutcome:
         del request
+        return BlockOutcome.UNGOVERNED
+
+    def clear_observed_operator_block(
+        self, target: int, reason: str, *, before_write: Callable[[], None]
+    ) -> BlockOutcome:
+        del target, reason
         return BlockOutcome.UNGOVERNED
 
     def force_clear(self, target: int, reason: str) -> BlockOutcome:
