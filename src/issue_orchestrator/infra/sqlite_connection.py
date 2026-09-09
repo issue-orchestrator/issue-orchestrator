@@ -7,6 +7,10 @@ import time
 from pathlib import Path
 from typing import Callable
 
+from .sqlite_readonly import (
+    open_sqlite_readonly as open_sqlite_readonly,
+    readonly_sqlite_transaction as readonly_sqlite_transaction,
+)
 
 
 def open_sqlite(
