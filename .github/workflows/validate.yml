@@ -85,23 +85,38 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
+      - name: Decide native-stack validation coverage
+        id: stack-coverage
+        run: python3 scripts/stack_ci_validation.py
+
+      - name: Explain deferred aggregate validation
+        if: steps.stack-coverage.outputs.run_full != 'true'
+        env:
+          REASON: ${{ steps.stack-coverage.outputs.reason }}
+        run: echo "$REASON" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Set up Python
+        if: steps.stack-coverage.outputs.run_full == 'true'
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
         with:
           python-version-file: .python-version
 
       - name: Install uv
+        if: steps.stack-coverage.outputs.run_full == 'true'
         uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990  # v8.3.2
 
       - name: Install dependencies
+        if: steps.stack-coverage.outputs.run_full == 'true'
         run: |
           uv sync --frozen --all-extras
           make semgrep-venv
 
       - name: Install Playwright browsers
+        if: steps.stack-coverage.outputs.run_full == 'true'
         run: .venv/bin/playwright install chromium
 
       - name: Run fast validate
+        if: steps.stack-coverage.outputs.run_full == 'true'
         run: make validate
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

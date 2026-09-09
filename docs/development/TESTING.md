@@ -142,6 +142,24 @@ pytest tests/ --ignore=tests/e2e/
 2. Set: `E2E_TEST_REPO=youruser/yourrepo`
 3. Run e2e tests against your repo
 
+## Native Stack CI Coverage
+
+GitHub evaluates every pull request in a native stack against the stack trunk.
+Running the aggregate `validate-fast` job on every layer therefore repeats the
+same cumulative work. When the existing changed-path filter selects this job,
+the workflow runs it fully for standalone pull requests, the cumulative top
+layer, the current lowest unmerged layer, every merge-group candidate, and
+pushes to `main`. Intermediate stack layers keep the required check name but
+defer the expensive setup and test steps.
+
+This repository requires GitHub Merge Queue for `main`. Every merge-group
+candidate runs the full job, including a contiguous group that ends at an
+intermediate stack layer. If layers land serially, GitHub rebases the next layer
+onto the trunk and makes it the lowest unmerged pull request; that new exact head
+also runs the full pull-request job. Missing or malformed stack metadata runs the
+full job conservatively. The selection policy is owned by
+`scripts/stack_ci_validation.py`.
+
 ## Test Mode
 
 Run orchestrator with mock data:
