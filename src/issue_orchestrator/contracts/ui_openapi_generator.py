@@ -111,8 +111,20 @@ def iter_components(data: dict[str, Any]) -> list[ComponentSchema]:
     return [ComponentSchema(name, schema) for name, schema in sorted(schemas.items())]
 
 
+_PYDANTIC_FIELD_CONSTRAINTS = (
+    ("minimum", "ge"),
+    ("exclusiveMinimum", "gt"),
+    ("maximum", "le"),
+    ("exclusiveMaximum", "lt"),
+    ("minLength", "min_length"),
+    ("maxLength", "max_length"),
+    ("minItems", "min_length"),
+    ("maxItems", "max_length"),
+)
+
+
 def _pydantic_field_constraints(prop_schema: dict[str, Any]) -> list[str]:
-    """Map JSON-schema numeric/length constraints to Pydantic ``Field`` kwargs.
+    """Map JSON-schema numeric/size constraints to Pydantic ``Field`` kwargs.
 
     Without this, e.g. ``{"type": "integer", "minimum": 1}`` in the
     UI OpenAPI schema would generate ``int`` with no runtime check —
@@ -126,28 +138,32 @@ def _pydantic_field_constraints(prop_schema: dict[str, Any]) -> list[str]:
     ``strict``, Pydantic accepts both and silently normalizes a
     malformed wire payload.  Strict is applied only to integers
     with constraints (the narrowest fix consistent with the
-    reviewer's invariant request).
+    reviewer's invariant request). Boolean fields are always strict:
+    JSON Schema never treats ``0``/``1`` as booleans, while Pydantic's
+    default ``bool`` parser does.
     """
     constraints: list[str] = []
     has_numeric_constraint = any(
         k in prop_schema for k in ("minimum", "exclusiveMinimum", "maximum", "exclusiveMaximum")
     )
-    if "minimum" in prop_schema:
-        constraints.append(f"ge={prop_schema['minimum']}")
-    if "exclusiveMinimum" in prop_schema:
-        constraints.append(f"gt={prop_schema['exclusiveMinimum']}")
-    if "maximum" in prop_schema:
-        constraints.append(f"le={prop_schema['maximum']}")
-    if "exclusiveMaximum" in prop_schema:
-        constraints.append(f"lt={prop_schema['exclusiveMaximum']}")
-    if "minLength" in prop_schema:
-        constraints.append(f"min_length={prop_schema['minLength']}")
-    if "maxLength" in prop_schema:
-        constraints.append(f"max_length={prop_schema['maxLength']}")
+    constraints.extend(
+        f"{field_name}={prop_schema[schema_name]}"
+        for schema_name, field_name in _PYDANTIC_FIELD_CONSTRAINTS
+        if schema_name in prop_schema
+    )
     # Numeric-constrained integers get strict scalar semantics so
     # the generated contract matches the canonical model + JSON
     # Schema (no coercion of strings/booleans).
-    if has_numeric_constraint and prop_schema.get("type") == "integer":
+    schema_type = prop_schema.get("type")
+    is_integer = schema_type == "integer" or (
+        isinstance(schema_type, list) and "integer" in schema_type
+    )
+    if has_numeric_constraint and is_integer:
+        constraints.append("strict=True")
+    is_boolean = schema_type == "boolean" or (
+        isinstance(schema_type, list) and "boolean" in schema_type
+    )
+    if is_boolean:
         constraints.append("strict=True")
     return constraints
 

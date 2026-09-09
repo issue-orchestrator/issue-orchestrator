@@ -3872,6 +3872,461 @@
           "lifecycle": {"$ref": "#/components/schemas/LifecycleTimelineContainerPayload"}
         }
       },
+      "RecoveryProcessIdentityPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "host",
+          "pid",
+          "started_at",
+          "instance_id"
+        ],
+        "properties": {
+          "host": {
+            "type": "string",
+            "minLength": 1
+          },
+          "pid": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "started_at": {
+            "type": "string",
+            "minLength": 1
+          },
+          "instance_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1
+          }
+        }
+      },
+      "RecoveryEngineIdentityPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "repo_root",
+          "instance_id",
+          "host",
+          "label",
+          "process"
+        ],
+        "properties": {
+          "repo_root": {
+            "type": "string",
+            "minLength": 1
+          },
+          "instance_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1
+          },
+          "host": {
+            "type": "string",
+            "minLength": 1
+          },
+          "label": {
+            "type": "string",
+            "minLength": 1
+          },
+          "process": {
+            "$ref": "#/components/schemas/RecoveryProcessIdentityPayload"
+          }
+        }
+      },
+      "RecoveryAuthorityPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "record_id",
+          "evidence_id",
+          "observation_revision",
+          "validated_head_sha",
+          "branch_name",
+          "repo_slug",
+          "issue_number",
+          "pr_number",
+          "expected_remote_head_sha",
+          "remote_baseline_status"
+        ],
+        "properties": {
+          "record_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "evidence_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "observation_revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "validated_head_sha": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{40}$"
+          },
+          "branch_name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "repo_slug": {
+            "type": "string",
+            "minLength": 1
+          },
+          "issue_number": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "pr_number": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1
+          },
+          "expected_remote_head_sha": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^[0-9a-f]{40}$"
+          },
+          "remote_baseline_status": {
+            "enum": [
+              "observed",
+              "unobserved"
+            ]
+          }
+        }
+      },
+      "RecoveryRecordFactPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "authority",
+          "state",
+          "failure",
+          "reason",
+          "escrow_retained"
+        ],
+        "properties": {
+          "authority": {
+            "$ref": "#/components/schemas/RecoveryAuthorityPayload"
+          },
+          "state": {
+            "enum": [
+              "queued",
+              "parked",
+              "publishing",
+              "recovered",
+              "failed",
+              "abandoned"
+            ]
+          },
+          "failure": {
+            "enum": [
+              "escrow_write_failed",
+              "artifact_missing",
+              "artifact_hash_mismatch",
+              "artifact_untrusted_path",
+              "validation_sha_mismatch",
+              "worktree_ahead_of_validation",
+              "ancestor_of_pending_head",
+              "divergent_validated_heads",
+              "awaiting_lineage_predecessor",
+              "remote_baseline_unproven",
+              "authority_snapshot_stale",
+              "duplicate_open_pr",
+              "published_head_lacks_validated_work",
+              "workspace_integrity",
+              "ref_pin_lost",
+              "publish_target_mismatch",
+              "remote_diverged",
+              "remote_head_changed",
+              "remote_unreadable",
+              "pr_closed_or_merged",
+              "pr_branch_mismatch",
+              "issue_unreadable",
+              "runtime_active",
+              "push_failed",
+              "submission_lost",
+              "review_routing_failed",
+              null
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "escrow_retained": {
+            "type": "boolean"
+          }
+        }
+      },
+      "RecoveryClaimOwnerPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "engine",
+          "owner_fence",
+          "stop_availability"
+        ],
+        "properties": {
+          "engine": {
+            "$ref": "#/components/schemas/RecoveryEngineIdentityPayload"
+          },
+          "owner_fence": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "stop_availability": {
+            "enum": [
+              "available",
+              "remote_host",
+              "exact_target_unavailable"
+            ]
+          }
+        }
+      },
+      "GuardedRecoveryStopActionPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "record_id",
+          "expected_engine",
+          "expected_owner_fence"
+        ],
+        "properties": {
+          "record_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "expected_engine": {
+            "$ref": "#/components/schemas/RecoveryEngineIdentityPayload"
+          },
+          "expected_owner_fence": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "OwnedRecoveryRecordPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "work",
+          "owner",
+          "stop_action"
+        ],
+        "properties": {
+          "kind": {
+            "const": "owned"
+          },
+          "work": {
+            "$ref": "#/components/schemas/RecoveryRecordFactPayload"
+          },
+          "owner": {
+            "$ref": "#/components/schemas/RecoveryClaimOwnerPayload"
+          },
+          "stop_action": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/GuardedRecoveryStopActionPayload"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "UnownedRecoveryRecordPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "work"
+        ],
+        "properties": {
+          "kind": {
+            "const": "unowned"
+          },
+          "work": {
+            "$ref": "#/components/schemas/RecoveryRecordFactPayload"
+          }
+        }
+      },
+      "RecoveryEngineGroupPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "engine",
+          "presentation",
+          "presentation_message",
+          "records"
+        ],
+        "properties": {
+          "engine": {
+            "$ref": "#/components/schemas/RecoveryEngineIdentityPayload"
+          },
+          "presentation": {
+            "enum": [
+              "observed",
+              "missing",
+              "replaced",
+              "unknown"
+            ]
+          },
+          "presentation_message": {
+            "type": "string",
+            "minLength": 1
+          },
+          "records": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OwnedRecoveryRecordPayload"
+            },
+            "minItems": 1
+          }
+        }
+      },
+      "RecoveryAvailablePayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "repo_key",
+          "status",
+          "engine_groups",
+          "unowned_records",
+          "message"
+        ],
+        "properties": {
+          "repo_key": {
+            "type": "string",
+            "minLength": 1
+          },
+          "status": {
+            "const": "available"
+          },
+          "engine_groups": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RecoveryEngineGroupPayload"
+            }
+          },
+          "unowned_records": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UnownedRecoveryRecordPayload"
+            }
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "RecoveryEmptyPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "repo_key",
+          "status",
+          "engine_groups",
+          "unowned_records",
+          "message"
+        ],
+        "properties": {
+          "repo_key": {
+            "type": "string",
+            "minLength": 1
+          },
+          "status": {
+            "const": "empty"
+          },
+          "engine_groups": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RecoveryEngineGroupPayload"
+            },
+            "maxItems": 0
+          },
+          "unowned_records": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UnownedRecoveryRecordPayload"
+            },
+            "maxItems": 0
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "RecoveryUnavailablePayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "repo_key",
+          "status",
+          "engine_groups",
+          "unowned_records",
+          "message"
+        ],
+        "properties": {
+          "repo_key": {
+            "type": "string",
+            "minLength": 1
+          },
+          "status": {
+            "enum": [
+              "database_absent",
+              "unreadable",
+              "unsupported_schema"
+            ]
+          },
+          "engine_groups": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RecoveryEngineGroupPayload"
+            },
+            "maxItems": 0
+          },
+          "unowned_records": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UnownedRecoveryRecordPayload"
+            },
+            "maxItems": 0
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "ControlCenterRecoveryRowsPayload": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/RecoveryAvailablePayload"
+          },
+          {
+            "$ref": "#/components/schemas/RecoveryEmptyPayload"
+          },
+          {
+            "$ref": "#/components/schemas/RecoveryUnavailablePayload"
+          }
+        ],
+        "discriminator": {
+          "propertyName": "status"
+        }
+      },
       "PhaseDialogPayload": {
         "type": "object",
         "additionalProperties": false,
