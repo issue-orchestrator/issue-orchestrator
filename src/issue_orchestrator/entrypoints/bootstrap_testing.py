@@ -4,6 +4,22 @@ from unittest.mock import MagicMock
 
 from ..ports.issue_tracker import IssueTracker
 from ..ports.manual_publication import ManualPublisher
+from ..ports.event_sink import EventSink
+from ..ports.session_runner import SessionRunner
+
+
+class Dependencies:
+    """Small compatibility container retained for explicit injection tests."""
+
+    def __init__(
+        self,
+        events: EventSink,
+        runner: SessionRunner,
+        github: object | None = None,
+    ) -> None:
+        self.events = events
+        self.runner = runner
+        self.github = github
 
 
 class TestingFreshIssueReader:

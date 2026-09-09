@@ -8,7 +8,7 @@ import pytest
 from issue_orchestrator.adapters.github.repo import get_repo_from_git, GitRepoError
 from issue_orchestrator.entrypoints.bootstrap import (
     Dependencies,
-    build_orchestrator,
+    build_orchestrator as _build_orchestrator,
     build_orchestrator_for_testing,
     _check_github_token_scopes,
     _create_planner,
@@ -20,6 +20,22 @@ from issue_orchestrator.infra.env import ENV_PREFIX
 from issue_orchestrator.infra.secret_env import EXTRA_FORBIDDEN_ENV_VARS_ENV
 from issue_orchestrator.ports import NullEventSink, NullSessionRunner
 from issue_orchestrator.ports.claim_manager import NullClaimManager
+from issue_orchestrator.ports.validated_work_verification import (
+    OrchestratorLivenessPort,
+)
+
+
+def build_orchestrator(*args, **kwargs):
+    """Exercise the production root with an explicit test liveness port."""
+    kwargs["validated_work_liveness"] = MagicMock(spec=OrchestratorLivenessPort)
+    return _build_orchestrator(*args, **kwargs)
+
+
+def scope_mock_github(adapter_factory: MagicMock, repo: str) -> MagicMock:
+    """Give a mocked repository adapter the identity required by strict consumers."""
+    adapter = adapter_factory.return_value
+    adapter.http_client.config.repo = repo
+    return adapter
 
 
 @pytest.fixture(autouse=True)
@@ -983,12 +999,22 @@ class TestBuildOrchestrator:
                         with patch("issue_orchestrator.entrypoints.bootstrap.EventHub"):
                             # Should NOT call get_repo_from_git when config.repo is set
                             mock_adapter.return_value = MagicMock()
+                            mock_adapter.return_value.http_client.config.repo = "test/repo"
                             mock_adapter.return_value.get_rate_limit_snapshot.return_value = {}
                             mock_adapter.return_value.get_token_scopes.return_value = []
 
-                            build_orchestrator(minimal_config)
+                            orchestrator = build_orchestrator(minimal_config)
                             # Verify we don't try to auto-detect when config.repo is set
                             # (get_repo_from_git should not be called)
+                            mock_get_repo.assert_not_called()
+                            from issue_orchestrator.control.recovery_drain import (
+                                RecoveryDrain,
+                            )
+
+                            assert isinstance(
+                                orchestrator.deps.validated_work_recovery,
+                                RecoveryDrain,
+                            )
 
     def test_build_orchestrator_auto_detects_repo_when_none(self) -> None:
         """Auto-detects repo from git when config.repo is None."""
@@ -1001,10 +1027,11 @@ class TestBuildOrchestrator:
         with patch("issue_orchestrator.entrypoints.bootstrap.install_gh_guard"):
             with patch("issue_orchestrator.entrypoints.bootstrap.create_plugin_manager"):
                 with patch("issue_orchestrator.entrypoints.bootstrap.get_repo_from_git") as mock_get_repo:
-                    with patch("issue_orchestrator.entrypoints.bootstrap.GitHubAdapter"):
+                    with patch("issue_orchestrator.entrypoints.bootstrap.GitHubAdapter") as mock_adapter:
                         with patch("issue_orchestrator.entrypoints.bootstrap.EventHub"):
                             with patch("issue_orchestrator.entrypoints.bootstrap.logger"):
                                 mock_get_repo.return_value = "auto/detected"
+                                scope_mock_github(mock_adapter, "auto/detected")
 
                                 # Should raise because other components fail, but auto-detect was called
                                 try:
@@ -1023,8 +1050,9 @@ class TestBuildOrchestrator:
         try:
             with patch("issue_orchestrator.entrypoints.bootstrap.install_gh_guard"):
                 with patch("issue_orchestrator.entrypoints.bootstrap.create_plugin_manager"):
-                    with patch("issue_orchestrator.entrypoints.bootstrap.GitHubAdapter"):
+                    with patch("issue_orchestrator.entrypoints.bootstrap.GitHubAdapter") as mock_adapter:
                         with patch("issue_orchestrator.entrypoints.bootstrap.EventHub"):
+                            scope_mock_github(mock_adapter, "test/repo")
                             try:
                                 build_orchestrator(minimal_config)
                             except ValueError:
@@ -1051,9 +1079,10 @@ class TestBuildOrchestrator:
             with patch("issue_orchestrator.entrypoints.bootstrap.install_gh_guard"):
                 with patch("issue_orchestrator.entrypoints.bootstrap.create_plugin_manager"):
                     with patch("issue_orchestrator.entrypoints.bootstrap.build_github_auth"):
-                        with patch("issue_orchestrator.entrypoints.bootstrap.GitHubAdapter"):
+                        with patch("issue_orchestrator.entrypoints.bootstrap.GitHubAdapter") as mock_adapter:
                             with patch("issue_orchestrator.adapters.github.fresh_issue_reader.GitHubFreshIssueReader"):
                                 with patch("issue_orchestrator.entrypoints.bootstrap.EventHub"):
+                                    scope_mock_github(mock_adapter, "test/repo")
                                     build_orchestrator(minimal_config)
 
             assert os.environ.get(EXTRA_FORBIDDEN_ENV_VARS_ENV) == "CUSTOM_GH_APP_PRIVATE_KEY"
@@ -1067,8 +1096,9 @@ class TestBuildOrchestrator:
         """Registers SSE plugin when enable_sse=True (default)."""
         with patch("issue_orchestrator.entrypoints.bootstrap.install_gh_guard"):
             with patch("issue_orchestrator.entrypoints.bootstrap.create_plugin_manager") as mock_pm_factory:
-                with patch("issue_orchestrator.entrypoints.bootstrap.GitHubAdapter"):
+                with patch("issue_orchestrator.entrypoints.bootstrap.GitHubAdapter") as mock_adapter:
                     with patch("issue_orchestrator.entrypoints.bootstrap.EventHub"):
+                        scope_mock_github(mock_adapter, "test/repo")
                         mock_pm = MagicMock()
                         mock_pm_factory.return_value = mock_pm
 
@@ -1084,8 +1114,9 @@ class TestBuildOrchestrator:
         """Skips SSE plugin when enable_sse=False."""
         with patch("issue_orchestrator.entrypoints.bootstrap.install_gh_guard"):
             with patch("issue_orchestrator.entrypoints.bootstrap.create_plugin_manager") as mock_pm_factory:
-                with patch("issue_orchestrator.entrypoints.bootstrap.GitHubAdapter"):
+                with patch("issue_orchestrator.entrypoints.bootstrap.GitHubAdapter") as mock_adapter:
                     with patch("issue_orchestrator.entrypoints.bootstrap.EventHub"):
+                        scope_mock_github(mock_adapter, "test/repo")
                         mock_pm = MagicMock()
                         mock_pm_factory.return_value = mock_pm
                         initial_call_count = mock_pm.register.call_count
@@ -1099,8 +1130,9 @@ class TestBuildOrchestrator:
         """Accepts enable_ipc parameter (even if it doesn't affect SSE)."""
         with patch("issue_orchestrator.entrypoints.bootstrap.install_gh_guard"):
             with patch("issue_orchestrator.entrypoints.bootstrap.create_plugin_manager") as mock_pm_factory:
-                with patch("issue_orchestrator.entrypoints.bootstrap.GitHubAdapter"):
+                with patch("issue_orchestrator.entrypoints.bootstrap.GitHubAdapter") as mock_adapter:
                     with patch("issue_orchestrator.entrypoints.bootstrap.EventHub"):
+                        scope_mock_github(mock_adapter, "test/repo")
                         mock_pm = MagicMock()
                         mock_pm_factory.return_value = mock_pm
 
@@ -1118,9 +1150,10 @@ class TestBuildOrchestrator:
 
         with patch("issue_orchestrator.entrypoints.bootstrap.install_gh_guard"):
             with patch("issue_orchestrator.entrypoints.bootstrap.create_plugin_manager"):
-                with patch("issue_orchestrator.entrypoints.bootstrap.GitHubAdapter"):
+                with patch("issue_orchestrator.entrypoints.bootstrap.GitHubAdapter") as mock_adapter:
                     with patch("issue_orchestrator.entrypoints.bootstrap.EventHub"):
                         with patch("issue_orchestrator.entrypoints.bootstrap.gh_audit") as mock_audit:
+                            scope_mock_github(mock_adapter, "test/repo")
                             try:
                                 build_orchestrator(minimal_config)
                             except ValueError:

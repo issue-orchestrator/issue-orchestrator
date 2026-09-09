@@ -2,7 +2,7 @@
 
 from ..control.background_job_supervisor import drain_background_jobs
 
-import asyncio, logging, os, signal, threading, time
+import asyncio, logging, os, threading, time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from functools import cached_property
@@ -35,7 +35,6 @@ from ..control.orchestrator_support import (
     pause_issue_for_reconciliation,
     check_health as _check_health,
     init_orchestrator_components,
-    handle_signal as _handle_signal,
 )
 from ..control.github_workflow import GitHubWorkflow, launch_issue_by_number as _gw_launch_issue_by_number, get_issue_machine as _gw_get_issue_machine
 from ..control.worktree_manager import get_worktree_path, get_session_name, extract_issue_branches
@@ -67,6 +66,7 @@ from ..control.pause_facade import (
     set_start_paused as _set_start_paused,
 )
 from ..domain.pause_state import PauseActor, PauseReason, PauseTransitionOutcome
+from ..domain.recovery_drain import RecoveryDrainMode
 from ..domain.state_machines.issue_machine import IssueStateMachine
 from ..domain.state_machines.session_machine import SessionStateMachine
 from ..domain.state_machines.review_machine import ReviewStateMachine
@@ -527,6 +527,9 @@ class Orchestrator:
             # Reconcile completed off-thread publish retries; success clears
             # failure state, while failures remain retryable.
             self.deps.publish_recovery.drain_completed_retries(self.state)
+            self.deps.validated_work_recovery.tick(
+                self.state, self._recovery_drain_mode
+            )
             self._session_launcher.reconcile_stale_tech_lead_needs_human(self.state.active_sessions, discover_markers=not self.state.paused)
             self._loop_iteration, cont = _run_tick_impl(
                 self._loop_iteration,
@@ -1105,13 +1108,8 @@ class Orchestrator:
     def launch_rework_session(self, rework: PendingRework) -> Optional[Session]:
         return _launch_rework_session(rework, self.state, self._session_launcher, self.deps.session_restorer, self.deps.pending_work_claims)
 
-
-async def run_orchestrator(config_path: Optional[Path] = None) -> None:
-    from ..entrypoints.bootstrap import build_orchestrator
-
-    config = Config.load(config_path) if config_path else Config.find_and_load()
-    orchestrator = build_orchestrator(config)
-    signal.signal(signal.SIGINT, lambda s, f: _handle_signal(orchestrator, s, f))
-    signal.signal(signal.SIGTERM, lambda s, f: _handle_signal(orchestrator, s, f))
-    await orchestrator.startup()
-    await orchestrator.run_loop()
+    def _recovery_drain_mode(self) -> RecoveryDrainMode:
+        """Read lifecycle admission at each retained-work start boundary."""
+        if self._shutdown_requested or self.state.paused:
+            return RecoveryDrainMode.STOPPED
+        return RecoveryDrainMode.ACTIVE

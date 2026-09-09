@@ -512,12 +512,16 @@ def test_production_bootstrap_requires_validation_even_when_review_gate_disabled
     monkeypatch.setattr(bootstrap, "install_gh_guard", first_startup_effect)
     if configured:
         with pytest.raises(ReachedStartup):
-            bootstrap.build_orchestrator(config)
+            bootstrap.build_orchestrator(
+                config, validated_work_liveness=Mock()
+            )
     else:
         with pytest.raises(
             ValueError, match="Completion intake requires validation.quick.cmd"
         ):
-            bootstrap.build_orchestrator(config)
+            bootstrap.build_orchestrator(
+                config, validated_work_liveness=Mock()
+            )
 
 from tests.runtime_lifecycle_helpers import runtime_owners
 

@@ -211,12 +211,6 @@ forbidden_modules = [
   "issue_orchestrator.adapters.terminal._tmux",
   "issue_orchestrator.adapters.terminal._iterm2",
 ]
-# Allow orchestrator to import bootstrap for run_orchestrator() entry point
-# This is the only allowed path to execution - via the composition root
-ignore_imports = [
-  "issue_orchestrator.infra.orchestrator -> issue_orchestrator.entrypoints.bootstrap",
-]
-
 [[tool.importlinter.contracts]]
 name = "Legacy GitHub CLI impl is forbidden"
 type = "forbidden"

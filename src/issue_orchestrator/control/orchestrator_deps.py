@@ -70,6 +70,7 @@ if TYPE_CHECKING:
     from .provider_resilience import ProviderResilienceManager
     from .board_snapshot_builder import BoardSnapshotBuilder
     from ..ports.provider_readiness import ProviderReadinessProbe
+    from ..ports.validated_work_drain import ValidatedWorkRecoveryDrain
 
 
 @dataclass(frozen=True)
@@ -168,6 +169,9 @@ class OrchestratorDeps:
 
     # Manual publish recovery ("Retry publish"): off-thread republish + reconcile
     publish_recovery: "PublishRecoveryService"
+    # Bounded retained-work recovery runs before planning so newly recovered
+    # review work is visible to the same tick's planner.
+    validated_work_recovery: "ValidatedWorkRecoveryDrain"
 
     # Cross-cutting infrastructure services (label mgmt, persistence, etc.)
     services: "InfraServices"
