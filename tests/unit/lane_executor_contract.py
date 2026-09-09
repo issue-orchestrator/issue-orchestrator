@@ -162,9 +162,7 @@ def read_tree_pids(readiness_path: Path) -> TreePids:
     """
     fields = readiness_path.read_text().split()
     if len(fields) != 2:
-        raise ValueError(
-            f"{readiness_path} is not a tree readiness record: {fields!r}"
-        )
+        raise ValueError(f"{readiness_path} is not a tree readiness record: {fields!r}")
     return TreePids(parent=int(fields[0]), grandchild=int(fields[1]))
 
 
@@ -377,9 +375,7 @@ class LaneExecutorContract:
         assert type(outcome) is LaneCompleted
         assert outcome.exit_code == 17
 
-    def test_observed_runtime_reflects_actual_execution(
-        self, tmp_path: Path
-    ) -> None:
+    def test_observed_runtime_reflects_actual_execution(self, tmp_path: Path) -> None:
         """Completed lanes report how long they actually executed.
 
         The lower bound proves the value tracks real execution; the
@@ -398,8 +394,8 @@ class LaneExecutorContract:
         )
         assert type(outcome) is LaneCompleted
         assert outcome.exit_code == 0
-        assert 1.5 <= outcome.observed_runtime_seconds <= (
-            self.completion_timeout_seconds
+        assert (
+            1.5 <= outcome.observed_runtime_seconds <= (self.completion_timeout_seconds)
         )
 
     def test_queue_wait_is_reported_and_plausible(self, tmp_path: Path) -> None:
@@ -423,7 +419,6 @@ class LaneExecutorContract:
         )
         assert type(outcome) is LaneCompleted
         assert outcome.queue_wait_seconds >= 0.0
-
 
     def test_output_streams_before_the_lane_completes(
         self, tmp_path: Path, capfd: "pytest.CaptureFixture[str]"
@@ -466,9 +461,7 @@ class LaneExecutorContract:
             captured = capfd.readouterr()
             observed += captured.out + captured.err
             time.sleep(_POLL_SECONDS)
-        marker_seen_while_running = (
-            "STREAM-MARKER" in observed and thread.is_alive()
-        )
+        marker_seen_while_running = "STREAM-MARKER" in observed and thread.is_alive()
         handshake.write_text("go")
         thread.join(timeout=_LANE_CONCLUSION_BACKSTOP_SECONDS)
         assert not thread.is_alive(), (
@@ -500,9 +493,7 @@ class LaneExecutorContract:
         assert type(outcome) is LaneCompleted
         assert outcome.exit_code == 137
 
-    def test_deadline_overrun_is_reported_as_timed_out(
-        self, tmp_path: Path
-    ) -> None:
+    def test_deadline_overrun_is_reported_as_timed_out(self, tmp_path: Path) -> None:
         """What the deadline uniquely owns here: the classification.
 
         The workload has nothing to establish before it can be killed — it
@@ -558,17 +549,16 @@ class LaneExecutorContract:
            stop existing. Neither cooperates with SIGTERM, so nothing here
            passes because a process was polite.
         """
-        # Both preconditions of the trigger, asserted rather than assumed:
-        # the interrupt is raised in the main thread and handled by the
-        # default handler. If either changed, the cancellation would never
-        # reach ``run()`` and this test would report the wrong culprit.
+        # The interrupt must be raised in the main thread. The test owns the
+        # handler for the duration of its trigger: validation wrappers and
+        # test runners may legitimately install a process-wide SIGINT handler,
+        # and inheriting that unrelated state made this contract order-dependent.
         assert threading.current_thread() is threading.main_thread(), (
             "this test cancels by interrupting the main thread, so it must "
             "be the thread that called into the backend"
         )
-        assert signal.getsignal(signal.SIGINT) is signal.default_int_handler, (
-            "something in this run owns SIGINT, so interrupting the main "
-            "thread would run that handler instead of cancelling the lane"
+        previous_interrupt_handler = signal.signal(
+            signal.SIGINT, signal.default_int_handler
         )
         readiness_path = tmp_path / "tree-ready.pids"
         try:
@@ -598,8 +588,7 @@ class LaneExecutorContract:
                     "timeout: the lane was still running (queued, or started "
                     "and mute) with nothing to kill."
                     if attempt.readiness_timed_out
-                    else "The lane concluded on its own first, as "
-                    f"{attempt.outcome!r}."
+                    else f"The lane concluded on its own first, as {attempt.outcome!r}."
                 )
             )
             assert attempt.cancelled is not None, (
@@ -615,6 +604,7 @@ class LaneExecutorContract:
                     f"by {_TREE_REAP_BACKSTOP_SECONDS:.0f}s: pid={pid}"
                 )
         finally:
+            signal.signal(signal.SIGINT, previous_interrupt_handler)
             # #7142: ``_TREE_SCRIPT`` ignores SIGTERM, so exactly when the
             # assertions above are doing their job — a backend regressed,
             # or the tree never announced itself — this test is the thing
