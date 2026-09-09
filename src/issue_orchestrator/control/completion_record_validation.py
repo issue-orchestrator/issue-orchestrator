@@ -1,5 +1,7 @@
 """Completion record loading and worktree validation."""
 
+from ..domain.publication_branch_policy import is_protected_publication_branch
+
 import json
 import logging
 from collections.abc import Sequence
@@ -272,17 +274,19 @@ class CompletionRecordValidator:
         return self._role_policy().processing_policy(context, issue_number, supplied_label, completion_path)
 
     def validate_worktree_state(
-        self, worktree: Path, record: CompletionRecord
+        self, worktree: Path, record: CompletionRecord, *, publication_branch: str | None = None,
     ) -> WorktreeValidationResult:
-        """Validate worktree state before executing requested publish actions."""
-        branch = self._git_adapter.get_current_branch(worktree)
+        """Validate publish policy; retained work supplies its authenticated target branch."""
+        branch = publication_branch if publication_branch is not None else self._git_adapter.get_current_branch(worktree)
         if not branch:
             return WorktreeValidationResult.fail(
                 WorktreeValidationFailure.CURRENT_BRANCH_UNKNOWN,
                 "Could not determine current branch",
             )
 
-        if RequestedAction.PUSH_BRANCH in record.requested_actions:
+        # A supplied publication branch describes the exact-head operation,
+        # which pushes even when the original record requested only CREATE_PR.
+        if publication_branch is not None or RequestedAction.PUSH_BRANCH in record.requested_actions:
             if is_protected_publication_branch(branch):
                 return WorktreeValidationResult.fail(
                     WorktreeValidationFailure.PROTECTED_BRANCH,

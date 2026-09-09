@@ -2,7 +2,7 @@
 
 from typing import Protocol
 
-from ..domain.validated_work_escrow import EscrowArtifacts, EscrowProblem, EscrowReport
+from ..domain.validated_work_escrow import EscrowArtifacts, EscrowProblem, EscrowReport, VerifiedEscrowCapture
 from ..domain.validated_work_store import EvidenceAdmission, EvidenceLookup, EvidenceRow
 
 
@@ -20,6 +20,8 @@ class ValidatedWorkEscrow(EvidenceReleaser, Protocol):
     ) -> EvidenceAdmission: ...
 
     def inspect(self, locator: str) -> EvidenceAdmission: ...
+
+    def read_capture(self, locator: str) -> VerifiedEscrowCapture: ...
 
     def ensure_pins(self, admission: EvidenceAdmission) -> None: ...
 

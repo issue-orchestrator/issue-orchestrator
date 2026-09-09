@@ -2300,7 +2300,7 @@ bound to the pinned validated ref:
 
 ```
 git worktree add --detach \
-    <state_dir>/validated-work/<issue>/<evidence_id>/workspace  <pinned_validated_ref>
+    <state_dir>/validated-work/<issue>/<evidence_id>/publication/workspace  <pinned_validated_ref>
 ```
 
 Not "rehydrate if the original is gone" — *always*. The §1.1 exit that matters most
@@ -2329,6 +2329,40 @@ copy of the problem:
 
 `L` stays exactly where it is — in the issue worktree and pinned at the `observed`
 ref (§6) — preserved and unpublished.
+
+Implementation: `EscrowPublicationWorkspaces` owns the detached checkout and a
+sibling `publication/run/` containing typed, verified artifact copies. The new
+`PublicationWorkspace` is distinct from the original `SessionRunAssets`; recovery
+never allocates a fictitious coding run or infers one from a path. The escrow
+owner exposes `read_capture()` so verification and immutable bytes cross one
+boundary together, without a second consumer reopening unchecked source paths.
+
+`publication-owner.json` is atomically published and synced in the capture directory
+before allocation. Receipt and artifact bytes are first written under a private
+escrow `.tmp` allocation, then linked to their final name without replacement;
+a crash leaves diagnosable private staging, never a torn authoritative file. It binds the common Git directory, work key, evidence ID and exact
+checkout path. It survives removal of the publication directory and is deleted
+last, so interrupted setup and cleanup can both replay. Unknown contents,
+modified artifacts, attached or changed HEADs, dirty/ignored files and symlinks
+are retained and refused. Tracked content is checked against the exact Git tree's
+blob bytes and file modes, independently of Git's cached status; assume-unchanged,
+skip-worktree and fsmonitor-valid index flags are refused. Checkout filters that
+transform canonical blob bytes are also refused rather than treating their output
+as verified disposable content. A missing checkout can be recreated after removing
+only its own stale Git registration; unrelated registrations are never pruned.
+All operations and publication use require the caller's disposition issue gate.
+The escrow envelope, immutable artifacts and pins survive workspace release.
+Checkout creation likewise happens in a fresh private staging generation. Only
+an exact, complete checkout is moved into the authoritative publication path.
+An interrupted allocation remains preserved in staging and a retry allocates a
+fresh generation. After an interrupted move, the final checkout is verified
+before repairing only its own Git reverse registration through the Git adapter's
+`repair_worktree_registration` method. It verifies the exact gitfile, common and
+administration directories, and refuses to steal administration still bound to
+another present checkout. Only that unchanged backlink is atomically replaced;
+Git's repository-wide `worktree repair` command is not invoked. No incomplete or
+ambiguous checkout is reset, overwritten or removed to finish initialization.
+
 
 #### 4.4b The remote write: exact object, exact expectation, one atomic step
 
@@ -3217,8 +3251,15 @@ The split is therefore by layer, not by parameter:
 | Manual publication | `PublishRecoveryService`, calling the executor directly | manual retry only | its existing locator + background-job authority, unchanged |
 
 `FencedValidatedHeadPublisher` is a thin wrapper constructed in bootstrap with the
-shared executor, store and the service's single execution owner. The caller keeps
-the execution lease across its entire check-then-delegate body:
+shared executor and `ValidatedWorkEffectAuthority`, the same behavior-level
+fence used by staged finalization. That authority owns the store check and the
+service's single execution owner; the wrapper does not duplicate their policy.
+Before dispatch it binds repository, issue, branch and exact target to the claim's
+record key and rejects the manual-only `UNCONSTRAINED` expectation. Unknown
+persistent authority raises without dispatching the next step; the outer owner
+retains the durable outcome-less attempt for reconciliation, including any landed
+branch effect. The caller keeps the execution lease across the entire
+check-then-delegate body (the underlying fence checks are expanded here):
 
 ```python
 def publish(
@@ -3720,7 +3761,7 @@ The contract moves the retention boundary off the worktree:
 | Escrowed capture envelope + completion/validation/exchange-summary copies | `<state_dir>/validated-work/<issue>/<evidence_id>/` | escrow retention sweep only |
 | Superseded **and attached** evidence (§2.1.3) | its own `<evidence_id>/` directory and refs | same window, measured from the owning record's `terminal_at` — role is irrelevant to retention, and superseding never deletes |
 | Run-ledger rows (§2.5) | `issue_run_ledger.sqlite` | `release_runs()`, only once the issue has no unresolved record — the ledger is what proves the runs were considered |
-| Publication workspace (§4.4a) | `<state_dir>/validated-work/<issue>/<evidence_id>/workspace/` | removed on a resolved row; recreated idempotently from the pinned ref, so its loss is never a data-loss event |
+| Publication workspace (§4.4a) | `<state_dir>/validated-work/<issue>/<evidence_id>/publication/workspace/` | removed on a resolved row; recreated idempotently from the pinned ref, so its loss is never a data-loss event |
 | Validated commits | pinned by `refs/issue-orchestrator/validated/<issue>/<evidence_id>` in the shared object store | ref deletion on a RESOLVED record + retention window |
 | Unvalidated commits on top of them (§1.1) | pinned by `refs/issue-orchestrator/observed/<issue>/<evidence_id>` when the worktree head differs | same window as the validated ref |
 | Live run directory | inside the worktree (unchanged) | worktree removal (now non-fatal) |

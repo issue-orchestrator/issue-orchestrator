@@ -2,6 +2,7 @@
 
 import os
 import stat
+import uuid
 from pathlib import Path
 
 
@@ -40,3 +41,23 @@ def write_durable(path: Path, data: bytes) -> None:
         stream.write(data)
         stream.flush()
         os.fsync(stream.fileno())
+
+
+def publish_durable(path: Path, data: bytes, *, staging_root: Path) -> None:
+    """Publish complete bytes atomically without replacing an existing name.
+
+    Interrupted private staging remains in the escrow owner's diagnostic .tmp
+    namespace. A replay uses a fresh staging allocation, so a torn write cannot
+    masquerade as a final receipt/artifact or strand its publication workspace.
+    """
+    durable_directory(staging_root)
+    staging = staging_root / uuid.uuid4().hex
+    durable_directory(staging)
+    temporary = staging / path.name
+    write_durable(temporary, data)
+    fsync_directory(staging)
+    os.link(temporary, path, follow_symlinks=False)
+    fsync_directory(path.parent)
+    temporary.unlink()
+    staging.rmdir()
+    fsync_directory(staging_root)

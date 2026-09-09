@@ -29,4 +29,3 @@ class ContainedValidationRunner(Protocol):
     def run(self, command: ContainedValidationCommand) -> CommandResult:
         """Return only after the scheduler proves the whole job family is gone."""
         ...
-

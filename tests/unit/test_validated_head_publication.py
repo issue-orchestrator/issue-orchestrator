@@ -180,3 +180,9 @@ def test_successful_stages_cannot_name_different_commits():
 def test_no_fabricated_push(status, push):
     with pytest.raises(ValueError):
         BranchWriteOutcome(status, SHA, push, None, "bad")
+
+
+@pytest.mark.parametrize("branch", ["main", "master"])
+def test_exact_publication_never_authorizes_a_protected_branch(branch):
+    with pytest.raises(ValueError, match="protected branch"):
+        replace(command(), branch_name=branch)

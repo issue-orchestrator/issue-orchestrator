@@ -200,6 +200,10 @@ class SqliteIssueRunLedger:
             raise ValueError("rejected receipt has no normalized completion")
         return CompletionRecord.from_dict(json.loads(read_regular(entry.normalized_path)))
 
+    def prepare_evidence(self, evidence: ValidatedWorkEvidence) -> "PreparedCompletionEvidence":
+        from .completion_intake_candidates import prepare_evidence
+        return prepare_evidence(self, evidence)
+
     def evidence_receive_sequence(self, evidence: ValidatedWorkEvidence) -> int:
         from .completion_intake_candidates import evidence_receive_sequence
         return evidence_receive_sequence(self, evidence)

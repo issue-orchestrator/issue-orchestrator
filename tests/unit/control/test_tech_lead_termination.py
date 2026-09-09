@@ -193,6 +193,11 @@ class _Host:
         return terminate_tech_lead_session(self, session)  # type: ignore[arg-type]
 
     # -- TechLeadTerminationHost ----------------------------------------
+    def preserve_issue_work(self, issue_number: int, reason: str):
+        from issue_orchestrator.domain.validated_work_commands import ValidatedWorkDispositionBatch
+        assert reason == "tech-lead-termination"
+        return ValidatedWorkDispositionBatch.no_work(issue_number, reason)
+
     def kill_session(self, name: str) -> None:
         self.killed.append(name)
 

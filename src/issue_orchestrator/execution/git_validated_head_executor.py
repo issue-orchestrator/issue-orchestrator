@@ -1,9 +1,9 @@
 """Exact remote execution without admission, review, or lifecycle policy."""
 
+from ..domain.publication_verification import publication_pr_identity_failure
 from ..domain.exact_git import ExactPushAuthenticationError, ExactPushOutcome
 from ..domain.publication_remote import (
     PublicationPullRequest,
-    PublicationPrState,
     PublicationRemoteError,
     publication_marker,
 )
@@ -317,16 +317,8 @@ class GitValidatedHeadExecutor:
         status: PrEnsureStatus,
         attribution: PullRequestAttribution,
     ) -> PrEnsureOutcome:
-        if pr.state is not PublicationPrState.OPEN:
-            failure = ValidatedWorkFailure.PR_CLOSED_OR_MERGED
-        elif (pr.head_repo, pr.base_repo, pr.branch, pr.base_branch) != (
-            command.repo_slug,
-            command.repo_slug,
-            command.branch_name,
-            command.pr_base_branch,
-        ):
-            failure = ValidatedWorkFailure.PR_BRANCH_MISMATCH
-        else:
+        failure = publication_pr_identity_failure(command, pr)
+        if failure is None:
             try:
                 remote_head = self._remote.read_branch(command)
             except PublicationRemoteError as exc:

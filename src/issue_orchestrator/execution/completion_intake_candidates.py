@@ -18,8 +18,13 @@ def prepare_candidate(ledger: CompletionIntakeLedger, entry_id: str, run: IssueR
 
 
 def evidence_receive_sequence(ledger: CompletionIntakeLedger, evidence: ValidatedWorkEvidence) -> int:
-    """Resolve only immutable owner receipts that reconstruct this exact identity."""
-    sequences = []
+    """Rank evidence through the same exact custody proof used by publication."""
+    return prepare_evidence(ledger, evidence).entry.receive_sequence
+
+
+def prepare_evidence(ledger: CompletionIntakeLedger, evidence: ValidatedWorkEvidence) -> PreparedCompletionEvidence:
+    """Recover the exact allocated role and owned bytes without a session worktree."""
+    candidates: list[PreparedCompletionEvidence] = []
     identity = evidence.identity
     for entry in ledger.entries_for_issue(identity.key.issue_number):
         if entry.run.identity != identity.run_identity or entry.normalized_sha256 != identity.completion_artifact.sha256:
@@ -31,7 +36,7 @@ def evidence_receive_sequence(ledger: CompletionIntakeLedger, evidence: Validate
             head=evidence.observations.worktree_head_sha, branch_verified=identity.branch_binding_verified,
             captured_at=evidence.observations.captured_at)
         if reconstructed.identity == identity:
-            sequences.append(entry.receive_sequence)
-    if not sequences:
+            candidates.append(candidate)
+    if not candidates:
         raise CompletionIntakeError("retained evidence has no exact owner receive-order proof")
-    return max(sequences)
+    return max(candidates, key=lambda candidate: candidate.entry.receive_sequence)

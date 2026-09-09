@@ -1,11 +1,11 @@
 """Fresh configured validation of receipt-owned intent, with exact HEAD binding."""
 
-import hashlib
 import json
 from pathlib import Path
 from dataclasses import replace
 from tempfile import TemporaryDirectory
 
+from ..domain.completion_validation_policy import completion_validator_digest
 from ..domain.completion_intake import (
     CompletionIntakeEntry,
     CompletionIntakeError,
@@ -111,22 +111,13 @@ def run_owned_validation(
         stdout_path=str(destination / "stdout.log"),
         stderr_path=str(destination / "stderr.log"),
     )
-    config = json.dumps(
-        {
-            "suite": "completion_intake",
-            "command": command,
-            "timeout_seconds": timeout_seconds,
-            "version": 1,
-        },
-        sort_keys=True,
-    ).encode()
     result = record.to_dict()
     if oversized:
         result["custody_failure"] = "validation output exceeds custody artifact limit; complete output retained in log parts"
     return OwnedValidationResult(
         binding=binding,
         head_sha=head_sha,
-        validator_digest=hashlib.sha256(config).hexdigest(),
+        validator_digest=completion_validator_digest(command, timeout_seconds),
         result_bytes=json.dumps(
             result, sort_keys=True, separators=(",", ":")
         ).encode(),
