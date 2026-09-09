@@ -21,7 +21,12 @@ from .auth import (
     build_github_auth,
     build_github_token_provider,
 )
-from .errors import GitHubAuthError, GitHubHttpError, GitHubScanIncompleteError, GitHubTransportError
+from .errors import (
+    GitHubAuthError,
+    GitHubHttpError,
+    GitHubScanIncompleteError,
+    GitHubTransportError,
+)
 from .tokens import (
     KEYRING_SERVICE,
     KEYRING_USERNAME,
@@ -294,9 +299,7 @@ def _format_error_entry(err: object) -> str:
     """Format a single entry from a GitHub `errors[]` array."""
     if isinstance(err, dict):
         bits = [
-            str(err[k])
-            for k in ("resource", "field", "code", "message")
-            if err.get(k)
+            str(err[k]) for k in ("resource", "field", "code", "message") if err.get(k)
         ]
         return "/".join(bits)
     return str(err) if err else ""
@@ -483,10 +486,7 @@ class GitHubHttpClient:
                 summary = _summarize_github_error(response_text)
                 detail = f" — {summary}" if summary else ""
                 raise GitHubHttpError(
-                    (
-                        f"GitHub {method.upper()} {path} failed: "
-                        f"{status_code}{detail}"
-                    ),
+                    (f"GitHub {method.upper()} {path} failed: {status_code}{detail}"),
                     method=method,
                     url=str(response.url),
                     status_code=status_code,
@@ -517,7 +517,9 @@ class GitHubHttpClient:
                 duration_ms=duration_ms,
                 error=error,
                 caller=caller,
-                bytes_returned=len(response_text.encode("utf-8")) if response_text else 0,
+                bytes_returned=len(response_text.encode("utf-8"))
+                if response_text
+                else 0,
                 items_returned=items_count,
                 full_scan=_is_full_scan(method, path),
                 rate_limit=rate_limit_info,
@@ -600,7 +602,9 @@ class GitHubHttpClient:
             return payload
         finally:
             duration_ms = int((time.monotonic() - start) * 1000)
-            rate_limit_info = _extract_rate_limit_headers(response) if response is not None else None
+            rate_limit_info = (
+                _extract_rate_limit_headers(response) if response is not None else None
+            )
             gh_audit.record_live_call(
                 command="POST /graphql",
                 caller=caller,
@@ -613,7 +617,9 @@ class GitHubHttpClient:
                 duration_ms=duration_ms,
                 error=error,
                 caller=caller,
-                bytes_returned=len(response_text.encode("utf-8")) if response_text else 0,
+                bytes_returned=len(response_text.encode("utf-8"))
+                if response_text
+                else 0,
                 items_returned=1 if payload.get("data") else 0,
                 full_scan=False,
                 rate_limit=rate_limit_info,
@@ -737,7 +743,9 @@ class GitHubHttpClient:
             if len(batch) < int(params["per_page"]) or len(collected) >= limit:
                 break
             page += 1
-            if page > 20:  # Safety limit: 20 * 100 = 2000 issues (list_all_labels parity)
+            if (
+                page > 20
+            ):  # Safety limit: 20 * 100 = 2000 issues (list_all_labels parity)
                 break
         return collected
 
@@ -846,7 +854,11 @@ class GitHubHttpClient:
 
         Returns the full issue data including number and html_url.
         """
-        json_body: dict[str, Any] = {"title": title, "body": body, "labels": labels or []}
+        json_body: dict[str, Any] = {
+            "title": title,
+            "body": body,
+            "labels": labels or [],
+        }
         if milestone is not None:
             json_body["milestone"] = milestone
 
@@ -879,7 +891,9 @@ class GitHubHttpClient:
             caller="remove_label",
         )
 
-    def get_issue_labels(self, issue_number: int, *, use_cache: bool = True) -> list[str]:
+    def get_issue_labels(
+        self, issue_number: int, *, use_cache: bool = True
+    ) -> list[str]:
         payload = self._request_json(
             "GET",
             f"/repos/{self._config.repo}/issues/{issue_number}/labels",
@@ -1183,7 +1197,10 @@ class GitHubHttpClient:
             caller="add_comment",
         )
         if isinstance(payload, dict):
-            return payload.get("html_url", f"https://github.com/{self._config.repo}/issues/{issue_number}")
+            return payload.get(
+                "html_url",
+                f"https://github.com/{self._config.repo}/issues/{issue_number}",
+            )
         return f"https://github.com/{self._config.repo}/issues/{issue_number}"
 
     def get_issue_comments(
@@ -1201,10 +1218,18 @@ class GitHubHttpClient:
         )
         return payload if isinstance(payload, list) else []
 
-    def find_issue_comment_receipt(self, issue_number: int, *, body: str) -> "IssueCommentReceipt | None":
+    def find_issue_comment_receipt(
+        self, issue_number: int, *, body: str
+    ) -> "IssueCommentReceipt | None":
         from .comment_receipts import find_comment_receipt
-        return find_comment_receipt(request=self._request_json, repo=self._config.repo,
-            issue_number=issue_number, body=body, app_identity=self._auth.comment_app_identity())
+
+        return find_comment_receipt(
+            request=self._request_json,
+            repo=self._config.repo,
+            issue_number=issue_number,
+            body=body,
+            app_identity=self._auth.comment_app_identity(),
+        )
 
     def issue_comment_marker_present(self, issue_number: int, marker: str) -> bool:
         """Return True if any comment on the issue/PR contains ``marker``.
@@ -1378,7 +1403,9 @@ class GitHubHttpClient:
             raise GitHubHttpError("GitHub create ref payload was not an object")
         return payload
 
-    def update_git_ref(self, *, ref: str, sha: str, force: bool = False) -> dict[str, Any]:
+    def update_git_ref(
+        self, *, ref: str, sha: str, force: bool = False
+    ) -> dict[str, Any]:
         encoded = quote(_api_ref_path(ref), safe="/")
         payload = self._request_json(
             "PATCH",
@@ -1439,7 +1466,9 @@ class GitHubHttpClient:
             caller="update_issue_state",
         )
 
-    def update_issue_milestone(self, issue_number: int, milestone: int | None) -> dict[str, Any] | None:
+    def update_issue_milestone(
+        self, issue_number: int, milestone: int | None
+    ) -> dict[str, Any] | None:
         payload = self._request_json(
             "PATCH",
             f"/repos/{self._config.repo}/issues/{issue_number}",
@@ -1458,6 +1487,66 @@ class GitHubHttpClient:
             caller="get_pr",
         )
         return payload if isinstance(payload, dict) else None
+
+    def read_publication_pr(self, number: int) -> dict[str, Any] | None:
+        """Uncached identity read; malformed responses are never absence."""
+        try:
+            payload = self._request_json(
+                "GET",
+                f"/repos/{self._config.repo}/pulls/{number}",
+                use_cache=False,
+                caller="read_publication_pr",
+            )
+        except GitHubHttpError as exc:
+            if exc.status_code == 404:
+                return None
+            raise
+        if not isinstance(payload, dict):
+            raise GitHubHttpError("Malformed publication PR response")
+        return payload
+
+    def read_publication_prs(self, branch: str) -> list[dict[str, Any]]:
+        """Complete, uncached branch candidate set; refuse a capped scan."""
+        owner = self._config.repo.split("/")[0]
+        result: list[dict[str, Any]] = []
+        for page in range(1, 21):
+            payload = self._request_json(
+                "GET",
+                f"/repos/{self._config.repo}/pulls",
+                params={
+                    "head": f"{owner}:{branch}",
+                    "state": "open",
+                    "per_page": 100,
+                    "page": page,
+                },
+                use_cache=False,
+                caller="read_publication_prs",
+            )
+            if not isinstance(payload, list) or any(
+                not isinstance(item, dict) for item in payload
+            ):
+                raise GitHubHttpError("Malformed publication PR candidates")
+            result.extend(payload)
+            if len(payload) < 100:
+                return result
+        raise GitHubHttpError("Publication PR scan incomplete")
+
+    def read_publication_branch(self, branch: str) -> dict[str, Any] | None:
+        encoded = quote(f"heads/{branch}", safe="/")
+        try:
+            payload = self._request_json(
+                "GET",
+                f"/repos/{self._config.repo}/git/ref/{encoded}",
+                use_cache=False,
+                caller="read_publication_branch",
+            )
+        except GitHubHttpError as exc:
+            if exc.status_code == 404:
+                return None
+            raise
+        if not isinstance(payload, dict):
+            raise GitHubHttpError("Malformed publication branch response")
+        return payload
 
     def get_pr_status_check_rollup(self, pr_number: int) -> str | None:
         """Fetch the aggregated status-check rollup for a PR's head commit.
@@ -1489,9 +1578,7 @@ class GitHubHttpClient:
             {"owner": owner, "repo": repo, "number": pr_number},
             caller="get_pr_status_check_rollup",
         )
-        pr_data = (
-            result.get("data", {}).get("repository", {}).get("pullRequest")
-        )
+        pr_data = result.get("data", {}).get("repository", {}).get("pullRequest")
         if not pr_data:
             return None
         nodes = (pr_data.get("commits") or {}).get("nodes") or []
@@ -1553,7 +1640,9 @@ class GitHubHttpClient:
         # cap-truncated, instead of collapsing every gap to permission-denied).
         if state == "FAILURE":
             return CommitCheckRollup(state="FAILURE", capability="ok")
-        capability = _aggregate_rollup_capability(checks.outcome, status_readout.outcome)
+        capability = _aggregate_rollup_capability(
+            checks.outcome, status_readout.outcome
+        )
         return CommitCheckRollup(state=state, capability=capability)
 
     def _read_check_run_signal(self, encoded_sha: str) -> _SourceReadout:
@@ -1596,14 +1685,19 @@ class GitHubHttpClient:
             except GitHubTransportError as exc:
                 logger.debug(
                     "check-runs read failed for %s (page %d, transient): %s",
-                    encoded_sha, page, exc,
+                    encoded_sha,
+                    page,
+                    exc,
                 )
                 return _SourceReadout((False, False, False), outcome="transient_error")
             except GitHubHttpError as exc:
                 outcome = classify_github_http_failure(exc)
                 logger.debug(
                     "check-runs unreadable for %s (page %d, %s): %s",
-                    encoded_sha, page, outcome, exc,
+                    encoded_sha,
+                    page,
+                    outcome,
+                    exc,
                 )
                 return _SourceReadout((False, False, False), outcome=outcome)
             page_failure, page_pending, page_present = _aggregate_check_runs(payload)
@@ -1622,7 +1716,8 @@ class GitHubHttpClient:
                     "without a failure; treating the check-runs source as "
                     "truncated so an unread later-page failure cannot be "
                     "masked as a conclusive success/pending",
-                    _MAX_CHECK_RUN_PAGES, encoded_sha,
+                    _MAX_CHECK_RUN_PAGES,
+                    encoded_sha,
                 )
                 # Cap reached on a full page (a further page exists) with no
                 # failure yet. The unread pages could hold a failed required
@@ -1666,7 +1761,9 @@ class GitHubHttpClient:
         normalized = payload if isinstance(payload, dict) else None
         return _CommitStatusReadout(payload=normalized, outcome="ok")
 
-    def list_prs(self, *, state: str = "open", limit: int = 100) -> list[dict[str, Any]]:
+    def list_prs(
+        self, *, state: str = "open", limit: int = 100
+    ) -> list[dict[str, Any]]:
         payload = self._request_json(
             "GET",
             f"/repos/{self._config.repo}/pulls",
@@ -1811,7 +1908,9 @@ class GitHubHttpClient:
                 return False
             raise
 
-    def get_prs_for_branch(self, branch: str, state: str = "open") -> list[dict[str, Any]]:
+    def get_prs_for_branch(
+        self, branch: str, state: str = "open"
+    ) -> list[dict[str, Any]]:
         owner = self._config.repo.split("/")[0]
         payload = self._request_json(
             "GET",
@@ -1837,20 +1936,25 @@ class GitHubHttpClient:
                     state,
                     item.get("html_url") or item.get("url"),
                 )
-                gh_audit.emit_event(EventName.GH_SEARCH_ITEM_MALFORMED, {
-                    "label": label,
-                    "state": state,
-                    "item": {
-                        "html_url": item.get("html_url"),
-                        "url": item.get("url"),
-                        "title": item.get("title"),
+                gh_audit.emit_event(
+                    EventName.GH_SEARCH_ITEM_MALFORMED,
+                    {
+                        "label": label,
+                        "state": state,
+                        "item": {
+                            "html_url": item.get("html_url"),
+                            "url": item.get("url"),
+                            "title": item.get("title"),
+                        },
                     },
-                })
+                )
                 continue
             items.append(item)
         return items
 
-    def get_prs_with_label(self, label: str, state: str = "open") -> list[dict[str, Any]]:
+    def get_prs_with_label(
+        self, label: str, state: str = "open"
+    ) -> list[dict[str, Any]]:
         if state == "all":
             items: list[dict[str, Any]] = []
             seen: set[int] = set()
@@ -1942,7 +2046,9 @@ class GitHubHttpClient:
             if cursor:
                 variables["after"] = cursor
 
-            result = self._graphql(query, variables, caller="get_prs_with_label_graphql")
+            result = self._graphql(
+                query, variables, caller="get_prs_with_label_graphql"
+            )
             data = result.get("data", {})
             repo_data = data.get("repository", {})
             prs_data = repo_data.get("pullRequests", {})
@@ -1950,7 +2056,10 @@ class GitHubHttpClient:
 
             for node in nodes:
                 # Reshape to match REST API format for _pr_info_from_api
-                labels = [{"name": l["name"]} for l in (node.get("labels", {}).get("nodes", []))]
+                labels = [
+                    {"name": l["name"]}
+                    for l in (node.get("labels", {}).get("nodes", []))
+                ]
                 pr_dict: dict[str, Any] = {
                     "number": node["number"],
                     "title": node.get("title", ""),
@@ -2018,9 +2127,9 @@ class GitHubHttpClient:
             {"owner": owner, "repo": repo, "number": issue_number},
             caller="get_closing_pull_request",
         )
-        issue = (
-            (result.get("data") or {}).get("repository", {}) or {}
-        ).get("issue") or {}
+        issue = ((result.get("data") or {}).get("repository", {}) or {}).get(
+            "issue"
+        ) or {}
         nodes = (issue.get("timelineItems") or {}).get("nodes") or []
         if not nodes:
             return None
@@ -2043,8 +2152,7 @@ class GitHubHttpClient:
         # parens are required so `OR` binds within the disjunction rather than
         # across the `is:pr` qualifier.
         query = (
-            f"repo:{self._config.repo} is:pr "
-            f"(head:{issue_number} OR #{issue_number})"
+            f"repo:{self._config.repo} is:pr (head:{issue_number} OR #{issue_number})"
         )
         payload = self._request_json(
             "GET",
@@ -2105,7 +2213,12 @@ class GitHubHttpClient:
         base: str = "main",
         draft: bool | None = None,
     ) -> dict[str, Any] | None:
-        body_payload: dict[str, Any] = {"title": title, "body": body, "head": head, "base": base}
+        body_payload: dict[str, Any] = {
+            "title": title,
+            "body": body,
+            "head": head,
+            "base": base,
+        }
         if draft is not None:
             body_payload["draft"] = draft
         payload = self._request_json(
@@ -2285,7 +2398,9 @@ class GitHubHttpClient:
     # -------------------- Rate limits --------------------
 
     def get_rate_limit_snapshot(self) -> GitHubRateLimitSnapshot | None:
-        payload = self._request_json("GET", "/rate_limit", caller="rate_limit", use_cache=False)
+        payload = self._request_json(
+            "GET", "/rate_limit", caller="rate_limit", use_cache=False
+        )
         if not isinstance(payload, dict):
             return None
         resources = payload.get("resources", {})
@@ -2341,7 +2456,9 @@ class GitHubHttpClient:
                 duration_ms=duration_ms,
                 error=error,
                 caller="get_token_scopes",
-                bytes_returned=len(response_text.encode("utf-8")) if response_text else 0,
+                bytes_returned=len(response_text.encode("utf-8"))
+                if response_text
+                else 0,
                 items_returned=0,
                 full_scan=False,
             )
@@ -2443,7 +2560,11 @@ def _count_items(payload: Any) -> int | None:
 def _is_full_scan(method: str, path: str) -> bool:
     if method.upper() != "GET":
         return False
-    return path.startswith("/repos/") and (path.endswith("/issues") or path.endswith("/pulls") or path.endswith("/milestones"))
+    return path.startswith("/repos/") and (
+        path.endswith("/issues")
+        or path.endswith("/pulls")
+        or path.endswith("/milestones")
+    )
 
 
 __all__ = [

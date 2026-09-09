@@ -4,6 +4,10 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 
+class ExactPushAuthenticationError(RuntimeError):
+    """Authentication could not supply the effective execution context."""
+
+
 class ExactPushOutcome(StrEnum):
     PUSHED = "pushed"
     LEASE_REJECTED = "lease_rejected"
