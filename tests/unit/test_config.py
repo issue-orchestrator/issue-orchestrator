@@ -3709,7 +3709,7 @@ tech_lead:
         assert (
             result["tech_lead"]["milestone_strategy"]["inherit_from_issues"] == "latest"
         )
-        # All five graduated-authority modes are operator-visible (#6761 F7).
+        # Every graduated-authority mode is operator-visible (#6761 F7).
         assert result["tech_lead"]["authority"] == {
             "post_comment": "propose",
             "create_issue": "execute",
@@ -3717,6 +3717,7 @@ tech_lead:
             "reset_retry": "propose",
             "kill_hung_session": "propose",
             "request_rework": "propose",
+            "recover_validated_work": "propose",
         }
 
     def test_tech_lead_authority_defaults(self):
@@ -3729,6 +3730,7 @@ tech_lead:
         assert config.tech_lead.authority.reset_retry == "propose"
         assert config.tech_lead.authority.kill_hung_session == "propose"
         assert config.tech_lead.authority.request_rework == "propose"
+        assert config.tech_lead.authority.recover_validated_work == "propose"
         assert config.validate() == [] or not any(
             "tech_lead.authority" in e for e in config.validate()
         )
@@ -3744,6 +3746,7 @@ tech_lead:
   authority:
     post_comment: propose
     create_issue: propose
+    recover_validated_work: execute
 """
         config_file = tmp_path / ".issue-orchestrator.yaml"
         config_file.write_text(config_content)
@@ -3755,6 +3758,7 @@ tech_lead:
         # Unset keys keep defaults
         assert config.tech_lead.authority.flag_pattern == "execute"
         assert config.tech_lead.authority.reset_retry == "propose"
+        assert config.tech_lead.authority.recover_validated_work == "execute"
 
     def test_tech_lead_max_concurrent_defaults_to_none(self):
         """Unset tech_lead.max_concurrent shares the worker budget (None)."""

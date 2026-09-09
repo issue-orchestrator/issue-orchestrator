@@ -219,11 +219,9 @@ def validate_decision_for_authority(
       scope — a failure investigation may only address its focus issue; a
       batch review may only address manifest PRs and the anchor tracking
       issue (#6761 re-review finding 2).
-    * An ACT-LEVEL proposal (reset_retry/kill_hung_session) is held to the
-      STRICTER issue-only scope (``allowed_act_level_targets``): its target is
-      handed to the issue reset owner as an ``issue_number``, so a batch
-      manifest PR number — or a tech_lead bookkeeping anchor — is a confused
-      deputy that would reset the wrong entity (#6764 re-review F1).
+    * An ACT-LEVEL proposal is held to the STRICTER issue-only scope
+      (``allowed_act_level_targets``). Operations that need a launch-observed
+      capability, including retained-work recovery, must carry that grant.
     * Failure investigations must publish their diagnosis to the originating
       issue — >=1 ``post_comment`` targeting the focus issue (#6761 F2).
     * ``create_issue`` proposals may not carry protected workflow labels
@@ -498,6 +496,9 @@ def generate_tech_lead_completion_actions(
                 source_session_name=session.run_assets.session_name,
                 observed_at=session.run_assets.started_at,
                 observed_session_generation=authority.observed_kill_target,
+                observed_validated_work_authority=(
+                    authority.observed_validated_work_authority
+                ),
                 rework_targets=authority.observed_rework_targets,
                 report_text=load_result.report_text,
                 dedup_corpus=open_issue_corpus.load(),

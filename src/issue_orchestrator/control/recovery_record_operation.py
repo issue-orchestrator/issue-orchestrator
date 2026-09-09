@@ -19,6 +19,12 @@ class RecoveryRecordOperation:
         self._execution, self._store = execution, store
         self._preparation, self._publication, self._completion = preparation, publication, completion
 
+    def preflight(
+        self, request: RecoveryRecordRequest
+    ) -> RecoveryAttemptPending | None:
+        """Read-only applicability check over the same current-record policy."""
+        return request.refusal(self._store.record_for_id(request.record_id))
+
     def run(self, request: RecoveryRecordRequest,
             state: OrchestratorState) -> RecoveryCompleted | RecoveryAttemptPending:
         """Return only after all synchronous children finish; never transfer a token.

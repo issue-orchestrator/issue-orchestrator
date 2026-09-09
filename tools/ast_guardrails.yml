@@ -121,12 +121,12 @@ deny_attr_calls:
       # spell the same writes out themselves, which is how they drifted apart -
       # and its one governed label goes through NeedsHumanBlock, never here.
       - src/issue_orchestrator/control/operator_unblock.py
-      # tech_lead_proposals hosts ActionApplier execution boundaries extracted
-      # for the applier line budget (#6778): apply_create_tech_lead_issue and
-      # finalize_tech_lead_op_execution run ONLY inside applier handlers, so
-      # their add_comment calls are the same applier IO boundary as
-      # action_applier.py's own.
+      # Tech-lead proposal creation and terminal execution are ActionApplier
+      # boundaries extracted for line budgets (#6778). They run only inside
+      # applier handlers, so their add_comment calls are the same applier IO
+      # boundary as action_applier.py's own.
       - src/issue_orchestrator/control/tech_lead_proposals.py
+      - src/issue_orchestrator/control/tech_lead_proposal_execution.py
       # Same rationale for the two other tech-lead applier boundaries extracted
       # for the applier line budget: apply_append_pattern_observation (#6781/
       # #6957) and apply_promote_tech_lead_finding /

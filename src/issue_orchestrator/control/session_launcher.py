@@ -131,6 +131,10 @@ from .session_worktree_briefing import (
     describe_worktree_state,
     detect_existing_work as detect_existing_work,
 )
+from ..ports.validated_work_recovery_authority import (
+    NoValidatedWorkRecoveryAuthority,
+    ValidatedWorkRecoveryAuthorityReader,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -176,6 +180,9 @@ class SessionLauncher:
         label_manager: Optional["LabelManager"] = None,
         send_to_session_fn: Optional[Callable[[str, str], bool]] = None,
         *,
+        validated_work_recovery_authority: "ValidatedWorkRecoveryAuthorityReader" = (
+            NoValidatedWorkRecoveryAuthority()
+        ),
         # Required (keyword-only): tech_lead prompts treat board-snapshot.json as
         # authoritative required input, so the launcher must always be able to
         # produce one. Tests inject a null-object/fake provider, never None.
@@ -202,6 +209,9 @@ class SessionLauncher:
         self._session_output = session_output
         self._manifest_downloader = manifest_downloader
         self._tech_lead_authority = tech_lead_authority
+        self._validated_work_recovery_authority = (
+            validated_work_recovery_authority
+        )
         self._board_snapshot_provider = board_snapshot_provider
         self._agent_callback_endpoint = agent_callback_endpoint
         self._issue_run_allocator = issue_run_allocator
@@ -624,6 +634,9 @@ class SessionLauncher:
             repository_host=self.repository_host,
             manifest_downloader=self._manifest_downloader,
             tech_lead_authority=self._tech_lead_authority,
+            validated_work_recovery_authority=(
+                self._validated_work_recovery_authority
+            ),
             board_snapshot_provider=self._board_snapshot_provider,
             issue=issue,
             ctx=ctx,

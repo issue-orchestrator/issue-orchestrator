@@ -58,6 +58,9 @@ if TYPE_CHECKING:
     from .tech_lead_kill_session import TechLeadKillSessionExecutor
     from .scoped_rework import RequestReworkExecutor
     from .tech_lead_reset_retry import TechLeadResetRetryExecutor
+    from .tech_lead_validated_work_recovery import (
+        TechLeadValidatedWorkRecoveryExecutor,
+    )
     from .tech_lead_run_ownership import TechLeadRunOwnership
 
 from .label_mutation_stats import LabelMutationStatField, LabelMutationStats
@@ -99,6 +102,7 @@ from .actions import (
     SetIssueStateAction,
     CreateTechLeadIssueAction,
     KillHungSessionAction,
+    RecoverValidatedWorkAction,
     RequestReworkAction,
     SurfaceTechLeadProposalAction,
     CleanupSessionAction,
@@ -129,7 +133,13 @@ ValidationRetryLauncherCallback = Callable[[int], Optional[Session]]
 # Takes issue_number and returns lease_id if active session exists
 LeaseIdLookup = Callable[[int], str | None]
 # Act-level tech_lead op actions share one dispatch shape (#6764/#6778).
-_TechLeadOpAction = TypeVar("_TechLeadOpAction", ResetRetryIssueAction, KillHungSessionAction, RequestReworkAction)
+_TechLeadOpAction = TypeVar(
+    "_TechLeadOpAction",
+    ResetRetryIssueAction,
+    KillHungSessionAction,
+    RequestReworkAction,
+    RecoverValidatedWorkAction,
+)
 @dataclass
 class ActionApplier:
     """Applies actions via ports/adapters.
@@ -198,6 +208,9 @@ class ActionApplier:
     tech_lead_reset_retry: Optional["TechLeadResetRetryExecutor"] = None
     tech_lead_kill_session: Optional["TechLeadKillSessionExecutor"] = None
     request_rework: Optional["RequestReworkExecutor"] = None
+    recover_validated_work: Optional[
+        "TechLeadValidatedWorkRecoveryExecutor"
+    ] = None
     tech_lead_ops: Optional["TechLeadAuthorityStore"] = None
     # Cross-repo filing seam for the finding-promotion lane (#6957). Unwired
     # means promotion actions fail loudly instead of silently no-oping — the
@@ -291,6 +304,7 @@ class ActionApplier:
                 reset_retry=self._apply_reset_retry_issue,
                 kill_hung_session=self._apply_kill_hung_session,
                 request_rework=self._apply_request_rework,
+                recover_validated_work=self._apply_recover_validated_work,
                 events=self.events, label_manager=self.label_manager, needs_human_block=self.needs_human_block,
                 apply_action=self.apply, verify_claim=self._verify_claim_before_write,
                 require_expected=self._require_expected,
@@ -555,7 +569,8 @@ class ActionApplier:
             post_comment=self.repository_host.add_comment,
             require_expected=self._require_expected, verify_claim=self._verify_claim_before_write,
             events=self.events, authority=self.tech_lead_ops,
-            reset=self.tech_lead_reset_retry, kill=self.tech_lead_kill_session, rework=self.request_rework)
+            reset=self.tech_lead_reset_retry, kill=self.tech_lead_kill_session,
+            rework=self.request_rework, recovery=self.recover_validated_work)
 
     def _apply_supersede_pr(self, action: Action) -> ActionResult:
         """Comment on and close a PR that has been superseded by a reset."""
@@ -1493,6 +1508,15 @@ class ActionApplier:
         self._verify_claim_before_write(action, action.request.target.pr_number)
         executor = self.request_rework
         return self._apply_tech_lead_op(action, executor.apply if executor else None, "request_rework")
+
+    def _apply_recover_validated_work(self, action: Action) -> ActionResult:
+        assert isinstance(action, RecoverValidatedWorkAction)
+        executor = self.recover_validated_work
+        return self._apply_tech_lead_op(
+            action,
+            executor.apply if executor else None,
+            "recover_validated_work",
+        )
 
     def _apply_kill_hung_session(self, action: Action) -> ActionResult:
         """Execute an APPROVED kill_hung_session op via the injected owner

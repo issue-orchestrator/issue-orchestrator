@@ -3026,6 +3026,10 @@ class TestClaimGateAudit:
     #   issue-runtime termination boundary (sessions/jobs/pair); its only
     #   GitHub writes are the proposal-issue outcome comment + close, on the
     #   unclaimed gated proposal issue the operator just approved.
+    # - RECOVER_VALIDATED_WORK: the tech-lead dispatch table verifies mutation
+    #   authority on the target issue before invoking the shared recovery
+    #   operation; that owner then checks the full launch-bound evidence
+    #   snapshot before publishing its retained branch/PR.
     # - DISCARD_TERMINAL_TECH_LEAD_PROPOSAL_OPS: orchestrator-owned ledger cleanup
     #   (#6779 R7/R10) - confirms each absent proposal with a targeted READ
     #   (get_issue_state) and discards only the local authority-store op row;
@@ -3085,6 +3089,7 @@ class TestClaimGateAudit:
         ActionType.REQUIRE_TECH_LEAD_INVESTIGATION,
         ActionType.RESET_RETRY_ISSUE,
         ActionType.KILL_HUNG_SESSION,
+        ActionType.RECOVER_VALIDATED_WORK,
         ActionType.RECOVER_TECH_LEAD_PROPOSAL,
         ActionType.DISCARD_TERMINAL_TECH_LEAD_PROPOSAL_OPS,
         ActionType.RECORD_TECH_LEAD_DISPOSITION,

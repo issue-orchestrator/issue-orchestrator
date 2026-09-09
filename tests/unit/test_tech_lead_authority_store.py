@@ -19,6 +19,13 @@ from issue_orchestrator.domain.tech_lead_session import (
     TechLeadSessionGeneration,
     TechLeadSessionFlavor,
 )
+from issue_orchestrator.domain.validated_work import (
+    RemoteBaselineStatus,
+    ValidatedWorkKey,
+)
+from issue_orchestrator.domain.validated_work_commands import (
+    ValidatedWorkAuthoritySnapshot,
+)
 from issue_orchestrator.infra.repo_identity import state_dir
 from issue_orchestrator.ports.tech_lead_authority import (
     InMemoryTechLeadAuthorityStore,
@@ -39,6 +46,22 @@ def _batch(prs: tuple[int, ...] = (101, 102)) -> TechLeadLaunchAuthority:
         flavor=TechLeadSessionFlavor.BATCH_REVIEW,
         anchor_issue_number=7,
         manifest_pr_numbers=prs,
+    )
+
+
+def _recovery_authority(issue_number: int = 14) -> ValidatedWorkAuthoritySnapshot:
+    key = ValidatedWorkKey("owner/repo", issue_number, "14-work", "a" * 40)
+    return ValidatedWorkAuthoritySnapshot(
+        record_id=key.record_id,
+        evidence_id="evidence-14",
+        observation_revision=4,
+        validated_head_sha=key.validated_head_sha,
+        branch_name=key.branch_name,
+        repo_slug=key.repo_slug,
+        issue_number=key.issue_number,
+        pr_number=None,
+        expected_remote_head_sha=None,
+        remote_baseline_status=RemoteBaselineStatus.UNOBSERVED,
     )
 
 
@@ -230,6 +253,40 @@ def test_health_problem_cohort_round_trips_and_is_validated() -> None:
         )
 
 
+def test_validated_work_recovery_authority_round_trips_inside_launch_grant() -> None:
+    grant = _recovery_authority()
+    authority = TechLeadLaunchAuthority(
+        flavor=TechLeadSessionFlavor.HEALTH_REVIEW,
+        anchor_issue_number=9,
+        problem_issue_numbers=(14,),
+        observed_validated_work_authorities=(grant,),
+    )
+
+    restored = TechLeadLaunchAuthority.from_dict(authority.to_dict())
+
+    assert restored == authority
+    assert restored.observed_validated_work_authority(14) == grant
+    assert restored.observed_validated_work_authority(99) is None
+
+
+def test_validated_work_recovery_authority_must_be_sorted_unique_and_in_scope() -> None:
+    grant = _recovery_authority()
+    with pytest.raises(ValueError, match="unique by issue"):
+        TechLeadLaunchAuthority(
+            flavor=TechLeadSessionFlavor.HEALTH_REVIEW,
+            anchor_issue_number=9,
+            problem_issue_numbers=(14,),
+            observed_validated_work_authorities=(grant, grant),
+        )
+    with pytest.raises(ValueError, match="act-level scope"):
+        TechLeadLaunchAuthority(
+            flavor=TechLeadSessionFlavor.HEALTH_REVIEW,
+            anchor_issue_number=9,
+            problem_issue_numbers=(15,),
+            observed_validated_work_authorities=(grant,),
+        )
+
+
 def test_discard_removes_only_the_named_run(tmp_path: Path) -> None:
     """Retention (#6769 F3): discard drops one run's row and nothing else."""
     store = SqliteTechLeadAuthorityStore.for_repo(tmp_path)
@@ -299,6 +356,45 @@ def test_op_round_trip(tmp_path: Path, make_store) -> None:
     assert store.load_op(issue_number=500) == _op()
     assert store.load_op(issue_number=501) is None
     assert store.list_ops() == ((500, _op()),)
+
+
+@pytest.mark.parametrize("make_store", OP_STORES)
+def test_recovery_op_round_trip_preserves_the_approved_snapshot(
+    tmp_path: Path, make_store
+) -> None:
+    store = make_store(tmp_path)
+    grant = _recovery_authority()
+    op = StoredTechLeadOp(
+        op_type="recover_validated_work",
+        target_issue_number=grant.issue_number,
+        rationale="publish retained work",
+        source_run_id="run-1",
+        source_session_name="issue-7",
+        source_action_id="A3",
+        created_at="2026-09-08T00:00:00+00:00",
+        validated_work_authority=grant,
+    )
+
+    store.record_op(issue_number=500, op=op)
+
+    assert store.load_op(issue_number=500) == op
+
+
+def test_recovery_op_requires_only_its_own_typed_snapshot() -> None:
+    grant = _recovery_authority()
+    with pytest.raises(ValueError, match="requires a bound"):
+        _op(target=grant.issue_number, op_type="recover_validated_work")
+    with pytest.raises(ValueError, match="Only recover_validated_work"):
+        StoredTechLeadOp(
+            op_type="reset_retry",
+            target_issue_number=grant.issue_number,
+            rationale="reset",
+            source_run_id="run-1",
+            source_session_name="issue-7",
+            source_action_id="A4",
+            created_at="2026-09-08T00:00:00+00:00",
+            validated_work_authority=grant,
+        )
 
 
 @pytest.mark.parametrize("make_store", OP_STORES)

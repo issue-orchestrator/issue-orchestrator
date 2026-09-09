@@ -38,12 +38,17 @@ from ..domain.tech_lead_session import (
     TechLeadSessionGeneration,
     TechLeadSessionFlavor,
 )
+from ..ports.validated_work_recovery_authority import (
+    NoValidatedWorkRecoveryAuthority,
+    ValidatedWorkRecoveryAuthorityReader,
+)
 from .completion_pr_collision import NoCommitsBetweenError
 from .scoped_rework_observation import observe_rework_targets
 from .completion_types import ERROR_PREFIX_PUBLISH_BLOCKED, ProcessingResult
 from .tech_lead_evidence import build_evidence_map, write_evidence_map
 from .tech_lead_dispositions import recovery_tracker_grants
 from .tech_lead_manifest_builder import TechLeadCandidatePolicy, TechLeadManifestBuilder
+from .tech_lead_recovery_targets import prepare_validated_work_recovery_targets
 
 if TYPE_CHECKING:
     from .completion_ports import GitAdapter
@@ -308,6 +313,9 @@ def prepare_tech_lead_session_data(
     repository_host: "RepositoryHost",
     manifest_downloader: "ManifestDownloader",
     tech_lead_authority: "TechLeadAuthorityStore",
+    validated_work_recovery_authority: "ValidatedWorkRecoveryAuthorityReader" = (
+        NoValidatedWorkRecoveryAuthority()
+    ),
     board_snapshot_provider: "BoardSnapshotProvider",
     issue: "Issue",
     ctx: "WorktreeContext",
@@ -408,6 +416,18 @@ def prepare_tech_lead_session_data(
     (run_dir / "tech-lead-data" / "scoped-rework-targets.json").write_text(
         json.dumps([target.to_dict() for target in rework_targets], indent=2), encoding="utf-8"
     )
+    act_level_issue_numbers = (
+        (issue.number,)
+        if focused
+        else problem_issue_numbers
+        if flavor is TechLeadSessionFlavor.HEALTH_REVIEW
+        else ()
+    )
+    validated_work_authorities = prepare_validated_work_recovery_targets(
+        data_dir=run_dir / "tech-lead-data",
+        authority=validated_work_recovery_authority,
+        issue_numbers=act_level_issue_numbers,
+    )
     previous_disposition = tech_lead_authority.load_disposition(issue_number=issue.number) if focused else None
     if previous_disposition is not None and previous_disposition.phase == "recovered":
         previous_disposition = None
@@ -435,6 +455,7 @@ def prepare_tech_lead_session_data(
             problem_issue_numbers=problem_issue_numbers,
             observed_session_generations=observed_session_generations,
             observed_rework_targets=rework_targets,
+            observed_validated_work_authorities=validated_work_authorities,
             recovery_tracker_numbers=tracker_grants,
         ),
     )

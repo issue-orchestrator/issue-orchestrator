@@ -18,6 +18,13 @@ from issue_orchestrator.domain.tech_lead_session import (
     TechLeadLaunchAuthority,
     TechLeadSessionFlavor,
 )
+from issue_orchestrator.domain.validated_work import (
+    RemoteBaselineStatus,
+    ValidatedWorkKey,
+)
+from issue_orchestrator.domain.validated_work_commands import (
+    ValidatedWorkAuthoritySnapshot,
+)
 from issue_orchestrator.infra.config import Config
 
 FOCUS = 6410
@@ -25,12 +32,31 @@ ANCHOR = 7000
 TRACKER = 6914
 
 
-def _authority() -> TechLeadLaunchAuthority:
+def _validated_work_authority(issue_number: int = FOCUS):
+    key = ValidatedWorkKey("owner/repo", issue_number, "focus-work", "a" * 40)
+    return ValidatedWorkAuthoritySnapshot(
+        record_id=key.record_id,
+        evidence_id="evidence-1",
+        observation_revision=3,
+        validated_head_sha=key.validated_head_sha,
+        branch_name=key.branch_name,
+        repo_slug=key.repo_slug,
+        issue_number=key.issue_number,
+        pr_number=None,
+        expected_remote_head_sha=None,
+        remote_baseline_status=RemoteBaselineStatus.UNOBSERVED,
+    )
+
+
+def _authority(*, with_recovery: bool = False) -> TechLeadLaunchAuthority:
     return TechLeadLaunchAuthority(
         flavor=TechLeadSessionFlavor.FAILURE_INVESTIGATION,
         anchor_issue_number=ANCHOR,
         focus_issue_number=FOCUS,
         recovery_tracker_numbers=(TRACKER,),
+        observed_validated_work_authorities=(
+            (_validated_work_authority(),) if with_recovery else ()
+        ),
     )
 
 
@@ -141,6 +167,37 @@ def test_immediate_remedies_and_human_handoff_are_terminal(remedy):
 def test_kill_without_observed_generation_cannot_be_a_terminal_remedy():
     action = ProposedTechLeadAction(id="A2", action_type="kill_hung_session", target_number=FOCUS, body="remedy")
     assert "launch-observed worker generation" in _validate(_decision(_diagnosis(), action))
+
+
+def test_recovery_without_launch_observed_authority_is_rejected_before_planning():
+    action = ProposedTechLeadAction(
+        id="A2",
+        action_type="recover_validated_work",
+        target_number=FOCUS,
+        body="Publish the retained validated head.",
+    )
+
+    assert "no launch-observed retained-work authority" in _validate(
+        _decision(_diagnosis(), action)
+    )
+
+
+def test_recovery_with_exact_launch_observed_authority_is_terminal():
+    config = Config()
+    action = ProposedTechLeadAction(
+        id="A2",
+        action_type="recover_validated_work",
+        target_number=FOCUS,
+        body="Publish the retained validated head.",
+    )
+    decision = _decision(_diagnosis(), action)
+
+    assert validate_decision_for_authority(
+        decision,
+        _authority(with_recovery=True),
+        config=config,
+        labels=LabelManager(config),
+    ) is None
 
 
 @pytest.mark.parametrize("target_is_pr", [False, True])

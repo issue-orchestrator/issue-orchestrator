@@ -1259,6 +1259,9 @@ def build_test_orchestrator_deps(
     from issue_orchestrator.ports.validated_work_drain import (
         NullValidatedWorkRecoveryDrain,
     )
+    from issue_orchestrator.ports.validated_work_recovery_authority import (
+        NoValidatedWorkRecoveryAuthority,
+    )
 
     return OrchestratorDeps(
         runtime_lifecycle=runtime_lifecycle,
@@ -1297,6 +1300,9 @@ def build_test_orchestrator_deps(
             manifest_downloader=manifest_downloader,
             issue_run_allocator=issue_run_allocator,
             tech_lead_authority=tech_lead_authority,
+            validated_work_recovery_authority=(
+                NoValidatedWorkRecoveryAuthority()
+            ),
             claim_manager=claim_manager,
             provider_resilience=provider_resilience,
             state_machine_manager=state_machine_manager,

@@ -13,10 +13,10 @@ Two scopes, deliberately disjoint for a health review (#6764 re-review F1):
 * **General** (:data:`TARGET_SCOPED_ACTION_TYPES`) — comment/routing proposals
   may address the general launch scope, which for a batch review includes the
   audited manifest PRs.
-* **Act-level** (``ACT_LEVEL_TECH_LEAD_ACTIONS``) — reset/kill are held to the
-  STRICTER issue-only scope, because their target is handed to the issue reset
-  owner as an ``issue_number``: a manifest PR number, or a tech-lead bookkeeping
-  anchor, is a confused deputy that resets the wrong entity.
+* **Act-level** (``ACT_LEVEL_TECH_LEAD_ACTIONS``) — runtime, rework, and
+  retained-work mutations are held to the STRICTER immutable capability scope.
+  A manifest PR number or bookkeeping anchor passed as a work issue would make
+  the tech lead a confused deputy.
 
 ``create_issue`` and ``flag_pattern`` carry no target and are scope-free by
 construction.
@@ -72,7 +72,7 @@ def _act_level_scope_description(authority: TechLeadLaunchAuthority) -> str:
             f" ({cohort or 'empty — a periodic review owns no act-level target'})"
         )
     return (
-        "no work issue is in scope for an act-level reset/kill from this"
+        "no work issue is in scope for an act-level mutation from this"
         " session — that intent applies only to a failure investigation's"
         " focus issue; batch manifest entries are PRs and tech_lead anchors are"
         " bookkeeping issues, so route board findings through the scope-free"
@@ -87,8 +87,9 @@ def target_scope_violation(
 
     Two scopes (#6764 re-review F1): comment/routing proposals may target the
     general launch scope (manifest PRs included for a batch), while act-level
-    reset/kill proposals are held to the STRICTER issue-only scope so a
-    manifest PR number never reaches the issue reset owner as an ``issue_number``.
+    mutations are held to the STRICTER issue-only scope so a manifest PR number
+    never reaches an issue-level owner as an ``issue_number``. Operations that
+    require an exact launch-observed capability are validated here as well.
     """
     allowed = authority.allowed_targets()
     act_allowed = authority.allowed_act_level_targets()
@@ -102,8 +103,20 @@ def target_scope_violation(
                 return (
                     f"proposed action {action.id} ({action.action_type}) targets"
                     f" #{action.target_number}, outside this session's launch"
-                    f" scope for an act-level reset/kill:"
+                    f" scope for an act-level mutation:"
                     f" {_act_level_scope_description(authority)}"
+                )
+            if (
+                action.action_type == "recover_validated_work"
+                and authority.observed_validated_work_authority(
+                    action.target_number or 0
+                )
+                is None
+            ):
+                return (
+                    f"proposed action {action.id} (recover_validated_work) has"
+                    " no launch-observed retained-work authority for"
+                    f" #{action.target_number}"
                 )
             continue
         if action.action_type not in TARGET_SCOPED_ACTION_TYPES:

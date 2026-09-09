@@ -45,6 +45,7 @@ TECH_LEAD_AUTHORITY_CONFIGURABLE_ACTIONS = (
     "reset_retry",
     "kill_hung_session",
     "request_rework",
+    "recover_validated_work",
 )
 
 
@@ -77,6 +78,7 @@ class TechLeadAuthorityConfig:
     reset_retry: str = "propose"
     kill_hung_session: str = "propose"
     request_rework: str = "propose"
+    recover_validated_work: str = "propose"
 
     @classmethod
     def from_mapping(cls, data: dict) -> "TechLeadAuthorityConfig":

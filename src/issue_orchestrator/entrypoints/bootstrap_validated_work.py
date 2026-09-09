@@ -10,6 +10,9 @@ from ..ports.completion_intake import CompletionIntakeLedger
 from ..control.validated_work_admission import RankedEvidenceAdmission
 from ..ports.validated_work_store import ValidatedWorkStore
 from ..ports.validated_work_recovery_store import ValidatedWorkRecoveryStore
+from ..ports.validated_work_recovery_authority import (
+    ValidatedWorkRecoveryAuthorityReader,
+)
 from ..control.validated_work_escrow import ValidatedWorkEscrowMaintenance
 from ..ports.issue_disposition_gate import IssueDispositionMutationGate
 from ..ports.publication_workspace import PublicationWorkspaces
@@ -87,6 +90,27 @@ class ValidatedWorkRecoveryOwners(ValidatedWorkAdmissionOwners):
     workspaces: PublicationWorkspaces
     remote: "PublicationRemote"
     issues: "RecoveryIssueReader"
+
+
+def build_validated_work_recovery_authority(
+    owners: ValidatedWorkAdmissionOwners,
+) -> ValidatedWorkRecoveryAuthorityReader:
+    """Expose the launch-time selector without leaking store reads to bootstrap."""
+    from ..control.validated_work_recovery_authority import (
+        ValidatedWorkRecoveryAuthority,
+    )
+
+    return ValidatedWorkRecoveryAuthority(owners.store)
+
+
+def build_no_validated_work_recovery_authority(
+) -> ValidatedWorkRecoveryAuthorityReader:
+    """Compose explicit unavailable recovery authority for test environments."""
+    from ..ports.validated_work_recovery_authority import (
+        NoValidatedWorkRecoveryAuthority,
+    )
+
+    return NoValidatedWorkRecoveryAuthority()
 
 
 def build_validated_work_admission(config: Config, working_copy: ExactGit, intake: CompletionIntakeLedger) -> ValidatedWorkAdmissionOwners:

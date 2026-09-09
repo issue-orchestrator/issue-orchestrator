@@ -92,6 +92,7 @@ from .actions import (
     Action,
     AddCommentAction,
     KillHungSessionAction,
+    RecoverValidatedWorkAction,
     RequestReworkAction,
     ResetRetryIssueAction,
     SurfaceTechLeadProposalAction,
@@ -124,11 +125,18 @@ from .tech_lead_proposals import (
 if TYPE_CHECKING:
     from ..domain.tech_lead_artifacts import TechLeadFinding
     from ..domain.tech_lead_findings import PatternEvidence
+    from ..domain.validated_work_commands import ValidatedWorkAuthoritySnapshot
     from ..infra.config import Config
     from .reconciliation import ExpectedState
 
 # Cap applied to SurfaceTechLeadProposalAction.body_preview at construction.
 _BODY_PREVIEW_CHARS = 500
+
+
+def _no_validated_work_authority(
+    _issue_number: int,
+) -> "ValidatedWorkAuthoritySnapshot | None":
+    return None
 
 # Operator-facing gate-note rendering (outcome → prose, batch note, composition)
 # lives in tech_lead_gate_notes so the planner stays focused on action mapping.
@@ -187,6 +195,9 @@ def plan_tech_lead_decision_actions(
     observed_session_generation: Callable[[int], TechLeadSessionGeneration | None],
     dedup_corpus: OpenIssueCorpus,
     dedup_grant: DuplicateTargetGrant,
+    observed_validated_work_authority: Callable[
+        [int], "ValidatedWorkAuthoritySnapshot | None"
+    ] = _no_validated_work_authority,
     rework_targets: tuple[ReworkTarget, ...] = (),
     report_text: str = "",
 ) -> list[Action]:
@@ -218,6 +229,7 @@ def plan_tech_lead_decision_actions(
         source_session_name=source_session_name,
         observed_at=observed_at,
         observed_session_generation=observed_session_generation,
+        observed_validated_work_authority=observed_validated_work_authority,
         dedup_corpus=dedup_corpus,
         dedup_grant=dedup_grant,
         rework_targets=rework_targets,
@@ -268,6 +280,9 @@ class _DecisionActionPlanner:
     source_session_name: str
     observed_at: str
     observed_session_generation: Callable[[int], TechLeadSessionGeneration | None]
+    observed_validated_work_authority: Callable[
+        [int], "ValidatedWorkAuthoritySnapshot | None"
+    ]
     # Trusted dedup facts (#6878), REQUIRED — never a silent empty default, which
     # would disable the safety mechanism invisibly. The corpus carries an explicit
     # Ready/Unavailable state; the grant is the launch-authority-derived set a
@@ -363,6 +378,13 @@ class _DecisionActionPlanner:
         """Gated proposal issue for an act-level intent (#6778)."""
         assert proposed.target_number is not None  # enforced by validate()
         request = self._rework_request(proposed) if proposed.action_type == "request_rework" else None
+        validated_work_authority = (
+            self.observed_validated_work_authority(proposed.target_number)
+            if proposed.action_type == "recover_validated_work"
+            else None
+        )
+        if proposed.action_type == "recover_validated_work" and validated_work_authority is None:
+            raise ValueError("recover_validated_work has no immutable launch authority")
         key = (proposed.action_type, request.key if request else proposed.target_number)
         existing = self.op_ledger.get(key)
         if existing is not None:
@@ -374,7 +396,8 @@ class _DecisionActionPlanner:
                         source_run_id=self.source_run_id, source_session_name=self.source_session_name,
                         target_session=self.observed_session_generation(proposed.target_number)
                             if proposed.action_type == "kill_hung_session" else None,
-                        rework_request=request),
+                        rework_request=request,
+                        validated_work_authority=validated_work_authority),
                     number=existing,
                     comment=build_duplicate_proposal_comment(
                         proposed, anchor_issue_number=self._anchor_number
@@ -413,6 +436,7 @@ class _DecisionActionPlanner:
                 expected=self.expected,
                 target_session=target_session,
                 rework_request=request,
+                validated_work_authority=validated_work_authority,
             )
         )
 
@@ -447,6 +471,29 @@ class _DecisionActionPlanner:
                 finding_ids=proposed.finding_ids, anchor_issue_number=self._anchor_number,
                 reason="tech_lead decision: scoped rework", expected=self.expected,
             ))
+            return
+        if proposed.action_type == "recover_validated_work":
+            authority = self.observed_validated_work_authority(
+                proposed.target_number
+            )
+            if authority is None:
+                raise ValueError(
+                    "recover_validated_work has no immutable launch authority"
+                )
+            self.actions.append(
+                RecoverValidatedWorkAction(
+                    authority=authority,
+                    rationale=proposed.body or "",
+                    proposal_id=proposed.id,
+                    finding_ids=proposed.finding_ids,
+                    anchor_issue_number=self._anchor_number,
+                    reason=(
+                        f"tech_lead decision action {proposed.id}: recover"
+                        f" retained validated work for issue #{proposed.target_number}"
+                    ),
+                    expected=self.expected,
+                )
+            )
             return
         assert proposed.action_type == "kill_hung_session"
         target_session = self.observed_session_generation(proposed.target_number)

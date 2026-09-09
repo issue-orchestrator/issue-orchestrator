@@ -74,6 +74,7 @@ class ActionType(Enum):
     # Act-level tech_lead execution: terminate issue runtime (#6778, approved ops)
     KILL_HUNG_SESSION = "kill_hung_session"
     REQUEST_REWORK = "request_rework"
+    RECOVER_VALIDATED_WORK = "recover_validated_work"
 
     # Confirm-and-discard terminal gated-proposal ledger rows (#6779 R7/R10):
     # the single mutating boundary for proposal-op cleanup, applied off the

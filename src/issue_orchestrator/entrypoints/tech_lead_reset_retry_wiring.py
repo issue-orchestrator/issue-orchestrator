@@ -31,6 +31,9 @@ from ..control.tech_lead_reset_retry import (
     ResetRetryRunOutcome,
     TechLeadResetRetryExecutor,
 )
+from ..control.tech_lead_validated_work_recovery import (
+    TechLeadValidatedWorkRecoveryExecutor,
+)
 
 if TYPE_CHECKING:
     from ..domain.tech_lead_session import TechLeadSessionGeneration
@@ -40,6 +43,20 @@ if TYPE_CHECKING:
 # Event provenance for ISSUE_UNBLOCKED emitted by an agent-authorized reset,
 # distinguishing it from the operator-clicked "web.reset-retry" source.
 TECH_LEAD_RESET_RETRY_EVENT_SOURCE = "tech_lead.reset_retry"
+
+
+def build_tech_lead_validated_work_recovery_executor(
+    orchestrator: "Orchestrator",
+) -> TechLeadValidatedWorkRecoveryExecutor:
+    """Bind the tech-lead command to the process-shared recovery owner."""
+    deps = orchestrator.deps
+    return TechLeadValidatedWorkRecoveryExecutor(
+        events=deps.events,
+        preflight=deps.validated_work_recovery.preflight,
+        recover=lambda command: deps.validated_work_recovery.recover(
+            command, orchestrator.state
+        ),
+    )
 
 
 def build_tech_lead_kill_session_executor(
