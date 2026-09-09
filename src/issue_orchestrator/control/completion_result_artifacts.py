@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
+from ..domain.completion_intake import CompletionIntakeReceipt
+from ..domain.completion_processing import CompletionPublication
 from ..domain.events import SessionEvent
 from ..domain.models import COMPLETION_RECORD_PATH, CompletionRecord, RequestedAction
 from ..domain.runtime_identity import RuntimeIdentity
@@ -52,6 +54,7 @@ def build_processing_result(
     error_details: list[dict[str, Any]],
     total_duration: float,
     completion_path: str | None,
+    intake_receipt: CompletionIntakeReceipt | None,
     preserved_completion_path: str | None,
     run_assets: SessionRunAssets,
     emit_completion_event: EmitCompletionEvent,
@@ -136,7 +139,10 @@ def build_processing_result(
         )
         post_issue_comment(issue_number, comment, context="processing failure")
 
-    cleanup_completion_record_fn(worktree, completion_path, issue_number)
+    if intake_receipt is None:
+        cleanup_completion_record_fn(worktree, completion_path, issue_number)
+    # Receipt custody belongs to the ledger. Neither its immutable normalized
+    # artifact nor a concurrently corrected agent candidate is this owner's to delete.
 
     review_exchange_halted = any(
         error.startswith(REVIEW_EXCHANGE_ERROR_PREFIX) for error in errors
@@ -145,7 +151,9 @@ def build_processing_result(
     return ProcessingResult(
         success=success,
         message=message,
+        intake_receipt=intake_receipt,
         pr_url=pr_url,
+        publication=CompletionPublication.from_result(pr_url, branch),
         actions_taken=actions_taken if actions_taken else None,
         diagnostic_path=diagnostic_path,
         completion_record_path=preserved_completion_path,

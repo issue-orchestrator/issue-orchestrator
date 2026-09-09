@@ -188,6 +188,8 @@ def create_mock_orchestrator():
     mock_deps.publish_recovery = MagicMock()
     mock_deps.publish_recovery.can_retry_publish.return_value = False
     mock_deps.timeline_reader = MagicMock()
+    from tests.runtime_lifecycle_helpers import runtime_owners
+    mock_deps.runtime_lifecycle = runtime_owners(active_sessions=state.active_sessions)
     mock_orch.deps = mock_deps
     mock_orch.scheduler = MagicMock()
     mock_orch.scheduler.sort_by_priority.side_effect = lambda issues: issues

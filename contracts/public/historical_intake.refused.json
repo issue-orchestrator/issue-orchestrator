@@ -1,0 +1,27 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "reason": {
+      "enum": [
+        "wrong_repository",
+        "candidate_changed",
+        "invalid_completion",
+        "invalid_selection",
+        "prerequisite_unavailable"
+      ],
+      "title": "Reason",
+      "type": "string"
+    },
+    "status": {
+      "const": "refused",
+      "title": "Status",
+      "type": "string"
+    }
+  },
+  "required": [
+    "status",
+    "reason"
+  ],
+  "title": "HistoricalIntakeRefusedContract",
+  "type": "object"
+}

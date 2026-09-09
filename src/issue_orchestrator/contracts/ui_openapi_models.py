@@ -76,11 +76,51 @@ class CompletedCodingAttemptPayload(BaseModel):
     started_at: str
     validation: ValidationOutcomePayload
 
+class CompletionIntakeReceiptPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    content_sha256: str
+    entry_id: str
+
+    @field_validator('content_sha256')
+    @classmethod
+    def _validate_content_sha256_pattern(cls, value: Any) -> Any:
+        if value is not None and re.search('^[0-9a-f]{64}$', value) is None:
+            raise ValueError("content_sha256 must match '^[0-9a-f]{64}$'")
+        return value
+
+    @field_validator('entry_id')
+    @classmethod
+    def _validate_entry_id_pattern(cls, value: Any) -> Any:
+        if value is not None and re.search('^[0-9a-f]{64}$', value) is None:
+            raise ValueError("entry_id must match '^[0-9a-f]{64}$'")
+        return value
+
 class CompletionRecordEvidencePayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal['available']
     path: str
     summary: str | None = None
+
+class CompletionResumeOutcomePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    actions_taken: list[str] | None
+    errors: list[str] | None
+    message: str
+    pr_url: str | None
+    success: bool
+
+class CompletionSubmissionPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    content_sha256: str
+    raw_bytes: str = Field(..., max_length=2796204)
+    submission_key: str = Field(..., min_length=1, max_length=128)
+
+    @field_validator('content_sha256')
+    @classmethod
+    def _validate_content_sha256_pattern(cls, value: Any) -> Any:
+        if value is not None and re.search('^[0-9a-f]{64}$', value) is None:
+            raise ValueError("content_sha256 must match '^[0-9a-f]{64}$'")
+        return value
 
 class ConfigDialogPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -461,6 +501,84 @@ class FlowColumnPayload(BaseModel):
     items: list[IssueItemPayload]
     session_scoped: bool | None = None
     title: str
+
+class HistoricalIntakeCommandPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    actor: str = Field(..., min_length=1)
+    branch_name: str = Field(..., min_length=1)
+    candidate_path: str
+    candidate_sha256: str
+    issue_number: int = Field(..., ge=1, strict=True)
+    reason: str = Field(..., min_length=1)
+    repo_slug: str = Field(..., min_length=1)
+    target_head_sha: str
+
+    @field_validator('candidate_path')
+    @classmethod
+    def _validate_candidate_path_pattern(cls, value: Any) -> Any:
+        if value is not None and re.search('^/', value) is None:
+            raise ValueError("candidate_path must match '^/'")
+        return value
+
+    @field_validator('candidate_sha256')
+    @classmethod
+    def _validate_candidate_sha256_pattern(cls, value: Any) -> Any:
+        if value is not None and re.search('^[0-9a-f]{64}$', value) is None:
+            raise ValueError("candidate_sha256 must match '^[0-9a-f]{64}$'")
+        return value
+
+    @field_validator('target_head_sha')
+    @classmethod
+    def _validate_target_head_sha_pattern(cls, value: Any) -> Any:
+        if value is not None and re.search('^[0-9a-f]{40}$', value) is None:
+            raise ValueError("target_head_sha must match '^[0-9a-f]{40}$'")
+        return value
+
+class HistoricalIntakeParkedPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    evidence_id: str
+    record_id: str
+    status: Literal['parked']
+
+    @field_validator('evidence_id')
+    @classmethod
+    def _validate_evidence_id_pattern(cls, value: Any) -> Any:
+        if value is not None and re.search('^e1:[0-9a-f]{64}$', value) is None:
+            raise ValueError("evidence_id must match '^e1:[0-9a-f]{64}$'")
+        return value
+
+    @field_validator('record_id')
+    @classmethod
+    def _validate_record_id_pattern(cls, value: Any) -> Any:
+        if value is not None and re.search('^r1:[0-9a-f]{64}$', value) is None:
+            raise ValueError("record_id must match '^r1:[0-9a-f]{64}$'")
+        return value
+
+class HistoricalIntakeRefusedPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    reason: Literal['wrong_repository', 'candidate_changed', 'invalid_completion', 'invalid_selection', 'prerequisite_unavailable']
+    status: Literal['refused']
+
+class HistoricalIntakeValidationFailedPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    entry_id: str
+    status: Literal['validation_failed']
+    validation_path: str = Field(..., min_length=1)
+    validation_sha256: str
+
+    @field_validator('entry_id')
+    @classmethod
+    def _validate_entry_id_pattern(cls, value: Any) -> Any:
+        if value is not None and re.search('^[0-9a-f]{64}$', value) is None:
+            raise ValueError("entry_id must match '^[0-9a-f]{64}$'")
+        return value
+
+    @field_validator('validation_sha256')
+    @classmethod
+    def _validate_validation_sha256_pattern(cls, value: Any) -> Any:
+        if value is not None and re.search('^[0-9a-f]{64}$', value) is None:
+            raise ValueError("validation_sha256 must match '^[0-9a-f]{64}$'")
+        return value
 
 class InfoDialogPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -1412,6 +1530,8 @@ CodingAttemptPayload: TypeAlias = RunningCodingAttemptPayload | CompletedCodingA
 E2EFailureEvidencePayload: TypeAlias = E2EFailureDetailsAvailablePayload | E2EFailureDetailsMissingPayload
 
 E2ETestExecutionPayload: TypeAlias = PassedE2ETestExecutionPayload | FailedE2ETestExecutionPayload | RunningE2ETestExecutionPayload | MissingE2ETestEvidencePayload
+
+HistoricalIntakeOutcomePayload: TypeAlias = HistoricalIntakeParkedPayload | HistoricalIntakeRefusedPayload | HistoricalIntakeValidationFailedPayload
 
 LifecycleTimelineContainerPayload: TypeAlias = DashboardTimelineContainerPayload | E2ESuiteTimelineContainerPayload
 

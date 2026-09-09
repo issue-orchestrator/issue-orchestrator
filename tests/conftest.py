@@ -38,6 +38,10 @@ from issue_orchestrator.ports.run_ledger_store import (
     SingleInstanceRunLedgerStore,
 )
 from pathlib import Path
+from collections.abc import Callable
+from issue_orchestrator.ports.completion_intake import CompletionIntakeRuntime
+from issue_orchestrator.ports.review_exchange_runner import ReviewExchangeRunner
+from issue_orchestrator.ports.working_copy import WorkingCopy
 from typing import Optional
 from unittest.mock import MagicMock, PropertyMock, patch
 from fastapi.testclient import TestClient
@@ -52,7 +56,7 @@ from issue_orchestrator.ports.pull_request_tracker import (
     StatusCheckRollupRead,
 )
 from issue_orchestrator.ports.repository_host import DependencyIssueSnapshot
-from issue_orchestrator.domain.issue_key import FakeIssueKey, IssueKey
+from issue_orchestrator.domain.issue_key import FakeIssueKey, GitHubIssueKey, IssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 
@@ -65,6 +69,19 @@ TEST_AGENT_CALLBACK_TOKEN = "test-agent-callback-token"
 # =============================================================================
 # Prevent tests from accidentally writing git config to the main repo.
 # When GIT_DIR is set, `git config` writes to that repo regardless of cwd.
+
+@pytest.fixture
+def completion_intake_fixture(tmp_path):
+    from tests.completion_intake_helpers import make_completion_intake_fixture
+
+    return make_completion_intake_fixture(tmp_path / "intake-owner")
+
+
+@pytest.fixture
+def completion_intake(completion_intake_fixture):
+    """Inject the real receipt lifetime through the typed runtime port."""
+    return completion_intake_fixture.runtime
+
 
 @pytest.fixture(autouse=True)
 def isolate_git_env(monkeypatch):
@@ -303,7 +320,8 @@ class MockGitHubAdapter:
     adapter rather than patching individual functions.
     """
 
-    def __init__(self):
+    def __init__(self, *, repo: str | None = None):
+        self.repo = repo
         # Storage for test data
         self.issues: list[Issue] = []
         self.labels: dict[int, set[str]] = {}  # issue_number -> labels
@@ -385,6 +403,8 @@ class MockGitHubAdapter:
 
     def create_issue_key(self, issue_number: int) -> IssueKey:
         """Create an IssueKey for testing."""
+        if self.repo is not None:
+            return GitHubIssueKey(repo=self.repo, external_id=str(issue_number))
         return FakeIssueKey(name=str(issue_number))
 
     def get_issue_labels(self, issue_number: int) -> list[str]:
@@ -884,6 +904,7 @@ def build_test_orchestrator_deps(
     worktree_manager,
     working_copy=None,
     *,
+    state,
     session_controller=None,
     label_sync=None,
     fact_gatherer=None,
@@ -895,6 +916,11 @@ def build_test_orchestrator_deps(
     timeline_reader=None,
     timeline_writer=None,
     provider_readiness_probe=None,
+    intake_working_copy: WorkingCopy | None = None,
+    review_exchange_runner_factory: Callable[
+        [CompletionIntakeRuntime], ReviewExchangeRunner
+    ]
+    | None = None,
 ):
     """Factory function to create OrchestratorDeps for testing.
 
@@ -908,6 +934,7 @@ def build_test_orchestrator_deps(
         events: EventSink (MockEventSink or similar)
         runner: SessionRunner (MockSessionRunner or similar)
         worktree_manager: WorktreeManager mock
+        state: The exact state later passed to Orchestrator; lifecycle shares its sessions.
         working_copy: Optional WorkingCopy (defaults to GitWorkingCopy)
         session_controller: Optional override for SessionController (for testing)
         label_sync: Optional override for LabelSync (for testing)
@@ -981,8 +1008,25 @@ def build_test_orchestrator_deps(
 
     issue_run_ledger = SqliteIssueRunLedger(state_dir(config.repo_root) / "issue_run_ledger.sqlite")
     from issue_orchestrator.control.issue_run_allocator import IssueRunAllocationService
-    issue_run_allocator = IssueRunAllocationService(session_output, issue_run_ledger)
+    evidence_working_copy = working_copy if intake_working_copy is None else intake_working_copy
+    issue_run_allocator = IssueRunAllocationService(session_output, issue_run_ledger, evidence_working_copy, configuration=config)
+    from issue_orchestrator.entrypoints.bootstrap_run_services import (
+        build_completion_intake,
+    )
+
+    from issue_orchestrator.entrypoints.bootstrap_validated_work import build_validated_work_admission
+    validated_work = build_validated_work_admission(config, evidence_working_copy, issue_run_ledger)
+    completion_intake = build_completion_intake(
+        config,
+        issue_run_ledger,
+        issue_run_allocator,
+        evidence_working_copy,
+        command_runner,
+        validated_work,
+    )
+    pair_registry = InMemoryPersistentExchangePairRegistry()
     completion_processor = CompletionProcessor(
+        completion_intake=completion_intake,
         issue_run_allocator=issue_run_allocator,
         agent_callback_endpoint=agent_callback_endpoint,
         label_adapter=repo_host,
@@ -990,8 +1034,14 @@ def build_test_orchestrator_deps(
         git_adapter=working_copy,
         event_bus=None,
         session_output=session_output,
-        review_exchange_runner=PersistentReviewExchangeRunner(
-            session_output, InMemoryPersistentExchangePairRegistry(),
+        review_exchange_runner=(
+            PersistentReviewExchangeRunner(
+                session_output,
+                pair_registry,
+                completion_intake=completion_intake,
+            )
+            if review_exchange_runner_factory is None
+            else review_exchange_runner_factory(completion_intake)
         ),
         label_config={
             "blocked": config.get_label_blocked(),
@@ -1111,9 +1161,8 @@ def build_test_orchestrator_deps(
     )
 
     _action_applier.claim_gate = claim_gate
-    # build_test_orchestrator_deps() returns deps without a live Orchestrator state.
-    # Use an explicit no-op lease lookup so claim verification behavior is predictable
-    # for tests that consume deps directly instead of relying on runtime wiring.
+    # Tests consuming deps directly choose single-instance claim behavior; the
+    # Orchestrator binds its actual lease lookup when constructed.
     _action_applier.lease_id_lookup = lambda _issue_number: None
 
     from issue_orchestrator.ports.provider_readiness import (
@@ -1123,6 +1172,7 @@ def build_test_orchestrator_deps(
     readiness_probe = provider_readiness_probe or NO_PROVIDER_READINESS_PROBE
 
     infra_services = InfraServices(
+        pair_registry=pair_registry,
         budgeted_validation=DisabledBudgetedValidation(),
         # Explicitly null: a test that pauses must never write through a
         # production filesystem adapter.
@@ -1174,9 +1224,13 @@ def build_test_orchestrator_deps(
     # into the very store this block reads (#6999 F2 round 2).
     _action_applier.needs_human_block = needs_human_block
 
+    from issue_orchestrator.ports.manual_publication import ManualPublisher
+    manual_publisher = MagicMock(spec=ManualPublisher)
+    manual_publisher.publish.side_effect = AssertionError("Manual publication needs an explicit test port")
+
     publish_recovery = PublishRecoveryService(
         repository_host=repo_host,
-        completion_processor=completion_processor,
+        manual_publisher=manual_publisher,
         locator_store=JsonPublishRetryLocatorStore(
             config.repo_root / ".issue-orchestrator" / "state" / "publish_retry_locators.json"
         ),
@@ -1192,14 +1246,25 @@ def build_test_orchestrator_deps(
     # Same post-construction wiring as bootstrap: the ActionApplier abandons
     # publish retries at issue terminal boundaries via the runtime terminator.
     _action_applier.publish_recovery = publish_recovery
+    _action_applier.completion_intake = completion_intake
+    from issue_orchestrator.entrypoints.bootstrap_issue_runtime import build_issue_runtime
+    runtime_lifecycle = build_issue_runtime(
+        state=state, ledger=issue_run_ledger, intake=completion_intake,
+        validated_work=validated_work, working_copy=evidence_working_copy,
+        sessions=_session_manager, pair_registry=pair_registry, supervisor=None,
+        publish_recovery=publish_recovery, events=events,
+    )
+    _action_applier.runtime_lifecycle = runtime_lifecycle
 
     return OrchestratorDeps(
+        runtime_lifecycle=runtime_lifecycle,
         events=events,
         runner=runner,
         # Orchestrator-owned, outside every worktree, exactly as bootstrap
         # wires it (#6999 F7).
         pending_work_claims=pending_work_claims,
         issue_run_ledger=issue_run_ledger,
+        completion_intake=completion_intake,
         issue_run_allocator=issue_run_allocator,
         claim_quarantine=build_claim_quarantine_owner(
             store=pending_work_claims,
@@ -1334,12 +1399,11 @@ def explicit_orchestrator_deps(request):
 
     Usage:
         def test_something(explicit_orchestrator_deps, sample_config):
-            deps = explicit_orchestrator_deps(sample_config, mock_repo_host, mock_wt_manager)
-            orchestrator = Orchestrator(
-                config=sample_config,
-                _repository_host=mock_repo_host,
-                **deps,
+            state = OrchestratorState()
+            deps = explicit_orchestrator_deps(
+                sample_config, mock_repo_host, mock_wt_manager, state=state
             )
+            orchestrator = Orchestrator(config=sample_config, deps=deps, state=state)
     """
     # Use provided mocks if test requests them, otherwise create new ones
     if 'mock_terminal_plugin' in request.fixturenames:
@@ -1355,11 +1419,11 @@ def explicit_orchestrator_deps(request):
     mock_events = MockEventSink()
     mock_runner = MockSessionRunner(plugin)
 
-    def create_deps(config, repo_host=None, worktree_manager=None):
+    def create_deps(config, repo_host=None, worktree_manager=None, *, state):
         """Create all dependencies for Orchestrator constructor."""
         rh = repo_host or default_repo_host
         wm = worktree_manager or MagicMock()
-        return build_test_orchestrator_deps(config, rh, mock_events, mock_runner, wm)
+        return build_test_orchestrator_deps(config, rh, mock_events, mock_runner, wm, state=state)
 
     return create_deps
 
@@ -1410,6 +1474,13 @@ def sample_orchestrator(sample_config, mock_repository_host):
     runner.plugin.session_exists_override = False
     wt_manager = GitWorktreeManager()
     wc = GitWorkingCopy()
+    from issue_orchestrator.execution.command_runner import LocalCommandRunner
+    initialized = LocalCommandRunner().run(
+        ["git", "init", "--initial-branch=main"], cwd=sample_config.repo_root, timeout_seconds=30
+    )
+    assert initialized.returncode == 0, initialized.stderr
+    from issue_orchestrator.domain.models import OrchestratorState
+    state = OrchestratorState()
 
     deps = build_test_orchestrator_deps(
         sample_config,
@@ -1418,9 +1489,10 @@ def sample_orchestrator(sample_config, mock_repository_host):
         runner,
         wt_manager,
         working_copy=wc,
+        state=state,
     )
 
-    return Orchestrator(config=sample_config, deps=deps)
+    return Orchestrator(config=sample_config, deps=deps, state=state)
 
 
 @pytest.fixture

@@ -1,0 +1,57 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "actor": {
+      "minLength": 1,
+      "title": "Actor",
+      "type": "string"
+    },
+    "branch_name": {
+      "minLength": 1,
+      "title": "Branch Name",
+      "type": "string"
+    },
+    "candidate_path": {
+      "pattern": "^/",
+      "title": "Candidate Path",
+      "type": "string"
+    },
+    "candidate_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Candidate Sha256",
+      "type": "string"
+    },
+    "issue_number": {
+      "exclusiveMinimum": 0,
+      "title": "Issue Number",
+      "type": "integer"
+    },
+    "reason": {
+      "minLength": 1,
+      "title": "Reason",
+      "type": "string"
+    },
+    "repo_slug": {
+      "minLength": 1,
+      "title": "Repo Slug",
+      "type": "string"
+    },
+    "target_head_sha": {
+      "pattern": "^[0-9a-f]{40}$",
+      "title": "Target Head Sha",
+      "type": "string"
+    }
+  },
+  "required": [
+    "repo_slug",
+    "issue_number",
+    "branch_name",
+    "target_head_sha",
+    "candidate_path",
+    "candidate_sha256",
+    "actor",
+    "reason"
+  ],
+  "title": "HistoricalIntakeCommandContract",
+  "type": "object"
+}

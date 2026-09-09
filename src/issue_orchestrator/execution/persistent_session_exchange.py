@@ -20,6 +20,8 @@ no-progress termination, and event emission.
 
 from __future__ import annotations
 
+from ..ports.completion_intake import CompletionIntakeRuntime
+
 import json
 import logging
 from collections.abc import Callable
@@ -90,11 +92,16 @@ from ..ports.turn_mailbox import TurnMailbox
 from ..domain.review_exchange_run import ReviewExchangeRun, ReviewExchangeRunAssets
 from ..domain.review_exchange_summary import ReviewExchangeReason, ReviewExchangeStatus, ReviewExchangeSummaryArtifactRef, ReviewExchangeSummaryV1, ReviewExchangeTerminalState
 from ..domain.runtime_config import RuntimeConfigReference
+from ..domain.review_validation import ReviewValidationEvidence
 from ..domain import review_exchange_turn_artifacts as turn_artifacts
 from ..events import EventContext, EventName
 from ..infra.env import ENV_PREFIX
 from ..infra.logging_config import log_context
 from ..infra.repo_identity import get_repo_head_sha
+from .persistent_pair_validation import (
+    PairValidationMirror as _PairValidationMirror,
+    validate_coder_completion as _validate_coder_completion,
+)
 from ..infra.terminal_recording import TERMINAL_RECORDING_FILENAME
 from ..ports import (
     EventSink,
@@ -137,6 +144,7 @@ from .persistent_round_runner import (
 from .persistent_role_prompt_policy import (
     FRESH_CODEX_PROMPT_PROCESS_TRIGGER,
     RoleAttemptWorkspace as _RoleAttemptWorkspace,
+    CoderReceiptAttemptWorkspace,
     role_prompt_inbox_path as _role_prompt_inbox_path,
     role_session_needs_fresh_prompt_process,
 )
@@ -263,6 +271,8 @@ def _release_pair_after_exchange_exception(
 def run_persistent_session_exchange(  # noqa: PLR0913
     *,
     exchange_run: ReviewExchangeRun,
+    completion_capability: str,
+    completion_intake: CompletionIntakeRuntime,
     session_output: SessionOutput,
     pair_registry: InMemoryPersistentExchangePairRegistry,
     persistent_pair_root: Path,
@@ -280,7 +290,7 @@ def run_persistent_session_exchange(  # noqa: PLR0913
     max_no_progress: int,
     require_validation: bool,
     nit_policy: str = "surface",
-    initial_validation_record_path: Path | None = None,
+    initial_validation_evidence: ReviewValidationEvidence | None = None,
     approval_gate: ReviewExchangeApprovalGate | None = None,
     web_port: int | None = None,
     events: EventSink | None = None,
@@ -399,15 +409,22 @@ def run_persistent_session_exchange(  # noqa: PLR0913
     )
 
     run_validation_record_path = exchange_run.assets.validation_record_path
+    exchange_intake = completion_intake.bind_exchange(exchange_run.session_run)
     pair_validation = _PairValidationMirror(
+        head_reader=get_repo_head_sha,
         pair_dir=pair_dir,
         record_path=pair_validation_record,
         coder_worktree_path=coder_worktree_path,
         run_record_path=run_validation_record_path,
+        intake=exchange_intake,
     )
-    pair_validation.replace_from_initial(initial_validation_record_path)
+    pair_validation.replace_from_initial(initial_validation_evidence)
+
+    spawned_for_run = False
 
     def _spawn_pair() -> PersistentExchangePair:
+        nonlocal spawned_for_run
+        spawned_for_run = True
         # Cache miss: this is the first exchange for the issue (or the
         # previous pair died). Create the reviewer worktree and open
         # both sessions with pair-scoped env paths.
@@ -423,6 +440,7 @@ def run_persistent_session_exchange(  # noqa: PLR0913
         )
         coder_spec = _RoleSessionSpec(
             role=Role.CODER,
+            completion_capability=completion_capability,
             agent=coder_agent,
             worktree=coder_worktree_path,
             run_dir=run_dir,
@@ -556,6 +574,7 @@ def run_persistent_session_exchange(  # noqa: PLR0913
         pair=pair,
         spec=_RoleSessionSpec(
             role=Role.CODER,
+            completion_capability=completion_capability,
             agent=coder_agent,
             worktree=coder_worktree_path,
             run_dir=run_dir,
@@ -574,6 +593,7 @@ def run_persistent_session_exchange(  # noqa: PLR0913
         ),
         slice_path=coder_session_slice,
     )
+    coder_session_owner.bind_allocated_run(process_started_for_run=spawned_for_run)
     reviewer_session_owner = _RoleSessionOwner(
         pair=pair,
         spec=_RoleSessionSpec(
@@ -666,6 +686,7 @@ def run_persistent_session_exchange(  # noqa: PLR0913
             ),
         )
     except Exception as exc:
+        exchange_intake.close_and_drain()
         _release_pair_after_exchange_exception(
             pair_registry=pair_registry,
             pair=pair,
@@ -686,6 +707,7 @@ def run_persistent_session_exchange(  # noqa: PLR0913
         _clear_role_prompt_inbox(pair.coder_response_path)
         _clear_role_prompt_inbox(pair.reviewer_response_path)
 
+    exchange_intake.close_and_drain()
     _release_pair_after_no_completion(
         pair_registry=pair_registry,
         pair=pair,
@@ -694,107 +716,6 @@ def run_persistent_session_exchange(  # noqa: PLR0913
         outcome=outcome,
     )
     return outcome
-
-
-@dataclass(frozen=True)
-class _PairValidationMirror:
-    """Own the pair-scoped validation record's freshness contract.
-
-    The persistent pair owns pair-scoped validation evidence, but validation is
-    only valid for the coder worktree's current HEAD. This mirror is the
-    single owner for invalidating stale pair records, copying the
-    current validation owner's record into pair scope, and asserting
-    that a required validation record both passed and matches HEAD.
-    """
-
-    pair_dir: Path
-    record_path: Path
-    coder_worktree_path: Path
-    run_record_path: Path | None = None
-
-    def replace_from_initial(self, source: Path | None) -> None:
-        """Mirror the caller's current validation source at exchange start.
-
-        A missing source clears any prior pair record. That is
-        intentional: an exchange without current validation evidence
-        must not inherit the last exchange's passing record.
-        """
-        self._replace_from(source)
-
-    def refresh_from_completion(
-        self,
-        payload: dict[str, Any],
-        *,
-        run_validation_record_path: Path,
-    ) -> str | None:
-        """Mirror validation evidence produced by this coder turn."""
-        source, error = self._completion_validation_source(
-            payload,
-            run_validation_record_path=run_validation_record_path,
-        )
-        if error is not None:
-            self._clear()
-            return error
-        self._replace_from(source)
-        return None
-
-    def current_validation_error(self) -> str | None:
-        return _validation_record_error(
-            self.record_path,
-            current_head_sha=get_repo_head_sha(self.coder_worktree_path),
-        )
-
-    def _completion_validation_source(
-        self,
-        payload: dict[str, Any],
-        *,
-        run_validation_record_path: Path,
-    ) -> tuple[Path | None, str | None]:
-        raw_path = payload.get("validation_record_path")
-        if raw_path is not None:
-            if not isinstance(raw_path, str) or not raw_path.strip():
-                return (
-                    None,
-                    "completion validation_record_path must be a non-empty string",
-                )
-            return self._validated_worktree_path(raw_path)
-        if run_validation_record_path.exists():
-            return run_validation_record_path, None
-        return None, None
-
-    def _validated_worktree_path(self, raw_path: str) -> tuple[Path | None, str | None]:
-        candidate = Path(raw_path)
-        if not candidate.is_absolute():
-            candidate = self.coder_worktree_path / candidate
-        try:
-            resolved = candidate.resolve()
-            worktree = self.coder_worktree_path.resolve()
-            if resolved != self.record_path.resolve():
-                resolved.relative_to(worktree)
-        except (OSError, ValueError):
-            return None, (
-                "completion validation_record_path must stay under the coder worktree"
-            )
-        if not resolved.exists():
-            return None, f"completion validation_record_path does not exist: {resolved}"
-        if not resolved.is_file():
-            return None, f"completion validation_record_path is not a file: {resolved}"
-        return resolved, None
-
-    def _replace_from(self, source: Path | None) -> None:
-        if source is None or not source.exists():
-            self._clear()
-            return
-        self.pair_dir.mkdir(parents=True, exist_ok=True)
-        payload = source.read_bytes()
-        _atomic_write_bytes(self.record_path, payload)
-        if self.run_record_path is not None:
-            _atomic_write_bytes(self.run_record_path, payload)
-
-    def _clear(self) -> None:
-        self.record_path.unlink(missing_ok=True)
-        if self.run_record_path is not None:
-            self.run_record_path.unlink(missing_ok=True)
 
 
 @dataclass(frozen=True)
@@ -817,6 +738,7 @@ class _RoleSessionSpec:
     issue_title: str
     session_name: str
     response_channel: ResponseChannel
+    completion_capability: str | None = field(default=None, repr=False)
 
 
 @dataclass
@@ -861,6 +783,11 @@ class _RoleSessionOwner:
                 return self._respawn(trigger=FRESH_CODEX_PROMPT_PROCESS_TRIGGER)
             return session
         return self._respawn(trigger="session is not live before next prompt")
+
+    def bind_allocated_run(self, *, process_started_for_run: bool) -> None:
+        """An existing process cannot retain a previous allocated run's capability."""
+        if not process_started_for_run:
+            self._respawn(trigger="allocated run changed")
 
     def note_turn_completed(self) -> None:
         """Record that the current process has completed a role turn."""
@@ -1040,6 +967,7 @@ def _open_role_session(spec: _RoleSessionSpec) -> PersistentSession:
         validation_output_dir=validation_output_dir,
         worktree=worktree,
         runtime_config=spec.runtime_config,
+        completion_capability=spec.completion_capability,
         agent_label=agent_label,
         web_port=web_port,
         issue_number=issue_number,
@@ -1079,6 +1007,7 @@ def _build_role_env(
     web_port: int | None,
     issue_number: int,
     session_name: str,
+    completion_capability: str | None = None,
 ) -> dict[str, str]:
     """Compose the agent environment via the shared filtered-env owner.
 
@@ -1110,6 +1039,8 @@ def _build_role_env(
     }
     overrides.update(runtime_config.to_env())
     if role == Role.CODER.value:
+        if completion_capability is not None:
+            overrides[f"{ENV_PREFIX}COMPLETION_CAPABILITY"] = completion_capability
         overrides[f"{ENV_PREFIX}VALIDATION_OUTPUT_DIR"] = str(validation_output_dir)
         overrides[f"{ENV_PREFIX}RUN_DIR"] = str(validation_output_dir)
     if review_report_file is not None:
@@ -1612,7 +1543,8 @@ def _drive_rounds(command: _DriveRoundsCommand) -> ReviewExchangeOutcome:
         response_file=reviewer_response,
         side_artifact_paths=(reviewer_report_path,),
     )
-    coder_workspace = _RoleAttemptWorkspace(
+    coder_workspace = CoderReceiptAttemptWorkspace(
+        intake=pair_validation.intake,
         response_file=coder_response,
         side_artifact_paths=(coder_completion_path,),
     )
@@ -2066,7 +1998,6 @@ def _enforce_coder_protocol(
     protocol_error = _validate_coder_completion(
         completion_path=coder_completion_path,
         pair_validation=pair_validation,
-        run_validation_record_path=run_dir / "validation-record.json",
         require_validation=require_validation,
     )
     next_attempt_index = 2
@@ -2186,7 +2117,6 @@ def _enforce_coder_protocol(
         protocol_error = _validate_coder_completion(
             completion_path=coder_completion_path,
             pair_validation=pair_validation,
-            run_validation_record_path=run_dir / "validation-record.json",
             require_validation=require_validation,
         )
     if protocol_error is not None:
@@ -3149,71 +3079,6 @@ def _record_chapter(command: _ChapterRecordCommand) -> int:
         },
     )
     return pair_event_index
-
-
-def _validation_record_error(
-    record_path: Path,
-    *,
-    current_head_sha: str | None,
-) -> str | None:
-    if not record_path.exists():
-        return "validation-record.json missing"
-    try:
-        data = json.loads(record_path.read_text())
-    except json.JSONDecodeError:
-        return "validation-record.json is not valid JSON"
-    if not isinstance(data, dict):
-        return "validation-record.json must be a JSON object"
-    if data.get("passed") is not True:
-        return "validation-record.json did not pass"
-    if current_head_sha is None:
-        return "cannot determine current HEAD for validation-record.json"
-    record_head_sha = data.get("head_sha")
-    if not isinstance(record_head_sha, str) or not record_head_sha:
-        return "validation-record.json missing head_sha"
-    if record_head_sha != current_head_sha:
-        return (
-            "validation-record.json head "
-            f"{record_head_sha[:12]} does not match current HEAD "
-            f"{current_head_sha[:12]}"
-        )
-    return None
-
-
-def _validate_coder_completion(
-    *,
-    completion_path: Path,
-    pair_validation: _PairValidationMirror,
-    run_validation_record_path: Path,
-    require_validation: bool,
-) -> str | None:
-    """Mirror of control/review_exchange_loop._validate_coder_protocol.
-
-    The coder must produce a completion-coder.json artifact (the
-    ``coding-done`` CLI's output) and, when ``require_validation`` is on,
-    a passing validation-record.json. A coder that only writes the
-    review-response file but skips coding-done would otherwise advance
-    the exchange by accident.
-    """
-    if not completion_path.exists():
-        return f"missing completion artifact: {completion_path}"
-    if completion_path.stat().st_size <= 0:
-        return f"completion artifact is empty: {completion_path}"
-    try:
-        payload = json.loads(completion_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return f"completion artifact is not valid JSON: {completion_path}"
-    if not isinstance(payload, dict):
-        return f"completion artifact must be a JSON object: {completion_path}"
-    validation_source_error = pair_validation.refresh_from_completion(
-        payload,
-        run_validation_record_path=run_validation_record_path,
-    )
-    if require_validation:
-        if validation_source_error is not None:
-            return validation_source_error
-        return pair_validation.current_validation_error()
-    return None
 
 
 # ``_atomic_write_json`` is the shared helper from ``infra.atomic_io``;

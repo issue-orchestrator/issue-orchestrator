@@ -39,12 +39,15 @@ The journey from "awaiting-merge reconciler detects a merged PR" to
 
 from __future__ import annotations
 
+from tests.runtime_lifecycle_helpers import make_action_applier
+
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
 from issue_orchestrator.control.action_applier import ActionApplier
+from issue_orchestrator.ports.completion_intake import CompletionIntakeRuntime
 from issue_orchestrator.control.actions import ReconcileHistoryEntryAction
 from issue_orchestrator.control.session_history import SessionHistoryOwner
 from issue_orchestrator.domain.models import SessionHistoryEntry
@@ -95,6 +98,7 @@ class _ListSink(EventSink):
 def _build_applier_with_dual_sink(
     history_entries: list[SessionHistoryEntry],
     store: TimelineStore,
+    completion_intake: CompletionIntakeRuntime,
 ) -> tuple[ActionApplier, _ListSink]:
     """Wire an ActionApplier whose event sink fans out to both a
     capturing list and the production TimelineWriter pipeline."""
@@ -109,7 +113,8 @@ def _build_applier_with_dual_sink(
     fresh_issue_reader = MagicMock()
     fresh_issue_reader.read_issue_labels.return_value = []
 
-    applier = ActionApplier(
+    applier = make_action_applier(
+        completion_intake=completion_intake,
         labels=labels,
         sessions=sessions,
         events=fan_in,
@@ -126,7 +131,7 @@ class TestPrMergedTimelineJourney:
     """Agent journey: PR merged → user sees `PR merged` on the timeline."""
 
     def test_merged_status_surfaces_pr_merged_in_user_view(
-        self, tmp_path: Path
+        self, tmp_path: Path, completion_intake
     ) -> None:
         """The full journey from reconciliation to projection."""
         issue_number = 7070
@@ -143,7 +148,9 @@ class TestPrMergedTimelineJourney:
             status_reason="Recovered awaiting merge state on startup",
         )
         store = _RecordingStore()
-        applier, list_sink = _build_applier_with_dual_sink([entry], store)
+        applier, list_sink = _build_applier_with_dual_sink(
+            [entry], store, completion_intake
+        )
 
         action = ReconcileHistoryEntryAction(
             issue_number=issue_number,
@@ -207,7 +214,7 @@ class TestPrMergedTimelineJourney:
         assert merged_event.status == "completed"
 
     def test_closed_without_merge_does_not_show_pr_merged(
-        self, tmp_path: Path
+        self, tmp_path: Path, completion_intake
     ) -> None:
         """Regression guard: PR closed without merge must NOT surface
         a `review.merged` event. The user expects "PR merged" to mean
@@ -227,7 +234,9 @@ class TestPrMergedTimelineJourney:
             status_reason="Recovered awaiting merge state on startup",
         )
         store = _RecordingStore()
-        applier, list_sink = _build_applier_with_dual_sink([entry], store)
+        applier, list_sink = _build_applier_with_dual_sink(
+            [entry], store, completion_intake
+        )
 
         action = ReconcileHistoryEntryAction(
             issue_number=issue_number,

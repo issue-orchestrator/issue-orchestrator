@@ -113,7 +113,12 @@ def main() -> None:
     # Handle --resume flag
     if args.resume:
         print("\nTriggering orchestrator resume...")
-        resume_success, resume_error = trigger_orchestrator_resume(verbose=args.verbose)
+        from .completion_submit import submit_completion_file
+
+        receipt = submit_completion_file(output_path)
+        resume_success, resume_error = trigger_orchestrator_resume(
+            verbose=args.verbose, receipt=receipt
+        )
         if resume_success:
             print("Orchestrator resume triggered successfully.")
         else:

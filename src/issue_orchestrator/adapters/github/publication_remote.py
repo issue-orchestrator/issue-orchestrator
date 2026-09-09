@@ -9,7 +9,7 @@ from ...domain.publication_remote import (
     PublicationPullRequest,
     PublicationPrState,
     PublicationRemoteError,
-    publication_marker,
+    attributed_publication_body,
 )
 from ...domain.validated_head_publication import PublishValidatedHeadCommand
 from ...domain.validated_work import require_sha
@@ -134,10 +134,13 @@ class GitHubPublicationRemote:
         self._require_repository(command)
         try:
             raw = self._client.create_pr(
-                title=f"#{command.issue_number}: Publish validated work",
-                body=f"Closes #{command.issue_number}\n\n{publication_marker(command.issue_number, command.branch_name)}",
+                title=command.content.title,
+                body=attributed_publication_body(
+                    command.content.body, command.issue_number, command.branch_name
+                ),
                 head=command.branch_name,
                 base=command.pr_base_branch,
+                draft=command.content.draft,
             )
             if raw is None:
                 raise PublicationRemoteError("PR create response was lost")

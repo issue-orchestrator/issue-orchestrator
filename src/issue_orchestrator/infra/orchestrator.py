@@ -1,5 +1,7 @@
 """Main orchestrator - ties everything together."""
 
+from ..control.background_job_supervisor import drain_background_jobs
+
 import asyncio, logging, os, signal, threading, time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -8,6 +10,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Optional, cast
 
 if TYPE_CHECKING:
+    from ..domain.completion_intake import (
+        SubmitCompletionEvidence,
+        CompletionIntakeReceipt,
+    )
+    from ..domain.historical_intake import (
+        HistoricalIntakeCommand,
+        HistoricalIntakeOutcome,
+    )
     from ..control.review_exchange_lifecycle import GenerationBoundTermination
     from ..ports.provider_resilience import ProviderErrorType
     from ..control.planner_types import OrchestratorSnapshot, Plan
@@ -60,7 +70,7 @@ from ..domain.pause_state import PauseActor, PauseReason, PauseTransitionOutcome
 from ..domain.state_machines.issue_machine import IssueStateMachine
 from ..domain.state_machines.session_machine import SessionStateMachine
 from ..domain.state_machines.review_machine import ReviewStateMachine
-from ..control.session_completion import handle_session_completion as _handle_session_completion, process_active_sessions as _process_active_sessions
+from ..control.session_completion import handle_session_completion as _handle_session_completion, process_active_sessions as _process_active_sessions, unprocessed_session_policy
 from ..control.session_launcher import SessionLauncher
 from ..control.board_snapshot_builder import StateBoardSnapshotProvider
 from ..control.tech_lead_run_wiring import (
@@ -89,7 +99,7 @@ from ..control.session_routing import (
 )
 from ..control.cleanup_manager import CleanupManager
 from ..control.worker_budget import worker_slot_free
-from ..control.review_exchange_lifecycle import IssueRuntimeTermination, ReviewExchangeCancellation, cancel_issue_review_exchange, terminate_issue_runtime
+from ..control.review_exchange_lifecycle import IssueRuntimeTermination, ReviewExchangeCancellation
 from ..control.completion_handler import (
     CompletionHandler,
     launch_review_by_number as _ch_launch_review_by_number,
@@ -152,6 +162,8 @@ class Orchestrator:
     def __post_init__(self):
         # All validation is done by OrchestratorDeps being a frozen dataclass with no Optional fields.
         # If deps is constructed, all dependencies are present.
+        if self.state.active_sessions is not self.deps.runtime_lifecycle.core.active_sessions:
+            raise ValueError("orchestrator state must share its runtime lifecycle active-session owner")
         init_orchestrator_components(self)
 
     @cached_property
@@ -249,45 +261,35 @@ class Orchestrator:
         return terminate_tech_lead_session(self, session)
 
     def cancel_review_exchange_for_issue(self, issue_number: int, *, reason: str) -> ReviewExchangeCancellation:
-        """Cancel review-exchange work through the issue lifecycle owner."""
-        return cancel_issue_review_exchange(
-            issue_number=issue_number,
-            reason=reason,
-            pair_registry=self.deps.services.pair_registry,
-            job_supervisor=self.deps.services.background_job_supervisor,
-        )
+        """Cancel issue-scoped review-exchange runtime work.
+
+        Entrypoints use this behavior-level facade instead of reaching
+        through ``deps`` to find lifecycle collaborators.
+        """
+        return self.deps.runtime_lifecycle.cancel_exchange(issue_number, reason)
+
+    def submit_completion_evidence(
+        self, capability: str, command: "SubmitCompletionEvidence"
+    ) -> "CompletionIntakeReceipt":
+        return self.deps.completion_intake.submit(capability, command)
+
+    def import_historical_completion(
+        self, command: "HistoricalIntakeCommand"
+    ) -> "HistoricalIntakeOutcome":
+        return self.deps.completion_intake.import_historical(command)
 
     def terminate_issue_runtime_for_issue(self, issue_number: int, *, reason: str) -> IssueRuntimeTermination:
         """Terminate all issue-scoped runtime owners at a lifecycle boundary."""
-        return terminate_issue_runtime(
-            issue_number=issue_number,
-            reason=reason,
-            pair_registry=self.deps.services.pair_registry,
-            job_supervisor=self.deps.services.background_job_supervisor,
-            session_manager=self.deps.session_manager,
-            active_sessions=self.state.active_sessions,
-            publish_recovery=self.deps.publish_recovery,
-        )
+        return self.deps.runtime_lifecycle.terminate(issue_number, reason)
 
     def issue_session_generation_stale_reason(self, target: "TechLeadSessionGeneration") -> str | None:
         """Read current applicability without stopping or re-approving any work."""
-        from ..control.review_exchange_lifecycle import issue_session_generation_stale_reason
-        return issue_session_generation_stale_reason(target=target,
-            active_sessions=self.state.active_sessions, session_exists=self._session_exists)
+        return self.deps.runtime_lifecycle.generation_stale_reason(target,
+            session_exists=self._session_exists)
 
     def terminate_issue_session_generation(self, target: "TechLeadSessionGeneration", *, reason: str) -> "GenerationBoundTermination":
-        """Conditionally stop one exact launch-observed worker generation."""
-        from ..control.review_exchange_lifecycle import terminate_issue_session_generation
-        return terminate_issue_session_generation(
-            target=target,
-            reason=reason,
-            active_sessions=self.state.active_sessions,
-            session_exists=self._session_exists,
-            kill_session=self.kill_session,
-            pair_registry=self.deps.services.pair_registry,
-            job_supervisor=self.deps.services.background_job_supervisor,
-            publish_recovery=self.deps.publish_recovery,
-        )
+        return self.deps.runtime_lifecycle.terminate_generation(target, reason,
+            session_exists=self._session_exists, kill_session=self.kill_session)
 
     @cached_property
     def _cleanup_manager(self) -> CleanupManager:
@@ -299,6 +301,7 @@ class Orchestrator:
             lambda name: _session_exists(name, self.deps.session_manager, self.deps.events),
             lambda issue_number, agent_config: get_worktree_path(self.config, issue_number, agent_config),
             lambda number, session_type="issue": get_session_name(number, session_type),
+            self.deps.runtime_lifecycle,
         )
 
     @cached_property
@@ -402,7 +405,13 @@ class Orchestrator:
     def _session_exists(self, name: str) -> bool:
         return _session_exists(name, self.deps.session_manager, self.deps.events)
 
+    def preserve_issue_work(self, issue_number: int, reason: str):
+        return self.deps.runtime_lifecycle.preserve(issue_number, reason)
+
     def _kill_session(self, name: str) -> None:
+        for session in tuple(self.state.active_sessions):
+            if session.terminal_id == name:
+                self.deps.runtime_lifecycle.preserve_terminal(session.issue.number, name, "terminal-stop", run=session.run_assets)
         _kill_session(name, self.deps.session_manager, self.deps.events)
 
     def _refresh_issue(self, n: int) -> Optional[Issue]:
@@ -447,7 +456,7 @@ class Orchestrator:
 
     @cached_property
     def _startup_worktree_reconciler(self) -> StartupWorktreeReconciler:
-        return StartupWorktreeReconciler(self.config, self._cleanup_manager, self.deps.worktree_manager, WorktreeAuditOwner(self.deps.worktree_manager))
+        return StartupWorktreeReconciler(self.config, self._cleanup_manager, self.deps.worktree_manager, WorktreeAuditOwner(self.deps.worktree_manager), self.deps.runtime_lifecycle)
 
     async def startup(self) -> None:
         self._sweep_orphan_atomic_write_tempfiles()
@@ -506,9 +515,11 @@ class Orchestrator:
             publish_recovery=self.deps.publish_recovery,
             pending_work_claims=self.deps.pending_work_claims,
             provider_error_type=provider_error_type,
+            processing_policy=unprocessed_session_policy(session, self.config),
         )
 
     def tick(self) -> bool:
+        self.deps.completion_intake.pump()
         with self.state_lock:
             self._last_tick_time = time.time()
             self.deps.provider_resilience.close_expired()
@@ -924,15 +935,7 @@ class Orchestrator:
         )
 
     def _shutdown_runtime_owners(self) -> None:
-        """Terminate agent processes before waiting for their worker threads."""
-        logger.info("[SHUTDOWN] Terminating agent runtime owners")
-        pair_registry = getattr(self.deps, "pair_registry", None)
-        if pair_registry is not None:
-            pair_registry.shutdown_all(reason="orchestrator-shutdown")
-        self.deps.runner.on_orchestrator_shutdown()
-        # Closing the agent processes above unblocks review-exchange workers.
-        self._drain_background_jobs()
-        logger.info("[SHUTDOWN] Agent runtime owners terminated")
+        self.deps.runtime_lifecycle.shutdown(self.deps.runner)
 
     def _close_external_resources(self) -> None:
         """Close process-scoped resources exactly once across all exit paths."""
@@ -950,27 +953,7 @@ class Orchestrator:
             self._external_resources_closed = True
 
     def _drain_background_jobs(self, timeout: float = 60.0) -> None:
-        """Block shutdown until review-exchange background threads finish.
-
-        Without this, daemon-thread termination on process exit can strand
-        ``summary.json`` / ``round-NNN.json`` mid-write. We duck-type on the
-        optional ``wait_until_idle`` method so this module stays free of
-        ``execution/`` imports; the thread-backed adapter supplies it, and
-        a purely synchronous adapter simply doesn't.
-        """
-        supervisor = self.deps.services.background_job_supervisor
-        if supervisor is None:
-            return
-        wait_until_idle = getattr(supervisor, "wait_until_idle", None)
-        if not callable(wait_until_idle):
-            return
-        logger.info("[SHUTDOWN] Waiting up to %.1fs for background job threads…", timeout)
-        idle = wait_until_idle(timeout=timeout)
-        if not idle:
-            logger.warning("[SHUTDOWN] Background jobs still running after timeout; daemon threads will be terminated on exit")
-        # Drain any failures that landed during shutdown so they are
-        # visible in logs rather than lost.
-        supervisor.tick()
+        drain_background_jobs(self.deps.services.background_job_supervisor, timeout)
 
     def request_shutdown(self, force: bool = False) -> None:
         """Request graceful or forced shutdown."""
@@ -988,13 +971,18 @@ class Orchestrator:
             return
         if force:
             logger.info("Force shutdown - killing %d session(s)", len(active))
-            for s in active:
+            for issue_number in {session.issue.number for session in active}:
+                self.preserve_issue_work(issue_number, "force-shutdown")
+            errors: list[Exception] = []
+            for session in tuple(active):
                 try:
-                    self._kill_session(s.terminal_id)
-                except Exception as e:
-                    logger.warning("Failed to kill session %s: %s", s.terminal_id, e)
-            with self.state_lock:
-                self.state.active_sessions = []
+                    self._kill_session(session.terminal_id)
+                    self.state.drop_active_session(session.terminal_id)
+                except Exception as exc:
+                    errors.append(exc)
+            if errors:
+                raise ExceptionGroup("forced shutdown did not stop every session", errors)
+
         else:
             logger.info("Shutdown requested - waiting for %d session(s)", len(active))
 

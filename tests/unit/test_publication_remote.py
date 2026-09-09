@@ -19,6 +19,7 @@ from issue_orchestrator.domain.publication_remote import (
 )
 from issue_orchestrator.domain.validated_head_publication import (
     PublishValidatedHeadCommand,
+    PublicationContent,
     RemoteHeadExpectation,
 )
 
@@ -33,6 +34,7 @@ COMMAND = PublishValidatedHeadCommand(
     Path("/repo"),
     None,
     "main",
+    PublicationContent("#1: Feature", "Closes #1\n\nImplementation details", True),
 )
 
 
@@ -204,3 +206,41 @@ def test_enterprise_endpoint_requires_effective_configured_port(
     )
     destination = ExactPushDestination(f"https://git.example{port}/owner/repo.git")
     assert remote.accepts_push_destination(COMMAND, destination) is accepted
+
+
+@pytest.mark.parametrize("already_attributed", [False, True])
+def test_create_preserves_prepared_content_and_adds_attribution(
+    remote_factory, already_attributed
+):
+    import json
+    from issue_orchestrator.domain.publication_remote import publication_marker
+
+    marker = publication_marker(1, "feature")
+    candidate = replace(
+        COMMAND,
+        content=replace(
+            COMMAND.content,
+            body=COMMAND.content.body + "\n\n" + marker
+            if already_attributed
+            else COMMAND.content.body,
+        ),
+    )
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        assert request.method == "POST"
+        assert request.url.path == "/repos/owner/repo/pulls"
+        body = json.loads(request.content)
+        assert body == {
+            "title": COMMAND.content.title,
+            "body": COMMAND.content.body + "\n\n" + publication_marker(1, "feature"),
+            "head": "feature",
+            "base": "main",
+            "draft": True,
+        }
+        return httpx.Response(201, json=pr_payload())
+
+    observed = remote_factory(handle).create_pr(candidate)
+    assert observed.number == 2
+    assert len(requests) == 1

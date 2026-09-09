@@ -61,6 +61,8 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 
 from ..domain.models import SessionStatus
+from ..domain.validated_work_observation import disposition_observation
+from .review_exchange_lifecycle import IssueRuntimeResetSnapshot
 from ..events import EventName
 from ..infra.logging_config import issue_log
 from ..ports import EventSink, make_trace_event
@@ -113,6 +115,7 @@ def publish_proposal_surfaced(
     finding_ids: Sequence[str],
     mode: str,
     stale_reason: str | None = None,
+    boundary: Mapping[str, Any] | None = None,
 ) -> None:
     """Publish the surfaced-proposal trace event (single payload owner).
 
@@ -135,6 +138,8 @@ def publish_proposal_surfaced(
     candidate = stale_reason
     if _is_present(candidate):
         payload["stale_reason"] = candidate
+    if boundary:
+        payload["boundary"] = dict(boundary)
     event_name = (
         EventName.TECH_LEAD_DECISION_REJECTED
         if mode == "rejected"
@@ -189,6 +194,7 @@ class ResetRetryRunOutcome:
     """Typed result of one reset-owner invocation (the injected boundary)."""
 
     success: bool
+    stale_reason: str | None = None
     error: str | None = None
     details: Mapping[str, Any] = field(default_factory=dict)
 
@@ -215,20 +221,10 @@ def reset_retry_stale_reason(
     """
     if issue is None:
         return "target issue could not be read from the repository host"
-    if issue.state != "open":
-        return f"target issue #{issue.number} is {issue.state}, not open"
-    if active_runtime:
-        return (
-            f"issue #{issue.number} has active runtime (session, review-exchange"
-            " pair/job, or publish retry); resetting would terminate live work"
-            " the proposal did not observe"
-        )
-    if not label_manager.get_blocking(issue.labels):
-        return (
-            f"issue #{issue.number} no longer carries a blocking-class"
-            " label; the diagnosed failure appears already recovered"
-        )
-    return None
+    from ..domain.reset_retry_policy import ResetRetryFacts
+    return ResetRetryFacts(issue.number, issue.state, active_runtime,
+        bool(label_manager.get_blocking(issue.labels))).stale_reason()
+
 
 
 @dataclass
@@ -244,27 +240,31 @@ class TechLeadResetRetryExecutor:
     events: EventSink
     label_manager: "LabelManager"
     read_issue: Callable[[int], "Issue | None"]
-    has_active_issue_runtime: Callable[[int], bool]
+    runtime_snapshot: Callable[[int], IssueRuntimeResetSnapshot]
     run_reset: RunResetFn
 
     def stale_reason(self, issue_number: int) -> str | None:
         """Read-only applicability used when handing off to an existing proposal."""
         return reset_retry_stale_reason(issue=self.read_issue(issue_number),
-            active_runtime=self.has_active_issue_runtime(issue_number),
+            active_runtime=self.runtime_snapshot(issue_number).activity.busy,
             label_manager=self.label_manager)
 
     def apply(self, action: ResetRetryIssueAction) -> ActionResult:
         issue = self.read_issue(action.issue_number)
+        snapshot = self.runtime_snapshot(action.issue_number)
         stale = reset_retry_stale_reason(
             issue=issue,
-            active_runtime=self.has_active_issue_runtime(action.issue_number),
+            active_runtime=snapshot.activity.busy,
             label_manager=self.label_manager,
         )
         if stale is not None:
             recovered = issue is not None and (issue.state == "closed" or not self.label_manager.get_blocking(issue.labels))
-            return self._downgrade(action, stale, recovered=recovered)
+            return self._downgrade(action, stale, {"validated_work": disposition_observation(snapshot.validated_work)}
+                if snapshot.validated_work is not None else {}, recovered=recovered)
         assert issue is not None  # stale check rejects None
         outcome = self.run_reset(action.issue_number, list(issue.labels))
+        if outcome.stale_reason is not None:
+            return self._downgrade(action, outcome.stale_reason, outcome.details)
         if not outcome.success:
             logger.error(
                 issue_log(
@@ -307,7 +307,7 @@ class TechLeadResetRetryExecutor:
             proposal_id=action.proposal_id,
         )
 
-    def _downgrade(self, action: ResetRetryIssueAction, stale: str, *, recovered: bool = False) -> ActionResult:
+    def _downgrade(self, action: ResetRetryIssueAction, stale: str, boundary: Mapping[str, Any], *, recovered: bool = False) -> ActionResult:
         """Stale precondition: surface as would-have-done, post no mutations."""
         logger.warning(
             issue_log(
@@ -329,8 +329,9 @@ class TechLeadResetRetryExecutor:
             finding_ids=action.finding_ids,
             mode=STALE_DOWNGRADE_MODE,
             stale_reason=stale,
+            boundary=boundary,
         )
-        return ActionResult.skip(
+        result = ActionResult.skip(
             action,
             f"stale precondition: {stale}",
             terminal_disposition_satisfied=recovered,
@@ -338,6 +339,7 @@ class TechLeadResetRetryExecutor:
             issue_number=action.issue_number,
             proposal_id=action.proposal_id,
         )
+        return replace(result, details={**result.details, "boundary": dict(boundary)})
 
 
 def preserve_reset_retry_eligibility(

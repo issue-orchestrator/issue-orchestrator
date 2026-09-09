@@ -151,16 +151,9 @@ def _coder_payload(round_index: int) -> dict[str, object]:
     worktree = Path.cwd()
     completion_full = worktree / completion_path_rel
     completion_full.parent.mkdir(parents=True, exist_ok=True)
-    completion_full.write_text(
-        json.dumps(
-            {
-                "outcome": "completed",
-                "implementation": f"stub-coder round {round_index}",
-                "round": round_index,
-            }
-        ),
-        encoding="utf-8",
-    )
+    from completion_receipt import write_and_submit_completion
+
+    write_and_submit_completion(completion_full, round_index)
     return {
         "response_type": "ok",
         "response_text": f"Applied (stub-coder round {round_index})",

@@ -7,6 +7,8 @@ Tests focus on behavior:
 - Error handling in cleanup operations
 """
 
+from tests.runtime_lifecycle_helpers import runtime_owners
+
 import logging
 import time
 from dataclasses import dataclass
@@ -102,6 +104,7 @@ def cleanup_manager_bundle(mock_config, mock_repository_host, mock_worktree_mana
     get_session_name = MagicMock(return_value="issue-123")
 
     manager = CleanupManager(
+        runtime_lifecycle=runtime_owners(),
         config=mock_config,
         repository_host=mock_repository_host,
         worktree_manager=mock_worktree_manager,

@@ -44,6 +44,12 @@ def _build_orchestrator_with_sqlite_timeline(sample_config, mock_repository_host
     from issue_orchestrator.execution.worktree_adapter import GitWorktreeManager
     from issue_orchestrator.execution.git_working_copy import GitWorkingCopy
 
+    from issue_orchestrator.execution.command_runner import LocalCommandRunner
+    initialized = LocalCommandRunner().run(
+        ["git", "init", "--initial-branch=main"], cwd=sample_config.repo_root, timeout_seconds=30
+    )
+    assert initialized.returncode == 0, initialized.stderr
+
     timeline_store = SqliteTimelineStore(
         sample_config.repo_root / ".issue-orchestrator" / "state" / "timeline.sqlite",
         config=TimelineStoreConfig(max_records=5000, max_total_records=20000),
@@ -54,6 +60,8 @@ def _build_orchestrator_with_sqlite_timeline(sample_config, mock_repository_host
     runner = MockSessionRunner()
     runner.plugin.session_exists_override = False
 
+    from issue_orchestrator.domain.models import OrchestratorState
+    runtime_state = OrchestratorState()
     deps = build_test_orchestrator_deps(
         sample_config,
         mock_repository_host,
@@ -63,8 +71,9 @@ def _build_orchestrator_with_sqlite_timeline(sample_config, mock_repository_host
         working_copy=GitWorkingCopy(),
         timeline_reader=timeline_reader,
         timeline_writer=timeline_writer,
+        state=runtime_state,
     )
-    return Orchestrator(config=sample_config, deps=deps), timeline_writer
+    return Orchestrator(config=sample_config, deps=deps, state=runtime_state), timeline_writer
 
 
 def _start_run_with_artifacts(

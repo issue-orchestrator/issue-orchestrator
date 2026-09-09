@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import logging
 from typing import TYPE_CHECKING, Callable, Optional, Protocol
+from ..domain.validated_work_commands import ValidatedWorkDispositionBatch
 
 if TYPE_CHECKING:
     from ..domain.models import OrchestratorState, Session
@@ -54,6 +55,8 @@ class TechLeadTerminationHost(Protocol):
 
     def kill_session(self, name: str) -> None: ...
 
+    def preserve_issue_work(self, issue_number: int, reason: str) -> ValidatedWorkDispositionBatch: ...
+
 
 def terminate_tech_lead_session(
     host: TechLeadTerminationHost, session: "Session"
@@ -62,6 +65,7 @@ def terminate_tech_lead_session(
     from .tech_lead_trigger import TechLeadTerminationOutcome
 
     number = session.issue.number
+    batch = host.preserve_issue_work(number, "tech-lead-termination")
     attempt = _effect_runner(number)
     deps = host.deps
 
@@ -114,6 +118,7 @@ def terminate_tech_lead_session(
         "remove scratch worktree",
     )
     return TechLeadTerminationOutcome(
+        validated_work=batch,
         terminal_stopped=terminal_stopped,
         machine_removed=machine_removed,
         claim_released=claim_released,

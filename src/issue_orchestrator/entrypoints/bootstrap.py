@@ -16,20 +16,19 @@ Principle: "No Nulls in Orchestrator"
 """
 
 import logging
-from pathlib import Path
 import os
 import time
 from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
 from ..control.background_job_supervisor import BackgroundJobSupervisor
-from ..ports.budgeted_validation import DisabledBudgetedValidation, DisabledBudgetedValidationReports, BudgetedValidationRuntime, BudgetedValidationReports
-from ..ports.command_runner import CommandRunner
-from ..ports.repository_host import RepositoryHost
-from ..control.budgeted_validation import BudgetedValidationCycle
-from .bootstrap_budgeted_validation import build_budgeted_validation_runtime, assemble_budgeted_validation_cycle
-from ..adapters.budgeted_validation_git import BudgetedValidationGit
-from ..adapters.budgeted_validation_store import FileBudgetedValidationStore
+from ..ports.budgeted_validation import (
+    DisabledBudgetedValidation, DisabledBudgetedValidationReports,
+)
+from .bootstrap_budgeted_validation import (
+    build_budgeted_validation_cycle as build_budgeted_validation_cycle,
+    build_budgeted_validation_services,
+)
 from ..infra.agent_callback_endpoint import RuntimeAgentCallbackEndpoint
 from .bootstrap_provider import (
     build_provider_circuit_store,
@@ -48,13 +47,22 @@ from .bootstrap_pending_work import (
     require_repository_host,
 )
 from .bootstrap_session_launcher import build_session_launcher_factory
-from .bootstrap_run_services import create_io_adapters as _create_io_adapters, build_issue_run_services
+from .bootstrap_run_services import (
+    create_io_adapters as _create_io_adapters,
+    build_issue_run_services,
+    build_completion_intake,
+)
+from .bootstrap_issue_runtime import build_issue_runtime
+from .bootstrap_validated_work import build_validated_work_admission
+from ..domain.models import OrchestratorState
 from .bootstrap_operator_commands import build_operator_issue_command_factory
+from .bootstrap_testing import TestingFreshIssueReader, manual_publication_for_testing
 from .bootstrap_completion import (
     _validation_attempt_key_factory,
     build_completion_handler_factory,
     wire_stack_publish_gate,
     build_publish_recovery as _build_publish_recovery,
+    build_manual_publisher as _build_manual_publisher,
     create_completion_components,
 )
 from ..infra.config import Config
@@ -62,7 +70,8 @@ from .bootstrap_validated_work import build_validated_work_escrow_maintenance as
 from ..infra.env import ENV_PREFIX
 from ..adapters.github.repo import get_repo_from_git, GitRepoError
 from ..ports.event_sink import EventSink, NullEventSink
-from ..ports.issue_tracker import IssueTracker
+from ..ports.manual_publication import ManualPublisher
+from ..adapters.github.publication_remote import GitHubPublicationRemote
 from ..ports.session_runner import SessionRunner, NullSessionRunner
 from ..ports.timeline_reader import NullTimelineReader
 from ..ports.timeline_store import NullTimelineStore, TimelineStore
@@ -356,9 +365,9 @@ def _wire_stack_publish_gate(
     """Only compose publication once all required collaborators exist."""
     if completion_processor is None or dependency_evaluator is None or github is None:
         return
-    wire_stack_publish_gate(completion_processor, dependency_evaluator, github, command_runner, config)
-
-
+    wire_stack_publish_gate(
+        completion_processor, dependency_evaluator, github, command_runner, config
+    )
 def _validate_required_deps(
     github: GitHubAdapter | None,
     event_hub: EventHub | None,
@@ -440,6 +449,12 @@ def build_orchestrator(
     from ..adapters.github.fresh_issue_reader import GitHubFreshIssueReader
     from ..execution.tech_lead_downloader import TechLeadDownloader
     from ..execution.e2e_issue_tracker_adapter import GitHubE2EIssueTracker
+
+    if not config.validation.quick.cmd:
+        raise ValueError(
+            "Completion intake requires validation.quick.cmd before starting an engine, "
+            "including when review.exchange.loop.require_validation is false"
+        )
 
     install_gh_guard()
 
@@ -642,22 +657,40 @@ def build_orchestrator(
         label_writer=repository_host,
         label_manager=label_manager, events=events)
 
-    issue_run_ledger, issue_run_allocator = build_issue_run_services(config.repo_root, session_output)
-    completion_processor, session_controller_instance, completion_handler_factory = create_completion_components(
-        config, github, events, working_copy, session_output, command_runner, provider_resilience,
-        issue_run_allocator=issue_run_allocator,
-        label_manager=label_manager,
-        background_job_supervisor=background_job_supervisor,
-        agent_callback_endpoint=agent_callback_endpoint,
-        pair_registry=pair_registry,
-        attempt_store=attempt_store,
-        turn_mailbox=turn_mailbox,
-        tech_lead_authority=tech_lead_authority,
-        tech_lead_run_activity=tech_lead.run_activity,
-        open_issue_corpus=tech_lead.open_issue_corpus,
-        repository_host=github,
-        needs_human_block=pending_work.needs_human_block,
-        coder_prompt_addendum=coder_prompt_addendum,
+    runtime_state = OrchestratorState()
+    issue_run_ledger, issue_run_allocator = build_issue_run_services(config, session_output, working_copy)
+    validated_work = build_validated_work_admission(config, working_copy, issue_run_ledger)
+    completion_intake = build_completion_intake(
+        config, issue_run_ledger, issue_run_allocator, working_copy, command_runner, validated_work
+    )
+    if action_applier is not None:
+        action_applier.completion_intake = completion_intake
+    assert action_applier is not None
+    completion_processor, session_controller_instance, completion_handler_factory = (
+        create_completion_components(
+            config,
+            github,
+            events,
+            working_copy,
+            session_output,
+            command_runner,
+            provider_resilience,
+            completion_intake=completion_intake,
+            runtime_canceller=lambda issue, reason: action_applier.runtime_lifecycle.cancel_exchange(issue, reason),
+            issue_run_allocator=issue_run_allocator,
+            label_manager=label_manager,
+            background_job_supervisor=background_job_supervisor,
+            agent_callback_endpoint=agent_callback_endpoint,
+            pair_registry=pair_registry,
+            attempt_store=attempt_store,
+            turn_mailbox=turn_mailbox,
+            tech_lead_authority=tech_lead_authority,
+            tech_lead_run_activity=tech_lead.run_activity,
+            open_issue_corpus=tech_lead.open_issue_corpus,
+            repository_host=github,
+            needs_human_block=pending_work.needs_human_block,
+            coder_prompt_addendum=coder_prompt_addendum,
+        )
     )
     _wire_stack_publish_gate(
         completion_processor, _dependency_evaluator, github, command_runner, config,
@@ -693,9 +726,14 @@ def build_orchestrator(
     assert manifest_downloader is not None
     assert e2e_issue_tracker is not None
 
+    manual_publisher = _build_manual_publisher(
+        completion_processor=completion_processor, completion_intake=completion_intake, working_copy=working_copy,
+        exact_git=working_copy, repo_slug=github.http_client.config.repo,
+        remote=GitHubPublicationRemote(github.http_client, repo_slug=github.http_client.config.repo),
+    )
     publish_recovery = _build_publish_recovery(
         repository_host=github,
-        completion_processor=completion_processor,
+        manual_publisher=manual_publisher,
         label_manager=label_manager,
         fresh_issue_reader=fresh_issue_reader,
         action_applier=action_applier,
@@ -708,12 +746,7 @@ def build_orchestrator(
     from ..execution.label_store import LabelStore
     label_store = LabelStore(state_dir(config.repo_root) / "label_store.sqlite")
 
-    # Wire post-construction collaborators into action_applier: the pair
-    # registry + shared supervisor so escalation / history-reconcile /
-    # STOP_SESSION boundaries terminate hidden review-exchange runtime,
-    # label_store for write-through persistence, and publish_recovery so
-    # issue terminal boundaries abandon publish retries (post-construction
-    # because PublishRecoveryService depends on this applier).
+    # Publish recovery closes the composition cycle before lifecycle binding.
     if action_applier is not None:
         action_applier.pair_registry = pair_registry
         action_applier.background_job_supervisor = background_job_supervisor
@@ -772,6 +805,11 @@ def build_orchestrator(
         needs_human_block=pending_work.needs_human_block,
         coder_prompt_addendum=coder_prompt_addendum,
     )
+    runtime_lifecycle = build_issue_runtime(state=runtime_state, ledger=issue_run_ledger,
+        intake=completion_intake, validated_work=validated_work, working_copy=working_copy,
+        sessions=session_manager, pair_registry=pair_registry, supervisor=background_job_supervisor,
+        publish_recovery=publish_recovery, events=events)
+    action_applier.runtime_lifecycle = runtime_lifecycle
     deps = OrchestratorDeps(
         issue_run_allocator=issue_run_allocator,
         events=events,
@@ -793,6 +831,8 @@ def build_orchestrator(
         session_output=session_output,
         manifest_downloader=manifest_downloader,
         issue_run_ledger=issue_run_ledger,
+        runtime_lifecycle=runtime_lifecycle,
+        completion_intake=completion_intake,
         pending_work_claims=pending_work.claims,
         claim_quarantine=pending_work.quarantine,
         needs_human_block=pending_work.needs_human_block,
@@ -801,7 +841,9 @@ def build_orchestrator(
         session_controller=session_controller_instance,
         # Run completion decisions (publish gate + push + PR) off the tick thread
         # on a dedicated runner so a slow publish never blocks the heartbeat.
-        completion_dispatcher=BackgroundCompletionDispatcher(ThreadBackgroundJobRunner()),
+        completion_dispatcher=BackgroundCompletionDispatcher(
+            ThreadBackgroundJobRunner()
+        ),
         health_gate=health_gate,
         agent_callback_endpoint=agent_callback_endpoint,
         session_launcher_factory=session_launcher_factory,
@@ -825,7 +867,7 @@ def build_orchestrator(
         services=infra_services,
     )
 
-    orchestrator = Orchestrator(config=config, deps=deps)
+    orchestrator = Orchestrator(config=config, deps=deps, state=runtime_state)
     # Act-level executor wiring closes over live orchestrator state (#6764/#6778).
     wire_tech_lead_act_executors(orchestrator)
     return orchestrator
@@ -869,6 +911,7 @@ def build_orchestrator_for_testing(
     claim_manager: ClaimManager | None = None,
     provider_readiness_probe: "ProviderReadinessProbe | None" = None,
     run_ownership: TechLeadRunOwnership | None = None,
+    manual_publisher: ManualPublisher | None = None,
 ) -> "Orchestrator":
     """Build an orchestrator for testing with mock dependencies.
 
@@ -921,7 +964,12 @@ def build_orchestrator_for_testing(
     working_copy = GitWorkingCopy()
     command_runner = LocalCommandRunner()
     session_output = FileSystemSessionOutput()
-    issue_run_ledger, issue_run_allocator = build_issue_run_services(config.repo_root, session_output)
+    runtime_state = OrchestratorState()
+    issue_run_ledger, issue_run_allocator = build_issue_run_services(config, session_output, working_copy)
+    validated_work = build_validated_work_admission(config, working_copy, issue_run_ledger)
+    completion_intake = build_completion_intake(
+        config, issue_run_ledger, issue_run_allocator, working_copy, command_runner, validated_work
+    )
     coder_prompt_addendum = build_coder_prompt_addendum_provider(config)
 
     # A test composition must never shell out to a real provider CLI: readiness
@@ -955,16 +1003,7 @@ def build_orchestrator_for_testing(
         command_runner=command_runner,
     )
 
-    class _TestFreshIssueReader:
-        """Fallback FreshIssueReader for tests without network dependencies."""
-
-        def __init__(self, issue_tracker: IssueTracker) -> None:
-            self._issue_tracker = issue_tracker
-
-        def read_issue_labels(self, issue_number: int) -> list[str]:
-            return self._issue_tracker.get_issue_labels(issue_number)
-
-    fresh_issue_reader = _TestFreshIssueReader(github)
+    fresh_issue_reader = TestingFreshIssueReader(github)
     e2e_issue_tracker = MagicMock()
 
     # Create default action applier
@@ -1023,7 +1062,7 @@ def build_orchestrator_for_testing(
     )
     from ..control.review_exchange_lifecycle import (
         ReviewExchangeCancellation,
-        cancel_issue_review_exchange,
+
     )
     pair_registry_for_testing = build_pair_registry_with_worktree_hook()
     from ..execution.review_exchange_turn_mailbox import InMemoryTurnMailbox
@@ -1046,23 +1085,18 @@ def build_orchestrator_for_testing(
         action_applier.tech_lead_ops = tech_lead_authority_for_testing
         action_applier.promotion_target = tech_lead.promotion_target
 
-    def _cancel_review_exchange_for_testing(
-        issue_number: int,
-        reason: str,
-    ) -> ReviewExchangeCancellation:
-        return cancel_issue_review_exchange(
-            issue_number=issue_number,
-            reason=reason,
-            pair_registry=pair_registry_for_testing,
-            job_supervisor=background_job_supervisor,
-        )
+    def _cancel_review_exchange_for_testing(issue_number: int, reason: str) -> ReviewExchangeCancellation:
+        return action_applier.runtime_lifecycle.cancel_exchange(issue_number, reason)
 
     pending_work = build_pending_work_wiring(
         repo_root=config.repo_root, repository_host=github,
         action_applier=action_applier, label_writer=github,
         label_manager=label_manager, events=events)
 
+    if action_applier is not None:
+        action_applier.completion_intake = completion_intake
     completion_processor = CompletionProcessor(
+        completion_intake=completion_intake,
         issue_run_allocator=issue_run_allocator,
         label_adapter=GovernedLabelSet(
             labels=github, governed_label=label_manager.needs_human
@@ -1073,12 +1107,15 @@ def build_orchestrator_for_testing(
         review_exchange_runner=PersistentReviewExchangeRunner(
             session_output,
             pair_registry_for_testing,
+            completion_intake=completion_intake,
             turn_mailbox=turn_mailbox,
             coder_prompt_addendum=coder_prompt_addendum,
         ),
         event_bus=None,
         label_config=label_manager.to_label_config_dict(),
-        pre_publish_gate=PrePublishGate(command_runner) if config.enforce_hooks else None,
+        pre_publish_gate=PrePublishGate(command_runner)
+        if config.enforce_hooks
+        else None,
         config=config,
         background_job_supervisor=background_job_supervisor,
         agent_callback_endpoint=agent_callback_endpoint,
@@ -1130,7 +1167,7 @@ def build_orchestrator_for_testing(
 
     publish_recovery = _build_publish_recovery(
         repository_host=github,
-        completion_processor=completion_processor,
+        manual_publisher=manual_publication_for_testing(manual_publisher),
         label_manager=label_manager,
         fresh_issue_reader=fresh_issue_reader,
         action_applier=action_applier,
@@ -1148,9 +1185,7 @@ def build_orchestrator_for_testing(
     from ..execution.label_store import LabelStore
     label_store = LabelStore(state_dir(config.repo_root) / "label_store.sqlite")
 
-    # Wire post-construction collaborators into action_applier (same as the
-    # primary path): label_store for write-through persistence, publish_recovery
-    # so issue terminal boundaries abandon publish retries.
+    # Bind shared post-construction owners.
     if action_applier is not None:
         action_applier.label_store = label_store
         action_applier.publish_recovery = publish_recovery
@@ -1217,6 +1252,11 @@ def build_orchestrator_for_testing(
         label_manager=label_manager,
         provider_resilience=provider_resilience,
     )
+    runtime_lifecycle = build_issue_runtime(state=runtime_state, ledger=issue_run_ledger,
+        intake=completion_intake, validated_work=validated_work, working_copy=working_copy,
+        sessions=session_manager, pair_registry=pair_registry_for_testing, supervisor=background_job_supervisor,
+        publish_recovery=publish_recovery, events=events)
+    action_applier.runtime_lifecycle = runtime_lifecycle
     deps = OrchestratorDeps(
         issue_run_allocator=issue_run_allocator,
         events=events,
@@ -1238,6 +1278,8 @@ def build_orchestrator_for_testing(
         session_output=session_output,
         manifest_downloader=manifest_downloader,
         issue_run_ledger=issue_run_ledger,
+        runtime_lifecycle=runtime_lifecycle,
+        completion_intake=completion_intake,
         pending_work_claims=pending_work.claims,
         claim_quarantine=pending_work.quarantine,
         needs_human_block=pending_work.needs_human_block,
@@ -1269,40 +1311,4 @@ def build_orchestrator_for_testing(
         services=infra_services,
     )
 
-    return Orchestrator(config=config, deps=deps)
-
-
-def build_budgeted_validation_cycle(root: Path) -> tuple[BudgetedValidationCycle, FileBudgetedValidationStore]:
-    """Standalone worker/CLI composition of the same repository-wide owner."""
-    from ..execution.command_runner import LocalCommandRunner
-
-    git = BudgetedValidationGit(root, LocalCommandRunner())
-    directory = git.storage_directory()
-    store = FileBudgetedValidationStore(directory)
-    return assemble_budgeted_validation_cycle(git, git, store, directory), store
-
-
-def build_budgeted_validation_services(config: Config, command_runner: CommandRunner, repository: RepositoryHost) -> tuple[BudgetedValidationRuntime, BudgetedValidationReports]:
-    """Share one durable reporting owner with observation and application."""
-    from datetime import datetime, timezone
-    from ..control.budgeted_validation_reporting import BudgetedValidationReportOwner
-    from ..ports.budgeted_validation import (
-        DisabledBudgetedValidation, DisabledBudgetedValidationReports,
-    )
-
-    suites = tuple(config.validation.budgeted.values())
-    # A disabled feature must not add a Git requirement to embedding/test
-    # compositions. A real checkout is still inspected when configuration is
-    # empty because its common directory may retain a removed suite's work.
-    if not suites and not (config.repo_root / ".git").exists():
-        return DisabledBudgetedValidation(), DisabledBudgetedValidationReports()
-    directory = BudgetedValidationGit(config.repo_root, command_runner).storage_directory()
-    store = FileBudgetedValidationStore(directory)
-    return (
-        build_budgeted_validation_runtime(
-            config.repo_root, suites, directory,
-            has_recoverable_work=lambda: bool(store.pending()),
-        ),
-        BudgetedValidationReportOwner(suites=suites, store=store,
-            repository=repository, clock=lambda: datetime.now(timezone.utc)),
-    )
+    return Orchestrator(config=config, deps=deps, state=runtime_state)

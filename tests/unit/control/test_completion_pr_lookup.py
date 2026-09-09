@@ -15,6 +15,7 @@ from issue_orchestrator.control.completion_pr_lookup import (
     NO_COMPLETION_PR,
     CompletionPrLookup,
 )
+from issue_orchestrator.domain.completion_processing import CompletionPublication
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.models import AgentConfig, Issue, Session, SessionStatus
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
@@ -70,7 +71,7 @@ def make_host(
 
 
 def pr_record(number: int, url: str) -> SimpleNamespace:
-    return SimpleNamespace(number=number, url=url)
+    return SimpleNamespace(number=number, url=url, branch="published-branch")
 
 
 @pytest.mark.parametrize(
@@ -203,3 +204,26 @@ def test_no_branch_pr_and_no_review_pr_produces_no_pr(tmp_path):
 
     assert result == NO_COMPLETION_PR
     assert host.calls == ["get_prs_for_branch"]
+
+
+@pytest.mark.parametrize("fetch_raises", [True, False])
+def test_publisher_identity_survives_missing_followup_read(tmp_path, fetch_raises):
+    session = make_session(tmp_path)
+    published = CompletionPublication("https://github.com/o/r/pull/42", "issue-7-r1")
+    host = make_host(get_pr_raises=fetch_raises)
+    resolved = CompletionPrLookup(host).for_session(session, SessionStatus.COMPLETED,
+        pr_url_hint=published.url, publication_hint=published)
+    review = resolved.review_for(session)
+    assert review.branch_name == "issue-7-r1"
+    assert review.pr_url == published.url
+    assert review.pr_number == 42
+    assert session.branch_name == "issue-7"
+    assert host.calls == ["get_pr"]
+
+
+def test_unbound_url_cannot_manufacture_review_branch(tmp_path):
+    session = make_session(tmp_path)
+    resolved = CompletionPrLookup(make_host(get_pr_raises=True)).for_session(
+        session, SessionStatus.COMPLETED, pr_url_hint="https://github.com/o/r/pull/42")
+    with pytest.raises(ValueError, match="requires the publication identity"):
+        resolved.review_for(session)

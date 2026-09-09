@@ -51,15 +51,11 @@ async def _run_with_repo_lock_heartbeat(
 
 
 def declare_no_control_api(orchestrator, api_port: int | None) -> None:
-    """Answer the endpoint question when this mode binds no server.
-
-    Running without ``--api-port`` is a valid deployment. Saying so
-    explicitly is what lets the launcher tell "no Control API here" from
-    "the server has not published yet" — only the second must block
-    agent launch.
-    """
+    """Refuse agent work when its durable completion endpoint cannot be served."""
     if api_port is None:
-        orchestrator.deps.agent_callback_endpoint.declare_unavailable()
+        raise ValueError(
+            "Completion intake requires a Control API endpoint; start with --api-port 0 or an explicit port"
+        )
 
 
 async def run_no_dashboard(orchestrator, api_port: int | None) -> None:

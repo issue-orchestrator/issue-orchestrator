@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Optional, Protocol
 
+from ..domain.validated_work_commands import ValidatedWorkDispositionBatch
+
 if TYPE_CHECKING:
     from .action_base import Action
 
@@ -39,6 +41,7 @@ class ActionResult:
     result_type: ActionResultType
     error: Optional[str] = None
     details: dict[str, Any] = field(default_factory=dict)
+    validated_work: ValidatedWorkDispositionBatch | None = None
 
     @property
     def success(self) -> bool:
@@ -66,19 +69,21 @@ class ActionResult:
         return value
 
     @classmethod
-    def ok(cls, action: "Action", **details: str | int | bool | list[str] | None) -> "ActionResult":
+    def ok(cls, action: "Action", validated_work: ValidatedWorkDispositionBatch | None = None, **details: str | int | bool | list[str] | None) -> "ActionResult":
         """Create a successful result."""
         return cls(
             action=action,
+            validated_work=validated_work,
             result_type=ActionResultType.SUCCESS,
             details=details,
         )
 
     @classmethod
-    def fail(cls, action: "Action", error: str, **details: str | int | bool | list[str] | None) -> "ActionResult":
+    def fail(cls, action: "Action", error: str, validated_work: ValidatedWorkDispositionBatch | None = None, **details: str | int | bool | list[str] | None) -> "ActionResult":
         """Create a failed result."""
         return cls(
             action=action,
+            validated_work=validated_work,
             result_type=ActionResultType.FAILURE,
             error=error,
             details=details,
@@ -89,11 +94,13 @@ class ActionResult:
         cls,
         action: "Action",
         reason: str,
+        validated_work: ValidatedWorkDispositionBatch | None = None,
         **details: str | int | bool | list[str] | None,
     ) -> "ActionResult":
         """Create a skipped result."""
         return cls(
             action=action,
+            validated_work=validated_work,
             result_type=ActionResultType.SKIPPED,
             details={"skip_reason": reason, **details},
         )

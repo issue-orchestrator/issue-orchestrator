@@ -1,6 +1,7 @@
 """Reconcile durable run ownership with the live registry, failing closed."""
 
 from collections.abc import Callable
+from pathlib import Path
 
 from ..domain.issue_run_evidence import (
     IssueRunEvidence,
@@ -10,6 +11,7 @@ from ..domain.issue_run_evidence import (
     IssueRunRecord,
 )
 from ..ports.issue_run_evidence import IssueRunLedger
+from ..domain.session_run import SessionRunAssets
 
 
 class IssueRunEvidenceService:
@@ -23,6 +25,24 @@ class IssueRunEvidenceService:
         self._ledger = ledger
         self._live_runs = live_runs
         self._now = now
+
+    def worktree_evidence(self, issue_number: int, path: Path) -> IssueRunEvidence:
+        return self.evidence_for_issue(issue_number).select(worktree_path=path)
+
+    def terminal_issues(self, terminal_id: str) -> tuple[int, ...]:
+        return tuple(issue for issue in self.issue_numbers()
+            if self.evidence_for_issue(issue).owns_terminal(terminal_id))
+
+    def terminal_evidence(self, issue_number: int, terminal_id: str, run: SessionRunAssets | None) -> IssueRunEvidence:
+        return self.evidence_for_issue(issue_number).select(terminal_id=terminal_id, run=run)
+
+    def issue_numbers(self) -> tuple[int, ...]:
+        return self._ledger.issue_numbers()
+
+    def issues_for_worktree(self, path: Path) -> tuple[int, ...]:
+        # Exact allocated paths, never agent metadata or filename patterns.
+        return tuple(issue for issue in self.issue_numbers()
+            if any(row.run.worktree_path == path for row in self._ledger.recorded_runs(issue)))
 
     def record_run(self, issue_number: int, record: IssueRunRecord) -> None:
         self._ledger.record_run(issue_number, record)
@@ -38,6 +58,8 @@ class IssueRunEvidenceService:
         for active in live:
             if not any(
                 row.session_key == active.session_key and row.run == active.run
+                and row.branch_name == active.branch_name
+                and row.terminal_binding == active.terminal_binding
                 for row in recorded
             ):
                 raise IssueRunEvidenceUnavailable(

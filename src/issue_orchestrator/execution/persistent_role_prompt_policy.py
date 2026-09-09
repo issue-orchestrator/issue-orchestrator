@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..domain.models import AgentConfig
+from ..ports.completion_intake import CompletionExchangeIntake
 from .agent_runner_providers import get_provider, is_valid_provider
 
 FRESH_CODEX_PROMPT_PROCESS_TRIGGER = (
@@ -63,3 +64,14 @@ class RoleAttemptWorkspace:
         role_prompt_inbox_path(self.response_file).unlink(missing_ok=True)
         for path in self.side_artifact_paths:
             path.unlink(missing_ok=True)
+
+
+@dataclass(frozen=True)
+class CoderReceiptAttemptWorkspace(RoleAttemptWorkspace):
+    """Reset receipt freshness at every coder send, including process retries."""
+
+    intake: CompletionExchangeIntake
+
+    def prepare_for_attempt(self) -> None:
+        self.intake.begin_attempt()
+        super().prepare_for_attempt()

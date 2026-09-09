@@ -12,6 +12,7 @@ from ..domain.validated_head_publication import (
     BranchWriteStatus,
     PrEnsureOutcome,
     PrEnsureStatus,
+    PullRequestAttribution,
     PublishValidatedHeadCommand,
     PublishValidatedHeadOutcome,
     RemoteHeadExpectation,
@@ -215,7 +216,12 @@ class GitValidatedHeadExecutor:
                         ValidatedWorkFailure.DUPLICATE_OPEN_PR,
                         "Recorded PR conflicts with open candidate",
                     )
-                return self._checked_pr(command, recorded, PrEnsureStatus.RECONCILED)
+                return self._checked_pr(
+                    command,
+                    recorded,
+                    PrEnsureStatus.RECONCILED,
+                    PullRequestAttribution.RECORDED,
+                )
             if scoped:
                 return self._adopt_candidate(command, scoped[0])
             return self._create_or_recover(command)
@@ -257,7 +263,12 @@ class GitValidatedHeadExecutor:
                 "Unrecorded PR lacks this operation's exact marker",
                 observed=pr,
             )
-        return self._checked_pr(command, pr, PrEnsureStatus.ADOPTED)
+        return self._checked_pr(
+            command,
+            pr,
+            PrEnsureStatus.ADOPTED,
+            PullRequestAttribution.OPERATION_MARKER,
+        )
 
     def _confirm_created(
         self, command: PublishValidatedHeadCommand, created: PublicationPullRequest
@@ -273,6 +284,7 @@ class GitValidatedHeadExecutor:
                     ValidatedWorkFailure.DUPLICATE_OPEN_PR,
                     "Multiple PRs after create",
                     observed=created,
+                    attribution=PullRequestAttribution.CREATED,
                 )
             observed = self._remote.read_pr(command, created.number)
             if observed is None:
@@ -281,14 +293,21 @@ class GitValidatedHeadExecutor:
                     "Created PR cannot be observed",
                     transient=True,
                     observed=created,
+                    attribution=PullRequestAttribution.CREATED,
                 )
-            return self._checked_pr(command, observed, PrEnsureStatus.CREATED)
+            return self._checked_pr(
+                command,
+                observed,
+                PrEnsureStatus.CREATED,
+                PullRequestAttribution.CREATED,
+            )
         except PublicationRemoteError as exc:
             return self._pr_failure(
                 ValidatedWorkFailure.REMOTE_UNREADABLE,
                 str(exc),
                 transient=True,
                 observed=created,
+                attribution=PullRequestAttribution.CREATED,
             )
 
     def _checked_pr(
@@ -296,6 +315,7 @@ class GitValidatedHeadExecutor:
         command: PublishValidatedHeadCommand,
         pr: PublicationPullRequest,
         status: PrEnsureStatus,
+        attribution: PullRequestAttribution,
     ) -> PrEnsureOutcome:
         if pr.state is not PublicationPrState.OPEN:
             failure = ValidatedWorkFailure.PR_CLOSED_OR_MERGED
@@ -315,6 +335,7 @@ class GitValidatedHeadExecutor:
                     str(exc),
                     transient=True,
                     observed=pr,
+                    attribution=attribution,
                 )
             if (
                 pr.head_sha != command.target_head_sha
@@ -325,9 +346,16 @@ class GitValidatedHeadExecutor:
                     "PR and remote must both identify target",
                     transient=True,
                     observed=pr,
+                    attribution=attribution,
                 )
             return PrEnsureOutcome(
-                status, pr.number, pr.url, pr.head_sha, None, "Exact target PR ensured"
+                status,
+                pr.number,
+                pr.url,
+                pr.head_sha,
+                None,
+                "Exact target PR ensured",
+                attribution,
             )
         return PrEnsureOutcome(
             PrEnsureStatus.REFUSED,
@@ -336,6 +364,7 @@ class GitValidatedHeadExecutor:
             pr.head_sha,
             failure,
             "PR is not usable",
+            attribution,
         )
 
     @staticmethod
@@ -345,6 +374,7 @@ class GitValidatedHeadExecutor:
         *,
         transient: bool = False,
         observed: PublicationPullRequest | None = None,
+        attribution: PullRequestAttribution = PullRequestAttribution.NONE,
     ) -> PrEnsureOutcome:
         return PrEnsureOutcome(
             PrEnsureStatus.TRANSIENT_FAILURE if transient else PrEnsureStatus.REFUSED,
@@ -353,6 +383,7 @@ class GitValidatedHeadExecutor:
             observed.head_sha if observed else None,
             failure,
             message,
+            attribution,
         )
 
     def publish_or_reconcile(

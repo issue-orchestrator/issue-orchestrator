@@ -10,6 +10,10 @@ Architecture reminder:
 - CompletionProcessor executes actions via adapters (labels, PR, comments)
 """
 
+from issue_orchestrator.domain.registered_completion import CompletionProcessingPolicy
+from issue_orchestrator.domain.session_key import TaskKind
+from issue_orchestrator.ports.completion_intake import CompletionIntakeRuntime
+from issue_orchestrator.domain.registered_completion import CompletionRolePolicy
 from tests.run_allocation_helpers import make_completion_processor
 
 import json
@@ -45,6 +49,7 @@ from issue_orchestrator.domain.review_exchange_run import (
     ReviewExchangeRunAssets,
 )
 from issue_orchestrator.domain.review_exchange_summary import ReviewExchangeSummaryV1
+from issue_orchestrator.domain.review_validation import ReviewValidationEvidence
 from issue_orchestrator.domain.runtime_config import RuntimeConfigReference
 from tests.callback_endpoint_helpers import ready_callback_endpoint
 from issue_orchestrator.control.completion_processor import (
@@ -85,6 +90,10 @@ from tests.unit.session_run_helpers import make_session_run_assets
 
 
 # ==================== Fixtures ====================
+
+
+def _failed_review_validation(head_sha: str) -> ReviewValidationEvidence:
+    return ReviewValidationEvidence.from_mapping({"passed": False, "head_sha": head_sha})
 
 
 def _write_test_config(tmp_path: Path) -> Path:
@@ -875,11 +884,52 @@ class TestReviewExchangeExecution:
             review_exchange_runner=PersistentReviewExchangeRunner(
                 session_output,
                 InMemoryPersistentExchangePairRegistry(),
+                completion_intake=Mock(spec=CompletionIntakeRuntime),
             ),
             event_bus=EventBus(),
             label_config={},
             config=config,
         )
+
+    def test_receipt_process_supplies_owner_validation_to_first_review(
+        self, tmp_path, mock_label_adapter, mock_pr_adapter, mock_git_adapter,
+        event_bus,
+    ) -> None:
+        from tests.unit.test_completion_evidence_intake import command, completion, setup
+
+        ledger, run, capability, intake, working_copy, _ = setup(tmp_path)
+        raw = json.loads(completion())
+        raw["requested_actions"] = ["push_branch", "create_pr"]
+        receipt = intake.submit(
+            capability, command(json.dumps(raw).encode(), "normal-process")
+        )
+        intake.drain()
+        config = self._make_config(tmp_path)
+        config.repo = "example/repo"
+        config.agents["agent:claude"] = config.agents.pop("agent:coder")
+        mock_git_adapter.get_head_sha.return_value = working_copy.get_head_sha(
+            run.worktree_path
+        )
+        review_runner = _CapturingReviewExchangeRunner()
+        processor = make_completion_processor(
+            agent_callback_endpoint=ready_callback_endpoint(),
+            label_adapter=mock_label_adapter, pr_adapter=mock_pr_adapter,
+            git_adapter=mock_git_adapter, session_output=FileSystemSessionOutput(),
+            review_exchange_runner=review_runner, event_bus=event_bus,
+            config=config, completion_intake=intake,
+        )
+
+        result = processor.process(
+            run.worktree_path, 42, "Feature", run_assets=run,
+            intake_receipt=receipt,
+        )
+
+        assert result.success
+        evidence = review_runner.calls[0]["initial_validation_evidence"]
+        assert isinstance(evidence, ReviewValidationEvidence)
+        attestation = ledger.validation_for_receipt(receipt.entry_id)
+        assert evidence.head_sha == attestation.head_sha
+        assert evidence.passed is True
 
     def test_exchange_failure_halts_before_pr_creation(
         self,
@@ -1742,6 +1792,7 @@ class TestReviewExchangeExecution:
         event_bus,
         monkeypatch,
     ) -> None:
+        mock_git_adapter.get_head_sha.return_value = "same-sha"
         config = self._make_config(tmp_path)
         processor = make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
@@ -1784,6 +1835,8 @@ class TestReviewExchangeExecution:
                     "reason": "reviewer_ok",
                     "response_text": "Looks good",
                     "timestamp": "2026-02-01T00:00:00Z",
+                    "head_sha": "same-sha",
+                    "validation_passed": True,
                 }
             )
         )
@@ -1845,6 +1898,7 @@ class TestReviewExchangeExecution:
         event_bus,
         monkeypatch,
     ) -> None:
+        mock_git_adapter.get_head_sha.return_value = "same-sha"
         # Symmetric to test_exchange_uses_cached_summary_after_restart but for
         # the non-ok branch: if a prior run persisted a changes_requested
         # outcome, the replay must also be tagged cached=True so the timeline
@@ -1970,6 +2024,7 @@ class TestReviewExchangeExecution:
         event_bus,
         monkeypatch,
     ) -> None:
+        mock_git_adapter.get_head_sha.return_value = "same-sha"
         # Second matrix point: a cached ``max_rounds_exceeded`` halt
         # surfaces the real reason in the emitted summary and recorded
         # errors. The earlier ``coder_protocol_error`` test pins one
@@ -2151,6 +2206,7 @@ class TestReviewExchangeExecution:
         event_bus,
         monkeypatch,
     ) -> None:
+        mock_git_adapter.get_head_sha.return_value = "same-sha"
         config = self._make_config(tmp_path)
         session_output = FileSystemSessionOutput()
         processor = make_completion_processor(
@@ -2194,6 +2250,8 @@ class TestReviewExchangeExecution:
                     "reason": "reviewer_ok",
                     "response_text": "Looks good",
                     "timestamp": "2026-02-01T00:00:00Z",
+                    "head_sha": "same-sha",
+                    "validation_passed": True,
                 }
             )
         )
@@ -2295,11 +2353,21 @@ class TestReviewExchangeExecution:
                     reason="reviewer_ok",
                 )
 
+        from tests.run_allocation_helpers import allocation_for
+        from issue_orchestrator.domain.issue_run_allocation import (
+            IssueExchangeRunAllocation,
+        )
+        from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+        from issue_orchestrator.domain.issue_key import FakeIssueKey
+
+        output = FileSystemSessionOutput()
+        allocator = allocation_for(output)
         processor = make_completion_processor(
             label_adapter=Mock(spec=LabelAdapter),
             pr_adapter=Mock(spec=PRAdapter),
             git_adapter=Mock(spec=GitAdapter),
-            session_output=FileSystemSessionOutput(),
+            session_output=output,
+            issue_run_allocator=allocator,
             review_exchange_runner=_CaptureRunner(),
             event_bus=EventBus(),
             label_config={},
@@ -2309,14 +2377,14 @@ class TestReviewExchangeExecution:
             agent_callback_endpoint=ready_callback_endpoint(),
         )
 
-        exchange_run = ReviewExchangeRun(
-            session_name="review-exchange-1",
-            run_id="review-run-1",
-            session_run=make_session_run_assets(tmp_path, session_name="review-exchange-1", run_id="review-run-1"),
-            parent_session_name="session-1",
-            assets=ReviewExchangeRunAssets.from_run_dir(
-                tmp_path / ".issue-orchestrator" / "sessions" / "review-run-1__review-exchange-1"
-            ),
+        exchange_run = allocator.allocate_exchange(
+            IssueExchangeRunAllocation(
+                worktree_path=tmp_path,
+                issue_number=1,
+                session_key=SessionKey(FakeIssueKey("1", "test/repo"), TaskKind.REWORK),
+                parent_session_name="session-1",
+                agent_label="agent:coder",
+            )
         )
         processor._run_review_exchange_loop(  # noqa: SLF001
             exchange_run=exchange_run,
@@ -2549,6 +2617,9 @@ class TestCompletionProcessorPRActions:
 
         assert result.success
         assert result.pr_url == "https://github.com/owner/repo/pull/42"
+        assert result.publication is not None
+        assert result.publication.url == result.pr_url
+        assert result.publication.branch == mock_pr_adapter.create_pr.return_value.branch
         mock_pr_adapter.create_pr.assert_called_once()
         call_args = mock_pr_adapter.create_pr.call_args
         assert call_args.kwargs["title"] == "#123: Add feature"
@@ -2852,7 +2923,7 @@ class TestTechLeadCompletionEffects:
         actions = make_planner(config).generate_completion_actions(
             session, SessionStatus.COMPLETED, processing_errors=result.errors,
             review_exchange_halted=result.review_exchange_halted,
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
         diagnoses = [action for action in actions if isinstance(action, AddCommentAction)
                      and action.number == 1 and "Diagnosis for #1" in action.comment]
         assert len(diagnoses) == 1
@@ -4936,11 +5007,10 @@ class TestCompletionProcessorPublishGate:
         mock_git_adapter.push.assert_not_called()
         mock_label_adapter.add_label.assert_not_called()
         mock_pr_adapter.add_comment.assert_not_called()
-        validation_record_path = processor._run_review_exchange_loop.call_args.kwargs[  # noqa: SLF001
-            "initial_validation_record_path"
+        validation_evidence = processor._run_review_exchange_loop.call_args.kwargs[  # noqa: SLF001
+            "initial_validation_evidence"
         ]
-        assert validation_record_path.exists()
-        record_data = json.loads(validation_record_path.read_text())
+        record_data = json.loads(validation_evidence.result_bytes)
         assert record_data["passed"] is False
         assert record_data["command"] == "/tmp/hooks/pre-push"
 
@@ -5081,9 +5151,12 @@ class TestCompletionProcessorPublishGate:
             issue_number=123,
             issue_title="Test Issue",
             session_name=None,
-            agent_label="agent:coder",
+            processing_policy=CompletionRolePolicy(("agent:coder",), None).processing_policy(
+                None, 123, "agent:coder", None
+            ),
             record=record,
             run_assets=make_session_run_assets(tmp_path),
+            validation_evidence=_failed_review_validation("head-a"),
         )
 
         assert result is None
@@ -5123,6 +5196,7 @@ class TestCompletionProcessorPublishGate:
         validation_record.write_text(
             json.dumps({"passed": False, "head_sha": "deadbeef" * 5})
         )
+        validation_evidence = _failed_review_validation("deadbeef" * 5)
 
         record = make_record(
             outcome=CompletionOutcome.COMPLETED,
@@ -5146,9 +5220,12 @@ class TestCompletionProcessorPublishGate:
                 issue_number=1,
                 issue_title="Test",
                 session_name=run.session_name,
-                agent_label="agent:coder",
+                processing_policy=CompletionRolePolicy(("agent:coder",), None).processing_policy(
+                    None, 1, "agent:coder", None
+                ),
                 record=record,
                 run_assets=run,
+                validation_evidence=validation_evidence,
             )
             assert result is not None
             assert result.success is True
@@ -5160,9 +5237,12 @@ class TestCompletionProcessorPublishGate:
             issue_number=1,
             issue_title="Test",
             session_name=run.session_name,
-            agent_label="agent:coder",
+            processing_policy=CompletionRolePolicy(("agent:coder",), None).processing_policy(
+                None, 1, "agent:coder", None
+            ),
             record=record,
             run_assets=run,
+            validation_evidence=validation_evidence,
         )
         assert result is not None
         assert result.success is False
@@ -5215,6 +5295,7 @@ class TestCompletionProcessorPublishGate:
         run = processor.session_output.start_run(worktree, "issue-1", issue_number=1)
         validation_record = run.run_dir / "validation-record.json"
         validation_record.write_text(json.dumps({"passed": False, "head_sha": "aaa"}))
+        validation_evidence = _failed_review_validation("aaa")
 
         record = make_record(
             outcome=CompletionOutcome.COMPLETED,
@@ -5233,9 +5314,12 @@ class TestCompletionProcessorPublishGate:
                 issue_number=1,
                 issue_title="Test",
                 session_name=run.session_name,
-                agent_label="agent:coder",
+                processing_policy=CompletionRolePolicy(("agent:coder",), None).processing_policy(
+                    None, 1, "agent:coder", None
+                ),
                 record=record,
                 run_assets=run,
+                validation_evidence=validation_evidence,
             )
             assert result is not None
             assert result.success is True
@@ -5277,29 +5361,37 @@ class TestCompletionProcessorPublishGate:
 
         # Two attempts on SHA "aaa" — within budget.
         validation_record.write_text(json.dumps({"passed": False, "head_sha": "aaa"}))
+        validation_evidence = _failed_review_validation("aaa")
         for _ in range(2):
             result = processor._reroute_pre_publish_validation_failure_if_possible(  # noqa: SLF001
                 worktree=worktree,
                 issue_number=1,
                 issue_title="Test",
                 session_name=run.session_name,
-                agent_label="agent:coder",
+                processing_policy=CompletionRolePolicy(("agent:coder",), None).processing_policy(
+                    None, 1, "agent:coder", None
+                ),
                 record=record,
                 run_assets=run,
+                validation_evidence=validation_evidence,
             )
             assert result is not None and result.success is True
 
         # SHA advances. Budget should reset, so two more attempts succeed.
         validation_record.write_text(json.dumps({"passed": False, "head_sha": "bbb"}))
+        validation_evidence = _failed_review_validation("bbb")
         for _ in range(2):
             result = processor._reroute_pre_publish_validation_failure_if_possible(  # noqa: SLF001
                 worktree=worktree,
                 issue_number=1,
                 issue_title="Test",
                 session_name=run.session_name,
-                agent_label="agent:coder",
+                processing_policy=CompletionRolePolicy(("agent:coder",), None).processing_policy(
+                    None, 1, "agent:coder", None
+                ),
                 record=record,
                 run_assets=run,
+                validation_evidence=validation_evidence,
             )
             assert result is not None and result.success is True
 
@@ -5309,9 +5401,12 @@ class TestCompletionProcessorPublishGate:
             issue_number=1,
             issue_title="Test",
             session_name=run.session_name,
-            agent_label="agent:coder",
+            processing_policy=CompletionRolePolicy(("agent:coder",), None).processing_policy(
+                None, 1, "agent:coder", None
+            ),
             record=record,
             run_assets=run,
+            validation_evidence=validation_evidence,
         )
         assert result is not None
         assert result.success is False
@@ -5865,3 +5960,84 @@ class TestEscalationVocabularyIsShared:
             dirty_tree_disposition(CompletionOutcome.COMPLETED.value)
             is DirtyTreeDisposition.REJECT
         )
+
+
+def test_shared_preparation_preserves_intent_without_publishing(
+    processor, mock_git_adapter, mock_pr_adapter, worktree_with_completion
+):
+    from issue_orchestrator.control.completion_preparation import PreparedCompletion
+
+    record = make_record(
+        outcome=CompletionOutcome.COMPLETED,
+        requested_actions=[RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR],
+        implementation="Preserve implementation details",
+    )
+    worktree = worktree_with_completion(record)
+    actions, errors = [], []
+    prepared = processor.prepare_completion(
+        worktree, 123, "Test Issue", run_assets=make_session_run_assets(worktree),
+        completion_path=None, agent_label="agent:coder", intake_receipt=None,
+        actions_taken=actions, errors=errors,
+    )
+    assert isinstance(prepared, PreparedCompletion)
+    assert prepared.record.requested_actions == record.requested_actions
+    assert prepared.actions.plan.ordered_actions == tuple(record.requested_actions)
+    assert not prepared.actions.halted
+    assert errors == []
+    mock_git_adapter.push.assert_not_called()
+    mock_pr_adapter.create_pr.assert_not_called()
+    publication = processor.prepare_pull_request(
+        worktree=worktree, record=prepared.record, issue_number=123,
+        issue_title="Test Issue", branch=prepared.branch, agent_label=prepared.agent_label, errors=errors,
+        exchange_mode=prepared.actions.exchange_mode,
+        exchange_result=prepared.actions.exchange_result,
+    )
+    assert publication is not None
+    assert publication.title == "#123: Test Issue"
+    assert "Preserve implementation details" in publication.body
+    mock_git_adapter.push.assert_not_called()
+    mock_pr_adapter.create_pr.assert_not_called()
+
+
+def test_manual_settlement_preserves_requested_effects_without_generic_publish(
+    processor, mock_git_adapter, mock_pr_adapter, mock_label_adapter, tmp_path
+):
+    from issue_orchestrator.domain.completion_intake import CompletionIntakeReceipt
+    from issue_orchestrator.domain.exact_git import ExactPushOutcome
+    from issue_orchestrator.domain.manual_publication import PreparedManualPublication
+    from issue_orchestrator.domain.session_run import RunContainedFile
+    from issue_orchestrator.domain.validated_head_publication import (
+        PublicationContent, PublishValidatedHeadCommand, PublishValidatedHeadOutcome,
+        RemoteHeadExpectation,
+    )
+    from issue_orchestrator.domain.validated_work import PublishValidatedHeadStatus
+
+    run = make_session_run_assets(tmp_path)
+    receipt = CompletionIntakeReceipt("a" * 64, "b" * 64)
+    command = PublishValidatedHeadCommand(123, "owner/repo", "issue-123", "c" * 40,
+        RemoteHeadExpectation.UNCONSTRAINED, None, tmp_path, None, "main",
+        PublicationContent("#123: Test Issue", "Implementation", True))
+    record = make_record(CompletionOutcome.COMPLETED,
+        [RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR, RequestedAction.REMOVE_NEEDS_REWORK_LABEL],
+        pr_labels=["feature"])
+    prepared = PreparedManualPublication(
+        command=command, receipt=receipt, run=run,
+        completion_artifact=RunContainedFile(run.run_dir, run.run_dir / "owned.json"),
+        record=record, issue_title="Test Issue", processing_policy=CompletionProcessingPolicy("agent:coder", TaskKind.CODE), label_target=123,
+        actions_taken=(), remaining_actions=(RequestedAction.REMOVE_NEEDS_REWORK_LABEL,),
+        exchange_mode=None, exchange_result=None, review_exchange_completed=False,
+        review_exchange_halted=False,
+    )
+    from issue_orchestrator.domain.validated_head_publication import PullRequestAttribution
+    publication = PublishValidatedHeadOutcome(PublishValidatedHeadStatus.PUBLISHED,
+        command.target_head_sha, 42, "https://github.com/owner/repo/pull/42",
+        command.target_head_sha, ExactPushOutcome.PUSHED, None, "Published",
+        PullRequestAttribution.CREATED)
+    result = processor.settle_manual_publication(prepared, publication)
+    assert result.success
+    assert result.pr_url == publication.pr_url
+    assert result.intake_receipt == receipt
+    mock_git_adapter.push.assert_not_called()
+    mock_pr_adapter.create_pr.assert_not_called()
+    mock_label_adapter.add_label.assert_called_once_with(42, "feature")
+    mock_label_adapter.remove_label.assert_called_once_with(123, "needs-rework")

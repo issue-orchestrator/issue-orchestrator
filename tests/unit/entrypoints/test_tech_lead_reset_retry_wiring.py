@@ -1,7 +1,7 @@
 """Production-wiring tests for the tech_lead ``reset_retry`` executor (#6777).
 
 These exercise the real composition path — ``build_tech_lead_reset_retry_executor``
-→ ``has_active_reset_retry_runtime`` → ``has_active_issue_runtime`` — rather than
+→ the shared lifecycle owner’s ``reset_snapshot`` — rather than
 a hand-rolled predicate, to prove the reset-freshness check covers EVERY runtime
 owner the reset boundary would terminate. A stale proposal must stale-downgrade
 with zero cancellation/abandon/reset whenever any hidden runtime is active, even
@@ -30,6 +30,7 @@ from issue_orchestrator.entrypoints.tech_lead_reset_retry_wiring import (
     build_tech_lead_reset_retry_executor,
 )
 from issue_orchestrator.infra.config import Config
+from tests.runtime_lifecycle_helpers import runtime_owners
 
 BLOCKED_FAILED = "blocked-failed"
 HIDDEN_EXCHANGE_JOB_ID = "review-exchange:17:coding-1:run-1"
@@ -137,6 +138,13 @@ def _build(
         session_manager=session_manager,
         publish_recovery=publish_recovery,
         services=services,
+        runtime_lifecycle=runtime_owners(
+            session_manager=session_manager,
+            active_sessions=state.active_sessions,
+            pair_registry=pair_registry,
+            job_supervisor=job_supervisor,
+            publish_recovery=publish_recovery,
+        ),
     )
     orchestrator = SimpleNamespace(
         deps=deps,

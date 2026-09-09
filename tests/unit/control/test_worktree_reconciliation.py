@@ -106,6 +106,7 @@ def test_recover_removes_only_inactive_owned_disposables(tmp_path: Path) -> None
         cleanup,
         worktrees,
         WorktreeAuditOwner(worktrees),
+        MagicMock(),
     ).recover(OrchestratorState())
 
     assert worktrees.remove_checkout_and_branch.call_args_list == [
@@ -145,6 +146,7 @@ def test_recover_retains_reviewer_with_local_changes(tmp_path: Path) -> None:
         cleanup,
         worktrees,
         WorktreeAuditOwner(worktrees),
+        MagicMock(),
     ).recover(OrchestratorState())
 
     worktrees.remove_checkout_and_branch.assert_not_called()
@@ -181,6 +183,7 @@ def test_recover_retains_clean_reviewer_when_detached_head_diverged(
         cleanup,
         worktrees,
         WorktreeAuditOwner(worktrees),
+        MagicMock(),
     ).recover(OrchestratorState())
 
     worktrees.can_remove_without_user_changes.assert_not_called()

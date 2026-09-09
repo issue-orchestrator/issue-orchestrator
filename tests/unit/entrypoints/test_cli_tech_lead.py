@@ -115,7 +115,7 @@ class TestCmdHealthReview:
             # clean one here, so the command reports a plain terminated timeout.
             return_value=HealthReviewResult(
                 200, status=TechLeadOutcomeStatus.TIMED_OUT, detail="timed out",
-                termination=TechLeadTerminationOutcome(),
+                termination=TechLeadTerminationOutcome(validated_work=ValidatedWorkDispositionBatch.no_work(1, "fixture"), ),
             ),
         ):
             rc = cli_tech_lead.cmd_health_review(_args(advise_only=False))
@@ -142,7 +142,7 @@ class TestCmdHealthReview:
             "issue_orchestrator.control.tech_lead_trigger.run_health_review",
             return_value=HealthReviewResult(
                 200, status=TechLeadOutcomeStatus.TIMED_OUT, detail="timed out",
-                termination=TechLeadTerminationOutcome(
+                termination=TechLeadTerminationOutcome(validated_work=ValidatedWorkDispositionBatch.no_work(1, "fixture"),
                     terminal_stopped=False, worktree_removed=False,
                     leaked_worktree="/wt/repo-tech-lead-200-abc",
                 ),
@@ -158,3 +158,5 @@ class TestCmdHealthReview:
         assert "TERMINATION INCOMPLETE" in out  # not a bare "session terminated"
         assert "/wt/repo-tech-lead-200-abc" in out  # the exact leaked path
         assert "remove it manually" in out
+
+from issue_orchestrator.domain.validated_work_commands import ValidatedWorkDispositionBatch

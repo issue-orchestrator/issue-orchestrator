@@ -1,5 +1,7 @@
 """Unit tests for ActionApplier."""
 
+from tests.runtime_lifecycle_helpers import make_action_applier, bind_action_runtime
+
 import logging
 import pytest
 from unittest.mock import MagicMock, Mock, patch
@@ -102,6 +104,7 @@ def mock_worktree_manager():
 
 @pytest.fixture
 def applier(
+    completion_intake,
     mock_labels,
     mock_sessions,
     mock_events,
@@ -114,7 +117,8 @@ def applier(
         single_instance_run_ownership,
     )
 
-    return ActionApplier(
+    return make_action_applier(
+        completion_intake=completion_intake,
         labels=mock_labels,
         sessions=mock_sessions,
         events=mock_events,
@@ -619,6 +623,7 @@ class TestReconcileHistoryEntryAction:
         )
         applier.history_owner = SessionHistoryOwner([entry])
         applier.pair_registry = MagicMock(name="pair_registry")
+        bind_action_runtime(applier)
         action = ReconcileHistoryEntryAction(
             issue_number=228,
             pr_number=318,
@@ -655,7 +660,9 @@ class TestReconcileHistoryEntryAction:
             "review-exchange:228:coding-1"
         ]
         applier.pair_registry = pair_registry
+        bind_action_runtime(applier)
         applier.background_job_supervisor = job_supervisor
+        bind_action_runtime(applier)
         action = ReconcileHistoryEntryAction(
             issue_number=228,
             pr_number=318,
@@ -729,6 +736,7 @@ class TestReconcileHistoryEntryAction:
         )
         applier.history_owner = SessionHistoryOwner([entry])
         applier.pair_registry = MagicMock(name="pair_registry")
+        bind_action_runtime(applier)
         action = ReconcileHistoryEntryAction(
             issue_number=228,
             pr_number=318,
@@ -744,14 +752,10 @@ class TestReconcileHistoryEntryAction:
             228, reason="issue-completed",
         )
 
-    def test_reconcile_history_entry_does_not_release_on_noop_path(
+    def test_reconcile_history_entry_rechecks_custody_on_noop_path(
         self, applier,
     ):
-        """If the history entry is already terminal (idempotent
-        no-op), the reconcile action returns early without firing the
-        HISTORY_RECONCILED event — and must NOT call release a second
-        time. Otherwise an already-released pair would receive a
-        second release call (idempotent, but noisy in logs)."""
+        """Already-terminal history still checks custody before idempotent release."""
         from unittest.mock import MagicMock
 
         entry = SessionHistoryEntry(
@@ -765,6 +769,7 @@ class TestReconcileHistoryEntryAction:
         )
         applier.history_owner = SessionHistoryOwner([entry])
         applier.pair_registry = MagicMock(name="pair_registry")
+        bind_action_runtime(applier)
         action = ReconcileHistoryEntryAction(
             issue_number=228,
             pr_number=318,
@@ -776,7 +781,7 @@ class TestReconcileHistoryEntryAction:
 
         applier.apply(action)
 
-        applier.pair_registry.release.assert_not_called()
+        applier.pair_registry.release.assert_called_once_with(228, reason="issue-completed")
 
 
 class TestSyncLabelsAction:
@@ -957,7 +962,7 @@ class TestStopSessionAction:
         result = applier.apply(action)
 
         assert result.success
-        mock_sessions.stop.assert_called_once()
+        assert [call.args[0].name for call in mock_sessions.stop.call_args_list] == ["issue-123", "rework-123"]
 
     def test_stop_issue_session_releases_review_exchange_lifecycle(
         self, applier, mock_sessions
@@ -968,7 +973,9 @@ class TestStopSessionAction:
         job_supervisor = Mock()
         job_supervisor.cancel_matching.return_value = ["review-exchange:123:issue-123"]
         applier.pair_registry = pair_registry
+        bind_action_runtime(applier)
         applier.background_job_supervisor = job_supervisor
+        bind_action_runtime(applier)
 
         action = StopSessionAction(
             session_type=SessionType.ISSUE,
@@ -1127,6 +1134,7 @@ class TestPublishRetryAbandonmentAtLifecycleBoundaries:
     def test_escalation_abandons_publish_retry(self, applier, mock_labels):
         publish_recovery = _FakePublishRetryAbandoner()
         applier.publish_recovery = publish_recovery
+        bind_action_runtime(applier)
         action = EscalateToHumanAction(
             issue_number=123,
             pr_number=456,
@@ -1143,6 +1151,7 @@ class TestPublishRetryAbandonmentAtLifecycleBoundaries:
     def test_issue_completed_reconciliation_abandons_publish_retry(self, applier):
         publish_recovery = _FakePublishRetryAbandoner()
         applier.publish_recovery = publish_recovery
+        bind_action_runtime(applier)
         entry = SessionHistoryEntry(
             issue_number=228,
             title="Shared cache read misses",
@@ -1154,6 +1163,7 @@ class TestPublishRetryAbandonmentAtLifecycleBoundaries:
         )
         applier.history_owner = SessionHistoryOwner([entry])
         applier.pair_registry = MagicMock(name="pair_registry")
+        bind_action_runtime(applier)
         action = ReconcileHistoryEntryAction(
             issue_number=228,
             pr_number=318,
@@ -1238,6 +1248,7 @@ class TestEscalateToHumanAction:
         from unittest.mock import MagicMock
 
         applier.pair_registry = MagicMock(name="pair_registry")
+        bind_action_runtime(applier)
         action = EscalateToHumanAction(
             issue_number=123,
             pr_number=456,
@@ -1265,7 +1276,9 @@ class TestEscalateToHumanAction:
             "review-exchange:123:coding-1"
         ]
         applier.pair_registry = pair_registry
+        bind_action_runtime(applier)
         applier.background_job_supervisor = job_supervisor
+        bind_action_runtime(applier)
         action = EscalateToHumanAction(
             issue_number=123,
             pr_number=456,
@@ -1327,6 +1340,7 @@ class TestEscalateToHumanAction:
         # the two collaborators.
         parent = MagicMock()
         applier.pair_registry = parent.pair_registry
+        bind_action_runtime(applier)
         applier.labels = parent.labels  # type: ignore[assignment]
 
         action = EscalateToHumanAction(
@@ -1374,6 +1388,7 @@ class TestEscalateToHumanAction:
         from unittest.mock import MagicMock
 
         applier.pair_registry = MagicMock(name="pair_registry")
+        bind_action_runtime(applier)
         mock_labels.add_label.side_effect = Exception("API error")
         action = EscalateToHumanAction(
             issue_number=123,
@@ -1776,7 +1791,7 @@ class TestCleanupSessionAction:
         def _boom(_path):
             raise RuntimeError("async notify failed")
 
-        applier = ActionApplier(
+        applier = make_action_applier(
             labels=mock_labels, sessions=mock_sessions, events=mock_events,
             repository_host=mock_repository_host, worktree_manager=mock_worktree_manager,
             fresh_issue_reader=mock_fresh_issue_reader, reconcile=False,
@@ -1828,7 +1843,9 @@ class TestCleanupSessionAction:
         job_supervisor = Mock()
         job_supervisor.cancel_matching.return_value = ["review-exchange:123:coding-1"]
         applier.pair_registry = pair_registry
+        bind_action_runtime(applier)
         applier.background_job_supervisor = job_supervisor
+        bind_action_runtime(applier)
 
         action = CleanupSessionAction(
             issue_number=123,
@@ -1867,7 +1884,9 @@ class TestCleanupSessionAction:
         job_supervisor = Mock()
         job_supervisor.cancel_matching.return_value = []
         applier.pair_registry = pair_registry
+        bind_action_runtime(applier)
         applier.background_job_supervisor = job_supervisor
+        bind_action_runtime(applier)
 
         action = CleanupSessionAction(
             issue_number=123,
@@ -1896,7 +1915,9 @@ class TestCleanupSessionAction:
         pair_registry = Mock()
         job_supervisor = Mock()
         applier.pair_registry = pair_registry
+        bind_action_runtime(applier)
         applier.background_job_supervisor = job_supervisor
+        bind_action_runtime(applier)
 
         action = CleanupSessionAction(
             issue_number=123,
@@ -1921,7 +1942,7 @@ class TestRemoveWorktreeAction:
 
     def test_remove_worktree_success(self, applier, mock_worktree_manager, tmp_path):
         """Test successful worktree removal."""
-        action = RemoveWorktreeAction(worktree_path=str(tmp_path))
+        action = RemoveWorktreeAction(worktree_path=str(tmp_path), issue_number=123)
 
         result = applier.apply(action)
 
@@ -1931,7 +1952,7 @@ class TestRemoveWorktreeAction:
     def test_remove_worktree_no_manager(self, applier, tmp_path):
         """Test worktree removal without manager."""
         applier.worktree_manager = None
-        action = RemoveWorktreeAction(worktree_path=str(tmp_path))
+        action = RemoveWorktreeAction(worktree_path=str(tmp_path), issue_number=123)
 
         result = applier.apply(action)
 
@@ -2046,7 +2067,7 @@ class TestShedRecoveredWorkflowLabelsNotDispatchable:
         mock_fresh_issue_reader.read_issue_labels.return_value = [
             "pr-pending", "publish-failed",
         ]
-        applier = ActionApplier(
+        applier = make_action_applier(
             labels=mock_labels,
             sessions=mock_sessions,
             events=mock_events,
@@ -2076,6 +2097,10 @@ class TestRecoverTerminalIssueAction:
     labels (#6431 F1).
     """
 
+    @pytest.fixture(autouse=True)
+    def bind_intake(self, completion_intake):
+        self.completion_intake = completion_intake
+
     @pytest.fixture
     def real_label_manager(self):
         from issue_orchestrator.infra.config import Config
@@ -2102,7 +2127,8 @@ class TestRecoverTerminalIssueAction:
     ):
         reader = MagicMock()
         reader.read_issue_labels.return_value = list(github_labels)
-        applier = ActionApplier(
+        applier = make_action_applier(
+            completion_intake=self.completion_intake,
             labels=mock_labels,
             sessions=mock_sessions,
             events=mock_events,
@@ -2153,7 +2179,8 @@ class TestRecoverTerminalIssueAction:
         reader.read_issue_labels.return_value = [
             "pr-pending", "publish-failed", "agent:backend",
         ]
-        applier = ActionApplier(
+        applier = make_action_applier(
+            completion_intake=self.completion_intake,
             labels=mock_labels,
             sessions=mock_sessions,
             events=mock_events,
@@ -2616,7 +2643,8 @@ class TestRecoverTerminalIssueAction:
         entry = self._awaiting_merge_entry()
         reader = MagicMock()
         reader.read_issue_labels.return_value = ["pr-pending"]
-        applier = ActionApplier(
+        applier = make_action_applier(
+            completion_intake=self.completion_intake,
             labels=mock_labels,
             sessions=mock_sessions,
             events=mock_events,
@@ -2736,7 +2764,7 @@ class TestExpectedStateEnforcement:
         mock_fresh_issue_reader,
     ):
         """Create an ActionApplier with reconciliation enabled."""
-        return ActionApplier(
+        return make_action_applier(
             labels=mock_labels,
             sessions=mock_sessions,
             events=mock_events,
@@ -2863,7 +2891,7 @@ class TestExpectedStateEnforcement:
         """Test ExpectedState is not enforced when reconcile=False."""
         from issue_orchestrator.control.reconciliation import ExpectedState
 
-        applier = ActionApplier(
+        applier = make_action_applier(
             labels=mock_labels,
             sessions=mock_sessions,
             events=mock_events,
@@ -3136,7 +3164,7 @@ class TestTechLeadMutationsCrossTheReconciliationGate:
         ]
         authority = MagicMock()
         target = MagicMock()
-        applier = ActionApplier(
+        applier = make_action_applier(
             labels=mock_labels,
             sessions=mock_sessions,
             events=mock_events,
@@ -3279,7 +3307,7 @@ class TestActLevelOpsCrossTheGateExactlyOnce:
         )
         executor = MagicMock()
         executor.apply.side_effect = lambda action: ActionResult.ok(action)
-        applier = ActionApplier(
+        applier = make_action_applier(
             labels=mock_labels,
             sessions=mock_sessions,
             events=mock_events,
@@ -3374,7 +3402,7 @@ class TestTechLeadIssueCreationCrossesTheReconciliationGate:
         reader = MagicMock()
         reader.read_issue_labels.return_value = ["tech-lead", "io:needs-reconcile"]
         authority = MagicMock()
-        applier = ActionApplier(
+        applier = make_action_applier(
             labels=mock_labels,
             sessions=mock_sessions,
             events=mock_events,
@@ -3478,7 +3506,7 @@ class TestTechLeadIssueCreationCrossesTheReconciliationGate:
             {"name": "tech-lead-observation"},
         ]
         mock_repository_host.create_issue.return_value = {"number": 900}
-        applier = ActionApplier(
+        applier = make_action_applier(
             labels=mock_labels,
             sessions=mock_sessions,
             events=mock_events,

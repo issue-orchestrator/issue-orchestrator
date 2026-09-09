@@ -16,6 +16,7 @@ fast-forward at the start of every reviewer round, remove when the
 
 from __future__ import annotations
 
+from ..ports.completion_intake import CompletionIntakeRuntime
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -23,6 +24,7 @@ from ..domain.models import AgentConfig
 from ..domain.review_exchange import ReviewExchangeOutcome
 from ..domain.review_exchange_run import ReviewExchangeRun
 from ..domain.runtime_config import RuntimeConfigReference
+from ..domain.review_validation import ReviewValidationEvidence
 from ..events import EventContext
 from ..ports.event_sink import EventSink
 from ..ports.review_exchange_approval_gate import ReviewExchangeApprovalGate
@@ -103,9 +105,11 @@ class PersistentReviewExchangeRunner:
         session_output: SessionOutput,
         pair_registry: InMemoryPersistentExchangePairRegistry,
         *,
+        completion_intake: CompletionIntakeRuntime,
         turn_mailbox: "TurnMailbox | None" = None,
         coder_prompt_addendum: CoderPromptAddendumProvider = NO_CODER_PROMPT_ADDENDUM,
     ) -> None:
+        self._completion_intake = completion_intake
         self._session_output = session_output
         self._pair_registry = pair_registry
         # Read off the registry rather than injected separately: the registry
@@ -137,6 +141,7 @@ class PersistentReviewExchangeRunner:
         self,
         *,
         exchange_run: ReviewExchangeRun,
+        completion_capability: str,
         coder_worktree: Path,
         issue_number: int,
         issue_title: str,
@@ -149,7 +154,7 @@ class PersistentReviewExchangeRunner:
         max_no_progress: int,
         require_validation: bool,
         nit_policy: str = "surface",
-        initial_validation_record_path: Path | None = None,
+        initial_validation_evidence: ReviewValidationEvidence | None = None,
         approval_gate: ReviewExchangeApprovalGate | None = None,
         web_port: int | None = None,
         events: EventSink | None = None,
@@ -189,6 +194,8 @@ class PersistentReviewExchangeRunner:
 
         return run_persistent_session_exchange(
             exchange_run=exchange_run,
+            completion_capability=completion_capability,
+            completion_intake=self._completion_intake,
             session_output=self._session_output,
             pair_registry=self._pair_registry,
             kill_evidence=self._kill_evidence,
@@ -207,7 +214,7 @@ class PersistentReviewExchangeRunner:
             max_no_progress=max_no_progress,
             require_validation=require_validation,
             nit_policy=nit_policy,
-            initial_validation_record_path=initial_validation_record_path,
+            initial_validation_evidence=initial_validation_evidence,
             approval_gate=approval_gate,
             web_port=web_port,
             events=events,

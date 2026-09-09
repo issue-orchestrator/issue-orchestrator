@@ -5,6 +5,119 @@
     "version": "1.0.0"
   },
   "paths": {
+    "/api/issues/{issue_number}/resume": {
+      "post": {
+        "summary": "Process an authenticated allocated-run completion receipt",
+        "parameters": [
+          {
+            "name": "issue_number",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          {
+            "name": "X-Completion-Capability",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CompletionIntakeReceiptPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Receipt processing outcome",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CompletionResumeOutcomePayload"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/completion/submissions": {
+      "post": {
+        "summary": "Register completion evidence",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CompletionSubmissionPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Durable intake outcome",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CompletionIntakeReceiptPayload"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "X-Completion-Capability",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "Secret capability bound by the allocating run owner; also requires agent callback or operator authentication."
+          }
+        ]
+      }
+    },
+    "/api/validated-work/intake": {
+      "post": {
+        "summary": "Import historical completion for parked admission",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HistoricalIntakeCommandPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Durable intake outcome",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HistoricalIntakeOutcomePayload"
+                }
+              }
+            }
+          }
+        },
+        "description": "Operator authentication only (admin bearer or browser session with CSRF). Agent callback tokens are refused. Actor is audit text, never authority."
+      }
+    },
     "/api/view-model": {
       "get": {
         "summary": "Get dashboard view model",
@@ -713,6 +826,231 @@
   },
   "components": {
     "schemas": {
+      "CompletionResumeOutcomePayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "success",
+          "message",
+          "pr_url",
+          "actions_taken",
+          "errors"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "message": {
+            "type": "string"
+          },
+          "pr_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "actions_taken": {
+            "type": ["array", "null"],
+            "items": {
+              "type": "string"
+            }
+          },
+          "errors": {
+            "type": ["array", "null"],
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "CompletionSubmissionPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "raw_bytes": {
+            "type": "string",
+            "format": "byte",
+            "maxLength": 2796204
+          },
+          "content_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "submission_key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "raw_bytes",
+          "content_sha256",
+          "submission_key"
+        ]
+      },
+      "CompletionIntakeReceiptPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "entry_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "content_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        },
+        "required": [
+          "entry_id",
+          "content_sha256"
+        ]
+      },
+      "HistoricalIntakeCommandPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "repo_slug": {
+            "type": "string",
+            "minLength": 1
+          },
+          "issue_number": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "branch_name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "target_head_sha": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{40}$"
+          },
+          "candidate_path": {
+            "type": "string",
+            "pattern": "^/"
+          },
+          "candidate_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "actor": {
+            "type": "string",
+            "minLength": 1
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "repo_slug",
+          "issue_number",
+          "branch_name",
+          "target_head_sha",
+          "candidate_path",
+          "candidate_sha256",
+          "actor",
+          "reason"
+        ]
+      },
+      "HistoricalIntakeParkedPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "parked"
+            ]
+          },
+          "record_id": {
+            "type": "string",
+            "pattern": "^r1:[0-9a-f]{64}$"
+          },
+          "evidence_id": {
+            "type": "string",
+            "pattern": "^e1:[0-9a-f]{64}$"
+          }
+        },
+        "required": [
+          "status",
+          "record_id",
+          "evidence_id"
+        ]
+      },
+      "HistoricalIntakeRefusedPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "refused"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "wrong_repository",
+              "candidate_changed",
+              "invalid_completion",
+              "invalid_selection",
+              "prerequisite_unavailable"
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "reason"
+        ]
+      },
+      "HistoricalIntakeValidationFailedPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "validation_failed"
+            ]
+          },
+          "entry_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "validation_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "validation_path": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "status",
+          "entry_id",
+          "validation_sha256",
+          "validation_path"
+        ]
+      },
+      "HistoricalIntakeOutcomePayload": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/HistoricalIntakeParkedPayload"
+          },
+          {
+            "$ref": "#/components/schemas/HistoricalIntakeRefusedPayload"
+          },
+          {
+            "$ref": "#/components/schemas/HistoricalIntakeValidationFailedPayload"
+          }
+        ],
+        "discriminator": {
+          "propertyName": "status"
+        }
+      },
       "IssueItemPayload": {
         "type": "object",
         "additionalProperties": true,

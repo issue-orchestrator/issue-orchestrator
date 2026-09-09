@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Callable, TYPE_CHECKING
 
 from ..ports.repository_host import RepositoryHostError
+from .review_exchange_lifecycle import IssueRuntimeLifecycleOwners
 
 if TYPE_CHECKING:
     from ..infra.config import Config, AgentConfig
@@ -46,7 +47,9 @@ class CleanupManager:
         session_exists_fn: Callable[[str], bool],
         get_worktree_path_fn: Callable[[int, "AgentConfig"], Path],
         get_session_name_fn: Callable[[int, str], str],
+        runtime_lifecycle: IssueRuntimeLifecycleOwners,
     ):
+        self._runtime_lifecycle = runtime_lifecycle
         self.config = config
         self.repository_host = repository_host
         self._worktree_manager = worktree_manager
@@ -167,6 +170,7 @@ class CleanupManager:
 
     def _execute_cleanup(self, pending: "PendingCleanup", close_tabs: bool, remove_wt: bool) -> bool:
         """Execute cleanup for a single pending cleanup. Returns True if successful."""
+        self._runtime_lifecycle.preserve(pending.issue_number, "deferred-cleanup")
         success = True
 
         if close_tabs:
@@ -190,6 +194,7 @@ class CleanupManager:
 
     def _remove_worktree_for_cleanup(self, worktree_path: Path, *, issue_number: int) -> bool:
         """Remove a worktree, escalating only when no user changes would be lost."""
+        self._runtime_lifecycle.preserve(issue_number, "worktree-cleanup")
         try:
             self._worktree_manager.remove_checkout(worktree_path)
             return True
@@ -318,6 +323,7 @@ class CleanupManager:
         remove_wt: bool,
     ) -> bool:
         """Clean up worktree for a specific issue. Returns True if cleaned."""
+        self._runtime_lifecycle.preserve(issue_number, "orphan-cleanup")
         for _agent_label, agent_config in self.config.agents.items():
             worktree_path = self._get_worktree_path(issue_number, agent_config)
 

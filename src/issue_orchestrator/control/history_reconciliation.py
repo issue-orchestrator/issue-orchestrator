@@ -22,7 +22,9 @@ from .session_history import HistoryReconciliationMutation, SessionHistoryOwner
 
 logger = logging.getLogger(__name__)
 
-IssueRuntimeTerminator = Callable[[int, str], object]
+from .review_exchange_lifecycle import IssueRuntimeTermination
+
+IssueRuntimeTerminator = Callable[[int, str], IssueRuntimeTermination]
 
 
 def apply_history_reconciliation(
@@ -46,6 +48,7 @@ def apply_history_reconciliation(
     )
     if not isinstance(outcome, HistoryReconciliationMutation):
         _log_noop(action, outcome.reason, outcome.current_status)
+        termination = terminate_issue_runtime(action.issue_number, "issue-completed")
         return ActionResult.ok(
             action,
             issue_number=action.issue_number,
@@ -54,6 +57,7 @@ def apply_history_reconciliation(
             noop_reason=outcome.reason,
             current_status=outcome.current_status,
             no_op=True,
+            validated_work=termination.validated_work,
         )
 
     events.publish(make_trace_event(
@@ -82,13 +86,14 @@ def apply_history_reconciliation(
         ))
 
     # Every successful awaiting-merge mutation is terminal (merged or closed).
-    terminate_issue_runtime(action.issue_number, "issue-completed")
+    termination = terminate_issue_runtime(action.issue_number, "issue-completed")
     return ActionResult.ok(
         action,
         issue_number=action.issue_number,
         pr_number=action.pr_number,
         previous_status=outcome.previous_status,
         status=outcome.status,
+        validated_work=termination.validated_work,
     )
 
 

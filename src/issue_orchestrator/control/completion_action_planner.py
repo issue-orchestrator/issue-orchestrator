@@ -34,7 +34,7 @@ from .label_manager import LabelManager
 from .provider_availability import ProviderAvailabilityPolicy
 from .provider_blocked_completion import provider_blocked_actions
 from .reconciliation import ExpectedState, build_expected_for_mutation
-from .tech_lead_session_policy import is_tech_lead_session
+from ..domain.registered_completion import CompletionProcessingPolicy
 from ..ports.provider_resilience import ProviderErrorType
 from .needs_human_block import NeedsHumanCause
 
@@ -216,14 +216,8 @@ class CompletionActionPlanner:
             )
         return actions
 
-    def _is_tech_lead_session(self, session: Session) -> bool:
-        """Check if this session is a tech_lead review session."""
-        return is_tech_lead_session(
-            self.config.tech_lead_review_agent, session.issue.agent_type
-        )
-
     def _generate_tech_lead_actions(
-        self, session: Session, expected: ExpectedState
+        self, session: Session, expected: ExpectedState, processing_policy: CompletionProcessingPolicy
     ) -> list[Action]:
         """Delegate batch-success tech_lead effects to the ADR-0031 owner module.
 
@@ -236,13 +230,14 @@ class CompletionActionPlanner:
             session,
             expected,
             completed_ok=True,
+            processing_policy=processing_policy,
             labels=self._lm,
             tech_lead_authority=self._tech_lead_authority,
             open_issue_corpus=self._open_issue_corpus,
         )
 
     def _generate_tech_lead_failure_actions(
-        self, session: Session, expected: ExpectedState
+        self, session: Session, expected: ExpectedState, processing_policy: CompletionProcessingPolicy
     ) -> list[Action]:
         """Delegate batch failure/timeout terminal effects to the owner module."""
         return generate_tech_lead_failure_actions(
@@ -250,12 +245,14 @@ class CompletionActionPlanner:
             session,
             expected,
             tech_lead_authority=self._tech_lead_authority,
+            processing_policy=processing_policy,
         )
 
     def _generate_completed_with_critical_actions(
         self,
         session: Session,
         critical_errors: list[str],
+        processing_policy: CompletionProcessingPolicy,
         diagnostic_path: Optional[str],
         expected: ExpectedState,
     ) -> tuple[Action, ...]:
@@ -271,7 +268,7 @@ class CompletionActionPlanner:
             session.issue.number,
             critical_errors,
         )
-        if self._is_tech_lead_session(session) and has_tech_lead_decision_errors(
+        if processing_policy.is_tech_lead and has_tech_lead_decision_errors(
             critical_errors
         ):
             return tuple(
@@ -302,6 +299,7 @@ class CompletionActionPlanner:
         pr_url: Optional[str] = None,
         completion_detail: Optional[dict[str, Any]] = None,
         provider_error_type: ProviderErrorType | None = None,
+        *, processing_policy: CompletionProcessingPolicy,
     ) -> tuple[Action, ...]:
         """Generate label/comment actions for session completion.
 
@@ -326,7 +324,7 @@ class CompletionActionPlanner:
         # If agent said "completed" but critical processing failed, treat as blocked-failed.
         if status == SessionStatus.COMPLETED and critical_errors:
             return self._generate_completed_with_critical_actions(
-                session, critical_errors, diagnostic_path, expected
+                session, critical_errors, processing_policy, diagnostic_path, expected
             )
 
         if status == SessionStatus.COMPLETED and review_exchange_halted:
@@ -341,7 +339,7 @@ class CompletionActionPlanner:
         if status == SessionStatus.TIMED_OUT:
             timeout_actions = self._generate_timeout_actions(session, expected)
             timeout_actions.extend(
-                self._generate_tech_lead_failure_actions(session, expected)
+                self._generate_tech_lead_failure_actions(session, expected, processing_policy)
             )
             return tuple(timeout_actions)
 
@@ -370,7 +368,7 @@ class CompletionActionPlanner:
                 return tuple(retry_actions)
             failure_actions = self._generate_failure_actions(session, expected)
             failure_actions.extend(
-                self._generate_tech_lead_failure_actions(session, expected)
+                self._generate_tech_lead_failure_actions(session, expected, processing_policy)
             )
             return tuple(failure_actions)
 
@@ -395,7 +393,7 @@ class CompletionActionPlanner:
                     expected=expected,
                 )
             ]
-            actions.extend(self._generate_tech_lead_actions(session, expected))
+            actions.extend(self._generate_tech_lead_actions(session, expected, processing_policy))
             return tuple(actions)
 
         # NEEDS_HUMAN keeps in-progress to maintain the ownership claim.

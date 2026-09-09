@@ -85,7 +85,10 @@ from .config_sections import (
 )
 from .config_value_rules import resolve_tech_lead_watch_label
 from .config_review_projection import serialized_internal_review_dict
-from .budgeted_validation_config import serialize_budgeted_validation, validate_budgeted_validation_agents
+from .budgeted_validation_config import (
+    serialize_budgeted_validation,
+    validate_budgeted_validation_agents,
+)
 from .validation_config_loader import (
     load_validation_config as load_validation_config,
     load_validation_config_from_file as load_validation_config_from_file,
@@ -100,7 +103,9 @@ def _put_if_truthy(target: dict, key: str, value: object) -> None:
 
 
 @dataclass
-class Config(ConfigLaunchIdentity, RuntimeConfigReferenceOwner, TechLeadActivationOwner):
+class Config(
+    ConfigLaunchIdentity, RuntimeConfigReferenceOwner, TechLeadActivationOwner
+):
     """Orchestrator configuration."""
 
     # Agent configurations keyed by label (e.g., "agent:web")
@@ -117,7 +122,9 @@ class Config(ConfigLaunchIdentity, RuntimeConfigReferenceOwner, TechLeadActivati
     label_in_progress: str = "in-progress"
     label_blocked: str = "blocked"
     label_needs_human: str = "needs-human"
-    label_needs_rework: str = "needs-rework"  # Applied to PR when reviewer requests changes
+    label_needs_rework: str = (
+        "needs-rework"  # Applied to PR when reviewer requests changes
+    )
     label_validation_failed: str = "validation-failed"  # Applied when validation fails
     label_prefix: Optional[str] = None  # Optional prefix for all labels (e.g., "bot")
 
@@ -125,9 +132,15 @@ class Config(ConfigLaunchIdentity, RuntimeConfigReferenceOwner, TechLeadActivati
     state_file: Path = Path(".issue-orchestrator/state.json")
     repo_root: Path = field(default_factory=Path.cwd)  # Root of the git repository
     repo_root_from_yaml: bool = False  # Internal: YAML explicitly set repo_root
-    worktree_base: Path = Path(".issue-orchestrator/worktrees")  # Base directory for worktrees
-    worktree_base_branch_override: Optional[str] = None  # Override base branch for worktree creation
-    worktree_seed_ref: Optional[str] = None  # Optional local ref to seed fresh issue worktrees
+    worktree_base: Path = Path(
+        ".issue-orchestrator/worktrees"
+    )  # Base directory for worktrees
+    worktree_base_branch_override: Optional[str] = (
+        None  # Override base branch for worktree creation
+    )
+    worktree_seed_ref: Optional[str] = (
+        None  # Optional local ref to seed fresh issue worktrees
+    )
     worktree_branch_on_recreate: str = "delete"  # delete or create_new_branch
 
     # AI systems allowlist (merged with built-in ai_systems.yaml)
@@ -136,14 +149,26 @@ class Config(ConfigLaunchIdentity, RuntimeConfigReferenceOwner, TechLeadActivati
     # GitHub settings
     repo: Optional[str] = None  # owner/repo, or None to auto-detect
     github_token: Optional[str] = None  # Explicit GitHub token (prefer env)
-    github_token_env: Optional[str] = None  # Env var name for token (overrides defaults)
-    github_keyring_service: Optional[str] = None  # Optional repo-specific keyring service name
-    github_keyring_username: Optional[str] = None  # Optional repo-specific keyring username/account
-    github_app_client_id: Optional[str] = None  # GitHub App Client ID for installation auth
+    github_token_env: Optional[str] = (
+        None  # Env var name for token (overrides defaults)
+    )
+    github_keyring_service: Optional[str] = (
+        None  # Optional repo-specific keyring service name
+    )
+    github_keyring_username: Optional[str] = (
+        None  # Optional repo-specific keyring username/account
+    )
+    github_app_client_id: Optional[str] = (
+        None  # GitHub App Client ID for installation auth
+    )
     github_app_id: Optional[str] = None  # GitHub App ID fallback for JWT issuer
     github_app_installation_id: Optional[str] = None  # GitHub App installation ID
-    github_app_private_key_path: Optional[str] = None  # PEM path for GitHub App private key
-    github_app_private_key_env: Optional[str] = None  # Env var containing GitHub App private key
+    github_app_private_key_path: Optional[str] = (
+        None  # PEM path for GitHub App private key
+    )
+    github_app_private_key_env: Optional[str] = (
+        None  # Env var containing GitHub App private key
+    )
     github_api_url: str = "https://api.github.com"
     github_http_timeout_seconds: float = 20.0
     github_cache_ttl_seconds: int = 300  # Cache TTL for GitHub adapter responses
@@ -154,7 +179,9 @@ class Config(ConfigLaunchIdentity, RuntimeConfigReferenceOwner, TechLeadActivati
     filtering: FilteringConfig = field(default_factory=FilteringConfig)
 
     # E2E test configuration
-    e2e_pr_labels: list[str] = field(default_factory=list)  # Labels to apply to PRs created during e2e tests
+    e2e_pr_labels: list[str] = field(
+        default_factory=list
+    )  # Labels to apply to PRs created during e2e tests
 
     # Comment headings for structured worker comments
     comment_headings: CommentHeadings = field(default_factory=CommentHeadings)
@@ -169,7 +196,9 @@ class Config(ConfigLaunchIdentity, RuntimeConfigReferenceOwner, TechLeadActivati
     ui_mode: str = "web"
     web_port: int = 0  # Port for web dashboard (0 = auto-assign free port)
     control_api_port: int = 0  # Port for control API (0 = auto-assign free port)
-    queue_refresh_seconds: int = 600  # How often web UI refetches queue from GitHub (0 = manual only)
+    queue_refresh_seconds: int = (
+        600  # How often web UI refetches queue from GitHub (0 = manual only)
+    )
     # Browser-session knobs for the Control Center login flow (security
     # #5987 F3). Overridable at runtime by
     # ISSUE_ORCHESTRATOR_SESSION_TTL_SECONDS /
@@ -205,15 +234,25 @@ class Config(ConfigLaunchIdentity, RuntimeConfigReferenceOwner, TechLeadActivati
 
     # Multi-instance support (for multi-orchestrator coordination)
     instances: int = 1  # Number of orchestrator instances to spawn (CC manages this)
-    session_no_output_seconds: int = 120  # Emit session_no_output after this many seconds idle
-    session_no_output_tail_lines: int = 50  # Max tail lines to include in session_no_output
+    session_no_output_seconds: int = (
+        120  # Emit session_no_output after this many seconds idle
+    )
+    session_no_output_tail_lines: int = (
+        50  # Max tail lines to include in session_no_output
+    )
     session_no_output_max_bytes: int = 10000  # Max bytes of tail content
-    session_no_output_repeat_seconds: int = 120  # Minimum gap between session_no_output events
+    session_no_output_repeat_seconds: int = (
+        120  # Minimum gap between session_no_output events
+    )
 
     # Session detection - be lenient to avoid false terminations
     # These protect against session detection failures during startup
-    session_grace_period_seconds: int = 120  # Don't terminate sessions younger than this
-    session_log_activity_seconds: int = 120  # If log modified within this window, session is alive
+    session_grace_period_seconds: int = (
+        120  # Don't terminate sessions younger than this
+    )
+    session_log_activity_seconds: int = (
+        120  # If log modified within this window, session is alive
+    )
 
     gh_write_verify_timeout_seconds: int = 20
     gh_write_verify_initial_delay_ms: int = 250
@@ -221,8 +260,12 @@ class Config(ConfigLaunchIdentity, RuntimeConfigReferenceOwner, TechLeadActivati
     gh_write_verify_backoff: float = 1.5
     gh_write_verify_jitter_ms: int = 0
     gh_rate_limit_startup: bool = True  # Log GH rate limits at startup
-    gh_rate_limit_every_calls: int = 500  # Check GH rate limits every N calls (0 = disabled)
-    gh_rate_limit_warn_fraction: float = 0.1  # Warn when remaining below fraction of limit
+    gh_rate_limit_every_calls: int = (
+        500  # Check GH rate limits every N calls (0 = disabled)
+    )
+    gh_rate_limit_warn_fraction: float = (
+        0.1  # Warn when remaining below fraction of limit
+    )
     gh_rate_limit_warn_remaining: int = 100  # Warn when remaining below this count
     gh_audit_enabled: bool = False  # Enable GH audit reporting
     gh_audit_events: bool = False  # Emit GH audit events to event stream
@@ -249,8 +292,12 @@ class Config(ConfigLaunchIdentity, RuntimeConfigReferenceOwner, TechLeadActivati
     cleanup: CleanupConfig = field(default_factory=CleanupConfig)
 
     # Enforcement options
-    enforce_hooks: bool = True  # Install pre-push hooks (runs project validation + orchestrator checks)
-    pre_push_hook: Optional[Path] = None  # Custom pre-push hook path (uses bundled if None)
+    enforce_hooks: bool = (
+        True  # Install pre-push hooks (runs project validation + orchestrator checks)
+    )
+    pre_push_hook: Optional[Path] = (
+        None  # Custom pre-push hook path (uses bundled if None)
+    )
 
     # Client-repo-specific setup commands (run after worktree creation).
     # No default — users must configure these for their repo (e.g., npm install,
@@ -262,22 +309,38 @@ class Config(ConfigLaunchIdentity, RuntimeConfigReferenceOwner, TechLeadActivati
     # Allow git push --dry-run --no-verify for reuse preflight (default on).
     allow_no_verify_dry_run_preflight: bool = True
     # Remediation strategies for publish-time failures.
-    worktree_remediation_pr_collision: str = "new_branch"  # fail | reuse_open | new_branch
+    worktree_remediation_pr_collision: str = (
+        "new_branch"  # fail | reuse_open | new_branch
+    )
     worktree_remediation_push_rebase_retry: bool = True
 
     # Code review workflow (optional) - per-PR review after agent creates PR
     review_enabled: bool = False  # Explicit toggle for code review
-    code_review_agent: Optional[str] = None  # Agent that reviews PRs (e.g., "agent:reviewer")
-    code_review_label: Optional[str] = None  # Label on PRs needing review (e.g., "needs-code-review")
-    code_reviewed_label: Optional[str] = None  # Label after review passes (e.g., "code-reviewed")
+    code_review_agent: Optional[str] = (
+        None  # Agent that reviews PRs (e.g., "agent:reviewer")
+    )
+    code_review_label: Optional[str] = (
+        None  # Label on PRs needing review (e.g., "needs-code-review")
+    )
+    code_reviewed_label: Optional[str] = (
+        None  # Label after review passes (e.g., "code-reviewed")
+    )
 
     # Tech Lead/batch review workflow (optional) - pattern review across multiple PRs
-    tech_lead_review_agent: Optional[str] = None  # Agent that does batch reviews (e.g., "agent:tech-lead")
-    tech_lead_review_label: Optional[str] = None  # Label for PRs awaiting tech_lead review (uses code_reviewed_label if not set)
+    tech_lead_review_agent: Optional[str] = (
+        None  # Agent that does batch reviews (e.g., "agent:tech-lead")
+    )
+    tech_lead_review_label: Optional[str] = (
+        None  # Label for PRs awaiting tech_lead review (uses code_reviewed_label if not set)
+    )
     tech_lead_reviewed_label: str = "tech-lead-reviewed"  # Label after tech_lead review (matches load_review_section default)
     tech_lead_failed_label: str = "tech-lead-failed"  # Label when tech_lead fails (matches load_review_section default)
-    tech_lead_review_threshold: int = 0  # Trigger tech_lead review after N PRs (0 = manual only)
-    tech_lead_review_on_failure: bool = True  # Trigger tech_lead to investigate when sessions fail
+    tech_lead_review_threshold: int = (
+        0  # Trigger tech_lead review after N PRs (0 = manual only)
+    )
+    tech_lead_review_on_failure: bool = (
+        True  # Trigger tech_lead to investigate when sessions fail
+    )
     tech_lead_follow_up_agent: Optional[str] = None
 
     @property
@@ -294,10 +357,14 @@ class Config(ConfigLaunchIdentity, RuntimeConfigReferenceOwner, TechLeadActivati
         )
 
     # Rework cycle limit (when reviewer requests changes)
-    max_rework_cycles: int = 5  # Max times to re-queue work agent before escalating to needs-human
+    max_rework_cycles: int = (
+        5  # Max times to re-queue work agent before escalating to needs-human
+    )
 
     # Publish failure limit (push/PR creation fails after agent completes)
-    max_consecutive_publish_failures: int = 3  # Escalate to needs-human after N consecutive publish failures
+    max_consecutive_publish_failures: int = (
+        3  # Escalate to needs-human after N consecutive publish failures
+    )
 
     # Reviewer feedback cache: write feedback locally on review completion and use it
     # for rework sessions within this time window (avoids GitHub eventual consistency issues)
@@ -351,7 +418,9 @@ class Config(ConfigLaunchIdentity, RuntimeConfigReferenceOwner, TechLeadActivati
     retry: RetryConfig = field(default_factory=RetryConfig)
 
     # Provider resilience configuration (retries + circuit breaker)
-    provider_resilience: ProviderResilienceConfig = field(default_factory=ProviderResilienceConfig)
+    provider_resilience: ProviderResilienceConfig = field(
+        default_factory=ProviderResilienceConfig
+    )
 
     # Isolation configuration - how agents are sandboxed
     isolation: IsolationConfig = field(default_factory=IsolationConfig)
@@ -454,6 +523,7 @@ class Config(ConfigLaunchIdentity, RuntimeConfigReferenceOwner, TechLeadActivati
         exact-label and label-prefix exclusion configuration.
         """
         from ..domain.issue_filter import IssueLabelFilter
+
         return IssueLabelFilter.from_config(
             exclude_labels=self.filtering.exclude_labels,
             exclude_label_prefixes=self.filtering.exclude_label_prefixes,
@@ -483,7 +553,10 @@ class Config(ConfigLaunchIdentity, RuntimeConfigReferenceOwner, TechLeadActivati
         exchange_dict: dict = {}
         if self.review_exchange_mode != "via-local-loop":
             exchange_dict["mode"] = self.review_exchange_mode
-        if self.review_exchange_probe_schedule != "daily" or self.review_exchange_probe_interval_days != 1:
+        if (
+            self.review_exchange_probe_schedule != "daily"
+            or self.review_exchange_probe_interval_days != 1
+        ):
             exchange_dict["probe"] = {
                 "schedule": self.review_exchange_probe_schedule,
                 "interval_days": self.review_exchange_probe_interval_days,
@@ -569,7 +642,9 @@ class Config(ConfigLaunchIdentity, RuntimeConfigReferenceOwner, TechLeadActivati
             if self.default_agent.model:
                 default_agent_dict["model"] = self.default_agent.model
             if self.default_agent.provider_args:
-                default_agent_dict["provider_args"] = dict(self.default_agent.provider_args)
+                default_agent_dict["provider_args"] = dict(
+                    self.default_agent.provider_args
+                )
             if default_agent_dict:
                 result["default_agent"] = default_agent_dict
 
@@ -716,31 +791,49 @@ class Config(ConfigLaunchIdentity, RuntimeConfigReferenceOwner, TechLeadActivati
             review_dict["code_review_label"] = self.code_review_label
         if self.code_reviewed_label:
             review_dict["code_reviewed_label"] = self.code_reviewed_label
-        _put_if_truthy(review_dict, "tech_lead_review_agent", self.tech_lead_review_agent)
-        _put_if_truthy(review_dict, "tech_lead_follow_up_agent", self.tech_lead_follow_up_agent)
+        _put_if_truthy(
+            review_dict, "tech_lead_review_agent", self.tech_lead_review_agent
+        )
+        _put_if_truthy(
+            review_dict, "tech_lead_follow_up_agent", self.tech_lead_follow_up_agent
+        )
         if self.tech_lead_review_label:
             review_dict["tech_lead_review_label"] = self.tech_lead_review_label
-        if self.tech_lead_reviewed_label and self.tech_lead_reviewed_label != "tech-lead-reviewed":
+        if (
+            self.tech_lead_reviewed_label
+            and self.tech_lead_reviewed_label != "tech-lead-reviewed"
+        ):
             review_dict["tech_lead_reviewed_label"] = self.tech_lead_reviewed_label
         if self.tech_lead_review_threshold != 0:
             review_dict["tech_lead_review_threshold"] = self.tech_lead_review_threshold
         if self.max_rework_cycles != 5:
             review_dict["max_rework_cycles"] = self.max_rework_cycles
         if self.max_consecutive_publish_failures != 3:
-            review_dict["max_consecutive_publish_failures"] = self.max_consecutive_publish_failures
+            review_dict["max_consecutive_publish_failures"] = (
+                self.max_consecutive_publish_failures
+            )
         if self.max_consecutive_review_exchange_failures != 3:
-            review_dict["max_consecutive_review_exchange_failures"] = self.max_consecutive_review_exchange_failures
+            review_dict["max_consecutive_review_exchange_failures"] = (
+                self.max_consecutive_review_exchange_failures
+            )
         if self.review_keep_current_approach_label != "reviewer-keep-current-approach":
-            review_dict["keep_current_approach_label"] = self.review_keep_current_approach_label
+            review_dict["keep_current_approach_label"] = (
+                self.review_keep_current_approach_label
+            )
         if self.review_run_audit_min_runtime_minutes != 20:
-            review_dict.setdefault("run_audit", {})["min_runtime_minutes"] = self.review_run_audit_min_runtime_minutes
+            review_dict.setdefault("run_audit", {})["min_runtime_minutes"] = (
+                self.review_run_audit_min_runtime_minutes
+            )
         if self.review_run_audit_on_timeout is not True:
-            review_dict.setdefault("run_audit", {})["on_timeout"] = self.review_run_audit_on_timeout
+            review_dict.setdefault("run_audit", {})["on_timeout"] = (
+                self.review_run_audit_on_timeout
+            )
         if (
             self.retrospective_review_enabled
             or self.retrospective_review_trigger_label != "retrospective-review"
             or self.retrospective_reviewed_label != "retrospective-reviewed"
-            or self.retrospective_changes_requested_label != "retrospective-changes-requested"
+            or self.retrospective_changes_requested_label
+            != "retrospective-changes-requested"
         ):
             review_dict["retrospective"] = {
                 "enabled": self.retrospective_review_enabled,
@@ -832,7 +925,11 @@ class Config(ConfigLaunchIdentity, RuntimeConfigReferenceOwner, TechLeadActivati
 
         # Validation section
         validation_dict: dict = {}
-        _put_if_truthy(validation_dict, "budgeted", serialize_budgeted_validation(self.validation.budgeted))
+        _put_if_truthy(
+            validation_dict,
+            "budgeted",
+            serialize_budgeted_validation(self.validation.budgeted),
+        )
         quick_dict: dict = {}
         if self.validation.quick.cmd:
             quick_dict["cmd"] = self.validation.quick.cmd
@@ -844,7 +941,9 @@ class Config(ConfigLaunchIdentity, RuntimeConfigReferenceOwner, TechLeadActivati
         if self.validation.publish.cmd:
             publish_dict["cmd"] = self.validation.publish.cmd
             if self.validation.publish.timeout_seconds != 1800:
-                publish_dict["timeout_seconds"] = self.validation.publish.timeout_seconds
+                publish_dict["timeout_seconds"] = (
+                    self.validation.publish.timeout_seconds
+                )
         if self.validation.publish.dirty_check != "tracked":
             publish_dict["dirty_check"] = self.validation.publish.dirty_check
         if publish_dict:
@@ -901,7 +1000,9 @@ class Config(ConfigLaunchIdentity, RuntimeConfigReferenceOwner, TechLeadActivati
         # Hooks section (only include if non-default)
         hooks_dict: dict = {}
         if self.hooks.ai_gate.interval_days != 7:
-            hooks_dict.setdefault("ai_gate", {})["interval_days"] = self.hooks.ai_gate.interval_days
+            hooks_dict.setdefault("ai_gate", {})["interval_days"] = (
+                self.hooks.ai_gate.interval_days
+            )
         if self.hooks.ai_gate.dangerous_allow_failure:
             hooks_dict.setdefault("ai_gate", {})["dangerous_allow_failure"] = True
         if hooks_dict:
@@ -936,7 +1037,13 @@ class Config(ConfigLaunchIdentity, RuntimeConfigReferenceOwner, TechLeadActivati
 
         with open(save_path, "w") as f:
             f.write(header)
-            yaml.dump(config_dict, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+            yaml.dump(
+                config_dict,
+                f,
+                default_flow_style=False,
+                sort_keys=False,
+                allow_unicode=True,
+            )
 
         return save_path
 
@@ -967,14 +1074,18 @@ class Config(ConfigLaunchIdentity, RuntimeConfigReferenceOwner, TechLeadActivati
         # Set repo root
         config.repo_root = repo_root
         if sections["repo"].get("root"):
-            config.repo_root = resolve_relative_path(sections["repo"]["root"], repo_root)
+            config.repo_root = resolve_relative_path(
+                sections["repo"]["root"], repo_root
+            )
             config.repo_root_from_yaml = True
 
         # Store raw data for unknown field validation
         config.raw_data = data
         config.raw_agents = sections["agents"]
         if sections["state"].get("file"):
-            config.state_file = resolve_relative_path(sections["state"]["file"], repo_root)
+            config.state_file = resolve_relative_path(
+                sections["state"]["file"], repo_root
+            )
 
         # Parse default_agent section
         default_agent_section = data.get("default_agent", {})
@@ -1001,7 +1112,9 @@ class Config(ConfigLaunchIdentity, RuntimeConfigReferenceOwner, TechLeadActivati
         config.filtering = parse_filtering_config(sections["filtering"])
         config.milestone_sort = sections["milestones"].get("sort", "milestone_number")
         config.milestone_sort_config = sections["milestones"].get("sort_config", {})
-        config.milestone_order = parse_milestone_order(sections["milestones"].get("order", []))
+        config.milestone_order = parse_milestone_order(
+            sections["milestones"].get("order", [])
+        )
         config.foundation_milestone = sections["milestones"].get("foundation", "M0")
         config.ai_systems_allowed = parse_ai_systems_allowed(
             sections["ai_systems"].get("allowed", [])
@@ -1074,9 +1187,14 @@ class Config(ConfigLaunchIdentity, RuntimeConfigReferenceOwner, TechLeadActivati
         if not (0 <= self.scheduling.default_priority_tier <= 9):
             errors.append("scheduling.default_priority_tier must be between 0 and 9")
 
-        if self.tech_lead.priority is not None and not re.fullmatch(r"P\d", self.tech_lead.priority.strip()):
+        if self.tech_lead.priority is not None and not re.fullmatch(
+            r"P\d", self.tech_lead.priority.strip()
+        ):
             errors.append("tech_lead.priority must be a tier like 'P0'..'P9'")
-        if self.tech_lead.max_concurrent is not None and self.tech_lead.max_concurrent < 1:
+        if (
+            self.tech_lead.max_concurrent is not None
+            and self.tech_lead.max_concurrent < 1
+        ):
             errors.append(
                 "tech_lead.max_concurrent must be >= 1 when set (a reserved tech_lead "
                 "budget of at least one slot); omit it to share the worker "
@@ -1099,8 +1217,17 @@ class Config(ConfigLaunchIdentity, RuntimeConfigReferenceOwner, TechLeadActivati
                 "provider_resilience.circuit_breaker.auth_cooldown_seconds must be "
                 f"between 60 and 604800, got {circuit.auth_cooldown_seconds}"
             )
-        errors.extend(validate_budgeted_validation_agents(self.validation.budgeted, set(self.agents)))
-        if self.validation.publish.dirty_check not in {"tracked", "unstaged", "all", "off"}:
+        errors.extend(
+            validate_budgeted_validation_agents(
+                self.validation.budgeted, set(self.agents)
+            )
+        )
+        if self.validation.publish.dirty_check not in {
+            "tracked",
+            "unstaged",
+            "all",
+            "off",
+        }:
             errors.append(
                 "validation.publish.dirty_check must be one of: tracked, unstaged, all, off"
             )
@@ -1131,8 +1258,6 @@ class Config(ConfigLaunchIdentity, RuntimeConfigReferenceOwner, TechLeadActivati
 
         Returns list of (agent_label, field_name, invalid_vars) tuples.
         """
-        import re
-
         # Valid variables for initial_prompt (before command rendering)
         VALID_INITIAL_PROMPT_VARS = {
             "issue_number",
@@ -1147,7 +1272,10 @@ class Config(ConfigLaunchIdentity, RuntimeConfigReferenceOwner, TechLeadActivati
 
         # Valid variables for command (after initial_prompt is rendered)
         # system_prompt includes completion command instructions, built by get_command()
-        VALID_COMMAND_VARS = VALID_INITIAL_PROMPT_VARS | {"initial_prompt", "system_prompt"}
+        VALID_COMMAND_VARS = VALID_INITIAL_PROMPT_VARS | {
+            "initial_prompt",
+            "system_prompt",
+        }
 
         # Regex to find {variable_name} patterns (excluding {{ escaped braces }})
         VAR_PATTERN = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
@@ -1173,9 +1301,8 @@ class Config(ConfigLaunchIdentity, RuntimeConfigReferenceOwner, TechLeadActivati
         """Validate configuration, raising ValueError if invalid."""
         errors = self.validate()
         if errors:
-            raise ValueError(
-                "Configuration errors:\n  - " + "\n  - ".join(errors)
-            )
+            raise ValueError("Configuration errors:\n  - " + "\n  - ".join(errors))
+
 
 def _apply_yaml_overrides(data: dict, overrides: list[str]) -> None:
     """Apply CLI overrides (path=value) to YAML data in-place."""

@@ -118,7 +118,7 @@ class _FakeHost:
         self._ticks_to_complete = ticks_to_complete
         # The typed outcome the facade returns on terminate — defaults to clean,
         # overridden by tests that inject a failed/leaked cleanup.
-        self._termination = termination or TechLeadTerminationOutcome()
+        self._termination = termination or TechLeadTerminationOutcome(validated_work=ValidatedWorkDispositionBatch.no_work(1, "fixture"), )
         self.pause_calls = 0
         self.pause_reasons: list = []
         self.tick_count = 0
@@ -303,7 +303,7 @@ class _FakeHealthHost:
         )
         self._launch = launch
         self._ticks_to_complete = ticks_to_complete
-        self._termination = termination or TechLeadTerminationOutcome()
+        self._termination = termination or TechLeadTerminationOutcome(validated_work=ValidatedWorkDispositionBatch.no_work(1, "fixture"), )
         self.pause_calls = 0
         self.pause_reasons: list = []
         self.ensure_calls = 0
@@ -428,7 +428,7 @@ def test_status_derives_launched_and_completed_booleans() -> None:
 
     timed_out = HealthReviewResult(
         1, status=TechLeadOutcomeStatus.TIMED_OUT, detail="x",
-        termination=TechLeadTerminationOutcome(),
+        termination=TechLeadTerminationOutcome(validated_work=ValidatedWorkDispositionBatch.no_work(1, "fixture"), ),
     )
     assert timed_out.launched is True and timed_out.completed is False
 
@@ -447,12 +447,12 @@ def test_non_timeout_with_stray_termination_is_rejected() -> None:
     with pytest.raises(ValueError, match="iff status is TIMED_OUT.*termination=present"):
         InvestigationResult(
             1, status=TechLeadOutcomeStatus.COMPLETED, detail="x",
-            termination=TechLeadTerminationOutcome(),
+            termination=TechLeadTerminationOutcome(validated_work=ValidatedWorkDispositionBatch.no_work(1, "fixture"), ),
         )
     with pytest.raises(ValueError, match="iff status is TIMED_OUT.*termination=present"):
         HealthReviewResult(
             1, status=TechLeadOutcomeStatus.NOT_LAUNCHED, detail="x",
-            termination=TechLeadTerminationOutcome(),
+            termination=TechLeadTerminationOutcome(validated_work=ValidatedWorkDispositionBatch.no_work(1, "fixture"), ),
         )
 
 
@@ -460,7 +460,7 @@ def test_unclean_facade_termination_survives_into_investigation_result() -> None
     # Producer-side: when the facade's terminate reports an INCOMPLETE cleanup
     # (leaked scratch worktree), that unclean outcome must survive the drive loop
     # into the command's InvestigationResult — not be flattened to a clean status.
-    leaked = TechLeadTerminationOutcome(
+    leaked = TechLeadTerminationOutcome(validated_work=ValidatedWorkDispositionBatch.no_work(1, "fixture"),
         worktree_removed=False, leaked_worktree="/wt/repo-tech-lead-5980-abc"
     )
     host = _FakeHost(
@@ -480,7 +480,7 @@ def test_unclean_facade_termination_survives_into_investigation_result() -> None
 
 def test_unclean_facade_termination_survives_into_health_review_result() -> None:
     # Producer-side, health-review counterpart.
-    leaked = TechLeadTerminationOutcome(
+    leaked = TechLeadTerminationOutcome(validated_work=ValidatedWorkDispositionBatch.no_work(1, "fixture"),
         terminal_stopped=False, worktree_removed=False,
         leaked_worktree="/wt/repo-tech-lead-200-xyz",
     )
@@ -496,3 +496,5 @@ def test_unclean_facade_termination_survives_into_health_review_result() -> None
     assert result.termination.clean is False
     assert result.termination.leaked_worktree == "/wt/repo-tech-lead-200-xyz"
     assert "cleanup INCOMPLETE" in result.detail
+
+from issue_orchestrator.domain.validated_work_commands import ValidatedWorkDispositionBatch

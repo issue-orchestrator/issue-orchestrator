@@ -1,6 +1,6 @@
 """Typed requests to the owner allocating registered issue run artifacts."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .session_key import SessionKey
@@ -8,6 +8,7 @@ from .session_key import SessionKey
 
 @dataclass(frozen=True, slots=True)
 class IssueRunAllocation:
+    terminal_id: str | None = field(kw_only=True)
     worktree_path: Path
     session_name: str
     issue_number: int

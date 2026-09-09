@@ -34,10 +34,12 @@ from .agent_done import (
     run_validation,
     validate_fields,
     write_completion_record,
+    die,
     write_error_completion,
     write_marker_file,
     record_validation_artifacts,
 )
+from .completion_submit import submit_completion_file
 from .dirty_retry_budget import (
     build_completion_record_for_escalation,
     build_escalation_payload,
@@ -260,7 +262,13 @@ def _handle_dirty_files_rejection(ctx: _DirtyTreeContext) -> None:
                 status_to_actions=STATUS_TO_ACTIONS,
                 needs_human_status=AgentStatus.NEEDS_HUMAN,
             )
-            write_completion_record(escalation_record)
+            output_path = write_completion_record(escalation_record)
+            try:
+                receipt = submit_completion_file(output_path)
+            except (OSError, ValueError, RuntimeError) as exc:
+                die(
+                    f"Completion intake unavailable; candidate preserved, no receipt: {type(exc).__name__}"
+                )
             write_marker_file("needs_human")
             reset_rejection_counter(worktree_root, session_id)
 
@@ -275,7 +283,7 @@ def _handle_dirty_files_rejection(ctx: _DirtyTreeContext) -> None:
             )
             print(f"{'=' * 60}")
 
-            trigger_orchestrator_resume(verbose=False)
+            trigger_orchestrator_resume(verbose=False, receipt=receipt)
             sys.exit(0)
 
     sys.exit(1)
@@ -632,8 +640,15 @@ def _enforce_preflight_push(run: _CompletionRun) -> None:
 
 def _finalize(run: _CompletionRun, validation: _ValidationStage) -> None:
     """Stage 5: write the marker and the record, then hand back to the operator."""
-    write_marker_file(run.status)
     output_path = write_completion_record(run.record)
+    try:
+        receipt = submit_completion_file(output_path)
+    except Exception:
+        die(
+            "Completion intake unavailable or refused; candidate preserved. No submission receipt received."
+        )
+    write_marker_file(run.status)
+    print(f"Completion receipt: {receipt.entry_id}")
 
     print(f"Completion record written to: {output_path.resolve()}")
     print(f"Status: {run.status}")
@@ -644,7 +659,7 @@ def _finalize(run: _CompletionRun, validation: _ValidationStage) -> None:
     if run.args.resume:
         print("\nTriggering orchestrator resume...")
         resume_success, resume_error = trigger_orchestrator_resume(
-            verbose=run.args.verbose
+            verbose=run.args.verbose, receipt=receipt
         )
         print(
             "Orchestrator resume triggered successfully."

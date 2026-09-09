@@ -64,7 +64,11 @@ logger = logging.getLogger(__name__)
 # the right shape for a future isolated-agent model — not a
 # privilege boundary against same-user agents today.
 _AGENT_CALLBACK_ROUTES: frozenset[str] = frozenset(
-    {"/api/preflight-push", "/api/review-exchange/respond"}
+    {
+        "/api/preflight-push",
+        "/api/review-exchange/respond",
+        "/api/completion/submissions",
+    }
 )
 
 # ``/api/issues/{issue_number}/resume`` has a variable segment, so it is

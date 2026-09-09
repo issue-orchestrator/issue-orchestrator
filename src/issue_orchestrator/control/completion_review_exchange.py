@@ -5,7 +5,6 @@ from ..domain.issue_run_allocation import IssueExchangeRunAllocation
 from ..domain.models import Issue
 from ..domain.session_key import SessionKey, TaskKind
 
-import json
 import logging
 from collections.abc import Callable
 from pathlib import Path
@@ -17,6 +16,7 @@ from ..domain.review_exchange_run import ReviewExchangeRun, ReviewExchangeRunAss
 from ..domain.review_exchange_resume import ResumeDecision
 from ..domain.review_artifacts import review_artifacts_from_exchange_result
 from ..domain.runtime_config import RuntimeConfigReference
+from ..domain.review_validation import ReviewValidationEvidence
 from ..ports.background_job import NullBackgroundJobRunner
 from ..ports.review_exchange_runner import ReviewExchangeRunner
 from ..ports.session_output import SessionOutput
@@ -243,6 +243,7 @@ class CompletionReviewExchange:
         errors: list[str],
         actions_taken: list[str],
         run_review_exchange_loop: RunReviewExchangeLoop,
+        initial_validation_evidence: ReviewValidationEvidence | None = None,
         approval_gate: "ReviewExchangeApprovalGate | None" = None,
         review_cache_boundary_started_at: str | None = None,
         current_head_sha: str | None = None,
@@ -290,11 +291,7 @@ class CompletionReviewExchange:
             session_name=session_name,
             run_id=run_id,
             agent_label=agent_label,
-            initial_validation_record_path=(
-                Path(record.validation_record_path)
-                if record.validation_record_path
-                else None
-            ),
+            initial_validation_evidence=initial_validation_evidence,
             current_head_sha=current_head_sha,
             review_cache_boundary_started_at=review_cache_boundary_started_at,
             errors=errors,
@@ -415,7 +412,7 @@ class CompletionReviewExchange:
         session_name: str | None,
         run_id: str,
         agent_label: str | None,
-        initial_validation_record_path: Path | None,
+        initial_validation_evidence: ReviewValidationEvidence | None,
         errors: list[str],
         actions_taken: list[str],
         run_review_exchange_loop: RunReviewExchangeLoop,
@@ -463,7 +460,7 @@ class CompletionReviewExchange:
             worktree,
             session_name,
             require_validation=require_validation,
-            current_validation_record_path=initial_validation_record_path,
+            current_validation_evidence=initial_validation_evidence,
             current_head_sha=current_head_sha,
             not_before_started_at=review_cache_boundary_started_at,
         )
@@ -528,7 +525,7 @@ class CompletionReviewExchange:
             session_name=session_name,
             agent_label=coder_label,
             reviewer_label=reviewer_label,
-            initial_validation_record_path=initial_validation_record_path,
+            initial_validation_evidence=initial_validation_evidence,
             review_run=review_run,
             current_head_sha=current_head_sha,
             run_review_exchange_loop=run_review_exchange_loop,
@@ -551,7 +548,7 @@ class CompletionReviewExchange:
             session_name=session_name,
             agent_label=agent_label,
             reviewer_label=reviewer_label,
-            initial_validation_record_path=initial_validation_record_path,
+            initial_validation_evidence=initial_validation_evidence,
             review_run=review_run,
             current_head_sha=current_head_sha,
             errors=errors,
@@ -612,27 +609,8 @@ class CompletionReviewExchange:
     ) -> str | None:
         """Tear down issue-scoped runtime work after a terminal job failure."""
         if self._review_exchange_canceller is None:
-            logger.warning(
-                "[REVIEW_EXCHANGE] no canceller configured for background "
-                "failure issue=%d job_id=%s reason=%s",
-                issue_number,
-                job_id,
-                reason,
-            )
-            return None
-        try:
-            cancellation = self._review_exchange_canceller(issue_number, reason)
-        except Exception as exc:  # noqa: BLE001 - failure path must still halt visibly
-            logger.exception(
-                "[REVIEW_EXCHANGE] failed to cancel runtime after background "
-                "failure issue=%d job_id=%s reason=%s",
-                issue_number,
-                job_id,
-                reason,
-            )
-            return (
-                f"{REVIEW_EXCHANGE_ERROR_PREFIX} failed to cancel runtime work: {exc}"
-            )
+            raise RuntimeError("terminal exchange requires the shared runtime preservation owner")
+        cancellation = self._review_exchange_canceller(issue_number, reason)
         cancelled_jobs = cancellation.cancelled_job_ids
         logger.info(
             "[REVIEW_EXCHANGE] cancelled runtime after background failure "
@@ -728,7 +706,7 @@ class CompletionReviewExchange:
         session_name: str | None,
         agent_label: str | None,
         reviewer_label: str | None,
-        initial_validation_record_path: Path | None,
+        initial_validation_evidence: ReviewValidationEvidence | None,
         review_run: ReviewExchangeRun,
         current_head_sha: str | None,
         run_review_exchange_loop: RunReviewExchangeLoop,
@@ -751,7 +729,7 @@ class CompletionReviewExchange:
                     issue_title=issue_title,
                     session_name=session_name,
                     agent_label=agent_label,
-                    initial_validation_record_path=initial_validation_record_path,
+                    initial_validation_evidence=initial_validation_evidence,
                     approval_gate=approval_gate,
                 )
             except Exception:
@@ -960,7 +938,7 @@ class CompletionReviewExchange:
         session_name: str | None,
         agent_label: str | None,
         reviewer_label: str | None,
-        initial_validation_record_path: Path | None,
+        initial_validation_evidence: ReviewValidationEvidence | None,
         review_run: ReviewExchangeRun,
         current_head_sha: str | None,
         errors: list[str],
@@ -975,7 +953,7 @@ class CompletionReviewExchange:
             issue_title=issue_title,
             session_name=session_name,
             agent_label=agent_label,
-            initial_validation_record_path=initial_validation_record_path,
+            initial_validation_evidence=initial_validation_evidence,
             approval_gate=approval_gate,
         )
         self._require_matching_review_run(exchange_result, review_run)
@@ -1126,75 +1104,21 @@ class CompletionReviewExchange:
         session_name: str | None,
         *,
         require_validation: bool,
-        current_validation_record_path: Path | None = None,
+        current_validation_evidence: ReviewValidationEvidence | None = None,
         current_head_sha: str | None = None,
         not_before_started_at: str | None = None,
     ) -> ResumeResolution:
         resolver = ReviewExchangeCacheResolver(
             session_output=self._session_output,
-            validation_head_sha=self._validation_head_sha,
-            current_validation_failed=self._current_validation_explicitly_failed,
-            cached_validation_passed=self.review_exchange_validation_passed,
         )
         return resolver.decide_review_exchange_resumption(
             worktree,
             session_name,
             require_validation=require_validation,
-            current_validation_record_path=current_validation_record_path,
+            current_validation_evidence=current_validation_evidence,
             current_head_sha=current_head_sha,
             not_before_started_at=not_before_started_at,
         )
-
-    @staticmethod
-    def review_exchange_validation_passed(record_path: Path | None) -> bool:
-        if not record_path or not record_path.exists():
-            return False
-        try:
-            data = json.loads(record_path.read_text())
-        except (OSError, json.JSONDecodeError):
-            return False
-        return bool(data.get("passed"))
-
-    @staticmethod
-    def _current_validation_explicitly_failed(record_path: Path | None) -> bool:
-        """Return True iff the record exists and explicitly says ``passed=False``.
-
-        Distinct from ``not review_exchange_validation_passed``: a missing or
-        unreadable record is treated as "no signal" (False), so this only
-        rejects the cache when the caller produced a definitive failure.
-        """
-        if not record_path or not record_path.exists():
-            return False
-        try:
-            data = json.loads(record_path.read_text())
-        except (OSError, json.JSONDecodeError):
-            return False
-        return data.get("passed") is False
-
-    @classmethod
-    def _review_exchange_validation_matches_current(
-        cls,
-        cached_record_path: Path | None,
-        current_record_path: Path | None,
-    ) -> bool:
-        current_sha = cls._validation_head_sha(current_record_path)
-        if not current_sha:
-            # Strict cache callers reject missing current validation before this
-            # helper. Older/dev resume paths keep their prior cache behavior.
-            return True
-        cached_sha = cls._validation_head_sha(cached_record_path)
-        return cached_sha == current_sha
-
-    @staticmethod
-    def _validation_head_sha(record_path: Path | None) -> str | None:
-        if not record_path or not record_path.exists():
-            return None
-        try:
-            data = json.loads(record_path.read_text())
-        except (OSError, json.JSONDecodeError):
-            return None
-        head_sha = data.get("head_sha")
-        return head_sha if isinstance(head_sha, str) and head_sha else None
 
     def resolve_review_exchange_mode(self, agent_label: str | None) -> str | None:
         if not self._config:
@@ -1288,7 +1212,7 @@ class CompletionReviewExchange:
         issue_title: str,
         session_name: str | None,
         agent_label: str | None,
-        initial_validation_record_path: Path | None = None,
+        initial_validation_evidence: ReviewValidationEvidence | None = None,
         approval_gate: "ReviewExchangeApprovalGate | None" = None,
         events: Any | None = None,
         event_context: Any | None = None,
@@ -1311,6 +1235,9 @@ class CompletionReviewExchange:
         # into ``execution/`` directly (was done via ``importlib`` in the
         # cutover; replaced by the injected port per #6161).
         return self._review_exchange_runner.run(
+            completion_capability=self._issue_run_allocator.submission_capability(
+                exchange_run.session_run
+            ),
             exchange_run=exchange_run,
             coder_worktree=worktree,
             issue_number=issue_number,
@@ -1324,7 +1251,7 @@ class CompletionReviewExchange:
             max_no_progress=self._config.review_exchange_max_no_progress,
             require_validation=self._config.review_exchange_require_validation,
             nit_policy=nit_policy,
-            initial_validation_record_path=initial_validation_record_path,
+            initial_validation_evidence=initial_validation_evidence,
             approval_gate=approval_gate,
             # Through the bound-endpoint owner, not the configured
             # value: the engine binds an auto-assigned port and never

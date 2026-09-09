@@ -1,7 +1,12 @@
 """Tests for the tech_lead reset_retry execution owner (#6764, ADR-0031 §2)."""
 
+from issue_orchestrator.domain.registered_completion import CompletionProcessingPolicy
 from dataclasses import replace
 from unittest.mock import ANY, MagicMock, call
+
+from tests.runtime_lifecycle_helpers import reset_snapshot
+
+from tests.runtime_lifecycle_helpers import make_action_applier
 
 import pytest
 
@@ -110,7 +115,7 @@ def make_executor(
         events=events,
         label_manager=LabelManager(Config()),
         read_issue=lambda _n: resolved_issue,
-        has_active_issue_runtime=lambda _n: active_session,
+        runtime_snapshot=lambda _n: reset_snapshot(_n, active_session),
         run_reset=run_reset,
     )
     return executor, events, run_reset
@@ -131,6 +136,8 @@ class _RaisingApplier:
     publishes exactly once with no second GitHub write after the raise."""
 
     def __init__(self, error: BaseException) -> None:
+        from tests.runtime_lifecycle_helpers import runtime_owners
+        self.runtime_lifecycle = runtime_owners()
         self._error = error
         self.apply_all_calls = 0
 
@@ -260,7 +267,7 @@ class TestExecutorApply:
 class TestApplierDispatch:
     def _applier(self, executor=None) -> tuple[ActionApplier, MagicMock]:
         events = MagicMock()
-        applier = ActionApplier(
+        applier = make_action_applier(
             labels=MagicMock(),
             sessions=MagicMock(),
             events=events,
@@ -383,7 +390,7 @@ class TestCompletionPipelineEligibility:
             pr_url=None,
             pr_number=None,
         )
-        applier = ActionApplier(
+        applier = make_action_applier(
             labels=labels if labels is not None else MagicMock(),
             sessions=MagicMock(),
             events=MagicMock(),
@@ -411,7 +418,7 @@ class TestCompletionPipelineEligibility:
                 config=config,
                 session_output=session_output,
                 pending_work_claims=_test_claim_store(),
-            )
+             processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
         return state, run
 
@@ -684,7 +691,7 @@ class TestEffectiveTerminalOutcomeEvents:
             state = OrchestratorState()
         state.active_sessions = [session]
         if action_applier is None:
-            action_applier = ActionApplier(
+            action_applier = make_action_applier(
                 labels=MagicMock(),
                 sessions=MagicMock(),
                 events=MagicMock(),
@@ -711,7 +718,7 @@ class TestEffectiveTerminalOutcomeEvents:
             claim_manager=claim_manager if claim_manager is not None else MagicMock(),
             events=events,
             pending_work_claims=_test_claim_store(),
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, Config().tech_lead_review_agent))
         return state
 
     def test_failed_mandated_reset_publishes_only_session_failed(self, tmp_path):
@@ -755,7 +762,7 @@ class TestEffectiveTerminalOutcomeEvents:
         labels = MagicMock()
         labels.has_label.return_value = False
         repository_host = MagicMock()
-        action_applier = ActionApplier(
+        action_applier = make_action_applier(
             labels=labels,
             sessions=MagicMock(),
             events=MagicMock(),
@@ -800,7 +807,7 @@ class TestEffectiveTerminalOutcomeEvents:
     def test_stale_investigation_kill_cannot_finalize_success(self, tmp_path):
         events = InMemoryEventSink()
         run_kill = MagicMock(return_value=KillSessionRunOutcome(success=False, stale_reason="worker generation already disappeared"))
-        applier = ActionApplier(labels=MagicMock(), sessions=MagicMock(), events=MagicMock(), repository_host=MagicMock())
+        applier = make_action_applier(labels=MagicMock(), sessions=MagicMock(), events=MagicMock(), repository_host=MagicMock())
         applier.tech_lead_kill_session = TechLeadKillSessionExecutor(events=MagicMock(), run_kill=run_kill)
         action = KillHungSessionAction(issue_number=17, proposal_id="A2", anchor_issue_number=17,
             target_session_id="observed-run", target_terminal_id="issue-17", target_session_type="code",
@@ -1029,7 +1036,7 @@ class TestTheDurableRunRecordAgreesWithTheTerminalOutcome:
         state = OrchestratorState()
         state.active_sessions = [session]
         if applier is None:
-            applier = ActionApplier(
+            applier = make_action_applier(
                 labels=MagicMock(),
                 sessions=MagicMock(),
                 events=MagicMock(),
@@ -1056,7 +1063,7 @@ class TestTheDurableRunRecordAgreesWithTheTerminalOutcome:
             claim_manager=MagicMock(),
             events=events,
             pending_work_claims=_test_claim_store(),
-        )
+         processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, Config().tech_lead_review_agent))
         return state
 
     def test_a_failed_mandated_action_records_the_run_failed(self, tmp_path):
@@ -1124,6 +1131,19 @@ def _test_claim_store(tmp_path=None):
     return SqlitePendingWorkClaimStore.for_repo(
         _Path(tmp_path) if tmp_path is not None else _Path(tempfile.mkdtemp())
     )
+
+
+def test_late_custody_refusal_keeps_full_boundary_in_result_and_event():
+    boundary = {"validated_work": {"dispositions": [
+        {"evidence_id": "a", "state": "parked", "failure": "none"},
+        {"evidence_id": "b", "state": "failed", "failure": "custody"},
+    ]}}
+    executor, events, run_reset = make_executor(outcome=ResetRetryRunOutcome(
+        success=False, stale_reason="validated_work_unresolved", details=boundary))
+    result = executor.apply(make_action())
+    run_reset.assert_called_once()
+    assert result.details["boundary"] == boundary
+    assert published(events, EventName.TECH_LEAD_ACTION_PROPOSED)[0].data["boundary"] == boundary
 
 
 @pytest.mark.parametrize("recovered", [False, True])

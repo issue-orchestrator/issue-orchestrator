@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.runtime_lifecycle_helpers import runtime_owners
+
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -73,6 +75,7 @@ def _cleanup_manager(
         agents={"agent:backend": SimpleNamespace()},
     )
     return CleanupManager(
+        runtime_lifecycle=runtime_owners(),
         config=config,
         repository_host=repository_host,
         worktree_manager=GitWorktreeManager(),
@@ -172,6 +175,7 @@ def test_startup_retains_clean_reviewer_with_detached_commit(tmp_path: Path) -> 
         cleanup,
         manager,
         WorktreeAuditOwner(manager),
+        MagicMock(),
     ).recover(OrchestratorState())
 
     assert summary.disposable_removed == 0
@@ -208,6 +212,7 @@ def test_startup_removes_owned_reviewer_after_coder_advances(tmp_path: Path) -> 
         cleanup,
         manager,
         WorktreeAuditOwner(manager),
+        MagicMock(),
     ).recover(OrchestratorState())
 
     assert summary.disposable_removed == 1

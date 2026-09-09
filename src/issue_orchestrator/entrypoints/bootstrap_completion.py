@@ -9,8 +9,13 @@ collaborators they share.
 from __future__ import annotations
 
 from ..ports.issue_run_allocator import IssueRunAllocator
+from ..ports.completion_intake import CompletionIntakeRuntime
+from ..ports.manual_publication import ManualPublisher
+from ..ports.working_copy import WorkingCopy
+from ..ports.exact_git import ExactGit
+from ..ports.publication_remote import PublicationRemote
 
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, Callable
 
 from ..execution.git_working_copy import GitWorkingCopy
 from ..execution.command_runner import LocalCommandRunner
@@ -19,6 +24,7 @@ from ..execution.session_output_adapter import FileSystemSessionOutput
 from ..infra import runtime_identity
 from ..control.completion_ports import LabelAdapter, PRAdapter
 from ..infra.config import Config
+from ..control.review_exchange_lifecycle import ReviewExchangeCancellation
 from ..ports import EventSink
 from ..ports.coder_prompt import (
     CoderPromptAddendumProvider,
@@ -26,8 +32,10 @@ from ..ports.coder_prompt import (
 )
 
 if TYPE_CHECKING:
-    from ..ports.fresh_issue_reader import FreshIssueReader
     from ..control.publish_recovery import PublishRecoveryService
+    from ..control.action_applier import ActionApplier
+    from ..control.dependency_evaluator import DependencyEvaluator
+    from ..ports.fresh_issue_reader import FreshIssueReader
     from ..control.needs_human_block import SharedNeedsHumanBlock
     from ..control.open_issue_corpus import OpenIssueCorpusManager
     from ..ports.completion_handler_factory import CompletionHandlerFactory
@@ -111,6 +119,8 @@ def create_completion_components(
     # Required: the composition root owns the single shared endpoint.
     agent_callback_endpoint: "AgentCallbackEndpoint",
     issue_run_allocator: IssueRunAllocator,
+    completion_intake: CompletionIntakeRuntime,
+    runtime_canceller: Callable[[int, str], ReviewExchangeCancellation],
     # The one owner of the shared needs-human block. The agent-requested
     # NEEDS_HUMAN completion outcome routes through it, and the label adapter
     # below refuses that label by value, so the two halves cannot disagree.
@@ -144,11 +154,6 @@ def create_completion_components(
         PersistentReviewExchangeRunner,
     )
     from ..control.governed_label_set import GovernedLabelSet
-    from ..control.review_exchange_lifecycle import (
-        ReviewExchangeCancellation,
-        cancel_issue_review_exchange,
-    )
-
     if github is None:
         # No repository host: there is no completion pipeline to build.
         return None, None, None
@@ -157,19 +162,8 @@ def create_completion_components(
     if pair_registry is None:
         pair_registry = InMemoryPersistentExchangePairRegistry()
 
-    def _cancel_review_exchange(
-        issue_number: int,
-        reason: str,
-    ) -> ReviewExchangeCancellation:
-        return cancel_issue_review_exchange(
-            issue_number=issue_number,
-            reason=reason,
-            pair_registry=pair_registry,
-            job_supervisor=background_job_supervisor,
-        )
-
     completion_processor = CompletionProcessor(
-        # The governed shared block is refused here BY VALUE, so an
+        completion_intake=completion_intake,  # The governed shared block is refused here BY VALUE, so an
         # agent-supplied ``pr_labels`` entry cannot mint a cause-free block
         # (#6999 F2 round 4). The typed NEEDS_HUMAN completion outcome routes
         # through the owner instead, which is where a cause gets recorded.
@@ -186,6 +180,7 @@ def create_completion_components(
         review_exchange_runner=PersistentReviewExchangeRunner(
             session_output,
             pair_registry,
+            completion_intake=completion_intake,
             turn_mailbox=turn_mailbox,
             coder_prompt_addendum=coder_prompt_addendum,
         ),
@@ -197,7 +192,7 @@ def create_completion_components(
         config=config,
         background_job_supervisor=background_job_supervisor,
         agent_callback_endpoint=agent_callback_endpoint,
-        review_exchange_canceller=_cancel_review_exchange,
+        review_exchange_canceller=runtime_canceller,
         review_artifact_reader=ManifestReviewArtifactReader(),
         runtime_identity=runtime_identity.resolve_runtime_identity(),
         tech_lead_authority=tech_lead_authority,
@@ -217,7 +212,7 @@ def create_completion_components(
         attempt_store=attempt_store,
         validation_attempt_key_factory=_validation_attempt_key_factory(config),
         max_validation_retries=config.retry.max_validation_retries,
-        review_exchange_canceller=_cancel_review_exchange,
+        review_exchange_canceller=runtime_canceller,
     )
 
     completion_handler_factory = (
@@ -292,27 +287,15 @@ def build_completion_handler_factory(
     return factory
 
 
-# Publication and recovery share the completion owner assembled above.
-from ..control.dependency_evaluator import DependencyEvaluator
-from ..control.action_applier import ActionApplier
-from ..ports.repository_host import RepositoryHost
-from ..infra.repo_identity import state_dir
-from ..execution.thread_background_job_runner import ThreadBackgroundJobRunner
 
 def wire_stack_publish_gate(
     completion_processor: "CompletionProcessor",
-    dependency_evaluator: DependencyEvaluator,
-    github: RepositoryHost,
-    command_runner: "LocalCommandRunner",
+    dependency_evaluator: "DependencyEvaluator",
+    github: "RepositoryHost",
+    command_runner: LocalCommandRunner,
     config: Config,
 ) -> None:
-    """Wire the stack publish-gate + branch ancestry (ADR-0029 / #6596).
-
-    Attaches the git ancestry checker to the single dependency-gate evaluator
-    and gives the completion processor a :class:`StackPublishGate` so a
-    Stack-after: successor's PR is based on its predecessor branch and a blocked
-    publish gate fails fast. The root supplies the complete composition.
-    """
+    """Attach branch ancestry and stack-base policy to the completion owner."""
     from ..control.stack_publish_gate import StackBaseGate
     from ..execution.stack_branch_ancestry import GitStackBranchAncestry
 
@@ -329,31 +312,27 @@ def wire_stack_publish_gate(
 def build_publish_recovery(
     *,
     repository_host: "RepositoryHost",
-    completion_processor: "CompletionProcessor",
+    manual_publisher: ManualPublisher,
     label_manager: "LabelManager",
     fresh_issue_reader: "FreshIssueReader",
     action_applier: "ActionApplier",
     config: Config,
     tech_lead_authority: "TechLeadAuthorityStore",
 ) -> "PublishRecoveryService":
-    """Wire the "Retry publish" owner: durable locator store + dedicated runner.
-
-    The republish runs on its own :class:`ThreadBackgroundJobRunner` (drained by
-    ``PublishRecoveryService.drain_completed_retries`` each tick), NOT the shared
-    completion/review-exchange runners — those are drained by other owners and
-    would steal or drop republish results.
-    """
+    """Wire the retry-publish owner with durable locators and its own runner."""
     from ..control.publish_recovery import PublishRecoveryService
     from ..execution.json_publish_retry_locator_store import (
         JsonPublishRetryLocatorStore,
     )
+    from ..execution.thread_background_job_runner import ThreadBackgroundJobRunner
+    from ..infra.repo_identity import state_dir
 
     locator_store = JsonPublishRetryLocatorStore(
         state_dir(config.repo_root) / "publish_retry_locators.json"
     )
     return PublishRecoveryService(
         repository_host=repository_host,
-        completion_processor=completion_processor,
+        manual_publisher=manual_publisher,
         locator_store=locator_store,
         runner=ThreadBackgroundJobRunner(),
         label_manager=label_manager,
@@ -361,4 +340,28 @@ def build_publish_recovery(
         action_applier=action_applier,
         code_review_agent_configured=bool(config.code_review_agent),
         tech_lead_authority=tech_lead_authority,
+    )
+
+
+def build_manual_publisher(
+    *,
+    completion_processor: "CompletionProcessor",
+    completion_intake: CompletionIntakeRuntime,
+    working_copy: WorkingCopy,
+    exact_git: ExactGit,
+    remote: PublicationRemote,
+    repo_slug: str,
+) -> ManualPublisher:
+    from ..control.manual_completion_preparation import ManualCompletionPreparation
+    from ..control.manual_publication import ManualCompletionPublisher
+    from ..execution.git_validated_head_executor import GitValidatedHeadExecutor
+
+    return ManualCompletionPublisher(
+        ManualCompletionPreparation(
+            intake=completion_intake,
+            completion=completion_processor,
+            working_copy=working_copy,
+            repo_slug=repo_slug,
+        ),
+        GitValidatedHeadExecutor(exact_git, remote),
     )

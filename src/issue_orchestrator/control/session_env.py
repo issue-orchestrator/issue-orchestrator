@@ -21,6 +21,8 @@ from ..infra.env import ENV_PREFIX
 from .isolation import build_agent_tool_env_assignments
 
 if TYPE_CHECKING:
+    from ..ports.issue_run_allocator import IssueRunAllocator
+    from ..domain.session_run import SessionRunAssets
     from ..ports.agent_callback_endpoint import AgentCallbackEndpoint
 
 
@@ -108,4 +110,18 @@ def build_session_env_exports(
         f" {runtime_tool_assignments}"
         f' PYTHONPATH="{orch_src}:${{PYTHONPATH:-}}"'
         f' PATH="{orch_bin}:$PATH"'
+    )
+
+
+def completion_capability_export(
+    allocator: "IssueRunAllocator", run: "SessionRunAssets"
+) -> str:
+    """Use the allocation owner's secret file; command logging sees only a locator."""
+    import shlex
+
+    artifact = allocator.submission_capability_file(run)
+    return (
+        " ISSUE_ORCHESTRATOR_COMPLETION_CAPABILITY=$(cat "
+        + shlex.quote(str(artifact.path))
+        + ")"
     )

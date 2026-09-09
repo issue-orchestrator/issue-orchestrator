@@ -31,6 +31,7 @@ from issue_orchestrator.domain.review_exchange_run import (
     ReviewExchangeRunAssets,
 )
 from issue_orchestrator.domain.review_exchange_summary import ReviewExchangeSummaryV1
+from issue_orchestrator.domain.review_validation import ReviewValidationEvidence
 from issue_orchestrator.domain.models import (
     CompletionOutcome,
     CompletionRecord,
@@ -265,6 +266,10 @@ def _write_validation_record(path: Path, *, head_sha: str, passed: bool = True) 
     path.write_text(json.dumps({"passed": passed, "head_sha": head_sha}))
 
 
+def _validation_evidence(head_sha: str, *, passed: bool = True) -> ReviewValidationEvidence:
+    return ReviewValidationEvidence.from_mapping({"passed": passed, "head_sha": head_sha})
+
+
 def _summary(
     *,
     status: str,
@@ -307,6 +312,7 @@ def _store_cached_approval(
             reason="reviewer_ok",
             rounds=1,
             response_text="Looks good.",
+            **_validation_summary_fields(validation_record_path),
         ),
     )
 
@@ -330,8 +336,23 @@ def _store_cached_halt(
             reason="max_rounds_exceeded",
             rounds=3,
             response_text="Max rounds reached.",
+            **_validation_summary_fields(validation_record_path),
         ),
     )
+
+
+def _validation_summary_fields(record_path: Path | None) -> dict[str, Any]:
+    if record_path is None or not record_path.exists():
+        return {}
+    try:
+        payload = json.loads(record_path.read_text())
+    except json.JSONDecodeError:
+        return {}
+    head_sha = payload.get("head_sha") if isinstance(payload, dict) else None
+    passed = payload.get("passed") if isinstance(payload, dict) else None
+    if not isinstance(head_sha, str) or not head_sha or type(passed) is not bool:
+        return {}
+    return {"head_sha": head_sha, "validation_passed": passed}
 
 
 def _build(
@@ -366,6 +387,8 @@ def _build(
         issue_run_allocator=IssueRunAllocationService(
             cast(SessionOutput, session_output),
             issue_run_ledger if issue_run_ledger is not None else MemoryIssueRunLedger(),
+            branch_working_copy(),
+            configuration=Config(repo="example/repo"),
         ),
         agent_callback_endpoint=ready_callback_endpoint(),
         config=_make_config(tmp_path, require_validation=require_validation),
@@ -1015,6 +1038,7 @@ def test_cached_review_is_reused_when_validation_sha_matches(
         run_id="coding-run-1",
         agent_label="agent:backend",
         record=_make_record(validation_record_path=current_validation),
+        initial_validation_evidence=_validation_evidence("same-sha"),
         errors=[],
         actions_taken=actions_taken,
         run_review_exchange_loop=fake_loop,
@@ -1183,6 +1207,7 @@ def test_cached_review_halt_is_logged_when_reused(
         run_id="coding-run-1",
         agent_label="agent:backend",
         record=_make_record(validation_record_path=current_validation),
+        initial_validation_evidence=_validation_evidence("same-sha"),
         errors=errors,
         actions_taken=actions_taken,
         run_review_exchange_loop=lambda **_: (_ for _ in ()).throw(
@@ -1246,6 +1271,7 @@ def test_cached_review_is_ignored_when_validation_sha_differs(tmp_path: Path) ->
         run_id="coding-run-1",
         agent_label="agent:backend",
         record=_make_record(validation_record_path=current_validation),
+        initial_validation_evidence=_validation_evidence("new-sha"),
         errors=[],
         actions_taken=actions_taken,
         run_review_exchange_loop=fake_loop,
@@ -1296,6 +1322,7 @@ def test_stale_no_completion_summary_still_trips_loop_budget(tmp_path: Path) -> 
         run_id="coding-run-1",
         agent_label="agent:backend",
         record=_make_record(validation_record_path=current_validation),
+        initial_validation_evidence=_validation_evidence("current-sha"),
         errors=errors,
         actions_taken=[],
         run_review_exchange_loop=lambda **_: (_ for _ in ()).throw(
@@ -1342,6 +1369,7 @@ def test_cached_review_before_scratch_boundary_is_ignored(tmp_path: Path) -> Non
         run_id="coding-run-1",
         agent_label="agent:backend",
         record=_make_record(validation_record_path=current_validation),
+        initial_validation_evidence=_validation_evidence("same-sha"),
         errors=[],
         actions_taken=actions_taken,
         run_review_exchange_loop=fake_loop,
@@ -1399,6 +1427,7 @@ def test_cached_review_is_ignored_without_matching_cached_sha_even_when_validati
         run_id="coding-run-1",
         agent_label="agent:backend",
         record=_make_record(validation_record_path=current_validation),
+        initial_validation_evidence=_validation_evidence("new-sha"),
         errors=[],
         actions_taken=actions_taken,
         run_review_exchange_loop=fake_loop,
@@ -1493,6 +1522,7 @@ def test_cached_review_is_ignored_when_current_validation_failed_on_same_sha(
         run_id="coding-run-1",
         agent_label="agent:backend",
         record=_make_record(validation_record_path=current_validation),
+        initial_validation_evidence=_validation_evidence("same-sha", passed=False),
         errors=[],
         actions_taken=actions_taken,
         run_review_exchange_loop=fake_loop,
@@ -1753,3 +1783,5 @@ def test_retry_does_not_reconsume_prior_run_timeout_cancellation(
         "review-exchange:230:coding-1:run-a",
         "review-exchange:230:coding-1:run-b",
     ]
+
+from tests.run_allocation_helpers import branch_working_copy

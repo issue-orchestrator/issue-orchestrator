@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Protocol
 
@@ -121,6 +121,7 @@ class TechLeadTerminationOutcome:
     operator action, not deferred to a tick-based retry that would never run.
     """
 
+    validated_work: "ValidatedWorkDispositionBatch" = field(kw_only=True)
     terminal_stopped: bool = True
     machine_removed: bool = True
     claim_released: bool = True
@@ -551,7 +552,7 @@ def _drive_session_to_completion(
 
 def _terminate_session(
     orchestrator: TechLeadDispatchHost, identity: str
-) -> "TechLeadTerminationOutcome":
+) -> "TechLeadTerminationOutcome | None":
     """Terminate the timed-out session so ownership of the timeout is EXPLICIT.
 
     Routes through the reconciling ``terminate_tech_lead_session`` owner (#6824
@@ -564,7 +565,7 @@ def _terminate_session(
     for session in list(orchestrator.state.active_sessions):
         if _session_identity(session) == identity:
             outcome = orchestrator.terminate_tech_lead_session(session)
-    return outcome if outcome is not None else TechLeadTerminationOutcome()
+    return outcome
 
 
 def _session_active(orchestrator: TechLeadDispatchHost, identity: str) -> bool:
@@ -610,3 +611,5 @@ def _admitted_queue_item(
         ),
         None,
     )
+
+from ..domain.validated_work_commands import ValidatedWorkDispositionBatch

@@ -13,7 +13,6 @@ from unittest.mock import Mock
 
 import pytest
 
-from issue_orchestrator.control.action_applier import ActionApplier
 from issue_orchestrator.control.completion_handler import CompletionHandler
 from issue_orchestrator.control.completion_processor import (
     CompletionProcessor,
@@ -26,7 +25,10 @@ from issue_orchestrator.control.issue_run_allocator import IssueRunAllocationSer
 from issue_orchestrator.execution.issue_run_ledger import SqliteIssueRunLedger
 from issue_orchestrator.control.open_issue_corpus import OpenIssueCorpusManager
 from issue_orchestrator.control.session_decision import ProviderAuthOutcome
-from issue_orchestrator.control.session_completion import handle_session_completion
+from issue_orchestrator.control.session_completion import (
+    handle_session_completion,
+    unprocessed_session_policy,
+)
 from issue_orchestrator.control.tech_lead_reset_retry import (
     TechLeadResetRetryExecutor,
     ResetRetryRunOutcome,
@@ -61,6 +63,7 @@ from issue_orchestrator.infra.tech_lead_run_record_store import (
 )
 from issue_orchestrator.ports import InMemoryEventSink, RepositoryHost
 from issue_orchestrator.ports.comment_receipt import IssueCommentReceipt
+from issue_orchestrator.ports.completion_intake import CompletionIntakeRuntime
 from issue_orchestrator.ports.label_set import LabelSet
 from issue_orchestrator.ports.open_issue_corpus_store import (
     InMemoryOpenIssueCorpusStore,
@@ -68,6 +71,8 @@ from issue_orchestrator.ports.open_issue_corpus_store import (
 from issue_orchestrator.ports.tech_lead_run_artifact_archive import (
     DiscardedTechLeadRunArtifacts,
 )
+from tests.run_allocation_helpers import branch_working_copy
+from tests.runtime_lifecycle_helpers import make_action_applier, reset_snapshot
 from issue_orchestrator.ports.working_copy import DiffResult
 from issue_orchestrator.view_models.tech_lead_activity import read_tech_lead_activity
 from tests.callback_endpoint_helpers import ready_callback_endpoint
@@ -172,7 +177,10 @@ def test_clean_decision_crosses_real_applier_and_failed_mandate_is_not_delivered
     pr.get_prs_for_issue.return_value = []
     processor = CompletionProcessor(
         issue_run_allocator=IssueRunAllocationService(
-            output, SqliteIssueRunLedger(tmp_path / "run-ledger.sqlite")
+            output,
+            SqliteIssueRunLedger(tmp_path / "run-ledger.sqlite"),
+            branch_working_copy(),
+            configuration=config,
         ),
         label_adapter=Mock(spec=LabelAdapter),
         pr_adapter=pr,
@@ -181,8 +189,10 @@ def test_clean_decision_crosses_real_applier_and_failed_mandate_is_not_delivered
         config=config,
         tech_lead_authority=authority,
         agent_callback_endpoint=ready_callback_endpoint(),
+        completion_intake=Mock(spec=CompletionIntakeRuntime),
     )
     processing_errors = []
+    processing_policy = unprocessed_session_policy(session, config)
     provider_decision = None
     if terminal_action == "provider_auth":
         provider_decision = ProviderAuthOutcome(
@@ -205,6 +215,7 @@ def test_clean_decision_crosses_real_applier_and_failed_mandate_is_not_delivered
             processed.success and not processed.errors and not processed.is_non_terminal
         )
         processing_errors = processed.errors
+        processing_policy = processed.require_processing_policy()
     git.push.assert_not_called()
     pr.create_pr.assert_not_called()
     pr.add_comment.assert_not_called()
@@ -254,7 +265,7 @@ def test_clean_decision_crosses_real_applier_and_failed_mandate_is_not_delivered
 
     host.find_issue_comment_receipt.side_effect = find_receipt
     host.add_comment.side_effect = write_comment
-    applier = ActionApplier(
+    applier = make_action_applier(
         labels=Mock(spec=LabelSet),
         sessions=Mock(),
         events=events,
@@ -271,7 +282,7 @@ def test_clean_decision_crosses_real_applier_and_failed_mandate_is_not_delivered
         events=events,
         label_manager=LabelManager(config),
         read_issue=lambda _n: replace(session.issue, labels=["blocked-failed"]),
-        has_active_issue_runtime=lambda _n: False,
+        runtime_snapshot=reset_snapshot,
         run_reset=reset,
     )
     state = OrchestratorState()
@@ -291,6 +302,7 @@ def test_clean_decision_crosses_real_applier_and_failed_mandate_is_not_delivered
         session_output=output,
         events=events,
         pending_work_claims=SqlitePendingWorkClaimStore.for_repo(tmp_path),
+        processing_policy=processing_policy,
         processing_errors=processing_errors,
         provider_error_type=provider_decision.provider_error_type
         if provider_decision

@@ -149,6 +149,10 @@ def _assert_created_pr_contract(ctx) -> None:
     assert pr.number == 100
     assert pr.url == "https://github.com/test/repo/pull/100"
     assert pr.state == "open"
+    assert pr.branch == "366-completed-r1"
+    from issue_orchestrator.execution.git_working_copy import GitWorkingCopy
+    review_run = ctx.orch.state.session_history[-1]
+    assert GitWorkingCopy().get_current_branch(review_run.worktree_path) == pr.branch
     assert ORCHESTRATOR_PR_MARKER in pr.body
     assert "code-reviewed" in pr.labels
     assert "needs-code-review" not in pr.labels

@@ -50,6 +50,7 @@ from ..ports.validated_work_verification import (
 )
 from ..ports.validated_work_escrow import EvidenceReleaser
 from .validated_work_admission import EvidenceAdmissionWriter
+from .validated_work_snapshots import DispositionSnapshots
 from .validated_work_attempts import PublishAttemptWriter
 from .validated_work_claims import ClaimAuthority, owner_identity
 from .validated_work_lineage import LineageClassifier
@@ -83,6 +84,7 @@ class SqliteValidatedWorkStore:
             )
         self._retention = retention
         self._db = DispositionDatabase(db_path)
+        self._snapshots = DispositionSnapshots(self._db)
         self._lineage = LineageClassifier(ancestry, artifacts)
         self._claims = ClaimAuthority(liveness)
         self._admission = EvidenceAdmissionWriter(self._lineage)
@@ -123,35 +125,13 @@ class SqliteValidatedWorkStore:
             )
 
     def for_issue(self, issue_number: int) -> ValidatedWorkDispositionBatch:
-        with self._db.transaction() as conn:
-            ids = conn.execute(
-                "SELECT record_id FROM validated_work_records WHERE issue_number=? ORDER BY record_id",
-                (issue_number,),
-            ).fetchall()
-            return ValidatedWorkDispositionBatch(
-                issue_number,
-                tuple(disposition(conn, r[0]) for r in ids),
-                "durable dispositions",
-            )
+        return self._snapshots.for_issue(issue_number)
 
     def has_unresolved_work(self, issue_number: int) -> bool:
-        # Materialize the typed batch before answering: an invalid excluded row
-        # must never turn the teardown/reset safety probe into "no work".
-        return self.for_issue(issue_number).unresolved
+        return self._snapshots.has_unresolved_work(issue_number)
 
     def evidence_for_id(self, evidence_id: str) -> EvidenceLookup | None:
-        with self._db.transaction() as conn:
-            row = conn.execute(
-                "SELECT * FROM validated_work_evidence WHERE evidence_id=?",
-                (evidence_id,),
-            ).fetchone()
-            return (
-                None
-                if row is None
-                else EvidenceLookup(
-                    evidence_row(row), disposition(conn, row["record_id"])
-                )
-            )
+        return self._snapshots.evidence_for_id(evidence_id)
 
     def attached_evidence(self, record_id: str) -> tuple[EvidenceRow, ...]:
         with self._db.transaction() as conn:
@@ -376,3 +356,6 @@ class SqliteValidatedWorkStore:
                 merged_head_sha=merged_head_sha,
                 observed_at=observed_at,
             )
+
+    def retained_evidence(self, issue_number: int) -> tuple[EvidenceRow, ...]:
+        return self._snapshots.retained_evidence(issue_number)

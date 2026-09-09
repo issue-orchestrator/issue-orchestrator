@@ -91,7 +91,8 @@ from .tech_lead_decision_loader import (
 from .tech_lead_case_files import build_pattern_ledger
 from .tech_lead_issue_policy import protected_tech_lead_label_violations
 from .tech_lead_proposals import build_op_ledger
-from .tech_lead_session_policy import is_tech_lead_session, read_tech_lead_assignment
+from .tech_lead_session_policy import read_tech_lead_assignment
+from ..domain.registered_completion import CompletionProcessingPolicy
 from .tech_lead_target_scope import target_scope_violation
 from .tech_lead_dispositions import investigation_disposition_violation
 
@@ -344,6 +345,7 @@ def discard_tech_lead_authority_after_completion(
     tech_lead_authority: "TechLeadAuthorityStore",
     session: Session,
     *,
+    processing_policy: CompletionProcessingPolicy,
     processing_errors: list[str] | None,
 ) -> None:
     """Retention owner (#6769 F3): drop the run's authority row at the end.
@@ -368,7 +370,7 @@ def discard_tech_lead_authority_after_completion(
     intersect it with live pending/active tech_lead work, so dropping it here is
     what releases the cohort's held run artifacts for cleanup.
     """
-    if not is_tech_lead_session(config.tech_lead_review_agent, session.issue.agent_type):
+    if not processing_policy.is_tech_lead:
         return
     if is_publish_failure(processing_errors):
         return
@@ -421,6 +423,7 @@ def generate_tech_lead_completion_actions(
     session: Session,
     expected: "ExpectedState",
     *,
+    processing_policy: CompletionProcessingPolicy,
     completed_ok: bool,
     labels: LabelManager,
     tech_lead_authority: "TechLeadAuthorityStore",
@@ -435,7 +438,7 @@ def generate_tech_lead_completion_actions(
     """
     actions: list[Action] = []
 
-    if not is_tech_lead_session(config.tech_lead_review_agent, session.issue.agent_type):
+    if not processing_policy.is_tech_lead:
         return actions
 
     authority, tamper = _resolve_launch_authority_for_session(tech_lead_authority, session)
@@ -610,6 +613,7 @@ def generate_tech_lead_failure_actions(
     session: Session,
     expected: "ExpectedState",
     *,
+    processing_policy: CompletionProcessingPolicy,
     tech_lead_authority: "TechLeadAuthorityStore",
 ) -> list[Action]:
     """Batch/health FAILED/TIMED_OUT terminal effects (#6768 round 5, ADR-0031 §4).
@@ -626,7 +630,7 @@ def generate_tech_lead_failure_actions(
     produces nothing (the session already failed; closing or labeling from
     untrusted worktree copies would hand the agent authority).
     """
-    if not is_tech_lead_session(config.tech_lead_review_agent, session.issue.agent_type):
+    if not processing_policy.is_tech_lead:
         return []
     authority, _tamper = _resolve_launch_authority_for_session(tech_lead_authority, session)
     if authority is None:

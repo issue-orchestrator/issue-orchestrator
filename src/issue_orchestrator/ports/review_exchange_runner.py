@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from ..events import EventContext
     from .event_sink import EventSink
     from .review_exchange_approval_gate import ReviewExchangeApprovalGate
+    from ..domain.review_validation import ReviewValidationEvidence
 
 
 class ReviewExchangeRunner(Protocol):
@@ -39,6 +40,7 @@ class ReviewExchangeRunner(Protocol):
         self,
         *,
         exchange_run: "ReviewExchangeRun",
+        completion_capability: str,
         coder_worktree: Path,
         issue_number: int,
         issue_title: str,
@@ -51,7 +53,7 @@ class ReviewExchangeRunner(Protocol):
         max_no_progress: int,
         require_validation: bool,
         nit_policy: str = "surface",
-        initial_validation_record_path: Path | None = None,
+        initial_validation_evidence: "ReviewValidationEvidence | None" = None,
         approval_gate: "ReviewExchangeApprovalGate | None" = None,
         web_port: int | None = None,
         events: "EventSink | None" = None,
