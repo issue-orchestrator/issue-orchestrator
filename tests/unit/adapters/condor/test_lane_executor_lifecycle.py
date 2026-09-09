@@ -42,6 +42,29 @@ _TERMINATED_NONZERO_EVENT_LOG = (
 )
 
 
+@pytest.fixture(autouse=True)
+def _own_lane_run_directories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Keep every retained run directory inside this test's private root.
+
+    The executor intentionally uses ``tempfile.mkdtemp`` so production failures
+    survive outside the working copy.  These tests used to discover and remove
+    those directories through process-global prefixes in the host temp root.
+    Identical work keys in parallel workers could therefore observe or delete
+    one another's diagnostics.
+
+    ``tempfile`` caches its selected root, so changing ``TMPDIR`` alone is not
+    enough.  Resetting that cache after installing the test-owned environment
+    makes both the executor and the assertions resolve the same private root.
+    ``monkeypatch`` restores the prior process state after each test.
+    """
+    lane_run_root = tmp_path / "lane-runs"
+    lane_run_root.mkdir()
+    monkeypatch.setenv("TMPDIR", str(lane_run_root))
+    monkeypatch.setattr(tempfile, "tempdir", None)
+
+
 def _write_stubs(binaries: Path, stubs: dict[str, str]) -> None:
     binaries.mkdir(parents=True, exist_ok=True)
     for name, body in stubs.items():
