@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 from ..infra.config import Config
 from ..ports.command_runner import CommandRunner
+from ..ports.event_sink import EventSink
 from ..ports.exact_git import ExactGit
 from ..ports.completion_intake import CompletionIntakeLedger
 from ..control.validated_work_admission import RankedEvidenceAdmission
@@ -13,6 +14,7 @@ from ..ports.validated_work_recovery_store import ValidatedWorkRecoveryStore
 from ..ports.validated_work_recovery_authority import (
     ValidatedWorkRecoveryAuthorityReader,
 )
+from ..ports.validated_work_abandonment import ValidatedWorkAbandonmentOwner
 from ..control.validated_work_escrow import ValidatedWorkEscrowMaintenance
 from ..ports.issue_disposition_gate import IssueDispositionMutationGate
 from ..ports.publication_workspace import PublicationWorkspaces
@@ -87,6 +89,7 @@ class ValidatedWorkRecoveryOwners(ValidatedWorkAdmissionOwners):
     execution: ValidatedWorkExecutionOwner
     effects: ValidatedWorkEffectAuthority
     blocks: "AggregateRecoveryBlocks"
+    abandonment: ValidatedWorkAbandonmentOwner
     workspaces: PublicationWorkspaces
     remote: "PublicationRemote"
     issues: "RecoveryIssueReader"
@@ -143,9 +146,13 @@ def build_validated_work_runtime(
     action_applier: "ActionApplier",
     label_manager: "LabelManager",
     human_block: "SharedNeedsHumanBlock",
+    events: EventSink,
 ) -> ValidatedWorkRecoveryOwners:
     """Build the full store once, then put aggregate policy around admission."""
     from ..control.aggregate_recovery_block import AggregateRecoveryBlocks
+    from ..control.operator_validated_work_abandonment import (
+        OperatorValidatedWorkAbandonment,
+    )
     from ..control.validated_work_effects import FencedValidatedWorkEffects
     from ..execution.publication_workspace import EscrowPublicationWorkspaces
     from ..execution.git_tools import create_git
@@ -195,6 +202,14 @@ def build_validated_work_runtime(
         applier=action_applier,
         human_block=human_block,
     )
+    abandonment = OperatorValidatedWorkAbandonment(
+        repo_slug=config.repo,
+        store=records,
+        execution=execution,
+        gate=external.gate,
+        blocks=blocks,
+        events=events,
+    )
     custody = ValidatedWorkCustody(escrow, blocks)
     repair = EscrowReconciliation(escrow=escrow, store=blocks)
     workspaces = EscrowPublicationWorkspaces(
@@ -215,6 +230,7 @@ def build_validated_work_runtime(
         execution=execution,
         effects=effects,
         blocks=blocks,
+        abandonment=abandonment,
         workspaces=workspaces,
         remote=external.remote,
         capture_observer=external.capture_observer,
@@ -236,6 +252,7 @@ def build_validated_work_recovery(
     """Close the exact-head publication graph over the live process owners."""
     from ..control.claimed_recovery_preparation import ClaimedRecoveryPreparation
     from ..control.fenced_validated_head_publisher import FencedValidatedHeadPublisher
+    from ..control.recovery_block_sweep import AggregateRecoveryBlockSweep
     from ..control.recovery_drain import RecoveryDrain
     from ..control.recovery_publication_attempt import RecoveryPublicationAttempt
     from ..control.recovery_publication_cleanup import RecoveryPublicationCleanup
@@ -318,6 +335,11 @@ def build_validated_work_recovery(
             effects=owners.effects,
             store=owners.records,
             observer=owners.capture_observer,
+        ),
+        block_sweep=AggregateRecoveryBlockSweep(
+            source=owners.records,
+            reconciler=owners.blocks,
+            batch_size=config.validated_work.drain_batch_size,
         ),
         batch_size=config.validated_work.drain_batch_size,
         interval_seconds=config.validated_work.drain_interval_seconds,

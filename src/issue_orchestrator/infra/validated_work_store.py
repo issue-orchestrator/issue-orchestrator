@@ -8,7 +8,9 @@ freshness/death/containment boolean.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 import sqlite3
 
@@ -28,6 +30,8 @@ from ..domain.validated_work_claim import (
     ValidatedWorkClaim,
 )
 from ..domain.validated_work_commands import (
+    AbandonValidatedWorkCommand,
+    AbandonValidatedWorkOutcome,
     ValidatedWorkAuthoritySnapshot,
     ValidatedWorkDisposition,
     ValidatedWorkDispositionBatch,
@@ -59,6 +63,7 @@ from ..ports.validated_work_verification import (
 from ..ports.validated_work_drain import ValidatedWorkDrainRequest
 from ..ports.validated_work_escrow import EvidenceReleaser
 from .validated_work_admission import EvidenceAdmissionWriter
+from .validated_work_abandonment import ValidatedWorkAbandonment
 from .validated_work_snapshots import DispositionSnapshots
 from .validated_work_recovery_blocks import RecoveryBlockPersistence
 from .validated_work_attempts import PublishAttemptWriter
@@ -87,6 +92,7 @@ class SqliteValidatedWorkStore:
         artifacts: ValidatedWorkArtifactVerifier,
         liveness: OrchestratorLivenessPort,
         retention: EvidenceReleaser,
+        clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         if ancestry is None or artifacts is None or liveness is None or retention is None:
             raise ValueError(
@@ -97,6 +103,9 @@ class SqliteValidatedWorkStore:
         self._snapshots = DispositionSnapshots(self._db)
         self._recovery_blocks = RecoveryBlockPersistence(self._db)
         self._lineage = LineageClassifier(ancestry, artifacts)
+        self._abandonment = ValidatedWorkAbandonment(
+            self._db, self._lineage, clock=clock
+        )
         self._claims = ClaimAuthority(liveness)
         self._admission = EvidenceAdmissionWriter(self._lineage)
         self._attempts = PublishAttemptWriter(self._claims, self._lineage)
@@ -141,11 +150,23 @@ class SqliteValidatedWorkStore:
         with self._db.transaction() as conn:
             return self._record_for_id(conn, record_id)
 
+    def abandon_if_current(
+        self, command: AbandonValidatedWorkCommand
+    ) -> AbandonValidatedWorkOutcome:
+        return self._abandonment.abandon_if_current(command)
+
     def for_issue(self, issue_number: int) -> ValidatedWorkDispositionBatch:
         return self._snapshots.for_issue(issue_number)
 
     def recovery_block_snapshot(self, repo_slug: str, issue_number: int) -> RecoveryBlockSnapshot:
         return self._recovery_blocks.snapshot(repo_slug, issue_number)
+
+    def retained_issue_numbers(
+        self, *, after_issue_number: int, limit: int
+    ) -> tuple[int, ...]:
+        return self._snapshots.retained_issue_numbers(
+            after_issue_number=after_issue_number, limit=limit
+        )
 
     def begin_block_label_cleanup(
         self, keys: tuple[RecoveryCleanupKey, ...], label: str

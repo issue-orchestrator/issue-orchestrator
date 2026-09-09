@@ -51,7 +51,8 @@ def completion(publication):
     gate = FileIssueDispositionMutationGate(rig.custody.state)
     labels = Labels()
     aggregate = AggregateRecoveryBlocks(repo_slug="owner/repo", records=rig.store,
-        admission=RankedEvidenceAdmission(rig.store, rig.custody.ledger), phases=rig.store,
+        admission=RankedEvidenceAdmission(rig.store, rig.custody.ledger),
+        phases=rig.store,
         authority=rig.effects, gate=gate, labels=LabelManager(Config(repo="owner/repo")),
         reader=labels, applier=labels, human_block=NO_OTHER_NEEDS_HUMAN_CAUSES)
     finalizer = StagedPublishedWorkFinalizer(effects=rig.effects, phases=rig.store,

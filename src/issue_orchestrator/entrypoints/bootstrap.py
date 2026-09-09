@@ -646,6 +646,7 @@ def build_orchestrator(
     validated_work = validated_work_bootstrap.build_validated_work_runtime(
         config, working_copy, issue_run_ledger, command_runner, validated_work_liveness,
         github, fresh_issue_reader, action_applier, label_manager, pending_work.needs_human_block,
+        events,
     )
     validated_work_recovery_authority = (
         validated_work_bootstrap.build_validated_work_recovery_authority(validated_work)

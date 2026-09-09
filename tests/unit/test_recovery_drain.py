@@ -8,6 +8,7 @@ import pytest
 from issue_orchestrator.control.recovery_drain import RecoveryDrain
 from issue_orchestrator.domain.models import OrchestratorState
 from issue_orchestrator.domain.recovery_attempt import RecoveryAttemptPending
+from issue_orchestrator.domain.recovery_block import RecoveryBlockSweepReport
 from issue_orchestrator.domain.recovery_drain import RecoveryDrainMode
 from issue_orchestrator.domain.validated_work import (
     RemoteBaselineStatus,
@@ -15,6 +16,7 @@ from issue_orchestrator.domain.validated_work import (
     ValidatedWorkState,
 )
 from issue_orchestrator.domain.validated_work_remote_authority import RemoteAuthorityRefreshRequest
+from issue_orchestrator.ports.recovery_block import NullRecoveryBlockSweep
 from tests.unit.validated_work_support import Rig, capture, claim, begin
 
 
@@ -93,6 +95,7 @@ def test_queue_routes_unobserved_remote_authority_to_refresh(tmp_path):
         queue=store,
         operation=operations,
         authority_refresh=refreshes,
+        block_sweep=NullRecoveryBlockSweep(),
         batch_size=2,
         interval_seconds=10,
     ).tick(OrchestratorState(), lambda: RecoveryDrainMode.ACTIVE)
@@ -113,6 +116,7 @@ def test_batch_bound_and_interval_do_not_starve_after_exception(tmp_path):
         queue=store,
         operation=operations,
         authority_refresh=Refreshes(),
+        block_sweep=NullRecoveryBlockSweep(),
         batch_size=2,
         interval_seconds=10,
         clock=lambda: now.value,
@@ -143,6 +147,7 @@ def test_interval_starts_after_synchronous_work_finishes(tmp_path):
         queue=store,
         operation=operations,
         authority_refresh=Refreshes(),
+        block_sweep=NullRecoveryBlockSweep(),
         batch_size=1,
         interval_seconds=10,
         clock=lambda: now.value,
@@ -159,10 +164,12 @@ def test_stopped_mode_cannot_select_or_start_recovery_work():
     queue = Mock()
     operation = Mock()
     authority_refresh = Mock()
+    block_sweep = Mock()
     drain = RecoveryDrain(
         queue=queue,
         operation=operation,
         authority_refresh=authority_refresh,
+        block_sweep=block_sweep,
         batch_size=1,
         interval_seconds=10,
     )
@@ -173,6 +180,30 @@ def test_stopped_mode_cannot_select_or_start_recovery_work():
     queue.drain_requests.assert_not_called()
     operation.run.assert_not_called()
     authority_refresh.run.assert_not_called()
+    block_sweep.tick.assert_not_called()
+
+
+def test_due_drain_reports_block_sweep_even_when_no_recovery_record_is_selected():
+    queue = Mock()
+    queue.drain_requests.return_value = ()
+    block_sweep = Mock()
+    expected = RecoveryBlockSweepReport((), "retained issue scan failed")
+    block_sweep.tick.return_value = expected
+    drain = RecoveryDrain(
+        queue=queue,
+        operation=Mock(),
+        authority_refresh=Mock(),
+        block_sweep=block_sweep,
+        batch_size=1,
+        interval_seconds=10,
+    )
+
+    report = drain.tick(
+        OrchestratorState(), lambda: RecoveryDrainMode.ACTIVE
+    )
+
+    assert report.items == ()
+    assert report.block_sweep is expected
 
 
 def test_lifecycle_stop_during_batch_prevents_another_operation_and_preserves_cursor(
@@ -190,6 +221,7 @@ def test_lifecycle_stop_during_batch_prevents_another_operation_and_preserves_cu
         queue=store,
         operation=operations,
         authority_refresh=Refreshes(),
+        block_sweep=NullRecoveryBlockSweep(),
         batch_size=3,
         interval_seconds=10,
         clock=lambda: now.value,

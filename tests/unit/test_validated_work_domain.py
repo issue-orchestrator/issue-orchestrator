@@ -33,10 +33,14 @@ from issue_orchestrator.domain.validated_work_claim import (
 )
 from issue_orchestrator.domain.validated_work_gate import DispositionGate, GateSource
 from issue_orchestrator.domain.validated_work_commands import (
+    AbandonStatus,
+    AbandonValidatedWorkCommand,
+    AbandonValidatedWorkOutcome,
     DispositionInitiator,
     OperatorResolution,
     StoredEvidenceCommand,
     ValidatedWorkAuthoritySnapshot,
+    ValidatedWorkDisposition,
     ValidatedWorkDispositionBatch,
 )
 from tests.unit.validated_work_support import (
@@ -419,6 +423,127 @@ def test_stored_recovery_cannot_be_automatic_or_redirect_authority(tmp_path):
     ):
         with pytest.raises(ValueError):
             replace(cmd, **kwargs)
+
+
+def _abandonment_values(tmp_path):
+    store = Rig(tmp_path / "work.sqlite").open()
+    admission = capture(state=ValidatedWorkState.PARKED)
+    store.admit(admission)
+    parked = store.get(admission.evidence.record_id)
+    authority = store.evidence_for_id(admission.evidence.evidence_id).evidence.authority
+    abandoned = replace(
+        parked,
+        state=ValidatedWorkState.ABANDONED,
+        failure=None,
+        reason="accepted loss",
+        resolution=OperatorResolution("operator", "accepted loss", AT),
+    )
+    return authority, parked, abandoned
+
+
+def test_abandon_command_requires_exact_typed_operator_input(tmp_path):
+    authority, _, _ = _abandonment_values(tmp_path)
+    command = AbandonValidatedWorkCommand(authority, "operator", "accepted loss")
+
+    assert command.authority is authority
+    for changes in (
+        {"actor": ""},
+        {"actor": "  "},
+        {"actor": 3},
+        {"reason": ""},
+        {"reason": "  "},
+        {"reason": object()},
+        {"authority": object()},
+    ):
+        with pytest.raises(ValueError):
+            replace(command, **changes)
+
+
+def test_each_abandon_outcome_status_accepts_only_its_payload_family(tmp_path):
+    authority, _, abandoned = _abandonment_values(tmp_path)
+
+    outcomes = (
+        AbandonValidatedWorkOutcome(
+            AbandonStatus.ABANDONED, abandoned, (), None, "abandoned"
+        ),
+        AbandonValidatedWorkOutcome(
+            AbandonStatus.ATTACHED_EVIDENCE_PENDING,
+            None,
+            ("evidence-a",),
+            None,
+            "attached",
+        ),
+        AbandonValidatedWorkOutcome(
+            AbandonStatus.EVIDENCE_NOT_CURRENT, None, (), authority, "superseded"
+        ),
+        AbandonValidatedWorkOutcome(
+            AbandonStatus.AUTHORITY_STALE, None, (), authority, "stale"
+        ),
+        *(
+            AbandonValidatedWorkOutcome(status, None, (), None, status.value)
+            for status in (
+                AbandonStatus.NO_SUCH_RECORD,
+                AbandonStatus.ALREADY_RESOLVED,
+                AbandonStatus.REFUSED_STATE,
+            )
+        ),
+    )
+
+    assert {outcome.status for outcome in outcomes} == set(AbandonStatus)
+
+
+@pytest.mark.parametrize(
+    "status,disposition,pending,current,message,match",
+    [
+        (AbandonStatus.ABANDONED, None, (), None, "x", "requires"),
+        (AbandonStatus.ATTACHED_EVIDENCE_PENDING, None, (), None, "x", "requires"),
+        (AbandonStatus.AUTHORITY_STALE, None, (), None, "x", "requires"),
+        (AbandonStatus.NO_SUCH_RECORD, "DISPOSITION", (), None, "x", "no result"),
+        (AbandonStatus.REFUSED_STATE, None, ("e",), None, "x", "no result"),
+        (AbandonStatus.ALREADY_RESOLVED, None, (), "AUTHORITY", "x", "no result"),
+    ],
+)
+def test_abandon_outcome_rejects_cross_status_payloads(
+    tmp_path, status, disposition, pending, current, message, match
+):
+    authority, parked, _ = _abandonment_values(tmp_path)
+    actual_disposition = parked if disposition else None
+    actual_current = authority if current else None
+
+    with pytest.raises(ValueError, match=match):
+        AbandonValidatedWorkOutcome(
+            status, actual_disposition, pending, actual_current, message
+        )
+
+
+@pytest.mark.parametrize(
+    "changes,match",
+    [
+        ({"status": "abandoned"}, "status"),
+        ({"pending_evidence_ids": ["e"]}, "tuple"),
+        ({"pending_evidence_ids": ("",)}, "non-empty"),
+        ({"pending_evidence_ids": ("e", "e")}, "distinct"),
+        ({"message": ""}, "message"),
+        ({"message": object()}, "message"),
+        ({"disposition": object()}, "typed disposition"),
+        ({"current_authority": object()}, "typed snapshot"),
+    ],
+)
+def test_abandon_outcome_rejects_untyped_or_malformed_values(
+    tmp_path, changes, match
+):
+    authority, _, abandoned = _abandonment_values(tmp_path)
+    values = {
+        "status": AbandonStatus.ABANDONED,
+        "disposition": abandoned,
+        "pending_evidence_ids": (),
+        "current_authority": None,
+        "message": "abandoned",
+    }
+    values.update(changes)
+
+    with pytest.raises(ValueError, match=match):
+        AbandonValidatedWorkOutcome(**values)
 
 
 @pytest.mark.parametrize("operation", [copy, deepcopy, pickle.dumps])

@@ -12,6 +12,9 @@ from issue_orchestrator.adapters.issue_disposition_gate import (
 )
 from issue_orchestrator.control.actions import ActionResult, AddLabelAction
 from issue_orchestrator.control.aggregate_recovery_block import AggregateRecoveryBlocks
+from issue_orchestrator.control.operator_validated_work_abandonment import (
+    OperatorValidatedWorkAbandonment,
+)
 from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.control.needs_human_block import NeedsHumanBlock
 from issue_orchestrator.control.retry_review_routing import RetryReviewPolicy
@@ -24,6 +27,7 @@ from issue_orchestrator.execution.pending_work_claim_store import (
     SqlitePendingWorkClaimStore,
 )
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.ports.event_sink import InMemoryEventSink
 from tests.unit.staged_finalization_support import Crash, FinalizationRig
 from tests.unit.validated_work_support import AT
 from tests.process_group_run import run_in_process_group
@@ -81,6 +85,7 @@ class AggregateRig:
         self.causes = SqlitePendingWorkClaimStore(path / "causes.sqlite")
         self.intake = Mock(spec=CompletionIntakeLedger)
         self.intake.evidence_receive_sequence.return_value = 1
+        self.events = InMemoryEventSink()
         self.compose()
 
     def compose(self, *, records=None):
@@ -103,6 +108,14 @@ class AggregateRig:
             reader=self.remote,
             applier=self.remote,
             human_block=self.human,
+        )
+        self.abandonment = OperatorValidatedWorkAbandonment(
+            repo_slug="owner/repo",
+            store=self.base.store,
+            execution=self.base.execution,
+            gate=self.gate,
+            blocks=self.aggregate,
+            events=self.events,
         )
         self.base.finalizer = StagedPublishedWorkFinalizer(
             effects=self.base.effects,
@@ -128,6 +141,7 @@ from unittest.mock import Mock
 from issue_orchestrator.adapters.issue_disposition_gate import FileIssueDispositionMutationGate
 from issue_orchestrator.control.aggregate_recovery_block import AggregateRecoveryBlocks
 from issue_orchestrator.control.label_manager import LabelManager
+from issue_orchestrator.ports.event_sink import NullEventSink
 from issue_orchestrator.domain.recovery_block import RecoveryMutationBusy
 from issue_orchestrator.infra.config import Config
 from tests.unit.validated_work_support import capture

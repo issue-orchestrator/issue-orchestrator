@@ -19,6 +19,7 @@ from ..ports.validated_work_drain import (
     ValidatedWorkDrainRequest,
     ValidatedWorkRecoveryOperation,
 )
+from ..ports.recovery_block import RecoveryBlockSweep
 
 logger = logging.getLogger(__name__)
 
@@ -28,10 +29,12 @@ class RecoveryDrain:
 
     def __init__(self, *, queue: ValidatedWorkDrainQueue, operation: ValidatedWorkRecoveryOperation,
                  authority_refresh: ValidatedWorkAuthorityRefreshOperation,
-                 batch_size: int, interval_seconds: int, clock: Callable[[], float] = time.monotonic) -> None:
+                 block_sweep: RecoveryBlockSweep, batch_size: int, interval_seconds: int,
+                 clock: Callable[[], float] = time.monotonic) -> None:
         require_positive(batch_size, "recovery batch size")
         require_positive(interval_seconds, "recovery interval")
         self._queue, self._operation, self._authority_refresh = queue, operation, authority_refresh
+        self._block_sweep = block_sweep
         self._batch_size, self._interval, self._clock = batch_size, interval_seconds, clock
         self._after = ""
         self._next_at = float("-inf")
@@ -68,6 +71,7 @@ class RecoveryDrain:
         # retry loop. A completed worker starts the next interval at quiescence.
         self._next_at = started + self._interval
         try:
+            block_sweep = self._block_sweep.tick(admission)
             requests = self._queue.drain_requests(
                 after_record_id=self._after,
                 limit=self._batch_size,
@@ -90,7 +94,7 @@ class RecoveryDrain:
                     if completed_batch and len(requests) < self._batch_size
                     else items[-1].record_id
                 )
-            return RecoveryDrainReport(tuple(items))
+            return RecoveryDrainReport(tuple(items), block_sweep)
         finally:
             self._next_at = self._clock() + self._interval
 

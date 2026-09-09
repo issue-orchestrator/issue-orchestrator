@@ -992,7 +992,20 @@ class TestBuildOrchestrator:
 
     def test_build_orchestrator_uses_configured_repo(self, minimal_config: Config) -> None:
         """Uses repo from config when available."""
-        with patch("issue_orchestrator.entrypoints.bootstrap.install_gh_guard"):
+        from issue_orchestrator.control.operator_validated_work_abandonment import (
+            OperatorValidatedWorkAbandonment,
+        )
+
+        executions = []
+        original_init = OperatorValidatedWorkAbandonment.__init__
+
+        def record_execution(owner, *args, **kwargs):
+            executions.append(kwargs["execution"])
+            original_init(owner, *args, **kwargs)
+
+        with patch.object(
+            OperatorValidatedWorkAbandonment, "__init__", record_execution
+        ), patch("issue_orchestrator.entrypoints.bootstrap.install_gh_guard"):
             with patch("issue_orchestrator.entrypoints.bootstrap.create_plugin_manager"):
                 with patch("issue_orchestrator.entrypoints.bootstrap.get_repo_from_git") as mock_get_repo:
                     with patch("issue_orchestrator.entrypoints.bootstrap.GitHubAdapter") as mock_adapter:
@@ -1015,6 +1028,9 @@ class TestBuildOrchestrator:
                                 orchestrator.deps.validated_work_recovery,
                                 RecoveryDrain,
                             )
+                            assert executions == [
+                                orchestrator.deps.validated_work_recovery._operation._execution
+                            ]
 
     def test_build_orchestrator_auto_detects_repo_when_none(self) -> None:
         """Auto-detects repo from git when config.repo is None."""

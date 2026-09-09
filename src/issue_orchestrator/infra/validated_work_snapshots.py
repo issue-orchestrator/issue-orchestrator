@@ -39,6 +39,21 @@ class DispositionSnapshots:
         # must never turn the teardown/reset safety probe into "no work".
         return self.for_issue(issue_number).unresolved
 
+    def retained_issue_numbers(
+        self, *, after_issue_number: int, limit: int
+    ) -> tuple[int, ...]:
+        require_positive(after_issue_number, "issue cursor", minimum=0)
+        require_positive(limit, "recovery block batch size")
+        with self._db.transaction() as conn:
+            return tuple(
+                row[0]
+                for row in conn.execute(
+                    "SELECT DISTINCT issue_number FROM validated_work_records "
+                    "WHERE issue_number>? ORDER BY issue_number LIMIT ?",
+                    (after_issue_number, limit),
+                )
+            )
+
     def evidence_for_id(self, evidence_id: str) -> EvidenceLookup | None:
         with self._db.transaction() as conn:
             row = conn.execute(
