@@ -4,42 +4,15 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
+from .publication_branch_policy import is_protected_publication_branch, require_short_publication_branch
 from .exact_git import ExactPushOutcome
 from .validated_work import (
     PublishValidatedHeadStatus,
     ValidatedWorkFailure,
+    ValidatedWorkKey,
     require_positive,
     require_sha,
 )
-
-PROTECTED_PUBLICATION_BRANCHES = frozenset({"main", "master"})
-
-
-def is_protected_publication_branch(branch: str) -> bool:
-    """Return whether exact publication must never write this branch."""
-    return branch in PROTECTED_PUBLICATION_BRANCHES
-
-
-def require_publication_branch_name(branch: str, *, target: bool) -> None:
-    """Validate a short publication ref and protect branch-write targets."""
-    if (
-        type(branch) is not str
-        or not branch
-        or branch == "@"
-        or branch.startswith(("-", "refs/"))
-        or branch.endswith((".", "/"))
-        or any(char.isspace() or ord(char) < 32 or char in "~^:?*[\\" for char in branch)
-        or ".." in branch
-        or "@{" in branch
-        or any(
-            not part or part.startswith(".") or part.endswith(".lock")
-            for part in branch.split("/")
-        )
-    ):
-        raise ValueError("publication requires valid short branch names")
-    if target and is_protected_publication_branch(branch):
-        raise ValueError("publication target branch is protected")
-
 
 class RemoteHeadExpectation(StrEnum):
     EXACT = "exact"
@@ -77,6 +50,10 @@ class PublishValidatedHeadCommand:
         if type(self.content) is not PublicationContent:
             raise ValueError("publication requires typed content")
         require_sha(self.target_head_sha)
+        if is_protected_publication_branch(self.branch_name):
+            raise ValueError(
+                "publication target branch is protected; protected branch writes are forbidden"
+            )
         if type(self.expectation) is not RemoteHeadExpectation:
             raise ValueError("remote expectation must be typed")
         if (self.expectation is RemoteHeadExpectation.EXACT) != (
@@ -92,8 +69,19 @@ class PublishValidatedHeadCommand:
             require_positive(self.pr_number, "pr_number")
         if len(self.repo_slug.split("/")) != 2 or not all(self.repo_slug.split("/")):
             raise ValueError("repository must be owner/name")
-        require_publication_branch_name(self.branch_name, target=True)
-        require_publication_branch_name(self.pr_base_branch, target=False)
+        for branch in (self.branch_name, self.pr_base_branch):
+            require_short_publication_branch(branch)
+
+
+    def require_disposition_binding(self, record_id: str) -> None:
+        """A retained record grants no authority over a different publication."""
+        key = ValidatedWorkKey(
+            self.repo_slug, self.issue_number, self.branch_name, self.target_head_sha
+        )
+        if key.record_id != record_id:
+            raise ValueError("publication target differs from claimed record")
+        if self.expectation is RemoteHeadExpectation.UNCONSTRAINED:
+            raise ValueError("disposition publication requires an explicit remote expectation")
 
 
 class BranchWriteStatus(StrEnum):

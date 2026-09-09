@@ -367,7 +367,9 @@ async def test_stale_worktrees_fallback_without_config(monkeypatch: pytest.Monke
             marker_present=False,
             expected_head=None,
         ),
-        is_commit_retained_by_branch=lambda _path, _head, _branch: True,
+        is_commit_retained_by_branch=lambda path, head, branch: (
+            path == reviewer and head == "a" * 40 and branch == "4070-fix"
+        ),
     )
     activity_reader = SimpleNamespace(
         read=lambda _repo, _selection: WorktreeActivityEvidence.known(set()),

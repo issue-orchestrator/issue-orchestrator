@@ -1,5 +1,6 @@
 """Immutable capture and named artifact locations, independent of store rows."""
 
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -82,3 +83,34 @@ class EscrowProblem:
 class EscrowReport:
     repaired: tuple[str, ...] = ()
     problems: tuple[EscrowProblem, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class VerifiedEscrowCapture:
+    """Immutable artifact bytes authenticated against one capture identity."""
+
+    admission: EvidenceAdmission
+    completion: bytes
+    validation: bytes
+    exchange_summary: bytes | None
+
+    def __post_init__(self) -> None:
+        for artifact in evidence_artifacts(self.admission.evidence):
+            data = self.for_slot(artifact.slot)
+            if type(data) is not bytes:
+                raise ValueError("capture artifact bytes must be immutable")
+            if len(data) != artifact.byte_size or hashlib.sha256(data).hexdigest() != artifact.sha256:
+                raise ValueError(f"artifact bytes do not match capture: {artifact.slot}")
+        if self.admission.evidence.identity.exchange_summary_artifact is None and self.exchange_summary is not None:
+            raise ValueError("capture contains an unadmitted exchange summary")
+
+    def for_slot(self, slot: ArtifactSlot) -> bytes:
+        match slot:
+            case ArtifactSlot.COMPLETION:
+                return self.completion
+            case ArtifactSlot.VALIDATION:
+                return self.validation
+            case ArtifactSlot.EXCHANGE_SUMMARY:
+                if self.exchange_summary is None:
+                    raise ValueError("capture lacks admitted exchange summary")
+                return self.exchange_summary

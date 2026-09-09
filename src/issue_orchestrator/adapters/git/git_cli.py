@@ -158,6 +158,10 @@ class GitCLI(Git):
     def worktree_add(self, repo: Path, path: Path, branch: str) -> None:
         self.run(repo, ["worktree", "add", str(path), branch])
 
+    def repair_worktree_registration(self, repo: Path, path: Path) -> None:
+        from .worktree_registration import repair_worktree_registration
+        repair_worktree_registration(self, repo, path)
+
     def worktree_remove(self, repo: Path, path: Path, force: bool = True, prune: bool = True) -> None:
         require_disposable_path(path)
         argv = ["worktree", "remove"]

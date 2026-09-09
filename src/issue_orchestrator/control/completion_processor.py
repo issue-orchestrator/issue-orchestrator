@@ -20,10 +20,12 @@ from ..ports.completion_intake import CompletionIntakeRuntime
 from ..domain.completion_intake import CompletionIntakeReceipt, CompletionIntakeError
 from ..domain.registered_completion import CompletionProcessingPolicy
 from ..domain.prepared_completion import PreparedCompletionEvidence
+from ..domain.publication_workspace import PublicationWorkspace
 from ..domain.review_validation import ReviewValidationEvidence
 from ..domain.publication_remote import attributed_publication_body
 from ..domain.manual_publication import PreparedManualPublication
 from ..domain.validated_head_publication import PublishValidatedHeadOutcome
+from .retained_completion_policy import prepare_retained_completion
 from .completion_manual_settlement import settle_manual_publication
 from .completion_preparation import PreparedActionPlan, PreparedCompletion, PreparedPullRequest, record_from_prepared_evidence, context_from_prepared_evidence
 
@@ -73,10 +75,6 @@ from ..ports.review_artifact_reader import (
 )
 from .background_job_supervisor import BackgroundJobSupervisor
 from ..ports.event_sink import RunScopedEventPayload, make_run_scoped_event, make_trace_event
-from ..infra.runtime_artifacts import (
-    build_forbidden_runtime_artifact_reason,
-    forbidden_branch_runtime_artifacts,
-)
 from ..infra.timeline_trace import is_timeline_trace_enabled
 from ..infra.worktree_base import resolve_base_branch
 from ..ports.review_exchange_runner import (
@@ -126,7 +124,7 @@ from .review_exchange_pr_comment import (
     GITHUB_COMMENT_BODY_LIMIT,
     build_review_exchange_pr_comment_body,
 )
-from .test_skip_guard import added_test_paths, scan_added_test_skip_guards
+from .publication_source_guards import PublicationSourceGuards
 from .tech_lead_approval_gate import build_tech_lead_decision_approval_gate
 from .tech_lead_completion import tech_lead_decision_processing_error
 from .tech_lead_session_policy import is_benign_tech_lead_no_commits, resolve_tech_lead_completion_actions
@@ -305,6 +303,7 @@ class CompletionProcessor:
         # validation forms an infinite loop. Reusing review_exchange_max_rounds
         # so the catch-all ceiling matches the in-loop bound.
         self._validation_reroute_counts: dict[tuple[str, str], int] = {}
+        self._publication_source_guards = PublicationSourceGuards(git_adapter, self._base_branch)
         self._record_validator = CompletionRecordValidator(
             config=config,
             git_adapter=git_adapter,
@@ -906,6 +905,16 @@ class CompletionProcessor:
         return PreparedCompletion(record, session_name, processing_policy, branch,
                                   preserved_completion_path, actions)
 
+    def prepare_retained_completion(
+        self, evidence: PreparedCompletionEvidence, workspace: PublicationWorkspace,
+    ) -> PreparedCompletion | ProcessingResult:
+        return prepare_retained_completion(
+            evidence, workspace, config=self._config, record_validator=self._record_validator,
+            reject_role=self._reject_tech_lead_completion_if_invalid, git=self.git_adapter,
+            base_branch=self._base_branch, source_guards=self._publication_source_guards,
+            human_block=self.needs_human_block,
+        )
+
     def settle_manual_publication(
         self, prepared: PreparedManualPublication, publication: PublishValidatedHeadOutcome,
     ) -> ProcessingResult:
@@ -1162,140 +1171,28 @@ class CompletionProcessor:
         )
 
     def _check_test_skip_guard_if_required(
-        self,
-        worktree: Path,
-        record: CompletionRecord,
-        session_name: str | None,
-        issue_number: int,
-        run_assets: SessionRunAssets,
+        self, worktree: Path, record: CompletionRecord, session_name: str | None,
+        issue_number: int, run_assets: SessionRunAssets,
     ) -> ProcessingResult | None:
-        """Reject newly added test-skip constructs before review/publish."""
         if not self._requires_publish_gate(record):
             return None
-
-        base_ref = f"origin/{self._base_branch()}"
-        diff_result = self.git_adapter.diff_against_base(worktree, base_ref)
-        if not diff_result.success:
-            return self._handle_gate_failure(
-                worktree,
-                record,
-                session_name,
-                issue_number,
-                (
-                    "Could not scan branch diff for banned test skips "
-                    f"against {base_ref}: {diff_result.error or 'unknown git error'}"
-                ),
-                gate_record=None,
-                run_assets=run_assets,
-            )
-
-        try:
-            test_paths = added_test_paths(diff_result.diff_text)
-        except ValueError as exc:
-            return self._handle_gate_failure(
-                worktree,
-                record,
-                session_name,
-                issue_number,
-                f"Could not parse branch diff for banned test skips: {exc}",
-                gate_record=None,
-                run_assets=run_assets,
-            )
-        if not test_paths:
+        reason = self._publication_source_guards.test_skips(worktree)
+        if reason is None:
             return None
-        branch_files_result = self.git_adapter.read_branch_text_files(
-            worktree, test_paths
-        )
-        if not branch_files_result.success:
-            return self._handle_gate_failure(
-                worktree,
-                record,
-                session_name,
-                issue_number,
-                (
-                    "Could not read branch-tip test files for banned test-skip "
-                    f"scan: {branch_files_result.error or 'unknown git error'}"
-                ),
-                gate_record=None,
-                run_assets=run_assets,
-            )
-        try:
-            scan = scan_added_test_skip_guards(
-                diff_result.diff_text, branch_files_result.files
-            )
-        except ValueError as exc:
-            return self._handle_gate_failure(
-                worktree,
-                record,
-                session_name,
-                issue_number,
-                f"Could not scan branch-tip test files for banned test skips: {exc}",
-                gate_record=None,
-                run_assets=run_assets,
-            )
-        if scan.ok:
-            return None
-        return self._handle_gate_failure(
-            worktree,
-            record,
-            session_name,
-            issue_number,
-            scan.reason(),
-            gate_record=None,
-            run_assets=run_assets,
-        )
+        return self._handle_gate_failure(worktree, record, session_name, issue_number,
+                                         reason, gate_record=None, run_assets=run_assets)
 
     def _check_runtime_artifact_guard_if_required(
-        self,
-        worktree: Path,
-        record: CompletionRecord,
-        session_name: str | None,
-        issue_number: int,
-        run_assets: SessionRunAssets,
+        self, worktree: Path, record: CompletionRecord, session_name: str | None,
+        issue_number: int, run_assets: SessionRunAssets,
     ) -> ProcessingResult | None:
-        """Reject committed issue-orchestrator runtime artifacts before publish.
-
-        Runtime outputs under ``.issue-orchestrator/`` (review-exchange prompts,
-        persistent-pair recordings, validation records, …) must never enter an
-        agent branch: when they do, the reviewer-worktree fast-forward checkout
-        fails and a validated rework is turned into ``blocked-failed`` (#6659).
-        Fail early here with an actionable message instead of letting the
-        brittle reviewer-worktree checkout surface it opaquely mid-exchange.
-        """
         if not self._requires_publish_gate(record):
             return None
-
-        base_ref = f"origin/{self._base_branch()}"
-        paths_result = self.git_adapter.branch_post_image_paths_against_base(
-            worktree, base_ref
-        )
-        if not paths_result.success:
-            return self._handle_gate_failure(
-                worktree,
-                record,
-                session_name,
-                issue_number,
-                (
-                    "Could not scan branch paths for runtime artifacts "
-                    f"against {base_ref}: "
-                    f"{paths_result.error or 'unknown git error'}"
-                ),
-                gate_record=None,
-                run_assets=run_assets,
-            )
-
-        forbidden = forbidden_branch_runtime_artifacts(paths_result.paths)
-        if not forbidden:
+        reason = self._publication_source_guards.runtime_artifacts(worktree)
+        if reason is None:
             return None
-        return self._handle_gate_failure(
-            worktree,
-            record,
-            session_name,
-            issue_number,
-            build_forbidden_runtime_artifact_reason(forbidden),
-            gate_record=None,
-            run_assets=run_assets,
-        )
+        return self._handle_gate_failure(worktree, record, session_name, issue_number,
+                                         reason, gate_record=None, run_assets=run_assets)
 
     def _check_publish_gate_if_required(
         self,

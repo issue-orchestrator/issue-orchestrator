@@ -835,11 +835,12 @@ class GitHubHttpClient:
 
         return collected[:limit], oldest_updated_at
 
-    def get_issue(self, issue_number: int) -> dict[str, Any] | None:
+    def get_issue(self, issue_number: int, *, use_cache: bool = True) -> dict[str, Any] | None:
         payload = self._request_json(
             "GET",
             f"/repos/{self._config.repo}/issues/{issue_number}",
             caller="get_issue",
+            use_cache=use_cache,
         )
         return payload if isinstance(payload, dict) else None
 

@@ -520,3 +520,47 @@ def test_production_bootstrap_requires_validation_even_when_review_gate_disabled
             bootstrap.build_orchestrator(config)
 
 from tests.runtime_lifecycle_helpers import runtime_owners
+
+
+
+def test_retained_preparation_keeps_exact_role_and_bytes_after_worktree_removal(tmp_path):
+    import shutil
+    from issue_orchestrator.domain.validated_work_capture import candidate_evidence
+
+    ledger, run, capability, owner, _, _ = setup(tmp_path)
+    receipt = owner.submit(capability, command(completion()))
+    owner.close_and_drain(42)
+    candidate = ledger.prepare_candidate(receipt.entry_id, ledger.recorded_run(run))
+    assert candidate is not None
+    evidence = candidate_evidence(candidate, issue_number=42, head=candidate.validation.head_sha,
+                                  branch_verified=True, captured_at="2026-09-07T00:00:00Z")
+    shutil.rmtree(run.worktree_path)
+    reopened = SqliteIssueRunLedger(tmp_path / "state" / "issue_run_ledger.sqlite")
+    recovered = reopened.prepare_evidence(evidence)
+    assert recovered == candidate
+    assert recovered.role == ledger.role_for_receipt(receipt.entry_id)
+    assert reopened.evidence_receive_sequence(evidence) == recovered.entry.receive_sequence
+    assert not run.worktree_path.exists()
+
+
+@pytest.mark.parametrize("damage", ["issue", "branch", "target", "run", "actions"])
+def test_retained_preparation_rejects_identity_substitution(tmp_path, damage):
+    from issue_orchestrator.domain.validated_work_capture import candidate_evidence
+
+    ledger, run, capability, owner, _, _ = setup(tmp_path)
+    receipt = owner.submit(capability, command(completion()))
+    owner.close_and_drain(42)
+    candidate = ledger.prepare_candidate(receipt.entry_id, ledger.recorded_run(run))
+    evidence = candidate_evidence(candidate, issue_number=42, head=candidate.validation.head_sha,
+                                  branch_verified=True, captured_at="2026-09-07T00:00:00Z")
+    identity = evidence.identity
+    if damage in {"issue", "branch", "target"}:
+        changes = {"issue": {"issue_number": 43}, "branch": {"branch_name": "other"},
+                   "target": {"validated_head_sha": "b" * 40}}[damage]
+        identity = replace(identity, key=replace(identity.key, **changes))
+    elif damage == "run":
+        identity = replace(identity, run_identity=replace(identity.run_identity, run_id="another-run"))
+    else:
+        identity = replace(identity, requested_actions=(RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR))
+    with pytest.raises(CompletionIntakeError, match="exact owner"):
+        ledger.prepare_evidence(replace(evidence, identity=identity))

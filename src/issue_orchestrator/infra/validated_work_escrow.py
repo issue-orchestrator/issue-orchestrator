@@ -6,11 +6,13 @@ import uuid
 from pathlib import Path
 
 from ..domain.exact_git import RefPinOutcome
+from ..domain.validated_work import ArtifactSlot
 from ..domain.validated_work_escrow import (
     ARTIFACT_FILENAMES,
     EscrowArtifacts,
     EscrowProblem,
     EscrowReport,
+    VerifiedEscrowCapture,
     evidence_artifacts,
     evidence_pins,
     validate_capture_locations,
@@ -61,6 +63,9 @@ class FilesystemValidatedWorkEscrow:
             raise ValueError("capture belongs to another repository")
 
     def inspect(self, locator: str) -> EvidenceAdmission:
+        return self.read_capture(locator).admission
+
+    def read_capture(self, locator: str) -> VerifiedEscrowCapture:
         directory = self._directory(locator)
         envelope = directory / "capture.json"
         size = envelope.lstat().st_size
@@ -70,13 +75,16 @@ class FilesystemValidatedWorkEscrow:
         self._validate_admission(admission)
         if admission.escrow_dir != locator:
             raise ValueError("capture directory does not match identity")
-        for artifact in evidence_artifacts(admission.evidence):
-            data = read_regular(
+        data = {
+            artifact.slot: read_regular(
                 directory / ARTIFACT_FILENAMES[artifact.slot], artifact.byte_size
             )
-            if hashlib.sha256(data).hexdigest() != artifact.sha256:
-                raise ValueError(f"artifact hash mismatch: {artifact.slot}")
-        return admission
+            for artifact in evidence_artifacts(admission.evidence)
+        }
+        return VerifiedEscrowCapture(
+            admission, data[ArtifactSlot.COMPLETION], data[ArtifactSlot.VALIDATION],
+            data.get(ArtifactSlot.EXCHANGE_SUMMARY),
+        )
 
     def capture(
         self, admission: EvidenceAdmission, sources: EscrowArtifacts
