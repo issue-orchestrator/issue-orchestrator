@@ -130,6 +130,7 @@ class ValidatedWorkSnapshotMapper:
             worktree_head_sha=evidence.admission.evidence.observations.worktree_head_sha,
             branch_name=result.key.branch_name,
             expected_remote_head_sha=evidence.authority.expected_remote_head_sha,
+            remote_baseline_status=evidence.authority.remote_baseline_status,
             superseded_evidence_ids=facts.superseded,
             attached_evidence_ids=facts.attached,
             lineage_role=result.lineage_role,

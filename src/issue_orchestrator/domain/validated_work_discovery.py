@@ -9,13 +9,18 @@ from .repository_engine_lifecycle import EngineIdentity, EngineStopAvailability
 from .validated_work import (
     FinalizationPhase,
     LineageRole,
+    RemoteBaselineStatus,
     UNRESOLVED_STATES,
     ValidatedWorkState,
     require_positive,
     require_sha,
     require_text,
 )
-from .validated_work_commands import AbandonStatus, ValidatedWorkDisposition
+from .validated_work_commands import (
+    AbandonStatus,
+    ValidatedWorkAuthoritySnapshot,
+    ValidatedWorkDisposition,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +47,7 @@ class ValidatedWorkSnapshot:
     worktree_head_sha: str
     branch_name: str
     expected_remote_head_sha: str | None
+    remote_baseline_status: RemoteBaselineStatus
     superseded_evidence_ids: tuple[str, ...]
     attached_evidence_ids: tuple[str, ...]
     lineage_role: LineageRole
@@ -55,6 +61,23 @@ class ValidatedWorkSnapshot:
     can_recover: bool
     can_abandon: bool
     abandon_unavailable: AbandonStatus | None
+
+    @property
+    def authority(self) -> ValidatedWorkAuthoritySnapshot:
+        """Return the exact approval boundary represented by this one snapshot."""
+        key = self.disposition.key
+        return ValidatedWorkAuthoritySnapshot(
+            record_id=self.record_id,
+            evidence_id=self.disposition.evidence_id,
+            observation_revision=self.observation_revision,
+            validated_head_sha=self.validated_head_sha,
+            branch_name=self.branch_name,
+            repo_slug=key.repo_slug,
+            issue_number=key.issue_number,
+            pr_number=self.disposition.pr_number,
+            expected_remote_head_sha=self.expected_remote_head_sha,
+            remote_baseline_status=self.remote_baseline_status,
+        )
 
     def __post_init__(self) -> None:
         self._validate_identity()
@@ -79,12 +102,17 @@ class ValidatedWorkSnapshot:
         require_sha(self.worktree_head_sha)
         if self.expected_remote_head_sha is not None:
             require_sha(self.expected_remote_head_sha)
+        if type(self.remote_baseline_status) is not RemoteBaselineStatus:
+            raise ValueError("snapshot remote baseline status must be typed")
+        if self.remote_baseline_status is RemoteBaselineStatus.UNOBSERVED and (
+            self.expected_remote_head_sha is not None
+            or self.disposition.pr_number is not None
+        ):
+            raise ValueError("unobserved snapshot cannot carry branch or PR authority")
         self._validate_evidence_ids()
         if type(self.escrow_retained) is not bool:
             raise ValueError("escrow retention must be a boolean")
-        require_positive(
-            self.observation_revision, "observation revision", minimum=0
-        )
+        require_positive(self.observation_revision, "observation revision", minimum=0)
 
     def _validate_lifecycle(self) -> None:
         if type(self.waits_on_record_id) is not str:
@@ -167,8 +195,7 @@ class ValidatedWorkDiscovery:
         if len(set(record_ids)) != len(record_ids):
             raise ValueError("discovery cannot repeat a record")
         if any(
-            record.disposition.state not in UNRESOLVED_STATES
-            and record.owner is None
+            record.disposition.state not in UNRESOLVED_STATES and record.owner is None
             for record in self.records
         ):
             raise ValueError(
