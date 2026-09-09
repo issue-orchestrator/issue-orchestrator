@@ -1110,6 +1110,7 @@ class Orchestrator:
 
     def _recovery_drain_mode(self) -> RecoveryDrainMode:
         """Read lifecycle admission at each retained-work start boundary."""
-        if self._shutdown_requested or self.state.paused:
+        if (self._shutdown_requested or self.pause_controller.pause_requested
+                or self.state.paused):
             return RecoveryDrainMode.STOPPED
         return RecoveryDrainMode.ACTIVE

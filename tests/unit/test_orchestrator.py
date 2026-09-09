@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import threading
 import pytest
 import tempfile
 from dataclasses import replace
@@ -24,6 +25,9 @@ from issue_orchestrator.domain.models import (
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.recovery_drain import RecoveryDrainMode
+from issue_orchestrator.domain.recovery_entry import RecoveryRecordRequest
+from issue_orchestrator.domain.recovery_attempt import RecoveryAttemptPending
+from issue_orchestrator.control.recovery_drain import RecoveryDrain
 from issue_orchestrator.domain.tech_lead_run import IssueInvestigationScope
 from issue_orchestrator.domain.tech_lead_session import (
     TechLeadLaunchScope,
@@ -42,6 +46,7 @@ from issue_orchestrator.ports.worktree_manager import (
 from issue_orchestrator.execution.worktree_adapter import GitWorktreeManager
 from issue_orchestrator.events import EventName
 from issue_orchestrator.contracts.public import OrchestratorPausedPayload, OrchestratorResumedPayload
+from tests.unit.threading_helpers import join_or_fail, run_in_thread, wait_for_event
 
 
 class MockWorktreeManager:
@@ -229,6 +234,92 @@ def test_retained_work_admission_observes_shutdown_requested_during_tick(
         orchestrator.tick()
 
     assert observed == [RecoveryDrainMode.ACTIVE, RecoveryDrainMode.STOPPED]
+
+
+class _ObservedRLock:
+    """Signal when the selected caller reaches a held state-lock boundary."""
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self.observe_acquire = False
+        self.acquire_attempted = threading.Event()
+
+    def acquire(self, *args, **kwargs):
+        if self.observe_acquire:
+            self.acquire_attempted.set()
+        return self._lock.acquire(*args, **kwargs)
+
+    def release(self) -> None:
+        self._lock.release()
+
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, *_args) -> None:
+        self.release()
+
+
+def test_public_pause_requested_during_recovery_stops_the_next_record(
+    sample_config,
+):
+    orchestrator = create_test_orchestrator(sample_config)
+    first_started = threading.Event()
+    release_first = threading.Event()
+    calls: list[str] = []
+    queue = MagicMock()
+    queue.recovery_requests.return_value = [
+        RecoveryRecordRequest("r1", "e1"),
+        RecoveryRecordRequest("r2", "e2"),
+    ]
+    operation = MagicMock()
+
+    def run_operation(request, _state):
+        calls.append(request.record_id)
+        if request.record_id == "r1":
+            first_started.set()
+            wait_for_event(release_first, 5, label="release first recovery record")
+        return RecoveryAttemptPending("still retained")
+
+    operation.run.side_effect = run_operation
+    orchestrator.deps = replace(
+        orchestrator.deps,
+        validated_work_recovery=RecoveryDrain(
+            queue=queue,
+            operation=operation,
+            batch_size=2,
+            interval_seconds=60,
+        ),
+    )
+    state_lock = _ObservedRLock()
+    orchestrator.state_lock = state_lock
+
+    with patch(
+        "issue_orchestrator.infra.orchestrator._run_tick_impl",
+        return_value=(1, True),
+    ):
+        tick_thread, tick_result = run_in_thread(orchestrator.tick)
+        wait_for_event(first_started, 5, label="first recovery record")
+        state_lock.observe_acquire = True
+        pause_thread, pause_result = run_in_thread(
+            lambda: orchestrator.pause(
+                reason=PauseReason.OPERATOR,
+                actor=PauseActor.DASHBOARD,
+            )
+        )
+        wait_for_event(
+            state_lock.acquire_attempted,
+            5,
+            label="public pause waiting for state lock",
+        )
+        release_first.set()
+        join_or_fail(tick_thread, 5, label="recovery tick")
+        join_or_fail(pause_thread, 5, label="public pause")
+
+    assert tick_result.unwrap() is True
+    assert pause_result.unwrap().committed is True
+    assert calls == ["r1"]
+    assert orchestrator.state.paused is True
 
 
 def test_cancel_review_exchange_for_issue_delegates_to_lifecycle_services(sample_config):
