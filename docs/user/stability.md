@@ -349,6 +349,7 @@ contracted route goes missing or stops using its generated response model.
 | Path | Scope |
 |---|---|
 | `/api/completion/submissions` | Repository Engine |
+| `/api/control-center/repositories/{repo_key}/engines/{instance_key}/stop-validated-work-owner` | Control Center |
 | `/api/control-center/repositories/{repo_key}/validated-work` | Control Center |
 | `/api/issues/{issue_number}/resume` | Repository Engine |
 | `/api/validated-work/intake` | Repository Engine |

@@ -145,3 +145,16 @@ def test_recovery_fact_requires_enumerated_failure_for_failed_state() -> None:
 def test_stop_action_rejects_boolean_fence() -> None:
     with pytest.raises(ValueError, match="non-negative integer fence"):
         replace(ACTION, expected_owner_fence=True)
+
+
+@pytest.mark.parametrize("timeout", [0, -1, True, float("inf")])
+def test_stop_action_requires_a_finite_positive_graceful_timeout(
+    timeout: object,
+) -> None:
+    with pytest.raises(ValueError, match="positive finite number"):
+        replace(ACTION, graceful_timeout_seconds=timeout)  # type: ignore[arg-type]
+
+
+def test_stop_action_requires_a_strict_force_policy_boolean() -> None:
+    with pytest.raises(ValueError, match="boolean"):
+        replace(ACTION, force_on_timeout=1)  # type: ignore[arg-type]

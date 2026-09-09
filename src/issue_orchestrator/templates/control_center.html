@@ -797,6 +797,33 @@
         </div>
     </div>
 
+    <dialog class="modal recovery-stop-dialog" id="recoveryStopDialog"
+            aria-labelledby="recoveryStopDialogTitle" aria-describedby="recoveryStopSummary">
+        <form id="recoveryStopForm" method="dialog">
+            <div class="modal-header">
+                <h2 class="modal-title" id="recoveryStopDialogTitle">Stop Repository Engine</h2>
+                <button type="button" class="modal-close" id="closeRecoveryStopDialog" aria-label="Close dialog">
+                    <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+                        <path fill="currentColor" fill-rule="evenodd" d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 111.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <p id="recoveryStopSummary"></p>
+                <div class="form-group recovery-stop-reason">
+                    <label class="form-label" for="recoveryStopReason">Reason for stopping</label>
+                    <textarea id="recoveryStopReason" rows="3" required></textarea>
+                    <p class="form-hint">The reason is recorded with the exact engine stop command.</p>
+                </div>
+                <p id="recoveryStopStatus" class="recovery-stop-status error" role="status" aria-live="polite" hidden></p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn" id="cancelRecoveryStop">Cancel</button>
+                <button type="submit" class="btn btn-danger" id="confirmRecoveryStop">Stop engine</button>
+            </div>
+        </form>
+    </dialog>
+
     <!-- Issue Number Input Modal (for Audit and Trace) -->
     <div class="modal-backdrop" id="issueInputModal" role="dialog" aria-labelledby="issueInputModalTitle" aria-modal="true">
         <div class="modal">
@@ -944,6 +971,7 @@
     <script src="/static/js/browser_auth.js?v={{ static_version }}"></script>
     <script src="/static/js/control_center_setup_commands.js?v={{ static_version }}"></script>
     <script src="/static/js/control_center_setup.js?v={{ static_version }}"></script>
+    <script src="/static/js/control_center_recovery_stop.js?v={{ static_version }}"></script>
     <script src="/static/js/control_center_recovery.js?v={{ static_version }}"></script>
     <script src="/static/js/control_center.js?v={{ static_version }}"></script>
 </body>

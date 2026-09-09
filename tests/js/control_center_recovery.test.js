@@ -124,6 +124,35 @@ test('bounds recovery reads during fast repository polling', async () => {
     assert.equal(requestCount, 2);
 });
 
+test('invalidation bypasses the cache and fences an older in-flight response', async () => {
+    const resolvers = [];
+    const view = createRecoveryView({
+        escapeHtml,
+        now: () => 1000,
+        fetch: async () => new Promise(resolve => resolvers.push(resolve)),
+    });
+    const staleRepo = [{ repo_key: REPO_KEY }];
+    const freshRepo = [{ repo_key: REPO_KEY }];
+
+    const staleLoad = view.load(staleRepo);
+    await Promise.resolve();
+    view.invalidate(REPO_KEY);
+    const freshLoad = view.load(freshRepo);
+    await Promise.resolve();
+    const fresh = availablePayload();
+    fresh.message = 'Fresh owner facts after stop';
+    resolvers[1]({ ok: true, json: async () => fresh });
+    await freshLoad;
+    const stale = availablePayload();
+    stale.message = 'Stale owner facts from before stop';
+    resolvers[0]({ ok: true, json: async () => stale });
+    await staleLoad;
+
+    const hydrated = [{ repo_key: REPO_KEY }];
+    view.hydrate(hydrated);
+    assert.equal(hydrated[0].validated_work.message, 'Fresh owner facts after stop');
+});
+
 test('renders owned and unowned retained work behind native disclosure', () => {
     const view = createRecoveryView({ escapeHtml, fetch: async () => {} });
     const html = view.render({ validated_work: availablePayload() });

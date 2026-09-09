@@ -50,6 +50,12 @@ Use this exact set for engine actions:
 1. Browser/window close is treated as UI detach.
 2. On reopen, detect still-running engines and present reconnect/recover actions.
 3. Surface stale/orphaned runtime states clearly and provide deterministic cleanup actions.
+4. An engine may be stopped from retained validated work only when the Control Center can
+   address the exact local process incarnation. The command carries the observed engine
+   identity, record id, and owner fence; the control layer refuses stale observations.
+5. The stop confirmation states that engine scope includes every job owned by that engine,
+   and records the operator's reason. Remote and unaddressable engines remain visible with
+   an explanation instead of an inert stop control.
 
 ## Future Compatibility
 

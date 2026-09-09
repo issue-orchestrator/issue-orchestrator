@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+from math import isfinite
 from pathlib import Path
 from typing import Literal
 
 from .repository_engine_lifecycle import (
+    ENGINE_STOP_GRACEFUL_TIMEOUT_SECONDS,
     EngineIdentity,
     EngineStopAvailability,
 )
@@ -21,6 +23,19 @@ from .validated_work_commands import ValidatedWorkAuthoritySnapshot
 from .validated_work_discovery import ClaimOwnerFact
 
 CONFIGURED_REPOSITORY_KEY_PATTERN = r"^repo-[0-9a-f]{64}$"
+DEFAULT_RECOVERY_ENGINE_INSTANCE_KEY = "default"
+
+
+def recovery_engine_instance_key(instance_id: str | None) -> str:
+    """Encode one engine instance for an unambiguous Control Center route."""
+    if instance_id is None:
+        return DEFAULT_RECOVERY_ENGINE_INSTANCE_KEY
+    require_text(instance_id, "engine instance id")
+    if instance_id == DEFAULT_RECOVERY_ENGINE_INSTANCE_KEY:
+        raise ValueError("default is reserved for the single-instance engine")
+    if Path(instance_id).name != instance_id or instance_id in {".", ".."}:
+        raise ValueError("engine instance id must be one safe path component")
+    return instance_id
 
 
 class RecoveryRowsStatus(StrEnum):
@@ -82,6 +97,8 @@ class GuardedRecoveryStopAction:
     record_id: str
     expected_engine: EngineIdentity
     expected_owner_fence: int
+    graceful_timeout_seconds: float = ENGINE_STOP_GRACEFUL_TIMEOUT_SECONDS
+    force_on_timeout: bool = True
 
     def __post_init__(self) -> None:
         require_text(self.record_id, "stop action record id")
@@ -89,6 +106,14 @@ class GuardedRecoveryStopAction:
             raise ValueError("stop action requires a typed engine")
         if type(self.expected_owner_fence) is not int or self.expected_owner_fence < 0:
             raise ValueError("stop action requires a non-negative integer fence")
+        if (
+            type(self.graceful_timeout_seconds) is not float
+            or self.graceful_timeout_seconds <= 0
+            or not isfinite(self.graceful_timeout_seconds)
+        ):
+            raise ValueError("stop action requires a positive finite number of seconds")
+        if type(self.force_on_timeout) is not bool:
+            raise ValueError("stop action force policy must be a boolean")
 
 
 @dataclass(frozen=True, slots=True)

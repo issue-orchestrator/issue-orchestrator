@@ -62,7 +62,10 @@ from ..ports.repository_engine_supervisor import SupervisorOps
 from ..ports import RepositoryHost
 from ..control.goal_pilot import GoalPilot
 from ..execution.control_center_actions import ControlCenterActions
-from ..execution.control_center_recovery import build_control_center_recovery_queries
+from ..execution.control_center_recovery import (
+    build_control_center_recovery_queries,
+    build_control_center_recovery_stops,
+)
 from ..execution.repository_setup_validation import (
     RepositorySetupValidationDetectorAdapter,
 )
@@ -1135,6 +1138,9 @@ install_control_api_repo_dependencies(
             or None
         ),
         get_recovery_queries=lambda: build_control_center_recovery_queries(
+            get_supervisor()
+        ),
+        get_recovery_stops=lambda: build_control_center_recovery_stops(
             get_supervisor()
         ),
     ),

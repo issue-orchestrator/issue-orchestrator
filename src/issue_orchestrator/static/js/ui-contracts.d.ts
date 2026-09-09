@@ -472,6 +472,8 @@ export interface FlowColumnPayload {
 export interface GuardedRecoveryStopActionPayload {
   expected_engine: RecoveryEngineIdentityPayload;
   expected_owner_fence: number;
+  force_on_timeout: boolean;
+  graceful_timeout_seconds: number;
   record_id: string;
 }
 
@@ -1334,6 +1336,31 @@ export interface StackDependencySuccessorPayload {
   ref: string;
 }
 
+export interface StopOwnerAbsentOutcomePayload {
+  message: string;
+  observed_owner: null;
+  status: "no_such_record" | "record_unavailable" | "not_owned";
+}
+
+export interface StopOwnerObservedOutcomePayload {
+  message: string;
+  observed_owner: RecoveryClaimOwnerPayload;
+  status: "stopped" | "stop_in_progress" | "remote_host" | "stop_failed";
+}
+
+export interface StopOwnerOptionalOutcomePayload {
+  message: string;
+  observed_owner: RecoveryClaimOwnerPayload | null;
+  status: "owner_changed" | "repo_mismatch";
+}
+
+export interface StopValidatedWorkOwnerRequestPayload {
+  expected_engine: RecoveryEngineIdentityPayload;
+  expected_owner_fence: number;
+  reason: string;
+  record_id: string;
+}
+
 export interface SwitchE2ETimelineViewCommandPayload {
   kind: "switch_e2e_timeline_view";
   label: string;
@@ -1565,6 +1592,8 @@ export type ReviewStagePayload = ReviewNotReachedPayload | ReviewSkippedPayload 
 export type ReviewTranscriptEvidencePayload = ReviewTranscriptAvailablePayload | ReviewTranscriptUnavailablePayload;
 
 export type SessionRecordingEvidencePayload = SessionRecordingAvailablePayload | SessionRecordingUnavailablePayload;
+
+export type StopValidatedWorkOwnerOutcomePayload = StopOwnerObservedOutcomePayload | StopOwnerAbsentOutcomePayload | StopOwnerOptionalOutcomePayload;
 
 export type TechLeadRunArtifactCommandPayload = OpenSessionRecordingCommandPayload | OpenReviewArtifactCommandPayload;
 

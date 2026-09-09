@@ -506,6 +506,8 @@ class GuardedRecoveryStopActionPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     expected_engine: RecoveryEngineIdentityPayload
     expected_owner_fence: int = Field(..., ge=0, strict=True)
+    force_on_timeout: bool = Field(..., strict=True)
+    graceful_timeout_seconds: float = Field(..., gt=0)
     record_id: str = Field(..., min_length=1)
 
 class HistoricalIntakeCommandPayload(BaseModel):
@@ -1442,6 +1444,59 @@ class StackDependencySuccessorPayload(BaseModel):
     mode: str
     ref: str
 
+class StopOwnerAbsentOutcomePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    message: str = Field(..., min_length=1)
+    observed_owner: None
+    status: Literal['no_such_record', 'record_unavailable', 'not_owned']
+
+    @field_validator('message')
+    @classmethod
+    def _validate_message_pattern(cls, value: Any) -> Any:
+        if value is not None and re.search('.*\\S.*', value) is None:
+            raise ValueError("message must match '.*\\\\S.*'")
+        return value
+
+class StopOwnerObservedOutcomePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    message: str = Field(..., min_length=1)
+    observed_owner: RecoveryClaimOwnerPayload
+    status: Literal['stopped', 'stop_in_progress', 'remote_host', 'stop_failed']
+
+    @field_validator('message')
+    @classmethod
+    def _validate_message_pattern(cls, value: Any) -> Any:
+        if value is not None and re.search('.*\\S.*', value) is None:
+            raise ValueError("message must match '.*\\\\S.*'")
+        return value
+
+class StopOwnerOptionalOutcomePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    message: str = Field(..., min_length=1)
+    observed_owner: RecoveryClaimOwnerPayload | None
+    status: Literal['owner_changed', 'repo_mismatch']
+
+    @field_validator('message')
+    @classmethod
+    def _validate_message_pattern(cls, value: Any) -> Any:
+        if value is not None and re.search('.*\\S.*', value) is None:
+            raise ValueError("message must match '.*\\\\S.*'")
+        return value
+
+class StopValidatedWorkOwnerRequestPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_engine: RecoveryEngineIdentityPayload
+    expected_owner_fence: int = Field(..., ge=1, strict=True)
+    reason: str = Field(..., min_length=1)
+    record_id: str = Field(..., min_length=1)
+
+    @field_validator('reason')
+    @classmethod
+    def _validate_reason_pattern(cls, value: Any) -> Any:
+        if value is not None and re.search('.*\\S.*', value) is None:
+            raise ValueError("reason must match '.*\\\\S.*'")
+        return value
+
 class SwitchE2ETimelineViewCommandPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal['switch_e2e_timeline_view']
@@ -1673,6 +1728,8 @@ ReviewStagePayload: TypeAlias = ReviewNotReachedPayload | ReviewSkippedPayload |
 ReviewTranscriptEvidencePayload: TypeAlias = ReviewTranscriptAvailablePayload | ReviewTranscriptUnavailablePayload
 
 SessionRecordingEvidencePayload: TypeAlias = SessionRecordingAvailablePayload | SessionRecordingUnavailablePayload
+
+StopValidatedWorkOwnerOutcomePayload: TypeAlias = StopOwnerObservedOutcomePayload | StopOwnerAbsentOutcomePayload | StopOwnerOptionalOutcomePayload
 
 TechLeadRunArtifactCommandPayload: TypeAlias = OpenSessionRecordingCommandPayload | OpenReviewArtifactCommandPayload
 
