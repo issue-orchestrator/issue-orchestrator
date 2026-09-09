@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from hashlib import sha256
 from pathlib import Path
 from typing import Protocol
 
 from ..domain.control_center_recovery import ConfiguredRepository
-from ..infra.repo_identity import normalize_repo_root
+from ..infra.repo_identity import configured_repository_key, normalize_repo_root
 
 
 class RegisteredRepository(Protocol):
@@ -19,12 +18,6 @@ class RegisteredRepository(Protocol):
 
 RepositoryLoader = Callable[[], Sequence[RegisteredRepository]]
 RepositorySlugLoader = Callable[[RegisteredRepository], str]
-
-
-def configured_repository_key(repo_root: str | Path) -> str:
-    """Return the stable, URL-safe public key for one canonical root."""
-    canonical = str(normalize_repo_root(repo_root))
-    return "repo-" + sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _registered_repositories() -> Sequence[RegisteredRepository]:

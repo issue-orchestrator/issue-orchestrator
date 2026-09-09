@@ -19,8 +19,19 @@ let shutdownExpectClose = false;
 let shutdownCloseAttempted = false;
 let doctorModalContext = { repoRoot: null, configName: null, mode: null, title: null, data: null };
 let setupWizardController = null;
+let recoveryView = null;
 
 const DISCOVERED_STALE_MS = 5 * 60 * 1000;
+
+function getRecoveryView() {
+    if (recoveryView === null && typeof createControlCenterRecoveryView === 'function') {
+        recoveryView = createControlCenterRecoveryView({
+            fetch: (...args) => fetch(...args),
+            escapeHtml,
+        });
+    }
+    return recoveryView;
+}
 
 // Load recently used repo from localStorage
 function loadRecentRepo() {
@@ -764,12 +775,20 @@ async function loadRepos(silent = false) {
             return;
         }
         const data = await response.json();
+        const recovery = getRecoveryView();
+        const recoveryUiState = recovery?.capture(document.getElementById('reposContent'));
         state.repos = data.repos || [];
+        recovery?.hydrate(state.repos);
+        renderRepos(recoveryUiState);
+
+        const pendingLoads = [];
+        if (recovery) pendingLoads.push(recovery.load(state.repos));
 
         // Also load discovered repos (in parallel on first load)
         if (!deepLinkHandled) {
-            await loadDiscoveredRepos();
+            pendingLoads.push(loadDiscoveredRepos());
         }
+        await Promise.all(pendingLoads);
 
         renderRepos();
         updateRunningCount();
@@ -1150,8 +1169,10 @@ function isRepoStopPending(path) {
     return pendingRepoStops.has(path);
 }
 
-function renderRepos() {
+function renderRepos(preservedRecoveryState = null) {
     const container = document.getElementById('reposContent');
+    const recovery = getRecoveryView();
+    const recoveryUiState = preservedRecoveryState || recovery?.capture(container);
     const discovered = state.discoveredRepos || [];
     const hasRegistered = state.repos.length > 0;
     const hasDiscovered = discovered.length > 0;
@@ -1166,6 +1187,7 @@ function renderRepos() {
                 <p>Run issue-orchestrator from a git repository to get started, or click Rescan Repositories.</p>
             </div>
         `;
+        recovery?.restore(container, recoveryUiState);
         return;
     }
 
@@ -1193,6 +1215,7 @@ function renderRepos() {
     container.querySelectorAll('select[data-action="select-config"]').forEach(select => {
         select.addEventListener('change', handleRepoCardConfigChange);
     });
+    recovery?.restore(container, recoveryUiState);
 }
 
 function renderDiscoveredRepoCard(repo) {
@@ -1332,6 +1355,7 @@ function renderRepoCard(repo) {
             ${modeMarkup}
             ${configMarkup}
             ${stats}
+            ${getRecoveryView()?.render(repo) || ''}
             <div class="repo-card-actions">
                 ${actions}
             </div>

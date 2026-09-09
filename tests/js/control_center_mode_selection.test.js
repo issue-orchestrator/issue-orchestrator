@@ -148,6 +148,58 @@ function genericElement() {
     };
 }
 
+function deferred() {
+    let resolve;
+    const promise = new Promise(done => { resolve = done; });
+    return { promise, resolve };
+}
+
+test('repository refresh preserves the latest recovery interaction after an awaited load', async () => {
+    const { context } = loadSelectionHelpers();
+    const pendingRecovery = deferred();
+    const container = genericElement();
+    const restored = [];
+    let currentUiState = { expandedKeys: ['before'], focusedKey: 'before' };
+    const recovery = {
+        capture() { return currentUiState; },
+        hydrate() {},
+        load() { return pendingRecovery.promise; },
+        render() { return ''; },
+        restore(_container, captured) { restored.push(captured); },
+    };
+    context.document.getElementById = id => id === 'reposContent'
+        ? container
+        : genericElement();
+    context.fetch = async () => ({
+        ok: true,
+        json: async () => ({ repos: [repository()] }),
+    });
+    context.createControlCenterRecoveryView = () => recovery;
+    vm.runInContext(
+        `deepLinkHandled = true;
+         updateRunningCount = () => {};
+         updateActiveSummary = () => {};
+         updateRecoveryBanner = () => {};
+         updateDropdownDisplay = () => {};
+         updateToolsScopeNote = () => {};
+         maybeStartFastRepoPoll = () => {};`,
+        context,
+    );
+
+    const loading = context.loadRepos();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(restored, [{ expandedKeys: ['before'], focusedKey: 'before' }]);
+
+    currentUiState = { expandedKeys: ['during'], focusedKey: null };
+    pendingRecovery.resolve();
+    await loading;
+
+    assert.deepEqual(restored, [
+        { expandedKeys: ['before'], focusedKey: 'before' },
+        { expandedKeys: ['during'], focusedKey: null },
+    ]);
+});
+
 test('repository card and activity menu lock mode controls while running or paused', () => {
     for (const status of [
         { state: 'running', startup_status: 'complete' },
