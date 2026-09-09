@@ -17,6 +17,10 @@ import pytest
 from issue_orchestrator.domain.validated_work_claim import ProcessIdentity
 from issue_orchestrator.execution.command_runner import LocalCommandRunner
 from issue_orchestrator.execution.repo_lock_liveness import RepoLockLiveness
+from issue_orchestrator.entrypoints.bootstrap_liveness import (
+    held_repo_validated_work_liveness,
+)
+from issue_orchestrator.infra.config import Config
 from issue_orchestrator.infra.repo_lock import (
     acquire_lock,
     held_repo_lock,
@@ -26,6 +30,24 @@ from issue_orchestrator.infra.repo_lock import (
 from issue_orchestrator.infra.repo_lock_capability import HeldStartupGate
 from issue_orchestrator.ports.command_runner import CommandResult, CommandRunner
 from tests.process_group_run import signal_group
+
+
+def test_production_liveness_factory_requires_and_uses_held_repo_gate(
+    tmp_path: Path,
+) -> None:
+    config = Config()
+    config.repo_root = tmp_path
+
+    with pytest.raises(RuntimeError, match="successful local startup gate"):
+        held_repo_validated_work_liveness(config)
+
+    with held_repo_lock(tmp_path):
+        liveness = held_repo_validated_work_liveness(config)
+        identity = liveness.current()
+        assert identity.pid == os.getpid()
+
+    with pytest.raises(RuntimeError, match="released"):
+        liveness.current()
 
 
 @contextmanager

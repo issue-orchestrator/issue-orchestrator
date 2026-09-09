@@ -70,6 +70,10 @@ def mock_run_doctor(monkeypatch, tmp_path: Path):
     monkeypatch.setattr("issue_orchestrator.infra.repo_lock.acquire_lock", Mock())
     monkeypatch.setattr("issue_orchestrator.infra.repo_lock.release_lock", Mock())
     monkeypatch.setattr(
+        "issue_orchestrator.entrypoints.bootstrap_liveness.held_repo_validated_work_liveness",
+        Mock(return_value=Mock()),
+    )
+    monkeypatch.setattr(
         "issue_orchestrator.infra.repo_lock.repository_lifecycle_mutation",
         lambda _repo: nullcontext(),
     )

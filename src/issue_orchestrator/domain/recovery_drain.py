@@ -1,9 +1,15 @@
 """Bounded drain observations; publication failures remain attached to their work."""
 
 from dataclasses import dataclass
+from enum import StrEnum
 
 from .recovery_attempt import RecoveryAttemptPending
 from .recovery_completion import RecoveryCompleted
+
+
+class RecoveryDrainMode(StrEnum):
+    ACTIVE = "active"
+    STOPPED = "stopped"
 
 
 @dataclass(frozen=True, slots=True)
