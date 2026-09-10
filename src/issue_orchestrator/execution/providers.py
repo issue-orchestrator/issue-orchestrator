@@ -69,7 +69,10 @@ def create_promotion_target_host(
     """
     from ..adapters.github import build_github_auth
     from ..adapters.github.http_client import GitHubHttpConfig
-    from ..adapters.github.promotion_target import build_promotion_target_host
+    from ..adapters.github.promotion_target import (
+        build_promotion_target_host,
+        supports_promotion_target_host,
+    )
 
     if repository_host is None:
         return None
@@ -82,6 +85,11 @@ def create_promotion_target_host(
         # unavailable credentials, just as it is for doctor and tick reads.
         if not promotion_lane_readiness(config).ready:
             return None
+    # Adapter support is an adapter-owned fact. Establish it before resolving
+    # credentials so active offline/fake hosts retain their unwired semantics
+    # even when an unused explicit target token is unavailable.
+    if not supports_promotion_target_host(repository_host):
+        return None
     target_connections = {}
     if config is not None:
         for repo in config.tech_lead.findings.target_repos():

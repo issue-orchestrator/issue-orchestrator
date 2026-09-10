@@ -348,9 +348,11 @@ repo's own pipeline, unchanged) → **close the loop**.
 When a foreign target is owned by a different GitHub App installation,
 `target_auth` binds that repository to its own token source. The composition
 root uses the same repository-scoped credential for startup readiness and every
-later promotion operation. GitHub App readiness is proven from a successful
-target-repository read plus the installation token's `issues: write`
-permission; repository user-role booleans do not describe App installations.
+later promotion operation. GitHub App readiness requires the installation
+token's `issues: write` permission plus authoritative confirmation from
+`GET /installation/repositories` that the exact target belongs to the
+installation; a successful public-repository read and repository user-role
+booleans do not prove App installation write access.
 
 On the tick a signature crosses `min_evidence`, has no promotion row, fits its
 routed target's cap, and is classified `fix:code`, the orchestrator files ONE

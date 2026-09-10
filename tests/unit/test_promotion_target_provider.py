@@ -48,6 +48,11 @@ def test_target_repo_auth_is_built_once_and_given_to_the_adapter() -> None:
             "build_promotion_target_host",
             return_value=adapted,
         ) as build_host,
+        patch(
+            "issue_orchestrator.adapters.github.promotion_target."
+            "supports_promotion_target_host",
+            return_value=True,
+        ),
     ):
         result = create_promotion_target_host(repository_host, config)
 
@@ -106,3 +111,23 @@ def test_inactive_promotion_does_not_resolve_unavailable_target_auth(
     assert result is None
     build_auth.assert_not_called()
     build_host.assert_not_called()
+
+
+def test_active_unsupported_host_does_not_resolve_unavailable_target_auth() -> None:
+    repo = "issue-orchestrator/issue-orchestrator"
+    config = _active_config()
+    config.tech_lead.findings.route = {
+        "completion-pipeline": PromotionRouteTarget(repo=repo),
+    }
+    config.tech_lead.findings.target_auth = {
+        repo: PromotionTargetGitHubAuthConfig(token_env="MISSING_PROMOTION_TOKEN")
+    }
+
+    with patch(
+        "issue_orchestrator.adapters.github.build_github_auth",
+        side_effect=AssertionError("unsupported host resolved target auth"),
+    ) as build_auth:
+        result = create_promotion_target_host(Mock(), config)
+
+    assert result is None
+    build_auth.assert_not_called()

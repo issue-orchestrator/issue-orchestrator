@@ -377,10 +377,15 @@ def build_promotion_target_host(
     real GitHub adapter; anything else (a fake, an offline stub) leaves the lane
     unwired, which makes its actions fail loudly rather than silently no-op.
     """
-    from .github_adapter import GitHubAdapter
-
-    if isinstance(repository_host, GitHubAdapter):
+    if supports_promotion_target_host(repository_host):
         return GitHubPromotionTargetHost(
             repository_host, target_connections=target_connections
         )
     return None
+
+
+def supports_promotion_target_host(repository_host: Any) -> bool:
+    """Whether the adapter-owned promotion target can wrap ``repository_host``."""
+    from .github_adapter import GitHubAdapter
+
+    return isinstance(repository_host, GitHubAdapter)

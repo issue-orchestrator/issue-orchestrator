@@ -186,6 +186,20 @@ def _installation_scan_incomplete(detail: str) -> GitHubScanIncompleteError:
     )
 
 
+def _record_installation_repository_names(
+    observed: set[str], page_names: tuple[str, ...]
+) -> None:
+    """Add one page only when every canonical repository identity is unique."""
+    canonical_page = set(page_names)
+    if len(canonical_page) != len(page_names) or not observed.isdisjoint(
+        canonical_page
+    ):
+        raise _installation_scan_incomplete(
+            "list repeated a canonical repository name"
+        )
+    observed.update(canonical_page)
+
+
 def _aggregate_check_runs(payload: object) -> _RollupSignal:
     """Reduce a REST `/check-runs` response to a `_RollupSignal`."""
     failure = pending = present = False
@@ -1446,7 +1460,7 @@ class GitHubHttpClient:
                     "count changed while paging"
                 )
 
-            observed_names.update(result.names)
+            _record_installation_repository_names(observed_names, result.names)
 
             if len(observed_names) > expected_total:
                 raise _installation_scan_incomplete(

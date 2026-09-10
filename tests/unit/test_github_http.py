@@ -521,6 +521,47 @@ def test_installation_repository_membership_rejects_non_member() -> None:
     assert client.installation_includes_repository("owner/public-target") is False
 
 
+def test_installation_repository_membership_rejects_duplicate_on_one_page() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "total_count": 1,
+                "repositories": [
+                    {"full_name": "owner/target"},
+                    {"full_name": "OWNER/TARGET"},
+                ],
+            },
+        )
+
+    client = _app_client_with_transport(httpx.MockTransport(handler))
+
+    with pytest.raises(GitHubScanIncompleteError, match="repeated a canonical"):
+        client.installation_includes_repository("owner/target")
+
+
+def test_installation_repository_membership_rejects_duplicate_across_pages() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params["page"])
+        repositories = (
+            [{"full_name": f"owner/repo-{number}"} for number in range(100)]
+            if page == 1
+            else [
+                {"full_name": "OWNER/REPO-0"},
+                {"full_name": "owner/new-last"},
+            ]
+        )
+        return httpx.Response(
+            200,
+            json={"total_count": 101, "repositories": repositories},
+        )
+
+    client = _app_client_with_transport(httpx.MockTransport(handler))
+
+    with pytest.raises(GitHubScanIncompleteError, match="repeated a canonical"):
+        client.installation_includes_repository("owner/new-last")
+
+
 def test_installation_repository_membership_rejects_a_truncated_scan() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         page = int(request.url.params["page"])
