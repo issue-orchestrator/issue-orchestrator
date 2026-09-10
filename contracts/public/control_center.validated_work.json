@@ -1,0 +1,573 @@
+{
+  "$defs": {
+    "EngineStopAvailability": {
+      "enum": [
+        "available",
+        "remote_host",
+        "exact_target_unavailable"
+      ],
+      "title": "EngineStopAvailability",
+      "type": "string"
+    },
+    "GuardedRecoveryStopActionContract": {
+      "additionalProperties": false,
+      "properties": {
+        "expected_engine": {
+          "$ref": "#/$defs/RecoveryEngineIdentityContract"
+        },
+        "expected_owner_fence": {
+          "minimum": 0,
+          "title": "Expected Owner Fence",
+          "type": "integer"
+        },
+        "record_id": {
+          "minLength": 1,
+          "title": "Record Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "record_id",
+        "expected_engine",
+        "expected_owner_fence"
+      ],
+      "title": "GuardedRecoveryStopActionContract",
+      "type": "object"
+    },
+    "OwnedRecoveryRecordContract": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "owned",
+          "title": "Kind",
+          "type": "string"
+        },
+        "owner": {
+          "$ref": "#/$defs/RecoveryClaimOwnerContract"
+        },
+        "stop_action": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GuardedRecoveryStopActionContract"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "work": {
+          "$ref": "#/$defs/RecoveryRecordFactContract"
+        }
+      },
+      "required": [
+        "kind",
+        "work",
+        "owner",
+        "stop_action"
+      ],
+      "title": "OwnedRecoveryRecordContract",
+      "type": "object"
+    },
+    "RecoveryAuthorityContract": {
+      "additionalProperties": false,
+      "properties": {
+        "branch_name": {
+          "minLength": 1,
+          "title": "Branch Name",
+          "type": "string"
+        },
+        "evidence_id": {
+          "minLength": 1,
+          "title": "Evidence Id",
+          "type": "string"
+        },
+        "expected_remote_head_sha": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{40}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Expected Remote Head Sha"
+        },
+        "issue_number": {
+          "exclusiveMinimum": 0,
+          "title": "Issue Number",
+          "type": "integer"
+        },
+        "observation_revision": {
+          "minimum": 0,
+          "title": "Observation Revision",
+          "type": "integer"
+        },
+        "pr_number": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Pr Number"
+        },
+        "record_id": {
+          "minLength": 1,
+          "title": "Record Id",
+          "type": "string"
+        },
+        "remote_baseline_status": {
+          "$ref": "#/$defs/RemoteBaselineStatus"
+        },
+        "repo_slug": {
+          "minLength": 1,
+          "title": "Repo Slug",
+          "type": "string"
+        },
+        "validated_head_sha": {
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Validated Head Sha",
+          "type": "string"
+        }
+      },
+      "required": [
+        "record_id",
+        "evidence_id",
+        "observation_revision",
+        "validated_head_sha",
+        "branch_name",
+        "repo_slug",
+        "issue_number",
+        "pr_number",
+        "expected_remote_head_sha",
+        "remote_baseline_status"
+      ],
+      "title": "RecoveryAuthorityContract",
+      "type": "object"
+    },
+    "RecoveryAvailableContract": {
+      "additionalProperties": false,
+      "properties": {
+        "engine_groups": {
+          "items": {
+            "$ref": "#/$defs/RecoveryEngineGroupContract"
+          },
+          "title": "Engine Groups",
+          "type": "array"
+        },
+        "message": {
+          "minLength": 1,
+          "title": "Message",
+          "type": "string"
+        },
+        "repo_key": {
+          "minLength": 1,
+          "title": "Repo Key",
+          "type": "string"
+        },
+        "status": {
+          "const": "available",
+          "title": "Status",
+          "type": "string"
+        },
+        "unowned_records": {
+          "items": {
+            "$ref": "#/$defs/UnownedRecoveryRecordContract"
+          },
+          "title": "Unowned Records",
+          "type": "array"
+        }
+      },
+      "required": [
+        "repo_key",
+        "status",
+        "engine_groups",
+        "unowned_records",
+        "message"
+      ],
+      "title": "RecoveryAvailableContract",
+      "type": "object"
+    },
+    "RecoveryClaimOwnerContract": {
+      "additionalProperties": false,
+      "properties": {
+        "engine": {
+          "$ref": "#/$defs/RecoveryEngineIdentityContract"
+        },
+        "owner_fence": {
+          "exclusiveMinimum": 0,
+          "title": "Owner Fence",
+          "type": "integer"
+        },
+        "stop_availability": {
+          "$ref": "#/$defs/EngineStopAvailability"
+        }
+      },
+      "required": [
+        "engine",
+        "owner_fence",
+        "stop_availability"
+      ],
+      "title": "RecoveryClaimOwnerContract",
+      "type": "object"
+    },
+    "RecoveryEmptyContract": {
+      "additionalProperties": false,
+      "properties": {
+        "engine_groups": {
+          "items": {
+            "$ref": "#/$defs/RecoveryEngineGroupContract"
+          },
+          "maxItems": 0,
+          "title": "Engine Groups",
+          "type": "array"
+        },
+        "message": {
+          "minLength": 1,
+          "title": "Message",
+          "type": "string"
+        },
+        "repo_key": {
+          "minLength": 1,
+          "title": "Repo Key",
+          "type": "string"
+        },
+        "status": {
+          "const": "empty",
+          "title": "Status",
+          "type": "string"
+        },
+        "unowned_records": {
+          "items": {
+            "$ref": "#/$defs/UnownedRecoveryRecordContract"
+          },
+          "maxItems": 0,
+          "title": "Unowned Records",
+          "type": "array"
+        }
+      },
+      "required": [
+        "repo_key",
+        "status",
+        "engine_groups",
+        "unowned_records",
+        "message"
+      ],
+      "title": "RecoveryEmptyContract",
+      "type": "object"
+    },
+    "RecoveryEngineGroupContract": {
+      "additionalProperties": false,
+      "properties": {
+        "engine": {
+          "$ref": "#/$defs/RecoveryEngineIdentityContract"
+        },
+        "presentation": {
+          "$ref": "#/$defs/RecoveryEnginePresentation"
+        },
+        "presentation_message": {
+          "minLength": 1,
+          "title": "Presentation Message",
+          "type": "string"
+        },
+        "records": {
+          "items": {
+            "$ref": "#/$defs/OwnedRecoveryRecordContract"
+          },
+          "minItems": 1,
+          "title": "Records",
+          "type": "array"
+        }
+      },
+      "required": [
+        "engine",
+        "presentation",
+        "presentation_message",
+        "records"
+      ],
+      "title": "RecoveryEngineGroupContract",
+      "type": "object"
+    },
+    "RecoveryEngineIdentityContract": {
+      "additionalProperties": false,
+      "properties": {
+        "host": {
+          "minLength": 1,
+          "title": "Host",
+          "type": "string"
+        },
+        "instance_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Instance Id"
+        },
+        "label": {
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "process": {
+          "$ref": "#/$defs/RecoveryProcessIdentityContract"
+        },
+        "repo_root": {
+          "minLength": 1,
+          "title": "Repo Root",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repo_root",
+        "instance_id",
+        "host",
+        "label",
+        "process"
+      ],
+      "title": "RecoveryEngineIdentityContract",
+      "type": "object"
+    },
+    "RecoveryEnginePresentation": {
+      "enum": [
+        "observed",
+        "missing",
+        "replaced",
+        "unknown"
+      ],
+      "title": "RecoveryEnginePresentation",
+      "type": "string"
+    },
+    "RecoveryProcessIdentityContract": {
+      "additionalProperties": false,
+      "properties": {
+        "host": {
+          "minLength": 1,
+          "title": "Host",
+          "type": "string"
+        },
+        "instance_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Instance Id"
+        },
+        "pid": {
+          "exclusiveMinimum": 0,
+          "title": "Pid",
+          "type": "integer"
+        },
+        "started_at": {
+          "minLength": 1,
+          "title": "Started At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "host",
+        "pid",
+        "started_at",
+        "instance_id"
+      ],
+      "title": "RecoveryProcessIdentityContract",
+      "type": "object"
+    },
+    "RecoveryRecordFactContract": {
+      "additionalProperties": false,
+      "properties": {
+        "authority": {
+          "$ref": "#/$defs/RecoveryAuthorityContract"
+        },
+        "escrow_retained": {
+          "title": "Escrow Retained",
+          "type": "boolean"
+        },
+        "failure": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ValidatedWorkFailure"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/ValidatedWorkState"
+        }
+      },
+      "required": [
+        "authority",
+        "state",
+        "failure",
+        "reason",
+        "escrow_retained"
+      ],
+      "title": "RecoveryRecordFactContract",
+      "type": "object"
+    },
+    "RecoveryUnavailableContract": {
+      "additionalProperties": false,
+      "properties": {
+        "engine_groups": {
+          "items": {
+            "$ref": "#/$defs/RecoveryEngineGroupContract"
+          },
+          "maxItems": 0,
+          "title": "Engine Groups",
+          "type": "array"
+        },
+        "message": {
+          "minLength": 1,
+          "title": "Message",
+          "type": "string"
+        },
+        "repo_key": {
+          "minLength": 1,
+          "title": "Repo Key",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "database_absent",
+            "unreadable",
+            "unsupported_schema"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "unowned_records": {
+          "items": {
+            "$ref": "#/$defs/UnownedRecoveryRecordContract"
+          },
+          "maxItems": 0,
+          "title": "Unowned Records",
+          "type": "array"
+        }
+      },
+      "required": [
+        "repo_key",
+        "status",
+        "engine_groups",
+        "unowned_records",
+        "message"
+      ],
+      "title": "RecoveryUnavailableContract",
+      "type": "object"
+    },
+    "RemoteBaselineStatus": {
+      "description": "Whether a missing remote SHA is authoritative absence or missing evidence.",
+      "enum": [
+        "observed",
+        "unobserved"
+      ],
+      "title": "RemoteBaselineStatus",
+      "type": "string"
+    },
+    "UnownedRecoveryRecordContract": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "unowned",
+          "title": "Kind",
+          "type": "string"
+        },
+        "work": {
+          "$ref": "#/$defs/RecoveryRecordFactContract"
+        }
+      },
+      "required": [
+        "kind",
+        "work"
+      ],
+      "title": "UnownedRecoveryRecordContract",
+      "type": "object"
+    },
+    "ValidatedWorkFailure": {
+      "description": "Precise, enumerable reasons. Never a free-text-only failure.",
+      "enum": [
+        "escrow_write_failed",
+        "artifact_missing",
+        "artifact_hash_mismatch",
+        "artifact_untrusted_path",
+        "validation_sha_mismatch",
+        "worktree_ahead_of_validation",
+        "ancestor_of_pending_head",
+        "divergent_validated_heads",
+        "awaiting_lineage_predecessor",
+        "remote_baseline_unproven",
+        "authority_snapshot_stale",
+        "duplicate_open_pr",
+        "published_head_lacks_validated_work",
+        "workspace_integrity",
+        "ref_pin_lost",
+        "publish_target_mismatch",
+        "remote_diverged",
+        "remote_head_changed",
+        "remote_unreadable",
+        "pr_closed_or_merged",
+        "pr_branch_mismatch",
+        "issue_unreadable",
+        "runtime_active",
+        "push_failed",
+        "submission_lost",
+        "review_routing_failed"
+      ],
+      "title": "ValidatedWorkFailure",
+      "type": "string"
+    },
+    "ValidatedWorkState": {
+      "enum": [
+        "queued",
+        "parked",
+        "publishing",
+        "recovered",
+        "failed",
+        "abandoned"
+      ],
+      "title": "ValidatedWorkState",
+      "type": "string"
+    }
+  },
+  "description": "Direct discriminated recovery payload, without a synthetic root wrapper.",
+  "discriminator": {
+    "mapping": {
+      "available": "#/$defs/RecoveryAvailableContract",
+      "database_absent": "#/$defs/RecoveryUnavailableContract",
+      "empty": "#/$defs/RecoveryEmptyContract",
+      "unreadable": "#/$defs/RecoveryUnavailableContract",
+      "unsupported_schema": "#/$defs/RecoveryUnavailableContract"
+    },
+    "propertyName": "status"
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/RecoveryAvailableContract"
+    },
+    {
+      "$ref": "#/$defs/RecoveryEmptyContract"
+    },
+    {
+      "$ref": "#/$defs/RecoveryUnavailableContract"
+    }
+  ],
+  "title": "ControlCenterRecoveryRowsContract"
+}

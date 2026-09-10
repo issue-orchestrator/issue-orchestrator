@@ -11,6 +11,14 @@ from typing import Any, Literal, Optional, Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, RootModel
 
+from ..domain.control_center_recovery import RecoveryEnginePresentation
+from ..domain.repository_engine_lifecycle import EngineStopAvailability
+from ..domain.validated_work import (
+    RemoteBaselineStatus,
+    ValidatedWorkFailure,
+    ValidatedWorkState,
+)
+
 
 class ContractBase(BaseModel):
     """Base contract with permissive extra fields."""
@@ -528,6 +536,121 @@ class HistoricalIntakeOutcomeContract(
     """Status determines the one permissible historical outcome payload."""
 
 
+class StrictRecoveryContract(BaseModel):
+    """Closed transport family for operator-visible retained-work authority."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+NonEmptyOptionalText = Annotated[str, Field(min_length=1)] | None
+PositiveOptionalInt = Annotated[int, Field(strict=True, gt=0)] | None
+OptionalSha = Annotated[str, Field(pattern=r"^[0-9a-f]{40}$")] | None
+
+
+class RecoveryProcessIdentityContract(StrictRecoveryContract):
+    host: str = Field(min_length=1)
+    pid: int = Field(strict=True, gt=0)
+    started_at: str = Field(min_length=1)
+    instance_id: NonEmptyOptionalText
+
+
+class RecoveryEngineIdentityContract(StrictRecoveryContract):
+    repo_root: str = Field(min_length=1)
+    instance_id: NonEmptyOptionalText
+    host: str = Field(min_length=1)
+    label: str = Field(min_length=1)
+    process: RecoveryProcessIdentityContract
+
+
+class RecoveryAuthorityContract(StrictRecoveryContract):
+    record_id: str = Field(min_length=1)
+    evidence_id: str = Field(min_length=1)
+    observation_revision: int = Field(strict=True, ge=0)
+    validated_head_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+    branch_name: str = Field(min_length=1)
+    repo_slug: str = Field(min_length=1)
+    issue_number: int = Field(strict=True, gt=0)
+    pr_number: PositiveOptionalInt
+    expected_remote_head_sha: OptionalSha
+    remote_baseline_status: RemoteBaselineStatus
+
+
+class RecoveryRecordFactContract(StrictRecoveryContract):
+    authority: RecoveryAuthorityContract
+    state: ValidatedWorkState
+    failure: ValidatedWorkFailure | None
+    reason: str
+    escrow_retained: bool = Field(strict=True)
+
+
+class RecoveryClaimOwnerContract(StrictRecoveryContract):
+    engine: RecoveryEngineIdentityContract
+    owner_fence: int = Field(strict=True, gt=0)
+    stop_availability: EngineStopAvailability
+
+
+class GuardedRecoveryStopActionContract(StrictRecoveryContract):
+    record_id: str = Field(min_length=1)
+    expected_engine: RecoveryEngineIdentityContract
+    expected_owner_fence: int = Field(strict=True, ge=0)
+
+
+class OwnedRecoveryRecordContract(StrictRecoveryContract):
+    kind: Literal["owned"]
+    work: RecoveryRecordFactContract
+    owner: RecoveryClaimOwnerContract
+    stop_action: GuardedRecoveryStopActionContract | None
+
+
+class UnownedRecoveryRecordContract(StrictRecoveryContract):
+    kind: Literal["unowned"]
+    work: RecoveryRecordFactContract
+
+
+class RecoveryEngineGroupContract(StrictRecoveryContract):
+    engine: RecoveryEngineIdentityContract
+    presentation: RecoveryEnginePresentation
+    presentation_message: str = Field(min_length=1)
+    records: list[OwnedRecoveryRecordContract] = Field(min_length=1)
+
+
+class RecoveryAvailableContract(StrictRecoveryContract):
+    repo_key: str = Field(min_length=1)
+    status: Literal["available"]
+    engine_groups: list[RecoveryEngineGroupContract]
+    unowned_records: list[UnownedRecoveryRecordContract]
+    message: str = Field(min_length=1)
+
+
+class RecoveryEmptyContract(StrictRecoveryContract):
+    repo_key: str = Field(min_length=1)
+    status: Literal["empty"]
+    engine_groups: list[RecoveryEngineGroupContract] = Field(max_length=0)
+    unowned_records: list[UnownedRecoveryRecordContract] = Field(max_length=0)
+    message: str = Field(min_length=1)
+
+
+class RecoveryUnavailableContract(StrictRecoveryContract):
+    repo_key: str = Field(min_length=1)
+    status: Literal["database_absent", "unreadable", "unsupported_schema"]
+    engine_groups: list[RecoveryEngineGroupContract] = Field(max_length=0)
+    unowned_records: list[UnownedRecoveryRecordContract] = Field(max_length=0)
+    message: str = Field(min_length=1)
+
+
+class ControlCenterRecoveryRowsContract(
+    RootModel[
+        Annotated[
+            RecoveryAvailableContract
+            | RecoveryEmptyContract
+            | RecoveryUnavailableContract,
+            Field(discriminator="status"),
+        ]
+    ]
+):
+    """Direct discriminated recovery payload, without a synthetic root wrapper."""
+
+
 PUBLIC_CONTRACTS: dict[str, type[BaseModel]] = {
     "completion.submission": CompletionSubmissionContract,
     "completion.receipt": CompletionIntakeReceiptContract,
@@ -537,6 +660,7 @@ PUBLIC_CONTRACTS: dict[str, type[BaseModel]] = {
     "historical_intake.parked": HistoricalIntakeParkedContract,
     "historical_intake.refused": HistoricalIntakeRefusedContract,
     "historical_intake.validation_failed": HistoricalIntakeValidationFailedContract,
+    "control_center.validated_work": ControlCenterRecoveryRowsContract,
     "dashboard.view_model": DashboardViewModelContract,
     "sse.session.started": SessionStartedPayload,
     "sse.session.completed": SessionCompletedPayload,
