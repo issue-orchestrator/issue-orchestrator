@@ -1023,14 +1023,36 @@ class TestBuildOrchestrator:
                             from issue_orchestrator.control.recovery_drain import (
                                 RecoveryDrain,
                             )
+                            from issue_orchestrator.control.recovery_record_operation import (
+                                RecoveryRecordOperation,
+                            )
+                            from issue_orchestrator.control.retained_claim_maintenance import (
+                                RetainedClaimMaintenance,
+                            )
+                            from typing import cast
 
                             assert isinstance(
                                 orchestrator.deps.validated_work_recovery,
                                 RecoveryDrain,
                             )
+                            drain = cast(
+                                RecoveryDrain,
+                                orchestrator.deps.validated_work_recovery,
+                            )
+                            operation = cast(
+                                RecoveryRecordOperation, drain._operation  # noqa: SLF001
+                            )
+                            maintenance = cast(
+                                RetainedClaimMaintenance,
+                                drain._claim_maintenance,  # noqa: SLF001
+                            )
                             assert executions == [
-                                orchestrator.deps.validated_work_recovery._operation._execution
+                                operation._execution  # noqa: SLF001
                             ]
+                            assert (
+                                maintenance._execution  # noqa: SLF001
+                                is operation._execution  # noqa: SLF001
+                            )
 
     def test_build_orchestrator_auto_detects_repo_when_none(self) -> None:
         """Auto-detects repo from git when config.repo is None."""

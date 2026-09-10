@@ -254,6 +254,7 @@ def build_validated_work_recovery(
     from ..control.fenced_validated_head_publisher import FencedValidatedHeadPublisher
     from ..control.recovery_block_sweep import AggregateRecoveryBlockSweep
     from ..control.recovery_drain import RecoveryDrain
+    from ..control.retained_claim_maintenance import RetainedClaimMaintenance
     from ..control.recovery_publication_attempt import RecoveryPublicationAttempt
     from ..control.recovery_publication_cleanup import RecoveryPublicationCleanup
     from ..control.recovery_publication_completion import RecoveryPublicationCompletion
@@ -335,6 +336,10 @@ def build_validated_work_recovery(
             effects=owners.effects,
             store=owners.records,
             observer=owners.capture_observer,
+        ),
+        claim_maintenance=RetainedClaimMaintenance(
+            store=owners.records,
+            execution=owners.execution,
         ),
         block_sweep=AggregateRecoveryBlockSweep(
             source=owners.records,
