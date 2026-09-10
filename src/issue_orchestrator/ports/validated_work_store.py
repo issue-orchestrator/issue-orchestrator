@@ -8,6 +8,8 @@ from ..domain.validated_work_claim import (
     ValidatedWorkClaim,
 )
 from ..domain.validated_work_commands import (
+    AbandonValidatedWorkCommand,
+    AbandonValidatedWorkOutcome,
     ValidatedWorkAuthoritySnapshot,
     ValidatedWorkDisposition,
     ValidatedWorkDispositionBatch,
@@ -42,6 +44,10 @@ class ValidatedWorkStore(Protocol):
     def record_for_id(self, record_id: str) -> ValidatedWorkRecord:
         """Typed durable facts, including lineage links and retained ownership."""
         ...
+
+    def abandon_if_current(
+        self, command: AbandonValidatedWorkCommand
+    ) -> AbandonValidatedWorkOutcome: ...
 
     def for_issue(self, issue_number: int) -> ValidatedWorkDispositionBatch: ...
 

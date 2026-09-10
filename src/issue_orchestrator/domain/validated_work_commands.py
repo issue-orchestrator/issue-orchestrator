@@ -3,7 +3,7 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, ClassVar
+from typing import Any, ClassVar, assert_never
 from .issue_run_evidence import IssueRunEvidence
 from .validated_work import (
     ValidatedWorkKey,
@@ -197,10 +197,101 @@ class AbandonValidatedWorkCommand:
     reason: str  # operator-supplied, non-empty
 
     def __post_init__(self) -> None:
-        if not self.actor.strip() or not self.reason.strip():
-            raise ValueError("abandonment requires an operator and a reason")
+        if type(self.authority) is not ValidatedWorkAuthoritySnapshot:
+            raise ValueError("abandonment requires typed rendered authority")
+        require_text(self.actor, "abandonment operator")
+        require_text(self.reason, "abandonment reason")
         if not self.authority.record_id or not self.authority.evidence_id:
             raise ValueError("abandonment requires the exact rendered authority")
+
+
+class AbandonStatus(StrEnum):
+    """Total result vocabulary for an operator abandonment attempt."""
+
+    ABANDONED = "abandoned"
+    NO_SUCH_RECORD = "no_such_record"
+    ALREADY_RESOLVED = "already_resolved"
+    REFUSED_STATE = "refused_state"
+    ATTACHED_EVIDENCE_PENDING = "attached_evidence_pending"
+    EVIDENCE_NOT_CURRENT = "evidence_not_current"
+    AUTHORITY_STALE = "authority_stale"
+
+
+@dataclass(frozen=True, slots=True)
+class AbandonValidatedWorkOutcome:
+    """Exhaustive result; refusal facts are captured in the store transaction."""
+
+    status: AbandonStatus
+    disposition: ValidatedWorkDisposition | None
+    pending_evidence_ids: tuple[str, ...]
+    current_authority: ValidatedWorkAuthoritySnapshot | None
+    message: str
+
+    def __post_init__(self) -> None:
+        if type(self.status) is not AbandonStatus:
+            raise ValueError("abandon status must be an AbandonStatus")
+        require_text(self.message, "abandon outcome message")
+        if type(self.pending_evidence_ids) is not tuple or any(
+            type(item) is not str or not item.strip()
+            for item in self.pending_evidence_ids
+        ):
+            raise ValueError("pending evidence must be a tuple of non-empty ids")
+        if len(set(self.pending_evidence_ids)) != len(self.pending_evidence_ids):
+            raise ValueError("pending evidence ids must be distinct")
+        if self.disposition is not None and type(self.disposition) is not ValidatedWorkDisposition:
+            raise ValueError("disposition must be a typed disposition")
+        if (
+            self.current_authority is not None
+            and type(self.current_authority) is not ValidatedWorkAuthoritySnapshot
+        ):
+            raise ValueError("current authority must be a typed snapshot")
+        self._validate_payload()
+
+    def _validate_payload(self) -> None:
+        match self.status:
+            case AbandonStatus.ABANDONED:
+                self._validate_abandoned()
+            case AbandonStatus.ATTACHED_EVIDENCE_PENDING:
+                self._validate_attached()
+            case AbandonStatus.EVIDENCE_NOT_CURRENT | AbandonStatus.AUTHORITY_STALE:
+                self._validate_stale()
+            case (
+                AbandonStatus.NO_SUCH_RECORD
+                | AbandonStatus.ALREADY_RESOLVED
+                | AbandonStatus.REFUSED_STATE
+            ):
+                self._validate_empty_refusal()
+            case _:
+                assert_never(self.status)
+
+    def _validate_abandoned(self) -> None:
+        if (
+            self.disposition is None
+            or self.disposition.state is not ValidatedWorkState.ABANDONED
+        ):
+            raise ValueError("ABANDONED requires an ABANDONED disposition")
+        if self.pending_evidence_ids or self.current_authority is not None:
+            raise ValueError("ABANDONED cannot carry refusal payloads")
+
+    def _validate_attached(self) -> None:
+        if not self.pending_evidence_ids:
+            raise ValueError("ATTACHED_EVIDENCE_PENDING requires pending ids")
+        if self.disposition is not None or self.current_authority is not None:
+            raise ValueError("attached refusal carries only pending ids")
+
+    def _validate_stale(self) -> None:
+        if self.current_authority is None:
+            raise ValueError("stale refusal requires current authority")
+        if self.disposition is not None or self.pending_evidence_ids:
+            raise ValueError("stale refusal carries only current authority")
+
+    def _validate_empty_refusal(self) -> None:
+        if (
+            self.disposition is not None
+            or self.pending_evidence_ids
+            or self.current_authority is not None
+        ):
+            raise ValueError("this refusal/status carries no result payload")
 
 
 @dataclass(frozen=True, slots=True)

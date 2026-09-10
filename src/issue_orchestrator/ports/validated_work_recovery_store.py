@@ -3,7 +3,7 @@
 from typing import Protocol
 
 from .published_work_finalization import FinalizationPhaseRecorder
-from .recovery_block import RecoveryBlockStore
+from .recovery_block import RecoveryBlockIssueSource, RecoveryBlockStore
 from .validated_work_drain import ValidatedWorkDrainQueue
 from .validated_work_preservation import ValidatedWorkAdmissionBackend
 from .validated_work_store import ValidatedWorkStore
@@ -14,6 +14,7 @@ class ValidatedWorkRecoveryStore(
     ValidatedWorkAdmissionBackend,
     ValidatedWorkDrainQueue,
     RecoveryBlockStore,
+    RecoveryBlockIssueSource,
     FinalizationPhaseRecorder,
     Protocol,
 ):

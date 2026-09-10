@@ -1,6 +1,7 @@
 """Sibling blocking through real durable publication and restart boundaries."""
 
 from dataclasses import replace
+from threading import Event
 
 import pytest
 
@@ -10,22 +11,251 @@ from issue_orchestrator.control.needs_human_block import (
     NeedsHumanCause,
     ValidatedWorkBlockSource,
 )
+from issue_orchestrator.control.recovery_block_sweep import (
+    AggregateRecoveryBlockSweep,
+)
 from issue_orchestrator.domain.issue_disposition_gate import IssueDispositionGateStatus
 from issue_orchestrator.domain.published_work_finalization import FinalizationStatus
-from issue_orchestrator.domain.recovery_block import RecoveryBlockReconcileStatus
+from issue_orchestrator.domain.recovery_block import (
+    RecoveryBlockProjectionDeferred,
+    RecoveryBlockReconcileStatus,
+)
 from issue_orchestrator.domain.recovery_block import RecoveryAdmissionDeferred
+from issue_orchestrator.domain.recovery_drain import RecoveryDrainMode
+from issue_orchestrator.domain.validated_work_execution import RecordExecutionBusy
 from issue_orchestrator.domain.validated_work import (
     FinalizationPhase as Phase,
     ValidatedWorkState as State,
     ValidatedWorkFailure as Failure,
 )
+from issue_orchestrator.domain.validated_work_commands import (
+    AbandonStatus,
+    AbandonValidatedWorkCommand,
+)
+from issue_orchestrator.events import EventName
 from tests.unit.aggregate_recovery_support import (
     AggregateRig,
     assert_admission_busy_in_child,
     assert_human_acquisition_busy_in_child,
 )
 from tests.unit.staged_finalization_support import Crash
+from tests.unit.threading_helpers import join_or_fail, run_in_thread, wait_for_event
 from tests.unit.validated_work_support import capture
+
+
+def _make_abandonable(rig):
+    assert rig.base.store.fail(
+        rig.base.claim,
+        failure=Failure.REVIEW_ROUTING_FAILED,
+        reason="review routing failed",
+        failed_at="2026-09-06T14:00:00+00:00",
+    )
+    assert rig.base.store.relinquish_claim(rig.base.claim)
+    assert (
+        rig.aggregate.reconcile_issue_block(6914).status
+        is RecoveryBlockReconcileStatus.RECONCILED
+    )
+    evidence = rig.base.store.evidence_for_id(rig.base.admission.evidence.evidence_id)
+    assert evidence is not None
+    return AbandonValidatedWorkCommand(
+        evidence.evidence.authority,
+        "operator@example.test",
+        "accepted loss after inspection",
+    )
+
+
+def test_abandonment_reprojects_only_its_record_scoped_blocks(tmp_path):
+    rig = AggregateRig(tmp_path)
+    command = _make_abandonable(rig)
+    other = HumanBlockRequest(
+        6914, NeedsHumanCause.SESSION_LIFECYCLE, "independent failure"
+    )
+    assert rig.human.acquire(other) is BlockOutcome.HELD
+
+    outcome = rig.abandonment.abandon(command)
+
+    assert outcome.status is AbandonStatus.ABANDONED
+    assert "recovery-pending" not in rig.remote.labels
+    assert "blocked-failed" in rig.remote.labels
+    assert "needs-human" in rig.remote.labels
+    assert rig.causes.needs_human_causes(6914) == frozenset({other.cause_key})
+    event = rig.events.last_event(EventName.VALIDATED_WORK_ABANDONED.value)
+    assert event is not None
+    assert event.data == {
+        "issue_number": 6914,
+        "record_id": command.authority.record_id,
+        "evidence_id": command.authority.evidence_id,
+        "actor": command.actor,
+        "reason": command.reason,
+    }
+
+
+def test_stale_abandonment_has_no_store_or_projection_effect(tmp_path):
+    rig = AggregateRig(tmp_path)
+    command = _make_abandonable(rig)
+    changed = replace(
+        rig.base.admission,
+        evidence=replace(
+            rig.base.admission.evidence,
+            observations=replace(
+                rig.base.admission.evidence.observations, pr_number=300
+            ),
+        ),
+    )
+    rig.base.store.admit(changed)
+    before_actions = list(rig.remote.actions)
+    before_labels = set(rig.remote.labels)
+    before_causes = rig.causes.needs_human_causes(6914)
+    before_events = list(rig.events.events)
+
+    outcome = rig.abandonment.abandon(command)
+
+    assert outcome.status is AbandonStatus.AUTHORITY_STALE
+    assert outcome.current_authority is not None
+    assert outcome.current_authority.pr_number == 300
+    assert rig.remote.actions == before_actions
+    assert rig.remote.labels == before_labels
+    assert rig.causes.needs_human_causes(6914) == before_causes
+    assert rig.events.events == before_events
+
+
+def test_abandonment_cannot_cross_a_busy_issue_mutation_gate(tmp_path):
+    rig = AggregateRig(tmp_path)
+    command = _make_abandonable(rig)
+
+    with rig.gate.try_acquire("owner/repo", 6914) as status:
+        assert status is IssueDispositionGateStatus.ACQUIRED
+        outcome = rig.abandonment.abandon(command)
+
+    assert outcome.status is AbandonStatus.REFUSED_STATE
+    assert rig.base.store.get(command.authority.record_id).state is State.FAILED
+    assert rig.events.events == []
+
+
+def test_same_thread_execution_reentry_refuses_abandonment_without_effects(tmp_path):
+    rig = AggregateRig(tmp_path)
+    command = _make_abandonable(rig)
+    before_labels = set(rig.remote.labels)
+    lease = rig.base.execution.try_enter(command.authority.record_id)
+    assert not isinstance(lease, RecordExecutionBusy)
+
+    with lease:
+        outcome = rig.abandonment.abandon(command)
+
+    assert outcome.status is AbandonStatus.REFUSED_STATE
+    assert rig.base.store.get(command.authority.record_id).state is State.FAILED
+    assert rig.remote.labels == before_labels
+    assert rig.events.events == []
+
+
+def test_other_thread_execution_refuses_then_release_allows_abandonment(tmp_path):
+    rig = AggregateRig(tmp_path)
+    command = _make_abandonable(rig)
+    entered, release = Event(), Event()
+
+    def hold_execution():
+        lease = rig.base.execution.try_enter(command.authority.record_id)
+        assert not isinstance(lease, RecordExecutionBusy)
+        with lease:
+            entered.set()
+            wait_for_event(release, 10)
+
+    thread, result = run_in_thread(hold_execution)
+    wait_for_event(entered, 5)
+    try:
+        refused = rig.abandonment.abandon(command)
+    finally:
+        release.set()
+        join_or_fail(thread, 5)
+
+    assert result.error is None
+    assert refused.status is AbandonStatus.REFUSED_STATE
+    assert rig.base.store.get(command.authority.record_id).state is State.FAILED
+    assert rig.events.events == []
+    assert rig.abandonment.abandon(command).status is AbandonStatus.ABANDONED
+
+
+def test_execution_on_another_record_does_not_block_abandonment(tmp_path):
+    rig = AggregateRig(tmp_path)
+    command = _make_abandonable(rig)
+    sibling = capture(issue=6914, branch="independently-executing")
+    rig.base.store.admit(sibling)
+    lease = rig.base.execution.try_enter(sibling.evidence.record_id)
+    assert not isinstance(lease, RecordExecutionBusy)
+
+    with lease:
+        outcome = rig.abandonment.abandon(command)
+
+    assert outcome.status is AbandonStatus.ABANDONED
+    assert rig.base.store.get(sibling.evidence.record_id).state is State.QUEUED
+
+
+def test_sweep_repairs_projection_after_abandonment_commits_before_label_write(
+    tmp_path,
+):
+    rig = AggregateRig(tmp_path)
+    command = _make_abandonable(rig)
+    rig.remote.fail_remove = "recovery-pending"
+
+    with pytest.raises(RecoveryBlockProjectionDeferred, match="lost remote write"):
+        rig.abandonment.abandon(command)
+
+    assert rig.base.store.get(command.authority.record_id).state is State.ABANDONED
+    assert "recovery-pending" in rig.remote.labels
+    assert len(
+        rig.events.get_events(EventName.VALIDATED_WORK_ABANDONED.value)
+    ) == 1
+    rig.remote.fail_remove = ""
+    report = AggregateRecoveryBlockSweep(
+        source=rig.base.store,
+        reconciler=rig.aggregate,
+        batch_size=1,
+    ).tick(lambda: RecoveryDrainMode.ACTIVE)
+
+    assert report.error == ""
+    assert len(report.items) == 1
+    assert report.items[0].outcome.status is RecoveryBlockReconcileStatus.RECONCILED
+    assert "recovery-pending" not in rig.remote.labels
+    assert len(
+        rig.events.get_events(EventName.VALIDATED_WORK_ABANDONED.value)
+    ) == 1
+
+
+def test_abandoning_one_record_keeps_an_unresolved_siblings_recovery_block(tmp_path):
+    rig = AggregateRig(tmp_path)
+    sibling = capture(branch="sibling", state=State.PARKED)
+    rig.base.store.admit(sibling)
+    command = _make_abandonable(rig)
+
+    outcome = rig.abandonment.abandon(command)
+
+    assert outcome.status is AbandonStatus.ABANDONED
+    assert "recovery-pending" in rig.remote.labels
+    assert rig.base.store.get(sibling.evidence.record_id).state is State.PARKED
+
+
+def test_abandonment_rejects_another_repository_before_store_or_projection(tmp_path):
+    rig = AggregateRig(tmp_path)
+    command = _make_abandonable(rig)
+    other = capture(issue=6914, branch="other-repository", state=State.PARKED)
+    other_key = replace(other.evidence.identity.key, repo_slug="another/repo")
+    other_identity = replace(other.evidence.identity, key=other_key)
+    other_evidence = replace(other.evidence, identity=other_identity)
+    other_authority = replace(
+        command.authority,
+        record_id=other_evidence.record_id,
+        evidence_id=other_evidence.evidence_id,
+        repo_slug="another/repo",
+        branch_name=other_key.branch_name,
+        validated_head_sha=other_key.validated_head_sha,
+    )
+    before_actions = list(rig.remote.actions)
+
+    with pytest.raises(ValueError, match="another repository"):
+        rig.abandonment.abandon(replace(command, authority=other_authority))
+
+    assert rig.base.store.get(command.authority.record_id).state is State.FAILED
+    assert rig.remote.actions == before_actions
 
 
 def test_real_aggregate_finalizes_and_preserves_later_operator_block(tmp_path):

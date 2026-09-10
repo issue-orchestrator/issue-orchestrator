@@ -184,11 +184,47 @@ class RecoveryMutationBusy(RecoveryAdmissionDeferred):
     """Another issue operation owns the gate; no work was admitted."""
 
 
+class RecoveryBlockProjectionDeferred(RuntimeError):
+    """A durable issue change awaits recovery-block reprojection."""
+
+
 @dataclass(frozen=True, slots=True)
 class RecoveryBlockReconcileOutcome:
     status: RecoveryBlockReconcileStatus
     labels_removed: tuple[str, ...]
     message: str
+
+    def require_reconciled(self) -> "RecoveryBlockReconcileOutcome":
+        if self.status is not RecoveryBlockReconcileStatus.RECONCILED:
+            raise RecoveryBlockProjectionDeferred(self.message)
+        return self
+
+
+@dataclass(frozen=True, slots=True)
+class RecoveryBlockSweepItem:
+    issue_number: int
+    outcome: RecoveryBlockReconcileOutcome
+
+    def __post_init__(self) -> None:
+        require_positive(self.issue_number, "issue number")
+        if type(self.outcome) is not RecoveryBlockReconcileOutcome:
+            raise ValueError("block sweep requires a typed reconciliation outcome")
+
+
+@dataclass(frozen=True, slots=True)
+class RecoveryBlockSweepReport:
+    items: tuple[RecoveryBlockSweepItem, ...]
+    error: str = ""
+
+    def __post_init__(self) -> None:
+        if type(self.items) is not tuple or any(
+            type(item) is not RecoveryBlockSweepItem for item in self.items
+        ):
+            raise ValueError("block sweep items must be an immutable typed tuple")
+        if type(self.error) is not str:
+            raise ValueError("block sweep error must be text")
+        if self.error and self.items:
+            raise ValueError("a failed block sweep cannot report partial issue results")
 
 
 def require_cleanup_absence(label: str, observed: tuple[str, ...]) -> None:

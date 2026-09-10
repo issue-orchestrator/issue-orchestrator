@@ -15,6 +15,7 @@ from issue_orchestrator.control.tech_lead_validated_work_recovery import (
 from issue_orchestrator.control.validated_work_recovery_authority import (
     ValidatedWorkRecoveryAuthority,
 )
+from issue_orchestrator.ports.recovery_block import NullRecoveryBlockSweep
 from issue_orchestrator.domain.models import OrchestratorState
 from issue_orchestrator.domain.published_work_finalization import PublishedWorkTarget
 from issue_orchestrator.domain.recovery_attempt import (
@@ -154,6 +155,7 @@ def test_recovery_drain_forwards_the_exact_approval_to_record_owner(tmp_path):
         queue=Mock(),
         operation=operation,
         authority_refresh=Mock(),
+        block_sweep=NullRecoveryBlockSweep(),
         batch_size=1,
         interval_seconds=1,
     )
@@ -222,6 +224,7 @@ def test_shared_preflight_reports_exact_changed_authority_without_claim(tmp_path
         queue=Mock(),
         operation=operation,
         authority_refresh=Mock(),
+        block_sweep=NullRecoveryBlockSweep(),
         batch_size=1,
         interval_seconds=1,
     )

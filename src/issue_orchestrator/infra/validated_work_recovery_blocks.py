@@ -25,7 +25,9 @@ class RecoveryBlockPersistence:
     def snapshot(self, repo_slug: str, issue_number: int) -> RecoveryBlockSnapshot:
         with self._db.transaction() as conn:
             rows = conn.execute(
-                "SELECT record_id FROM validated_work_records WHERE issue_number=? ORDER BY record_id",
+                "SELECT DISTINCT r.record_id FROM validated_work_records r "
+                "JOIN validated_work_evidence e ON e.record_id=r.record_id "
+                "WHERE r.issue_number=? AND e.released_at='' ORDER BY r.record_id",
                 (issue_number,),
             ).fetchall()
             return RecoveryBlockSnapshot(

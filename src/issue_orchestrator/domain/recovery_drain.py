@@ -5,6 +5,7 @@ from enum import StrEnum
 
 from .recovery_attempt import RecoveryAttemptPending
 from .recovery_completion import RecoveryCompleted
+from .recovery_block import RecoveryBlockSweepReport
 
 
 class RecoveryDrainMode(StrEnum):
@@ -22,3 +23,4 @@ class RecoveryDrainItem:
 @dataclass(frozen=True, slots=True)
 class RecoveryDrainReport:
     items: tuple[RecoveryDrainItem, ...]
+    block_sweep: RecoveryBlockSweepReport = RecoveryBlockSweepReport(())

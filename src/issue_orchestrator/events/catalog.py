@@ -331,6 +331,7 @@ class EventName(str, Enum):
     RECONCILIATION_REQUIRED = "reconciliation.required"  # Drift detected, action blocked
     ISSUE_PAUSED_RECONCILE = "issue.paused_reconcile"  # Issue paused due to drift
     VALIDATED_WORK_DISPOSITION_OBSERVED = "validated_work.disposition_observed"
+    VALIDATED_WORK_ABANDONED = "validated_work.abandoned"
     HISTORY_RECONCILED = "history.reconciled"
 
     # =========================================================================

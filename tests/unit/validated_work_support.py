@@ -1,6 +1,8 @@
 """Typed boundary fakes and deterministic validated-work fixtures."""
 
 from dataclasses import dataclass, field, replace
+from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 
 from issue_orchestrator.domain.models import RequestedAction
@@ -113,13 +115,19 @@ class Rig:
     artifacts: ArtifactVerifier = field(default_factory=ArtifactVerifier)
     liveness: Liveness = field(default_factory=Liveness)
 
-    def open(self, liveness: Liveness | None = None) -> SqliteValidatedWorkStore:
+    def open(
+        self,
+        liveness: Liveness | None = None,
+        *,
+        clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+    ) -> SqliteValidatedWorkStore:
         return SqliteValidatedWorkStore(
             self.path,
             ancestry=self.graph,
             artifacts=self.artifacts,
             retention=self.artifacts,
             liveness=self.liveness if liveness is None else liveness,
+            clock=clock,
         )
 
 
