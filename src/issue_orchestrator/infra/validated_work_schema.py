@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS validated_work_records (
     owner_fence           INTEGER NOT NULL DEFAULT 0, -- §4.4e; monotonic, never reused
     owner_host            TEXT NOT NULL DEFAULT '',   -- current claim holder
     owner_pid             INTEGER NOT NULL DEFAULT 0,
-    owner_started_at      TEXT NOT NULL DEFAULT '',   -- pid reuse guard
+    owner_started_at      TEXT NOT NULL DEFAULT '',   -- process-incarnation token (historical name)
     owner_claim_hash      TEXT NOT NULL DEFAULT '',   -- sha256 of the claim secret
     owner_instance_id     TEXT NOT NULL DEFAULT '',   -- repo-lock instance, for the death proof
     owner_claimed_at      TEXT NOT NULL DEFAULT '',   -- diagnostics/UI only, never authority
