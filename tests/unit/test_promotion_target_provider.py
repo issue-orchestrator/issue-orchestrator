@@ -2,6 +2,8 @@
 
 from unittest.mock import Mock, patch
 
+import pytest
+
 from issue_orchestrator.execution.providers import create_promotion_target_host
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.infra.config_models_tech_lead import (
@@ -10,9 +12,17 @@ from issue_orchestrator.infra.config_models_tech_lead import (
 )
 
 
+def _active_config() -> Config:
+    config = Config()
+    config.repo = "source/repo"
+    config.tech_lead_review_agent = "agent:tech-lead"
+    config.tech_lead_follow_up_agent = "agent:backend"
+    return config
+
+
 def test_target_repo_auth_is_built_once_and_given_to_the_adapter() -> None:
     repo = "issue-orchestrator/issue-orchestrator"
-    config = Config()
+    config = _active_config()
     config.tech_lead.findings.route = {
         "completion-pipeline": PromotionRouteTarget(repo=repo),
         "session-runtime": PromotionRouteTarget(repo=repo),
@@ -62,3 +72,37 @@ def test_target_repo_auth_is_built_once_and_given_to_the_adapter() -> None:
     assert connection.base_url == "https://api.github.com"
     assert connection.timeout_seconds == 20.0
     assert connection.auth is auth
+
+
+@pytest.mark.parametrize("inactive_mode", ("master_disabled", "promotion_off"))
+def test_inactive_promotion_does_not_resolve_unavailable_target_auth(
+    inactive_mode: str,
+) -> None:
+    repo = "issue-orchestrator/issue-orchestrator"
+    config = _active_config()
+    config.tech_lead.findings.route = {
+        "completion-pipeline": PromotionRouteTarget(repo=repo),
+    }
+    config.tech_lead.findings.target_auth = {
+        repo: PromotionTargetGitHubAuthConfig(token_env="MISSING_PROMOTION_TOKEN")
+    }
+    if inactive_mode == "master_disabled":
+        config.tech_lead.enabled = False
+    else:
+        config.tech_lead.findings.promote = "off"
+
+    with (
+        patch(
+            "issue_orchestrator.adapters.github.build_github_auth",
+            side_effect=AssertionError("inactive lane resolved target auth"),
+        ) as build_auth,
+        patch(
+            "issue_orchestrator.adapters.github.promotion_target."
+            "build_promotion_target_host"
+        ) as build_host,
+    ):
+        result = create_promotion_target_host(Mock(), config)
+
+    assert result is None
+    build_auth.assert_not_called()
+    build_host.assert_not_called()

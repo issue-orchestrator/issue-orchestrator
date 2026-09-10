@@ -425,12 +425,46 @@ class TestFilingReadiness:
             "metadata": "read",
         }
         http_client.config.auth = auth
+        http_client.installation_includes_repository.return_value = True
         http_client.get_repository.return_value = {
             "permissions": {"push": False, "admin": False}
         }
 
         assert target.check_filing_ready(_contract()) is None
         auth.installation_permissions.assert_called_once_with()
+        http_client.installation_includes_repository.assert_called_once_with(REPO)
+
+    def test_github_app_public_read_does_not_prove_installation_membership(
+        self, target, http_client
+    ):
+        auth = Mock()
+        auth.auth_kind = "github_app"
+        auth.installation_permissions.return_value = {"issues": "write"}
+        http_client.config.auth = auth
+        # GitHub permits this read even when the public repo is outside the
+        # installation's selected repository set.
+        http_client.get_repository.return_value = {"visibility": "public"}
+        http_client.installation_includes_repository.return_value = False
+
+        reason = target.check_filing_ready(_contract())
+
+        assert reason is not None and "not selected" in reason
+
+    def test_github_app_incomplete_membership_read_fails_closed(
+        self, target, http_client
+    ):
+        auth = Mock()
+        auth.auth_kind = "github_app"
+        auth.installation_permissions.return_value = {"issues": "write"}
+        http_client.config.auth = auth
+        http_client.get_repository.return_value = {"visibility": "public"}
+        http_client.installation_includes_repository.side_effect = (
+            GitHubHttpError("installation repository scan incomplete")
+        )
+
+        reason = target.check_filing_ready(_contract())
+
+        assert reason is not None and "scan incomplete" in reason
 
     def test_github_app_without_issues_write_fails_closed(self, target, http_client):
         auth = Mock()
@@ -442,6 +476,7 @@ class TestFilingReadiness:
         reason = target.check_filing_ready(_contract())
 
         assert reason is not None and "issues: write" in reason
+        http_client.installation_includes_repository.assert_not_called()
 
     @pytest.mark.parametrize("role", ("push", "maintain", "admin"))
     def test_a_label_writing_role_covers_any_label_gap(

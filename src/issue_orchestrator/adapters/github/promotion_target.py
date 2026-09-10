@@ -97,10 +97,11 @@ class GitHubPromotionTargetHost:
         which is the exact failure this check exists to prevent (#6957 round-6
         review F2/A1).
 
-        Cost is one repository read per distinct target, plus a label list only
-        when the token cannot provision (the case where the gap matters). An
-        inconclusive permissions payload fails closed: #6957 requires route
-        writability to be PROVEN before startup, not guessed and retried late.
+        Cost is one repository read per distinct target, plus the authoritative
+        installation-repository list for App auth or a label list when a user
+        token cannot provision. An inconclusive permissions or membership
+        payload fails closed: #6957 requires route writability to be PROVEN
+        before startup, not guessed and retried late.
         """
         try:
             return self._filing_problem(contract)
@@ -125,18 +126,7 @@ class GitHubPromotionTargetHost:
                 return f"{repo} has issues disabled, so findings cannot be filed there"
             auth = client.config.auth
             if auth is not None and auth.auth_kind == "github_app":
-                permissions = auth.installation_permissions()
-                if permissions.get("issues") == "write":
-                    # The successful repository read proves this installation
-                    # can access the exact target. GitHub App tokens report
-                    # repository-role booleans as false, so their authoritative
-                    # write proof is the installation token's permission set.
-                    # `issues: write` covers issue creation and label management.
-                    return None
-                return (
-                    f"{repo} is accessible to this GitHub App installation, but"
-                    " its token lacks the required issues: write permission"
-                )
+                return _github_app_filing_problem(client, repo=repo)
             permissions = payload.get("permissions")
             if not isinstance(permissions, dict):
                 return (
@@ -351,6 +341,29 @@ def _existing_label_names(client: GitHubHttpClient) -> frozenset[str]:
         for entry in client.list_all_labels()
         if isinstance(entry, dict) and isinstance((name := entry.get("name")), str)
     )
+
+
+def _github_app_filing_problem(
+    client: GitHubHttpClient, *, repo: str
+) -> str | None:
+    """Prove the App installation can execute the exact filing command."""
+    auth = client.config.auth
+    if auth is None or auth.auth_kind != "github_app":
+        raise GitHubHttpError("GitHub App filing proof requires GitHub App auth")
+    if auth.installation_permissions().get("issues") != "write":
+        return (
+            f"{repo} is readable by this GitHub App installation, but its token"
+            " lacks the required issues: write permission"
+        )
+    if not client.installation_includes_repository(repo):
+        return (
+            f"{repo} is readable, but it is not selected for this GitHub App"
+            " installation; public repository reads do not prove installation"
+            " write access"
+        )
+    # App tokens report repository-role booleans as false. Exact installation
+    # membership plus `issues: write` covers issue creation and label management.
+    return None
 
 
 def build_promotion_target_host(

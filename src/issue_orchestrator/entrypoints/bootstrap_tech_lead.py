@@ -56,8 +56,9 @@ class TechLeadComposition:
     board_publisher: "TechLeadBoardPublisher | None"
     fact_gatherer: "FactGatherer | None"
     # Cross-repo filing seam for the finding-promotion lane (#6957). None when
-    # the repository host is not a real GitHub adapter (offline/testing), which
-    # leaves promotion actions failing loudly rather than silently no-oping.
+    # the lane is inactive/unready or the repository host is not a real GitHub
+    # adapter (offline/testing). Active promotion actions still fail loudly if
+    # their target is unexpectedly unwired.
     promotion_target: "PromotionTargetHost | None" = None
 
 

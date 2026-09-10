@@ -63,9 +63,9 @@ def create_promotion_target_host(
     helpers and the doctor check depend on this seam rather than importing the
     GitHub adapter package themselves. Explicit per-target credentials are
     resolved here once and shared by doctor and runtime filing. Returns None
-    when the host is not a real GitHub adapter (offline/testing), which leaves
-    the promotion lane unwired — its actions then fail loudly instead of
-    silently no-oping.
+    when the readiness owner says the lane cannot run or the host is not a real
+    GitHub adapter (offline/testing). Active actions still fail loudly if their
+    target is unexpectedly unwired.
     """
     from ..adapters.github import build_github_auth
     from ..adapters.github.http_client import GitHubHttpConfig
@@ -73,6 +73,15 @@ def create_promotion_target_host(
 
     if repository_host is None:
         return None
+    if config is not None:
+        from ..infra.tech_lead_promotion_activation import promotion_lane_readiness
+
+        # The readiness owner defines when this lane has dependencies at all.
+        # Inactive/unready lanes must not resolve target credentials during
+        # bootstrap; switching promotion off is an operator escape hatch from
+        # unavailable credentials, just as it is for doctor and tick reads.
+        if not promotion_lane_readiness(config).ready:
+            return None
     target_connections = {}
     if config is not None:
         for repo in config.tech_lead.findings.target_repos():
