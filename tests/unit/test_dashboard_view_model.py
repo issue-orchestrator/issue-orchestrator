@@ -401,17 +401,56 @@ def test_view_model_queue_and_blocked_items():
     assert view_model.blocked_count == 1
 
 
-def test_tech_lead_observation_is_blocked_without_consuming_queue_position():
+def test_non_executable_issues_are_not_projected_as_blocked_work():
     config = _make_config()
+    config.label_prefix = "bot"
     observation = Issue(
         number=39,
         title="Pattern case file",
         labels=["agent:tech-lead", "tech-lead-observation"],
     )
+    proposal = Issue(
+        number=40,
+        title="Gated recovery proposal",
+        labels=["agent:tech-lead", "BOT:Proposed-Tech-Lead"],
+    )
+    genuine_failure = Issue(
+        number=41,
+        title="Failed executable work",
+        labels=["agent:backend", "blocked-failed"],
+    )
+    planning_issue = Issue(
+        number=42,
+        title="Planning-only initiative",
+        labels=["initiative:control", "bot:blocked-failed"],
+    )
     runnable = Issue(number=45, title="Runnable", labels=["agent:backend"])
     state = OrchestratorState(
         startup_status="complete",
-        cached_queue_issues=[observation, runnable],
+        cached_scope_issues=[
+            observation,
+            proposal,
+            genuine_failure,
+            planning_issue,
+            runnable,
+        ],
+        cached_queue_issues=[runnable],
+        session_history=[
+            SessionHistoryEntry(
+                issue_number=40,
+                title="Gated recovery proposal",
+                agent_type="agent:tech-lead",
+                status="failed",
+                runtime_minutes=2,
+            ),
+            SessionHistoryEntry(
+                issue_number=42,
+                title="Planning-only initiative",
+                agent_type="agent:backend",
+                status="failed",
+                runtime_minutes=4,
+            ),
+        ],
     )
     orchestrator = _OrchestratorStub(state=state, config=config)
 
@@ -427,8 +466,13 @@ def test_tech_lead_observation_is_blocked_without_consuming_queue_position():
 
     assert [item["issue_number"] for item in view_model.queue_items] == [45]
     assert view_model.queue_items[0]["queue_wait_reason"] == "Waiting: next scheduler tick"
-    blocked_item = next(item for item in view_model.blocked_items if item["issue_number"] == 39)
-    assert blocked_item["blocked_summary"] == "Pattern case file (tech_lead observation ledger)"
+    assert [item["issue_number"] for item in view_model.blocked_items] == [41]
+    assert view_model.blocked_count == 1
+    assert view_model.scope_summary["in_scope_total"] == 5
+    blocked_column = next(
+        column for column in view_model.flow_columns if column["id"] == "blocked"
+    )
+    assert blocked_column["count"] == 1
 
 
 def test_large_queue_counts_use_full_queue_not_preview_page():

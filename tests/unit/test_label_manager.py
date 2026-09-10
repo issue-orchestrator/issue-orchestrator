@@ -605,6 +605,17 @@ class TestProposedTechLeadLabel:
         assert lm.is_workflow_reserved("proposed-tech-lead") is True
         assert lm.is_workflow_reserved("Proposed-Tech-Lead") is True
 
+    def test_identifies_tech_lead_artifact_without_reclassifying_failures(
+        self, lm: LabelManager
+    ) -> None:
+        assert lm.is_tech_lead_artifact_any(["Proposed-Tech-Lead"]) is True
+        assert lm.is_tech_lead_artifact_any(["blocked-failed"]) is False
+
+    def test_identifies_prefixed_tech_lead_artifact_case_insensitively(
+        self, plm: LabelManager
+    ) -> None:
+        assert plm.is_tech_lead_artifact_any(["BOT:Proposed-Tech-Lead"]) is True
+
 
 class TestTechLeadObservationLabel:
     """Pattern case-file label (#6781): blocking-class (never picked up),
@@ -636,3 +647,13 @@ class TestTechLeadObservationLabel:
     def test_workflow_reserved_case_insensitively(self, lm: LabelManager) -> None:
         assert lm.is_workflow_reserved("tech-lead-observation") is True
         assert lm.is_workflow_reserved("Tech-Lead-Observation") is True
+
+    def test_identifies_tech_lead_artifact_with_prefix_configured(
+        self, plm: LabelManager
+    ) -> None:
+        assert plm.is_tech_lead_artifact_any(
+            ["agent:tech-lead", "Tech-Lead-Observation"]
+        ) is True
+        assert plm.is_tech_lead_artifact_any(
+            ["agent:tech-lead", "BOT:Tech-Lead-Observation"]
+        ) is True

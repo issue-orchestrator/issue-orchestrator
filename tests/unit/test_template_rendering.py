@@ -334,6 +334,51 @@ def test_complete_compact_column_keeps_full_list_footer_hidden(jinja_env):
     assert footer.has_attr("hidden")
 
 
+def test_kanban_blocked_column_excludes_non_executable_issues(jinja_env):
+    config = make_config()
+    config.agents = {"agent:web": make_agent_config()}
+    blocked = Issue(
+        number=210,
+        title="Failed executable work",
+        labels=["agent:web", "blocked-failed"],
+    )
+    proposal = Issue(
+        number=211,
+        title="Gated proposal",
+        labels=["agent:web", "proposed-tech-lead"],
+    )
+    observation = Issue(
+        number=212,
+        title="Pattern case file",
+        labels=["agent:web", "tech-lead-observation"],
+    )
+    planning_issue = Issue(
+        number=213,
+        title="Planning-only initiative",
+        labels=["initiative:control", "blocked-failed"],
+    )
+    state = OrchestratorState(
+        startup_status="complete",
+        cached_queue_issues=[blocked, proposal, observation, planning_issue],
+    )
+    vm = build_dashboard_view_model(
+        OrchestratorStub(state=state, config=config),
+        provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
+        tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        active_tab="kanban",
+        e2e_status_provider=e2e_disabled,
+    )
+
+    soup = render_dashboard(jinja_env, vm)
+
+    blocked_col = soup.select_one('[data-column="blocked"]')
+    assert blocked_col is not None
+    assert blocked_col.select_one(".count").text.strip() == "1"
+    assert [
+        card.get("data-issue") for card in blocked_col.select(".issue-card")
+    ] == ["210"]
+
+
 def test_kanban_running_column_is_expandable_and_routes_cancel_to_menu(jinja_env):
     config = make_config()
     config.agents = {"agent:web": make_agent_config()}

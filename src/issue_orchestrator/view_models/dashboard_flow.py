@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
-from typing import Any, Literal
+from collections.abc import Iterable, Mapping
+from typing import Any, Literal, TypeVar
 
+from ..control.label_manager import LabelManager
 from ..domain.issue_key import format_issue_label
 
 StaleBadgeVisibilityMode = Literal["when_stale", "when_stale_and_merge_pending", "never"]
 COMPACT_COLUMN_PREVIEW_LIMIT = 12
+LaneItemT = TypeVar("LaneItemT", bound=Mapping[str, Any])
 
 
 def compute_compact_card_fingerprint(card: dict[str, Any]) -> str:
@@ -191,7 +193,7 @@ def exclude_flow_overlaps(
     ]
 
 
-def _issue_number(item: dict[str, Any]) -> int | None:
+def _issue_number(item: Mapping[str, Any]) -> int | None:
     raw = item.get("issue_number")
     if isinstance(raw, int):
         return raw
@@ -208,6 +210,34 @@ def _issue_numbers(items: list[dict[str, Any]]) -> set[int]:
         for issue_number in [_issue_number(item)]
         if issue_number is not None
     }
+
+
+def non_executable_issue_numbers(
+    issues: Iterable[Any],
+    labels: LabelManager,
+) -> frozenset[int]:
+    """Identify current issues that must not enter executable-work lanes."""
+    return frozenset(
+        issue.number
+        for issue in issues
+        if issue.agent_type is None or labels.is_tech_lead_artifact_any(issue.labels)
+    )
+
+
+def merge_blocked_items(
+    scope_items: list[LaneItemT],
+    history_items: list[LaneItemT],
+    *,
+    excluded_issue_numbers: frozenset[int],
+) -> list[LaneItemT]:
+    """Merge current and historical blocks, with newer history taking precedence."""
+    merged = {
+        issue_number: item
+        for item in scope_items + history_items
+        for issue_number in [_issue_number(item)]
+        if issue_number is not None and issue_number not in excluded_issue_numbers
+    }
+    return list(merged.values())
 
 
 def _exclude_issue_numbers(
