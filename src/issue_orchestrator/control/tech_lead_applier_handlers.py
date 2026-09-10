@@ -83,6 +83,7 @@ TECH_LEAD_MUTATING_ACTION_TYPES: frozenset[ActionType] = (
             ActionType.RESET_RETRY_ISSUE,
             ActionType.KILL_HUNG_SESSION,
             ActionType.REQUEST_REWORK,
+            ActionType.RECOVER_VALIDATED_WORK,
             ActionType.RECOVER_TECH_LEAD_PROPOSAL,
             ActionType.DISCARD_TERMINAL_TECH_LEAD_PROPOSAL_OPS,
             ActionType.APPEND_PATTERN_OBSERVATION,
@@ -151,6 +152,7 @@ def tech_lead_action_handlers(
     repository_host: "RepositoryHost | None",
     authority: "TechLeadAuthorityStore | None",
     promotion_target: "PromotionTargetHost | None",
+    recover_validated_work: ActionHandler | None = None,
 ) -> dict[ActionType, ActionHandler]:
     """Map every tech-lead ActionType to the owner that applies it."""
     handlers: dict[ActionType, ActionHandler] = {
@@ -164,6 +166,13 @@ def tech_lead_action_handlers(
         ActionType.RESET_RETRY_ISSUE: reset_retry,
         ActionType.KILL_HUNG_SESSION: kill_hung_session,
         ActionType.REQUEST_REWORK: request_rework,
+        ActionType.RECOVER_VALIDATED_WORK: (
+            recover_validated_work
+            if recover_validated_work is not None
+            else lambda action: ActionResult.fail(
+                action, "validated-work recovery executor is not wired"
+            )
+        ),
         ActionType.RECOVER_TECH_LEAD_PROPOSAL: lambda action: apply_recover_tech_lead_proposal(
             action, authority=authority, repository=repository_host, guard=require_mutation_authority),
         ActionType.ESCALATE_TECH_LEAD_DISPOSITION: lambda action: apply_human_disposition(

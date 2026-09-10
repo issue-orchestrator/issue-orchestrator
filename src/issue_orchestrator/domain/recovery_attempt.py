@@ -7,6 +7,7 @@ from .publication_verification import PublicationVerification
 from .recovery_publication import PreparedRecoveryPublication
 from .validated_head_publication import PublishValidatedHeadCommand, PublishValidatedHeadOutcome
 from .validated_work import DispositionPhase, ValidatedWorkFailure, ValidatedWorkState, PublishValidatedHeadStatus
+from .validated_work_commands import ValidatedWorkAuthoritySnapshot
 from .validated_work_store import PublishAttempt, ValidatedWorkRecord
 
 
@@ -41,9 +42,48 @@ class RecoveryAttemptPlan:
 
 
 @dataclass(frozen=True, slots=True)
+class RecoveryAuthorityStale:
+    """The exact approved and current facts for a zero-write stale refusal."""
+
+    approved: ValidatedWorkAuthoritySnapshot
+    current: ValidatedWorkAuthoritySnapshot
+
+    def differences(self) -> dict[str, dict[str, object]]:
+        approved = self.approved.to_dict()
+        current = self.current.to_dict()
+        return {
+            field: {"approved": approved[field], "current": current[field]}
+            for field in approved
+            if approved[field] != current[field]
+        }
+
+    def describe(self) -> str:
+        detail = "; ".join(
+            f"{field}: approved={values['approved']!r}, current={values['current']!r}"
+            for field, values in self.differences().items()
+        )
+        return f"Recovery approval no longer matches retained facts ({detail})"
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "approved": self.approved.to_dict(),
+            "current": self.current.to_dict(),
+            "differences": self.differences(),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class RecoveryAttemptPending:
     message: str
     failure: ValidatedWorkFailure | None = None
+    authority_stale: RecoveryAuthorityStale | None = None
+
+    def __post_init__(self) -> None:
+        if (
+            self.authority_stale is not None
+            and self.failure is not ValidatedWorkFailure.AUTHORITY_SNAPSHOT_STALE
+        ):
+            raise ValueError("authority-stale facts require the matching failure")
 
 
 def target_from_verification(prepared: PreparedRecoveryPublication,

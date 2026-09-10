@@ -14,6 +14,7 @@ direction.
 from __future__ import annotations
 
 from ..domain.scoped_rework import ReworkRequest
+from ..domain.validated_work_commands import ValidatedWorkAuthoritySnapshot
 
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -412,6 +413,35 @@ class RequestReworkAction(Action):
     @property
     def issue_number(self) -> int:
         return self.request.target.issue_number
+
+    def reconciliation_subject(self) -> int:
+        return self.issue_number
+
+
+@dataclass(frozen=True)
+class RecoverValidatedWorkAction(Action):
+    """Publish one exact retained validated head through the recovery owner."""
+
+    authority: ValidatedWorkAuthoritySnapshot = field(kw_only=True)
+    rationale: str = ""
+    proposal_id: str = ""
+    finding_ids: tuple[str, ...] = ()
+    anchor_issue_number: int = 0
+    proposal_issue_number: int = 0
+    requires_effective_disposition: bool = False
+    action_type: ActionType = field(
+        default=ActionType.RECOVER_VALIDATED_WORK, init=False
+    )
+
+    def __post_init__(self) -> None:
+        if not self.proposal_id:
+            raise ValueError("RecoverValidatedWorkAction requires the proposal id")
+        if self.proposal_issue_number < 0:
+            raise ValueError("proposal_issue_number cannot be negative")
+
+    @property
+    def issue_number(self) -> int:
+        return self.authority.issue_number
 
     def reconciliation_subject(self) -> int:
         return self.issue_number

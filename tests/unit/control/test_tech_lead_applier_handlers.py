@@ -28,6 +28,7 @@ from issue_orchestrator.control.actions import (
     KillHungSessionAction,
     PromoteTechLeadFindingAction,
     RecordTechLeadDispositionAction,
+    RecoverValidatedWorkAction,
     EscalateTechLeadDispositionAction,
     ReportPromotedFindingEvidenceAction,
     ResetRetryIssueAction,
@@ -50,6 +51,13 @@ from issue_orchestrator.domain.tech_lead_session import (
     TechLeadCreationOrigin,
     TechLeadDisposition,
 )
+from issue_orchestrator.domain.validated_work import (
+    RemoteBaselineStatus,
+    ValidatedWorkKey,
+)
+from issue_orchestrator.domain.validated_work_commands import (
+    ValidatedWorkAuthoritySnapshot,
+)
 
 ANCHOR = 77
 CASE_FILE = 65
@@ -57,6 +65,22 @@ TARGET = 12
 UPSTREAM = "owner/upstream"
 PROMOTION_MARKER = "<!-- issue-orchestrator:tech-lead-promotion:v1:abc -->"
 CASE_FILE_MARKER = "<!-- issue-orchestrator:tech-lead-case-file:v1:abc -->"
+
+
+def _validated_work_authority() -> ValidatedWorkAuthoritySnapshot:
+    key = ValidatedWorkKey("owner/repo", TARGET, "12-work", "a" * 40)
+    return ValidatedWorkAuthoritySnapshot(
+        record_id=key.record_id,
+        evidence_id="evidence-1",
+        observation_revision=2,
+        validated_head_sha=key.validated_head_sha,
+        branch_name=key.branch_name,
+        repo_slug=key.repo_slug,
+        issue_number=key.issue_number,
+        pr_number=None,
+        expected_remote_head_sha=None,
+        remote_baseline_status=RemoteBaselineStatus.UNOBSERVED,
+    )
 
 
 def _op() -> StoredTechLeadOp:
@@ -126,7 +150,17 @@ def _mutating_actions() -> dict[ActionType, tuple[Action, int]]:
         ActionType.REQUEST_REWORK: (
             RequestReworkAction(request=ReworkRequest(
                 ReworkTarget("owner/repo", 94, TARGET, "a" * 40, "12-work", (), ()),
-                "finding", "report", "feedback"), proposal_id="A1", expected=expected), TARGET,
+            "finding", "report", "feedback"), proposal_id="A1", expected=expected), TARGET,
+        ),
+        ActionType.RECOVER_VALIDATED_WORK: (
+            RecoverValidatedWorkAction(
+                authority=_validated_work_authority(),
+                rationale="publish retained validated work",
+                proposal_id="A1",
+                anchor_issue_number=ANCHOR,
+                expected=expected,
+            ),
+            TARGET,
         ),
         ActionType.RECOVER_TECH_LEAD_PROPOSAL: (
             RecoverTechLeadProposalAction(creation_key="key", issue_number=TARGET, expected=expected), TARGET,
@@ -235,6 +269,7 @@ class _Registry:
             reset_retry=inert,
             kill_hung_session=inert,
             request_rework=inert,
+            recover_validated_work=inert,
             events=MagicMock(), label_manager=MagicMock(), needs_human_block=MagicMock(),
             apply_action=inert,
             verify_claim=lambda action, number: None,

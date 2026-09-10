@@ -3,7 +3,7 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import ClassVar
+from typing import Any, ClassVar
 from .issue_run_evidence import IssueRunEvidence
 from .validated_work import (
     ValidatedWorkKey,
@@ -81,6 +81,64 @@ class ValidatedWorkAuthoritySnapshot:
             and (self.expected_remote_head_sha is not None or self.pr_number is not None)
         ):
             raise ValueError("unobserved authority cannot name branch or PR facts")
+
+    def to_dict(self) -> dict[str, object]:
+        """Serialize the complete approval boundary without dropping null facts."""
+        return {
+            "record_id": self.record_id,
+            "evidence_id": self.evidence_id,
+            "observation_revision": self.observation_revision,
+            "validated_head_sha": self.validated_head_sha,
+            "branch_name": self.branch_name,
+            "repo_slug": self.repo_slug,
+            "issue_number": self.issue_number,
+            "pr_number": self.pr_number,
+            "expected_remote_head_sha": self.expected_remote_head_sha,
+            "remote_baseline_status": self.remote_baseline_status.value,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ValidatedWorkAuthoritySnapshot":
+        """Parse persisted approval authority; malformed content fails loudly."""
+        required = {
+            "record_id",
+            "evidence_id",
+            "observation_revision",
+            "validated_head_sha",
+            "branch_name",
+            "repo_slug",
+            "issue_number",
+            "pr_number",
+            "expected_remote_head_sha",
+            "remote_baseline_status",
+        }
+        missing = sorted(required - data.keys())
+        if missing:
+            raise ValueError(f"validated-work authority is missing fields: {missing}")
+        unexpected = sorted(data.keys() - required)
+        if unexpected:
+            raise ValueError(
+                f"validated-work authority has unexpected fields: {unexpected}"
+            )
+        try:
+            baseline = RemoteBaselineStatus(data["remote_baseline_status"])
+        except (TypeError, ValueError):
+            raise ValueError(
+                "validated-work authority remote_baseline_status is invalid:"
+                f" {data.get('remote_baseline_status')!r}"
+            ) from None
+        return cls(
+            record_id=data["record_id"],  # type: ignore[arg-type]
+            evidence_id=data["evidence_id"],  # type: ignore[arg-type]
+            observation_revision=data["observation_revision"],  # type: ignore[arg-type]
+            validated_head_sha=data["validated_head_sha"],  # type: ignore[arg-type]
+            branch_name=data["branch_name"],  # type: ignore[arg-type]
+            repo_slug=data["repo_slug"],  # type: ignore[arg-type]
+            issue_number=data["issue_number"],  # type: ignore[arg-type]
+            pr_number=data["pr_number"],  # type: ignore[arg-type]
+            expected_remote_head_sha=data["expected_remote_head_sha"],  # type: ignore[arg-type]
+            remote_baseline_status=baseline,
+        )
 
 
 @dataclass(frozen=True, slots=True)

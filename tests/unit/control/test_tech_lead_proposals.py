@@ -19,6 +19,7 @@ from issue_orchestrator.control.actions import (
     CreateTechLeadProposalIssueAction,
     DiscardTerminalTechLeadProposalOpsAction,
     KillHungSessionAction,
+    RecoverValidatedWorkAction,
     ResetRetryIssueAction,
 )
 from issue_orchestrator.control.label_manager import LabelManager
@@ -56,6 +57,13 @@ from issue_orchestrator.domain.tech_lead_session import (
     StoredTechLeadOp,
     TechLeadCreationOrigin,
 )
+from issue_orchestrator.domain.validated_work import (
+    RemoteBaselineStatus,
+    ValidatedWorkKey,
+)
+from issue_orchestrator.domain.validated_work_commands import (
+    ValidatedWorkAuthoritySnapshot,
+)
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.domain.tech_lead_findings import (
     PatternObservation,
@@ -90,6 +98,39 @@ def _op(
 
 def _kill_op(target: int = 14, *, session_id: str = "RUN-14") -> StoredTechLeadOp:
     return _op(target, op_type="kill_hung_session", target_session_id=session_id)
+
+
+def _recovery_op(
+    target: int = 14,
+    *,
+    expected_remote_head_sha: str | None = None,
+    pr_number: int | None = None,
+    remote_baseline_status: RemoteBaselineStatus = RemoteBaselineStatus.OBSERVED,
+) -> StoredTechLeadOp:
+    key = ValidatedWorkKey("owner/repo", target, "14-work", "a" * 40)
+    authority = ValidatedWorkAuthoritySnapshot(
+        record_id=key.record_id,
+        evidence_id="evidence-14",
+        observation_revision=4,
+        validated_head_sha=key.validated_head_sha,
+        branch_name=key.branch_name,
+        repo_slug=key.repo_slug,
+        issue_number=key.issue_number,
+        pr_number=pr_number,
+        expected_remote_head_sha=expected_remote_head_sha,
+        remote_baseline_status=remote_baseline_status,
+    )
+    return StoredTechLeadOp(
+        op_type="recover_validated_work",
+        target_issue_number=target,
+        rationale="Publish retained validated work.",
+        source_run_id="run-1",
+        source_session_name="issue-99",
+        source_action_id="A3",
+        created_at="2026-09-08T00:00:00+00:00",
+        finding_ids=("T1",),
+        validated_work_authority=authority,
+    )
 
 
 def _proposed(
@@ -162,6 +203,46 @@ def test_proposal_action_carries_gate_label_and_scan_labels() -> None:
     # R6: the proposal's findings are persisted onto the stored op.
     assert action.op == _op(finding_ids=("T1",))
     assert action.anchor_issue_number == 99
+
+
+@pytest.mark.parametrize(
+    ("authority", "expected_lines"),
+    [
+        (
+            _recovery_op().validated_work_authority,
+            ("| Remote observation | `observed` |", "Approved remote baseline | `absent`; PR `none`"),
+        ),
+        (
+            _recovery_op(
+                expected_remote_head_sha="b" * 40,
+                pr_number=72,
+            ).validated_work_authority,
+            ("| Remote observation | `observed` |", f"Approved remote baseline | `{'b' * 40}`; PR `72`"),
+        ),
+        (
+            _recovery_op(
+                remote_baseline_status=RemoteBaselineStatus.UNOBSERVED,
+            ).validated_work_authority,
+            ("| Remote observation | `unobserved` |", "Approved remote baseline | `unknown`; PR `none`"),
+        ),
+    ],
+)
+def test_recovery_proposal_renders_remote_authority_without_inventing_absence(
+    authority, expected_lines
+) -> None:
+    action = build_tech_lead_proposal_issue_action(
+        _proposed("recover_validated_work", 14),
+        config=Config(tech_lead_review_agent="tech-lead-agent"),
+        anchor_issue_number=99,
+        source_run_id="run-1",
+        source_session_name="issue-99",
+        expected=EXPECTED,
+        validated_work_authority=authority,
+        now_iso="2026-09-08T00:00:00+00:00",
+    )
+
+    assert "| Repository | `owner/repo` |" in action.body
+    assert all(line in action.body for line in expected_lines)
 
 
 def test_proposal_action_requires_gate_label() -> None:
@@ -475,6 +556,21 @@ def test_approved_kill_op_plans_kill_action() -> None:
     assert action.proposal_issue_number == 501
     # R1: the approved generation binding rides the action to the executor.
     assert action.target_session_id == "RUN-14"
+
+
+def test_approved_recovery_op_plans_exact_snapshot_with_proposal_linkage() -> None:
+    op = _recovery_op()
+
+    [action] = plan_approved_tech_lead_op_executions(
+        (ApprovedTechLeadOp(proposal_issue_number=502, op=op),)
+    )
+
+    assert isinstance(action, RecoverValidatedWorkAction)
+    assert action.authority is op.validated_work_authority
+    assert action.issue_number == 14
+    assert action.proposal_issue_number == 502
+    assert action.proposal_id == "A3"
+    assert action.finding_ids == ("T1",)
 
 
 # --- Creation boundary (applier owner) ------------------------------------

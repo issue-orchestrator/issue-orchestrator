@@ -11,9 +11,24 @@ from issue_orchestrator.control.required_issue_comment import ReuseTechLeadPropo
 from issue_orchestrator.control.tech_lead_completion_gate import evaluate_required_act_level_outcome
 from issue_orchestrator.control.tech_lead_reset_retry import TechLeadResetRetryExecutor, ResetRetryRunOutcome, apply_completion_actions_gated
 from issue_orchestrator.control.tech_lead_kill_session import TechLeadKillSessionExecutor, KillSessionRunOutcome
+from issue_orchestrator.control.tech_lead_validated_work_recovery import (
+    TechLeadValidatedWorkRecoveryExecutor,
+)
 from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.domain.models import Issue
 from issue_orchestrator.domain.tech_lead_session import StoredTechLeadOp
+from issue_orchestrator.domain.recovery_attempt import (
+    RecoveryAttemptPending,
+    RecoveryAuthorityStale,
+)
+from issue_orchestrator.domain.validated_work import (
+    RemoteBaselineStatus,
+    ValidatedWorkFailure,
+    ValidatedWorkKey,
+)
+from issue_orchestrator.domain.validated_work_commands import (
+    ValidatedWorkAuthoritySnapshot,
+)
 from issue_orchestrator.ports.comment_receipt import IssueCommentReceipt
 from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthorityStore
 from issue_orchestrator.infra.config import Config
@@ -64,6 +79,53 @@ def harness(op_type="reset_retry"):
         repository_host=host, tech_lead_ops=authority, tech_lead_reset_retry=reset, tech_lead_kill_session=kill)
     action = ReuseTechLeadProposalAction(number=7000, comment="Reuse current remedy", required_op=op)
     return host, authority, reset, kill, applier, action
+
+
+def _recovery_authority(revision: int = 1) -> ValidatedWorkAuthoritySnapshot:
+    key = ValidatedWorkKey("owner/repo", 6410, "issue-6410", "a" * 40)
+    return ValidatedWorkAuthoritySnapshot(
+        record_id=key.record_id,
+        evidence_id="evidence-6410",
+        observation_revision=revision,
+        validated_head_sha=key.validated_head_sha,
+        branch_name=key.branch_name,
+        repo_slug=key.repo_slug,
+        issue_number=key.issue_number,
+        pr_number=71,
+        expected_remote_head_sha="b" * 40,
+        remote_baseline_status=RemoteBaselineStatus.OBSERVED,
+    )
+
+
+def recovery_harness(preflight):
+    host, authority = Host(), InMemoryTechLeadAuthorityStore()
+    snapshot = _recovery_authority()
+    op = StoredTechLeadOp(
+        op_type="recover_validated_work",
+        target_issue_number=6410,
+        rationale="recover retained work",
+        source_run_id="source",
+        source_session_name="session",
+        source_action_id="A3",
+        created_at="2026-09-08T00:00:00+00:00",
+        validated_work_authority=snapshot,
+    )
+    authority.record_op(issue_number=7000, op=op)
+    recovery = TechLeadValidatedWorkRecoveryExecutor(
+        events=MagicMock(), preflight=preflight, recover=MagicMock()
+    )
+    applier = ActionApplier(
+        labels=MagicMock(),
+        sessions=MagicMock(),
+        events=MagicMock(),
+        repository_host=host,
+        tech_lead_ops=authority,
+        recover_validated_work=recovery,
+    )
+    action = ReuseTechLeadProposalAction(
+        number=7000, comment="Reuse current recovery", required_op=op
+    )
+    return host, applier, action, recovery
 
 
 @pytest.mark.parametrize("condition", ["closed", "missing", "no-op", "unblocked", "active", "validated-work", "write-race"])
@@ -117,6 +179,40 @@ def test_valid_proposal_reuse_proves_receipt_without_executing_or_reapproving(op
     assert applier.apply(action).success
     assert host.comments == [(7000, action.comment)]
     assert authority.load_op(issue_number=7000) == action.required_op
+
+
+def test_current_recovery_proposal_is_reusable_without_executing_it() -> None:
+    host, applier, action, recovery = recovery_harness(lambda _command: None)
+
+    result = applier.apply(action)
+
+    assert result.success
+    assert host.comments == [(7000, action.comment)]
+    recovery.recover.assert_not_called()
+
+
+def test_stale_recovery_proposal_reuse_withholds_success_only_effects() -> None:
+    approved = _recovery_authority()
+    current = replace(approved, observation_revision=2)
+    stale = RecoveryAuthorityStale(approved, current)
+    host, applier, action, recovery = recovery_harness(
+        lambda _command: RecoveryAttemptPending(
+            stale.describe(),
+            ValidatedWorkFailure.AUTHORITY_SNAPSHOT_STALE,
+            stale,
+        )
+    )
+
+    results, error = apply_completion_actions_gated(
+        applier,
+        [AddCommentAction(number=6410, comment="success-only"), action],
+        issue_number=6410,
+    )
+
+    assert error is None
+    assert evaluate_required_act_level_outcome(results).failed
+    assert host.comments == []
+    recovery.recover.assert_not_called()
 
 
 @pytest.mark.parametrize("required", [False, True])

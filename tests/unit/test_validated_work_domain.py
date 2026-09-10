@@ -36,6 +36,7 @@ from issue_orchestrator.domain.validated_work_commands import (
     DispositionInitiator,
     OperatorResolution,
     StoredEvidenceCommand,
+    ValidatedWorkAuthoritySnapshot,
     ValidatedWorkDispositionBatch,
 )
 from tests.unit.validated_work_support import (
@@ -377,6 +378,23 @@ def test_authority_constructor_binds_exact_work(tmp_path, field, value):
     snapshot = store.evidence_for_id(a.evidence.evidence_id).evidence.authority
     with pytest.raises(ValueError):
         replace(snapshot, **{field: value})
+
+
+def test_authority_snapshot_round_trips_the_complete_approval_boundary(tmp_path):
+    store = Rig(tmp_path / "work.sqlite").open()
+    admission = capture()
+    store.admit(admission)
+    snapshot = store.evidence_for_id(admission.evidence.evidence_id).evidence.authority
+
+    assert ValidatedWorkAuthoritySnapshot.from_dict(snapshot.to_dict()) == snapshot
+    malformed = snapshot.to_dict()
+    malformed.pop("observation_revision")
+    with pytest.raises(ValueError, match="missing fields"):
+        ValidatedWorkAuthoritySnapshot.from_dict(malformed)
+    with pytest.raises(ValueError, match="unexpected fields"):
+        ValidatedWorkAuthoritySnapshot.from_dict(
+            {**snapshot.to_dict(), "replacement_head_sha": "f" * 40}
+        )
 
 
 def test_stored_recovery_cannot_be_automatic_or_redirect_authority(tmp_path):

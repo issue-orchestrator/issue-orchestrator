@@ -45,6 +45,7 @@ TERMINAL_INVESTIGATION_ACTIONS = frozenset(
         "reset_retry",
         "kill_hung_session",
         "request_rework",
+        "recover_validated_work",
     }
 )
 
@@ -85,7 +86,7 @@ def investigation_disposition_violation(
             and _targets_focus(a, authority)
         ]
         if len(terminal) != 1:
-            return "failure investigation requires exactly one terminal disposition for the focus issue: defer_to_tracker, escalate_to_human, reset_retry, kill_hung_session, or request_rework"
+            return "failure investigation requires exactly one terminal disposition for the focus issue: defer_to_tracker, escalate_to_human, reset_retry, kill_hung_session, request_rework, or recover_validated_work"
         assert authority.focus_issue_number is not None
         if terminal[0].action_type == "kill_hung_session" and authority.observed_kill_target(authority.focus_issue_number) is None:
             return "kill_hung_session requires a launch-observed worker generation"

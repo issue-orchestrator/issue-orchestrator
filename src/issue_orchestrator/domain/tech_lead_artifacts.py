@@ -42,6 +42,7 @@ TechLeadActionType = Literal[
     "reset_retry",
     "kill_hung_session",
     "request_rework",
+    "recover_validated_work",
 ]
 TechLeadFindingClassification = Literal["infra", "task", "agent", "systemic"]
 TechLeadAuthorityMode = Literal["execute", "propose"]
@@ -60,7 +61,8 @@ VALID_TECH_LEAD_ACTION_TYPES: frozenset[str] = frozenset(
         "flag_pattern",
         "reset_retry",
         "kill_hung_session",
-    "request_rework",
+        "request_rework",
+        "recover_validated_work",
     )
 )
 _VALID_CLASSIFICATIONS = frozenset(("infra", "task", "agent", "systemic"))
@@ -70,7 +72,7 @@ _VALID_CLASSIFICATIONS = frozenset(("infra", "task", "agent", "systemic"))
 # be granted direct ``execute`` authority. Keep the explicit unwired set as the
 # fail-closed extension point for future act-level actions.
 ACT_LEVEL_TECH_LEAD_ACTIONS: frozenset[str] = frozenset(
-    ("reset_retry", "kill_hung_session", "request_rework")
+    ("reset_retry", "kill_hung_session", "request_rework", "recover_validated_work")
 )
 UNWIRED_ACT_LEVEL_TECH_LEAD_ACTIONS: frozenset[str] = frozenset()
 

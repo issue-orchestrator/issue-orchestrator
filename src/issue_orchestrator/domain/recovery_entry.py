@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from enum import StrEnum
 
-from .recovery_attempt import RecoveryAttemptPending
+from .recovery_attempt import RecoveryAttemptPending, RecoveryAuthorityStale
 from .validated_work import EvidenceRole, LineageRole, ValidatedWorkFailure, ValidatedWorkState, require_positive, require_text
 from .validated_work_commands import ValidatedWorkAuthoritySnapshot
 from .validated_work_store import ValidatedWorkRecord
@@ -56,9 +56,9 @@ class RecoveryRecordRequest:
         row, disposition = record.current_evidence, record.disposition
         if (disposition.record_id != self.record_id or row.evidence_id != self.evidence_id
                 or row.role is not EvidenceRole.CURRENT or row.released_at):
-            return RecoveryAttemptPending("Recovery evidence is no longer current", ValidatedWorkFailure.AUTHORITY_SNAPSHOT_STALE)
+            return self._stale_refusal(row.authority, "Recovery evidence is no longer current")
         if self.approved is not None and self.approved != row.authority:
-            return RecoveryAttemptPending("Recovery approval no longer matches retained facts", ValidatedWorkFailure.AUTHORITY_SNAPSHOT_STALE)
+            return self._stale_refusal(row.authority, "Recovery approval no longer matches retained facts")
         state = disposition.state
         if state is ValidatedWorkState.PUBLISHING:
             return None
@@ -67,3 +67,17 @@ class RecoveryRecordRequest:
         if state is ValidatedWorkState.PARKED and self.approved is not None:
             return None
         return RecoveryAttemptPending("Retained work is not authorized for publication")
+
+    def _stale_refusal(
+        self, current: ValidatedWorkAuthoritySnapshot, message: str
+    ) -> RecoveryAttemptPending:
+        stale = (
+            RecoveryAuthorityStale(self.approved, current)
+            if self.approved is not None
+            else None
+        )
+        return RecoveryAttemptPending(
+            stale.describe() if stale is not None else message,
+            ValidatedWorkFailure.AUTHORITY_SNAPSHOT_STALE,
+            stale,
+        )

@@ -72,6 +72,7 @@ from .actions import (
     AddCommentAction,
     AddLabelAction,
     KillHungSessionAction,
+    RecoverValidatedWorkAction,
     ResetRetryIssueAction,
     SurfaceTechLeadProposalAction,
 )
@@ -621,6 +622,12 @@ def _failure_surface_identity(
             action.issue_number,
             "reset_retry",
             f"issue #{action.issue_number}",
+        )
+    if isinstance(action, RecoverValidatedWorkAction):
+        return (
+            action.issue_number,
+            "recover_validated_work",
+            f"retained validated work for issue #{action.issue_number}",
         )
     return (
         fallback_issue_number,

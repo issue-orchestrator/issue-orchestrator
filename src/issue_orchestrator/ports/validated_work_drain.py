@@ -8,6 +8,7 @@ from ..domain.recovery_attempt import RecoveryAttemptPending
 from ..domain.recovery_completion import RecoveryCompleted
 from ..domain.recovery_entry import RecoveryRecordRequest
 from ..domain.validated_work_remote_authority import RemoteAuthorityRefreshRequest
+from ..domain.validated_work_commands import StoredEvidenceCommand
 
 ValidatedWorkDrainRequest = RecoveryRecordRequest | RemoteAuthorityRefreshRequest
 
@@ -25,6 +26,12 @@ class ValidatedWorkDrainQueue(Protocol):
 
 
 class ValidatedWorkRecoveryOperation(Protocol):
+    def preflight(
+        self, request: RecoveryRecordRequest
+    ) -> RecoveryAttemptPending | None:
+        """Apply the operation's current-record policy without writes."""
+        ...
+
     def run(self, request: RecoveryRecordRequest, state: OrchestratorState) -> RecoveryCompleted | RecoveryAttemptPending:
         """Own execution and claim until all synchronous effects/children finish."""
         ...
@@ -43,6 +50,18 @@ class RecoveryDrainAdmission(Protocol):
 
 
 class ValidatedWorkRecoveryDrain(Protocol):
+    def preflight(
+        self, command: StoredEvidenceCommand
+    ) -> RecoveryAttemptPending | None:
+        """Read current applicability through the shared recovery policy."""
+        ...
+
+    def recover(
+        self, command: StoredEvidenceCommand, state: OrchestratorState
+    ) -> RecoveryCompleted | RecoveryAttemptPending:
+        """Run an explicitly authorized command through the shared owner."""
+        ...
+
     def tick(
         self, state: OrchestratorState, admission: RecoveryDrainAdmission
     ) -> RecoveryDrainReport:
@@ -53,7 +72,17 @@ class ValidatedWorkRecoveryDrain(Protocol):
 class NullValidatedWorkRecoveryDrain:
     """Explicit testing composition with no production recovery authority."""
 
+    def preflight(
+        self, command: StoredEvidenceCommand
+    ) -> RecoveryAttemptPending | None:
+        return RecoveryAttemptPending("Validated-work recovery is not composed")
+
     def tick(
         self, state: OrchestratorState, admission: RecoveryDrainAdmission
     ) -> RecoveryDrainReport:
         return RecoveryDrainReport(())
+
+    def recover(
+        self, command: StoredEvidenceCommand, state: OrchestratorState
+    ) -> RecoveryCompleted | RecoveryAttemptPending:
+        return RecoveryAttemptPending("Validated-work recovery is not composed")

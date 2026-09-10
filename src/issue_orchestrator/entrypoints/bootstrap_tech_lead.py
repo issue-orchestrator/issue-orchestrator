@@ -131,11 +131,15 @@ def wire_tech_lead_act_executors(orchestrator: "Orchestrator") -> None:
     from .tech_lead_reset_retry_wiring import (
         build_tech_lead_kill_session_executor,
         build_tech_lead_reset_retry_executor,
+        build_tech_lead_validated_work_recovery_executor,
     )
 
     applier = orchestrator.deps.action_applier
     applier.tech_lead_reset_retry = build_tech_lead_reset_retry_executor(orchestrator)
     applier.tech_lead_kill_session = build_tech_lead_kill_session_executor(orchestrator)
+    applier.recover_validated_work = (
+        build_tech_lead_validated_work_recovery_executor(orchestrator)
+    )
     from ..control.scoped_rework import RequestReworkExecutor
     from ..control.pending_work_successors import PendingWorkSuccessors
     applier.tech_lead_ops = orchestrator.deps.services.tech_lead_authority

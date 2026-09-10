@@ -47,6 +47,7 @@ def build_session_launcher_factory(
     issue_run_allocator: IssueRunAllocator,
     manifest_downloader,
     tech_lead_authority,
+    validated_work_recovery_authority,
     claim_manager,
     provider_resilience,
     state_machine_manager,
@@ -88,6 +89,7 @@ def build_session_launcher_factory(
                 session_manager.runner.send_to_session_by_name(name, text)
             ),
             board_snapshot_provider=board_snapshot_provider,
+            validated_work_recovery_authority=validated_work_recovery_authority,
             agent_callback_endpoint=agent_callback_endpoint,
             issue_run_allocator=issue_run_allocator,
             provider_readiness_probe=provider_readiness_probe,

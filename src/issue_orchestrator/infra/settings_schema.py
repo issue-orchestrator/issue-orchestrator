@@ -1363,6 +1363,26 @@ class ReviewSettings(BaseModel):
             "yaml_path": "tech_lead.authority.request_rework",
         },
     )
+    tech_lead_authority_recover_validated_work: str = Field(
+        "propose",
+        title=f"{TECH_LEAD_DISPLAY_NAME} Authority: Recover Validated Work",
+        description=(
+            "Publish an exact retained validated commit through the recovery owner"
+        ),
+        json_schema_extra={
+            "enum": list(TECH_LEAD_AUTHORITY_MODES),
+            "doc_examples": ["propose", "execute"],
+            "doc_notes": (
+                "propose (default) creates a gated issue containing the full"
+                " retained-work authority snapshot. Approval or direct execute"
+                " rechecks that exact snapshot before the shared recovery owner"
+                " publishes anything."
+            ),
+            "section": _TECH_LEAD_SECTION,
+            "config_attr": "tech_lead.authority.recover_validated_work",
+            "yaml_path": "tech_lead.authority.recover_validated_work",
+        },
+    )
     tech_lead_findings_promote: str = Field(
         FINDING_PROMOTION_GATED,
         title=f"{TECH_LEAD_DISPLAY_NAME} Finding Promotion",
@@ -1617,6 +1637,7 @@ class ReviewSettings(BaseModel):
         "tech_lead_authority_reset_retry",
         "tech_lead_authority_kill_hung_session",
         "tech_lead_authority_request_rework",
+        "tech_lead_authority_recover_validated_work",
     )
     @classmethod
     def _validate_tech_lead_authority_mode(cls, value: str) -> str:

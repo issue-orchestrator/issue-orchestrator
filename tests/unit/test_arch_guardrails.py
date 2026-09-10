@@ -66,6 +66,21 @@ def test_blocks_subprocess_import_in_control(tmp_path: Path) -> None:
     )
 
 
+def test_allows_comment_publication_only_in_proposal_execution_owner(
+    tmp_path: Path,
+) -> None:
+    code = "def publish(host):\n    host.add_comment(1, 'done')\n"
+    assert (
+        _run(
+            tmp_path,
+            code,
+            "src/issue_orchestrator/control/tech_lead_proposal_execution.py",
+        )
+        == 0
+    )
+    assert _run(tmp_path, code, "src/issue_orchestrator/control/other.py") == 2
+
+
 def test_allows_subprocess_in_execution(tmp_path: Path) -> None:
     code = "import subprocess\nsubprocess.run(['echo','hi'])\n"
     assert _run(tmp_path, code, "src/issue_orchestrator/execution/x.py") == 0

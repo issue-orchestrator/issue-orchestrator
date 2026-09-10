@@ -41,12 +41,10 @@ the whole gated lifecycle:
   approved ops into the typed execution actions (``reset_retry`` reuses the
   #6777 executor + stale policy verbatim; ``kill_hung_session`` uses its own
   executor in ``tech_lead_kill_session``).
-* **Terminal handling** — :func:`finalize_tech_lead_op_execution` posts the
-  outcome comment on the proposal issue, closes it, and discards the op for
-  executed AND stale outcomes (stale = "preconditions no longer hold": the
-  executor posted no mutations). A loud executor failure leaves the op in
-  place so the next tick retries. ``discard_op`` after terminal handling
-  plus create-once recording makes ops execute at most once.
+* **Execution handoff** — :mod:`tech_lead_proposal_execution` rechecks consent,
+  posts terminal outcomes, closes the proposal, and discards its op. These
+  functions are re-exported here to preserve the proposal lifecycle API while
+  keeping mutation sequencing in its own owner.
 """
 
 from __future__ import annotations
@@ -54,9 +52,10 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Callable, Iterable, Mapping, Sequence, TypeVar
+from typing import TYPE_CHECKING, Iterable, Mapping, Sequence
 
 from ..domain.scoped_rework import ReworkRequest, ReworkReceipt
+from ..domain.validated_work import RemoteBaselineStatus
 from ..domain.tech_lead_session import (
     PROPOSED_TECH_LEAD_LABEL,
     ApprovedTechLeadOp,
@@ -72,16 +71,20 @@ from .actions import (
     CreateTechLeadProposalIssueAction,
     DiscardTerminalTechLeadProposalOpsAction,
     KillHungSessionAction,
+    RecoverValidatedWorkAction,
     RequestReworkAction,
     ResetRetryIssueAction,
 )
-from .reconciliation import build_expected_for_mutation, ReconciliationRequired
-from .claim_gate import ClaimLostError
-from .tech_lead_reset_retry import STALE_DOWNGRADE_MODE
+from .reconciliation import build_expected_for_mutation
+from .tech_lead_proposal_execution import (
+    execute_approved_tech_lead_op as execute_approved_tech_lead_op,
+    finalize_tech_lead_op_execution as finalize_tech_lead_op_execution,
+)
 
 if TYPE_CHECKING:
     from ..domain.scoped_rework import TechLeadProposalCommand, TechLeadProposalCommandOutcome
     from ..domain.tech_lead_artifacts import ProposedTechLeadAction
+    from ..domain.validated_work_commands import ValidatedWorkAuthoritySnapshot
     from ..infra.config import Config
     from ..ports import RepositoryHost
     from ..ports.issue import Issue
@@ -89,13 +92,6 @@ if TYPE_CHECKING:
     from .reconciliation import ExpectedState
 
 logger = logging.getLogger(__name__)
-
-# The two act-level op actions the consent-gated execution owner handles;
-# mirrors the applier's constrained TypeVar so the thin dispatch preserves the
-# concrete action type through the consent gate into finalize.
-_TechLeadOpAction = TypeVar(
-    "_TechLeadOpAction", ResetRetryIssueAction, KillHungSessionAction, RequestReworkAction
-)
 
 # Exhaustive open tech-lead-agent scan bound (#6779 R4). Both the per-tick fact
 # gatherer and startup recovery page the COMPLETE open set so a backlog of
@@ -114,6 +110,7 @@ _OP_TITLES: dict[str, str] = {
     "request_rework": "scoped PR rework for issue #{target}",
     "reset_retry": "reset & retry issue #{target} from scratch",
     "kill_hung_session": "kill hung session for issue #{target}",
+    "recover_validated_work": "recover retained validated work for issue #{target}",
 }
 
 
@@ -148,6 +145,7 @@ def build_stored_tech_lead_op(
     source_session_name: str,
     target_session: TechLeadSessionGeneration | None = None,
     rework_request: ReworkRequest | None = None,
+    validated_work_authority: "ValidatedWorkAuthoritySnapshot | None" = None,
     now_iso: str | None = None,
 ) -> StoredTechLeadOp:
     """The orchestrator-side executable payload for an act-level proposal.
@@ -163,6 +161,7 @@ def build_stored_tech_lead_op(
         op_type=proposed.action_type,
         target_issue_number=rework_request.target.issue_number if rework_request else proposed.target_number,
         rework_request=rework_request,
+        validated_work_authority=validated_work_authority,
         rationale=proposed.body or "",
         source_run_id=source_run_id,
         source_session_name=source_session_name,
@@ -198,6 +197,28 @@ def _proposal_issue_body(
             f"| Evidence | `{request.evidence_identity}` |\n"
             f"| Predicted effects | Preserve `{target.branch}`; invalidate review labels; queue normal rework. "
             "Clear only the observed operator human block; independent causes stay. A merged PR creates a forward fix. |\n"
+        )
+    if op.validated_work_authority is not None:
+        authority = op.validated_work_authority
+        observed = authority.remote_baseline_status.value
+        if authority.expected_remote_head_sha is not None:
+            remote_head = authority.expected_remote_head_sha
+        elif (
+            authority.remote_baseline_status is RemoteBaselineStatus.OBSERVED
+        ):
+            remote_head = "absent"
+        else:
+            remote_head = "unknown"
+        session_row += (
+            f"| Retained record | `{authority.record_id}` |\n"
+            f"| Evidence | `{authority.evidence_id}` revision"
+            f" `{authority.observation_revision}` |\n"
+            f"| Repository | `{authority.repo_slug}` |\n"
+            f"| Validated head | `{authority.validated_head_sha}` on"
+            f" `{authority.branch_name}` |\n"
+            f"| Remote observation | `{observed}` |\n"
+            f"| Approved remote baseline | `{remote_head}`;"
+            f" PR `{authority.pr_number if authority.pr_number is not None else 'none'}` |\n"
         )
     return f"""## Gated tech_lead proposal (ADR-0031 §2)
 
@@ -241,6 +262,7 @@ def build_tech_lead_proposal_issue_action(
     expected: "ExpectedState",
     target_session: TechLeadSessionGeneration | None = None,
     rework_request: ReworkRequest | None = None,
+    validated_work_authority: "ValidatedWorkAuthoritySnapshot | None" = None,
     now_iso: str | None = None,
 ) -> CreateTechLeadProposalIssueAction:
     """Compose the gated proposal issue creation for an act-level proposal.
@@ -254,6 +276,7 @@ def build_tech_lead_proposal_issue_action(
         source_session_name=source_session_name,
         target_session=target_session,
         rework_request=rework_request,
+        validated_work_authority=validated_work_authority,
         now_iso=now_iso,
     )
     title_detail = _OP_TITLES[op.op_type].format(target=op.target_issue_number)
@@ -540,6 +563,20 @@ def plan_approved_tech_lead_op_executions(
                 proposal_issue_number=item.proposal_issue_number, reason=reason,
                 expected=build_expected_for_mutation(),
             ))
+        elif op.op_type == "recover_validated_work":
+            assert op.validated_work_authority is not None
+            actions.append(
+                RecoverValidatedWorkAction(
+                    authority=op.validated_work_authority,
+                    rationale=op.rationale,
+                    proposal_id=op.source_action_id,
+                    finding_ids=op.finding_ids,
+                    anchor_issue_number=item.proposal_issue_number,
+                    proposal_issue_number=item.proposal_issue_number,
+                    reason=reason,
+                    expected=build_expected_for_mutation(),
+                )
+            )
         elif op.op_type == "kill_hung_session":
             actions.append(
                 KillHungSessionAction(
@@ -576,188 +613,6 @@ def plan_approved_tech_lead_op_executions(
             op.target_issue_number,
         )
     return actions
-
-
-def _terminal_outcome_comment(
-    result: ActionResult, action: Action, op_type: str, target: int
-) -> str | None:
-    """The proposal-issue terminal comment, or None for non-terminal results."""
-    if result.success:
-        return (
-            "## ✅ Approved tech_lead operation executed\n\n"
-            f"`{op_type}` for #{target} was executed after re-validating its"
-            " preconditions. Closing this proposal."
-        )
-    if result.details.get("mode") == STALE_DOWNGRADE_MODE:
-        stale = result.details.get("skip_reason", "preconditions no longer hold")
-        return (
-            "## ⏸️ Preconditions no longer hold\n\n"
-            f"`{op_type}` for #{target} was approved, but re-validation found"
-            f" the recorded preconditions stale: {stale}\n\n"
-            "No changes were made. Closing this proposal."
-        )
-    return None
-
-
-def finalize_tech_lead_op_execution(
-    result: ActionResult,
-    action: "ResetRetryIssueAction | KillHungSessionAction | RequestReworkAction",
-    *,
-    repository_host: "RepositoryHost | None",
-    ops: "TechLeadAuthorityStore | None",
-    before_finalize_write: Callable[[], None] | None = None,
-) -> ActionResult:
-    """Terminal handling for a proposal-linked op execution (once-only owner).
-
-    Executed and stale outcomes both terminate the proposal: outcome comment,
-    close, ``discard_op`` — in that order, so a crash mid-finalize leaves the
-    issue open and the next tick retries finalization (the reset executor's
-    own stale policy makes a re-run of an already-applied reset downgrade
-    instead of double-executing). Executor FAILURES are not terminal: the op
-    row stays and the next tick retries the execution loudly.
-
-    Direct execute-authority actions (``proposal_issue_number == 0``) pass
-    through untouched.
-    """
-    proposal_issue = getattr(action, "proposal_issue_number", 0)
-    if not proposal_issue:
-        return result
-    op_type = (
-        "request_rework" if isinstance(action, RequestReworkAction) else
-        "reset_retry"
-        if isinstance(action, ResetRetryIssueAction)
-        else "kill_hung_session"
-    )
-    comment = _terminal_outcome_comment(result, action, op_type, action.issue_number)
-    if comment is None:
-        return result  # loud failure: keep the op, retry next tick
-    if repository_host is None or ops is None:
-        return ActionResult.fail(
-            action,
-            "tech_lead proposal finalization requires repository_host and the"
-            " TechLeadAuthorityStore wired into this applier",
-        )
-    try:
-        if before_finalize_write is not None:
-            before_finalize_write()
-        repository_host.add_comment(proposal_issue, comment)
-        if before_finalize_write is not None:
-            before_finalize_write()
-        repository_host.update_issue_state(proposal_issue, "closed")
-        ops.discard_op(issue_number=proposal_issue)
-    except (ClaimLostError, ReconciliationRequired):
-        raise
-    except Exception as e:
-        logger.exception(
-            "Failed to finalize tech_lead proposal #%d after %s",
-            proposal_issue,
-            op_type,
-        )
-        return ActionResult.fail(
-            action,
-            f"op outcome reached but proposal #{proposal_issue} finalization"
-            f" failed: {e}",
-            proposal_issue_number=proposal_issue,
-        )
-    logger.info(
-        "[tech_lead] Proposal #%d finalized (%s, success=%s)",
-        proposal_issue,
-        op_type,
-        result.success,
-    )
-    return result
-
-
-def _approval_confirmed(repository_host: "RepositoryHost", proposal_issue: int) -> bool:
-    """Fresh read: True iff the proposal still openly holds operator approval.
-
-    Approval STILL STANDS only when a fresh read shows the proposal issue open
-    AND no longer gated (case-insensitive via the one shared predicate, #6779
-    R15/R16); a re-added gate, a closed issue, or a deleted issue each withdraw
-    it. Fail-safe: a read that raises is UNCONFIRMED (never approval), so the
-    caller preserves the op inert rather than act on unverifiable consent.
-    """
-    try:
-        issue = repository_host.get_issue(proposal_issue)
-    except Exception:
-        logger.exception(
-            "[tech_lead] Fresh consent read for proposal #%d failed; treating"
-            " approval as unconfirmed and preserving the op (#6779 R16)",
-            proposal_issue,
-        )
-        return False
-    if issue is None:
-        return False  # proposal deleted -> gone, not approved
-    if issue.state != "open":
-        return False  # proposal closed -> rejected/terminal
-    return not _issue_carries_gate(issue)  # re-gated -> approval withdrawn
-
-
-def _withheld_for_withdrawn_approval(
-    action: "_TechLeadOpAction",
-    repository_host: "RepositoryHost | None",
-) -> ActionResult | None:
-    """None when approval still stands, else the inert result to return.
-
-    The consent gate the lifecycle owner runs immediately before a target
-    mutation. Direct execute-authority actions (``proposal_issue_number == 0``)
-    carry no per-instance gate and pass straight through (None). Otherwise a
-    fresh read decides: still approved -> None (proceed); withdrawn or
-    unconfirmable -> a non-terminal failure that PRESERVES the op (executor not
-    run, proposal not finalized) so the next tick re-reads it as an inert
-    proposal.
-    """
-    proposal_issue = getattr(action, "proposal_issue_number", 0)
-    if not proposal_issue:
-        return None
-    if repository_host is None:
-        return ActionResult.fail(
-            action,
-            "approved tech_lead op consent re-check requires repository_host"
-            " wired into this applier",
-        )
-    if _approval_confirmed(repository_host, proposal_issue):
-        return None
-    logger.info(
-        "[tech_lead] Proposal #%d no longer confirms operator approval before"
-        " apply (re-gated, closed, or unreadable): preserving its op inert"
-        " (#6779 R16)",
-        proposal_issue,
-    )
-    return ActionResult.fail(
-        action,
-        f"proposal #{proposal_issue} no longer confirms operator approval;"
-        " op preserved inert",
-        proposal_issue_number=proposal_issue,
-    )
-
-
-def execute_approved_tech_lead_op(
-    action: "_TechLeadOpAction",
-    apply_fn: "Callable[[_TechLeadOpAction], ActionResult]",
-    *,
-    repository_host: "RepositoryHost | None",
-    ops: "TechLeadAuthorityStore | None",
-    before_finalize_write: Callable[[], None] | None = None,
-) -> ActionResult:
-    """Consent-gated execution boundary for an approved gated-proposal op.
-
-    The proposal lifecycle owner the applier dispatches an approved act-level op
-    to (the applier stays a thin dispatch). Immediately before the target
-    mutation it re-confirms per-instance approval with a FRESH read
-    (:func:`_withheld_for_withdrawn_approval`), then runs the executor and
-    finalizes. Consent is re-checked HERE, not snapshotted at plan time: an
-    operator who removes the gate, lets the scan plan the op, then re-adds the
-    gate before apply has the op preserved inert rather than executed and closed
-    (#6779 R16, the undoable-until-executed property). Read failures fail safe.
-    """
-    inert = _withheld_for_withdrawn_approval(action, repository_host)
-    if inert is not None:
-        return inert
-    return finalize_tech_lead_op_execution(
-        apply_fn(action), action, repository_host=repository_host, ops=ops,
-        before_finalize_write=before_finalize_write
-    )
 
 
 def apply_tech_lead_proposal_command(

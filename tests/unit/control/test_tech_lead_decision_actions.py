@@ -10,6 +10,7 @@ from issue_orchestrator.control.actions import (
     CreateTechLeadIssueAction,
     CreateTechLeadProposalIssueAction,
     KillHungSessionAction,
+    RecoverValidatedWorkAction,
     RecordTechLeadDispositionAction,
     EscalateTechLeadDispositionAction,
     ResetRetryIssueAction,
@@ -39,6 +40,13 @@ from issue_orchestrator.domain.tech_lead_session import (
     PROPOSED_TECH_LEAD_LABEL,
     TECH_LEAD_OBSERVATION_LABEL,
     TechLeadSessionGeneration,
+)
+from issue_orchestrator.domain.validated_work import (
+    RemoteBaselineStatus,
+    ValidatedWorkKey,
+)
+from issue_orchestrator.domain.validated_work_commands import (
+    ValidatedWorkAuthoritySnapshot,
 )
 from issue_orchestrator.infra.config import Config
 
@@ -122,6 +130,7 @@ def _plan(
     anchor: Issue | None = None,
     op_ledger: dict[tuple[str, int], int] | None = None,
     observed_session_generation=lambda _n: None,
+    observed_validated_work_authority=lambda _n: None,
     pattern_ledger: dict[str, PatternEvidence] | None = None,
     dedup_corpus: OpenIssueCorpus | None = None,
     dedup_grant: DuplicateTargetGrant | None = None,
@@ -135,10 +144,27 @@ def _plan(
         expected=EXPECTED,
         op_ledger=op_ledger or {},
         observed_session_generation=observed_session_generation,
+        observed_validated_work_authority=observed_validated_work_authority,
         pattern_ledger=pattern_ledger or {},
         dedup_corpus=dedup_corpus or OpenIssueCorpus.disabled(),
         dedup_grant=dedup_grant or DuplicateTargetGrant.none(),
         **SOURCE_RUN,
+    )
+
+
+def _recovery_authority(issue_number: int = 13) -> ValidatedWorkAuthoritySnapshot:
+    key = ValidatedWorkKey("owner/repo", issue_number, "13-work", "a" * 40)
+    return ValidatedWorkAuthoritySnapshot(
+        record_id=key.record_id,
+        evidence_id="evidence-13",
+        observation_revision=2,
+        validated_head_sha=key.validated_head_sha,
+        branch_name=key.branch_name,
+        repo_slug=key.repo_slug,
+        issue_number=key.issue_number,
+        pr_number=None,
+        expected_remote_head_sha=None,
+        remote_baseline_status=RemoteBaselineStatus.UNOBSERVED,
     )
 
 
@@ -1583,6 +1609,35 @@ def test_kill_hung_session_execute_plans_generation_bound_kill_action() -> None:
     assert planned.target_terminal_id == "issue-13"
     assert planned.target_session_type == "code"
     assert planned.expected is EXPECTED
+
+
+@pytest.mark.parametrize("authority_mode", ["propose", "execute"])
+def test_recover_validated_work_binds_the_exact_launch_grant(authority_mode) -> None:
+    config = _config(recover_validated_work=authority_mode)
+    grant = _recovery_authority()
+    action = ProposedTechLeadAction(
+        id="A9",
+        action_type="recover_validated_work",
+        target_number=13,
+        body="Publish the validated head retained in escrow.",
+        finding_ids=("T1",),
+    )
+
+    [planned] = _plan(
+        _decision(action),
+        config,
+        observed_validated_work_authority=lambda number: (
+            grant if number == 13 else None
+        ),
+    )
+
+    bound = (
+        planned.op.validated_work_authority
+        if isinstance(planned, CreateTechLeadProposalIssueAction)
+        else planned.authority
+    )
+    assert isinstance(planned, (CreateTechLeadProposalIssueAction, RecoverValidatedWorkAction))
+    assert bound is grant
 
 
 def test_mixed_decision_preserves_order_and_authority() -> None:

@@ -9,6 +9,9 @@ from ..domain.recovery_attempt import RecoveryAttemptPending
 from ..domain.recovery_drain import RecoveryDrainItem, RecoveryDrainMode, RecoveryDrainReport
 from ..domain.validated_work_remote_authority import RemoteAuthorityRefreshRequest
 from ..domain.validated_work import require_positive
+from ..domain.validated_work_commands import StoredEvidenceCommand
+from ..domain.recovery_entry import RecoveryRecordRequest
+from ..domain.recovery_completion import RecoveryCompleted
 from ..ports.validated_work_drain import (
     RecoveryDrainAdmission,
     ValidatedWorkAuthorityRefreshOperation,
@@ -32,6 +35,26 @@ class RecoveryDrain:
         self._batch_size, self._interval, self._clock = batch_size, interval_seconds, clock
         self._after = ""
         self._next_at = float("-inf")
+
+    @staticmethod
+    def _request(command: StoredEvidenceCommand) -> RecoveryRecordRequest:
+        return RecoveryRecordRequest(
+            record_id=command.authority.record_id,
+            evidence_id=command.evidence_id,
+            approved=command.authority,
+        )
+
+    def preflight(
+        self, command: StoredEvidenceCommand
+    ) -> RecoveryAttemptPending | None:
+        """Read current applicability through the shared record operation."""
+        return self._operation.preflight(self._request(command))
+
+    def recover(
+        self, command: StoredEvidenceCommand, state: OrchestratorState
+    ) -> RecoveryCompleted | RecoveryAttemptPending:
+        """Execute explicit recovery through the same per-record operation."""
+        return self._operation.run(self._request(command), state)
 
     def tick(
         self, state: OrchestratorState, admission: RecoveryDrainAdmission
