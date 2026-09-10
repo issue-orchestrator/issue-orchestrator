@@ -48,8 +48,10 @@ class DispositionSnapshots:
             return tuple(
                 row[0]
                 for row in conn.execute(
-                    "SELECT DISTINCT issue_number FROM validated_work_records "
-                    "WHERE issue_number>? ORDER BY issue_number LIMIT ?",
+                    "SELECT DISTINCT r.issue_number FROM validated_work_records r "
+                    "JOIN validated_work_evidence e ON e.record_id=r.record_id "
+                    "WHERE r.issue_number>? AND e.released_at='' "
+                    "ORDER BY r.issue_number LIMIT ?",
                     (after_issue_number, limit),
                 )
             )

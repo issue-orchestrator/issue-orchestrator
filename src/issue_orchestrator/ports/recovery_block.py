@@ -19,7 +19,7 @@ class RecoveryBlockIssueSource(Protocol):
     def retained_issue_numbers(
         self, *, after_issue_number: int, limit: int
     ) -> tuple[int, ...]:
-        """Enumerate issues with retained rows in stable bounded order."""
+        """Enumerate issues with unreleased evidence in stable bounded order."""
         ...
 
 
@@ -27,7 +27,7 @@ class RecoveryBlockStore(Protocol):
     def recovery_block_snapshot(
         self, repo_slug: str, issue_number: int
     ) -> RecoveryBlockSnapshot:
-        """Read every retained sibling, phase and capture in one transaction.
+        """Read every sibling with unreleased evidence in one transaction.
 
         Released publishing interests require durable successful publication
         and routing, never an unchecked phase column. Invalid rows raise.

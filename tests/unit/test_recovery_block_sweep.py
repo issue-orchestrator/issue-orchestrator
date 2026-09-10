@@ -1,5 +1,6 @@
 """Bounded retained-issue projection convergence."""
 
+import sqlite3
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 
@@ -13,6 +14,7 @@ from issue_orchestrator.domain.recovery_block import (
     RecoveryBlockReconcileStatus,
 )
 from issue_orchestrator.domain.recovery_drain import RecoveryDrainMode
+from issue_orchestrator.domain.validated_work import ValidatedWorkState
 from tests.unit.validated_work_support import Rig, capture
 
 
@@ -45,6 +47,62 @@ def test_retained_issue_source_and_sweep_are_bounded_round_robin(tmp_path):
     ] == [[1, 2], [3, 4], [5], [1, 2]]
     assert reconciler.calls == [1, 2, 3, 4, 5, 1, 2]
     assert store.retained_issue_numbers(after_issue_number=2, limit=2) == (3, 4)
+
+
+def _release_terminal_evidence(database, admission):
+    with sqlite3.connect(database) as conn:
+        conn.execute(
+            "UPDATE validated_work_records SET state='abandoned', "
+            "resolution_kind='operator_abandoned', resolved_by='operator', "
+            "resolution_reason='accepted loss', resolved_at=?, terminal_at=? "
+            "WHERE record_id=?",
+            (
+                "2026-09-06T13:00:00+00:00",
+                "2026-09-06T13:00:00+00:00",
+                admission.evidence.record_id,
+            ),
+        )
+        conn.execute(
+            "UPDATE validated_work_evidence SET released_at=? WHERE record_id=?",
+            ("2026-09-07T13:00:00+00:00", admission.evidence.record_id),
+        )
+
+
+def test_released_terminal_history_does_not_consume_sweep_pages(tmp_path):
+    database = tmp_path / "work.sqlite"
+    store = Rig(database).open()
+    released = capture(issue=1)
+    live = capture(issue=2)
+    store.admit(released)
+    store.admit(live)
+    _release_terminal_evidence(database, released)
+
+    assert store.retained_issue_numbers(after_issue_number=0, limit=1) == (2,)
+    assert store.recovery_block_snapshot("owner/repo", 1).interests == ()
+
+    reconciler = Reconciler()
+    report = AggregateRecoveryBlockSweep(
+        source=store, reconciler=reconciler, batch_size=1
+    ).tick(lambda: RecoveryDrainMode.ACTIVE)
+
+    assert [item.issue_number for item in report.items] == [2]
+    assert reconciler.calls == [2]
+
+
+def test_recovery_block_snapshot_omits_released_terminal_sibling(tmp_path):
+    database = tmp_path / "work.sqlite"
+    store = Rig(database).open()
+    released = capture(issue=7, branch="old", state=ValidatedWorkState.PARKED)
+    live = capture(issue=7, branch="live", head=f"{9:040x}")
+    store.admit(released)
+    store.admit(live)
+    _release_terminal_evidence(database, released)
+
+    snapshot = store.recovery_block_snapshot("owner/repo", 7)
+
+    assert [item.disposition.record_id for item in snapshot.interests] == [
+        live.evidence.record_id
+    ]
 
 
 def test_retained_issue_scan_failure_is_reported_without_partial_results():
