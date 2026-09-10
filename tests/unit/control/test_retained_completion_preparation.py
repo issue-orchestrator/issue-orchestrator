@@ -44,8 +44,8 @@ def prepare(rig, *, changed_validator=False, raw=None):
     rig.lifecycle.terminate(42, "retain before teardown")
     row = rig.store.retained_evidence(42)[0]
     rig.git.run(rig.repo, ["worktree", "remove", "--force", str(rig.worktree)])
-    workspace_owner = EscrowPublicationWorkspaces(root=rig.escrow.root,
-        repository=rig.repo, repo_slug="owner/repo", escrow=rig.escrow, git=rig.git)
+    workspace_owner = EscrowPublicationWorkspaces(root=rig.escrow.root.parent / "validated-work-publications",
+        repository=rig.repo, repo_slug="owner/repo", escrow=rig.escrow, git=rig.git, prepare=lambda _: None)
     workspace = workspace_owner.prepare(row.admission)
     config = Config(repo="owner/repo", repo_root=rig.repo, worktree_base_branch_override="main")
     config.validation.quick.cmd = "false" if changed_validator else "true"

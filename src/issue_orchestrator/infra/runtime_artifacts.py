@@ -88,6 +88,7 @@ CLEANUP_SAFE_UNTRACKED_EXACT: frozenset[str] = frozenset(
 )
 
 CLEANUP_SAFE_UNTRACKED_ROOTS: tuple[str, ...] = (
+    ".import_linter_cache",
     ".issue-orchestrator/attempts",
     ".issue-orchestrator/backups",
     ".issue-orchestrator/diagnostics",
@@ -98,14 +99,18 @@ CLEANUP_SAFE_UNTRACKED_ROOTS: tuple[str, ...] = (
     ".issue-orchestrator/state",
     ".issue-orchestrator/tool-homes",
     ".issue-orchestrator/validation",
+    ".pytest_cache",
+    ".ruff_cache",
     ".venv",
+    ".venv-semgrep",
+    "packages/vscode/dist",
 )
 
 CLEANUP_SAFE_UNTRACKED_PATTERNS: tuple[str, ...] = (
     ".issue-orchestrator/followups-*",
 )
 
-DEPENDENCY_OUTPUT_DIR_NAMES: frozenset[str] = frozenset({"node_modules"})
+DEPENDENCY_OUTPUT_DIR_NAMES: frozenset[str] = frozenset({"__pycache__", "node_modules"})
 
 
 def _normalize_runtime_pattern(pattern: str) -> str:
@@ -265,6 +270,22 @@ def is_cleanup_safe_untracked_path(path: str, worktree: Path | None = None) -> b
     discard paths with explicit runtime/dependency ownership and path-boundary
     matches.
     """
+    if is_builtin_cleanup_safe_untracked_path(path):
+        return True
+    normalized = _normalize_runtime_pattern(path)
+    return any(
+        _matches_runtime_pattern(normalized, pattern)
+        for pattern in load_runtime_ignore_patterns(worktree)
+    )
+
+
+def is_builtin_cleanup_safe_untracked_path(path: str) -> bool:
+    """Return whether trusted process policy owns an untracked output path.
+
+    Unlike :func:`is_cleanup_safe_untracked_path`, this never reads policy from
+    the worktree being classified. Destructive owners use this boundary when
+    mutable checkout contents must not be able to grant cleanup authority.
+    """
     normalized = _normalize_runtime_pattern(path)
     if not normalized:
         return False
@@ -277,14 +298,30 @@ def is_cleanup_safe_untracked_path(path: str, worktree: Path | None = None) -> b
         for pattern in CLEANUP_SAFE_UNTRACKED_PATTERNS
     ):
         return True
-    if any(
-        _matches_runtime_pattern(normalized, pattern)
-        for pattern in load_runtime_ignore_patterns(worktree)
-    ):
-        return True
     if is_orchestrator_untracked_planted(normalized):
         return True
     return _has_dependency_output_component(normalized)
+
+
+def builtin_cleanup_root(path: str) -> str | None:
+    """Return the narrowest trusted output root that owns ``path``.
+
+    The returned path is suitable for non-following removal from an isolated
+    owner workspace. ``None`` means process policy does not own the path.
+    """
+    normalized = _normalize_runtime_pattern(path).rstrip("/")
+    if not normalized or not is_builtin_cleanup_safe_untracked_path(normalized):
+        return None
+    if normalized in CLEANUP_SAFE_UNTRACKED_EXACT:
+        return normalized
+    for root in CLEANUP_SAFE_UNTRACKED_ROOTS:
+        if _path_matches_root(normalized, root):
+            return root
+    parts = normalized.split("/")
+    for index, part in enumerate(parts):
+        if part in DEPENDENCY_OUTPUT_DIR_NAMES:
+            return "/".join(parts[: index + 1])
+    return normalized
 
 
 # --------------------------------------------------------------------------- #

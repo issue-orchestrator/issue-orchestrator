@@ -121,6 +121,23 @@ def test_inconsistent_observed_replay_cannot_block_the_drain_queue(tmp_path):
     assert any(isinstance(item, RecoveryRecordRequest) for item in requests)
 
 
+def test_approval_required_unobserved_work_enters_remote_refresh_queue(tmp_path):
+    store = Rig(tmp_path / "work.sqlite").open()
+    historical = capture(
+        state=State.PARKED,
+        failure=None,
+        reason="historical intake requires explicit approval",
+        remote_status=RemoteBaselineStatus.UNOBSERVED,
+    )
+    store.admit(historical)
+
+    request, = store.drain_requests(after_record_id="", limit=10)
+
+    assert isinstance(request, RemoteAuthorityRefreshRequest)
+    assert request.state is State.PARKED
+    assert request.failure is None
+
+
 def test_unobserved_replay_cannot_erase_last_observed_remote_authority(tmp_path):
     store = Rig(tmp_path / "work.sqlite").open()
     original = capture()

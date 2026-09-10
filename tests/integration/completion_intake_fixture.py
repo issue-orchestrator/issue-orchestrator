@@ -93,7 +93,9 @@ class ExchangeIntakeFixture:
             ConfiguredCompletionEvidenceValidator(
                 GitWorkingCopy(git),
                 LocalCommandRunner(),
-                IsolatedCompletionValidationWorkspace(state, git),
+                IsolatedCompletionValidationWorkspace(
+                    state, git, lambda _path: None
+                ),
                 command="true",
                 timeout_seconds=30,
             ),
