@@ -766,6 +766,7 @@ class TestControlReposDashboardUrl:
     ) -> None:
         from issue_orchestrator.execution import control_center_repo_status
         from issue_orchestrator.infra import repo_registry
+        from issue_orchestrator.infra.repo_identity import configured_repository_key
 
         repo = tmp_path / "repo"
         for mode in ("default", "codex"):
@@ -809,6 +810,7 @@ class TestControlReposDashboardUrl:
 
         assert payload["status"]["state"] == "running"
         assert payload["status"]["orphaned"] is True
+        assert payload["repo_key"] == configured_repository_key(repo)
         assert payload["selected_mode"] == "default"
         assert payload["active_mode"] == "codex"
 

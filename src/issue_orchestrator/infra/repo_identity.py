@@ -23,6 +23,12 @@ def normalize_repo_root(path: Path | str) -> Path:
     return Path(path).resolve()
 
 
+def configured_repository_key(repo_root: Path | str) -> str:
+    """Return the stable, opaque public key for one canonical repository root."""
+    canonical = str(normalize_repo_root(repo_root))
+    return "repo-" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def state_dir(repo_root: Path | str) -> Path:
     """Get the state directory for a repository.
 

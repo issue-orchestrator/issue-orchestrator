@@ -858,6 +858,129 @@ body {
     fill: currentColor;
 }
 
+.repo-recovery {
+    margin: 0 0 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--bg-input);
+}
+
+.repo-recovery summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 10px;
+    color: var(--text-primary);
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.repo-recovery-count {
+    min-width: 22px;
+    padding: 1px 7px;
+    border-radius: 999px;
+    background: var(--accent-blue);
+    color: var(--bg-main);
+    text-align: center;
+}
+
+.repo-recovery-body {
+    padding: 0 10px 10px;
+}
+
+.repo-recovery-group {
+    padding-top: 10px;
+    border-top: 1px solid var(--border-color);
+}
+
+.repo-recovery-group + .repo-recovery-group {
+    margin-top: 10px;
+}
+
+.repo-recovery-group h4 {
+    color: var(--text-primary);
+    font-size: 12px;
+}
+
+.repo-recovery-presentation {
+    margin: 3px 0 8px;
+    color: var(--text-secondary);
+    font-size: 11px;
+}
+
+.repo-recovery-presentation-badge,
+.repo-recovery-state {
+    display: inline-block;
+    margin-right: 4px;
+    color: var(--text-secondary);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+}
+
+.repo-recovery-presentation-badge.observed {
+    color: var(--accent-green);
+}
+
+.repo-recovery-presentation-badge.missing,
+.repo-recovery-presentation-badge.replaced {
+    color: var(--accent-yellow);
+}
+
+.repo-recovery-group ul {
+    display: grid;
+    gap: 6px;
+    list-style: none;
+}
+
+.repo-recovery-record {
+    min-width: 0;
+    padding: 7px 8px;
+    border-radius: 4px;
+    background: var(--bg-card);
+}
+
+.repo-recovery-record-title {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    color: var(--text-primary);
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.repo-recovery-record code {
+    display: block;
+    overflow-wrap: anywhere;
+    color: var(--text-secondary);
+    font-size: 11px;
+}
+
+.repo-recovery-record p {
+    margin-top: 3px;
+    overflow-wrap: anywhere;
+    color: var(--text-secondary);
+    font-size: 11px;
+}
+
+.repo-recovery-status {
+    margin: 0 0 12px;
+    padding: 8px 10px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    color: var(--text-secondary);
+    font-size: 11px;
+    overflow-wrap: anywhere;
+}
+
+.repo-recovery-status.unavailable strong {
+    color: var(--accent-yellow);
+}
+
 .repo-card-actions {
     display: flex;
     gap: 8px;

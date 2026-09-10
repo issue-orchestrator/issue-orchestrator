@@ -365,7 +365,17 @@ def test_start_buttons_are_disabled_while_start_is_pending() -> None:
     # placeholder; the route handler substitutes the token at render time.
     # Test against the template's pre-render shape.
     assert '<script src="/static/js/browser_auth.js?v={{ static_version }}"></script>' in template
+    assert '<script src="/static/js/control_center_recovery.js?v={{ static_version }}"></script>' in template
     assert '<script src="/static/js/control_center.js?v={{ static_version }}"></script>' in template
+    assert template.index("control_center_recovery.js") < template.index("control_center.js")
+    assert "if (recovery) pendingLoads.push(recovery.load(state.repos));" in script
+    assert (
+        "state.repos = data.repos || [];\n        recovery?.hydrate(state.repos);\n"
+        "        renderRepos(recoveryUiState);\n\n"
+        "        const pendingLoads = [];"
+    ) in script
+    assert "${getRecoveryView()?.render(repo) || ''}" in script
+    assert "recovery?.restore(container, recoveryUiState);" in script
     assert "document.getElementById('sidebarCloseCC').addEventListener('click'" in script
     assert "menuCloseCC" not in script
     assert "const pendingRepoStarts = new Set();" in script

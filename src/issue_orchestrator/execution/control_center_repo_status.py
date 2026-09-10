@@ -12,6 +12,7 @@ from ..execution.control_center_runtime import (
     enrich_runtime_health,
 )
 from ..execution.orchestrator_http_api import probe_orchestrator_json
+from ..infra.repo_identity import configured_repository_key
 from ..ports.repository_engine_supervisor import (
     MultiInstanceStatus,
     SupervisorOps,
@@ -61,6 +62,7 @@ def build_repos_status(
         mode_configs = {mode: list_configs(path, mode) for mode in available_modes}
         available_configs = mode_configs.get(selection.mode.value, [])
         repo_data: dict[str, Any] = {
+            "repo_key": configured_repository_key(repo.path),
             "path": repo.path,
             "name": repo.name,
             "added_at": repo.added_at,
