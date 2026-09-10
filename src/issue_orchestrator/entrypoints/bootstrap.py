@@ -53,10 +53,10 @@ from .bootstrap_run_services import (
     build_completion_intake,
 )
 from .bootstrap_issue_runtime import build_issue_runtime
-from .bootstrap_validated_work import build_validated_work_admission
+from .bootstrap_validated_work import build_validated_work_admission, build_validated_work_recovery, build_validated_work_runtime
 from ..domain.models import OrchestratorState
 from .bootstrap_operator_commands import build_operator_issue_command_factory
-from .bootstrap_testing import TestingFreshIssueReader, manual_publication_for_testing
+from .bootstrap_testing import Dependencies as Dependencies, TestingFreshIssueReader, manual_publication_for_testing
 from .bootstrap_completion import (
     _validation_attempt_key_factory,
     build_completion_handler_factory,
@@ -71,6 +71,8 @@ from ..infra.env import ENV_PREFIX
 from ..adapters.github.repo import get_repo_from_git, GitRepoError
 from ..ports.event_sink import EventSink, NullEventSink
 from ..ports.manual_publication import ManualPublisher
+from ..ports.validated_work_drain import NullValidatedWorkRecoveryDrain
+from ..ports.validated_work_verification import OrchestratorLivenessPort
 from ..adapters.github.publication_remote import GitHubPublicationRemote
 from ..ports.session_runner import SessionRunner, NullSessionRunner
 from ..ports.timeline_reader import NullTimelineReader
@@ -406,28 +408,12 @@ def _validate_required_deps(
             raise ValueError(f"{name} is required")
 
 
-class Dependencies:
-    """Container for all injected dependencies.
-
-    This keeps the orchestrator constructor signature clean by bundling
-    all dependencies into a single object.
-    """
-
-    def __init__(
-        self,
-        events: EventSink,
-        runner: SessionRunner,
-        github: GitHubAdapter | None = None,
-    ):
-        self.events = events
-        self.runner = runner
-        self.github = github
-
-
 def build_orchestrator(
     config: Config,
     enable_ipc: bool = True,
     enable_sse: bool = True,
+    *,
+    validated_work_liveness: OrchestratorLivenessPort,
 ) -> "Orchestrator":
     """Build a fully-wired orchestrator with all dependencies.
 
@@ -659,7 +645,13 @@ def build_orchestrator(
 
     runtime_state = OrchestratorState()
     issue_run_ledger, issue_run_allocator = build_issue_run_services(config, session_output, working_copy)
-    validated_work = build_validated_work_admission(config, working_copy, issue_run_ledger)
+    assert action_applier is not None
+    assert fresh_issue_reader is not None
+    assert github is not None
+    validated_work = build_validated_work_runtime(
+        config, working_copy, issue_run_ledger, command_runner, validated_work_liveness,
+        github, fresh_issue_reader, action_applier, label_manager, pending_work.needs_human_block,
+    )
     completion_intake = build_completion_intake(
         config, issue_run_ledger, issue_run_allocator, working_copy, command_runner, validated_work
     )
@@ -810,6 +802,11 @@ def build_orchestrator(
         sessions=session_manager, pair_registry=pair_registry, supervisor=background_job_supervisor,
         publish_recovery=publish_recovery, events=events)
     action_applier.runtime_lifecycle = runtime_lifecycle
+    validated_work_recovery = build_validated_work_recovery(
+        config, owners=validated_work, completion_processor=completion_processor,
+        runtime=runtime_lifecycle.core, working_copy=working_copy, fresh_issue_reader=fresh_issue_reader,
+        action_applier=action_applier, label_manager=label_manager,
+    )
     deps = OrchestratorDeps(
         issue_run_allocator=issue_run_allocator,
         events=events,
@@ -864,6 +861,7 @@ def build_orchestrator(
         lease_renewer=lease_renewer,
         run_ownership=run_ownership,
         publish_recovery=publish_recovery,
+        validated_work_recovery=validated_work_recovery,
         services=infra_services,
     )
 
@@ -1308,6 +1306,7 @@ def build_orchestrator_for_testing(
         lease_renewer=lease_renewer,
         run_ownership=run_ownership,
         publish_recovery=publish_recovery,
+        validated_work_recovery=NullValidatedWorkRecoveryDrain(),
         services=infra_services,
     )
 

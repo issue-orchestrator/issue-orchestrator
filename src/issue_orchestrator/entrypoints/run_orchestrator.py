@@ -19,6 +19,7 @@ import asyncio
 import atexit
 import logging
 import os
+import signal
 import sys
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,26 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 _EXPECTED_IDENTITY_ENV = "ISSUE_ORCHESTRATOR_EXPECTED_IDENTITY"
+
+
+async def run_orchestrator(config_path: Path | None = None) -> None:
+    """Run the legacy in-process entrypoint under the repository owner gate."""
+    from ..control.orchestrator_support import handle_signal
+    from ..infra.config import Config
+    from ..infra.repo_lock import held_repo_lock
+    from .bootstrap import build_orchestrator
+    from .bootstrap_liveness import held_repo_validated_work_liveness
+
+    config = Config.load(config_path) if config_path else Config.find_and_load()
+    with held_repo_lock(config.repo_root):
+        orchestrator = build_orchestrator(
+            config,
+            validated_work_liveness=held_repo_validated_work_liveness(config),
+        )
+        signal.signal(signal.SIGINT, lambda s, f: handle_signal(orchestrator, s, f))
+        signal.signal(signal.SIGTERM, lambda s, f: handle_signal(orchestrator, s, f))
+        await orchestrator.startup()
+        await orchestrator.run_loop()
 
 
 def parse_args() -> argparse.Namespace:
@@ -228,8 +249,13 @@ async def run(
     """
     from ..entrypoints._auth_middleware import install_access_log_redaction
     from ..entrypoints.bootstrap import build_orchestrator
+    from ..entrypoints.bootstrap_liveness import held_repo_validated_work_liveness
     from ..entrypoints.web import run_with_web_dashboard
-    from ..infra.repo_lock import acquire_lock, release_lock, touch_lock
+    from ..infra.repo_lock import (
+        acquire_lock,
+        release_lock,
+        touch_lock,
+    )
     from .engine_startup import EngineStartup
 
     _assert_expected_identity(repo_root)
@@ -265,7 +291,12 @@ async def run(
     # and the bound port land on the same agent-callback endpoint the
     # sessions it launches will read (#6924).
     logger.info("Building orchestrator...")
-    orchestrator = build_orchestrator(config)
+    orchestrator = build_orchestrator(
+        config,
+        validated_work_liveness=held_repo_validated_work_liveness(
+            config, instance_id=instance_id
+        ),
+    )
     engine_startup = EngineStartup(
         callback_endpoint=orchestrator.deps.agent_callback_endpoint
     )

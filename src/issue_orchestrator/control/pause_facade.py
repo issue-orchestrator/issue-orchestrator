@@ -58,8 +58,9 @@ def pause(
     ``reason``/``actor`` are required with no defaults: a default would let a
     call site silently invent provenance. Returns what was committed.
     """
-    with state_lock:
-        return controller.pause(reason=reason, actor=actor, detail=detail)
+    with controller.pending_pause_request():
+        with state_lock:
+            return controller.pause(reason=reason, actor=actor, detail=detail)
 
 
 def resume(

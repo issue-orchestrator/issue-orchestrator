@@ -137,6 +137,8 @@ def test_locked_cli_start_persists_exact_selection_after_lock_publication(
     acquire = MagicMock()
     release = MagicMock()
     record = MagicMock()
+    liveness = object()
+    build = MagicMock(return_value=orchestrator)
     monkeypatch.setattr(
         "issue_orchestrator.execution.control_center_runtime."
         "inspect_repository_orchestrator_ownership",
@@ -149,6 +151,10 @@ def test_locked_cli_start_persists_exact_selection_after_lock_publication(
     monkeypatch.setattr("issue_orchestrator.infra.repo_lock.is_locked", lambda _: False)
     monkeypatch.setattr("issue_orchestrator.infra.repo_lock.acquire_lock", acquire)
     monkeypatch.setattr("issue_orchestrator.infra.repo_lock.release_lock", release)
+    monkeypatch.setattr(
+        "issue_orchestrator.entrypoints.bootstrap_liveness.held_repo_validated_work_liveness",
+        MagicMock(return_value=liveness),
+    )
     monkeypatch.setattr(
         "issue_orchestrator.infra.repo_lock.repository_lifecycle_mutation",
         lambda _repo: nullcontext(),
@@ -163,7 +169,7 @@ def test_locked_cli_start_persists_exact_selection_after_lock_publication(
     result = cli_run_modes.run_locked_cli_engine(
         args,
         config,
-        MagicMock(return_value=orchestrator),
+        build,
     )
 
     assert result == 0
@@ -175,6 +181,7 @@ def test_locked_cli_start_persists_exact_selection_after_lock_publication(
         config_fingerprint="effective-fingerprint",
     )
     record.assert_called_once_with(tmp_path, selection)
+    build.assert_called_once_with(config=config, validated_work_liveness=liveness)
     release.assert_called_once_with(tmp_path)
 
 

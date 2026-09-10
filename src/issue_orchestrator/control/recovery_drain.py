@@ -6,10 +6,14 @@ import time
 
 from ..domain.models import OrchestratorState
 from ..domain.recovery_attempt import RecoveryAttemptPending
-from ..domain.recovery_drain import RecoveryDrainItem, RecoveryDrainReport
+from ..domain.recovery_drain import RecoveryDrainItem, RecoveryDrainMode, RecoveryDrainReport
 from ..domain.recovery_entry import RecoveryRecordRequest
 from ..domain.validated_work import require_positive
-from ..ports.validated_work_drain import ValidatedWorkDrainQueue, ValidatedWorkRecoveryOperation
+from ..ports.validated_work_drain import (
+    RecoveryDrainAdmission,
+    ValidatedWorkDrainQueue,
+    ValidatedWorkRecoveryOperation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +30,11 @@ class RecoveryDrain:
         self._after = ""
         self._next_at = float("-inf")
 
-    def tick(self, state: OrchestratorState) -> RecoveryDrainReport:
+    def tick(
+        self, state: OrchestratorState, admission: RecoveryDrainAdmission
+    ) -> RecoveryDrainReport:
+        if admission() is RecoveryDrainMode.STOPPED:
+            return RecoveryDrainReport(())
         started = self._clock()
         if started < self._next_at:
             return RecoveryDrainReport(())
@@ -34,13 +42,29 @@ class RecoveryDrain:
         # retry loop. A completed worker starts the next interval at quiescence.
         self._next_at = started + self._interval
         try:
-            requests = self._queue.recovery_requests(after_record_id=self._after, limit=self._batch_size)
+            requests = self._queue.recovery_requests(
+                after_record_id=self._after,
+                limit=self._batch_size,
+            )
             if not requests and self._after:
                 self._after = ""
-                requests = self._queue.recovery_requests(after_record_id="", limit=self._batch_size)
-            items = tuple(self._advance(request, state) for request in requests)
-            self._after = requests[-1].record_id if len(requests) == self._batch_size else ""
-            return RecoveryDrainReport(items)
+                requests = self._queue.recovery_requests(
+                    after_record_id="",
+                    limit=self._batch_size,
+                )
+            items: list[RecoveryDrainItem] = []
+            for request in requests:
+                if admission() is RecoveryDrainMode.STOPPED:
+                    break
+                items.append(self._advance(request, state))
+            if items:
+                completed_batch = len(items) == len(requests)
+                self._after = (
+                    ""
+                    if completed_batch and len(requests) < self._batch_size
+                    else items[-1].record_id
+                )
+            return RecoveryDrainReport(tuple(items))
         finally:
             self._next_at = self._clock() + self._interval
 

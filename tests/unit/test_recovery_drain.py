@@ -1,12 +1,14 @@
 """Bounded persisted selection and fair outage retry without wall-clock waits."""
 
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
 from issue_orchestrator.control.recovery_drain import RecoveryDrain
 from issue_orchestrator.domain.models import OrchestratorState
 from issue_orchestrator.domain.recovery_attempt import RecoveryAttemptPending
+from issue_orchestrator.domain.recovery_drain import RecoveryDrainMode
 from issue_orchestrator.domain.validated_work import ValidatedWorkState, ValidatedWorkFailure
 from tests.unit.validated_work_support import Rig, capture, claim, begin
 
@@ -57,17 +59,18 @@ def test_batch_bound_and_interval_do_not_starve_after_exception(tmp_path):
     operations.raise_for.add(ordered[0].record_id)
     drain = RecoveryDrain(queue=store, operation=operations, batch_size=2, interval_seconds=10, clock=lambda: now.value)
     state = OrchestratorState()
-    first = drain.tick(state)
+    active = lambda: RecoveryDrainMode.ACTIVE
+    first = drain.tick(state, active)
     assert len(first.items) == 2
     assert "remote interrupted" in first.items[0].outcome.message
-    assert len(drain.tick(state).items) == 0
+    assert len(drain.tick(state, active).items) == 0
     now.value = 10
-    assert len(drain.tick(state).items) == 2
+    assert len(drain.tick(state, active).items) == 2
     now.value = 20
-    assert len(drain.tick(state).items) == 1
+    assert len(drain.tick(state, active).items) == 1
     assert operations.called == [request.record_id for request in ordered]
     now.value = 30
-    assert len(drain.tick(state).items) == 2
+    assert len(drain.tick(state, active).items) == 2
     assert operations.called[-2:] == [request.record_id for request in ordered[:2]]
 
 
@@ -78,8 +81,61 @@ def test_interval_starts_after_synchronous_work_finishes(tmp_path):
     operations = Operations()
     operations.during = lambda: setattr(now, "value", 100.0)
     drain = RecoveryDrain(queue=store, operation=operations, batch_size=1, interval_seconds=10, clock=lambda: now.value)
-    assert len(drain.tick(OrchestratorState()).items) == 1
+    active = lambda: RecoveryDrainMode.ACTIVE
+    assert len(drain.tick(OrchestratorState(), active).items) == 1
     now.value = 109
-    assert len(drain.tick(OrchestratorState()).items) == 0
+    assert len(drain.tick(OrchestratorState(), active).items) == 0
     now.value = 110
-    assert len(drain.tick(OrchestratorState()).items) == 1
+    assert len(drain.tick(OrchestratorState(), active).items) == 1
+
+
+def test_stopped_mode_cannot_select_or_start_recovery_work():
+    queue = Mock()
+    operation = Mock()
+    drain = RecoveryDrain(
+        queue=queue,
+        operation=operation,
+        batch_size=1,
+        interval_seconds=10,
+    )
+
+    report = drain.tick(OrchestratorState(), lambda: RecoveryDrainMode.STOPPED)
+
+    assert report.items == ()
+    queue.recovery_requests.assert_not_called()
+    operation.run.assert_not_called()
+
+
+def test_lifecycle_stop_during_batch_prevents_another_operation_and_preserves_cursor(
+    tmp_path,
+):
+    store = Rig(tmp_path / "work.sqlite").open()
+    for issue in range(1, 4):
+        store.admit(capture(issue=issue))
+    ordered = store.recovery_requests(after_record_id="", limit=10)
+    now = SimpleNamespace(value=0.0)
+    mode = SimpleNamespace(value=RecoveryDrainMode.ACTIVE)
+    operations = Operations()
+    operations.during = lambda: setattr(mode, "value", RecoveryDrainMode.STOPPED)
+    drain = RecoveryDrain(
+        queue=store,
+        operation=operations,
+        batch_size=3,
+        interval_seconds=10,
+        clock=lambda: now.value,
+    )
+
+    first = drain.tick(OrchestratorState(), lambda: mode.value)
+
+    assert [item.record_id for item in first.items] == [ordered[0].record_id]
+    assert operations.called == [ordered[0].record_id]
+    mode.value = RecoveryDrainMode.ACTIVE
+    operations.during = lambda: None
+    now.value = 10
+
+    resumed = drain.tick(OrchestratorState(), lambda: mode.value)
+
+    assert [item.record_id for item in resumed.items] == [
+        ordered[1].record_id,
+        ordered[2].record_id,
+    ]

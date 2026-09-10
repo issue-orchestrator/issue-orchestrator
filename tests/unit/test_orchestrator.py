@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import threading
 import pytest
 import tempfile
 from dataclasses import replace
@@ -12,7 +13,8 @@ from unittest.mock import MagicMock, patch, call, AsyncMock, PropertyMock
 from tests.conftest import MockSessionRunner
 from tests.conftest import operator_paused_state
 from issue_orchestrator.domain.pause_state import PauseActor, PauseReason
-from issue_orchestrator.infra.orchestrator import Orchestrator, run_orchestrator
+from issue_orchestrator.infra.orchestrator import Orchestrator
+from issue_orchestrator.entrypoints.run_orchestrator import run_orchestrator
 from issue_orchestrator.domain.models import (
     Issue,
     Session,
@@ -22,6 +24,10 @@ from issue_orchestrator.domain.models import (
     ORCHESTRATOR_PR_MARKER,
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey
+from issue_orchestrator.domain.recovery_drain import RecoveryDrainMode
+from issue_orchestrator.domain.recovery_entry import RecoveryRecordRequest
+from issue_orchestrator.domain.recovery_attempt import RecoveryAttemptPending
+from issue_orchestrator.control.recovery_drain import RecoveryDrain
 from issue_orchestrator.domain.tech_lead_run import IssueInvestigationScope
 from issue_orchestrator.domain.tech_lead_session import (
     TechLeadLaunchScope,
@@ -40,6 +46,7 @@ from issue_orchestrator.ports.worktree_manager import (
 from issue_orchestrator.execution.worktree_adapter import GitWorktreeManager
 from issue_orchestrator.events import EventName
 from issue_orchestrator.contracts.public import OrchestratorPausedPayload, OrchestratorResumedPayload
+from tests.unit.threading_helpers import join_or_fail, run_in_thread, wait_for_event
 
 
 class MockWorktreeManager:
@@ -141,6 +148,178 @@ def test_start_paused_requests_initial_queue_refresh(sample_config):
 
     assert orchestrator.state.paused is True
     assert orchestrator.state.queue_refresh_requested is True
+
+
+def test_tick_drains_retained_work_before_planning(sample_config):
+    """Recovered review work is visible to the planning phase of the same tick."""
+    orchestrator = create_test_orchestrator(sample_config)
+    order: list[str] = []
+    publish_recovery = MagicMock()
+    publish_recovery.drain_completed_retries.side_effect = lambda _state: order.append(
+        "publish-retries"
+    )
+    validated_work_recovery = MagicMock()
+    validated_work_recovery.tick.side_effect = lambda _state, _admission: order.append(
+        "retained-work"
+    )
+    orchestrator.deps = replace(
+        orchestrator.deps,
+        publish_recovery=publish_recovery,
+        validated_work_recovery=validated_work_recovery,
+    )
+
+    def observe_planning(*_args, **_kwargs):
+        order.append("planning")
+        return 1, True
+
+    with patch(
+        "issue_orchestrator.infra.orchestrator._run_tick_impl",
+        side_effect=observe_planning,
+    ):
+        assert orchestrator.tick() is True
+
+    assert order == ["publish-retries", "retained-work", "planning"]
+    recovery_args = validated_work_recovery.tick.call_args.args
+    assert recovery_args[0] is orchestrator.state
+    assert recovery_args[1]() is RecoveryDrainMode.ACTIVE
+
+
+@pytest.mark.parametrize("paused,shutdown", [(True, False), (False, True)])
+def test_tick_stops_retained_work_drain_when_lifecycle_refuses_new_effects(
+    sample_config, paused, shutdown
+):
+    orchestrator = create_test_orchestrator(sample_config)
+    if paused:
+        orchestrator.state.pause_state = operator_paused_state()
+    orchestrator.shutdown_requested = shutdown
+    recovery = MagicMock()
+    orchestrator.deps = replace(
+        orchestrator.deps,
+        validated_work_recovery=recovery,
+    )
+
+    with patch(
+        "issue_orchestrator.infra.orchestrator._run_tick_impl",
+        return_value=(1, True),
+    ):
+        orchestrator.tick()
+
+    recovery_args = recovery.tick.call_args.args
+    assert recovery_args[0] is orchestrator.state
+    assert recovery_args[1]() is RecoveryDrainMode.STOPPED
+
+
+def test_retained_work_admission_observes_shutdown_requested_during_tick(
+    sample_config,
+):
+    orchestrator = create_test_orchestrator(sample_config)
+    observed: list[RecoveryDrainMode] = []
+    recovery = MagicMock()
+
+    def observe_live_admission(_state, admission):
+        observed.append(admission())
+        orchestrator.request_shutdown()
+        observed.append(admission())
+
+    recovery.tick.side_effect = observe_live_admission
+    orchestrator.deps = replace(
+        orchestrator.deps,
+        validated_work_recovery=recovery,
+    )
+
+    with patch(
+        "issue_orchestrator.infra.orchestrator._run_tick_impl",
+        return_value=(1, True),
+    ):
+        orchestrator.tick()
+
+    assert observed == [RecoveryDrainMode.ACTIVE, RecoveryDrainMode.STOPPED]
+
+
+class _ObservedRLock:
+    """Signal when the selected caller reaches a held state-lock boundary."""
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self.observe_acquire = False
+        self.acquire_attempted = threading.Event()
+
+    def acquire(self, *args, **kwargs):
+        if self.observe_acquire:
+            self.acquire_attempted.set()
+        return self._lock.acquire(*args, **kwargs)
+
+    def release(self) -> None:
+        self._lock.release()
+
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, *_args) -> None:
+        self.release()
+
+
+def test_public_pause_requested_during_recovery_stops_the_next_record(
+    sample_config,
+):
+    orchestrator = create_test_orchestrator(sample_config)
+    first_started = threading.Event()
+    release_first = threading.Event()
+    calls: list[str] = []
+    queue = MagicMock()
+    queue.recovery_requests.return_value = [
+        RecoveryRecordRequest("r1", "e1"),
+        RecoveryRecordRequest("r2", "e2"),
+    ]
+    operation = MagicMock()
+
+    def run_operation(request, _state):
+        calls.append(request.record_id)
+        if request.record_id == "r1":
+            first_started.set()
+            wait_for_event(release_first, 5, label="release first recovery record")
+        return RecoveryAttemptPending("still retained")
+
+    operation.run.side_effect = run_operation
+    orchestrator.deps = replace(
+        orchestrator.deps,
+        validated_work_recovery=RecoveryDrain(
+            queue=queue,
+            operation=operation,
+            batch_size=2,
+            interval_seconds=60,
+        ),
+    )
+    state_lock = _ObservedRLock()
+    orchestrator.state_lock = state_lock
+
+    with patch(
+        "issue_orchestrator.infra.orchestrator._run_tick_impl",
+        return_value=(1, True),
+    ):
+        tick_thread, tick_result = run_in_thread(orchestrator.tick)
+        wait_for_event(first_started, 5, label="first recovery record")
+        state_lock.observe_acquire = True
+        pause_thread, pause_result = run_in_thread(
+            lambda: orchestrator.pause(
+                reason=PauseReason.OPERATOR,
+                actor=PauseActor.DASHBOARD,
+            )
+        )
+        wait_for_event(
+            state_lock.acquire_attempted,
+            5,
+            label="public pause waiting for state lock",
+        )
+        release_first.set()
+        join_or_fail(tick_thread, 5, label="recovery tick")
+        join_or_fail(pause_thread, 5, label="public pause")
+
+    assert tick_result.unwrap() is True
+    assert pause_result.unwrap().committed is True
+    assert calls == ["r1"]
+    assert orchestrator.state.paused is True
 
 
 def test_cancel_review_exchange_for_issue_delegates_to_lifecycle_services(sample_config):
@@ -2229,8 +2408,8 @@ class TestRunOrchestrator:
 
     @pytest.mark.asyncio
     @patch("issue_orchestrator.entrypoints.bootstrap.build_orchestrator")
-    @patch("issue_orchestrator.infra.orchestrator.Config.load")
-    @patch("issue_orchestrator.infra.orchestrator.signal.signal")
+    @patch("issue_orchestrator.infra.config.Config.load")
+    @patch("issue_orchestrator.entrypoints.run_orchestrator.signal.signal")
     async def test_run_orchestrator_loads_config_from_path(
         self,
         mock_signal,
@@ -2255,8 +2434,8 @@ class TestRunOrchestrator:
 
     @pytest.mark.asyncio
     @patch("issue_orchestrator.entrypoints.bootstrap.build_orchestrator")
-    @patch("issue_orchestrator.infra.orchestrator.Config.find_and_load")
-    @patch("issue_orchestrator.infra.orchestrator.signal.signal")
+    @patch("issue_orchestrator.infra.config.Config.find_and_load")
+    @patch("issue_orchestrator.entrypoints.run_orchestrator.signal.signal")
     async def test_run_orchestrator_finds_config_when_no_path(
         self,
         mock_signal,
@@ -2278,8 +2457,8 @@ class TestRunOrchestrator:
 
     @pytest.mark.asyncio
     @patch("issue_orchestrator.entrypoints.bootstrap.build_orchestrator")
-    @patch("issue_orchestrator.infra.orchestrator.Config.find_and_load")
-    @patch("issue_orchestrator.infra.orchestrator.signal.signal")
+    @patch("issue_orchestrator.infra.config.Config.find_and_load")
+    @patch("issue_orchestrator.entrypoints.run_orchestrator.signal.signal")
     async def test_run_orchestrator_calls_startup(
         self,
         mock_signal,
@@ -2301,8 +2480,8 @@ class TestRunOrchestrator:
 
     @pytest.mark.asyncio
     @patch("issue_orchestrator.entrypoints.bootstrap.build_orchestrator")
-    @patch("issue_orchestrator.infra.orchestrator.Config.find_and_load")
-    @patch("issue_orchestrator.infra.orchestrator.signal.signal")
+    @patch("issue_orchestrator.infra.config.Config.find_and_load")
+    @patch("issue_orchestrator.entrypoints.run_orchestrator.signal.signal")
     async def test_run_orchestrator_calls_run_loop(
         self,
         mock_signal,
@@ -2324,8 +2503,8 @@ class TestRunOrchestrator:
 
     @pytest.mark.asyncio
     @patch("issue_orchestrator.entrypoints.bootstrap.build_orchestrator")
-    @patch("issue_orchestrator.infra.orchestrator.Config.find_and_load")
-    @patch("issue_orchestrator.infra.orchestrator.signal.signal")
+    @patch("issue_orchestrator.infra.config.Config.find_and_load")
+    @patch("issue_orchestrator.entrypoints.run_orchestrator.signal.signal")
     async def test_run_orchestrator_sets_up_signal_handlers(
         self,
         mock_signal,
