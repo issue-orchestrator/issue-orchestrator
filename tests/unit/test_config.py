@@ -3716,6 +3716,7 @@ tech_lead:
             "flag_pattern": "execute",
             "reset_retry": "propose",
             "kill_hung_session": "propose",
+            "request_rework": "propose",
         }
 
     def test_tech_lead_authority_defaults(self):
@@ -3727,6 +3728,7 @@ tech_lead:
         assert config.tech_lead.authority.flag_pattern == "execute"
         assert config.tech_lead.authority.reset_retry == "propose"
         assert config.tech_lead.authority.kill_hung_session == "propose"
+        assert config.tech_lead.authority.request_rework == "propose"
         assert config.validate() == [] or not any(
             "tech_lead.authority" in e for e in config.validate()
         )

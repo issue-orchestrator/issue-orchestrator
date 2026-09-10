@@ -1627,6 +1627,43 @@ class TestTheOwnerSurvivesAHalfWrittenTransition:
             reason="publish failures exhausted",
         )
 
+    @pytest.mark.parametrize("scoped", [False, True])
+    def test_observed_operator_clear_serializes_with_new_cause(
+        self, sample_config, tmp_path, scoped
+    ):
+        """A cause arriving after the scan cannot be erased by the same clear."""
+        live: dict[int, set[str]] = {
+            903: {LabelManager(sample_config).needs_human}
+        }
+        labels, block, claims = self._block(sample_config, tmp_path, live)
+
+        class _Effects:
+            def perform(self, effect):
+                return effect()
+
+        clearing = block.with_effects(_Effects()) if scoped else block
+        admission = []
+        request = self._request(labels)
+
+        outcome = clearing.clear_observed_operator_block(
+            903,
+            "approved scoped rework",
+            before_write=lambda: admission.append(block.acquire(request)),
+        )
+
+        assert admission == [BlockOutcome.FAILED]
+        assert outcome is BlockOutcome.CLEARED
+        assert labels.needs_human not in live[903]
+        assert claims.needs_human_causes(903) == frozenset()
+
+        # The losing lifecycle retries after the serialized clear and opens a
+        # new label generation rather than having its provenance erased.
+        assert block.acquire(request) is BlockOutcome.HELD
+        assert labels.needs_human in live[903]
+        assert claims.needs_human_causes(903) == frozenset(
+            {NeedsHumanCause.SESSION_LIFECYCLE.value}
+        )
+
     def test_a_failed_label_write_leaves_no_cause_claiming_a_block(
         self, sample_config, tmp_path
     ):

@@ -31,15 +31,18 @@ from issue_orchestrator.control.actions import (
     EscalateTechLeadDispositionAction,
     ReportPromotedFindingEvidenceAction,
     ResetRetryIssueAction,
+    RequestReworkAction,
     SettleTechLeadPromotionAction,
     SurfaceTechLeadProposalAction,
 )
 from issue_orchestrator.control.reconciliation import build_expected_for_mutation
+from issue_orchestrator.control.tech_lead_proposal_creation import RecoverTechLeadProposalAction
 from issue_orchestrator.control.tech_lead_applier_handlers import (
     TECH_LEAD_MUTATING_ACTION_TYPES,
     tech_lead_action_handlers,
 )
 from issue_orchestrator.domain.tech_lead_findings import PatternObservation
+from issue_orchestrator.domain.scoped_rework import ReworkRequest, ReworkTarget
 from issue_orchestrator.domain.tech_lead_session import (
     PROPOSED_TECH_LEAD_LABEL,
     StoredTechLeadOp,
@@ -119,6 +122,14 @@ def _mutating_actions() -> dict[ActionType, tuple[Action, int]]:
                 expected=expected,
             ),
             TARGET,
+        ),
+        ActionType.REQUEST_REWORK: (
+            RequestReworkAction(request=ReworkRequest(
+                ReworkTarget("owner/repo", 94, TARGET, "a" * 40, "12-work", (), ()),
+                "finding", "report", "feedback"), proposal_id="A1", expected=expected), TARGET,
+        ),
+        ActionType.RECOVER_TECH_LEAD_PROPOSAL: (
+            RecoverTechLeadProposalAction(creation_key="key", issue_number=TARGET, expected=expected), TARGET,
         ),
         ActionType.KILL_HUNG_SESSION: (
             KillHungSessionAction(
@@ -223,6 +234,7 @@ class _Registry:
             surface_proposal=inert,
             reset_retry=inert,
             kill_hung_session=inert,
+            request_rework=inert,
             events=MagicMock(), label_manager=MagicMock(), needs_human_block=MagicMock(),
             apply_action=inert,
             verify_claim=lambda action, number: None,

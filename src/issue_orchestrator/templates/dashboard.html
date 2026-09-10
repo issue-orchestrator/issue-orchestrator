@@ -41,6 +41,7 @@
     {% endfor %}
     <link rel="stylesheet" href="/static/css/ui_primitives.css">
     <link rel="stylesheet" href="/static/vendor/xterm/xterm.css">
+    <link rel="stylesheet" href="/static/css/scoped_rework_proposals.css">
 </head>
 <body>
     <a href="#mainContent" class="skip-link">Skip to main content</a>
@@ -387,6 +388,12 @@
                  beside its tone class, so colour is never the only signal, and
                  refreshes replace only the <ul> rows so an open panel keeps its
                  state and focus. -->
+            <details id="reworkProposalsPanel" class="rework-proposals">
+                <summary id="reworkProposalsSummary">Tech-lead rework proposals</summary>
+                <button type="button" id="refreshReworkProposals">Refresh proposals</button>
+                <p id="reworkProposalStatus" role="status" aria-live="polite"></p>
+                <ul id="reworkProposalList" aria-label="Scoped rework proposals"></ul>
+            </details>
             <details class="tech-lead-activity" id="techLeadActivityPanel">
                 <summary class="tla-summary">
                     Tech lead activity
@@ -670,5 +677,6 @@
     <script src="/static/js/dashboard/{{ chunk }}"></script>
     {% endfor %}
     <script src="/static/js/dashboard.js"></script>
+    <script src="/static/js/scoped_rework_proposals.js"></script>
 </body>
 </html>

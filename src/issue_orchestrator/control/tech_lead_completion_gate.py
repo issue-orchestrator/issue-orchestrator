@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Sequence, TYPE_CHECKING
 if TYPE_CHECKING:
     from .tech_lead_actions import RequireTechLeadInvestigationAction
-from .actions import Action, ActionResult, ActionResultType, ResetRetryIssueAction, KillHungSessionAction
+from .actions import Action, ActionResult, ActionResultType, ResetRetryIssueAction, KillHungSessionAction, RequestReworkAction
 
 
 @dataclass(frozen=True)
@@ -55,7 +55,8 @@ def is_required_act_level_action(action: Action) -> bool:
     from .tech_lead_actions import RecordTechLeadDispositionAction, EscalateTechLeadDispositionAction, CreateTechLeadProposalIssueAction
     from .tech_lead_actions import RequireTechLeadInvestigationAction, TechLeadPlanningFailureAction
     from .required_issue_comment import RequiredIssueCommentAction
-    return isinstance(action, (RequireTechLeadInvestigationAction, TechLeadPlanningFailureAction, RequiredIssueCommentAction, ResetRetryIssueAction, KillHungSessionAction,
+    return isinstance(action, (RequireTechLeadInvestigationAction, TechLeadPlanningFailureAction, RequiredIssueCommentAction,
+                               ResetRetryIssueAction, KillHungSessionAction, RequestReworkAction,
                                RecordTechLeadDispositionAction, EscalateTechLeadDispositionAction,
                                CreateTechLeadProposalIssueAction))
 
@@ -105,12 +106,16 @@ def evaluate_required_act_level_outcome(
     """
     from .required_issue_comment import RequiredIssueCommentAction
     from .tech_lead_actions import TechLeadPlanningFailureAction
+    from .tech_lead_completion_obligations import scoped_rework_effect_committed
     failed_results = tuple(
         result
         for result in applied
         if is_required_act_level_action(result.action)
         and (isinstance(result.action, TechLeadPlanningFailureAction)
         or result.result_type is ActionResultType.FAILURE or (
+            isinstance(result.action, RequestReworkAction)
+            and not scoped_rework_effect_committed(result)
+        ) or (
             isinstance(result.action, RequiredIssueCommentAction)
             and result.result_type is not ActionResultType.SUCCESS
         ) or (

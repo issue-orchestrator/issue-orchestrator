@@ -387,6 +387,7 @@ def _manifest_label_actions(
     expected: "ExpectedState",
     *,
     success: bool,
+    rework_pr_numbers: frozenset[int] = frozenset(),
 ) -> list[Action]:
     """Label the AUTHORITY manifest PRs tech-lead-reviewed/-failed.
 
@@ -415,6 +416,7 @@ def _manifest_label_actions(
             expected=expected,
         )
         for pr_number in authority.manifest_pr_numbers
+        if not success or pr_number not in rework_pr_numbers
     ]
 
 
@@ -467,7 +469,11 @@ def generate_tech_lead_completion_actions(
     succeeded = load_result is not None and load_result.ok
 
     if authority.flavor is TechLeadSessionFlavor.BATCH_REVIEW:
-        actions.extend(_manifest_label_actions(config, authority, expected, success=succeeded))
+        rework_pr_numbers = frozenset(
+            action.target_number for action in load_result.decision.proposed_actions
+            if action.action_type == "request_rework" and action.target_number is not None
+        ) if load_result is not None and load_result.decision is not None else frozenset()
+        actions.extend(_manifest_label_actions(config, authority, expected, success=succeeded, rework_pr_numbers=rework_pr_numbers))
 
     if load_result is None:
         return actions
@@ -486,12 +492,14 @@ def generate_tech_lead_completion_actions(
                 labels,
                 anchor_issue=session.issue,
                 expected=expected,
-                op_ledger=build_op_ledger(tech_lead_authority.list_ops()),
+                op_ledger=build_op_ledger(tech_lead_authority.list_ops(), tech_lead_authority.list_rework_receipts()),
                 pattern_ledger=build_pattern_ledger(tech_lead_authority.list_pattern_evidence()),
                 source_run_id=session.run_assets.run_id,
                 source_session_name=session.run_assets.session_name,
                 observed_at=session.run_assets.started_at,
                 observed_session_generation=authority.observed_kill_target,
+                rework_targets=authority.observed_rework_targets,
+                report_text=load_result.report_text,
                 dedup_corpus=open_issue_corpus.load(),
                 dedup_grant=DuplicateTargetGrant.of(authority.allowed_targets()),
             )

@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
     from .tech_lead_reset_retry import TechLeadResetRetryExecutor
     from .tech_lead_kill_session import TechLeadKillSessionExecutor
+    from .scoped_rework import RequestReworkExecutor
 
 
 @dataclass(frozen=True)
@@ -48,11 +49,17 @@ class ReuseTechLeadProposalAction(RequiredIssueCommentAction):
 def validate_proposal_reuse(action: ReuseTechLeadProposalAction, *,
         host: RepositoryHost, authority: TechLeadAuthorityStore | None,
         reset: TechLeadResetRetryExecutor | None,
-        kill: TechLeadKillSessionExecutor | None) -> None:
+        kill: TechLeadKillSessionExecutor | None,
+        rework: RequestReworkExecutor | None = None) -> None:
     if authority is None:
         raise ValueError("proposal reuse requires the authority owner")
-    stored = authority.load_op(issue_number=action.number)
     required = action.required_op
+    if required.rework_request is not None:
+        if rework is None:
+            raise ValueError("scoped proposal reuse has no live applicability owner")
+        rework.validate_proposal_reuse(action.number, required.rework_request)
+        return
+    stored = authority.load_op(issue_number=action.number)
     if stored is None or (stored.op_type, stored.target_issue_number,
             stored.target_session_id, stored.target_terminal_id, stored.target_session_type) != (
             required.op_type, required.target_issue_number, required.target_session_id,
@@ -103,7 +110,8 @@ def apply_issue_comment(action: AddCommentAction, *, host: RepositoryHost,
         verify_claim: Callable[[Action, int], None], events: EventSink,
         authority: TechLeadAuthorityStore | None,
         reset: TechLeadResetRetryExecutor | None,
-        kill: TechLeadKillSessionExecutor | None) -> ActionResult:
+        kill: TechLeadKillSessionExecutor | None,
+        rework: RequestReworkExecutor | None = None) -> ActionResult:
     """One publication owner for ordinary and mandatory issue explanations."""
     def guard() -> None:
         require_expected(action, action.number)
@@ -111,7 +119,7 @@ def apply_issue_comment(action: AddCommentAction, *, host: RepositoryHost,
         if isinstance(action, ReuseTechLeadProposalAction):
             require_expected(action, action.required_op.target_issue_number)
             verify_claim(action, action.required_op.target_issue_number)
-            validate_proposal_reuse(action, host=host, authority=authority, reset=reset, kill=kill)
+            validate_proposal_reuse(action, host=host, authority=authority, reset=reset, kill=kill, rework=rework)
     if isinstance(action, RequiredIssueCommentAction):
         return apply_required_issue_comment(action, host=host, guard=guard, post_comment=post_comment)
     # Ordinary comments preserve their reconciliation exception contract.

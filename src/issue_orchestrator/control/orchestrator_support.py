@@ -460,7 +460,7 @@ class OrchestratorSupport:
                 issue_number=a.issue_number,
                 pr_number=a.pr_number or None,
                 source=a.source,
-                feedback=a.feedback,
+                feedback=a.feedback, scoped_request_keys=a.scoped_request_keys,
             )
         )
         log_transition("rework", a.issue_number, "CREATED", "QUEUED", f"cycle {a.rework_cycle}")

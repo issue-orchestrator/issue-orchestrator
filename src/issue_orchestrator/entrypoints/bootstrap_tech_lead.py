@@ -23,6 +23,7 @@ from ..ports.budgeted_validation import BudgetedValidationReports, DisabledBudge
 if TYPE_CHECKING:
     from ..control.board_snapshot_builder import BoardSnapshotBuilder
     from ..control.fact_gatherer import FactGatherer
+    from ..control.pr_scanner import PRScanner
     from ..control.open_issue_corpus import OpenIssueCorpusManager
     from ..control.provider_resilience import ProviderResilienceManager
     from ..control.retry_history_state import ExpediteEligibility, ExpediteLane
@@ -135,7 +136,22 @@ def wire_tech_lead_act_executors(orchestrator: "Orchestrator") -> None:
     applier = orchestrator.deps.action_applier
     applier.tech_lead_reset_retry = build_tech_lead_reset_retry_executor(orchestrator)
     applier.tech_lead_kill_session = build_tech_lead_kill_session_executor(orchestrator)
+    from ..control.scoped_rework import RequestReworkExecutor
+    from ..control.pending_work_successors import PendingWorkSuccessors
     applier.tech_lead_ops = orchestrator.deps.services.tech_lead_authority
+    if orchestrator.deps.repository_host is not None:
+        applier.request_rework = RequestReworkExecutor(
+            repository=orchestrator.deps.repository_host,
+            mutate=applier.apply_scoped_rework_mutation,
+            before_write=applier.require_scoped_rework_authority,
+            pending_successors=PendingWorkSuccessors(orchestrator.deps.pending_work_claims),
+            receipts=orchestrator.deps.services.tech_lead_authority,
+            labels=orchestrator.deps.label_manager, block=applier.needs_human_block,
+            events=orchestrator.deps.events, filtering_label=orchestrator.config.filtering.label or "",
+            is_active=lambda number: any(session.issue.number == number for session in orchestrator.state.active_sessions),
+            is_attempt_active=lambda number, identity: any(session.issue.number == number and session.run_assets.identity == identity
+                for session in orchestrator.state.active_sessions),
+        )
     applier.promotion_target = orchestrator.deps.services.promotion_target
     applier.expedite_lane = build_expedite_lane(orchestrator)
 
@@ -456,3 +472,19 @@ def _make_e2e_health_reader(
             return None
 
     return _read
+
+
+def create_rework_scanner(
+    config: "Config", repository: "RepositoryHost", events: "EventSink",
+    working_copy: "WorkingCopy", authority: "TechLeadAuthorityStore",
+) -> "PRScanner":
+    """Use the same branch and durable-feedback producers in both roots."""
+    from ..control.pr_scanner import PRScanner
+    from ..control.scoped_rework_launch import scoped_rework_request_keys
+    from ..control.worktree_manager import extract_issue_branches
+
+    return PRScanner(
+        config=config, repository=repository, events=events,
+        issue_branches_fn=lambda: extract_issue_branches(working_copy, config.repo_root),
+        rework_request_keys=lambda number: scoped_rework_request_keys(authority, number),
+    )

@@ -13,14 +13,21 @@ direction.
 
 from __future__ import annotations
 
+from ..domain.scoped_rework import ReworkRequest
+
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING
 
 from ..domain.models import DiscoveredFailure
 from ..domain.tech_lead_milestone import TechLeadMilestoneIntent
 from ..domain.tech_lead_comment import TechLeadCommentIntent
 from ..domain.tech_lead_session import TechLeadCreationOrigin, TechLeadSessionFlavor
 from .action_base import Action, ActionType
+from .tech_lead_mutation import (
+    NO_RECONCILIATION_SUBJECT as NO_RECONCILIATION_SUBJECT,
+    TechLeadMutation as TechLeadMutation,
+    reconciliation_subject_for as reconciliation_subject_for,
+)
 
 if TYPE_CHECKING:
     from ..domain.tech_lead_findings import PatternObservation
@@ -37,53 +44,6 @@ TECH_LEAD_ISSUE_CREATION_ACTION_TYPES: frozenset[ActionType] = frozenset(
         ActionType.CREATE_TECH_LEAD_CASE_FILE_ISSUE,
     }
 )
-
-#: A command whose reconciliation subject is "no managed-repo issue at all".
-#: Only two tech-lead mutations legitimately have none: creating the ANCHOR
-#: issue itself (there is nothing yet to reconcile against) and discarding
-#: terminal ledger rows (a purely orchestrator-side write). Anything else with
-#: this subject is a composition bug, and the dispatch guard fails it closed.
-NO_RECONCILIATION_SUBJECT = 0
-
-
-@runtime_checkable
-class TechLeadMutation(Protocol):
-    """A tech-lead command that MUTATES, and names what it reconciles against.
-
-    Every mutating tech-lead command crosses the applier's optimistic-concurrency
-    gate before it writes, and that gate needs an issue to read labels from. The
-    dispatch table used to supply those subjects by hand for the four commands
-    someone remembered, which is exactly why issue creation kept slipping past
-    it: a case file or proposal could still be filed against a source anchor
-    paused behind ``io:needs-reconcile`` (#6957 round-6 review F3/A3).
-
-    So the SUBJECT is part of each command's own contract, not a lookup table
-    the registry has to keep in sync. A command that mutates and does not
-    implement this protocol cannot be dispatched.
-    """
-
-    def reconciliation_subject(self) -> int:
-        """The managed-repo issue whose current labels gate this mutation.
-
-        :data:`NO_RECONCILIATION_SUBJECT` when the command genuinely has none.
-        """
-        ...
-
-
-def reconciliation_subject_for(action: Action) -> int:
-    """The managed-repo issue *action*'s mutation is checked against.
-
-    Fails loudly for a mutating tech-lead command that never declared one:
-    silently skipping the gate is the failure mode this replaces.
-    """
-    if not isinstance(action, TechLeadMutation):
-        raise TypeError(
-            f"{type(action).__name__} is dispatched as a mutating tech-lead"
-            " command but does not implement TechLeadMutation; every mutating"
-            " command must name the issue its reconciliation is checked against"
-        )
-    return action.reconciliation_subject()
-
 
 @dataclass(frozen=True)
 class CreateTechLeadIssueAction(Action):
@@ -435,6 +395,25 @@ class KillHungSessionAction(Action):
 
     def reconciliation_subject(self) -> int:
         """The issue whose runtime this termination mutates."""
+        return self.issue_number
+
+
+@dataclass(frozen=True)
+class RequestReworkAction(Action):
+    """A consent-bound instruction to the branch-preserving rework owner."""
+
+    request: ReworkRequest = field(kw_only=True)
+    proposal_id: str = field(kw_only=True)
+    finding_ids: tuple[str, ...] = ()
+    anchor_issue_number: int = 0
+    proposal_issue_number: int = 0
+    action_type: ActionType = field(default=ActionType.REQUEST_REWORK, init=False)
+
+    @property
+    def issue_number(self) -> int:
+        return self.request.target.issue_number
+
+    def reconciliation_subject(self) -> int:
         return self.issue_number
 
 

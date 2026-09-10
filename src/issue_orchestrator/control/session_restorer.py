@@ -285,15 +285,15 @@ class SessionRestorer:
 
         # Create session with domain identity
         issue_key = GitHubIssueKey(repo=self.config.repo, external_id=str(issue_number))
-        if session_name.startswith(RETROSPECTIVE_REVIEW_TERMINAL_PREFIX):
-            task_kind = TaskKind.RETROSPECTIVE_REVIEW
-        else:
-            task_kind = TaskKind.REVIEW if is_review else TaskKind.CODE
+        task_kind = _restored_task_kind(session_name, is_review)
         session_key = SessionKey(issue=issue_key, task=task_kind)
         # Use the agent type from issue labels, or the first available agent as fallback
         agent_label_val = issue_obj.agent_type or next(
             iter(self.config.agents.keys()), "unknown"
         )
+        if task_kind is TaskKind.REWORK and self.tech_lead_authority is not None:
+            from .scoped_rework import note_scoped_rework_started
+            note_scoped_rework_started(self.tech_lead_authority, run_assets.identity)
         return Session(
             key=session_key,
             issue=issue_obj,
@@ -376,3 +376,12 @@ class SessionRestorer:
         if match:
             return int(match.group(1))
         return None
+
+
+def _restored_task_kind(session_name: str, is_review: bool) -> TaskKind:
+    """Preserve the worker lane when adopting a canonical terminal."""
+    if session_name.startswith(RETROSPECTIVE_REVIEW_TERMINAL_PREFIX):
+        return TaskKind.RETROSPECTIVE_REVIEW
+    if session_name.startswith("rework-"):
+        return TaskKind.REWORK
+    return TaskKind.REVIEW if is_review else TaskKind.CODE

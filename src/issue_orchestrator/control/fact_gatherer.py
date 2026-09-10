@@ -357,26 +357,12 @@ class FactGatherer:
         rather than optional so this can never silently report an EMPTY approval
         backlog because a caller forgot to hand over its observation (#7014).
 
-        Four independent triggers can each produce facts (only the case where
-        none is active yields None):
-          * BATCH fields, gated by ``tech_lead_review_threshold`` (via the watch
-            label);
-          * HEALTH-REVIEW fields, gated by
-            ``tech_lead.health_review.interval_minutes`` when the periodic review
-            is due, and independently by :func:`storm_possible` so an
-            unscheduled storm escalation can dedup its anchor on a tick the
-            interval is not due (including ``interval_minutes=0``, which
-            disables only the periodic trigger);
-          * PROPOSAL fields (approved-op execution + terminal-op cleanup
-            candidates), armed by the tech lead agent's local op ledger and
-            reconciled whenever it holds an op — INDEPENDENT of the batch
-            review threshold (#6779 R12), so a manual-approval / default
-            (threshold=0) proposal still advances and self-heals.
-          * APPROVAL-BACKLOG fields, armed by observing a gate-labeled open
-            issue on the board (#7014). This one costs no read at all — the
-            board is already in hand — and it arms independently so a repo
-            whose only tech-lead activity is a pile of gated proposals still
-            publishes an operator board that shows them.
+        Facts are armed independently by batch review, due health review or
+        storms, durable proposal operations, pending creation recovery,
+        dispositions, finding promotion, or the observed approval backlog.
+        Pending creations and stored ops reconcile even with threshold=0;
+        health interval=0 disables only the periodic trigger. The already-read
+        board can arm backlog publication without another issue scan (#7014).
 
         GitHub API discipline shapes every read here: due-ness and storm
         possibility are pure state/config math computed FIRST, so a health-only
@@ -421,6 +407,7 @@ class FactGatherer:
             if tech_lead_workflow_enabled and self.tech_lead_authority is not None
             else {}
         )
+        pending_creations = self.tech_lead_authority.list_pending_proposals() if self.tech_lead_authority is not None else ()
         pending_dispositions = tuple(row for row in self.tech_lead_authority.list_dispositions()
             if row.phase == "prepared") if self.tech_lead_authority is not None else ()
         # Local promotion state arms independently of anchor triggers.
@@ -446,7 +433,7 @@ class FactGatherer:
         # never report them as "nothing armed" (F5).
         other_armed = bool(
             batch_armed or health_armed or ops or storm_armed or promotable
-            or promotion_updates or settled or gated_proposals or backlog_cleared or pending_dispositions
+            or promotion_updates or settled or gated_proposals or backlog_cleared or pending_dispositions or pending_creations
         )
         if not approval_due and not other_armed:
             return None
@@ -481,7 +468,7 @@ class FactGatherer:
                 absent_op_candidates,
                 case_files,
                 scanned_issues,
-            ) = self._classify_tech_lead_anchor_scan(ops)
+            ) = self._classify_tech_lead_anchor_scan(ops, tuple(item.marker for item in pending_creations))
             case_files_scanned = True
             scan_observations = scanned_issues
             # Batch anchor classification stays gated on batch_armed: a batch
@@ -504,6 +491,7 @@ class FactGatherer:
         state.tech_lead_gated_backlog_seen = bool(gated_proposals)
 
         facts = TechLeadFacts(
+            pending_proposal_creations=pending_creations,
             pending_dispositions=pending_dispositions,
             pr_count=len(prs),
             threshold=self.config.tech_lead_review_threshold,
@@ -636,6 +624,7 @@ class FactGatherer:
     def _classify_tech_lead_anchor_scan(
         self,
         ops: Mapping[int, "StoredTechLeadOp"],
+        pending_markers: tuple[str, ...] = (),
     ) -> tuple[
         int | None,
         int | None,
@@ -674,7 +663,7 @@ class FactGatherer:
         existing = discover_open_tech_lead_anchor_issues(
             self.repository_host, self.config
         )
-        reconciled = reconcile_tech_lead_proposals(existing, ops=ops)
+        reconciled = reconcile_tech_lead_proposals(existing, ops=ops, pending_markers=pending_markers)
         remaining, case_files = split_tech_lead_case_file_issues(
             reconciled.anchor_candidate_issues
         )

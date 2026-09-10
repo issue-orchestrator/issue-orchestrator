@@ -601,7 +601,7 @@ class TestPROperations:
             "number": 10,
             "title": "Test PR",
             "html_url": "https://github.com/owner/repo/pull/10",
-            "head": {"ref": "feature-branch"},
+            "head": {"ref": "feature-branch", "sha": "a" * 40},
             "body": "PR description",
             "state": "open",
             "labels": [{"name": "bug"}],
@@ -614,6 +614,7 @@ class TestPROperations:
         assert pr.number == 10
         assert pr.title == "Test PR"
         assert pr.branch == "feature-branch"
+        assert pr.head_sha == "a" * 40
         assert pr.labels == ["bug"]
         assert pr.mergeable_state == "unstable"
         assert pr.status_check_rollup is None
@@ -1060,7 +1061,7 @@ class TestPROperations:
                 "number": 10,
                 "title": "Test PR",
                 "html_url": "https://github.com/owner/repo/pull/10",
-                "head": {"ref": "feature"},
+                "head": {"ref": "feature", "sha": "b" * 40},
                 "body": "",
                 "state": "open",
                 "labels": [],
@@ -1071,6 +1072,8 @@ class TestPROperations:
 
         assert len(prs) == 1
         assert prs[0].branch == "feature"
+        assert prs[0].head_sha == "b" * 40
+        assert adapter.get_prs_for_branch("feature")[0].head_sha == "b" * 40
         mock_http_client.get_prs_for_branch.assert_called_once_with("feature", state="open")
 
     def test_get_prs_for_branch_error_propagates(self, adapter, mock_http_client):

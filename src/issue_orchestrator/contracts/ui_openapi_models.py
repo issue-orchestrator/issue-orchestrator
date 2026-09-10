@@ -1213,6 +1213,27 @@ class ReviewTranscriptUnavailablePayload(BaseModel):
     kind: Literal['unavailable']
     reason: str
 
+class ReworkProposalPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    can_approve: bool
+    can_decline: bool
+    detail: str
+    evidence_identity: str
+    expected_head: str
+    feedback: str
+    forward_issue_number: int
+    issue_number: int
+    mutations: str
+    pr_number: int
+    proposal_issue_number: int
+    report: str
+    repository: str
+    status: str
+
+class ReworkProposalsPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    proposals: list[ReworkProposalPayload]
+
 class RunningCodingAttemptPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     agent: AgentIdentityPayload
@@ -1341,6 +1362,17 @@ class TechLeadIssueScopePayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     issue_number: int = Field(..., ge=1, strict=True)
     kind: Literal['issue']
+
+class TechLeadProposalCommandPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    decision: Literal['approve', 'decline']
+    proposal_issue_number: int = Field(..., ge=1, strict=True)
+
+class TechLeadProposalOutcomePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    detail: str
+    outcome: str
+    proposal_issue_number: int
 
 class TechLeadRunActivityEntryPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")

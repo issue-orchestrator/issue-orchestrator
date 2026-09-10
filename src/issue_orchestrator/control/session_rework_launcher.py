@@ -34,6 +34,8 @@ from ..ports.coder_prompt import CoderPromptAddendumProvider
 from ..ports.command_runner import CommandRunner
 from ..ports.worktree_manager import WorktreeManager, WorktreeReuseOptions
 from .actions import Action, AddCommentAction, AddLabelAction, RemoveLabelAction
+from .scoped_rework_launch import ScopedReworkLaunch
+from .scoped_rework import note_scoped_rework_started
 from .launch_transaction import (
     NO_LAUNCH_WORK_CLAIM,
     LaunchWorkClaim,
@@ -41,7 +43,7 @@ from .launch_transaction import (
 )
 from .session_launch_types import LaunchDisposition, LaunchResult
 from .stack_base import StackBaseDecision
-from .session_review_support import copy_review_feedback_to_rework, format_reviewer_feedback
+from .session_review_support import copy_review_feedback_to_rework, format_reviewer_feedback, combine_rework_feedback
 from .session_worktree_diagnostics import (
     build_worktree_error_comment,
     write_worktree_diagnostic,
@@ -156,6 +158,7 @@ class ReworkLaunchDependencies:
     check_provider_ready: ProviderReadinessChecker
     resolve_stack_decision: StackDecisionResolverFn
     coder_prompt_addendum: CoderPromptAddendumProvider
+    scoped_rework: ScopedReworkLaunch
 
 
 @dataclass(frozen=True)
@@ -283,6 +286,10 @@ def launch_rework_session(
     session_key = SessionKey(issue=issue_key, task=TaskKind.REWORK)
     pr_number, branch_name = resolve_rework_pr(deps.repository_host, rework, issue_number)
 
+    scoped = deps.scoped_rework.admit(rework, pr_number, work_claim=work_claim)
+    if isinstance(scoped, LaunchResult):
+        return scoped
+    work_claim = deps.scoped_rework.claim(work_claim, scoped.keys)
     session_name = f"rework-{issue_number}"
     # Preflight: session conflicts, then the stack work gate. A blocked/ambiguous
     # stack predecessor fails the rework closed before the reused successor
@@ -444,10 +451,6 @@ def launch_rework_session(
             rework_run_assets=run,
         )
 
-        feedback_sections: list[str] = []
-        if rework.feedback:
-            feedback_sections.append(rework.feedback)
-
         reviewer_feedback = format_reviewer_feedback(
             pr_number=pr_number,
             repository_host=deps.repository_host,
@@ -455,11 +458,10 @@ def launch_rework_session(
             run_assets=run,
             sleep_fn=time.sleep,
         )
-        if reviewer_feedback:
-            feedback_sections.append(reviewer_feedback)
-
-        if feedback_sections:
-            combined_feedback = "\n\n".join(feedback_sections)
+        combined_feedback = combine_rework_feedback(
+            rework.feedback, scoped.feedback, reviewer_feedback,
+        )
+        if combined_feedback:
             existing_work = f"{existing_work}\n\n{combined_feedback}" if existing_work else combined_feedback
             logger.info("[launch] Including rework feedback in session prompt")
             deps.session_output.save_review_feedback(
@@ -515,6 +517,8 @@ def launch_rework_session(
             command,
         )
 
+        if failure := deps.scoped_rework.before_spawn(scoped.keys, run.identity):
+            return failure
         session_created = deps.create_session(session_name, command, worktree_path, f"Rework #{issue_number}")
         logger.info(
             "[launch] Rework session create result: issue=%s pr=%s session=%s created=%s",
@@ -560,6 +564,7 @@ def launch_rework_session(
             original_prompt=rendered_prompt,
         )
 
+        note_scoped_rework_started(deps.scoped_rework.store, run.identity)
         log_transition("rework", issue_number, "LAUNCHING", "ACTIVE", f"session launched, cycle={rework.rework_cycle}")
         logger.info("Launched rework session for issue #%d (cycle %d)", issue_number, rework.rework_cycle)
 
@@ -588,6 +593,17 @@ def launch_rework_session(
             events=deps.events,
         )
 
+        settle_started_rework_trigger(deps, pr_number, issue_number, issue_key, scoped.keys)
+
+        return LaunchResult(session, True)
+
+
+def settle_started_rework_trigger(
+    deps: ReworkLaunchDependencies, pr_number: int, issue_number: int,
+    issue_key: IssueKey, keys: tuple[str, ...],
+) -> None:
+    """Retire the trigger only when this run owns every approved instruction."""
+    if not deps.scoped_rework.has_unselected_work(pr_number, keys):
         deps.apply_actions([
             RemoveLabelAction(
                 issue_number=pr_number,
@@ -601,8 +617,6 @@ def launch_rework_session(
             "issue_key": issue_key.stable_id(),
             "removed": [deps.label_manager.needs_rework],
         }))
-
-        return LaunchResult(session, True)
 
 
 def check_rework_conflicts(

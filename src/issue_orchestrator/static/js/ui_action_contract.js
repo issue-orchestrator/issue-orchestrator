@@ -21,6 +21,7 @@
         SESSION_PROMPT: (issueNumber) => `/api/session/prompt/${issueNumber}`,
         TERMINAL_RECORDING: (issueNumber) => `/api/session/terminal-recording/${issueNumber}`,
         TECH_LEAD_RUNS: '/api/tech-lead/runs',
+        TECH_LEAD_REWORK_PROPOSALS: '/api/tech-lead/rework-proposals',
         RETRY_PUBLISH: (issueNumber) => `/api/issues/${issueNumber}/retry-publish`,
         CLOSE_ISSUE: (issueNumber) => `/api/issues/${issueNumber}/close`,
         ISSUE_RESUME: (issueNumber) => `/api/issues/${issueNumber}/resume`,
@@ -36,6 +37,13 @@
         'tech_lead_report',
         'tech_lead_decision',
     ]);
+
+    function buildTechLeadProposalRequest(command) {
+        if (!Number.isInteger(command.proposal_issue_number) || command.proposal_issue_number <= 0 || !['approve', 'decline'].includes(command.decision)) {
+            throw new Error('Invalid tech-lead proposal command');
+        }
+        return {endpoint: ENDPOINTS.TECH_LEAD_REWORK_PROPOSALS, method: 'POST', body: command};
+    }
 
     function normalizeIssueNumbers(issueNumbers) {
         if (!Array.isArray(issueNumbers)) return [];
@@ -280,6 +288,7 @@
         ENDPOINTS,
         REVIEW_ARTIFACT_TYPES,
         normalizeIssueNumbers,
+        buildTechLeadProposalRequest,
         buildUnblockRequest,
         buildResetRetryRequest,
         buildRetrospectiveReviewPreflightRequest,

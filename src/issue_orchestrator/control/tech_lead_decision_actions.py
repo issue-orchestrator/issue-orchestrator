@@ -72,6 +72,10 @@ is stopped and no other labels are touched.
 
 from __future__ import annotations
 
+import hashlib
+import json
+from ..domain.scoped_rework import ReworkRequest, ReworkTarget
+
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Callable, Mapping
 
@@ -88,6 +92,7 @@ from .actions import (
     Action,
     AddCommentAction,
     KillHungSessionAction,
+    RequestReworkAction,
     ResetRetryIssueAction,
     SurfaceTechLeadProposalAction,
 )
@@ -174,7 +179,7 @@ def plan_tech_lead_decision_actions(
     *,
     anchor_issue: Issue,
     expected: "ExpectedState",
-    op_ledger: Mapping[tuple[str, int], int],
+    op_ledger: Mapping[tuple[str, int | str], int],
     pattern_ledger: Mapping[str, "PatternEvidence"],
     source_run_id: str,
     source_session_name: str,
@@ -182,6 +187,8 @@ def plan_tech_lead_decision_actions(
     observed_session_generation: Callable[[int], TechLeadSessionGeneration | None],
     dedup_corpus: OpenIssueCorpus,
     dedup_grant: DuplicateTargetGrant,
+    rework_targets: tuple[ReworkTarget, ...] = (),
+    report_text: str = "",
 ) -> list[Action]:
     """Plan orchestrator actions for a validated tech_lead decision.
 
@@ -213,6 +220,8 @@ def plan_tech_lead_decision_actions(
         observed_session_generation=observed_session_generation,
         dedup_corpus=dedup_corpus,
         dedup_grant=dedup_grant,
+        rework_targets=rework_targets,
+        report_text=report_text,
     )
     try:
         for proposed in decision.proposed_actions:
@@ -249,7 +258,7 @@ class _DecisionActionPlanner:
     labels: LabelManager
     anchor_issue: Issue
     expected: "ExpectedState"
-    op_ledger: Mapping[tuple[str, int], int]
+    op_ledger: Mapping[tuple[str, int | str], int]
     # signature -> its FULL durable row: planning preflights a new
     # observation's classification against it, which a bare issue number
     # cannot support (#6957 round-2 review F3).
@@ -265,9 +274,11 @@ class _DecisionActionPlanner:
     # dedup redirect may target.
     dedup_corpus: OpenIssueCorpus
     dedup_grant: DuplicateTargetGrant
+    rework_targets: tuple[ReworkTarget, ...] = ()
+    report_text: str = ""
     actions: list[Action] = field(default_factory=list)
     shadow: list[SurfaceTechLeadProposalAction] = field(default_factory=list)
-    _planned_ops: set[tuple[str, int]] = field(default_factory=set)
+    _planned_ops: set[tuple[str, int | str]] = field(default_factory=set)
     # (action_id, title, body) of EVERY create_issue intent this decision has
     # processed — whether it filed a new issue or routed onto an existing one.
     # The persisted-corpus gate cannot see them (they have no issue number yet),
@@ -335,10 +346,24 @@ class _DecisionActionPlanner:
         # round-1 review F1/A1).
         self._case_files.plan(CaseFileIntake.diagnosing(proposed))
 
+    def _rework_request(self, proposed: ProposedTechLeadAction) -> ReworkRequest:
+        target = next((target for target in self.rework_targets if target.pr_number == proposed.target_number), None)
+        if target is None:
+            raise ValueError("request_rework has no immutable launch target")
+        findings = [self.findings[finding_id] for finding_id in proposed.finding_ids]
+        identity = sorted((finding.title, finding.details or "", sorted(finding.evidence)) for finding in findings)
+        return ReworkRequest(
+            target=target,
+            evidence_identity=hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest(),
+            report=self.report_text,
+            feedback=proposed.body or "",
+        )
+
     def _plan_gated_op(self, proposed: ProposedTechLeadAction) -> None:
         """Gated proposal issue for an act-level intent (#6778)."""
         assert proposed.target_number is not None  # enforced by validate()
-        key = (proposed.action_type, proposed.target_number)
+        request = self._rework_request(proposed) if proposed.action_type == "request_rework" else None
+        key = (proposed.action_type, request.key if request else proposed.target_number)
         existing = self.op_ledger.get(key)
         if existing is not None:
             from .required_issue_comment import ReuseTechLeadProposalAction
@@ -348,7 +373,8 @@ class _DecisionActionPlanner:
                     required_op=build_stored_tech_lead_op(proposed,
                         source_run_id=self.source_run_id, source_session_name=self.source_session_name,
                         target_session=self.observed_session_generation(proposed.target_number)
-                            if proposed.action_type == "kill_hung_session" else None),
+                            if proposed.action_type == "kill_hung_session" else None,
+                        rework_request=request),
                     number=existing,
                     comment=build_duplicate_proposal_comment(
                         proposed, anchor_issue_number=self._anchor_number
@@ -386,6 +412,7 @@ class _DecisionActionPlanner:
                 source_session_name=self.source_session_name,
                 expected=self.expected,
                 target_session=target_session,
+                rework_request=request,
             )
         )
 
@@ -413,6 +440,13 @@ class _DecisionActionPlanner:
                     expected=self.expected,
                 )
             )
+            return
+        if proposed.action_type == "request_rework":
+            self.actions.append(RequestReworkAction(
+                request=self._rework_request(proposed), proposal_id=proposed.id,
+                finding_ids=proposed.finding_ids, anchor_issue_number=self._anchor_number,
+                reason="tech_lead decision: scoped rework", expected=self.expected,
+            ))
             return
         assert proposed.action_type == "kill_hung_session"
         target_session = self.observed_session_generation(proposed.target_number)

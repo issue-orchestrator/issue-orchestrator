@@ -1350,6 +1350,19 @@ class ReviewSettings(BaseModel):
             "yaml_path": "tech_lead.authority.kill_hung_session",
         },
     )
+    tech_lead_authority_request_rework: str = Field(
+        "propose",
+        title=f"{TECH_LEAD_DISPLAY_NAME} Authority: Scoped Rework",
+        description="Request rework of an observed PR while preserving its branch",
+        json_schema_extra={
+            "enum": list(TECH_LEAD_AUTHORITY_MODES),
+            "doc_examples": ["propose", "execute"],
+            "doc_notes": "propose creates a gated proposal. Approval revalidates the observed PR head and link, invalidates review labels, and feeds normal rework. Merged PRs receive a forward-fix issue. Independent human block causes remain.",
+            "section": _TECH_LEAD_SECTION,
+            "config_attr": "tech_lead.authority.request_rework",
+            "yaml_path": "tech_lead.authority.request_rework",
+        },
+    )
     tech_lead_findings_promote: str = Field(
         FINDING_PROMOTION_GATED,
         title=f"{TECH_LEAD_DISPLAY_NAME} Finding Promotion",
@@ -1603,6 +1616,7 @@ class ReviewSettings(BaseModel):
         "tech_lead_authority_flag_pattern",
         "tech_lead_authority_reset_retry",
         "tech_lead_authority_kill_hung_session",
+        "tech_lead_authority_request_rework",
     )
     @classmethod
     def _validate_tech_lead_authority_mode(cls, value: str) -> str:

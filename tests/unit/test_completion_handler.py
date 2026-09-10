@@ -11,7 +11,9 @@ Tests focus on invariant outcomes, state transitions, and business rules
 rather than implementation details.
 """
 
+from issue_orchestrator.control.in_flight_work import SettlementOutcome
 from issue_orchestrator.domain.registered_completion import CompletionProcessingPolicy
+
 import pytest
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -3611,7 +3613,14 @@ class TestTechLeadAuthorityRetention:
         handler = make_handler(config)
         result = handler.process_completion(session, status, finalize_terminal=False, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
         assert self._load_authority(config, session) is not None
-        handler.finalize_terminal_outcome(session, result.history_status, None, None, processing_policy=result.processing_policy)
+        handler.finalize_terminal_outcome(
+            session,
+            result.history_status,
+            None,
+            None,
+            work_outcome=SettlementOutcome.CONSUMED,
+            processing_policy=result.processing_policy,
+        )
         assert self._load_authority(config, session) is None
 
     def test_rejected_completion_discards_authority_row(

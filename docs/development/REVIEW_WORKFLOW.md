@@ -355,3 +355,38 @@ registered parent worktree tip.
 Dashboard shows "Coding" or "Reviewing" based on session terminal ID:
 - `issue-*` -> "Coding"
 - `review-*` -> "Reviewing"
+
+### Scoped tech-lead rework
+
+`request_rework` addresses a specific existing PR after a later tech-lead finding.
+The agent targets only PRs in its `scoped-rework-targets.json` launch facts and
+supplies finding IDs plus actionable feedback. The immutable stored operation
+binds the repository, PR, linked issue, head, branch, observed labels and report.
+Editing the proposal issue body cannot change the approved instruction. A durable
+creation intent and an opaque marker recover an accepted GitHub create before
+its response or local stored-op write completes.
+
+`tech_lead.authority.request_rework` defaults to `propose`. In Control Center's
+repository dashboard, open **Tech-lead rework proposals** to inspect the evidence,
+head, eligibility and predicted changes. **Approve rework** removes the same
+`proposed-tech-lead` gate that an operator can remove on GitHub; **Decline** closes
+the proposal. The engine executes approved operations through the existing
+proposal lifecycle. Pausing the engine preserves inspection and consent while
+execution waits for resume.
+
+Approval preserves the branch, invalidates stale review labels and publishes
+`needs-rework` last. The instruction is journaled before label writes and is read
+again at normal rework launch, including recovered/already-queued work. Pending
+work carries exact request IDs, with fresh PR/head/link checks before spawn.
+The ordinary durable work claim binds those IDs to the consuming run before
+starting the provider; failed spawns release them, and restoration adopts only
+the matching run. Only an
+observed operator human block may be cleared; independent recorded lifecycle
+causes retain their block. Existing agent, dependency, milestone and rework-cycle
+policy still controls launch.
+
+A changed head or closed-unmerged/missing target is stale. A merged PR receives
+one forward-fix issue with the same evidence and routing, using the original
+approval as consent. Durable receipts and authoritative marker recovery prevent
+repeating the rework or forward fix after a restart. Finding promotion from
+`flag_pattern` remains the separate lane for repeated systemic findings.

@@ -19,10 +19,12 @@ import asyncio
 
 import logging
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
+from ..domain.scoped_rework import TechLeadProposalCommand
 from fastapi.responses import JSONResponse
 
 from ..contracts.ui_openapi_models import (
+    ReworkProposalPayload, ReworkProposalsPayload, TechLeadProposalCommandPayload, TechLeadProposalOutcomePayload,
     TechLeadIssueScopePayload,
     TechLeadRunAdmissionPayload,
     TechLeadRunRequestPayload,
@@ -125,3 +127,23 @@ async def request_tech_lead_run(
         body.model_dump(mode="json"),
         status_code=_OUTCOME_STATUS[admission.outcome],
     )
+
+
+@web_tech_lead_router.get("/api/tech-lead/rework-proposals", response_model=ReworkProposalsPayload)
+async def get_rework_proposals(orchestrator: WebOrchestratorDependency) -> ReworkProposalsPayload:
+    if orchestrator is None:
+        raise HTTPException(status_code=503, detail="Repository Engine is not running")
+    views = await asyncio.to_thread(orchestrator.tech_lead_rework_proposals)
+    return ReworkProposalsPayload(proposals=[ReworkProposalPayload.model_validate(view.to_dict()) for view in views])
+
+
+@web_tech_lead_router.post("/api/tech-lead/rework-proposals", response_model=TechLeadProposalOutcomePayload)
+async def command_rework_proposal(payload: TechLeadProposalCommandPayload,
+                                  orchestrator: WebOrchestratorDependency) -> JSONResponse:
+    if orchestrator is None:
+        raise HTTPException(status_code=503, detail="Repository Engine is not running")
+    outcome = await asyncio.to_thread(orchestrator.request_tech_lead_proposal,
+        TechLeadProposalCommand(payload.proposal_issue_number, payload.decision))
+    body = TechLeadProposalOutcomePayload(proposal_issue_number=outcome.proposal_issue_number,
+        outcome=outcome.outcome, detail=outcome.detail)
+    return JSONResponse(body.model_dump(), status_code=200 if outcome.outcome in {"approved", "declined"} else 409)

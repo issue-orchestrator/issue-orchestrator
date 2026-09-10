@@ -56,6 +56,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Callable, Iterable, Mapping, Sequence, TypeVar
 
+from ..domain.scoped_rework import ReworkRequest, ReworkReceipt
 from ..domain.tech_lead_session import (
     PROPOSED_TECH_LEAD_LABEL,
     ApprovedTechLeadOp,
@@ -71,12 +72,15 @@ from .actions import (
     CreateTechLeadProposalIssueAction,
     DiscardTerminalTechLeadProposalOpsAction,
     KillHungSessionAction,
+    RequestReworkAction,
     ResetRetryIssueAction,
 )
-from .reconciliation import build_expected_for_mutation
+from .reconciliation import build_expected_for_mutation, ReconciliationRequired
+from .claim_gate import ClaimLostError
 from .tech_lead_reset_retry import STALE_DOWNGRADE_MODE
 
 if TYPE_CHECKING:
+    from ..domain.scoped_rework import TechLeadProposalCommand, TechLeadProposalCommandOutcome
     from ..domain.tech_lead_artifacts import ProposedTechLeadAction
     from ..infra.config import Config
     from ..ports import RepositoryHost
@@ -90,7 +94,7 @@ logger = logging.getLogger(__name__)
 # mirrors the applier's constrained TypeVar so the thin dispatch preserves the
 # concrete action type through the consent gate into finalize.
 _TechLeadOpAction = TypeVar(
-    "_TechLeadOpAction", ResetRetryIssueAction, KillHungSessionAction
+    "_TechLeadOpAction", ResetRetryIssueAction, KillHungSessionAction, RequestReworkAction
 )
 
 # Exhaustive open tech-lead-agent scan bound (#6779 R4). Both the per-tick fact
@@ -107,6 +111,7 @@ TECH_LEAD_PROPOSAL_SCAN_LIMIT = 2000
 # batch-anchor title heuristic), and classification additionally excludes
 # gate-labeled/op-backed issues before that heuristic runs.
 _OP_TITLES: dict[str, str] = {
+    "request_rework": "scoped PR rework for issue #{target}",
     "reset_retry": "reset & retry issue #{target} from scratch",
     "kill_hung_session": "kill hung session for issue #{target}",
 }
@@ -142,6 +147,7 @@ def build_stored_tech_lead_op(
     source_run_id: str,
     source_session_name: str,
     target_session: TechLeadSessionGeneration | None = None,
+    rework_request: ReworkRequest | None = None,
     now_iso: str | None = None,
 ) -> StoredTechLeadOp:
     """The orchestrator-side executable payload for an act-level proposal.
@@ -155,7 +161,8 @@ def build_stored_tech_lead_op(
     assert proposed.target_number is not None  # enforced by validate()
     return StoredTechLeadOp(
         op_type=proposed.action_type,
-        target_issue_number=proposed.target_number,
+        target_issue_number=rework_request.target.issue_number if rework_request else proposed.target_number,
+        rework_request=rework_request,
         rationale=proposed.body or "",
         source_run_id=source_run_id,
         source_session_name=source_session_name,
@@ -182,6 +189,16 @@ def _proposal_issue_body(
         if op.op_type == "kill_hung_session"
         else ""
     )
+    if op.rework_request is not None:
+        request = op.rework_request
+        target = request.target
+        session_row += (
+            f"| PR | {target.repository}#{target.pr_number} |\n"
+            f"| Expected head | `{target.head_sha}` |\n"
+            f"| Evidence | `{request.evidence_identity}` |\n"
+            f"| Predicted effects | Preserve `{target.branch}`; invalidate review labels; queue normal rework. "
+            "Clear only the observed operator human block; independent causes stay. A merged PR creates a forward fix. |\n"
+        )
     return f"""## Gated tech_lead proposal (ADR-0031 §2)
 
 A tech_lead session proposed an act-level operation. It is **inert** until a
@@ -223,6 +240,7 @@ def build_tech_lead_proposal_issue_action(
     source_session_name: str,
     expected: "ExpectedState",
     target_session: TechLeadSessionGeneration | None = None,
+    rework_request: ReworkRequest | None = None,
     now_iso: str | None = None,
 ) -> CreateTechLeadProposalIssueAction:
     """Compose the gated proposal issue creation for an act-level proposal.
@@ -235,6 +253,7 @@ def build_tech_lead_proposal_issue_action(
         source_run_id=source_run_id,
         source_session_name=source_session_name,
         target_session=target_session,
+        rework_request=rework_request,
         now_iso=now_iso,
     )
     title_detail = _OP_TITLES[op.op_type].format(target=op.target_issue_number)
@@ -259,15 +278,16 @@ def build_tech_lead_proposal_issue_action(
 
 def build_op_ledger(
     ops: Iterable[tuple[int, StoredTechLeadOp]],
-) -> dict[tuple[str, int], int]:
+    receipts: Iterable[ReworkReceipt] = (),
+) -> dict[tuple[str, int | str], int]:
     """Project store rows to a (op_type, target) -> proposal-issue map.
 
     The store row lifetime IS the "open proposal" window: rows are created
     with the proposal issue and discarded at terminal handling, so this
     ledger enforces one open proposal per (op, target) without a GitHub read.
     """
-    return {
-        (op.op_type, op.target_issue_number): issue_number for issue_number, op in ops
+    return {("request_rework", receipt.request.key): receipt.proposal_issue_number for receipt in receipts if receipt.proposal_issue_number} | {
+        (op.op_type, op.rework_request.key if op.rework_request else op.target_issue_number): issue_number for issue_number, op in ops
     }
 
 
@@ -326,23 +346,15 @@ def reconcile_tech_lead_proposals(
     issues: Sequence["Issue"],
     *,
     ops: Mapping[int, StoredTechLeadOp],
+    pending_markers: tuple[str, ...] = (),
 ) -> ReconciledTechLeadProposals:
     """Classify the exhaustive open scan against the durable ledger.
 
-    One pass reconciles every proposal transition so callers cannot mistake a
-    stale row for a live proposal:
-
-    * gate-labeled open issues are open proposals — inert, nothing to execute;
-    * op-backed open issues WITHOUT the gate label were approved (the operator
-      removed it) — returned for the planner to execute;
-    * ledger rows whose proposal issue is absent from the scan are only
-      CANDIDATES for terminal cleanup (#6779 R7): most were closed manually or
-      leaked by a finalize that crashed before ``discard_op``, but a truncated
-      scan (a later-page API failure, or a repo with more open issues than the
-      scan cap) can also drop a still-open proposal. Reconciliation is
-      read-only, so it returns the candidate numbers without deleting anything;
-      the confirm-and-discard owner re-reads each before cleanup;
-    * everything else flows on to the batch/health anchor classifier.
+    Gated issues are inert; ungated stored ops are approved for execution.
+    Missing op-backed issues are cleanup CANDIDATES, since a truncated scan
+    can omit live issues. The confirm-and-discard owner re-reads them (#6779 R7).
+    Issues attributed to pending creations stay out of anchor classification
+    until the creation owner restores their op. Everything else can be an anchor.
     """
     open_numbers = {issue.number for issue in issues}
     remaining: list["Issue"] = []
@@ -356,7 +368,10 @@ def reconcile_tech_lead_proposals(
                 ApprovedTechLeadOp(proposal_issue_number=issue.number, op=op)
             )
             continue
-        remaining.append(issue)
+        # Accepted creates awaiting ledger recovery are never review anchors,
+        # even if the operator already removed their gate.
+        if not any(marker in (issue.body or "") for marker in pending_markers):
+            remaining.append(issue)
     absent = tuple(sorted(number for number in ops if number not in open_numbers))
     return ReconciledTechLeadProposals(
         anchor_candidate_issues=remaining,
@@ -517,7 +532,15 @@ def plan_approved_tech_lead_op_executions(
         # correlates back to what the approver saw (#6779 R6). kill also carries
         # the session generation it consented to terminate (#6779 R1); any other
         # act-level op is reset_retry (StoredTechLeadOp validated op_type).
-        if op.op_type == "kill_hung_session":
+        if op.op_type == "request_rework":
+            assert op.rework_request is not None
+            actions.append(RequestReworkAction(
+                request=op.rework_request, proposal_id=op.source_action_id,
+                finding_ids=op.finding_ids, anchor_issue_number=item.proposal_issue_number,
+                proposal_issue_number=item.proposal_issue_number, reason=reason,
+                expected=build_expected_for_mutation(),
+            ))
+        elif op.op_type == "kill_hung_session":
             actions.append(
                 KillHungSessionAction(
                     issue_number=op.target_issue_number,
@@ -578,10 +601,11 @@ def _terminal_outcome_comment(
 
 def finalize_tech_lead_op_execution(
     result: ActionResult,
-    action: "ResetRetryIssueAction | KillHungSessionAction",
+    action: "ResetRetryIssueAction | KillHungSessionAction | RequestReworkAction",
     *,
     repository_host: "RepositoryHost | None",
     ops: "TechLeadAuthorityStore | None",
+    before_finalize_write: Callable[[], None] | None = None,
 ) -> ActionResult:
     """Terminal handling for a proposal-linked op execution (once-only owner).
 
@@ -599,6 +623,7 @@ def finalize_tech_lead_op_execution(
     if not proposal_issue:
         return result
     op_type = (
+        "request_rework" if isinstance(action, RequestReworkAction) else
         "reset_retry"
         if isinstance(action, ResetRetryIssueAction)
         else "kill_hung_session"
@@ -613,9 +638,15 @@ def finalize_tech_lead_op_execution(
             " TechLeadAuthorityStore wired into this applier",
         )
     try:
+        if before_finalize_write is not None:
+            before_finalize_write()
         repository_host.add_comment(proposal_issue, comment)
+        if before_finalize_write is not None:
+            before_finalize_write()
         repository_host.update_issue_state(proposal_issue, "closed")
         ops.discard_op(issue_number=proposal_issue)
+    except (ClaimLostError, ReconciliationRequired):
+        raise
     except Exception as e:
         logger.exception(
             "Failed to finalize tech_lead proposal #%d after %s",
@@ -707,6 +738,7 @@ def execute_approved_tech_lead_op(
     *,
     repository_host: "RepositoryHost | None",
     ops: "TechLeadAuthorityStore | None",
+    before_finalize_write: Callable[[], None] | None = None,
 ) -> ActionResult:
     """Consent-gated execution boundary for an approved gated-proposal op.
 
@@ -723,5 +755,40 @@ def execute_approved_tech_lead_op(
     if inert is not None:
         return inert
     return finalize_tech_lead_op_execution(
-        apply_fn(action), action, repository_host=repository_host, ops=ops
+        apply_fn(action), action, repository_host=repository_host, ops=ops,
+        before_finalize_write=before_finalize_write
     )
+
+
+def apply_tech_lead_proposal_command(
+    command: "TechLeadProposalCommand", *, repository: "RepositoryHost", ops: "TechLeadAuthorityStore"
+) -> "TechLeadProposalCommandOutcome":
+    """The UI gesture for the EXISTING gate, with no second execution path.
+
+    Approval removes the same label GitHub operators remove. The existing
+    reconciliation/planner/consent-checked dispatcher performs execution on
+    the next tick, under its normal pause and mutation guards.
+    """
+    from ..domain.scoped_rework import TechLeadProposalCommandOutcome
+
+    number = command.proposal_issue_number
+    op = ops.load_op(issue_number=number)
+    if op is None or op.op_type != "request_rework":
+        return TechLeadProposalCommandOutcome("unavailable", "No stored scoped-rework proposal exists", number)
+    assert op.rework_request is not None
+    if ops.load_rework_receipt(op.rework_request.key) is not None:
+        return TechLeadProposalCommandOutcome("unavailable", "Execution has started; the recorded outcome is authoritative", number)
+    try:
+        issue = repository.get_issue(number)
+        if issue is None or issue.state != "open":
+            return TechLeadProposalCommandOutcome("unavailable", "Proposal is closed or missing", number)
+        if command.decision == "decline":
+            repository.update_issue_state(number, "closed")
+            ops.discard_op(issue_number=number)
+            return TechLeadProposalCommandOutcome("declined", "Proposal declined", number)
+        for label in issue.labels:
+            if is_proposed_tech_lead_gate(label):
+                repository.remove_label(number, label)
+        return TechLeadProposalCommandOutcome("approved", "Approval recorded; the engine will revalidate and execute the stored operation", number)
+    except Exception as exc:
+        return TechLeadProposalCommandOutcome("failed", str(exc), number)

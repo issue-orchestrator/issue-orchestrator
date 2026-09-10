@@ -269,7 +269,7 @@ than guessing.
   finding: `create_issue` to instrument it rather than assume it works.
 - `post_comment`/`escalate_to_human` may only target THIS tracking issue;
   board-wide findings belong in `create_issue`/`flag_pattern` proposals.
-- Act-level proposals (`reset_retry`, `kill_hung_session`) may only target
+- Reset/stop act-level proposals (`reset_retry`, `kill_hung_session`) may only target
   issue numbers listed in the snapshot's `problem_cohort` - the storm cohort
   this review owns. An EMPTY `problem_cohort` means you own no act-level
   targets at all (a periodic review walks the floor and proposes; it does not
@@ -278,6 +278,9 @@ than guessing.
   on the board, including issues another review already owns. An act-level
   proposal for an issue outside `problem_cohort` is rejected at completion, so
   check the cohort - never the failure list - before proposing one.
+- Scoped `request_rework` may target only PRs in the supplied
+  `scoped-rework-targets.json`; this does not grant reset/stop authority over
+  their issues. Propose branch-preserving corrections with evidence.
 - There is no PR manifest for this session: do NOT audit or label PRs, do
   NOT follow any Batch Review Flow step, and do NOT write the batch flow's
   empty-audit pair - your artifacts carry the board findings themselves.
@@ -369,8 +372,13 @@ Compact `tech-lead-decision.json` example:
   - Act-level `reset_retry` and `kill_hung_session` may only target the
     `focus_issue_number` (failure investigation), or an issue number listed
     in the snapshot's `problem_cohort` (health review). A batch review owns
-    no act-level target at all: manifest entries are PRs and the anchor is
+    no act-level target at all for these reset/stop operations: manifest entries are PRs and the anchor is
     bookkeeping, so resetting either would hit the wrong entity.
+  - Act-level `request_rework` targets only a PR in your orchestrator-supplied
+    `scoped-rework-targets.json`, with `target_is_pr: true`, `finding_ids` and
+    requested feedback in `body`. Its recorded head and labels bind approval.
+    Batch targets come from the reviewed manifest; health/failure targets come
+    from the supplied validated problem facts. Never invent a PR target.
   Any other target is rejected at completion. `create_issue` and
   `flag_pattern` carry no target.
 - `flag_pattern` requires a stable `pattern_signature` (a short reusable slug
@@ -419,10 +427,19 @@ Compact `tech-lead-decision.json` example:
   completion-mandatory command; failed publication/storage fails completion.
   See the Failure Investigation Flow for the finite deadline and release rules.
 - Valid `action_type` values: `post_comment`, `create_issue`,
-  `escalate_to_human`, `defer_to_tracker`, `flag_pattern`, `reset_retry`, `kill_hung_session`.
+  `escalate_to_human`, `defer_to_tracker`, `flag_pattern`, `reset_retry`, `kill_hung_session`, `request_rework`.
+- For an existing PR needing scoped corrections, propose `request_rework` with
+  `target_is_pr: true`, its PR `target_number`, `finding_ids`, and actionable
+  feedback in `body`. Target only PRs in `scoped-rework-targets.json`; those
+  immutable launch facts bind the repository, linked issue, head and branch.
+  The report is preserved as the coder instruction. Default authority is
+  `propose`: approve in the rework proposal panel or remove the existing
+  proposed-tech-lead gate. Execution preserves the branch and uses normal
+  rework policy; changed heads require fresh review, and merged PRs receive
+  one forward fix. `flag_pattern` promotion is a different lane.
 - Proposals are intent, not execution: the orchestrator decides what to
   execute per its configured authority. Act-level proposals (`reset_retry`,
-  `kill_hung_session`) under `propose` authority become reviewable GitHub
+  `kill_hung_session`, `request_rework`) under `propose` authority become reviewable GitHub
   issues carrying the `proposed-tech-lead` label; a human approves one by
   removing that label, and the orchestrator re-checks the target's state
   before executing — stale proposals are closed with a comment, not

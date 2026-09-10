@@ -41,6 +41,7 @@ TechLeadActionType = Literal[
     "flag_pattern",
     "reset_retry",
     "kill_hung_session",
+    "request_rework",
 ]
 TechLeadFindingClassification = Literal["infra", "task", "agent", "systemic"]
 TechLeadAuthorityMode = Literal["execute", "propose"]
@@ -59,6 +60,7 @@ VALID_TECH_LEAD_ACTION_TYPES: frozenset[str] = frozenset(
         "flag_pattern",
         "reset_retry",
         "kill_hung_session",
+    "request_rework",
     )
 )
 _VALID_CLASSIFICATIONS = frozenset(("infra", "task", "agent", "systemic"))
@@ -68,7 +70,7 @@ _VALID_CLASSIFICATIONS = frozenset(("infra", "task", "agent", "systemic"))
 # be granted direct ``execute`` authority. Keep the explicit unwired set as the
 # fail-closed extension point for future act-level actions.
 ACT_LEVEL_TECH_LEAD_ACTIONS: frozenset[str] = frozenset(
-    ("reset_retry", "kill_hung_session")
+    ("reset_retry", "kill_hung_session", "request_rework")
 )
 UNWIRED_ACT_LEVEL_TECH_LEAD_ACTIONS: frozenset[str] = frozenset()
 
@@ -450,6 +452,9 @@ class ProposedTechLeadAction:
                 self.target_number is not None, f"{context} requires target_number"
             )
             _require(bool(self.body), f"{context} requires body (rationale)")
+            if self.action_type == "request_rework":
+                _require(self.target_is_pr, f"{context} requires target_is_pr=true")
+                _require(bool(self.finding_ids), f"{context} requires finding_ids")
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {

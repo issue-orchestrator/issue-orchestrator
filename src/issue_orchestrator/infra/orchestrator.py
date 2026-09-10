@@ -42,6 +42,7 @@ from ..control.worktree_manager import get_worktree_path, get_session_name, extr
 logger = logging.getLogger(__name__)
 
 
+from .tech_lead_proposal_facade import rework_proposal_views, rework_proposal_command, ReworkProposalView, TechLeadProposalCommand, TechLeadProposalCommandOutcome
 from .config import Config
 from ..ports.issue import Issue
 from ..domain.models import (
@@ -1069,13 +1070,6 @@ class Orchestrator:
     def launch_retrospective_review_session(self, review: PendingRetrospectiveReview) -> Optional[Session]:
         return _launch_retrospective_review_session(review, self.state, self._session_launcher, self.deps.session_restorer, self.deps.pending_work_claims)
 
-    # #6994 R2 F2/F8: `launch_tech_lead_session` is the ONE entry point — it re-decides
-    # subject eligibility, scope exclusivity and cross-engine ownership immediately
-    # before starting. `launch_queued_*` is the raw step that authority delegates to.
-    # Both tech-lead transitions run under `state_lock` (reentrant, so the tick's
-    # own launch nests safely) because admission and launch each read the pending
-    # queue and then mutate it, and the dashboard command surface runs on a
-    # different thread from the tick.
     def launch_queued_tech_lead_session(self, tech_lead: PendingTechLeadReview) -> Optional[Session]:
         return _launch_tech_lead_session(tech_lead, self.state, self.config, self._session_launcher, self.deps.session_restorer, self.deps.pending_work_claims)
 
@@ -1085,6 +1079,12 @@ class Orchestrator:
 
     def ensure_health_review_anchor(self) -> Optional[PendingTechLeadReview]:
         return _ensure_health_review_anchor(self)
+
+    def tech_lead_rework_proposals(self) -> tuple["ReworkProposalView", ...]:
+        return rework_proposal_views(self)
+
+    def request_tech_lead_proposal(self, command: "TechLeadProposalCommand") -> "TechLeadProposalCommandOutcome":
+        return rework_proposal_command(self, command)
 
     def request_tech_lead_run(self, request: TechLeadRunRequest) -> TechLeadRunAdmission:
         with self.state_lock:

@@ -5,6 +5,48 @@
     "version": "1.0.0"
   },
   "paths": {
+    "/api/tech-lead/rework-proposals": {
+      "get": {
+        "operationId": "getReworkProposals",
+        "responses": {
+          "200": {
+            "description": "Stored scoped rework proposals and outcomes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReworkProposalsPayload"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "commandReworkProposal",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TechLeadProposalCommandPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Stored proposal approval outcome",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TechLeadProposalOutcomePayload"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/issues/{issue_number}/resume": {
       "post": {
         "summary": "Process an authenticated allocated-run completion receipt",
@@ -826,6 +868,126 @@
   },
   "components": {
     "schemas": {
+      "ReworkProposalPayload": {
+        "type": "object",
+        "properties": {
+          "proposal_issue_number": {
+            "type": "integer"
+          },
+          "pr_number": {
+            "type": "integer"
+          },
+          "issue_number": {
+            "type": "integer"
+          },
+          "forward_issue_number": {
+            "type": "integer"
+          },
+          "repository": {
+            "type": "string"
+          },
+          "expected_head": {
+            "type": "string"
+          },
+          "evidence_identity": {
+            "type": "string"
+          },
+          "feedback": {
+            "type": "string"
+          },
+          "report": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "mutations": {
+            "type": "string"
+          },
+          "can_approve": {
+            "type": "boolean"
+          },
+          "can_decline": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "proposal_issue_number",
+          "pr_number",
+          "issue_number",
+          "forward_issue_number",
+          "repository",
+          "expected_head",
+          "evidence_identity",
+          "feedback",
+          "report",
+          "status",
+          "detail",
+          "mutations",
+          "can_approve",
+          "can_decline"
+        ],
+        "additionalProperties": false
+      },
+      "ReworkProposalsPayload": {
+        "type": "object",
+        "properties": {
+          "proposals": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReworkProposalPayload"
+            }
+          }
+        },
+        "required": [
+          "proposals"
+        ],
+        "additionalProperties": false
+      },
+      "TechLeadProposalCommandPayload": {
+        "type": "object",
+        "properties": {
+          "proposal_issue_number": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "decision": {
+            "type": "string",
+            "enum": [
+              "approve",
+              "decline"
+            ]
+          }
+        },
+        "required": [
+          "proposal_issue_number",
+          "decision"
+        ],
+        "additionalProperties": false
+      },
+      "TechLeadProposalOutcomePayload": {
+        "type": "object",
+        "properties": {
+          "proposal_issue_number": {
+            "type": "integer"
+          },
+          "outcome": {
+            "type": "string"
+          },
+          "detail": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "proposal_issue_number",
+          "outcome",
+          "detail"
+        ],
+        "additionalProperties": false
+      },
       "CompletionResumeOutcomePayload": {
         "type": "object",
         "additionalProperties": false,

@@ -17,12 +17,20 @@ from __future__ import annotations
 import sqlite3
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS tech_lead_rework_receipts (
+    request_key TEXT PRIMARY KEY,
+    receipt TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS tech_lead_launch_authority (
     run_id TEXT NOT NULL,
     session_name TEXT NOT NULL,
     authority TEXT NOT NULL,
     recorded_at TEXT NOT NULL,
     PRIMARY KEY (run_id, session_name)
+);
+CREATE TABLE IF NOT EXISTS tech_lead_pending_proposals (
+    creation_key TEXT PRIMARY KEY,
+    intent TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS tech_lead_proposal_ops (
     issue_number INTEGER PRIMARY KEY,

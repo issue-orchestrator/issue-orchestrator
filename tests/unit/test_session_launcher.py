@@ -2631,6 +2631,239 @@ class TestLaunchReworkSession:
         assert started.data["agent"] == "agent:web"
         assert started.data["task"] == "rework"
 
+    def test_approved_scoped_instruction_reaches_existing_branch_and_exact_run(
+        self, launcher_bundle, mock_repo_host, mock_worktree_manager, sample_config,
+    ):
+        from issue_orchestrator.domain.scoped_rework import ReworkReceipt, ReworkRequest, ReworkTarget
+
+        pr = PRInfo(456, "Fix #123", "url", "123-existing", "Fixes #123", "open", [], head_sha="a" * 40)
+        mock_repo_host.prs[123] = [pr]
+        mock_repo_host.pr_reviews[456] = [
+            {"state": "CHANGES_REQUESTED", "body": "Keep reviewer regression coverage", "user": {"login": "reviewer"}},
+        ]
+        request = ReworkRequest(
+            ReworkTarget("test/repo", 456, 123, pr.head_sha, pr.branch, (), ()),
+            "actor-read", "Authoritative report: credentials leak", "Use actor-scoped reads",
+        )
+        store = SqliteTechLeadAuthorityStore.for_repo(sample_config.repo_root)
+        store.save_rework_receipt(ReworkReceipt(request, "queued"))
+        rework = PendingRework(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="123"),
+            agent_type="agent:web", rework_cycle=1, feedback="Earlier coder feedback",
+        )
+        result = launcher_bundle.launcher.launch_rework_session(rework, active_sessions=[])
+        assert result.success and result.session is not None
+        assert len(launcher_bundle.create_session_calls) == 1
+        command = launcher_bundle.create_session_calls[0]["cmd"]
+        for instruction in (request.report, request.feedback, "Earlier coder feedback", "Keep reviewer regression coverage"):
+            assert instruction in command
+        assert mock_worktree_manager.create_calls[0]["branch_name"] == pr.branch
+        receipt = store.load_rework_receipt(request.key)
+        assert receipt.status == "active"
+        assert receipt.attempt == result.session.run_assets.identity
+        # The existing terminal blocks a second provider launch for this request.
+        launcher_bundle.session_exists_override[0] = lambda _: True
+        repeated = launcher_bundle.launcher.launch_rework_session(rework, active_sessions=[result.session])
+        assert not repeated.success
+        assert len(launcher_bundle.create_session_calls) == 1
+
+    @pytest.fixture
+    def scoped_launch_case(self, sample_config, mock_repo_host):
+        from issue_orchestrator.domain.scoped_rework import ReworkReceipt, ReworkRequest, ReworkTarget
+        pr = PRInfo(456, "Fix #123", "url", "123-existing", "Fixes #123", "open", [], head_sha="a" * 40)
+        mock_repo_host.prs[123] = [pr]
+        request = ReworkRequest(ReworkTarget("test/repo", 456, 123, pr.head_sha, pr.branch, (), ()),
+                                "actor-read", "The approved report", "Actor-scope reads")
+        store = SqliteTechLeadAuthorityStore.for_repo(sample_config.repo_root)
+        store.save_rework_receipt(ReworkReceipt(request, "queued"))
+        rework = PendingRework(issue_key=GitHubIssueKey(repo="test/repo", external_id="123"),
+            agent_type="agent:web", rework_cycle=1, pr_number=456, scoped_request_keys=(request.key,))
+        return store, request, rework, pr
+
+    @pytest.mark.parametrize("change", ["head", "closed", "link", "missing"])
+    def test_scoped_queued_target_changes_never_spawn(self, launcher_bundle, scoped_launch_case, mock_repo_host, change):
+        store, request, rework, pr = scoped_launch_case
+        # Even a preexisting cached feedback string cannot bypass refusal.
+        rework.feedback = request.report
+        if change == "head":
+            pr.head_sha = "b" * 40
+        elif change == "closed":
+            pr.state = "closed"
+        elif change == "link":
+            pr.body, pr.branch = "Fixes #999", "999-other"
+        else:
+            mock_repo_host.prs.clear()
+        result = launcher_bundle.launcher.launch_rework_session(rework, active_sessions=[])
+        assert not result.success
+        assert launcher_bundle.create_session_calls == []
+        assert store.load_rework_receipt(request.key).status == "stale"
+
+    def test_scoped_request_claim_is_durable_before_spawn_and_compensates_false(
+        self, launcher_bundle, scoped_launch_case,
+    ):
+        store, request, rework, _ = scoped_launch_case
+        def refuse(*args):
+            receipt = store.load_rework_receipt(request.key)
+            assert receipt.status == "executing" and receipt.attempt is not None
+            return False
+        launcher_bundle.create_session_override[0] = refuse
+        result = launcher_bundle.launcher.launch_rework_session(rework, active_sessions=[])
+        assert not result.success
+        receipt = store.load_rework_receipt(request.key)
+        assert receipt.status == "queued" and receipt.attempt is None
+
+    def test_scoped_findings_approved_before_admission_share_one_launch(
+        self, launcher_bundle, scoped_launch_case,
+    ):
+        from dataclasses import replace
+        from issue_orchestrator.domain.scoped_rework import ReworkReceipt
+        store, first, rework, _ = scoped_launch_case
+        second = replace(first, evidence_identity="second-finding", report="Second approved report")
+        store.save_rework_receipt(ReworkReceipt(second, "queued"))
+        result = launcher_bundle.launcher.launch_rework_session(rework, active_sessions=[])
+        assert result.success and result.session is not None
+        assert len(launcher_bundle.create_session_calls) == 1
+        command = launcher_bundle.create_session_calls[0]["cmd"]
+        for request in (first, second):
+            assert request.report in command
+            receipt = store.load_rework_receipt(request.key)
+            assert receipt.status == "active"
+            assert receipt.attempt == result.session.run_assets.identity
+        assert set(rework.scoped_request_keys) == {first.key, second.key}
+
+    @pytest.mark.parametrize("provider", [None, "auth", "quota", "transient"])
+    def test_scoped_first_union_and_durable_deferred_exact_selection(
+        self, launcher_bundle, scoped_launch_case, tmp_path, provider,
+    ):
+        from dataclasses import replace
+        from issue_orchestrator.control.in_flight_work import InFlightWorkLedger, SettlementOutcome
+        from issue_orchestrator.control.launch_transaction import PendingWorkLaunchClaim
+        from issue_orchestrator.control.actions import RemoveLabelAction
+        from issue_orchestrator.domain.models import OrchestratorState
+        from issue_orchestrator.domain.pending_work import PendingWorkClaim, PendingWorkKind
+        from issue_orchestrator.domain.scoped_rework import ReworkReceipt
+        from issue_orchestrator.execution.pending_work_claim_store import SqlitePendingWorkClaimStore
+        from issue_orchestrator.ports.provider_resilience import ProviderErrorType
+        store, first, rework, _ = scoped_launch_case
+        db = tmp_path / "durable-claims.sqlite"
+        claims = SqlitePendingWorkClaimStore(db)
+        claim = PendingWorkClaim(PendingWorkKind.REWORK, rework)
+        if provider is not None:
+            initial = launcher_bundle.launcher.launch_rework_session(rework, [],
+                work_claim=PendingWorkLaunchClaim(claim, claims))
+            assert initial.success and initial.session is not None
+            ledger = InFlightWorkLedger(OrchestratorState(), claims)
+            ledger.take(initial.session, claim)
+            ledger.settle(initial.session, SettlementOutcome.for_provider_error(ProviderErrorType(provider)))
+            # New process: exact payload comes only from the durable claim store.
+            claims = SqlitePendingWorkClaimStore(db)
+            rework = claims.list_unresolved_claims()[0].claim.request
+            claim = PendingWorkClaim(PendingWorkKind.REWORK, rework)
+        second = replace(first, evidence_identity="later-approved", report="Later approved finding")
+        store.save_rework_receipt(ReworkReceipt(second, "queued"))
+        launcher_bundle.action_applier.apply.reset_mock()
+        result = launcher_bundle.launcher.launch_rework_session(rework, [],
+            work_claim=PendingWorkLaunchClaim(claim, claims))
+        assert result.success and result.session is not None
+        command = launcher_bundle.create_session_calls[-1]["cmd"]
+        assert first.report in command
+        assert (second.report in command) is (provider is None)
+        assert store.load_rework_receipt(first.key).attempt == result.session.run_assets.identity
+        later = store.load_rework_receipt(second.key)
+        assert later.status == ("active" if provider is None else "queued")
+        assert (later.attempt is None) is (provider is not None)
+        assert set(rework.scoped_request_keys) == ({first.key, second.key} if provider is None else {first.key})
+        removes = [call.args[0] for call in launcher_bundle.action_applier.apply.call_args_list
+            if isinstance(call.args[0], RemoveLabelAction) and call.args[0].label == "needs-rework"]
+        assert bool(removes) is (provider is None)
+
+    @pytest.mark.parametrize("provider", ["auth", "quota", "transient"])
+    @pytest.mark.parametrize("claim_state", ["missing", "different"])
+    def test_scoped_deferred_launch_refuses_missing_or_different_claim(
+        self, launcher_bundle, scoped_launch_case, tmp_path, provider, claim_state,
+    ):
+        from dataclasses import replace
+        from issue_orchestrator.control.in_flight_work import InFlightWorkLedger, SettlementOutcome
+        from issue_orchestrator.control.launch_transaction import PendingWorkLaunchClaim
+        from issue_orchestrator.domain.models import OrchestratorState
+        from issue_orchestrator.domain.pending_work import PendingWorkClaim, PendingWorkKind
+        from issue_orchestrator.execution.pending_work_claim_store import SqlitePendingWorkClaimStore
+        from issue_orchestrator.ports.provider_resilience import ProviderErrorType
+
+        store, request, rework, _ = scoped_launch_case
+        db = tmp_path / "durable-claims.sqlite"
+        claims = SqlitePendingWorkClaimStore(db)
+        claim = PendingWorkClaim(PendingWorkKind.REWORK, rework)
+        initial = launcher_bundle.launcher.launch_rework_session(
+            rework, [], work_claim=PendingWorkLaunchClaim(claim, claims))
+        assert initial.success and initial.session is not None
+        ledger = InFlightWorkLedger(OrchestratorState(), claims)
+        ledger.take(initial.session, claim)
+        ledger.settle(initial.session, SettlementOutcome.for_provider_error(ProviderErrorType(provider)))
+        receipt = store.load_rework_receipt(request.key)
+        if claim_state == "missing":
+            claims.consume_pending_work_claim(initial.session.run_assets)
+        else:
+            rework = replace(rework, feedback="Different replacement instructions")
+        claims = SqlitePendingWorkClaimStore(db)
+        before = claims.list_unresolved_claims()
+        result = launcher_bundle.launcher.launch_rework_session(
+            rework, [], work_claim=PendingWorkLaunchClaim(
+                PendingWorkClaim(PendingWorkKind.REWORK, rework), claims))
+        assert result.disposition is LaunchDisposition.CLAIM_UNRECORDED
+        assert len(launcher_bundle.create_session_calls) == 1
+        assert store.load_rework_receipt(request.key) == receipt
+        assert claims.list_unresolved_claims() == before
+
+    def test_scoped_receipt_claim_failure_prevents_provider_spawn(self, launcher_bundle, scoped_launch_case, monkeypatch):
+        store, request, rework, _ = scoped_launch_case
+        original = SqliteTechLeadAuthorityStore.save_rework_receipts
+        def fail_claim(self, receipts):
+            if any(item.attempt is not None for item in receipts):
+                raise OSError("receipt store unavailable")
+            return original(self, receipts)
+        monkeypatch.setattr(SqliteTechLeadAuthorityStore, "save_rework_receipts", fail_claim)
+        result = launcher_bundle.launcher.launch_rework_session(rework, active_sessions=[])
+        assert result.disposition is LaunchDisposition.CLAIM_UNRECORDED
+        assert launcher_bundle.create_session_calls == []
+        assert store.load_rework_receipt(request.key).attempt is None
+
+    def test_scoped_postspawn_crash_restores_exact_claim_without_consuming_later_request(
+        self, launcher_bundle, scoped_launch_case, monkeypatch, mock_repo_host, mock_working_copy, sample_config,
+    ):
+        from dataclasses import replace
+        from issue_orchestrator.control.session_restorer import SessionRestorer
+        from issue_orchestrator.control.scoped_rework import note_scoped_rework_finished
+        from issue_orchestrator.domain.scoped_rework import ReworkReceipt
+        store, request, rework, _ = scoped_launch_case
+        original = SqliteTechLeadAuthorityStore.save_rework_receipts
+        def fail_active(self, receipts):
+            if any(item.status == "active" for item in receipts):
+                raise OSError("crash after provider spawn")
+            return original(self, receipts)
+        monkeypatch.setattr(SqliteTechLeadAuthorityStore, "save_rework_receipts", fail_active)
+        with pytest.raises(OSError, match="after provider spawn"):
+            launcher_bundle.launcher.launch_rework_session(rework, active_sessions=[])
+        assert len(launcher_bundle.create_session_calls) == 1
+        claimed = store.load_rework_receipt(request.key)
+        assert claimed.status == "executing" and claimed.attempt is not None
+        later = replace(request, evidence_identity="later-finding")
+        store.save_rework_receipt(ReworkReceipt(later, "queued"))
+        monkeypatch.setattr(SqliteTechLeadAuthorityStore, "save_rework_receipts", original)
+        run_dirs = list((launcher_bundle.create_session_calls[0]["wd"] / ".issue-orchestrator/sessions").iterdir())
+        run_dir = next(path for path in run_dirs if path.name.endswith("__coding-2"))
+        restorer = SessionRestorer(sample_config, mock_repo_host, mock_working_copy, tech_lead_authority=store)
+        sessions = restorer.restore_known_terminal(issue_number=123, session_name="rework-123", run_dir=run_dir,
+            is_review=False, already_tracked=[])
+        assert len(sessions) == 1
+        assert sessions[0].key.task is TaskKind.REWORK
+        assert store.load_rework_receipt(request.key).status == "active"
+        assert store.load_rework_receipt(later.key).status == "queued"
+        from issue_orchestrator.control.in_flight_work import SettlementOutcome
+        note_scoped_rework_finished(store, sessions[0].run_assets.identity, True, work_outcome=SettlementOutcome.CONSUMED)
+        assert store.load_rework_receipt(request.key).status == "completed"
+        assert store.load_rework_receipt(later.key).status == "queued"
+
     def test_internal_review_instructions_reach_rework_command(
         self,
         internal_review_launcher_bundle,

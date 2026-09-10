@@ -304,10 +304,8 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
     # claimed by label) and settle to a no-op.
     from .in_flight_work import InFlightWorkLedger, SettlementOutcome
 
-    InFlightWorkLedger(state, pending_work_claims).settle(
-        session,
-        SettlementOutcome.for_provider_error(provider_error_type),
-    )
+    work_outcome = SettlementOutcome.for_provider_error(provider_error_type)
+    InFlightWorkLedger(state, pending_work_claims).settle(session, work_outcome)
 
     # Handle validation retry - queue for re-launch instead of normal completion
     if status == SessionStatus.NEEDS_VALIDATION_RETRY:
@@ -420,6 +418,7 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
         blocked_reason=blocked_reason,
         completion_detail=completion_detail,
         processing_errors=processing_errors,
+        work_outcome=work_outcome,
     )
     # completed_today is a success gate: record only on a clean EFFECTIVE completion.
     if effective_status == SessionStatus.COMPLETED:

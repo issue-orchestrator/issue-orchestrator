@@ -1118,6 +1118,27 @@ export interface ReviewTranscriptUnavailablePayload {
   reason: string;
 }
 
+export interface ReworkProposalPayload {
+  can_approve: boolean;
+  can_decline: boolean;
+  detail: string;
+  evidence_identity: string;
+  expected_head: string;
+  feedback: string;
+  forward_issue_number: number;
+  issue_number: number;
+  mutations: string;
+  pr_number: number;
+  proposal_issue_number: number;
+  report: string;
+  repository: string;
+  status: string;
+}
+
+export interface ReworkProposalsPayload {
+  proposals: ReworkProposalPayload[];
+}
+
 export interface RunningCodingAttemptPayload {
   agent: AgentIdentityPayload;
   commands: TimelineCommandPayload[];
@@ -1246,6 +1267,17 @@ export interface TechLeadGlobalHealthReviewScopePayload {
 export interface TechLeadIssueScopePayload {
   issue_number: number;
   kind: "issue";
+}
+
+export interface TechLeadProposalCommandPayload {
+  decision: "approve" | "decline";
+  proposal_issue_number: number;
+}
+
+export interface TechLeadProposalOutcomePayload {
+  detail: string;
+  outcome: string;
+  proposal_issue_number: number;
 }
 
 export interface TechLeadRunActivityEntryPayload {

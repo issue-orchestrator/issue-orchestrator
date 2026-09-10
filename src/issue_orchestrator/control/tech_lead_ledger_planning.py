@@ -28,6 +28,7 @@ from .actions import Action, DiscardTerminalTechLeadProposalOpsAction, RecordTec
 from .tech_lead_finding_promotion import plan_finding_promotion_actions
 from .reconciliation import build_expected_for_mutation
 from .tech_lead_proposals import plan_approved_tech_lead_op_executions
+from .tech_lead_proposal_creation import RecoverTechLeadProposalAction
 
 if TYPE_CHECKING:
     from ..domain.models import TechLeadFacts
@@ -48,6 +49,9 @@ def plan_tech_lead_ledger_actions(
     actions: list[Action] = list(
         plan_approved_tech_lead_op_executions(facts.approved_tech_lead_ops)
     )
+    actions.extend(RecoverTechLeadProposalAction(creation_key=pending.key,
+        issue_number=pending.op.target_issue_number, expected=build_expected_for_mutation())
+        for pending in facts.pending_proposal_creations)
     if facts.absent_proposal_op_candidates:
         actions.append(
             DiscardTerminalTechLeadProposalOpsAction(
