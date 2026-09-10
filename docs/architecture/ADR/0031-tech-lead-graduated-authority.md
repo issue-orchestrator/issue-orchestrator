@@ -321,6 +321,12 @@ tech_lead:
     promote: gated            # off | gated | auto   (default: gated)
     min_evidence: 2           # observations before promotion eligibility
     max_open_promoted: 3      # per target repo, cap on in-flight promotions
+    target_auth:              # optional credential per foreign target repo
+      issue-orchestrator/issue-orchestrator:
+        app:
+          client_id: Iv23example
+          installation_id: "123456"
+          private_key_path: ~/.config/io/target.private-key.pem
     route:                    # area label -> target that owns the fix
       completion-pipeline: issue-orchestrator/issue-orchestrator
       review-exchange:        # a target whose queue filters on its own labels
@@ -338,6 +344,15 @@ declares its own, because the source repo's scope label means nothing there.
 
 Lifecycle: **flag** (unchanged) → **promote** → **gate** → **run** (the target
 repo's own pipeline, unchanged) → **close the loop**.
+
+When a foreign target is owned by a different GitHub App installation,
+`target_auth` binds that repository to its own token source. The composition
+root uses the same repository-scoped credential for startup readiness and every
+later promotion operation. GitHub App readiness requires the installation
+token's `issues: write` permission plus authoritative confirmation from
+`GET /installation/repositories` that the exact target belongs to the
+installation; a successful public-repository read and repository user-role
+booleans do not prove App installation write access.
 
 On the tick a signature crosses `min_evidence`, has no promotion row, fits its
 routed target's cap, and is classified `fix:code`, the orchestrator files ONE

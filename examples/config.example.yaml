@@ -511,6 +511,15 @@ tech_lead:
   #   promote: "gated"
   #   min_evidence: 2
   #   max_open_promoted: 3
+  #   # Optional per-target auth. Omit when the managed repo credential also
+  #   # has access to the foreign target. Values are credential references,
+  #   # never inline tokens.
+  #   target_auth:
+  #     issue-orchestrator/issue-orchestrator:
+  #       app:
+  #         client_id: "Iv23example"
+  #         installation_id: "123456"
+  #         private_key_path: "~/.config/io/target.private-key.pem"
   #   route:
   #     completion-pipeline: "issue-orchestrator/issue-orchestrator"
   #     review-exchange:

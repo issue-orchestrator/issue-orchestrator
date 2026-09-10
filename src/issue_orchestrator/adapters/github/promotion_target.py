@@ -4,8 +4,9 @@ The orchestrator's ``GitHubAdapter`` is bound to ONE repo (its caches, label
 provisioning, and write verification all assume ``config.repo``), but promotion
 routes a finding to the repo that owns the fix — frequently a different one. So
 this adapter reuses the adapter's own cross-repo pattern (a short-lived
-``GitHubHttpClient`` built from the same auth/base-url config), scoped to the
-four operations :class:`PromotionTargetHost` declares and nothing else.
+``GitHubHttpClient`` built from the target repo's configured auth, or the source
+auth when no override exists), scoped to the four operations
+:class:`PromotionTargetHost` declares and nothing else.
 
 Requests for the adapter's OWN repo are delegated to the bound adapter, so a
 self-routed promotion keeps the cache/verification behavior every other write
@@ -16,7 +17,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Any, Iterator, Sequence
+from typing import TYPE_CHECKING, Any, Iterator, Mapping, Sequence
 
 from ...ports.promotion_target import (
     FiledIssue,
@@ -51,22 +52,33 @@ _LABEL_WRITE_ROLES = ("push", "maintain", "admin")
 class GitHubPromotionTargetHost:
     """Files and follows promoted findings in an arbitrary GitHub repository."""
 
-    def __init__(self, adapter: "GitHubAdapter") -> None:
+    def __init__(
+        self,
+        adapter: "GitHubAdapter",
+        *,
+        target_connections: Mapping[str, GitHubHttpConfig] | None = None,
+    ) -> None:
         self._adapter = adapter
+        self._target_connections = {
+            repo.casefold(): connection
+            for repo, connection in (target_connections or {}).items()
+        }
 
     @contextmanager
     def _client_for(self, repo: str) -> Iterator[GitHubHttpClient]:
         """A client scoped to *repo*, reusing the adapter's own for its repo."""
-        if repo == self._adapter.repo:
+        if repo.casefold() == self._adapter.repo.casefold():
             yield self._adapter.http_client
             return
-        config = self._adapter.http_client.config
+        source = self._adapter.http_client.config
+        connection = self._target_connections.get(repo.casefold())
         client = GitHubHttpClient(
-            GitHubHttpConfig(
+            connection
+            or GitHubHttpConfig(
                 repo=repo,
-                base_url=config.base_url,
-                timeout_seconds=config.timeout_seconds,
-                auth=config.auth,
+                base_url=source.base_url,
+                timeout_seconds=source.timeout_seconds,
+                auth=source.auth,
             )
         )
         try:
@@ -85,10 +97,11 @@ class GitHubPromotionTargetHost:
         which is the exact failure this check exists to prevent (#6957 round-6
         review F2/A1).
 
-        Cost is one repository read per distinct target, plus a label list only
-        when the token cannot provision (the case where the gap matters). An
-        inconclusive permissions payload fails closed: #6957 requires route
-        writability to be PROVEN before startup, not guessed and retried late.
+        Cost is one repository read per distinct target, plus the authoritative
+        installation-repository list for App auth or a label list when a user
+        token cannot provision. An inconclusive permissions or membership
+        payload fails closed: #6957 requires route writability to be PROVEN
+        before startup, not guessed and retried late.
         """
         try:
             return self._filing_problem(contract)
@@ -111,6 +124,9 @@ class GitHubPromotionTargetHost:
                 return f"{repo} returned an unexpected repository payload"
             if payload.get("has_issues") is False:
                 return f"{repo} has issues disabled, so findings cannot be filed there"
+            auth = client.config.auth
+            if auth is not None and auth.auth_kind == "github_app":
+                return _github_app_filing_problem(client, repo=repo)
             permissions = payload.get("permissions")
             if not isinstance(permissions, dict):
                 return (
@@ -327,15 +343,49 @@ def _existing_label_names(client: GitHubHttpClient) -> frozenset[str]:
     )
 
 
-def build_promotion_target_host(repository_host: Any) -> Any:
+def _github_app_filing_problem(
+    client: GitHubHttpClient, *, repo: str
+) -> str | None:
+    """Prove the App installation can execute the exact filing command."""
+    auth = client.config.auth
+    if auth is None or auth.auth_kind != "github_app":
+        raise GitHubHttpError("GitHub App filing proof requires GitHub App auth")
+    if auth.installation_permissions().get("issues") != "write":
+        return (
+            f"{repo} is readable by this GitHub App installation, but its token"
+            " lacks the required issues: write permission"
+        )
+    if not client.installation_includes_repository(repo):
+        return (
+            f"{repo} is readable, but it is not selected for this GitHub App"
+            " installation; public repository reads do not prove installation"
+            " write access"
+        )
+    # App tokens report repository-role booleans as false. Exact installation
+    # membership plus `issues: write` covers issue creation and label management.
+    return None
+
+
+def build_promotion_target_host(
+    repository_host: Any,
+    *,
+    target_connections: Mapping[str, GitHubHttpConfig] | None = None,
+) -> Any:
     """Adapt a repository host to :class:`PromotionTargetHost`, or None.
 
     The composition root wires promotion only when the repository host is a
     real GitHub adapter; anything else (a fake, an offline stub) leaves the lane
     unwired, which makes its actions fail loudly rather than silently no-op.
     """
+    if supports_promotion_target_host(repository_host):
+        return GitHubPromotionTargetHost(
+            repository_host, target_connections=target_connections
+        )
+    return None
+
+
+def supports_promotion_target_host(repository_host: Any) -> bool:
+    """Whether the adapter-owned promotion target can wrap ``repository_host``."""
     from .github_adapter import GitHubAdapter
 
-    if isinstance(repository_host, GitHubAdapter):
-        return GitHubPromotionTargetHost(repository_host)
-    return None
+    return isinstance(repository_host, GitHubAdapter)

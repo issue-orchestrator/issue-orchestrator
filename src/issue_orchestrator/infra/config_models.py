@@ -14,6 +14,7 @@ from .config_models_tech_lead import (
     TECH_LEAD_MAX_EXPEDITED_LIMIT as TECH_LEAD_MAX_EXPEDITED_LIMIT,
     MilestoneStrategyConfig as MilestoneStrategyConfig,
     PromotionRouteTarget as PromotionRouteTarget,
+    PromotionTargetGitHubAuthConfig as PromotionTargetGitHubAuthConfig,
     StuckSweepConfig as StuckSweepConfig,
     TechLeadActivationOwner as TechLeadActivationOwner,
     TechLeadAuthorityConfig as TechLeadAuthorityConfig,

@@ -47,6 +47,13 @@ logger = logging.getLogger(__name__)
 # from a truncated read.
 _MARKER_SCAN_PAGE_CAP = 20
 
+# Installation repository selection is an authorization boundary: an App
+# installation token may read public repositories that the installation does
+# not cover.  Negative membership therefore needs a complete walk of GitHub's
+# authoritative installation-repository list.  The cap is only a runaway
+# backstop; hitting it is "unknown", never "not selected".
+_INSTALLATION_REPOSITORY_PAGE_CAP = 100
+
 
 # Completed check-run conclusions that GitHub treats as acceptable for a
 # required status check: only `success`, `skipped`, and `neutral` clear merge.
@@ -139,6 +146,58 @@ class _CommitStatusReadout:
 
     payload: dict[str, Any] | None
     outcome: _SourceStatus
+
+
+@dataclass(frozen=True)
+class _InstallationRepositoryPage:
+    """One validated page from GitHub's installation-repository envelope."""
+
+    total_count: int
+    names: tuple[str, ...]
+
+
+def _installation_repository_page(payload: object) -> _InstallationRepositoryPage:
+    """Validate one membership page before it can affect authorization."""
+    if not isinstance(payload, dict):
+        raise _installation_scan_incomplete("response was not an object")
+    total = payload.get("total_count")
+    if not isinstance(total, int) or isinstance(total, bool) or total < 0:
+        raise _installation_scan_incomplete("total_count was invalid")
+    repositories = payload.get("repositories")
+    if not isinstance(repositories, list) or len(repositories) > 100:
+        raise _installation_scan_incomplete("repositories was not a valid page")
+    names: list[str] = []
+    for item in repositories:
+        full_name = item.get("full_name") if isinstance(item, dict) else None
+        if not isinstance(full_name, str) or not full_name:
+            raise _installation_scan_incomplete(
+                "a repository did not include full_name"
+            )
+        names.append(full_name.casefold())
+    return _InstallationRepositoryPage(total_count=total, names=tuple(names))
+
+
+def _installation_scan_incomplete(detail: str) -> GitHubScanIncompleteError:
+    return GitHubScanIncompleteError(
+        f"GitHub installation repository {detail}; cannot prove exact repository"
+        " membership",
+        method="GET",
+        url="/installation/repositories",
+    )
+
+
+def _record_installation_repository_names(
+    observed: set[str], page_names: tuple[str, ...]
+) -> None:
+    """Add one page only when every canonical repository identity is unique."""
+    canonical_page = set(page_names)
+    if len(canonical_page) != len(page_names) or not observed.isdisjoint(
+        canonical_page
+    ):
+        raise _installation_scan_incomplete(
+            "list repeated a canonical repository name"
+        )
+    observed.update(canonical_page)
 
 
 def _aggregate_check_runs(payload: object) -> _RollupSignal:
@@ -1363,6 +1422,59 @@ class GitHubHttpClient:
         if not isinstance(payload, dict):
             raise GitHubHttpError("GitHub repository payload was not an object")
         return payload
+
+    def installation_includes_repository(self, repo: str) -> bool:
+        """Whether this App installation authoritatively includes ``repo``.
+
+        ``GET /repos/{repo}`` is not membership evidence: installation tokens
+        retain read-only access to public repositories outside their selected
+        repository set.  GitHub's ``GET /installation/repositories`` endpoint
+        is authoritative, so this method drains its paginated result and
+        refuses to answer from malformed, truncated, changing, or capped data.
+        """
+        if self.auth_kind != "github_app":
+            raise GitHubAuthError(
+                "Installation repository membership requires GitHub App auth"
+            )
+
+        path = "/installation/repositories"
+        per_page = 100
+        page = 1
+        expected_total: int | None = None
+        observed_names: set[str] = set()
+        target = repo.casefold()
+        while page <= _INSTALLATION_REPOSITORY_PAGE_CAP:
+            result = _installation_repository_page(
+                self._request_json(
+                    "GET",
+                    path,
+                    params={"per_page": per_page, "page": page},
+                    use_cache=False,
+                    caller="installation_includes_repository",
+                )
+            )
+            if expected_total is None:
+                expected_total = result.total_count
+            elif result.total_count != expected_total:
+                raise _installation_scan_incomplete(
+                    "count changed while paging"
+                )
+
+            _record_installation_repository_names(observed_names, result.names)
+
+            if len(observed_names) > expected_total:
+                raise _installation_scan_incomplete(
+                    "list exceeded its reported total"
+                )
+            if len(result.names) < per_page:
+                if len(observed_names) == expected_total:
+                    return target in observed_names
+                raise _installation_scan_incomplete(
+                    "list ended before its reported total"
+                )
+            page += 1
+
+        raise _installation_scan_incomplete("scan exceeded its page cap")
 
     def get_default_branch(self) -> str:
         payload = self._request_json(

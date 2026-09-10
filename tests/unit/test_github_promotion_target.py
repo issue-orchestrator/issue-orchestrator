@@ -7,11 +7,12 @@ merged PR" is distinguished from "closed" — that distinction is what separates
 a shipped fix from an operator decline.
 """
 
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 
 from issue_orchestrator.adapters.github.errors import GitHubHttpError
+from issue_orchestrator.adapters.github.http_client import GitHubHttpConfig
 from issue_orchestrator.adapters.github.promotion_target import (
     GitHubPromotionTargetHost,
 )
@@ -41,6 +42,41 @@ def target(http_client):
     adapter.repo = REPO
     adapter.http_client = http_client
     return GitHubPromotionTargetHost(adapter)
+
+
+def test_foreign_repo_operations_use_their_repo_scoped_auth() -> None:
+    source_auth = Mock()
+    target_auth = Mock()
+    adapter = Mock()
+    adapter.repo = REPO
+    adapter.http_client.config.base_url = "https://api.github.com"
+    adapter.http_client.config.timeout_seconds = 20.0
+    adapter.http_client.config.auth = source_auth
+    client = Mock()
+
+    with patch(
+        "issue_orchestrator.adapters.github.promotion_target.GitHubHttpClient",
+        return_value=client,
+    ) as client_type:
+        target = GitHubPromotionTargetHost(
+            adapter,
+            target_connections={
+                "owner/foreign": GitHubHttpConfig(
+                    repo="owner/foreign",
+                    base_url="https://github.example/api/v3",
+                    timeout_seconds=7.0,
+                    auth=target_auth,
+                )
+            },
+        )
+        target.add_comment(repo="Owner/Foreign", issue_number=7, body="done")
+
+    connection = client_type.call_args.args[0]
+    assert connection.auth is target_auth
+    assert connection.base_url == "https://github.example/api/v3"
+    assert connection.timeout_seconds == 7.0
+    client.add_comment.assert_called_once_with(7, "done")
+    client.close.assert_called_once_with()
 
 
 class TestFiling:
@@ -378,6 +414,69 @@ class TestFilingReadiness:
         http_client.get_repository.return_value = {"name": "porchpin"}
         reason = target.check_filing_ready(_contract())
         assert reason is not None and "cannot prove" in reason
+
+    def test_github_app_uses_installation_permissions_not_user_roles(
+        self, target, http_client
+    ):
+        auth = Mock()
+        auth.auth_kind = "github_app"
+        auth.installation_permissions.return_value = {
+            "issues": "write",
+            "metadata": "read",
+        }
+        http_client.config.auth = auth
+        http_client.installation_includes_repository.return_value = True
+        http_client.get_repository.return_value = {
+            "permissions": {"push": False, "admin": False}
+        }
+
+        assert target.check_filing_ready(_contract()) is None
+        auth.installation_permissions.assert_called_once_with()
+        http_client.installation_includes_repository.assert_called_once_with(REPO)
+
+    def test_github_app_public_read_does_not_prove_installation_membership(
+        self, target, http_client
+    ):
+        auth = Mock()
+        auth.auth_kind = "github_app"
+        auth.installation_permissions.return_value = {"issues": "write"}
+        http_client.config.auth = auth
+        # GitHub permits this read even when the public repo is outside the
+        # installation's selected repository set.
+        http_client.get_repository.return_value = {"visibility": "public"}
+        http_client.installation_includes_repository.return_value = False
+
+        reason = target.check_filing_ready(_contract())
+
+        assert reason is not None and "not selected" in reason
+
+    def test_github_app_incomplete_membership_read_fails_closed(
+        self, target, http_client
+    ):
+        auth = Mock()
+        auth.auth_kind = "github_app"
+        auth.installation_permissions.return_value = {"issues": "write"}
+        http_client.config.auth = auth
+        http_client.get_repository.return_value = {"visibility": "public"}
+        http_client.installation_includes_repository.side_effect = (
+            GitHubHttpError("installation repository scan incomplete")
+        )
+
+        reason = target.check_filing_ready(_contract())
+
+        assert reason is not None and "scan incomplete" in reason
+
+    def test_github_app_without_issues_write_fails_closed(self, target, http_client):
+        auth = Mock()
+        auth.auth_kind = "github_app"
+        auth.installation_permissions.return_value = {"issues": "read"}
+        http_client.config.auth = auth
+        http_client.get_repository.return_value = {"permissions": {}}
+
+        reason = target.check_filing_ready(_contract())
+
+        assert reason is not None and "issues: write" in reason
+        http_client.installation_includes_repository.assert_not_called()
 
     @pytest.mark.parametrize("role", ("push", "maintain", "admin"))
     def test_a_label_writing_role_covers_any_label_gap(

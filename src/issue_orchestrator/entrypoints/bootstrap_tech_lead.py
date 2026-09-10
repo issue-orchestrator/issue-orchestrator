@@ -56,8 +56,9 @@ class TechLeadComposition:
     board_publisher: "TechLeadBoardPublisher | None"
     fact_gatherer: "FactGatherer | None"
     # Cross-repo filing seam for the finding-promotion lane (#6957). None when
-    # the repository host is not a real GitHub adapter (offline/testing), which
-    # leaves promotion actions failing loudly rather than silently no-oping.
+    # the lane is inactive/unready or the repository host is not a real GitHub
+    # adapter (offline/testing). Active promotion actions still fail loudly if
+    # their target is unexpectedly unwired.
     promotion_target: "PromotionTargetHost | None" = None
 
 
@@ -300,7 +301,7 @@ def create_tech_lead_composition(
     """Build the tech_lead store and ensure both projections share one publisher."""
     authority = create_tech_lead_authority_store(config)
     open_issue_corpus = create_open_issue_corpus_store(config)
-    promotion_target = create_promotion_target_host(repository_host)
+    promotion_target = create_promotion_target_host(repository_host, config)
     from ..control.open_issue_corpus import OpenIssueCorpusManager
 
     open_issue_corpus_manager = OpenIssueCorpusManager(
@@ -337,6 +338,7 @@ def create_tech_lead_composition(
 
 def create_promotion_target_host(
     repository_host: "RepositoryHost | None",
+    config: "Config",
 ) -> "PromotionTargetHost | None":
     """The cross-repo filing seam for finding promotion (#6957).
 
@@ -347,7 +349,7 @@ def create_promotion_target_host(
         create_promotion_target_host as build_promotion_target_host,
     )
 
-    return build_promotion_target_host(repository_host)
+    return build_promotion_target_host(repository_host, config)
 
 
 def create_board_snapshot_builder(

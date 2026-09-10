@@ -55,20 +55,62 @@ def create_repository_host(
 
 def create_promotion_target_host(
     repository_host: "RepositoryHost | None",
+    config: "Config | None" = None,
 ) -> "PromotionTargetHost | None":
     """Adapt a repository host to the finding-promotion target port (#6957).
 
     The provider factory owns the adapter construction so composition-root
     helpers and the doctor check depend on this seam rather than importing the
-    GitHub adapter package themselves. Returns None when the host is not a real
-    GitHub adapter (offline/testing), which leaves the promotion lane unwired —
-    its actions then fail loudly instead of silently no-oping.
+    GitHub adapter package themselves. Explicit per-target credentials are
+    resolved here once and shared by doctor and runtime filing. Returns None
+    when the readiness owner says the lane cannot run or the host is not a real
+    GitHub adapter (offline/testing). Active actions still fail loudly if their
+    target is unexpectedly unwired.
     """
-    from ..adapters.github.promotion_target import build_promotion_target_host
+    from ..adapters.github import build_github_auth
+    from ..adapters.github.http_client import GitHubHttpConfig
+    from ..adapters.github.promotion_target import (
+        build_promotion_target_host,
+        supports_promotion_target_host,
+    )
 
     if repository_host is None:
         return None
-    return build_promotion_target_host(repository_host)
+    if config is not None:
+        from ..infra.tech_lead_promotion_activation import promotion_lane_readiness
+
+        # The readiness owner defines when this lane has dependencies at all.
+        # Inactive/unready lanes must not resolve target credentials during
+        # bootstrap; switching promotion off is an operator escape hatch from
+        # unavailable credentials, just as it is for doctor and tick reads.
+        if not promotion_lane_readiness(config).ready:
+            return None
+    # Adapter support is an adapter-owned fact. Establish it before resolving
+    # credentials so active offline/fake hosts retain their unwired semantics
+    # even when an unused explicit target token is unavailable.
+    if not supports_promotion_target_host(repository_host):
+        return None
+    target_connections = {}
+    if config is not None:
+        for repo in config.tech_lead.findings.target_repos():
+            auth_config = config.tech_lead.findings.auth_for(repo)
+            if auth_config is None:
+                continue
+            auth = build_github_auth(
+                **auth_config.auth_kwargs(),
+                repo=repo,
+                api_url=auth_config.api_url,
+                timeout_seconds=auth_config.http_timeout_seconds,
+            )
+            target_connections[repo] = GitHubHttpConfig(
+                repo=repo,
+                base_url=auth_config.api_url,
+                timeout_seconds=auth_config.http_timeout_seconds,
+                auth=auth,
+            )
+    return build_promotion_target_host(
+        repository_host, target_connections=target_connections
+    )
 
 
 def create_repository_setup_host(

@@ -63,6 +63,26 @@ def _client_with_transport(transport: httpx.BaseTransport) -> GitHubHttpClient:
     return client
 
 
+def _app_client_with_transport(transport: httpx.BaseTransport) -> GitHubHttpClient:
+    class _Provider:
+        auth_kind = "github_app"
+
+        @staticmethod
+        def get_token() -> str:
+            return "installation-token"
+
+    auth = GitHubAuth(
+        token_provider=_Provider(),
+        source_descriptions=("GitHub App installation 145305179",),
+        repo="owner/repo",
+    )
+    client = GitHubHttpClient(GitHubHttpConfig(repo="owner/repo", auth=auth))
+    client._client = httpx.Client(  # noqa: SLF001 - test transport injection
+        transport=transport, base_url="https://api.github.com"
+    )
+    return client
+
+
 def test_resolve_github_token_repo_scoped_env_is_strict(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -381,6 +401,7 @@ def test_github_app_installation_provider_mints_and_caches_token(
             json={
                 "token": "installation-token",
                 "expires_at": "2026-07-08T12:00:00Z",
+                "permissions": {"issues": "write", "metadata": "read"},
             },
         )
 
@@ -396,6 +417,10 @@ def test_github_app_installation_provider_mints_and_caches_token(
 
     assert provider.get_token() == "installation-token"
     assert provider.get_token() == "installation-token"
+    assert provider.installation_permissions() == {
+        "issues": "write",
+        "metadata": "read",
+    }
     assert calls == ["https://api.github.com/app/installations/145305179/access_tokens"]
 
 
@@ -456,6 +481,104 @@ def test_github_http_client_uses_fresh_auth_headers_per_request() -> None:
     client.get_issue_labels(1, use_cache=False)
 
     assert seen == ["Bearer token-1", "Bearer token-2"]
+
+
+def test_installation_repository_membership_is_proven_across_pages() -> None:
+    requested_pages: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params["page"])
+        requested_pages.append(page)
+        if page == 1:
+            repositories = [
+                {"full_name": f"owner/repo-{number}"} for number in range(100)
+            ]
+        else:
+            repositories = [{"full_name": "Owner/Target"}]
+        return httpx.Response(
+            200,
+            json={"total_count": 101, "repositories": repositories},
+        )
+
+    client = _app_client_with_transport(httpx.MockTransport(handler))
+
+    assert client.installation_includes_repository("owner/target") is True
+    assert requested_pages == [1, 2]
+
+
+def test_installation_repository_membership_rejects_non_member() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "total_count": 1,
+                "repositories": [{"full_name": "owner/selected-repo"}],
+            },
+        )
+
+    client = _app_client_with_transport(httpx.MockTransport(handler))
+
+    assert client.installation_includes_repository("owner/public-target") is False
+
+
+def test_installation_repository_membership_rejects_duplicate_on_one_page() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "total_count": 1,
+                "repositories": [
+                    {"full_name": "owner/target"},
+                    {"full_name": "OWNER/TARGET"},
+                ],
+            },
+        )
+
+    client = _app_client_with_transport(httpx.MockTransport(handler))
+
+    with pytest.raises(GitHubScanIncompleteError, match="repeated a canonical"):
+        client.installation_includes_repository("owner/target")
+
+
+def test_installation_repository_membership_rejects_duplicate_across_pages() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params["page"])
+        repositories = (
+            [{"full_name": f"owner/repo-{number}"} for number in range(100)]
+            if page == 1
+            else [
+                {"full_name": "OWNER/REPO-0"},
+                {"full_name": "owner/new-last"},
+            ]
+        )
+        return httpx.Response(
+            200,
+            json={"total_count": 101, "repositories": repositories},
+        )
+
+    client = _app_client_with_transport(httpx.MockTransport(handler))
+
+    with pytest.raises(GitHubScanIncompleteError, match="repeated a canonical"):
+        client.installation_includes_repository("owner/new-last")
+
+
+def test_installation_repository_membership_rejects_a_truncated_scan() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params["page"])
+        repositories = (
+            [{"full_name": f"owner/repo-{number}"} for number in range(100)]
+            if page == 1
+            else []
+        )
+        return httpx.Response(
+            200,
+            json={"total_count": 101, "repositories": repositories},
+        )
+
+    client = _app_client_with_transport(httpx.MockTransport(handler))
+
+    with pytest.raises(GitHubScanIncompleteError, match="before its reported total"):
+        client.installation_includes_repository("owner/public-target")
 
 
 def test_github_auth_validates_app_installation_repo_access(
