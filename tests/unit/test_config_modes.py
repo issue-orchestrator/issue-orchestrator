@@ -322,3 +322,26 @@ def test_single_provider_modes_pin_the_effort_ceiling(mode: str) -> None:
             f"{contract['effort_key']}: xhigh (found {effort!r}), so the "
             "claude/codex A/B is uncontrolled"
         )
+
+
+def test_shipped_main_modes_enable_bounded_tech_lead_autonomy() -> None:
+    for mode in ("default", *_SINGLE_PROVIDER_MODES):
+        config = _load_shipped_mode(mode)
+        authority = config["tech_lead"]["authority"]
+        findings = config["tech_lead"]["findings"]
+
+        assert config["review"]["internal"]["enabled"] is False
+        assert authority["reset_retry"] == "execute"
+        assert authority["kill_hung_session"] == "execute"
+        assert authority["request_rework"] == "execute"
+        assert authority["recover_validated_work"] == "execute"
+        assert authority["create_issue"] == "execute"
+        assert findings == {
+            "promote": "auto",
+            "min_evidence": 2,
+            "max_open_promoted": 3,
+            "route": {"default": "self"},
+        }
+
+    codex = _load_shipped_mode("codex")
+    assert codex["agents"]["agent:tech-lead"]["model"] == "gpt-6-astra"

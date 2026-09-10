@@ -3267,6 +3267,47 @@ tech_lead:
 
         assert findings.route_for("anything-else").repo == "self"
 
+    def test_finding_promotion_target_auth_is_repo_scoped(self, tmp_path):
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(
+            """
+tech_lead:
+  findings:
+    target_auth:
+      issue-orchestrator/issue-orchestrator:
+        app:
+          client_id: app-client
+          installation_id: "123"
+          private_key_env: IO_APP_KEY
+    route:
+      completion-pipeline: issue-orchestrator/issue-orchestrator
+"""
+        )
+
+        findings = Config.load(config_file).tech_lead.findings
+        auth = findings.auth_for("Issue-Orchestrator/Issue-Orchestrator")
+
+        assert auth is not None
+        assert auth.app_client_id == "app-client"
+        assert auth.app_installation_id == "123"
+        assert auth.app_private_key_env == "IO_APP_KEY"
+        assert findings.startup_errors() == []
+
+    def test_unused_finding_promotion_target_auth_fails_startup(self):
+        from issue_orchestrator.infra.config_models_tech_lead import (
+            PromotionTargetGitHubAuthConfig,
+        )
+
+        findings = Config().tech_lead.findings
+        findings.target_auth = {
+            "unused/repo": PromotionTargetGitHubAuthConfig(token_env="TOKEN")
+        }
+
+        assert any(
+            "does not match any foreign route" in error
+            for error in findings.startup_errors()
+        )
+
     def test_finding_promotion_default_route_is_case_insensitive(self, tmp_path):
         config_file = tmp_path / ".issue-orchestrator.yaml"
         config_file.write_text(

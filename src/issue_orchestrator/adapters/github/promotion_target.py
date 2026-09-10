@@ -4,8 +4,9 @@ The orchestrator's ``GitHubAdapter`` is bound to ONE repo (its caches, label
 provisioning, and write verification all assume ``config.repo``), but promotion
 routes a finding to the repo that owns the fix — frequently a different one. So
 this adapter reuses the adapter's own cross-repo pattern (a short-lived
-``GitHubHttpClient`` built from the same auth/base-url config), scoped to the
-four operations :class:`PromotionTargetHost` declares and nothing else.
+``GitHubHttpClient`` built from the target repo's configured auth, or the source
+auth when no override exists), scoped to the four operations
+:class:`PromotionTargetHost` declares and nothing else.
 
 Requests for the adapter's OWN repo are delegated to the bound adapter, so a
 self-routed promotion keeps the cache/verification behavior every other write
@@ -16,7 +17,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Any, Iterator, Sequence
+from typing import TYPE_CHECKING, Any, Iterator, Mapping, Sequence
 
 from ...ports.promotion_target import (
     FiledIssue,
@@ -51,22 +52,33 @@ _LABEL_WRITE_ROLES = ("push", "maintain", "admin")
 class GitHubPromotionTargetHost:
     """Files and follows promoted findings in an arbitrary GitHub repository."""
 
-    def __init__(self, adapter: "GitHubAdapter") -> None:
+    def __init__(
+        self,
+        adapter: "GitHubAdapter",
+        *,
+        target_connections: Mapping[str, GitHubHttpConfig] | None = None,
+    ) -> None:
         self._adapter = adapter
+        self._target_connections = {
+            repo.casefold(): connection
+            for repo, connection in (target_connections or {}).items()
+        }
 
     @contextmanager
     def _client_for(self, repo: str) -> Iterator[GitHubHttpClient]:
         """A client scoped to *repo*, reusing the adapter's own for its repo."""
-        if repo == self._adapter.repo:
+        if repo.casefold() == self._adapter.repo.casefold():
             yield self._adapter.http_client
             return
-        config = self._adapter.http_client.config
+        source = self._adapter.http_client.config
+        connection = self._target_connections.get(repo.casefold())
         client = GitHubHttpClient(
-            GitHubHttpConfig(
+            connection
+            or GitHubHttpConfig(
                 repo=repo,
-                base_url=config.base_url,
-                timeout_seconds=config.timeout_seconds,
-                auth=config.auth,
+                base_url=source.base_url,
+                timeout_seconds=source.timeout_seconds,
+                auth=source.auth,
             )
         )
         try:
@@ -111,6 +123,20 @@ class GitHubPromotionTargetHost:
                 return f"{repo} returned an unexpected repository payload"
             if payload.get("has_issues") is False:
                 return f"{repo} has issues disabled, so findings cannot be filed there"
+            auth = client.config.auth
+            if auth is not None and auth.auth_kind == "github_app":
+                permissions = auth.installation_permissions()
+                if permissions.get("issues") == "write":
+                    # The successful repository read proves this installation
+                    # can access the exact target. GitHub App tokens report
+                    # repository-role booleans as false, so their authoritative
+                    # write proof is the installation token's permission set.
+                    # `issues: write` covers issue creation and label management.
+                    return None
+                return (
+                    f"{repo} is accessible to this GitHub App installation, but"
+                    " its token lacks the required issues: write permission"
+                )
             permissions = payload.get("permissions")
             if not isinstance(permissions, dict):
                 return (
@@ -327,7 +353,11 @@ def _existing_label_names(client: GitHubHttpClient) -> frozenset[str]:
     )
 
 
-def build_promotion_target_host(repository_host: Any) -> Any:
+def build_promotion_target_host(
+    repository_host: Any,
+    *,
+    target_connections: Mapping[str, GitHubHttpConfig] | None = None,
+) -> Any:
     """Adapt a repository host to :class:`PromotionTargetHost`, or None.
 
     The composition root wires promotion only when the repository host is a
@@ -337,5 +367,7 @@ def build_promotion_target_host(repository_host: Any) -> Any:
     from .github_adapter import GitHubAdapter
 
     if isinstance(repository_host, GitHubAdapter):
-        return GitHubPromotionTargetHost(repository_host)
+        return GitHubPromotionTargetHost(
+            repository_host, target_connections=target_connections
+        )
     return None

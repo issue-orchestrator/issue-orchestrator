@@ -11,6 +11,12 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from ..domain.tech_lead_artifacts import UNWIRED_ACT_LEVEL_TECH_LEAD_ACTIONS
+from .config_models_promotion_auth import (
+    PromotionTargetGitHubAuthConfig,
+    parse_promotion_target_auth,
+    promotion_target_auth_errors,
+)
+
 from ..domain.tech_lead_findings import (
     FINDING_PROMOTION_GATED,
     FINDING_PROMOTION_OFF,
@@ -372,14 +378,18 @@ class TechLeadFindingsConfig:
     ``min_evidence`` is how many observations a signature must accrue before it
     is eligible, ``max_open_promoted`` bounds in-flight promoted issues PER
     TARGET REPO (storm backpressure: excess eligible signatures queue behind
-    merges rather than flooding a repo), and ``route`` maps an area label to the
-    :class:`PromotionRouteTarget` that owns the fix. ``route['default']`` is the
-    catch-all; ``self`` means the managed repo itself.
+    merges rather than flooding a repo), ``target_auth`` optionally binds a
+    foreign repo to a distinct non-secret credential reference, and ``route``
+    maps an area label to the :class:`PromotionRouteTarget` that owns the fix.
+    ``route['default']`` is the catch-all; ``self`` means the managed repo.
     """
 
     promote: str = FINDING_PROMOTION_GATED
     min_evidence: int = 2
     max_open_promoted: int = 3
+    target_auth: dict[str, "PromotionTargetGitHubAuthConfig"] = field(
+        default_factory=dict
+    )
     route: dict[str, PromotionRouteTarget] = field(
         default_factory=lambda: {
             PROMOTION_ROUTE_DEFAULT_KEY: PromotionRouteTarget(repo=PROMOTION_ROUTE_SELF)
@@ -437,6 +447,7 @@ class TechLeadFindingsConfig:
             promote=_promote_mode(data.get("promote", FINDING_PROMOTION_GATED)),
             min_evidence=int(data.get("min_evidence", 2)),
             max_open_promoted=int(data.get("max_open_promoted", 3)),
+            target_auth=parse_promotion_target_auth(data.get("target_auth")),
             route=route,
         )
 
@@ -529,6 +540,9 @@ class TechLeadFindingsConfig:
                     " target's worker agent label; an issue with no agent label is"
                     " never picked up by any pipeline"
                 )
+        errors.extend(
+            promotion_target_auth_errors(self.target_auth, self.target_repos())
+        )
         return errors
 
     def to_event_dict(self) -> dict:
@@ -540,6 +554,18 @@ class TechLeadFindingsConfig:
                 area: target.to_event_dict() for area, target in self.route.items()
             },
         }
+
+    def auth_for(self, repo: str) -> "PromotionTargetGitHubAuthConfig | None":
+        """Return the explicit credential for *repo*, matching GitHub case rules."""
+        folded = repo.casefold()
+        return next(
+            (
+                auth
+                for key, auth in self.target_auth.items()
+                if key.casefold() == folded
+            ),
+            None,
+        )
 
 
 # Upper bound on the expedite-lane cap (#6870). The single source of truth for

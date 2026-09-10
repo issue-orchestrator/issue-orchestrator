@@ -381,6 +381,7 @@ def test_github_app_installation_provider_mints_and_caches_token(
             json={
                 "token": "installation-token",
                 "expires_at": "2026-07-08T12:00:00Z",
+                "permissions": {"issues": "write", "metadata": "read"},
             },
         )
 
@@ -396,6 +397,10 @@ def test_github_app_installation_provider_mints_and_caches_token(
 
     assert provider.get_token() == "installation-token"
     assert provider.get_token() == "installation-token"
+    assert provider.installation_permissions() == {
+        "issues": "write",
+        "metadata": "read",
+    }
     assert calls == ["https://api.github.com/app/installations/145305179/access_tokens"]
 
 

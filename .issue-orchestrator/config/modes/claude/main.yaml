@@ -104,9 +104,10 @@ review:
   code_review_label: needs-code-review
   code_reviewed_label: code-reviewed
   max_rework_cycles: 10
-  # Fast coder-owned review before the independent external review.
+  # One independent reviewer is the review boundary. The coder-owned agentic
+  # review loop duplicated cost without providing independent evidence.
   internal:
-    enabled: true
+    enabled: false
     max_rounds: 10
     instructions: "repo-specific/prompts/internal-review.md"
   nits:
@@ -210,12 +211,13 @@ tech_lead:
   # investigations, batch reviews) run even when the worker budget is saturated;
   # total live agents are then bounded at max_concurrent_sessions + 1.
   max_concurrent: 1
-  # Both act-level actions execute through owners that revalidate immediately
-  # before mutating: reset_retry checks failure/runtime state and kill binds to
-  # the exact observed session generation.
+  # Direct actions execute through owners that revalidate their exact observed
+  # authority immediately before mutating.
   authority:
     reset_retry: execute
     kill_hung_session: execute
+    request_rework: execute
+    recover_validated_work: execute
     # Auto-file create_issue follow-ups directly (the default), made explicit now
     # that it is safe: duplicate proposals are deduped against the full open
     # backlog (#6880 gate + #6882 trusted SQL corpus), so the tech lead cannot
@@ -228,6 +230,14 @@ tech_lead:
   dedup:
     enabled: true
     similarity_threshold: 0.72
+  # Recurring code findings become bounded runnable work without an approval
+  # queue. This repo owns every default-routed finding.
+  findings:
+    promote: auto
+    min_evidence: 2
+    max_open_promoted: 3
+    route:
+      default: self
   # Periodic "walk the board" health review — uses the single session slot when
   # due (deduped, skips at capacity).
   health_review:

@@ -54,6 +54,7 @@ class GitHubAppInstallationTokenProvider:
         self._post = post
         self._cached_token: str | None = None
         self._expires_at_epoch: float = 0.0
+        self._permissions: dict[str, str] | None = None
 
     @property
     def comment_app_identity(self) -> GitHubAppIdentity:
@@ -70,6 +71,15 @@ class GitHubAppInstallationTokenProvider:
         ):
             return self._cached_token
         return self._refresh()
+
+    def installation_permissions(self) -> dict[str, str]:
+        """Permissions GitHub bound to the current installation token."""
+        self.get_token()
+        if self._permissions is None:
+            raise GitHubAuthError(
+                "GitHub App installation token response did not include permissions."
+            )
+        return dict(self._permissions)
 
     def _refresh(self) -> str:
         private_key = self._config.read_private_key()
@@ -113,6 +123,7 @@ class GitHubAppInstallationTokenProvider:
         payload = response.json()
         token = payload.get("token") if isinstance(payload, dict) else None
         expires_at = payload.get("expires_at") if isinstance(payload, dict) else None
+        permissions = payload.get("permissions") if isinstance(payload, dict) else None
         if not isinstance(token, str) or not token:
             raise GitHubAuthError(
                 "GitHub App installation token response did not include a token."
@@ -121,8 +132,16 @@ class GitHubAppInstallationTokenProvider:
             raise GitHubAuthError(
                 "GitHub App installation token response did not include expires_at."
             )
+        if not isinstance(permissions, dict) or not all(
+            isinstance(key, str) and isinstance(value, str)
+            for key, value in permissions.items()
+        ):
+            raise GitHubAuthError(
+                "GitHub App installation token response did not include permissions."
+            )
         self._cached_token = token
         self._expires_at_epoch = _parse_github_timestamp(expires_at)
+        self._permissions = dict(permissions)
         return token
 
 
@@ -147,6 +166,12 @@ class GitHubAuth:
         if self.auth_kind == "github_app":
             raise GitHubAuthError("GitHub App comment provenance requires configured app identity")
         return None
+
+    def installation_permissions(self) -> dict[str, str]:
+        """Return App installation permissions; personal auth has no such proof."""
+        if isinstance(self.token_provider, GitHubAppInstallationTokenProvider):
+            return self.token_provider.installation_permissions()
+        raise GitHubAuthError("Installation permissions require GitHub App auth")
 
     def authorization_headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.token_provider.get_token()}"}

@@ -148,7 +148,7 @@ def check_tech_lead_finding_routes(
             # makes that part of activation), so this narrowing cannot fail.
             assert config.repo is not None
             target_host = create_promotion_target_host(
-                create_repository_host(repo=config.repo, config=config)
+                create_repository_host(repo=config.repo, config=config), config
             )
         except Exception as exc:
             return [
