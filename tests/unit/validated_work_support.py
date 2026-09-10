@@ -137,6 +137,7 @@ def capture(
     observed: str | None = None,
     bound: bool = True,
     at: str = AT,
+    remote_status: RemoteBaselineStatus = RemoteBaselineStatus.OBSERVED,
 ) -> EvidenceAdmission:
     key = ValidatedWorkKey("owner/repo", issue, branch, head)
     identity = ValidatedWorkIdentity(
@@ -155,11 +156,11 @@ def capture(
     observations = ValidatedWorkObservations(
         at,
         observed or head,
-        expected,
-        pr,
+        expected if remote_status is RemoteBaselineStatus.OBSERVED else None,
+        pr if remote_status is RemoteBaselineStatus.OBSERVED else None,
         ("blocked-failed",),
         {ArtifactSlot.COMPLETION: "/audit/completion"},
-        RemoteBaselineStatus.OBSERVED,
+        remote_status,
     )
     ev = ValidatedWorkEvidence(identity, observations)
     return EvidenceAdmission(

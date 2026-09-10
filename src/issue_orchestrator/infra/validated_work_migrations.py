@@ -17,6 +17,23 @@ from .validated_work_legacy import (
 )
 
 
+def migrate_evidence_base_gate(conn: sqlite3.Connection) -> None:
+    """Add the mutable recovery gate while preserving admission audit facts."""
+    columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(validated_work_evidence)")
+    }
+    for name in ("base_state", "base_failure", "base_reason"):
+        if name not in columns:
+            conn.execute(
+                f"ALTER TABLE validated_work_evidence ADD COLUMN {name} TEXT NOT NULL DEFAULT ''"
+            )
+    conn.execute(
+        "UPDATE validated_work_evidence SET "
+        "base_state=initial_state,base_failure=initial_failure,base_reason=initial_reason "
+        "WHERE base_state=''"
+    )
+
+
 def migrate_remote_baseline_authority(conn: sqlite3.Connection) -> None:
     """Remove authority that predates the observed/unobserved provenance bit.
 
@@ -54,10 +71,14 @@ def migrate_remote_baseline_authority(conn: sqlite3.Connection) -> None:
             conn.execute(
                 "UPDATE validated_work_evidence SET observations=?,expected_remote_head='',"
                 "pr_number=NULL,observation_revision=observation_revision+1,"
-                "initial_state=?,initial_failure=?,initial_reason=? "
+                "initial_state=?,initial_failure=?,initial_reason=?,"
+                "base_state=?,base_failure=?,base_reason=? "
                 "WHERE evidence_id=?",
                 (
                     canonical_json(observations),
+                    state.value,
+                    failure.value if failure is not None else "",
+                    reason,
                     state.value,
                     failure.value if failure is not None else "",
                     reason,

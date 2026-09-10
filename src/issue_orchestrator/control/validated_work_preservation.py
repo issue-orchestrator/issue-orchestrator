@@ -8,12 +8,13 @@ from ..domain.completion_intake import CompletionIntakeError
 from ..domain.prepared_completion import PreparedCompletionEvidence
 from ..domain.validated_work import ValidatedWorkFailure
 from ..domain.validated_work_commands import AutomaticCaptureCommand, ValidatedWorkDispositionBatch
-from ..domain.publication_remote import PublicationPrState, PublicationRemoteError
+from ..domain.publication_remote import PublicationRemoteError
 from ..domain.validated_work import RemoteBaselineStatus, ValidatedWorkState
 from ..domain.validated_work_capture import (
     AutomaticCaptureDecision, ValidatedWorkRemoteFacts, ValidatedWorkRemoteRequest,
     candidate_evidence, newest_per_work,
 )
+from ..domain.validated_work_remote_authority import classify_remote_pr
 from ..domain.validated_work_escrow import EscrowArtifacts
 from ..ports.completion_intake import CompletionIntakeRuntime
 from ..ports.validated_work_preservation import ValidatedWorkAdmissionStore
@@ -94,7 +95,7 @@ class ValidatedWorkPreservationService:
         if isinstance(observed, ValidatedWorkRemoteFacts):
             remote_status = RemoteBaselineStatus.OBSERVED
             expected_remote_head_sha = observed.branch_head_sha
-            pr_number, remote_failure = _capture_pr(
+            pr_number, remote_failure = classify_remote_pr(
                 observed, candidate.run.session_key.issue.scope(), branch_name,
             )
         else:
@@ -120,23 +121,3 @@ class ValidatedWorkPreservationService:
 @dataclass(frozen=True, slots=True)
 class _RemoteUnavailable:
     """One failed remote read shared only within its atomic capture batch."""
-
-
-def _capture_pr(
-    facts: ValidatedWorkRemoteFacts, repo_slug: str, branch_name: str,
-) -> tuple[int | None, ValidatedWorkFailure | None]:
-    if len(facts.pull_requests) > 1:
-        return None, ValidatedWorkFailure.DUPLICATE_OPEN_PR
-    if not facts.pull_requests:
-        return None, None
-    pr = facts.pull_requests[0]
-    if (
-        pr.state is not PublicationPrState.OPEN
-        or pr.head_repo != repo_slug
-        or pr.base_repo != repo_slug
-        or pr.branch != branch_name
-        or facts.branch_head_sha is None
-        or pr.head_sha != facts.branch_head_sha
-    ):
-        return None, ValidatedWorkFailure.PR_BRANCH_MISMATCH
-    return pr.number, None

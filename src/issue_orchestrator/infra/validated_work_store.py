@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+import sqlite3
 
-from ..domain.recovery_entry import RecoveryRecordRequest
 from ..domain.retention_clock import retention_instant
 from ..domain.recovery_block import RecoveryBlockSnapshot, RecoveryCleanupKey
 from ..domain.published_work_finalization import FinalizationCheckpoint, PublishedWorkTarget
@@ -47,11 +47,16 @@ from ..domain.validated_work_store import (
     PublishValidatedHeadStatus,
     ValidatedWorkRecord,
 )
+from ..domain.validated_work_remote_authority import (
+    RemoteAuthorityDecision,
+    RemoteAuthorityRefreshRequest,
+)
 from ..ports.validated_work_verification import (
     OrchestratorLivenessPort,
     ValidatedWorkAncestry,
     ValidatedWorkArtifactVerifier,
 )
+from ..ports.validated_work_drain import ValidatedWorkDrainRequest
 from ..ports.validated_work_escrow import EvidenceReleaser
 from .validated_work_admission import EvidenceAdmissionWriter
 from .validated_work_snapshots import DispositionSnapshots
@@ -123,8 +128,10 @@ class SqliteValidatedWorkStore:
                 )
             )
 
-    def recovery_requests(self, *, after_record_id: str, limit: int) -> tuple[RecoveryRecordRequest, ...]:
-        return self._snapshots.recovery_requests(after_record_id=after_record_id, limit=limit)
+    def drain_requests(
+        self, *, after_record_id: str, limit: int
+    ) -> tuple[ValidatedWorkDrainRequest, ...]:
+        return self._snapshots.drain_requests(after_record_id=after_record_id, limit=limit)
 
     def get(self, record_id: str) -> ValidatedWorkDisposition:
         with self._db.transaction() as conn:
@@ -132,25 +139,7 @@ class SqliteValidatedWorkStore:
 
     def record_for_id(self, record_id: str) -> ValidatedWorkRecord:
         with self._db.transaction() as conn:
-            row = record_row(conn, record_id)
-            return ValidatedWorkRecord(
-                disposition(conn, record_id),
-                current_evidence(conn, record_id),
-                row["lineage_key"],
-                row["superseded_by_record_id"],
-                row["waits_on_record_id"],
-                row["owner_fence"],
-                owner_identity(row),
-                FinalizationPhase(row["finalization_phase"]),
-                row["publishing_started_at"],
-                ResolutionKind(row["resolution_kind"])
-                if row["resolution_kind"]
-                else None,
-                row["resolved_at"],
-                row["created_at"],
-                row["updated_at"],
-                row["terminal_at"],
-            )
+            return self._record_for_id(conn, record_id)
 
     def for_issue(self, issue_number: int) -> ValidatedWorkDispositionBatch:
         return self._snapshots.for_issue(issue_number)
@@ -267,6 +256,88 @@ class SqliteValidatedWorkStore:
                         )
                     )
             return tuple(candidates)
+
+    def refresh_remote_authority(
+        self,
+        claim: ValidatedWorkClaim,
+        request: RemoteAuthorityRefreshRequest,
+        decision: RemoteAuthorityDecision,
+        *,
+        refreshed_at: str,
+    ) -> ValidatedWorkDisposition | None:
+        with self._db.transaction(write=True) as conn:
+            if not self._claims.holds(conn, claim):
+                return None
+            record = self._record_for_id(conn, claim.record_id)
+            if request.refusal(record) is not None:
+                return None
+            decision.require_preserved_capture(record)
+            evidence = record.current_evidence
+            refresh_observations(conn, evidence.evidence_id, decision.observations)
+            conn.execute(
+                "UPDATE validated_work_evidence SET base_state=?,base_failure=?,base_reason=? "
+                "WHERE evidence_id=?",
+                (
+                    decision.state.value,
+                    decision.failure.value if decision.failure else "",
+                    decision.reason,
+                    evidence.evidence_id,
+                ),
+            )
+            if (
+                record.disposition.state is ValidatedWorkState.PUBLISHING
+                and decision.state is ValidatedWorkState.QUEUED
+            ):
+                conn.execute(
+                    "UPDATE validated_work_records SET failure='',reason=?,updated_at=? "
+                    "WHERE record_id=? AND owner_fence=?",
+                    (decision.reason, refreshed_at, claim.record_id, claim.fence),
+                )
+            else:
+                # Vacate the drainable slot before lineage atomically installs
+                # the refreshed base gate and its relationships.
+                conn.execute(
+                    "UPDATE validated_work_records SET state='parked',failure=?,reason=?,updated_at=? "
+                    "WHERE record_id=? AND owner_fence=?",
+                    (
+                        decision.failure.value if decision.failure else "",
+                        decision.reason,
+                        refreshed_at,
+                        claim.record_id,
+                        claim.fence,
+                    ),
+                )
+                self._lineage.classify(
+                    conn,
+                    record.lineage_key,
+                    refreshed_at,
+                    reconsider=frozenset({claim.record_id}),
+                )
+            return disposition(conn, claim.record_id)
+
+    @staticmethod
+    def _record_for_id(
+        conn: sqlite3.Connection, record_id: str
+    ) -> ValidatedWorkRecord:
+        row = record_row(conn, record_id)
+        return ValidatedWorkRecord(
+            disposition(conn, record_id),
+            current_evidence(conn, record_id),
+            row["lineage_key"],
+            row["superseded_by_record_id"],
+            row["waits_on_record_id"],
+            row["owner_fence"],
+            owner_identity(row),
+            FinalizationPhase(row["finalization_phase"]),
+            row["publishing_started_at"],
+            ResolutionKind(row["resolution_kind"])
+            if row["resolution_kind"]
+            else None,
+            row["resolved_at"],
+            row["created_at"],
+            row["updated_at"],
+            row["terminal_at"],
+        )
 
     def resolve_attached_evidence(
         self, claim: ValidatedWorkClaim, *, record_id: str, resolved_at: str

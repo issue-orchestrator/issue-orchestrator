@@ -268,7 +268,7 @@ def test_public_pause_requested_during_recovery_stops_the_next_record(
     release_first = threading.Event()
     calls: list[str] = []
     queue = MagicMock()
-    queue.recovery_requests.return_value = [
+    queue.drain_requests.return_value = [
         RecoveryRecordRequest("r1", "e1"),
         RecoveryRecordRequest("r2", "e2"),
     ]
@@ -287,6 +287,7 @@ def test_public_pause_requested_during_recovery_stops_the_next_record(
         validated_work_recovery=RecoveryDrain(
             queue=queue,
             operation=operation,
+            authority_refresh=MagicMock(),
             batch_size=2,
             interval_seconds=60,
         ),

@@ -15,10 +15,15 @@ from issue_orchestrator.domain.validated_work_store import (
     AdmissionStatus as Status,
     EvidenceRole,
 )
+from issue_orchestrator.domain.recovery_entry import RecoveryRecordRequest
+from issue_orchestrator.domain.validated_work_remote_authority import (
+    RemoteAuthorityRefreshRequest,
+)
 from tests.unit.validated_work_support import (
     AT,
     LATER,
     L,
+    V,
     Rig,
     begin,
     capture,
@@ -49,6 +54,138 @@ def test_replay_refresh_is_revised_only_before_submission(tmp_path):
     finalize(store, token, attempt)
     store.admit(a)
     assert store.evidence_for_id(a.evidence.evidence_id).evidence == row
+
+
+def test_observed_replay_replaces_only_the_transient_remote_base_gate(tmp_path):
+    store = Rig(tmp_path / "work.sqlite").open()
+    original = capture(
+        state=State.PARKED,
+        failure=Failure.REMOTE_UNREADABLE,
+        reason="remote read failed",
+        remote_status=RemoteBaselineStatus.UNOBSERVED,
+    )
+    store.admit(original)
+    observed = replace(
+        changed_observations(
+            original,
+            remote_baseline_status=RemoteBaselineStatus.OBSERVED,
+            expected_remote_head_sha=V,
+            pr_number=91,
+        ),
+        initial_state=State.QUEUED,
+        initial_failure=None,
+        initial_reason="remote authority observed",
+    )
+
+    outcome = store.admit(observed)
+
+    row = store.evidence_for_id(original.evidence.evidence_id).evidence
+    request, = store.drain_requests(after_record_id="", limit=10)
+    assert outcome.status is Status.CONVERGED
+    assert outcome.disposition.state is State.QUEUED
+    assert row.admission.initial_failure is Failure.REMOTE_UNREADABLE
+    assert row.base_state is State.QUEUED
+    assert row.base_failure is None
+    assert row.authority.remote_baseline_status is RemoteBaselineStatus.OBSERVED
+    assert isinstance(request, RecoveryRecordRequest)
+
+
+def test_inconsistent_observed_replay_cannot_block_the_drain_queue(tmp_path):
+    store = Rig(tmp_path / "work.sqlite").open()
+    original = capture(
+        issue=1,
+        state=State.PARKED,
+        failure=Failure.REMOTE_UNREADABLE,
+        reason="remote read failed",
+        remote_status=RemoteBaselineStatus.UNOBSERVED,
+    )
+    other = capture(issue=2)
+    store.admit(original)
+    store.admit(other)
+    inconsistent = changed_observations(
+        original,
+        remote_baseline_status=RemoteBaselineStatus.OBSERVED,
+        expected_remote_head_sha=V,
+        pr_number=91,
+    )
+
+    with pytest.raises(ValueError, match="cannot retain the remote-unreadable"):
+        store.admit(inconsistent)
+
+    requests = store.drain_requests(after_record_id="", limit=10)
+    assert {request.record_id for request in requests} == {
+        original.evidence.record_id,
+        other.evidence.record_id,
+    }
+    assert any(isinstance(item, RemoteAuthorityRefreshRequest) for item in requests)
+    assert any(isinstance(item, RecoveryRecordRequest) for item in requests)
+
+
+def test_unobserved_replay_cannot_erase_last_observed_remote_authority(tmp_path):
+    store = Rig(tmp_path / "work.sqlite").open()
+    original = capture()
+    store.admit(original)
+    unavailable = replace(
+        changed_observations(
+            original,
+            remote_baseline_status=RemoteBaselineStatus.UNOBSERVED,
+            expected_remote_head_sha=None,
+            pr_number=None,
+        ),
+        initial_state=State.PARKED,
+        initial_failure=Failure.REMOTE_UNREADABLE,
+        initial_reason="later read failed",
+    )
+
+    outcome = store.admit(unavailable)
+
+    row = store.evidence_for_id(original.evidence.evidence_id).evidence
+    assert outcome.disposition.state is State.QUEUED
+    assert row.base_state is State.QUEUED
+    assert row.authority.remote_baseline_status is RemoteBaselineStatus.OBSERVED
+    assert row.authority.expected_remote_head_sha == original.evidence.observations.expected_remote_head_sha
+    assert row.authority.pr_number == original.evidence.observations.pr_number
+
+
+def test_observed_replay_preserves_a_later_durable_failure(tmp_path):
+    store = Rig(tmp_path / "work.sqlite").open()
+    original = capture(
+        state=State.PARKED,
+        failure=Failure.REMOTE_UNREADABLE,
+        reason="remote read failed",
+        remote_status=RemoteBaselineStatus.UNOBSERVED,
+    )
+    store.admit(original)
+    token = claim(store, original)
+    assert store.fail(
+        token,
+        failure=Failure.PUSH_FAILED,
+        reason="publication failed",
+        failed_at=LATER,
+    )
+    assert store.relinquish_claim(token)
+    observed = replace(
+        changed_observations(
+            original,
+            remote_baseline_status=RemoteBaselineStatus.OBSERVED,
+            expected_remote_head_sha=V,
+            pr_number=91,
+        ),
+        initial_state=State.QUEUED,
+        initial_failure=None,
+        initial_reason="remote authority observed",
+    )
+
+    outcome = store.admit(observed)
+
+    row = store.evidence_for_id(original.evidence.evidence_id).evidence
+    assert outcome.status is Status.CONVERGED
+    assert outcome.disposition.state is State.FAILED
+    assert outcome.disposition.failure is Failure.PUSH_FAILED
+    assert outcome.disposition.reason == "publication failed"
+    assert row.base_state is State.QUEUED
+    assert row.base_failure is None
+    assert row.authority.remote_baseline_status is RemoteBaselineStatus.OBSERVED
 
 
 @pytest.mark.parametrize(

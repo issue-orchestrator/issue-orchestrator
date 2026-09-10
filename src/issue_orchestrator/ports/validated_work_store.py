@@ -26,6 +26,10 @@ from ..domain.validated_work_store import (
     PublishValidatedHeadStatus,
     ValidatedWorkRecord,
 )
+from ..domain.validated_work_remote_authority import (
+    RemoteAuthorityDecision,
+    RemoteAuthorityRefreshRequest,
+)
 from typing import Protocol
 
 
@@ -88,6 +92,17 @@ class ValidatedWorkStore(Protocol):
     def retained_claims(
         self, states: frozenset[ValidatedWorkState]
     ) -> tuple[RetainedClaim, ...]: ...
+
+    def refresh_remote_authority(
+        self,
+        claim: ValidatedWorkClaim,
+        request: RemoteAuthorityRefreshRequest,
+        decision: RemoteAuthorityDecision,
+        *,
+        refreshed_at: str,
+    ) -> ValidatedWorkDisposition | None:
+        """Atomically replace mutable remote facts and their recovery gate."""
+        ...
 
     def resolve_attached_evidence(
         self, claim: ValidatedWorkClaim, *, record_id: str, resolved_at: str

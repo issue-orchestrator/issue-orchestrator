@@ -1,10 +1,12 @@
 """Constructor and identity invariants of bounded disposition slices 1 + 1a."""
 
+from concurrent.futures import ThreadPoolExecutor
 from copy import copy, deepcopy
 from dataclasses import replace
 import json
 import pickle
 import sqlite3
+from threading import Barrier
 
 import pytest
 
@@ -67,11 +69,18 @@ def test_gate_source_distinguishes_failure_authority_from_lineage_restriction():
     durable = DispositionGate(ValidatedWorkState.FAILED, failure, "failed")
     derived = DispositionGate(ValidatedWorkState.PARKED, failure, "waiting")
     admission = capture(state=ValidatedWorkState.PARKED, reason="operator approval")
+    base = DispositionGate(
+        admission.initial_state, admission.initial_failure, admission.initial_reason
+    )
     assert durable.source is GateSource.DURABLE_FAILURE
-    assert durable.restore(admission) == durable
+    assert durable.restore(base) == durable
+    assert not durable.tracks(base)
     assert derived.source is GateSource.LINEAGE_RESTRICTION
-    restored = derived.restore(admission)
+    assert derived.tracks(base)
+    restored = derived.restore(base)
     assert restored.source is GateSource.CURRENT_DISPOSITION
+    assert base.tracks(base)
+    assert replace(base, reason="new diagnostics").tracks(base)
     assert restored.state is ValidatedWorkState.PARKED
     assert restored.reason == "operator approval"
 
@@ -116,12 +125,9 @@ def test_legacy_observations_decode_as_unobserved_remote_authority():
     observations = json.loads(canonical_json(evidence.observations))
     observations.pop("remote_baseline_status")
     decoded = decode_evidence(
-        canonical_json(evidence.identity),
-        json.dumps(observations),
+        canonical_json(evidence.identity), json.dumps(observations),
     )
-    assert (
-        decoded.observations.remote_baseline_status is RemoteBaselineStatus.UNOBSERVED
-    )
+    assert decoded.observations.remote_baseline_status is RemoteBaselineStatus.UNOBSERVED
     assert decoded.observations.expected_remote_head_sha is None
     assert decoded.observations.pr_number is None
 
@@ -140,16 +146,15 @@ def test_store_migrates_legacy_queued_remote_authority_to_parked(tmp_path):
 
     reopened = rig.open()
     disposition = reopened.get(admission.evidence.record_id)
-    (row,) = reopened.retained_evidence(admission.evidence.identity.key.issue_number)
+    row, = reopened.retained_evidence(admission.evidence.identity.key.issue_number)
     assert disposition.state is ValidatedWorkState.PARKED
     assert disposition.failure is ValidatedWorkFailure.REMOTE_UNREADABLE
     assert row.admission.initial_state is ValidatedWorkState.PARKED
     assert row.admission.initial_failure is ValidatedWorkFailure.REMOTE_UNREADABLE
+    assert row.base_state is ValidatedWorkState.PARKED
+    assert row.base_failure is ValidatedWorkFailure.REMOTE_UNREADABLE
     assert row.observation_revision == 1
-    assert (
-        row.admission.evidence.observations.remote_baseline_status
-        is RemoteBaselineStatus.UNOBSERVED
-    )
+    assert row.admission.evidence.observations.remote_baseline_status is RemoteBaselineStatus.UNOBSERVED
     assert row.admission.evidence.observations.expected_remote_head_sha is None
     assert row.admission.evidence.observations.pr_number is None
     with sqlite3.connect(rig.path) as conn:
@@ -176,16 +181,12 @@ def test_legacy_migration_preserves_ambiguous_publishing_lifecycle(tmp_path):
         )
 
     reopened = rig.open()
-    assert (
-        reopened.get(admission.evidence.record_id).state
-        is ValidatedWorkState.PUBLISHING
-    )
-    (row,) = reopened.retained_evidence(admission.evidence.identity.key.issue_number)
+    assert reopened.get(admission.evidence.record_id).state is ValidatedWorkState.PUBLISHING
+    row, = reopened.retained_evidence(admission.evidence.identity.key.issue_number)
     assert row.admission.initial_state is ValidatedWorkState.PARKED
-    assert (
-        row.admission.evidence.observations.remote_baseline_status
-        is RemoteBaselineStatus.UNOBSERVED
-    )
+    assert row.base_state is ValidatedWorkState.PARKED
+    assert row.base_failure is ValidatedWorkFailure.REMOTE_UNREADABLE
+    assert row.admission.evidence.observations.remote_baseline_status is RemoteBaselineStatus.UNOBSERVED
 
 
 def test_legacy_migration_reserves_write_authority_before_inspection(tmp_path):
@@ -229,6 +230,49 @@ def test_legacy_migration_reserves_write_authority_before_inspection(tmp_path):
         row.admission.evidence.observations.remote_baseline_status
         is RemoteBaselineStatus.UNOBSERVED
     )
+
+
+def test_existing_database_migrates_separate_base_gate_from_admission(tmp_path):
+    rig = Rig(tmp_path / "work.sqlite")
+    admission = capture(
+        state=ValidatedWorkState.PARKED,
+        failure=ValidatedWorkFailure.WORKSPACE_INTEGRITY,
+        reason="operator approval",
+    )
+    rig.open().admit(admission)
+    with sqlite3.connect(rig.path) as conn:
+        conn.execute("ALTER TABLE validated_work_evidence DROP COLUMN base_reason")
+        conn.execute("ALTER TABLE validated_work_evidence DROP COLUMN base_failure")
+        conn.execute("ALTER TABLE validated_work_evidence DROP COLUMN base_state")
+
+    row, = rig.open().retained_evidence(admission.evidence.identity.key.issue_number)
+
+    assert row.base_state is ValidatedWorkState.PARKED
+    assert row.base_failure is ValidatedWorkFailure.WORKSPACE_INTEGRITY
+    assert row.base_reason == "operator approval"
+
+
+def test_existing_database_migration_is_serialized_across_openers(tmp_path):
+    rig = Rig(tmp_path / "work.sqlite")
+    admission = capture()
+    rig.open().admit(admission)
+    with sqlite3.connect(rig.path) as conn:
+        conn.execute("ALTER TABLE validated_work_evidence DROP COLUMN base_reason")
+        conn.execute("ALTER TABLE validated_work_evidence DROP COLUMN base_failure")
+        conn.execute("ALTER TABLE validated_work_evidence DROP COLUMN base_state")
+    barrier = Barrier(8)
+
+    def reopen(_: int):
+        barrier.wait()
+        row, = Rig(rig.path).open().retained_evidence(
+            admission.evidence.identity.key.issue_number
+        )
+        return row.base_state
+
+    with ThreadPoolExecutor(max_workers=8) as workers:
+        states = tuple(workers.map(reopen, range(8)))
+
+    assert states == (ValidatedWorkState.QUEUED,) * 8
 
 
 @pytest.mark.parametrize(

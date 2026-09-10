@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from .validated_work import ValidatedWorkFailure as Failure, ValidatedWorkState as State
-from .validated_work_store import EvidenceAdmission
+from .validated_work_store import EvidenceRow
 
 
 LINEAGE_FAILURES = frozenset(
@@ -52,13 +52,16 @@ class DispositionGate:
         return GateSource.CURRENT_DISPOSITION
 
     @classmethod
-    def admitted(cls, admission: EvidenceAdmission) -> "DispositionGate":
-        return cls(
-            admission.initial_state, admission.initial_failure, admission.initial_reason
-        )
+    def from_evidence(cls, evidence: EvidenceRow) -> "DispositionGate":
+        return cls(evidence.base_state, evidence.base_failure, evidence.base_reason)
 
-    def restore(self, admission: EvidenceAdmission) -> "DispositionGate":
+    def restore(self, base: "DispositionGate") -> "DispositionGate":
         """Only a removable restriction may recover the evidence's admission gate."""
         if self.source is GateSource.LINEAGE_RESTRICTION:
-            return self.admitted(admission)
+            return base
         return self
+
+    def tracks(self, base: "DispositionGate") -> bool:
+        """Whether changing the durable base may reconsider this disposition."""
+        same_authority = (self.state, self.failure) == (base.state, base.failure)
+        return same_authority or self.source is GateSource.LINEAGE_RESTRICTION

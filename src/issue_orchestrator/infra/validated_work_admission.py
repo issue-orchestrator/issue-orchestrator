@@ -2,9 +2,17 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import sqlite3
 
-from ..domain.validated_work import canonical_json, canonical_lineage_key
+from ..domain.validated_work import (
+    RemoteBaselineStatus,
+    ValidatedWorkFailure,
+    ValidatedWorkState,
+    canonical_json,
+    canonical_lineage_key,
+)
+from ..domain.validated_work_gate import DispositionGate
 from ..domain.validated_work_store import (
     AdmissionStatus,
     EvidenceAdmission,
@@ -12,7 +20,12 @@ from ..domain.validated_work_store import (
     EvidenceAdmissionSelection,
 )
 from .validated_work_lineage import LineageClassifier
-from .validated_work_rows import current_evidence, record_row, refresh_observations
+from .validated_work_rows import (
+    current_evidence,
+    evidence_row,
+    record_row,
+    refresh_observations,
+)
 
 
 class EvidenceAdmissionWriter:
@@ -89,15 +102,75 @@ class EvidenceAdmissionWriter:
             return AdmissionStatus.RETAINED
         row = record_row(conn, known["record_id"])
         if not row["owner_claim_hash"] and row["state"] in {"queued", "parked", "failed"}:
-            refresh_observations(
-                conn, known["evidence_id"], admission.evidence.observations
-            )
+            reconsider = self._refresh_current_replay(conn, admission, known, row)
             conn.execute(
                 "UPDATE validated_work_records SET updated_at=? WHERE record_id=?",
                 (admission.admitted_at, row["record_id"]),
             )
-            self._lineage.classify(conn, row["lineage_key"], admission.admitted_at)
+            self._lineage.classify(
+                conn,
+                row["lineage_key"],
+                admission.admitted_at,
+                reconsider=frozenset({row["record_id"]}) if reconsider else frozenset(),
+            )
         return AdmissionStatus.CONVERGED
+
+    @staticmethod
+    def _refresh_current_replay(
+        conn: sqlite3.Connection,
+        admission: EvidenceAdmission,
+        known: sqlite3.Row,
+        record: sqlite3.Row,
+    ) -> bool:
+        """Refresh facts without separating remote provenance from its base gate."""
+        stored = evidence_row(known)
+        previous = stored.admission.evidence.observations
+        incoming = admission.evidence.observations
+        reconsider = False
+        if (
+            previous.remote_baseline_status is RemoteBaselineStatus.OBSERVED
+            and incoming.remote_baseline_status is RemoteBaselineStatus.UNOBSERVED
+        ):
+            # A transient read failure carries no newer remote fact. Preserve
+            # the last observed authority while accepting the other replayed
+            # observations.
+            incoming = replace(
+                incoming,
+                expected_remote_head_sha=previous.expected_remote_head_sha,
+                pr_number=previous.pr_number,
+                remote_baseline_status=RemoteBaselineStatus.OBSERVED,
+            )
+        elif (
+            stored.base_failure is ValidatedWorkFailure.REMOTE_UNREADABLE
+            and previous.remote_baseline_status is RemoteBaselineStatus.UNOBSERVED
+            and incoming.remote_baseline_status is RemoteBaselineStatus.OBSERVED
+        ):
+            if admission.initial_failure is ValidatedWorkFailure.REMOTE_UNREADABLE:
+                raise ValueError(
+                    "observed replay cannot retain the remote-unreadable base gate"
+                )
+            admission.require_capture_gate()
+            current_gate = DispositionGate(
+                ValidatedWorkState(record["state"]),
+                ValidatedWorkFailure(record["failure"])
+                if record["failure"]
+                else None,
+                record["reason"],
+            )
+            previous_base = DispositionGate.from_evidence(stored)
+            reconsider = current_gate.tracks(previous_base)
+            conn.execute(
+                "UPDATE validated_work_evidence SET base_state=?,base_failure=?,base_reason=? "
+                "WHERE evidence_id=?",
+                (
+                    admission.initial_state.value,
+                    admission.initial_failure.value if admission.initial_failure else "",
+                    admission.initial_reason,
+                    known["evidence_id"],
+                ),
+            )
+        refresh_observations(conn, known["evidence_id"], incoming)
+        return reconsider
 
     def resolve_attached(
         self, conn: sqlite3.Connection, record_id: str, at: str
@@ -166,8 +239,9 @@ class EvidenceAdmissionWriter:
         ev, obs = admission.evidence, admission.evidence.observations
         conn.execute(
             "INSERT INTO validated_work_evidence (evidence_id,record_id,role,identity,observations,worktree_head_sha,"
-            "expected_remote_head,pr_number,escrow_dir,pinned_ref,observed_ref,initial_state,initial_failure,initial_reason,admitted_at,role_changed_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "expected_remote_head,pr_number,escrow_dir,pinned_ref,observed_ref,initial_state,initial_failure,initial_reason,"
+            "base_state,base_failure,base_reason,admitted_at,role_changed_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 ev.evidence_id,
                 ev.record_id,
@@ -180,6 +254,9 @@ class EvidenceAdmissionWriter:
                 admission.escrow_dir,
                 admission.pinned_ref,
                 admission.observed_ref,
+                admission.initial_state.value,
+                admission.initial_failure.value if admission.initial_failure else "",
+                admission.initial_reason,
                 admission.initial_state.value,
                 admission.initial_failure.value if admission.initial_failure else "",
                 admission.initial_reason,

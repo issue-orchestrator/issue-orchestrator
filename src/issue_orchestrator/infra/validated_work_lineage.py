@@ -169,14 +169,15 @@ class LineageClassifier:
         conn: sqlite3.Connection, row: sqlite3.Row, reconsider: frozenset[str]
     ) -> LineageDecision:
         evidence = current_evidence(conn, row["record_id"])
+        base = DispositionGate.from_evidence(evidence)
         if row["record_id"] in reconsider:
-            gate = DispositionGate.admitted(evidence.admission)
+            gate = base
         else:
             gate = DispositionGate(
                 State(row["state"]),
                 Failure(row["failure"]) if row["failure"] else None,
                 row["reason"],
-            ).restore(evidence.admission)
+            ).restore(base)
         return LineageDecision(evidence, gate.state, gate.failure, gate.reason)
 
     def _classify_publication(
