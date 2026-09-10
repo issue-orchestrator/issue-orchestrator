@@ -7,6 +7,8 @@
     }
 })(typeof globalThis !== 'undefined' ? globalThis : this, function createControlCenterRecoveryView(deps) {
     const { fetch, escapeHtml } = deps;
+    const renderStopAction = deps.renderStopAction || (() => '');
+    const validateStopRow = deps.validateStopRow || (() => {});
     const now = deps.now || Date.now;
     const REFRESH_INTERVAL_MS = 30000;
     const REPO_KEY = /^repo-[0-9a-f]{64}$/;
@@ -20,6 +22,7 @@
     const PRESENTATIONS = new Set(['observed', 'missing', 'replaced', 'unknown']);
     const cache = new Map();
     const inFlight = new Map();
+    const generations = new Map();
 
     function object(value, label) {
         if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -80,7 +83,9 @@
         text(group.presentation_message, 'recovery engine presentation message');
         const records = array(group.records, 'owned recovery records');
         if (records.length === 0) throw new Error('recovery engine group must have records');
-        records.forEach(row => validateWork(row, 'owned'));
+        records.forEach((row) => {
+            validateStopRow(validateWork(row, 'owned'), engine);
+        });
         return group;
     }
 
@@ -117,10 +122,19 @@
         }
     }
 
+    function invalidate(repoKey) {
+        if (!REPO_KEY.test(repoKey)) throw new Error('registered repository has no valid recovery key');
+        generations.set(repoKey, (generations.get(repoKey) || 0) + 1);
+        cache.delete(repoKey);
+        inFlight.delete(repoKey);
+    }
+
     async function request(repoKey) {
         const cached = cache.get(repoKey);
         if (cached && now() - cached.loadedAt < REFRESH_INTERVAL_MS) return cached;
-        if (inFlight.has(repoKey)) return inFlight.get(repoKey);
+        const existing = inFlight.get(repoKey);
+        if (existing) return existing.pending;
+        const generation = generations.get(repoKey) || 0;
         const pending = (async () => {
             try {
                 if (!REPO_KEY.test(repoKey)) {
@@ -145,13 +159,16 @@
                 };
             }
         })();
-        inFlight.set(repoKey, pending);
+        const entry = { generation, pending };
+        inFlight.set(repoKey, entry);
         try {
             const result = await pending;
-            cache.set(repoKey, result);
+            if ((generations.get(repoKey) || 0) === generation) {
+                cache.set(repoKey, result);
+            }
             return result;
         } finally {
-            inFlight.delete(repoKey);
+            if (inFlight.get(repoKey) === entry) inFlight.delete(repoKey);
         }
     }
 
@@ -174,13 +191,18 @@
     function capture(container) {
         const expandedKeys = [];
         let focusedKey = null;
+        let focusedAction = null;
         const activeElement = container?.ownerDocument?.activeElement || null;
         container?.querySelectorAll('details[data-recovery-repo-key]').forEach((details) => {
             const key = details.dataset.recoveryRepoKey;
             if (details.open) expandedKeys.push(key);
             if (details.querySelector('summary') === activeElement) focusedKey = key;
+            const action = activeElement?.closest?.('[data-recovery-focus-key]');
+            if (action && details.contains(action)) {
+                focusedAction = { repoKey: key, actionKey: action.dataset.recoveryFocusKey };
+            }
         });
-        return { expandedKeys, focusedKey };
+        return { expandedKeys, focusedKey, focusedAction };
     }
 
     function restore(container, captured) {
@@ -190,10 +212,15 @@
             const key = details.dataset.recoveryRepoKey;
             details.open = expanded.has(key);
             if (key === captured.focusedKey) details.querySelector('summary')?.focus();
+            if (key === captured.focusedAction?.repoKey) {
+                const replacement = [...details.querySelectorAll('[data-recovery-focus-key]')]
+                    .find(action => action.dataset.recoveryFocusKey === captured.focusedAction.actionKey);
+                (replacement || details.querySelector('summary'))?.focus();
+            }
         });
     }
 
-    function renderRecord(row) {
+    function renderRecord(row, repoKey) {
         const { authority } = row.work;
         return `<li class="repo-recovery-record">
             <div class="repo-recovery-record-title">
@@ -202,10 +229,11 @@
             </div>
             <code>${escapeHtml(authority.branch_name)}</code>
             <p>${escapeHtml(row.work.reason)}</p>
+            ${row.kind === 'owned' ? renderStopAction(row, repoKey) : ''}
         </li>`;
     }
 
-    function renderGroup(group) {
+    function renderGroup(group, repoKey) {
         const instance = secondaryLabel(group.engine.label, group.engine.instance_id);
         return `<section class="repo-recovery-group">
             <h4>${escapeHtml(group.engine.label)}${instance}</h4>
@@ -213,7 +241,7 @@
                 <span class="repo-recovery-presentation-badge ${escapeHtml(group.presentation)}">${escapeHtml(group.presentation)}</span>
                 ${escapeHtml(group.presentation_message)}
             </p>
-            <ul>${group.records.map(renderRecord).join('')}</ul>
+            <ul>${group.records.map(row => renderRecord(row, repoKey)).join('')}</ul>
         </section>`;
     }
 
@@ -233,12 +261,12 @@
             (total, group) => total + group.records.length,
             payload.unowned_records.length,
         );
-        const groups = payload.engine_groups.map(renderGroup).join('');
+        const groups = payload.engine_groups.map(group => renderGroup(group, payload.repo_key)).join('');
         const unowned = payload.unowned_records.length === 0 ? '' : `
             <section class="repo-recovery-group">
                 <h4>No engine owner</h4>
                 <p class="repo-recovery-presentation">These records are retained and ready for recovery ownership.</p>
-                <ul>${payload.unowned_records.map(renderRecord).join('')}</ul>
+                <ul>${payload.unowned_records.map(row => renderRecord(row, payload.repo_key)).join('')}</ul>
             </section>`;
         return `<details class="repo-recovery" data-recovery-repo-key="${escapeHtml(payload.repo_key)}">
             <summary>
@@ -281,5 +309,5 @@
         return STATUS_RENDERERS[payload.status](payload);
     }
 
-    return { capture, hydrate, load, render, restore, validatePayload };
+    return { capture, hydrate, invalidate, load, render, restore, validatePayload };
 });

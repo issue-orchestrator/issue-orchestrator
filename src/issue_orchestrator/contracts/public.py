@@ -593,6 +593,8 @@ class GuardedRecoveryStopActionContract(StrictRecoveryContract):
     record_id: str = Field(min_length=1)
     expected_engine: RecoveryEngineIdentityContract
     expected_owner_fence: int = Field(strict=True, ge=0)
+    graceful_timeout_seconds: float = Field(strict=True, gt=0)
+    force_on_timeout: bool = Field(strict=True)
 
 
 class OwnedRecoveryRecordContract(StrictRecoveryContract):

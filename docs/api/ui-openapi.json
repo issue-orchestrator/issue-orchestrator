@@ -897,6 +897,96 @@
           }
         }
       }
+    },
+    "/api/control-center/repositories/{repo_key}/engines/{instance_key}/stop-validated-work-owner": {
+      "post": {
+        "operationId": "stopControlCenterValidatedWorkOwner",
+        "summary": "Stop the exact Repository Engine that owns retained validated work",
+        "parameters": [
+          {
+            "name": "repo_key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^repo-[0-9a-f]{64}$"
+            },
+            "description": "Opaque key issued by the configured repository registry"
+          },
+          {
+            "name": "instance_key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "Rendered engine instance id, or default for a single-instance engine"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StopValidatedWorkOwnerRequestPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Exact owning engine stopped",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StopValidatedWorkOwnerOutcomePayload"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Configured repository or validated-work record was not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StopValidatedWorkOwnerOutcomePayload"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Rendered repository, owner, fence, or stop capability is stale",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StopValidatedWorkOwnerOutcomePayload"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Exact engine stop failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StopValidatedWorkOwnerOutcomePayload"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Validated-work ownership could not be read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StopValidatedWorkOwnerOutcomePayload"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -4131,7 +4221,9 @@
         "required": [
           "record_id",
           "expected_engine",
-          "expected_owner_fence"
+          "expected_owner_fence",
+          "graceful_timeout_seconds",
+          "force_on_timeout"
         ],
         "properties": {
           "record_id": {
@@ -4144,6 +4236,13 @@
           "expected_owner_fence": {
             "type": "integer",
             "minimum": 0
+          },
+          "graceful_timeout_seconds": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "force_on_timeout": {
+            "type": "boolean"
           }
         }
       },
@@ -4354,6 +4453,135 @@
           },
           {
             "$ref": "#/components/schemas/RecoveryUnavailablePayload"
+          }
+        ],
+        "discriminator": {
+          "propertyName": "status"
+        }
+      },
+      "StopValidatedWorkOwnerRequestPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "record_id",
+          "expected_engine",
+          "expected_owner_fence",
+          "reason"
+        ],
+        "properties": {
+          "record_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "expected_engine": {
+            "$ref": "#/components/schemas/RecoveryEngineIdentityPayload"
+          },
+          "expected_owner_fence": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": ".*\\S.*"
+          }
+        }
+      },
+      "StopOwnerObservedOutcomePayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "status",
+          "observed_owner",
+          "message"
+        ],
+        "properties": {
+          "status": {
+            "enum": [
+              "stopped",
+              "stop_in_progress",
+              "remote_host",
+              "stop_failed"
+            ]
+          },
+          "observed_owner": {
+            "$ref": "#/components/schemas/RecoveryClaimOwnerPayload"
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": ".*\\S.*"
+          }
+        }
+      },
+      "StopOwnerAbsentOutcomePayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "status",
+          "observed_owner",
+          "message"
+        ],
+        "properties": {
+          "status": {
+            "enum": [
+              "no_such_record",
+              "record_unavailable",
+              "not_owned"
+            ]
+          },
+          "observed_owner": {
+            "type": "null"
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": ".*\\S.*"
+          }
+        }
+      },
+      "StopOwnerOptionalOutcomePayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "status",
+          "observed_owner",
+          "message"
+        ],
+        "properties": {
+          "status": {
+            "enum": [
+              "owner_changed",
+              "repo_mismatch"
+            ]
+          },
+          "observed_owner": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RecoveryClaimOwnerPayload"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": ".*\\S.*"
+          }
+        }
+      },
+      "StopValidatedWorkOwnerOutcomePayload": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/StopOwnerObservedOutcomePayload"
+          },
+          {
+            "$ref": "#/components/schemas/StopOwnerAbsentOutcomePayload"
+          },
+          {
+            "$ref": "#/components/schemas/StopOwnerOptionalOutcomePayload"
           }
         ],
         "discriminator": {

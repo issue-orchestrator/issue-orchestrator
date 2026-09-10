@@ -108,6 +108,8 @@ def test_transport_round_trips_exact_internal_projection_without_root_wrapper() 
         "record_id": rows.engine_groups[0].records[0].work.authority.record_id,
         "expected_engine": payload["engine_groups"][0]["engine"],
         "expected_owner_fence": 3,
+        "graceful_timeout_seconds": 120.0,
+        "force_on_timeout": True,
     }
     assert ControlCenterRecoveryTransportMapper.parse_contract(payload) == rows
 

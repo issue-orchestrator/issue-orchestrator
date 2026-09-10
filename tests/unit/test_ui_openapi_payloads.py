@@ -31,6 +31,8 @@ from issue_orchestrator.contracts.ui_openapi_models import (
     RepositorySetupPrerequisitesPayload,
     RepositorySetupPreviewPayload,
     RepositorySetupResultPayload,
+    StopValidatedWorkOwnerOutcomePayload,
+    StopValidatedWorkOwnerRequestPayload,
     ViewModelSnapshotPayload,
     WorktreeAuditRequestPayload,
     WorktreeAuditResponsePayload,
@@ -350,6 +352,9 @@ def test_control_center_recovery_openapi_is_one_closed_named_family() -> None:
         "RecoveryAvailablePayload",
         "RecoveryEmptyPayload",
         "RecoveryUnavailablePayload",
+        "StopOwnerObservedOutcomePayload",
+        "StopOwnerAbsentOutcomePayload",
+        "StopOwnerOptionalOutcomePayload",
     }
     assert all(schemas[name]["additionalProperties"] is False for name in object_names)
 
@@ -371,6 +376,14 @@ def test_control_center_recovery_openapi_is_one_closed_named_family() -> None:
         "items": {"$ref": "#/components/schemas/OwnedRecoveryRecordPayload"},
         "minItems": 1,
     }
+    stop_union = schemas["StopValidatedWorkOwnerOutcomePayload"]
+    assert set(stop_union) == {"oneOf", "discriminator"}
+    assert stop_union["discriminator"] == {"propertyName": "status"}
+    assert stop_union["oneOf"] == [
+        {"$ref": "#/components/schemas/StopOwnerObservedOutcomePayload"},
+        {"$ref": "#/components/schemas/StopOwnerAbsentOutcomePayload"},
+        {"$ref": "#/components/schemas/StopOwnerOptionalOutcomePayload"},
+    ]
 
 
 def test_control_center_recovery_nullable_pr_number_is_strict_in_python() -> None:
@@ -397,6 +410,117 @@ def test_control_center_recovery_retention_boolean_is_strict_in_python() -> None
         _validator("ControlCenterRecoveryRowsPayload").validate(malformed)
     with pytest.raises(ValidationError, match="valid boolean"):
         adapter.validate_python(malformed)
+
+
+def test_control_center_owner_stop_contract_preserves_exact_command_and_outcome() -> (
+    None
+):
+    from pydantic import TypeAdapter, ValidationError
+
+    engine = _recovery_engine_payload()
+    request = {
+        "record_id": "record-7",
+        "expected_engine": engine,
+        "expected_owner_fence": 3,
+        "reason": "Engine is wedged",
+    }
+    outcome = {
+        "status": "stopped",
+        "observed_owner": {
+            "engine": engine,
+            "owner_fence": 3,
+            "stop_availability": "available",
+        },
+        "message": "Expected engine stopped gracefully",
+    }
+
+    _validator("StopValidatedWorkOwnerRequestPayload").validate(request)
+    _validator("StopValidatedWorkOwnerOutcomePayload").validate(outcome)
+    assert StopValidatedWorkOwnerRequestPayload.model_validate(request).reason == (
+        "Engine is wedged"
+    )
+    assert (
+        TypeAdapter(StopValidatedWorkOwnerOutcomePayload)
+        .validate_python(outcome)
+        .status
+        == "stopped"
+    )
+
+    with pytest.raises(ValidationError, match="reason must match"):
+        StopValidatedWorkOwnerRequestPayload.model_validate(
+            {**request, "reason": "   "}
+        )
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        StopValidatedWorkOwnerRequestPayload.model_validate(
+            {**request, "actor": "caller-controlled"}
+        )
+
+
+def test_control_center_owner_stop_outcome_discriminant_owns_owner_nullability() -> (
+    None
+):
+    from pydantic import TypeAdapter, ValidationError
+
+    adapter = TypeAdapter(StopValidatedWorkOwnerOutcomePayload)
+    validator = _validator("StopValidatedWorkOwnerOutcomePayload")
+    owner = {
+        "engine": _recovery_engine_payload(),
+        "owner_fence": 3,
+        "stop_availability": "available",
+    }
+    requirements = {
+        "stopped": "required",
+        "stop_in_progress": "required",
+        "remote_host": "required",
+        "stop_failed": "required",
+        "no_such_record": "forbidden",
+        "record_unavailable": "forbidden",
+        "not_owned": "forbidden",
+        "owner_changed": "optional",
+        "repo_mismatch": "optional",
+    }
+
+    for status, requirement in requirements.items():
+        for observed_owner in (owner, None):
+            payload = {
+                "status": status,
+                "observed_owner": observed_owner,
+                "message": "Visible outcome",
+            }
+            valid = (
+                requirement == "optional"
+                or (requirement == "required" and observed_owner is owner)
+                or (requirement == "forbidden" and observed_owner is None)
+            )
+            if valid:
+                validator.validate(payload)
+                assert adapter.validate_python(payload).status == status
+            else:
+                with pytest.raises(JsonSchemaValidationError):
+                    validator.validate(payload)
+                with pytest.raises(ValidationError):
+                    adapter.validate_python(payload)
+
+    invalid_payloads = [
+        {"status": "stopped", "observed_owner": owner, "message": "   "},
+        {"status": "unknown", "observed_owner": None, "message": "Visible"},
+        {
+            "status": "stopped",
+            "observed_owner": {**owner, "owner_fence": True},
+            "message": "Visible",
+        },
+        {
+            "status": "no_such_record",
+            "observed_owner": None,
+            "message": "Visible",
+            "unexpected": True,
+        },
+    ]
+    for payload in invalid_payloads:
+        with pytest.raises(JsonSchemaValidationError):
+            validator.validate(payload)
+        with pytest.raises(ValidationError):
+            adapter.validate_python(payload)
 
 
 def _e2e_timeline_event(**overrides: object) -> dict[str, object]:
@@ -476,9 +600,9 @@ def test_worktree_audit_request_and_response_match_ui_openapi() -> None:
     assert operation["requestBody"]["content"]["application/json"]["schema"] == {
         "$ref": "#/components/schemas/WorktreeAuditRequestPayload"
     }
-    assert operation["responses"]["200"]["content"]["application/json"][
-        "schema"
-    ] == {"$ref": "#/components/schemas/WorktreeAuditResponsePayload"}
+    assert operation["responses"]["200"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/WorktreeAuditResponsePayload"
+    }
 
 
 def test_repository_setup_command_and_results_match_ui_openapi() -> None:
@@ -919,7 +1043,9 @@ def test_dashboard_data_payload_requires_provider_circuit() -> None:
     malformed_circuit = _provider_circuit_payload()
     del malformed_circuit["status_unavailable"]
     with pytest.raises(JsonSchemaValidationError):
-        data_validator.validate(_dashboard_data_payload(providerCircuit=malformed_circuit))
+        data_validator.validate(
+            _dashboard_data_payload(providerCircuit=malformed_circuit)
+        )
     with pytest.raises(JsonSchemaValidationError):
         circuit_validator.validate(malformed_circuit)
     with pytest.raises(ValidationError):
@@ -1082,6 +1208,7 @@ def test_tech_lead_activity_artifacts_are_the_shared_lifecycle_commands() -> Non
         validator.validate(unknown_type)
     with pytest.raises(ValidationError):
         TechLeadRunActivityEntryPayload.model_validate(unknown_type)
+
 
 def test_view_model_snapshot_payload_matches_ui_openapi() -> None:
     config = _make_config()
@@ -2447,7 +2574,9 @@ def test_stack_dashboard_card_matches_ui_openapi() -> None:
 def test_flow_column_hidden_count_is_required_by_ui_openapi() -> None:
     payload = _stacked_view_model_dict()
 
-    queued = next(column for column in payload["flow_columns"] if column["id"] == "queued")
+    queued = next(
+        column for column in payload["flow_columns"] if column["id"] == "queued"
+    )
     assert queued["hidden_count"] == 0
     del queued["hidden_count"]
 

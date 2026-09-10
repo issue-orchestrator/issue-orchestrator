@@ -981,6 +981,57 @@ body {
     color: var(--accent-yellow);
 }
 
+.repo-recovery-stop,
+.repo-recovery-stop-note {
+    margin-top: 8px;
+}
+
+.repo-recovery-stop-note {
+    color: var(--text-secondary);
+    font-size: 11px;
+}
+
+.repo-recovery-engine-controls {
+    margin-top: 8px;
+}
+
+.recovery-stop-dialog {
+    position: fixed;
+    inset: 0;
+    margin: auto;
+    padding: 0;
+    color: var(--text-primary);
+}
+
+.recovery-stop-dialog::backdrop {
+    background: rgba(0, 0, 0, 0.55);
+}
+
+.recovery-stop-reason {
+    margin-top: 16px;
+}
+
+.recovery-stop-reason textarea {
+    width: 100%;
+    min-height: 76px;
+    padding: 8px 10px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--bg-input);
+    color: var(--text-primary);
+    font: inherit;
+    resize: vertical;
+}
+
+.recovery-stop-status {
+    margin-top: 12px;
+    padding: 8px 10px;
+    border: 1px solid var(--accent-red);
+    border-radius: 6px;
+    color: var(--accent-red);
+    overflow-wrap: anywhere;
+}
+
 .repo-card-actions {
     display: flex;
     gap: 8px;

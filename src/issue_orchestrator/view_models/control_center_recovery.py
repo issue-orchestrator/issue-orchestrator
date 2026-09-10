@@ -73,6 +73,16 @@ def _engine(contract: RecoveryEngineIdentityContract) -> EngineIdentity:
     )
 
 
+class RecoveryEngineIdentityTransportMapper:
+    """Own the shared strict transport-to-domain engine identity conversion."""
+
+    @staticmethod
+    def parse(contract: RecoveryEngineIdentityContract) -> EngineIdentity:
+        if type(contract) is not RecoveryEngineIdentityContract:
+            raise TypeError("recovery engine transport must be the strict contract")
+        return _engine(contract)
+
+
 def _authority(
     contract: RecoveryAuthorityContract,
 ) -> ValidatedWorkAuthoritySnapshot:
@@ -117,6 +127,8 @@ def _action(
         contract.record_id,
         _engine(contract.expected_engine),
         contract.expected_owner_fence,
+        contract.graceful_timeout_seconds,
+        contract.force_on_timeout,
     )
 
 

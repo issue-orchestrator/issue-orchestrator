@@ -53,6 +53,22 @@ def test_control_center_recovery_read_is_registered_in_ui_openapi() -> None:
     }
 
 
+def test_control_center_recovery_stop_is_registered_in_ui_openapi() -> None:
+    from issue_orchestrator.contracts.ui_openapi_generator import load_schema
+
+    operation = load_schema()["paths"][
+        "/api/control-center/repositories/{repo_key}/engines/{instance_key}/stop-validated-work-owner"
+    ]["post"]
+    assert operation["operationId"] == "stopControlCenterValidatedWorkOwner"
+    assert operation["requestBody"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/StopValidatedWorkOwnerRequestPayload"
+    }
+    for status in ["200", "404", "409", "500", "503"]:
+        assert operation["responses"][status]["content"]["application/json"][
+            "schema"
+        ] == {"$ref": "#/components/schemas/StopValidatedWorkOwnerOutcomePayload"}
+
+
 def _python_class_body(source: str, class_name: str) -> str:
     marker = f"class {class_name}(BaseModel):"
     start = source.index(marker)

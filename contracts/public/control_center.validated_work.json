@@ -20,6 +20,15 @@
           "title": "Expected Owner Fence",
           "type": "integer"
         },
+        "force_on_timeout": {
+          "title": "Force On Timeout",
+          "type": "boolean"
+        },
+        "graceful_timeout_seconds": {
+          "exclusiveMinimum": 0,
+          "title": "Graceful Timeout Seconds",
+          "type": "number"
+        },
         "record_id": {
           "minLength": 1,
           "title": "Record Id",
@@ -29,7 +38,9 @@
       "required": [
         "record_id",
         "expected_engine",
-        "expected_owner_fence"
+        "expected_owner_fence",
+        "graceful_timeout_seconds",
+        "force_on_timeout"
       ],
       "title": "GuardedRecoveryStopActionContract",
       "type": "object"

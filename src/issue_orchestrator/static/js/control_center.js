@@ -20,6 +20,7 @@ let shutdownCloseAttempted = false;
 let doctorModalContext = { repoRoot: null, configName: null, mode: null, title: null, data: null };
 let setupWizardController = null;
 let recoveryView = null;
+let recoveryStopView = null;
 
 const DISCOVERED_STALE_MS = 5 * 60 * 1000;
 
@@ -28,9 +29,42 @@ function getRecoveryView() {
         recoveryView = createControlCenterRecoveryView({
             fetch: (...args) => fetch(...args),
             escapeHtml,
+            renderStopAction: getRecoveryStopView()?.renderAction,
+            validateStopRow: getRecoveryStopView()?.validateRow,
         });
     }
     return recoveryView;
+}
+
+function focusRecoveryEngineControls(repoKey) {
+    const card = [...document.querySelectorAll('.repo-card[data-repo-key]')]
+        .find(candidate => candidate.dataset.repoKey === repoKey);
+    const controls = card?.querySelector('.repo-card-actions');
+    const stop = controls?.querySelector('[data-action="stop"]');
+    if (!stop) {
+        controls?.focus();
+        showToast('Independent engine stop controls are not currently available.', 'info');
+        return;
+    }
+    stop.scrollIntoView({ block: 'center' });
+    stop.focus();
+}
+
+function getRecoveryStopView() {
+    if (recoveryStopView === null && typeof createControlCenterRecoveryStopView === 'function') {
+        recoveryStopView = createControlCenterRecoveryStopView({
+            document,
+            escapeHtml,
+            fetch: (...args) => fetch(...args),
+            notify: showToast,
+            navigateToEngineControls: focusRecoveryEngineControls,
+            refresh: (repoKey) => {
+                getRecoveryView()?.invalidate(repoKey);
+                return loadRepos(true);
+            },
+        });
+    }
+    return recoveryStopView;
 }
 
 // Load recently used repo from localStorage
@@ -1344,7 +1378,8 @@ function renderRepoCard(repo) {
     }
 
     return `
-        <div class="repo-card ${repo.is_current_dir ? 'current-dir' : ''}">
+        <div class="repo-card ${repo.is_current_dir ? 'current-dir' : ''}"
+             data-repo-key="${escapeHtml(repo.repo_key)}">
             <div class="repo-card-header">
                 <div>
                     <div class="repo-card-title">${escapeHtml(repo.name)}</div>
@@ -1356,7 +1391,8 @@ function renderRepoCard(repo) {
             ${configMarkup}
             ${stats}
             ${getRecoveryView()?.render(repo) || ''}
-            <div class="repo-card-actions">
+            <div class="repo-card-actions" tabindex="-1"
+                 aria-label="Engine controls for ${escapeHtml(repo.name)}">
                 ${actions}
             </div>
         </div>
@@ -2788,6 +2824,8 @@ async function requestWorktreeAudit(repoPath) {
 document.addEventListener('DOMContentLoaded', () => {
     // Apply initial theme
     applyTheme(state.theme);
+
+    getRecoveryStopView()?.bind(document.getElementById('reposContent'));
 
     // Load repos
     loadRepos();
