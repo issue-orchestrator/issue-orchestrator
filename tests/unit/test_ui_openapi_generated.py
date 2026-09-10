@@ -129,6 +129,89 @@ def test_ui_openapi_generator_preserves_python_regex_patterns() -> None:
     assert "re.search('^agent:(?!tech-lead$).+', value)" in python_models
 
 
+def test_ui_openapi_generator_preserves_array_cardinality() -> None:
+    components = [
+        ComponentSchema(
+            "BoundedCollectionsPayload",
+            {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["empty", "populated"],
+                "properties": {
+                    "empty": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "maxItems": 0,
+                    },
+                    "populated": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 1,
+                        "maxItems": 3,
+                    },
+                },
+            },
+        ),
+    ]
+
+    python_models = render_python_models(components)
+
+    assert "empty: list[str] = Field(..., max_length=0)" in python_models
+    assert (
+        "populated: list[str] = Field(..., min_length=1, max_length=3)"
+        in python_models
+    )
+
+
+def test_ui_openapi_generator_keeps_nullable_constrained_integers_strict() -> None:
+    components = [
+        ComponentSchema(
+            "NullableIdentityPayload",
+            {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["pr_number"],
+                "properties": {
+                    "pr_number": {
+                        "type": ["integer", "null"],
+                        "minimum": 1,
+                    },
+                },
+            },
+        ),
+    ]
+
+    python_models = render_python_models(components)
+
+    assert (
+        "pr_number: int | None = Field(..., ge=1, strict=True)" in python_models
+    )
+
+
+def test_ui_openapi_generator_keeps_boolean_fields_strict() -> None:
+    components = [
+        ComponentSchema(
+            "BooleanPayload",
+            {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["retained", "maybe_retained"],
+                "properties": {
+                    "retained": {"type": "boolean"},
+                    "maybe_retained": {"type": ["boolean", "null"]},
+                },
+            },
+        ),
+    ]
+
+    python_models = render_python_models(components)
+
+    assert "retained: bool = Field(..., strict=True)" in python_models
+    assert (
+        "maybe_retained: bool | None = Field(..., strict=True)" in python_models
+    )
+
+
 def test_ui_openapi_generator_renders_bare_enum_component_as_reusable_alias() -> None:
     """A top-level ``enum`` component (e.g. ``TimelineView``) must render as
     a reusable ``Literal``/``type`` alias, not an empty Pydantic model, and

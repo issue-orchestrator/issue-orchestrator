@@ -19,6 +19,7 @@ from jsonschema import Draft202012Validator, RefResolver
 from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 
 from issue_orchestrator.contracts.ui_openapi_models import (
+    ControlCenterRecoveryRowsPayload,
     E2ERunDetailPayload,
     E2ERunTimelinePayload,
     IssueDetailActionPayload,
@@ -173,6 +174,229 @@ def _schema_error_messages(errors: list[JsonSchemaValidationError]) -> str:
         messages.append(error.message)
         pending.extend(error.context)
     return "\n".join(messages)
+
+
+def _recovery_available_payload() -> dict[str, object]:
+    authority = {
+        "record_id": "record-7",
+        "evidence_id": "evidence-7",
+        "observation_revision": 2,
+        "validated_head_sha": "1" * 40,
+        "branch_name": "feature/recovery",
+        "repo_slug": "owner/repo",
+        "issue_number": 7,
+        "pr_number": None,
+        "expected_remote_head_sha": None,
+        "remote_baseline_status": "unobserved",
+    }
+    work = {
+        "authority": authority,
+        "state": "parked",
+        "failure": None,
+        "reason": "",
+        "escrow_retained": True,
+    }
+    return {
+        "repo_key": "configured-repo",
+        "status": "available",
+        "engine_groups": [],
+        "unowned_records": [{"kind": "unowned", "work": work}],
+        "message": "Preserved validated work is available",
+    }
+
+
+def _recovery_engine_payload() -> dict[str, object]:
+    return {
+        "repo_root": "/repo",
+        "instance_id": "engine-a",
+        "host": "local",
+        "label": "Engine A",
+        "process": {
+            "host": "local",
+            "pid": 42,
+            "started_at": "linux-proc-v1:boot:17",
+            "instance_id": "engine-a",
+        },
+    }
+
+
+def test_control_center_recovery_union_validates_every_availability_shape() -> None:
+    from pydantic import TypeAdapter
+
+    validator = _validator("ControlCenterRecoveryRowsPayload")
+    adapter = TypeAdapter(ControlCenterRecoveryRowsPayload)
+    available = _recovery_available_payload()
+    validator.validate(available)
+    assert adapter.validate_python(available).status == "available"
+
+    for status in ("empty", "database_absent", "unreadable", "unsupported_schema"):
+        payload = {
+            "repo_key": "configured-repo",
+            "status": status,
+            "engine_groups": [],
+            "unowned_records": [],
+            "message": "Visible recovery status",
+        }
+        validator.validate(payload)
+        assert adapter.validate_python(payload).status == status
+
+
+def test_control_center_recovery_cardinality_survives_both_schema_boundaries() -> None:
+    from pydantic import TypeAdapter, ValidationError
+
+    validator = _validator("ControlCenterRecoveryRowsPayload")
+    adapter = TypeAdapter(ControlCenterRecoveryRowsPayload)
+    row = _recovery_available_payload()["unowned_records"][0]  # type: ignore[index]
+    malformed = {
+        "repo_key": "configured-repo",
+        "status": "empty",
+        "engine_groups": [],
+        "unowned_records": [row],
+        "message": "No retained work",
+    }
+
+    with pytest.raises(JsonSchemaValidationError):
+        validator.validate(malformed)
+    with pytest.raises(ValidationError, match="at most 0 items"):
+        adapter.validate_python(malformed)
+
+    available = _recovery_available_payload()
+    available["engine_groups"] = [
+        {
+            "engine": _recovery_engine_payload(),
+            "presentation": "observed",
+            "presentation_message": "Exact engine incarnation is observed",
+            "records": [],
+        }
+    ]
+    with pytest.raises(JsonSchemaValidationError):
+        validator.validate(available)
+    with pytest.raises(ValidationError, match="at least 1 item"):
+        adapter.validate_python(available)
+
+
+def test_control_center_recovery_rejects_unknown_nested_authority() -> None:
+    from copy import deepcopy
+
+    from pydantic import TypeAdapter, ValidationError
+
+    validator = _validator("ControlCenterRecoveryRowsPayload")
+    adapter = TypeAdapter(ControlCenterRecoveryRowsPayload)
+    malformed = deepcopy(_recovery_available_payload())
+    authority = malformed["unowned_records"][0]["work"]["authority"]  # type: ignore[index]
+    authority["unexpected_owner"] = "smuggled"
+
+    with pytest.raises(JsonSchemaValidationError):
+        validator.validate(malformed)
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        adapter.validate_python(malformed)
+
+
+def test_control_center_recovery_owned_action_is_required_nullable_data() -> None:
+    from copy import deepcopy
+
+    from pydantic import TypeAdapter, ValidationError
+
+    validator = _validator("ControlCenterRecoveryRowsPayload")
+    adapter = TypeAdapter(ControlCenterRecoveryRowsPayload)
+    payload = _recovery_available_payload()
+    work = deepcopy(payload["unowned_records"][0]["work"])  # type: ignore[index]
+    engine = _recovery_engine_payload()
+    owned = {
+        "kind": "owned",
+        "work": work,
+        "owner": {
+            "engine": engine,
+            "owner_fence": 3,
+            "stop_availability": "exact_target_unavailable",
+        },
+        "stop_action": None,
+    }
+    payload["engine_groups"] = [
+        {
+            "engine": engine,
+            "presentation": "observed",
+            "presentation_message": "Exact engine incarnation is observed",
+            "records": [owned],
+        }
+    ]
+    payload["unowned_records"] = []
+    validator.validate(payload)
+    adapter.validate_python(payload)
+
+    del owned["stop_action"]
+    with pytest.raises(JsonSchemaValidationError):
+        validator.validate(payload)
+    with pytest.raises(ValidationError, match="Field required"):
+        adapter.validate_python(payload)
+
+
+def test_control_center_recovery_openapi_is_one_closed_named_family() -> None:
+    import json
+
+    schemas = json.loads(Path("docs/api/ui-openapi.json").read_text())["components"][
+        "schemas"
+    ]
+    object_names = {
+        "RecoveryProcessIdentityPayload",
+        "RecoveryEngineIdentityPayload",
+        "RecoveryAuthorityPayload",
+        "RecoveryRecordFactPayload",
+        "RecoveryClaimOwnerPayload",
+        "GuardedRecoveryStopActionPayload",
+        "OwnedRecoveryRecordPayload",
+        "UnownedRecoveryRecordPayload",
+        "RecoveryEngineGroupPayload",
+        "RecoveryAvailablePayload",
+        "RecoveryEmptyPayload",
+        "RecoveryUnavailablePayload",
+    }
+    assert all(schemas[name]["additionalProperties"] is False for name in object_names)
+
+    union = schemas["ControlCenterRecoveryRowsPayload"]
+    assert set(union) == {"oneOf", "discriminator"}
+    assert union["discriminator"] == {"propertyName": "status"}
+    assert union["oneOf"] == [
+        {"$ref": "#/components/schemas/RecoveryAvailablePayload"},
+        {"$ref": "#/components/schemas/RecoveryEmptyPayload"},
+        {"$ref": "#/components/schemas/RecoveryUnavailablePayload"},
+    ]
+    assert set(schemas["UnownedRecoveryRecordPayload"]["properties"]) == {
+        "kind",
+        "work",
+    }
+    assert "stop_action" in schemas["OwnedRecoveryRecordPayload"]["required"]
+    assert schemas["RecoveryEngineGroupPayload"]["properties"]["records"] == {
+        "type": "array",
+        "items": {"$ref": "#/components/schemas/OwnedRecoveryRecordPayload"},
+        "minItems": 1,
+    }
+
+
+def test_control_center_recovery_nullable_pr_number_is_strict_in_python() -> None:
+    from pydantic import TypeAdapter, ValidationError
+
+    adapter = TypeAdapter(ControlCenterRecoveryRowsPayload)
+    malformed = _recovery_available_payload()
+    malformed["unowned_records"][0]["work"]["authority"]["pr_number"] = "7"  # type: ignore[index]
+
+    with pytest.raises(JsonSchemaValidationError):
+        _validator("ControlCenterRecoveryRowsPayload").validate(malformed)
+    with pytest.raises(ValidationError, match="valid integer"):
+        adapter.validate_python(malformed)
+
+
+def test_control_center_recovery_retention_boolean_is_strict_in_python() -> None:
+    from pydantic import TypeAdapter, ValidationError
+
+    adapter = TypeAdapter(ControlCenterRecoveryRowsPayload)
+    malformed = _recovery_available_payload()
+    malformed["unowned_records"][0]["work"]["escrow_retained"] = 1  # type: ignore[index]
+
+    with pytest.raises(JsonSchemaValidationError):
+        _validator("ControlCenterRecoveryRowsPayload").validate(malformed)
+    with pytest.raises(ValidationError, match="valid boolean"):
+        adapter.validate_python(malformed)
 
 
 def _e2e_timeline_event(**overrides: object) -> dict[str, object]:

@@ -469,6 +469,12 @@ export interface FlowColumnPayload {
   [key: string]: any;
 }
 
+export interface GuardedRecoveryStopActionPayload {
+  expected_engine: RecoveryEngineIdentityPayload;
+  expected_owner_fence: number;
+  record_id: string;
+}
+
 export interface HistoricalIntakeCommandPayload {
   actor: string;
   branch_name: string;
@@ -789,6 +795,13 @@ export interface OutcomeBadgePayload {
   tone: "passed" | "failed" | "error" | "in_progress" | "neutral";
 }
 
+export interface OwnedRecoveryRecordPayload {
+  kind: "owned";
+  owner: RecoveryClaimOwnerPayload;
+  stop_action: GuardedRecoveryStopActionPayload | null;
+  work: RecoveryRecordFactPayload;
+}
+
 export interface PassedE2ETestExecutionPayload {
   commands: TimelineCommandPayload[];
   completed_at: string;
@@ -865,6 +878,79 @@ export interface RecentE2ERunSummaryPayload {
 
 export interface RecentE2ERunsPayload {
   runs: RecentE2ERunSummaryPayload[];
+}
+
+export interface RecoveryAuthorityPayload {
+  branch_name: string;
+  evidence_id: string;
+  expected_remote_head_sha: string | null;
+  issue_number: number;
+  observation_revision: number;
+  pr_number: number | null;
+  record_id: string;
+  remote_baseline_status: "observed" | "unobserved";
+  repo_slug: string;
+  validated_head_sha: string;
+}
+
+export interface RecoveryAvailablePayload {
+  engine_groups: RecoveryEngineGroupPayload[];
+  message: string;
+  repo_key: string;
+  status: "available";
+  unowned_records: UnownedRecoveryRecordPayload[];
+}
+
+export interface RecoveryClaimOwnerPayload {
+  engine: RecoveryEngineIdentityPayload;
+  owner_fence: number;
+  stop_availability: "available" | "remote_host" | "exact_target_unavailable";
+}
+
+export interface RecoveryEmptyPayload {
+  engine_groups: RecoveryEngineGroupPayload[];
+  message: string;
+  repo_key: string;
+  status: "empty";
+  unowned_records: UnownedRecoveryRecordPayload[];
+}
+
+export interface RecoveryEngineGroupPayload {
+  engine: RecoveryEngineIdentityPayload;
+  presentation: "observed" | "missing" | "replaced" | "unknown";
+  presentation_message: string;
+  records: OwnedRecoveryRecordPayload[];
+}
+
+export interface RecoveryEngineIdentityPayload {
+  host: string;
+  instance_id: string | null;
+  label: string;
+  process: RecoveryProcessIdentityPayload;
+  repo_root: string;
+}
+
+export interface RecoveryProcessIdentityPayload {
+  host: string;
+  instance_id: string | null;
+  pid: number;
+  started_at: string;
+}
+
+export interface RecoveryRecordFactPayload {
+  authority: RecoveryAuthorityPayload;
+  escrow_retained: boolean;
+  failure: "escrow_write_failed" | "artifact_missing" | "artifact_hash_mismatch" | "artifact_untrusted_path" | "validation_sha_mismatch" | "worktree_ahead_of_validation" | "ancestor_of_pending_head" | "divergent_validated_heads" | "awaiting_lineage_predecessor" | "remote_baseline_unproven" | "authority_snapshot_stale" | "duplicate_open_pr" | "published_head_lacks_validated_work" | "workspace_integrity" | "ref_pin_lost" | "publish_target_mismatch" | "remote_diverged" | "remote_head_changed" | "remote_unreadable" | "pr_closed_or_merged" | "pr_branch_mismatch" | "issue_unreadable" | "runtime_active" | "push_failed" | "submission_lost" | "review_routing_failed" | null;
+  reason: string;
+  state: "queued" | "parked" | "publishing" | "recovered" | "failed" | "abandoned";
+}
+
+export interface RecoveryUnavailablePayload {
+  engine_groups: RecoveryEngineGroupPayload[];
+  message: string;
+  repo_key: string;
+  status: "database_absent" | "unreadable" | "unsupported_schema";
+  unowned_records: UnownedRecoveryRecordPayload[];
 }
 
 export interface RepositorySetupCommandPayload {
@@ -1373,6 +1459,11 @@ export interface TimelineSubjectPayload {
   status?: string | null;
 }
 
+export interface UnownedRecoveryRecordPayload {
+  kind: "unowned";
+  work: RecoveryRecordFactPayload;
+}
+
 export interface ValidationEvidenceMissingPayload {
   diagnostics: TimelineDiagnosticPayload[];
   expected_record_path?: string | null;
@@ -1458,6 +1549,8 @@ export interface WorktreeAuditResponsePayload {
 }
 
 export type CodingAttemptPayload = RunningCodingAttemptPayload | CompletedCodingAttemptPayload | PublishFailedCodingAttemptPayload | BlockedCodingAttemptPayload | FailedCodingAttemptPayload | MissingCodingEvidencePayload;
+
+export type ControlCenterRecoveryRowsPayload = RecoveryAvailablePayload | RecoveryEmptyPayload | RecoveryUnavailablePayload;
 
 export type E2EFailureEvidencePayload = E2EFailureDetailsAvailablePayload | E2EFailureDetailsMissingPayload;
 

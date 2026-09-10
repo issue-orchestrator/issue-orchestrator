@@ -55,8 +55,8 @@ class BlockedIssuesDialogPayload(BaseModel):
 
 class CapturedOutputAvailabilityPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    stderr_available: bool
-    stdout_available: bool
+    stderr_available: bool = Field(..., strict=True)
+    stdout_available: bool = Field(..., strict=True)
 
 class CodingOutputsPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -107,7 +107,7 @@ class CompletionResumeOutcomePayload(BaseModel):
     errors: list[str] | None
     message: str
     pr_url: str | None
-    success: bool
+    success: bool = Field(..., strict=True)
 
 class CompletionSubmissionPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -135,7 +135,7 @@ class CreateE2EUntriagedIssuesCommandPayload(BaseModel):
 
 class CycleArtifactsPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    has_review_feedback: bool
+    has_review_feedback: bool = Field(..., strict=True)
     log_url: str | None
     pr_number: int | None
     pr_url: str | None
@@ -162,17 +162,17 @@ class DashboardDataPayload(BaseModel):
     configMode: str
     configName: str
     e2eLastRun: dict[str, Any] | None = None
-    e2eRunning: bool
+    e2eRunning: bool = Field(..., strict=True)
     githubOwner: str
     githubRepo: str
-    paused: bool
+    paused: bool = Field(..., strict=True)
     providerCircuit: ProviderCircuitStatusPayload
     queueRefreshSeconds: int
     repo: str
     repoRoot: str
-    startupComplete: bool
+    startupComplete: bool = Field(..., strict=True)
     techLeadActivity: TechLeadActivityPayload
-    validationConfigured: bool
+    validationConfigured: bool = Field(..., strict=True)
 
 class DashboardIterationPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -212,7 +212,7 @@ class DashboardViewModelPayload(BaseModel):
     github_repo: str
     history_items: list[IssueItemPayload]
     issues: list[IssueItemPayload]
-    paused: bool
+    paused: bool = Field(..., strict=True)
     queue_count: int
     queue_items: list[IssueItemPayload]
     queue_page: int
@@ -223,7 +223,7 @@ class DashboardViewModelPayload(BaseModel):
     repo: str
     repo_root: str
     scope_summary: dict[str, Any]
-    shutdown_requested: bool
+    shutdown_requested: bool = Field(..., strict=True)
     startup_message: str
     startup_status: str
 
@@ -438,7 +438,7 @@ class E2ETimelineEventPayload(BaseModel):
     phase: str
     removed: list[str] | None = None
     response_type: str | None = None
-    review_oriented: bool
+    review_oriented: bool = Field(..., strict=True)
     reviewer_agent: str | None = None
     reviewer_response_text: str | None = None
     reviewer_response_type: str | None = None
@@ -455,7 +455,7 @@ class E2ETimelineEventPayload(BaseModel):
     task: str | None = None
     timeline_schema_version: int | None = None
     timestamp: str
-    unsupported_schema: bool
+    unsupported_schema: bool = Field(..., strict=True)
     views: list[str] | None = None
 
 class E2ETimelinePhaseTocItemPayload(BaseModel):
@@ -495,12 +495,18 @@ class FailedE2ETestExecutionPayload(BaseModel):
 class FlowColumnPayload(BaseModel):
     model_config = ConfigDict(extra="allow")
     count: int
-    expandable: bool | None = None
+    expandable: bool | None = Field(default=None, strict=True)
     hidden_count: int = Field(..., ge=0, strict=True)
     id: str
     items: list[IssueItemPayload]
-    session_scoped: bool | None = None
+    session_scoped: bool | None = Field(default=None, strict=True)
     title: str
+
+class GuardedRecoveryStopActionPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_engine: RecoveryEngineIdentityPayload
+    expected_owner_fence: int = Field(..., ge=0, strict=True)
+    record_id: str = Field(..., min_length=1)
 
 class HistoricalIntakeCommandPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -594,12 +600,12 @@ class IssueCyclePayload(BaseModel):
     cycle_label: str | None
     cycle_number: int
     diagnostics: list[TimelineDiagnosticPayload]
-    expanded: bool | None
+    expanded: bool | None = Field(..., strict=True)
     iteration: int | None
     lifecycle: int | None
     outcome: OutcomeBadgePayload
     phase_groups: list[JourneyPhaseGroupPayload]
-    reset_from_scratch: bool | None
+    reset_from_scratch: bool | None = Field(..., strict=True)
     retry_count: int | None
     review: ReviewStagePayload
     reviewer_agent: str | None
@@ -659,7 +665,7 @@ class IssueDetailTimelineDiagnosticPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     dropped_missing_semantics: int
     expected_timeline_store: str
-    expected_timeline_store_exists: bool
+    expected_timeline_store_exists: bool = Field(..., strict=True)
     resolved_run_dir: str | None
     signals: list[str]
     state: str
@@ -690,7 +696,7 @@ class IssueItemPayload(BaseModel):
     provider_badge: ProviderBadgeViewPayload | None = None
     provider_signal: str | None = None
     runtime_label: str | None = None
-    show_stale_badge: bool
+    show_stale_badge: bool = Field(..., strict=True)
     stack_chip: StackChipViewPayload | None = None
     stack_dependency: StackDependencyGateViewPayload | None = None
     stack_signal: str | None = None
@@ -741,9 +747,9 @@ class JourneyPhaseGroupPayload(BaseModel):
 class JourneyRunPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     cycles: list[IssueCyclePayload]
-    expanded: bool
+    expanded: bool = Field(..., strict=True)
     outcome: OutcomeBadgePayload
-    reset_from_scratch: bool
+    reset_from_scratch: bool = Field(..., strict=True)
     run_id: str | None
     run_key: str
     run_label: str
@@ -758,7 +764,7 @@ class JourneyStepPayload(BaseModel):
     day: str
     detail: str | None = None
     event: str
-    in_round_progress: bool | None = None
+    in_round_progress: bool | None = Field(default=None, strict=True)
     narrative: str
     status: str
     time_label: str
@@ -813,7 +819,7 @@ class OpenCompletionRecordCommandPayload(BaseModel):
 
 class OpenE2ERunCommandPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    expand_run_details: bool | None = None
+    expand_run_details: bool | None = Field(default=None, strict=True)
     kind: Literal['open_e2e_run']
     label: str
     run_id: int = Field(..., ge=1, strict=True)
@@ -870,6 +876,13 @@ class OutcomeBadgePayload(BaseModel):
     label: str
     tone: Literal['passed', 'failed', 'error', 'in_progress', 'neutral']
 
+class OwnedRecoveryRecordPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal['owned']
+    owner: RecoveryClaimOwnerPayload
+    stop_action: GuardedRecoveryStopActionPayload | None
+    work: RecoveryRecordFactPayload
+
 class PassedE2ETestExecutionPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     commands: list[TimelineCommandPayload]
@@ -897,7 +910,7 @@ class ProviderCircuitEntryPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     consecutive_outages: int
     cooldown_remaining_label: str | None
-    is_open: bool
+    is_open: bool = Field(..., strict=True)
     last_error_summary: str | None
     next_retry_at: str | None
     provider: str
@@ -905,12 +918,12 @@ class ProviderCircuitEntryPayload(BaseModel):
 
 class ProviderCircuitStatusPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    any_open: bool
+    any_open: bool = Field(..., strict=True)
     entries: list[ProviderCircuitEntryPayload]
     next_retry_at: str | None
     open_count: int
     open_providers: list[str]
-    status_unavailable: bool
+    status_unavailable: bool = Field(..., strict=True)
     summary_text: str
 
 class PublishFailedCodingAttemptPayload(BaseModel):
@@ -948,20 +961,107 @@ class RecentE2ERunsPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     runs: list[RecentE2ERunSummaryPayload]
 
+class RecoveryAuthorityPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    branch_name: str = Field(..., min_length=1)
+    evidence_id: str = Field(..., min_length=1)
+    expected_remote_head_sha: str | None
+    issue_number: int = Field(..., ge=1, strict=True)
+    observation_revision: int = Field(..., ge=0, strict=True)
+    pr_number: int | None = Field(..., ge=1, strict=True)
+    record_id: str = Field(..., min_length=1)
+    remote_baseline_status: Literal['observed', 'unobserved']
+    repo_slug: str = Field(..., min_length=1)
+    validated_head_sha: str
+
+    @field_validator('expected_remote_head_sha')
+    @classmethod
+    def _validate_expected_remote_head_sha_pattern(cls, value: Any) -> Any:
+        if value is not None and re.search('^[0-9a-f]{40}$', value) is None:
+            raise ValueError("expected_remote_head_sha must match '^[0-9a-f]{40}$'")
+        return value
+
+    @field_validator('validated_head_sha')
+    @classmethod
+    def _validate_validated_head_sha_pattern(cls, value: Any) -> Any:
+        if value is not None and re.search('^[0-9a-f]{40}$', value) is None:
+            raise ValueError("validated_head_sha must match '^[0-9a-f]{40}$'")
+        return value
+
+class RecoveryAvailablePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    engine_groups: list[RecoveryEngineGroupPayload]
+    message: str = Field(..., min_length=1)
+    repo_key: str = Field(..., min_length=1)
+    status: Literal['available']
+    unowned_records: list[UnownedRecoveryRecordPayload]
+
+class RecoveryClaimOwnerPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    engine: RecoveryEngineIdentityPayload
+    owner_fence: int = Field(..., ge=1, strict=True)
+    stop_availability: Literal['available', 'remote_host', 'exact_target_unavailable']
+
+class RecoveryEmptyPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    engine_groups: list[RecoveryEngineGroupPayload] = Field(..., max_length=0)
+    message: str = Field(..., min_length=1)
+    repo_key: str = Field(..., min_length=1)
+    status: Literal['empty']
+    unowned_records: list[UnownedRecoveryRecordPayload] = Field(..., max_length=0)
+
+class RecoveryEngineGroupPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    engine: RecoveryEngineIdentityPayload
+    presentation: Literal['observed', 'missing', 'replaced', 'unknown']
+    presentation_message: str = Field(..., min_length=1)
+    records: list[OwnedRecoveryRecordPayload] = Field(..., min_length=1)
+
+class RecoveryEngineIdentityPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    host: str = Field(..., min_length=1)
+    instance_id: str | None = Field(..., min_length=1)
+    label: str = Field(..., min_length=1)
+    process: RecoveryProcessIdentityPayload
+    repo_root: str = Field(..., min_length=1)
+
+class RecoveryProcessIdentityPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    host: str = Field(..., min_length=1)
+    instance_id: str | None = Field(..., min_length=1)
+    pid: int = Field(..., ge=1, strict=True)
+    started_at: str = Field(..., min_length=1)
+
+class RecoveryRecordFactPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    authority: RecoveryAuthorityPayload
+    escrow_retained: bool = Field(..., strict=True)
+    failure: Literal['escrow_write_failed', 'artifact_missing', 'artifact_hash_mismatch', 'artifact_untrusted_path', 'validation_sha_mismatch', 'worktree_ahead_of_validation', 'ancestor_of_pending_head', 'divergent_validated_heads', 'awaiting_lineage_predecessor', 'remote_baseline_unproven', 'authority_snapshot_stale', 'duplicate_open_pr', 'published_head_lacks_validated_work', 'workspace_integrity', 'ref_pin_lost', 'publish_target_mismatch', 'remote_diverged', 'remote_head_changed', 'remote_unreadable', 'pr_closed_or_merged', 'pr_branch_mismatch', 'issue_unreadable', 'runtime_active', 'push_failed', 'submission_lost', 'review_routing_failed'] | None
+    reason: str
+    state: Literal['queued', 'parked', 'publishing', 'recovered', 'failed', 'abandoned']
+
+class RecoveryUnavailablePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    engine_groups: list[RecoveryEngineGroupPayload] = Field(..., max_length=0)
+    message: str = Field(..., min_length=1)
+    repo_key: str = Field(..., min_length=1)
+    status: Literal['database_absent', 'unreadable', 'unsupported_schema']
+    unowned_records: list[UnownedRecoveryRecordPayload] = Field(..., max_length=0)
+
 class RepositorySetupCommandPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     config_name: str | None = Field(default=None, min_length=1)
-    configure_internal_reviewer: bool
-    configure_reviewer: bool
-    configure_tech_lead: bool
-    create_labels: bool | None = None
-    create_prompts: bool | None = None
+    configure_internal_reviewer: bool = Field(..., strict=True)
+    configure_reviewer: bool = Field(..., strict=True)
+    configure_tech_lead: bool = Field(..., strict=True)
+    create_labels: bool | None = Field(default=None, strict=True)
+    create_prompts: bool | None = Field(default=None, strict=True)
     effort: Literal['low', 'medium', 'high', 'xhigh', 'max']
     github_authorization: RepositorySetupGitHubAuthorizationPayload
     internal_review_instructions: str = Field(..., min_length=1)
     internal_review_max_rounds: int = Field(..., ge=1, le=50, strict=True)
     model: Literal['haiku', 'sonnet', 'opus']
-    replace_existing: bool | None = None
+    replace_existing: bool | None = Field(default=None, strict=True)
     repo_name: str = Field(..., min_length=1)
     repo_root: str = Field(..., min_length=1)
     reviewer_effort: Literal['low', 'medium', 'high', 'xhigh', 'max']
@@ -1029,7 +1129,7 @@ class RepositorySetupGitHubAuthorizationDetectionPayload(BaseModel):
     authorization: RepositorySetupGitHubAuthorizationPayload
     configuration_error: str | None = Field(default=None, min_length=1)
     configured_kind: Literal['detected', 'personal', 'github_app', 'invalid']
-    inline_token_migration_required: bool
+    inline_token_migration_required: bool = Field(..., strict=True)
 
 class RepositorySetupGitHubAuthorizationPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -1075,12 +1175,12 @@ class RepositorySetupPrerequisiteCheckPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     detail: str = Field(..., min_length=1)
     name: str | None = Field(default=None, min_length=1)
-    ok: bool
+    ok: bool = Field(..., strict=True)
 
 class RepositorySetupPrerequisitesPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     agent_checks: list[RepositorySetupPrerequisiteCheckPayload]
-    all_ok: bool
+    all_ok: bool = Field(..., strict=True)
     checks: dict[str, RepositorySetupPrerequisiteCheckPayload]
 
 class RepositorySetupPreviewPayload(BaseModel):
@@ -1107,10 +1207,10 @@ class RetrospectiveReviewDecisionPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     action: str
     agent_label: str | None
-    eligible: bool
+    eligible: bool = Field(..., strict=True)
     issue: int = Field(..., ge=1, strict=True)
     labels: list[str]
-    prior_pr_number: int | None = Field(..., ge=1)
+    prior_pr_number: int | None = Field(..., ge=1, strict=True)
     prior_pr_url: str | None
     reason: str
     state: str | None
@@ -1121,7 +1221,7 @@ class RetrospectiveReviewExecutePayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     failed: list[RetrospectiveReviewFailurePayload]
     queued: list[RetrospectiveReviewQueuedPayload]
-    refresh_triggered: bool
+    refresh_triggered: bool = Field(..., strict=True)
     skipped: list[RetrospectiveReviewDecisionPayload]
     trigger_label: str
     workflow: Literal['retrospective_review']
@@ -1143,12 +1243,12 @@ class RetrospectiveReviewQueuedPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     action: str
     agent_label: str | None
-    eligible: bool
+    eligible: bool = Field(..., strict=True)
     issue: int = Field(..., ge=1, strict=True)
     labels: list[str]
-    prior_pr_number: int | None = Field(..., ge=1)
+    prior_pr_number: int | None = Field(..., ge=1, strict=True)
     prior_pr_url: str | None
-    queued: bool
+    queued: bool = Field(..., strict=True)
     reason: str
     state: str | None
     title: str | None
@@ -1215,8 +1315,8 @@ class ReviewTranscriptUnavailablePayload(BaseModel):
 
 class ReworkProposalPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    can_approve: bool
-    can_decline: bool
+    can_approve: bool = Field(..., strict=True)
+    can_decline: bool = Field(..., strict=True)
     detail: str
     evidence_identity: str
     expected_head: str
@@ -1275,7 +1375,7 @@ class SessionDiagnosticsDialogPayload(BaseModel):
 
 class SessionDiagnosticsFollowUpIssuePayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    blocking: bool
+    blocking: bool = Field(..., strict=True)
     evidence: str | None = None
     reason: str
     suggested_labels: list[str] | None = None
@@ -1310,7 +1410,7 @@ class StackChipViewPayload(BaseModel):
 class StackDependencyGatePayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     gate: str
-    open: bool
+    open: bool = Field(..., strict=True)
     reason_codes: list[str]
     reasons: list[str]
 
@@ -1320,12 +1420,12 @@ class StackDependencyGateViewPayload(BaseModel):
     blocked_gates: list[str]
     blocked_reason_codes: list[str]
     gates: list[StackDependencyGatePayload]
-    has_stack_edges: bool
+    has_stack_edges: bool = Field(..., strict=True)
     issue_number: int
     mode: str
     predecessors: list[StackDependencyPredecessorPayload]
     stack_base_branch: str | None
-    stale: bool
+    stale: bool = Field(..., strict=True)
     stale_reason_codes: list[str]
     successors: list[StackDependencySuccessorPayload]
 
@@ -1398,10 +1498,10 @@ class TechLeadRunActivityEntryPayload(BaseModel):
 
 class TechLeadRunAdmissionPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    admitted: bool
-    behind_global_barrier: bool
+    admitted: bool = Field(..., strict=True)
+    behind_global_barrier: bool = Field(..., strict=True)
     detail: str
-    issue_number: int | None = Field(..., ge=1)
+    issue_number: int | None = Field(..., ge=1, strict=True)
     outcome: Literal['queued', 'already_queued', 'already_running', 'paused', 'not_running', 'not_configured', 'not_eligible', 'claim_conflict', 'failed']
     reason: str
     run_key: str
@@ -1434,8 +1534,8 @@ class TestCaseResultPayload(BaseModel):
     flip_rate: float
     flip_rate_percent: float
     history: list[TestCaseHistoryPayload]
-    is_likely_flaky: bool
-    is_quarantined: bool
+    is_likely_flaky: bool = Field(..., strict=True)
+    is_quarantined: bool = Field(..., strict=True)
     label: str
     longrepr: str | None
     nodeid: str
@@ -1466,6 +1566,11 @@ class TimelineSubjectPayload(BaseModel):
     label: str
     outcome: str | None = None
     status: str | None = None
+
+class UnownedRecoveryRecordPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal['unowned']
+    work: RecoveryRecordFactPayload
 
 class ValidationEvidenceMissingPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -1542,9 +1647,9 @@ class WorktreeAuditRequestPayload(BaseModel):
 class WorktreeAuditResponsePayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     activity_evidence: WorktreeAuditActivityEvidence
-    audit_unavailable: bool
+    audit_unavailable: bool = Field(..., strict=True)
     cleanup_candidates: list[WorktreeAuditEntryPayload]
-    issue_cleanup_enabled: bool | None
+    issue_cleanup_enabled: bool | None = Field(..., strict=True)
     message: str = Field(..., min_length=1)
     note: str | None
     scope: WorktreeAuditScope
@@ -1552,6 +1657,8 @@ class WorktreeAuditResponsePayload(BaseModel):
     worktrees: list[WorktreeAuditEntryPayload]
 
 CodingAttemptPayload: TypeAlias = RunningCodingAttemptPayload | CompletedCodingAttemptPayload | PublishFailedCodingAttemptPayload | BlockedCodingAttemptPayload | FailedCodingAttemptPayload | MissingCodingEvidencePayload
+
+ControlCenterRecoveryRowsPayload: TypeAlias = RecoveryAvailablePayload | RecoveryEmptyPayload | RecoveryUnavailablePayload
 
 E2EFailureEvidencePayload: TypeAlias = E2EFailureDetailsAvailablePayload | E2EFailureDetailsMissingPayload
 
