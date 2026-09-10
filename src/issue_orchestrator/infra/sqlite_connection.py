@@ -21,6 +21,7 @@ def open_sqlite(
     isolation_level: str | None = None,
     row_factory: Callable | None = None,
     pragmas: bool = True,
+    uri: bool = False,
 ) -> sqlite3.Connection:
     """Open a SQLite connection with consistent pragmas and options."""
     kwargs: dict = {}
@@ -31,18 +32,23 @@ def open_sqlite(
     if isolation_level is not None:
         kwargs["isolation_level"] = isolation_level
 
-    conn = sqlite3.connect(str(path), **kwargs)
+    conn = sqlite3.connect(str(path), uri=uri, **kwargs)
     if row_factory is not None:
         conn.row_factory = row_factory
     if pragmas:
-        _apply_pragmas(conn)
+        apply_sqlite_pragmas(conn)
     return conn
 
 
-def _apply_pragmas(conn: sqlite3.Connection) -> None:
+def apply_sqlite_pragmas(
+    conn: sqlite3.Connection,
+    *,
+    busy_timeout_ms: int = 5000,
+) -> None:
     """Apply durability pragmas."""
+    busy_timeout_ms = _positive_pragma_integer(busy_timeout_ms)
     conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA busy_timeout = 5000")
+    conn.execute(f"PRAGMA busy_timeout = {busy_timeout_ms}")
     for attempt in range(5):
         try:
             conn.execute("PRAGMA journal_mode = WAL")
@@ -50,5 +56,11 @@ def _apply_pragmas(conn: sqlite3.Connection) -> None:
         except sqlite3.OperationalError as exc:
             if "locked" not in str(exc).lower() or attempt == 4:
                 raise
-            time.sleep(0.1 * (2 ** attempt))
+            time.sleep(0.1 * (2**attempt))
     conn.execute("PRAGMA synchronous = FULL")
+
+
+def _positive_pragma_integer(value: int) -> int:
+    if type(value) is not int or value <= 0:
+        raise ValueError("SQLite pragma value must be a positive integer")
+    return value
