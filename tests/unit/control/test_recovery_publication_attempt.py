@@ -11,6 +11,8 @@ from issue_orchestrator.control.validated_work_effects import FencedValidatedWor
 from issue_orchestrator.domain.published_work_finalization import PublishedWorkTarget
 from issue_orchestrator.domain.recovery_attempt import RecoveryAttemptPending
 from issue_orchestrator.domain.validated_work import ValidatedWorkState, PublishValidatedHeadStatus
+from issue_orchestrator.domain.publication_remote import PublicationPullRequest, PublicationPrState
+from issue_orchestrator.domain.validated_work_capture import ValidatedWorkRemoteFacts
 from issue_orchestrator.domain.validated_work_execution import RecordExecutionBusy
 from issue_orchestrator.execution.git_validated_head_executor import GitValidatedHeadExecutor
 from issue_orchestrator.execution.publication_verifier import RemotePublicationVerifier
@@ -30,6 +32,15 @@ class RecoveryRemote(Remote):
 
 @pytest.fixture
 def publication(retained):
+    head = retained.git.head_sha(retained.worktree)
+    retained.observer.observe.return_value = ValidatedWorkRemoteFacts(None, tuple(
+        PublicationPullRequest(
+            number, f"https://example.invalid/owner/repo/pull/{number}",
+            "owner/repo", "owner/repo", "feature", "main", head,
+            PublicationPrState.OPEN, "duplicate fixture",
+        )
+        for number in (10, 11)
+    ))
     rig = prepare(retained)
     prepared = rig.owner.prepare(rig.row, rig.workspace, "Recovered feature")
     retained.remote = retained.repo.parent / "remote.git"

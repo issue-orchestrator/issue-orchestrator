@@ -10,6 +10,7 @@ from ..domain.validated_work import (
     AdmittedArtifact,
     ArtifactSlot,
     ReviewDisposition,
+    RemoteBaselineStatus,
     ValidatedWorkEvidence,
     ValidatedWorkIdentity,
     ValidatedWorkKey,
@@ -33,10 +34,7 @@ def load_document(value: str | bytes) -> dict[str, Any]:
     return result
 
 
-def decode_evidence(
-    identity_json: str, observations_json: str
-) -> ValidatedWorkEvidence:
-    identity = load_document(identity_json)
+def _decode_identity(identity: dict[str, Any]) -> ValidatedWorkIdentity:
     for name in (
         "completion_artifact",
         "validation_artifact",
@@ -59,7 +57,31 @@ def decode_evidence(
         identity["exchange_terminal"] = ReviewExchangeTerminalState(
             **identity["exchange_terminal"]
         )
-    observations = load_document(observations_json)
+    return ValidatedWorkIdentity(**identity)
+
+
+def _decode_observations(
+    observations: dict[str, Any], *, legacy_shape_only: bool
+) -> ValidatedWorkObservations:
+    legacy = "remote_baseline_status" not in observations
+    if legacy_shape_only:
+        if not legacy:
+            raise ValueError("legacy observations unexpectedly carry remote authority")
+        # This value exists only while validating the historical byte shape.
+        # Before the provenance bit existed, the capture gate treated these
+        # values as authoritative. The returned runtime evidence is decoded
+        # separately below and always discards that unproved authority.
+        observations["remote_baseline_status"] = RemoteBaselineStatus.OBSERVED
+    else:
+        observations["remote_baseline_status"] = RemoteBaselineStatus(
+            observations.get("remote_baseline_status", RemoteBaselineStatus.UNOBSERVED)
+        )
+        if legacy:
+            # Older rows never proved whether null meant branch absence or a
+            # read that never happened. Discard their apparent authority
+            # together: refresh must rebuild branch and PR facts as one read.
+            observations["expected_remote_head_sha"] = None
+            observations["pr_number"] = None
     if not isinstance(observations["observed_blocking_labels"], list):
         raise ValueError("observed_blocking_labels must be an array")
     observations["observed_blocking_labels"] = tuple(
@@ -68,6 +90,27 @@ def decode_evidence(
     observations["admitted_from_paths"] = {
         ArtifactSlot(k): v for k, v in observations["admitted_from_paths"].items()
     }
-    return ValidatedWorkEvidence(
-        ValidatedWorkIdentity(**identity), ValidatedWorkObservations(**observations)
+    return ValidatedWorkObservations(**observations)
+
+
+def _decode_evidence(
+    identity_json: str, observations_json: str, *, legacy_shape_only: bool
+) -> ValidatedWorkEvidence:
+    identity = _decode_identity(load_document(identity_json))
+    observations = _decode_observations(
+        load_document(observations_json), legacy_shape_only=legacy_shape_only
     )
+    return ValidatedWorkEvidence(identity, observations)
+
+
+def decode_evidence(
+    identity_json: str, observations_json: str
+) -> ValidatedWorkEvidence:
+    return _decode_evidence(identity_json, observations_json, legacy_shape_only=False)
+
+
+def decode_legacy_evidence_shape(
+    identity_json: str, observations_json: str
+) -> ValidatedWorkEvidence:
+    """Decode historical bytes without granting their remote facts authority."""
+    return _decode_evidence(identity_json, observations_json, legacy_shape_only=True)

@@ -11,7 +11,7 @@ from issue_orchestrator.adapters.github.http_client import (
     GitHubHttpConfig,
 )
 from issue_orchestrator.adapters.github.publication_remote import (
-    GitHubPublicationRemote,
+    GitHubPublicationRemote, GitHubValidatedWorkCaptureObserver,
 )
 from issue_orchestrator.domain.publication_remote import (
     PublicationPrState,
@@ -22,6 +22,7 @@ from issue_orchestrator.domain.validated_head_publication import (
     PublicationContent,
     RemoteHeadExpectation,
 )
+from issue_orchestrator.domain.validated_work_capture import ValidatedWorkRemoteRequest
 
 SHA = "a" * 40
 COMMAND = PublishValidatedHeadCommand(
@@ -54,7 +55,7 @@ def remote_factory(monkeypatch):
     clients = []
     original = httpx.Client
 
-    def make(handler, *, api_url="https://api.github.com"):
+    def make(handler, *, api_url="https://api.github.com", capture=False):
         monkeypatch.setattr(
             httpx,
             "Client",
@@ -64,7 +65,8 @@ def remote_factory(monkeypatch):
             GitHubHttpConfig(repo="owner/repo", token="test", base_url=api_url)
         )
         clients.append(client)
-        return GitHubPublicationRemote(client, repo_slug="owner/repo")
+        adapter = GitHubValidatedWorkCaptureObserver if capture else GitHubPublicationRemote
+        return adapter(client, repo_slug="owner/repo")
 
     yield make
     for client in clients:
@@ -94,6 +96,37 @@ def test_all_reads_bypass_etag_cache(remote_factory):
         assert len(remote.list_prs(COMMAND)) == 1
     assert len(requests) == 6
     assert all("if-none-match" not in request.headers for request in requests)
+
+
+def test_capture_observer_reads_one_complete_uncached_branch_and_pr_snapshot(remote_factory):
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        if "/git/ref/" in request.url.path:
+            return httpx.Response(200, json={
+                "ref": "refs/heads/feature",
+                "object": {"type": "commit", "sha": SHA},
+            })
+        return httpx.Response(200, json=[pr_payload()])
+
+    observer = remote_factory(handler, capture=True)
+    facts = observer.observe(ValidatedWorkRemoteRequest("owner/repo", 1, "feature"))
+    assert facts.branch_head_sha == SHA
+    assert tuple(pr.number for pr in facts.pull_requests) == (2,)
+    assert len(requests) == 2
+    assert all("if-none-match" not in request.headers for request in requests)
+
+
+def test_capture_observer_never_converts_an_unreadable_pr_scan_to_branch_absence(remote_factory):
+    def handler(request):
+        if "/git/ref/" in request.url.path:
+            return httpx.Response(404, json={"message": "missing"})
+        return httpx.Response(401, json={"message": "bad token"})
+
+    observer = remote_factory(handler, capture=True)
+    with pytest.raises(PublicationRemoteError):
+        observer.observe(ValidatedWorkRemoteRequest("owner/repo", 1, "feature"))
 
 
 @pytest.mark.parametrize("method", ["read_branch", "read_pr", "list_prs"])

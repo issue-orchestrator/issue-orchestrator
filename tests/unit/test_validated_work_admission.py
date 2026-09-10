@@ -7,6 +7,7 @@ from contextlib import closing
 import pytest
 
 from issue_orchestrator.domain.validated_work import (
+    RemoteBaselineStatus,
     ValidatedWorkFailure as Failure,
     ValidatedWorkState as State,
 )
@@ -190,6 +191,16 @@ def test_new_capture_cannot_autoqueue_detached_or_ahead_work(tmp_path):
     for item in (capture(bound=False), capture(observed=L)):
         with pytest.raises(ValueError, match="approval-required"):
             store.admit(item)
+    unobserved = capture(expected=None, pr=None)
+    observations = replace(
+        unobserved.evidence.observations,
+        remote_baseline_status=RemoteBaselineStatus.UNOBSERVED,
+    )
+    with pytest.raises(ValueError, match="approval-required"):
+        store.admit(replace(
+            unobserved,
+            evidence=replace(unobserved.evidence, observations=observations),
+        ))
     assert not store.for_issue(6914).found_work
 
 

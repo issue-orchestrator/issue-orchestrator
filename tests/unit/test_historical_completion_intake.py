@@ -80,12 +80,12 @@ def historical(tmp_path: Path):
     )
     from issue_orchestrator.infra.validated_work_escrow import FilesystemValidatedWorkEscrow
     from issue_orchestrator.execution.validated_work_ancestry import GitValidatedWorkAncestry
-    from issue_orchestrator.control.validated_work_capture import ParkedEvidenceCustody
+    from issue_orchestrator.control.validated_work_capture import ValidatedWorkCustody
     escrow = FilesystemValidatedWorkEscrow(state / "validated-work", repository=repo, repo_slug="test/repo", git=wc)
     store = SqliteValidatedWorkIntakeStore(state / "validated_work.sqlite",
         GitValidatedWorkAncestry(repository=repo, repo_slug="test/repo", git=wc), escrow)
     custody = HistoricalIntakeCustody(
-        repo_root=repo, state_root=state, git=git, custody=ParkedEvidenceCustody(escrow, store), ledger=ledger
+        repo_root=repo, state_root=state, git=git, custody=ValidatedWorkCustody(escrow, store), ledger=ledger
     )
     owner = HistoricalCompletionIntake(
         repo_slug="test/repo",

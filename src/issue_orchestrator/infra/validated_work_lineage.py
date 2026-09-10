@@ -7,6 +7,7 @@ from dataclasses import dataclass, replace
 
 from ..domain.validated_work import (
     LineageRole,
+    RemoteBaselineStatus,
     ResolutionKind,
     ValidatedWorkFailure as Failure,
     ValidatedWorkState as State,
@@ -239,9 +240,11 @@ class LineageClassifier:
     ) -> None:
         obs = decision.evidence.admission.evidence.observations
         expected = obs.expected_remote_head_sha or ""
-        proven = expected == fact.published_head_sha or (
+        proven = obs.remote_baseline_status is RemoteBaselineStatus.OBSERVED and (
+            expected == fact.published_head_sha or (
             fact.published_via is PublicationProvenance.PUSHED_BY_OWNER
             and expected == fact.published_pre_push_expected
+            )
         )
         if not proven:
             decision.restrict(LineageRole.HEAD, Failure.REMOTE_BASELINE_UNPROVEN)

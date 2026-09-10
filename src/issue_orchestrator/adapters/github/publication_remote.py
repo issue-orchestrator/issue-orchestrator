@@ -12,6 +12,10 @@ from ...domain.publication_remote import (
     attributed_publication_body,
 )
 from ...domain.validated_head_publication import PublishValidatedHeadCommand
+from ...domain.validated_work_capture import (
+    ValidatedWorkRemoteFacts,
+    ValidatedWorkRemoteRequest,
+)
 from ...domain.validated_work import require_sha
 from ...ports.repository_host import RepositoryHostError
 from .http_client import GitHubHttpClient
@@ -37,6 +41,44 @@ def _pull_request(raw: dict[str, Any]) -> PublicationPullRequest:
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise PublicationRemoteError("Incomplete publication PR identity") from exc
+
+
+def _branch_head(client: GitHubHttpClient, branch_name: str) -> str | None:
+    raw = client.read_publication_branch(branch_name)
+    if raw is None:
+        return None
+    if raw["ref"] != f"refs/heads/{branch_name}" or raw["object"]["type"] != "commit":
+        raise ValueError("Unexpected branch ref identity")
+    sha = raw["object"]["sha"]
+    require_sha(sha)
+    return sha
+
+
+def _branch_pull_requests(
+    client: GitHubHttpClient, branch_name: str
+) -> tuple[PublicationPullRequest, ...]:
+    return tuple(_pull_request(raw) for raw in client.read_publication_prs(branch_name))
+
+
+class GitHubValidatedWorkCaptureObserver:
+    """Capture one complete uncached branch/PR snapshot without publication intent."""
+
+    def __init__(self, client: GitHubHttpClient, *, repo_slug: str) -> None:
+        if client.config.repo != repo_slug:
+            raise ValueError("HTTP client repository must match capture repository")
+        self._client = client
+        self._repo_slug = repo_slug
+
+    def observe(self, request: ValidatedWorkRemoteRequest) -> ValidatedWorkRemoteFacts:
+        if request.repo_slug != self._repo_slug:
+            raise PublicationRemoteError("Capture repository does not match configured remote")
+        try:
+            return ValidatedWorkRemoteFacts(
+                _branch_head(self._client, request.branch_name),
+                _branch_pull_requests(self._client, request.branch_name),
+            )
+        except (RepositoryHostError, KeyError, TypeError, ValueError) as exc:
+            raise PublicationRemoteError(str(exc)) from exc
 
 
 class GitHubPublicationRemote:
@@ -87,17 +129,7 @@ class GitHubPublicationRemote:
     def read_branch(self, command: PublishValidatedHeadCommand) -> str | None:
         self._require_repository(command)
         try:
-            raw = self._client.read_publication_branch(command.branch_name)
-            if raw is None:
-                return None
-            if (
-                raw["ref"] != f"refs/heads/{command.branch_name}"
-                or raw["object"]["type"] != "commit"
-            ):
-                raise ValueError("Unexpected branch ref identity")
-            sha = raw["object"]["sha"]
-            require_sha(sha)
-            return sha
+            return _branch_head(self._client, command.branch_name)
         except (RepositoryHostError, KeyError, TypeError, ValueError) as exc:
             raise PublicationRemoteError(str(exc)) from exc
 
@@ -123,10 +155,7 @@ class GitHubPublicationRemote:
     ) -> tuple[PublicationPullRequest, ...]:
         self._require_repository(command)
         try:
-            return tuple(
-                _pull_request(raw)
-                for raw in self._client.read_publication_prs(command.branch_name)
-            )
+            return _branch_pull_requests(self._client, command.branch_name)
         except (RepositoryHostError, ValueError, TypeError) as exc:
             raise PublicationRemoteError(str(exc)) from exc
 

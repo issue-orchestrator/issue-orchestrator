@@ -1,6 +1,8 @@
 """Real filesystem/Git escrow crash prefixes with normal SQLite admission."""
 
+import hashlib
 import json
+import sqlite3
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -12,9 +14,11 @@ from issue_orchestrator.control.validated_work_escrow import (
     ValidatedWorkEscrowMaintenance,
 )
 from issue_orchestrator.domain.validated_work import (
+    RemoteBaselineStatus,
     ValidatedWorkState,
     ValidatedWorkFailure,
     EvidenceRole,
+    canonical_json,
 )
 from issue_orchestrator.domain.validated_work_escrow import evidence_pins
 from issue_orchestrator.execution.git_working_copy import GitWorkingCopy
@@ -62,6 +66,18 @@ def maintenance(escrow, store, days=30):
     return ValidatedWorkEscrowMaintenance(
         escrow=escrow, store=store, retention_days=days
     )
+
+
+def rewrite_as_legacy_envelope(path: Path, *, extra_field: bool = False) -> bytes:
+    document = json.loads(path.read_bytes())
+    document.pop("checksum")
+    document["observations"].pop("remote_baseline_status")
+    if extra_field:
+        document["unknown"] = "must remain rejected"
+    document["checksum"] = hashlib.sha256(canonical_json(document).encode()).hexdigest()
+    encoded = canonical_json(document).encode()
+    path.write_bytes(encoded)
+    return encoded
 
 
 class CrashPinGit(GitWorkingCopy):
@@ -137,6 +153,82 @@ def test_content_addressed_replay_keeps_original_envelope_and_uses_no_sources(
     )
     assert escrow.capture(newer, sources) == admission
     assert capture_path.read_bytes() == before
+
+
+def test_legacy_parked_envelope_survives_database_migration_and_reconciliation(
+    rig, tmp_path
+):
+    admission, sources = real_capture(
+        rig,
+        tmp_path / "sources",
+        state=ValidatedWorkState.PARKED,
+        failure=ValidatedWorkFailure.WORKTREE_AHEAD_OF_VALIDATION,
+        reason="retained before remote authority provenance",
+    )
+    escrow = escrow_for(rig)
+    store = store_for(rig, escrow)
+    store.admit(escrow.capture(admission, sources))
+    capture_path = escrow.root / admission.escrow_dir / "capture.json"
+    immutable_legacy = rewrite_as_legacy_envelope(capture_path)
+    database = rig.root / ".issue-orchestrator/state/validated_work.sqlite"
+    with sqlite3.connect(database) as conn:
+        observations = json.loads(canonical_json(admission.evidence.observations))
+        observations.pop("remote_baseline_status")
+        conn.execute(
+            "UPDATE validated_work_evidence SET observations=? WHERE evidence_id=?",
+            (canonical_json(observations), admission.evidence.evidence_id),
+        )
+
+    reopened = store_for(rig, escrow)
+    report = maintenance(escrow, reopened).reconcile_escrow_orphans()
+    assert not report.problems
+    (reopened_row,) = reopened.retained_evidence(6914)
+    assert reopened_row.admission.initial_state is ValidatedWorkState.PARKED
+    assert (
+        reopened_row.admission.evidence.observations.remote_baseline_status
+        is RemoteBaselineStatus.UNOBSERVED
+    )
+    assert reopened_row.admission.evidence.observations.expected_remote_head_sha is None
+    assert reopened_row.admission.evidence.observations.pr_number is None
+    assert escrow.inspect(admission.escrow_dir) == reopened_row.admission
+    assert capture_path.read_bytes() == immutable_legacy
+
+
+def test_legacy_queued_orphan_replays_as_parked_without_rewriting_capture(
+    rig, tmp_path
+):
+    admission, sources = real_capture(rig, tmp_path / "sources")
+    escrow = escrow_for(rig)
+    escrow.capture(admission, sources)
+    capture_path = escrow.root / admission.escrow_dir / "capture.json"
+    immutable_legacy = rewrite_as_legacy_envelope(capture_path)
+    store = store_for(rig, escrow)
+
+    report = maintenance(escrow, store).reconcile_escrow_orphans()
+
+    assert report.repaired == (admission.evidence.evidence_id,)
+    assert not report.problems
+    repaired = store.evidence_for_id(admission.evidence.evidence_id)
+    assert repaired is not None
+    assert repaired.record.state is ValidatedWorkState.PARKED
+    assert repaired.record.failure is ValidatedWorkFailure.REMOTE_UNREADABLE
+    assert repaired.evidence.admission.initial_state is ValidatedWorkState.PARKED
+    assert (
+        repaired.evidence.admission.evidence.observations.remote_baseline_status
+        is RemoteBaselineStatus.UNOBSERVED
+    )
+    assert capture_path.read_bytes() == immutable_legacy
+
+
+def test_legacy_envelope_still_rejects_authenticated_unknown_fields(rig, tmp_path):
+    admission, sources = real_capture(rig, tmp_path / "sources")
+    escrow = escrow_for(rig)
+    escrow.capture(admission, sources)
+    capture_path = escrow.root / admission.escrow_dir / "capture.json"
+    rewrite_as_legacy_envelope(capture_path, extra_field=True)
+
+    with pytest.raises(ValueError, match="noncanonical"):
+        escrow.inspect(admission.escrow_dir)
 
 
 @pytest.mark.parametrize(
@@ -238,7 +330,9 @@ def test_retention_uses_resolved_records_all_roles_and_configured_window(rig, tm
         a.evidence.evidence_id for a in (first, second, attached)
     }
     assert rig.working.retained_refs(rig.root) == ()
-    assert store.evidence_for_retention(released_before="2027-01-01T00:00:00+00:00") == ()
+    assert (
+        store.evidence_for_retention(released_before="2027-01-01T00:00:00+00:00") == ()
+    )
 
 
 @pytest.mark.parametrize(

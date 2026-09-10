@@ -5,11 +5,14 @@ from pathlib import Path
 from typing import Protocol
 
 from ..adapters.github.http_client import GitHubHttpClient
-from ..adapters.github.publication_remote import GitHubPublicationRemote
+from ..adapters.github.publication_remote import (
+    GitHubPublicationRemote, GitHubValidatedWorkCaptureObserver,
+)
 from ..adapters.github.recovery_issue_reader import GitHubRecoveryIssueReader
 from ..adapters.issue_disposition_gate import FileIssueDispositionMutationGate
 from ..ports.issue_disposition_gate import IssueDispositionMutationGate
 from ..ports.publication_remote import PublicationRemote
+from ..ports.validated_work_capture_observer import ValidatedWorkCaptureObserver
 from ..ports.recovery_issue_reader import RecoveryIssueReader
 
 
@@ -17,6 +20,7 @@ from ..ports.recovery_issue_reader import RecoveryIssueReader
 class ValidatedWorkExternalAdapters:
     gate: IssueDispositionMutationGate
     remote: PublicationRemote
+    capture_observer: ValidatedWorkCaptureObserver
     issues: RecoveryIssueReader
 
 
@@ -33,5 +37,6 @@ def build_validated_work_external_adapters(
     return ValidatedWorkExternalAdapters(
         gate=FileIssueDispositionMutationGate(repo_root),
         remote=GitHubPublicationRemote(client, repo_slug=repo_slug),
+        capture_observer=GitHubValidatedWorkCaptureObserver(client, repo_slug=repo_slug),
         issues=GitHubRecoveryIssueReader(client, repo_slug=repo_slug),
     )

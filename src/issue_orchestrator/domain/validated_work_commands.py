@@ -9,6 +9,7 @@ from .validated_work import (
     ValidatedWorkKey,
     ValidatedWorkState,
     ValidatedWorkFailure,
+    RemoteBaselineStatus,
     LineageRole,
     UNRESOLVED_STATES,
     require_text,
@@ -59,6 +60,7 @@ class ValidatedWorkAuthoritySnapshot:
     issue_number: int
     pr_number: int | None  # the PR the approver saw
     expected_remote_head_sha: str | None  # the remote baseline the approver saw
+    remote_baseline_status: RemoteBaselineStatus
 
     def __post_init__(self) -> None:
         key = ValidatedWorkKey(
@@ -72,6 +74,13 @@ class ValidatedWorkAuthoritySnapshot:
             require_positive(self.pr_number, "pr_number")
         if self.expected_remote_head_sha is not None:
             require_sha(self.expected_remote_head_sha)
+        if type(self.remote_baseline_status) is not RemoteBaselineStatus:
+            raise ValueError("authority remote baseline status must be typed")
+        if (
+            self.remote_baseline_status is RemoteBaselineStatus.UNOBSERVED
+            and (self.expected_remote_head_sha is not None or self.pr_number is not None)
+        ):
+            raise ValueError("unobserved authority cannot name branch or PR facts")
 
 
 @dataclass(frozen=True, slots=True)

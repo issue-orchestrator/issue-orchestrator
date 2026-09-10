@@ -5,7 +5,7 @@ from ..domain.completion_processing import ProcessingResult
 from ..domain.publication_workspace import PublicationWorkspace
 from ..domain.recovery_publication import PreparedRecoveryPublication
 from ..domain.validated_head_publication import PublicationContent, PublishValidatedHeadCommand, RemoteHeadExpectation
-from ..domain.validated_work import EvidenceRole, ReviewDisposition
+from ..domain.validated_work import EvidenceRole, RemoteBaselineStatus, ReviewDisposition
 from ..domain.validated_work_store import EvidenceRow
 from ..ports.completion_intake import CompletionIntakeLedger
 from ..ports.working_copy import WorkingCopy
@@ -49,6 +49,10 @@ class RetainedCompletionPreparation:
                                     processing_policy=prepared.processing_policy)
         self._require_source(workspace)
         observation = admitted.observations
+        if observation.remote_baseline_status is not RemoteBaselineStatus.OBSERVED:
+            raise CompletionIntakeError(
+                "retained publication requires an observed remote branch baseline"
+            )
         command = PublishValidatedHeadCommand(
             issue_number=key.issue_number, repo_slug=key.repo_slug,
             branch_name=key.branch_name, target_head_sha=key.validated_head_sha,

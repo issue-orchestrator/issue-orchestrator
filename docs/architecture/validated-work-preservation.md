@@ -1,6 +1,6 @@
 # Validated work preservation at runtime boundaries
 
-The admission-only runtime implementation of [ADR-0035](ADR/0035-validated-work-disposition.md) preserves validated work as `PARKED`. Publication and recovery approvals remain separate capabilities described by the [accepted design](../design/validated-work-disposition.md).
+The runtime implementation of [ADR-0035](ADR/0035-validated-work-disposition.md) preserves every validated head before teardown. Healthy, fully observed work enters `QUEUED`; incomplete or approval-required work enters `PARKED`. Publication and recovery approvals remain separate capabilities described by the [accepted design](../design/validated-work-disposition.md).
 
 ## Ownership and scope
 
@@ -23,7 +23,21 @@ Manual consumers use `prepare_receipt_for_issue(receipt, run, issue_number)`. Th
 
 Before teardown, escrow reconciliation repairs interrupted captures and verifies retained database rows against their envelopes and pins. Each distinct validated work key receives immutable escrow, an exact validated-head pin, and a separate observed-head pin when those heads differ. Advancing or detaching the checkout preserves both facts and leaves work parked with the corresponding failure reason. Missing objects or corrupt custody abort destructive continuation.
 
-Automatic capture, fresh historical intake, and orphan replay share `ParkedEvidenceCustody` and `RankedEvidenceAdmission`. The latter reconstructs exact evidence identities through the intake ledger to obtain trusted global receive order. It conditionally admits against the current evidence identity inside a SQLite write transaction, retrying selection after a concurrent change. Capturing an older receipt later retains it as superseded evidence; it cannot replace a newer receipt for the same work key. Unmappable evidence fails closed. Capture and admission retries retain the original immutable envelope and converge after partial progress.
+Automatic capture, fresh historical intake, and orphan replay share `ValidatedWorkCustody` and `RankedEvidenceAdmission`. The latter reconstructs exact evidence identities through the intake ledger to obtain trusted global receive order. It conditionally admits against the current evidence identity inside a SQLite write transaction, retrying selection after a concurrent change. Capturing an older receipt later retains it as superseded evidence; it cannot replace a newer receipt for the same work key. Unmappable evidence fails closed. Capture and admission retries retain the original immutable envelope and converge after partial progress.
+
+Automatic capture reads the remote branch and its complete open-PR set through
+`ValidatedWorkCaptureObserver`. Both facts form one observation and are shared by
+all candidates for that branch in the termination batch. Only an observed,
+matching workspace may enter `QUEUED`. An unreadable remote becomes
+`PARKED(REMOTE_UNREADABLE)` with `remote_baseline_status=UNOBSERVED`; a missing
+SHA has no absence authority in that state. Legacy observations decode the same
+way and discard old branch/PR values whose read provenance cannot be proved.
+At database open, the migration rewrites those observations and their
+denormalized columns together and advances the observation revision so standing
+approvals become stale. Legacy `QUEUED` evidence becomes `PARKED` with
+`REMOTE_UNREADABLE`; a `PUBLISHING` record keeps its in-flight lifecycle so an
+ambiguous remote side effect is never erased, but its evidence still loses the
+unproven authority and cannot authorize another submission.
 
 ## Results and verification
 

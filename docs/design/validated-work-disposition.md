@@ -236,15 +236,21 @@ class ValidatedWorkIdentity:
     reviewer_proof_digest: str | None    # required for EXCHANGE_APPROVED (§5)
 
 
+class RemoteBaselineStatus(StrEnum):
+    OBSERVED = "observed"      # branch and complete open-PR set were both read
+    UNOBSERVED = "unobserved"  # absence has not been proved
+
+
 @dataclass(frozen=True, slots=True)
 class ValidatedWorkObservations:
     """Everything read from mutable state. NONE of it enters evidence_id."""
     captured_at: str                     # ISO-8601 UTC
     worktree_head_sha: str               # issue worktree HEAD at capture; may move
-    expected_remote_head_sha: str | None # remote branch head at capture; None = absent
+    expected_remote_head_sha: str | None # None = absent only when status is OBSERVED
     pr_number: int | None
     observed_blocking_labels: tuple[str, ...]  # exactly what this op may later clear
     admitted_from_paths: Mapping[ArtifactSlot, str]  # audit only, never re-read
+    remote_baseline_status: RemoteBaselineStatus
 
 
 @dataclass(frozen=True, slots=True)
@@ -289,8 +295,9 @@ and the difference between them is what makes convergence structural:
 Excluded from both, by construction:
 
 - **Capture timestamps.** `captured_at` is when we looked, not what we found.
-- **Mutable external observations.** `expected_remote_head_sha`, `pr_number`, and
-  `observed_blocking_labels` are reconciliation *inputs* read fresh from GitHub;
+- **Mutable external observations.** `expected_remote_head_sha`, `pr_number`,
+  `remote_baseline_status`, and `observed_blocking_labels` are reconciliation
+  *inputs* read fresh from GitHub;
   a label added by a human between two captures must not change any id.
 - **Mutable local observations.** `worktree_head_sha` — see the note above.
 - **Filesystem paths.** Artifacts are identified by `ArtifactSlot` + content hash,
@@ -348,6 +355,22 @@ consent to publish a specific commit onto a specific remote state, so §8.1 bind
 approval, and execution requires exact equality before it will act. The revision is
 the cheap, monotonic way to detect that the facts moved under a standing approval;
 it is authorization bookkeeping, never an input to identity.
+
+`expected_remote_head_sha=None` is authoritative branch absence only beside
+`remote_baseline_status=OBSERVED`. Fresh automatic capture reads both the branch
+and the complete open-PR set without cache before it may queue work. If either
+read fails, capture records `UNOBSERVED` and parks the evidence as
+`REMOTE_UNREADABLE`; it never turns missing knowledge into branch absence.
+Captures for multiple validated heads on one branch share that complete snapshot
+within the termination batch. Legacy evidence whose JSON omitted the status
+decodes as `UNOBSERVED`, discards its unproven branch/PR values, and remains
+parked until a fresh observation capability replaces the missing authority.
+The SQLite migration updates JSON and denormalized columns atomically. It
+also increments the observation revision, invalidating approvals over the old
+facts. It demotes legacy queued evidence and its queued record to
+`PARKED(REMOTE_UNREADABLE)`. It leaves a `PUBLISHING` record in place because a
+remote side effect may already exist, while the migrated unobserved evidence
+prevents another publication from treating its former values as authority.
 
 #### 2.1.2 Atomic capture, and repair of a partial one
 
@@ -860,6 +883,7 @@ class ValidatedWorkAuthoritySnapshot:
     issue_number: int
     pr_number: int | None                 # the PR the approver saw
     expected_remote_head_sha: str | None   # the remote baseline the approver saw
+    remote_baseline_status: RemoteBaselineStatus
 
 
 @dataclass(frozen=True, slots=True)

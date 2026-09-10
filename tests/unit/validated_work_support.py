@@ -9,6 +9,7 @@ from issue_orchestrator.domain.validated_work import (
     AdmittedArtifact,
     ArtifactSlot,
     ReviewDisposition,
+    RemoteBaselineStatus,
     ValidatedWorkEvidence,
     ValidatedWorkFailure,
     ValidatedWorkIdentity,
@@ -158,6 +159,7 @@ def capture(
         pr,
         ("blocked-failed",),
         {ArtifactSlot.COMPLETION: "/audit/completion"},
+        RemoteBaselineStatus.OBSERVED,
     )
     ev = ValidatedWorkEvidence(identity, observations)
     return EvidenceAdmission(
