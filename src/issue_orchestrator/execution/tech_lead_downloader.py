@@ -11,7 +11,7 @@ import logging
 from pathlib import Path
 
 from ..domain.tech_lead_manifest import TechLeadManifest, PRFiles
-from ..ports import RepositoryHost, CommandRunner
+from ..ports import PullRequestTracker
 
 logger = logging.getLogger(__name__)
 
@@ -20,19 +20,18 @@ class TechLeadDownloader:
     """Downloads PR data based on a tech_lead manifest.
 
     Implements ManifestDownloader port.
-    Uses RepositoryHost for PR metadata and CommandRunner for diffs
-    (since diff isn't in the protocol yet).
+    Uses RepositoryHost for both PR metadata and complete diff content.
     """
 
     def __init__(
         self,
-        repository_host: RepositoryHost,
-        command_runner: CommandRunner,
+        repository_host: PullRequestTracker,
     ):
         self._host = repository_host
-        self._runner = command_runner
 
-    def download(self, manifest: TechLeadManifest, worktree_path: Path) -> TechLeadManifest:
+    def download(
+        self, manifest: TechLeadManifest, worktree_path: Path
+    ) -> TechLeadManifest:
         """Fetch all PR data and update manifest with local file paths.
 
         Args:
@@ -49,25 +48,19 @@ class TechLeadDownloader:
         data_path.mkdir(parents=True, exist_ok=True)
 
         for pr in manifest.prs:
-            try:
-                pr.files = self._download_pr_data(pr.number, data_path)
-                logger.info("[tech_lead] Downloaded data for PR #%d", pr.number)
-            except Exception as e:
-                logger.warning("[tech_lead] Failed to download PR #%d: %s", pr.number, e)
-                # Continue with other PRs even if one fails
+            pr.files = self._download_pr_data(pr.number, data_path)
+            logger.info("[tech_lead] Downloaded data for PR #%d", pr.number)
 
         return manifest
 
     def _download_pr_data(self, pr_number: int, data_path: Path) -> PRFiles:
         """Download diff and metadata for a single PR."""
-        # Fetch and write diff using gh CLI
+        # A transport failure must abort manifest construction. Writing the
+        # error into a readable artifact turns missing review evidence into a
+        # plausible empty diff and lets the session continue with bad input.
         diff_filename = f"pr-{pr_number}-diff.txt"
         diff_path = data_path / diff_filename
-        diff_result = self._runner.run(["gh", "pr", "diff", str(pr_number)])
-        if diff_result.returncode == 0:
-            diff_path.write_text(diff_result.stdout)
-        else:
-            diff_path.write_text(f"# Error fetching diff: {diff_result.stderr}")
+        diff_path.write_text(self._host.get_pr_diff(pr_number))
 
         # Fetch and write metadata via RepositoryHost
         meta_filename = f"pr-{pr_number}-meta.json"

@@ -355,6 +355,20 @@ class PullRequestTracker(Protocol):
         """
         ...
 
+    def get_pr_diff(self, pr_number: int) -> str:
+        """Get the complete unified diff for a pull request.
+
+        Args:
+            pr_number: The PR number to retrieve.
+
+        Returns:
+            The complete diff exactly as returned by the repository host.
+
+        Raises:
+            RepositoryError: If the diff cannot be retrieved completely.
+        """
+        ...
+
     def read_pr_status_check_rollup(
         self, pr_number: int, *, skip_primary_source: bool = False
     ) -> "StatusCheckRollupRead":

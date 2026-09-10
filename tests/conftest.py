@@ -1096,7 +1096,6 @@ def build_test_orchestrator_deps(
     from issue_orchestrator.execution.tech_lead_downloader import TechLeadDownloader
     manifest_downloader = TechLeadDownloader(
         repository_host=repo_host,
-        command_runner=command_runner,
     )
 
     # Create claim components (NullClaimManager by default for tests)

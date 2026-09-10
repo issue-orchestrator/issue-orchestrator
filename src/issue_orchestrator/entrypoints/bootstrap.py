@@ -539,7 +539,6 @@ def build_orchestrator(
     # Create manifest downloader for tech_lead sessions
     manifest_downloader = TechLeadDownloader(
         repository_host=github,
-        command_runner=command_runner,
     ) if github else None
 
     # Create cache-bypassing reader
@@ -1003,7 +1002,6 @@ def build_orchestrator_for_testing(
     from unittest.mock import MagicMock
     manifest_downloader = TechLeadDownloader(
         repository_host=github,
-        command_runner=command_runner,
     )
 
     fresh_issue_reader = TestingFreshIssueReader(github)

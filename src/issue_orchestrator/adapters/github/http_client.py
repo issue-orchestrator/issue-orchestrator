@@ -429,6 +429,25 @@ def _extract_rate_limit_headers(response: httpx.Response) -> dict[str, Any] | No
     return result if result else None
 
 
+def _decode_response_payload(
+    response_text: str,
+    response_kind: Literal["json", "text"],
+) -> Any:
+    if response_kind == "text":
+        return response_text
+    if not response_text:
+        return {}
+    return _json.loads(response_text)
+
+
+def _response_status_is_error(
+    status_code: int,
+    response_kind: Literal["json", "text"],
+) -> bool:
+    """Text evidence requires an exact success response, including no redirects."""
+    return status_code >= 400 or (response_kind == "text" and status_code != 200)
+
+
 class GitHubHttpClient:
     """Minimal GitHub REST client for issue-orchestrator."""
 
@@ -498,8 +517,57 @@ class GitHubHttpClient:
         use_cache: bool = True,
         caller: str = "github_http",
     ) -> Any:
+        return self._request_payload(
+            method,
+            path,
+            params=params,
+            json_body=json_body,
+            use_cache=use_cache,
+            caller=caller,
+            response_kind="json",
+        )
+
+    def _request_text(
+        self,
+        method: str,
+        path: str,
+        *,
+        accept: str,
+        use_cache: bool = False,
+        caller: str = "github_http",
+    ) -> str:
+        payload = self._request_payload(
+            method,
+            path,
+            use_cache=use_cache,
+            caller=caller,
+            response_kind="text",
+            accept=accept,
+        )
+        if not isinstance(payload, str):
+            raise GitHubHttpError(
+                f"GitHub {method.upper()} {path} returned non-text content",
+                method=method,
+                url=path,
+            )
+        return payload
+
+    def _request_payload(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        json_body: dict[str, Any] | None = None,
+        use_cache: bool = True,
+        caller: str = "github_http",
+        response_kind: Literal["json", "text"],
+        accept: str | None = None,
+    ) -> Any:
         url = path
         headers = self._auth_headers()
+        if accept is not None:
+            headers["Accept"] = accept
         cache_key = self._cache_key(method, url, params)
         if use_cache and method.upper() == "GET":
             cached = self._etag_cache.get(cache_key)
@@ -540,7 +608,7 @@ class GitHubHttpClient:
                     payload = cached.payload
                     was_304 = True
                     return payload
-            if status_code >= 400:
+            if _response_status_is_error(status_code, response_kind):
                 error = f"{status_code} {response_text.strip()}"
                 summary = _summarize_github_error(response_text)
                 detail = f" — {summary}" if summary else ""
@@ -551,10 +619,7 @@ class GitHubHttpClient:
                     status_code=status_code,
                     response_text=response_text,
                 )
-            if response_text:
-                payload = response.json()
-            else:
-                payload = {}
+            payload = _decode_response_payload(response_text, response_kind)
             if use_cache and method.upper() == "GET":
                 etag = response.headers.get("ETag")
                 if etag:
@@ -1600,6 +1665,16 @@ class GitHubHttpClient:
             caller="get_pr",
         )
         return payload if isinstance(payload, dict) else None
+
+    def get_pr_diff(self, pr_number: int) -> str:
+        """Fetch a PR's complete unified diff through the authenticated client."""
+        return self._request_text(
+            "GET",
+            f"/repos/{self._config.repo}/pulls/{pr_number}",
+            accept="application/vnd.github.v3.diff",
+            use_cache=False,
+            caller="get_pr_diff",
+        )
 
     def read_publication_pr(self, number: int) -> dict[str, Any] | None:
         """Uncached identity read; malformed responses are never absence."""
