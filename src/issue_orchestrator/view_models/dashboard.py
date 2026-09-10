@@ -1149,6 +1149,7 @@ def build_dashboard_view_model(
     seen_issues: set[int] = set()
 
     queue_total = 0
+    non_executable_numbers: frozenset[int] = frozenset()
 
     if state and config:
         lm = LabelManager(config)
@@ -1323,7 +1324,7 @@ def build_dashboard_view_model(
     }
     if config:
         milestones = config.get_filter_milestones()
-        in_scope_total = _unique_issue_count(
+        in_scope_items = (
             backlog_items
             + queue_items
             + active_items
@@ -1331,6 +1332,11 @@ def build_dashboard_view_model(
             + awaiting_merge_items
             + completed_items
         )
+        in_scope_items.extend(
+            {"issue_number": issue_number}
+            for issue_number in non_executable_numbers
+        )
+        in_scope_total = _unique_issue_count(in_scope_items)
         scope_summary = {
             "repo_open_total": queue_total,
             "in_scope_total": in_scope_total,

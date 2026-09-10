@@ -403,6 +403,7 @@ def test_view_model_queue_and_blocked_items():
 
 def test_non_executable_issues_are_not_projected_as_blocked_work():
     config = _make_config()
+    config.label_prefix = "bot"
     observation = Issue(
         number=39,
         title="Pattern case file",
@@ -411,7 +412,7 @@ def test_non_executable_issues_are_not_projected_as_blocked_work():
     proposal = Issue(
         number=40,
         title="Gated recovery proposal",
-        labels=["agent:tech-lead", "proposed-tech-lead"],
+        labels=["agent:tech-lead", "BOT:Proposed-Tech-Lead"],
     )
     genuine_failure = Issue(
         number=41,
@@ -421,18 +422,19 @@ def test_non_executable_issues_are_not_projected_as_blocked_work():
     planning_issue = Issue(
         number=42,
         title="Planning-only initiative",
-        labels=["initiative:control", "blocked-failed"],
+        labels=["initiative:control", "bot:blocked-failed"],
     )
     runnable = Issue(number=45, title="Runnable", labels=["agent:backend"])
     state = OrchestratorState(
         startup_status="complete",
-        cached_queue_issues=[
+        cached_scope_issues=[
             observation,
             proposal,
             genuine_failure,
             planning_issue,
             runnable,
         ],
+        cached_queue_issues=[runnable],
         session_history=[
             SessionHistoryEntry(
                 issue_number=40,

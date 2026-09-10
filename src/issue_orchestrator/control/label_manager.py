@@ -218,8 +218,10 @@ class LabelManager:
 
     def _strip_prefix(self, label: str) -> str:
         """Strip the configured prefix from *label*, returning the base name."""
-        if self._prefix and label.startswith(f"{self._prefix}:"):
-            return label[len(self._prefix) + 1:]
+        if self._prefix:
+            marker = f"{self._prefix}:"
+            if label[: len(marker)].casefold() == marker.casefold():
+                return label[len(marker):]
         return label
 
     # ------------------------------------------------------------------
