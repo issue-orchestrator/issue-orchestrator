@@ -52,6 +52,10 @@ _UNKNOWN_ROUTE_PATH_DETAIL = "(unknown route path expression)"
 # prose above: metric ids are baseline keys, so rewording a diagnostic must never
 # invalidate an accepted entry.
 _ABSENT_ROUTE_PATH_IDENTITY = "<no-path-argument>"
+_ROUTER_FACTORY_NAME = "APIRouter"
+_ROUTER_INCLUDE_NAME = "include_router"
+_ROUTER_PREFIX_KEYWORD = "prefix"
+_ROUTER_FACTORY_MODULES = {"fastapi", "fastapi.routing"}
 
 
 @dataclass(frozen=True)
@@ -63,6 +67,7 @@ class Metric:
     path: str
     detail: str
     new_metric_min_value: int = 1
+    hard_gated: bool = False
 
     @property
     def key(self) -> str:
@@ -88,8 +93,14 @@ class RatchetViolation:
     previous: int | None
     current: int
     detail: str
+    hard_gated: bool = False
 
     def fmt(self) -> str:
+        if self.hard_gated:
+            return (
+                f"{self.path} [{self.rule_id}] hard-gated {self.kind}: "
+                f"{self.current} ({self.detail})"
+            )
         if self.previous is None:
             return (
                 f"{self.path} [{self.rule_id}] new {self.kind}: "
@@ -176,6 +187,24 @@ class RouteOperation:
         return repr(self.path_expression)
 
 
+@dataclass(frozen=True)
+class RouteModule:
+    file_path: str
+    tree: ast.Module
+
+
+@dataclass(frozen=True)
+class PrefixedRouterSite:
+    file_path: str
+    line: int
+    call_name: str
+    prefix_expression: str
+
+    @property
+    def metric_id(self) -> str:
+        return f"prefixed-router:{self.file_path}:{self.line}"
+
+
 def _load_yaml(path: Path) -> dict[str, Any]:
     with path.open("r", encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
@@ -203,6 +232,7 @@ def _write_baseline(path: Path, metrics: Sequence[Metric]) -> None:
         "metrics": {
             metric.key: metric.to_baseline_entry()
             for metric in sorted(metrics, key=lambda m: (m.rule_id, m.path, m.metric_id))
+            if not metric.hard_gated
         },
     }
     _write_baseline_data(path, payload)
@@ -918,7 +948,7 @@ def _response_model_name(call: ast.Call) -> str | None:
     return None
 
 
-def _iter_route_operations(root: Path, rule: Mapping[str, Any]) -> Iterable[RouteOperation]:
+def _iter_route_modules(root: Path, rule: Mapping[str, Any]) -> Iterable[RouteModule]:
     include = _patterns(rule, "route_include")
     exclude = _patterns(rule, "route_exclude")
     route_rule = {"id": rule["id"], "include": include, "exclude": exclude}
@@ -931,8 +961,12 @@ def _iter_route_operations(root: Path, rule: Mapping[str, Any]) -> Iterable[Rout
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=rel_path)
         except SyntaxError as exc:
             raise ValueError(f"{rel_path}: syntax error while collecting UI OpenAPI routes: {exc}") from exc
+        yield RouteModule(file_path=rel_path, tree=tree)
 
-        for node in ast.walk(tree):
+
+def _iter_route_operations(modules: Sequence[RouteModule]) -> Iterable[RouteOperation]:
+    for module in modules:
+        for node in ast.walk(module.tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
             for decorator in node.decorator_list:
@@ -947,11 +981,73 @@ def _iter_route_operations(root: Path, rule: Mapping[str, Any]) -> Iterable[Rout
                 yield RouteOperation(
                     method=method,
                     url_path=url_path,
-                    file_path=rel_path,
+                    file_path=module.file_path,
                     line=decorator.lineno,
                     response_model=_response_model_name(decorator),
                     path_expression=_route_path_expression(decorator),
                 )
+
+
+def _router_factory_names(tree: ast.Module) -> set[str]:
+    """`APIRouter` plus any local alias it was imported under."""
+    names = {_ROUTER_FACTORY_NAME}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        if (node.module or "") not in _ROUTER_FACTORY_MODULES:
+            continue
+        for alias in node.names:
+            if alias.name == _ROUTER_FACTORY_NAME and alias.asname:
+                names.add(alias.asname)
+    return names
+
+
+def _called_name(call: ast.Call) -> str | None:
+    if isinstance(call.func, ast.Name):
+        return call.func.id
+    if isinstance(call.func, ast.Attribute):
+        return call.func.attr
+    return None
+
+
+def _router_prefix_expression(call: ast.Call) -> str | None:
+    """Return the prefix expression when this call can apply a router prefix.
+
+    ``prefix`` is keyword-only on both ``APIRouter`` and ``include_router``, so a
+    ``**kwargs`` splat is the only other way a prefix can reach them. An explicit
+    empty-string prefix is a no-op and is not reported.
+    """
+    for keyword in call.keywords:
+        if keyword.arg is None:
+            return f"**{ast.unparse(keyword.value)}"
+        if keyword.arg != _ROUTER_PREFIX_KEYWORD:
+            continue
+        if isinstance(keyword.value, ast.Constant) and keyword.value.value == "":
+            return None
+        return ast.unparse(keyword.value)
+    return None
+
+
+def _iter_prefixed_router_sites(modules: Sequence[RouteModule]) -> Iterable[PrefixedRouterSite]:
+    for module in modules:
+        factory_names = _router_factory_names(module.tree)
+        for node in ast.walk(module.tree):
+            if not isinstance(node, ast.Call):
+                continue
+            called = _called_name(node)
+            if called is None:
+                continue
+            if called not in factory_names and called != _ROUTER_INCLUDE_NAME:
+                continue
+            prefix_expression = _router_prefix_expression(node)
+            if prefix_expression is None:
+                continue
+            yield PrefixedRouterSite(
+                file_path=module.file_path,
+                line=node.lineno,
+                call_name=called,
+                prefix_expression=prefix_expression,
+            )
 
 
 def _schema_component_name(schema: Mapping[str, Any], *, schema_path: str, route_key: str) -> str:
@@ -1035,19 +1131,48 @@ def _is_browser_route(route: RouteOperation, rule: Mapping[str, Any]) -> bool:
     return any(route.url_path.startswith(prefix) for prefix in prefixes)
 
 
+def _prefixed_router_metrics(
+    rule_id: str,
+    sites: Sequence[PrefixedRouterSite],
+    schema_rel: str,
+) -> list[Metric]:
+    return [
+        Metric(
+            rule_id=rule_id,
+            kind="ui_openapi_prefixed_router",
+            metric_id=site.metric_id,
+            value=1,
+            path=site.file_path,
+            detail=(
+                f"{site.call_name} at line {site.line} applies router prefix "
+                f"{site.prefix_expression}; this guardrail compares route decorator path "
+                f"literals directly with {schema_rel} path keys, so a prefixed router would "
+                "silently compare the wrong paths"
+            ),
+            hard_gated=True,
+        )
+        for site in sites
+    ]
+
+
 def _collect_ui_openapi_routes(root: Path, rule: Mapping[str, Any]) -> list[Metric]:
     rule_id = str(rule["id"])
     new_metric_min_value = _new_metric_min_value(rule)
     schema_rel = str(rule["schema"])
     schema_operations = _load_ui_openapi_operations(root, rule)
-    routes = list(_iter_route_operations(root, rule))
+    modules = list(_iter_route_modules(root, rule))
+    routes = list(_iter_route_operations(modules))
     routes_by_key: dict[tuple[str, str], list[RouteOperation]] = {}
     for route in routes:
         if route.url_path is None:
             continue
         routes_by_key.setdefault(route.key, []).append(route)
 
-    metrics: list[Metric] = []
+    metrics: list[Metric] = _prefixed_router_metrics(
+        rule_id,
+        sorted(_iter_prefixed_router_sites(modules), key=lambda site: (site.file_path, site.line)),
+        schema_rel,
+    )
 
     for (method, url_path), expected_model in sorted(schema_operations.items(), key=lambda item: item[0]):
         route_key = _route_metric_id(method, url_path)
@@ -1191,13 +1316,37 @@ def collect_metrics(root: Path, config: Mapping[str, Any]) -> list[Metric]:
     return sorted(metrics, key=lambda m: (m.rule_id, m.path, m.metric_id))
 
 
+def _hard_gate_violation(metric: Metric) -> RatchetViolation:
+    return RatchetViolation(
+        key=metric.key,
+        rule_id=metric.rule_id,
+        kind=metric.kind,
+        path=metric.path,
+        previous=None,
+        current=metric.value,
+        detail=metric.detail,
+        hard_gated=True,
+    )
+
+
+def hard_gate_violations(metrics: Sequence[Metric]) -> list[RatchetViolation]:
+    """Findings that invalidate their own analysis and can never be baselined."""
+    return [
+        _hard_gate_violation(metric)
+        for metric in sorted(metrics, key=lambda m: m.key)
+        if metric.hard_gated
+    ]
+
+
 def compare_to_baseline(metrics: Sequence[Metric], baseline: Mapping[str, Any]) -> list[RatchetViolation]:
     raw_entries = _baseline_entries(baseline)
 
     current_by_key = {metric.key: metric for metric in metrics}
-    violations: list[RatchetViolation] = []
+    violations: list[RatchetViolation] = hard_gate_violations(metrics)
 
     for key, metric in sorted(current_by_key.items()):
+        if metric.hard_gated:
+            continue
         raw_previous = raw_entries.get(key)
         if raw_previous is None:
             if metric.value < metric.new_metric_min_value:
@@ -1302,6 +1451,10 @@ def accept_baseline_keys(
     if missing:
         raise ValueError(f"cannot accept missing current metric(s): {', '.join(missing)}")
 
+    gated = [key for key in keys if current_by_key[key].hard_gated]
+    if gated:
+        raise ValueError(f"cannot accept hard-gated metric key(s): {', '.join(gated)}")
+
     baseline["version"] = BASELINE_VERSION
     for key in keys:
         raw_entries[key] = current_by_key[key].to_baseline_entry()
@@ -1388,6 +1541,7 @@ def _print_json_report(
                 "previous": violation.previous,
                 "current": violation.current,
                 "detail": violation.detail,
+                "hard_gated": violation.hard_gated,
             }
             for violation in violations
         ],
@@ -1428,7 +1582,7 @@ def _run_guardrail_operation(
 
     if args.update_baseline:
         _write_baseline(baseline_path, metrics)
-        return GuardrailResult(violations=[], stale_entries=[])
+        return GuardrailResult(violations=hard_gate_violations(metrics), stale_entries=[])
 
     if args.accept:
         baseline = accept_baseline_keys(baseline_path, metrics, args.accept)
