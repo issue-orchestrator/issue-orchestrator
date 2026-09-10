@@ -2324,7 +2324,8 @@ bound to the pinned validated ref:
 
 ```
 git worktree add --detach \
-    <state_dir>/validated-work/<issue>/<evidence_id>/publication/workspace  <pinned_validated_ref>
+    <state_dir>/validated-work-publications/<issue>/<path-safe-evidence-id>/publication/workspace \
+    <pinned_validated_ref>
 ```
 
 Not "rehydrate if the original is gone" — *always*. The §1.1 exit that matters most
@@ -2361,14 +2362,16 @@ never allocates a fictitious coding run or infers one from a path. The escrow
 owner exposes `read_capture()` so verification and immutable bytes cross one
 boundary together, without a second consumer reopening unchecked source paths.
 
-`publication-owner.json` is atomically published and synced in the capture directory
+`publication-owner.json` is atomically published and synced in the disposable
+publication asset directory
 before allocation. Receipt and artifact bytes are first written under a private
 escrow `.tmp` allocation, then linked to their final name without replacement;
 a crash leaves diagnosable private staging, never a torn authoritative file. It binds the common Git directory, work key, evidence ID and exact
 checkout path. It survives removal of the publication directory and is deleted
 last, so interrupted setup and cleanup can both replay. Unknown contents,
-modified artifacts, attached or changed HEADs, dirty/ignored files and symlinks
-are retained and refused. Tracked content is checked against the exact Git tree's
+modified artifacts, attached or changed HEADs, unknown dirty/ignored files and
+symlinks are retained and refused. Explicitly owned setup/runtime outputs are
+allowed and removed with the disposable workspace. Tracked content is checked against the exact Git tree's
 blob bytes and file modes, independently of Git's cached status; assume-unchanged,
 skip-worktree and fsmonitor-valid index flags are refused. Checkout filters that
 transform canonical blob bytes are also refused rather than treating their output
@@ -3785,7 +3788,7 @@ The contract moves the retention boundary off the worktree:
 | Escrowed capture envelope + completion/validation/exchange-summary copies | `<state_dir>/validated-work/<issue>/<evidence_id>/` | escrow retention sweep only |
 | Superseded **and attached** evidence (§2.1.3) | its own `<evidence_id>/` directory and refs | same window, measured from the owning record's `terminal_at` — role is irrelevant to retention, and superseding never deletes |
 | Run-ledger rows (§2.5) | `issue_run_ledger.sqlite` | `release_runs()`, only once the issue has no unresolved record — the ledger is what proves the runs were considered |
-| Publication workspace (§4.4a) | `<state_dir>/validated-work/<issue>/<evidence_id>/publication/workspace/` | removed on a resolved row; recreated idempotently from the pinned ref, so its loss is never a data-loss event |
+| Publication workspace (§4.4a) | `<state_dir>/validated-work-publications/<issue>/<path-safe-evidence-id>/publication/workspace/` | removed on a resolved row; recreated idempotently from the pinned ref, so its loss is never a data-loss event |
 | Validated commits | pinned by `refs/issue-orchestrator/validated/<issue>/<evidence_id>` in the shared object store | ref deletion on a RESOLVED record + retention window |
 | Unvalidated commits on top of them (§1.1) | pinned by `refs/issue-orchestrator/observed/<issue>/<evidence_id>` when the worktree head differs | same window as the validated ref |
 | Live run directory | inside the worktree (unchanged) | worktree removal (now non-fatal) |

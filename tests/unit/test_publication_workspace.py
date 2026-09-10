@@ -5,10 +5,19 @@ from dataclasses import replace
 
 import pytest
 
+from issue_orchestrator.domain.completion_intake import CompletionIntakeError
 from issue_orchestrator.execution.publication_workspace import EscrowPublicationWorkspaces
-from issue_orchestrator.domain.validated_work_escrow import evidence_pins
+from issue_orchestrator.domain.validated_work_escrow import evidence_pins, publication_locator
 from .git_escrow_support import git_rig, real_capture
 from .test_validated_work_escrow import escrow_for
+
+
+def publication_root(escrow):
+    return escrow.root.parent / "validated-work-publications"
+
+
+def publication_directory(escrow, admission):
+    return publication_root(escrow) / publication_locator(admission.evidence) / "publication"
 
 
 @pytest.fixture
@@ -23,14 +32,15 @@ def prepared(tmp_path, monkeypatch):
     escrow.capture(admission, sources)
     before = escrow.read_capture(admission.escrow_dir)
     rig.run("worktree", "remove", "--force", str(original))
-    owner = EscrowPublicationWorkspaces(root=escrow.root, repository=rig.root,
-                                       repo_slug="owner/repo", escrow=escrow, git=rig.git)
+    owner = EscrowPublicationWorkspaces(root=publication_root(escrow), repository=rig.root,
+                                       repo_slug="owner/repo", escrow=escrow, git=rig.git, prepare=lambda _: None)
     return rig, admission, escrow, owner, before
 
 
 def test_reconstructs_exact_detached_work_and_verified_artifacts_after_original_is_gone(prepared):
     rig, admission, escrow, owner, capture = prepared
     workspace = owner.prepare(admission)
+    assert all(":" not in part for part in workspace.checkout.parts)
     assert rig.git.head_sha(workspace.checkout) == rig.target
     assert rig.git.run(workspace.checkout, ["symbolic-ref", "-q", "HEAD"], check=False).returncode == 1
     assert workspace.artifacts.completion.read_bytes() == capture.completion
@@ -45,6 +55,156 @@ def test_reconstructs_exact_detached_work_and_verified_artifacts_after_original_
     assert escrow.read_capture(admission.escrow_dir) == capture
     escrow.verify_pins(admission)
     owner.release(admission)
+
+
+def test_prepares_runtime_and_releases_owned_setup_output(prepared):
+    rig, admission, escrow, _, _ = prepared
+    prepared_paths = []
+
+    def prepare_runtime(workspace):
+        prepared_paths.append(workspace)
+        runtime = workspace / ".venv"
+        runtime.mkdir(exist_ok=True)
+        (runtime / "ready").write_text("prepared")
+
+    owner = EscrowPublicationWorkspaces(root=publication_root(escrow), repository=rig.root,
+        repo_slug="owner/repo", escrow=escrow, git=rig.git, prepare=prepare_runtime)
+    workspace = owner.prepare(admission)
+    assert prepared_paths == [workspace.checkout]
+    assert (workspace.checkout / ".venv" / "ready").read_text() == "prepared"
+    owner.release(admission)
+    assert not workspace.checkout.exists()
+
+
+def test_failed_runtime_setup_is_retryable_without_weakening_source_checks(prepared):
+    rig, admission, escrow, _, _ = prepared
+    attempts = 0
+
+    def prepare_runtime(workspace):
+        nonlocal attempts
+        attempts += 1
+        (workspace / ".venv").mkdir(exist_ok=True)
+        if attempts == 1:
+            raise RuntimeError("dependency service unavailable")
+
+    owner = EscrowPublicationWorkspaces(root=publication_root(escrow), repository=rig.root,
+        repo_slug="owner/repo", escrow=escrow, git=rig.git, prepare=prepare_runtime)
+    with pytest.raises(CompletionIntakeError, match="workspace setup failed"):
+        owner.prepare(admission)
+    workspace = owner.prepare(admission)
+    assert attempts == 2
+    owner.release(admission)
+
+
+def test_mutable_runtime_ignore_cannot_authorize_publication_cleanup(prepared):
+    _, admission, _, owner, _ = prepared
+    workspace = owner.prepare(admission)
+    ignore = workspace.checkout / ".issue-orchestrator" / "runtime-ignore"
+    ignore.parent.mkdir(exist_ok=True)
+    ignore.write_text("*\n")
+    operator_work = workspace.checkout / "operator-work"
+    operator_work.write_text("preserve")
+
+    for operation in (owner.prepare, owner.release):
+        with pytest.raises(ValueError, match="dirty publication checkout"):
+            operation(admission)
+        assert operator_work.read_text() == "preserve"
+
+
+def test_prepare_unlinks_redirected_runtime_root_before_setup(prepared, tmp_path):
+    rig, admission, escrow, owner, _ = prepared
+    workspace = owner.prepare(admission)
+    external = tmp_path / "external-runtime"
+    external.mkdir()
+    runtime = workspace.checkout / ".venv"
+    runtime.symlink_to(external, target_is_directory=True)
+
+    def prepare_runtime(checkout):
+        runtime_root = checkout / ".venv"
+        runtime_root.mkdir()
+        (runtime_root / "ready").write_text("prepared")
+
+    retrying = EscrowPublicationWorkspaces(root=publication_root(escrow), repository=rig.root,
+        repo_slug="owner/repo", escrow=escrow, git=rig.git, prepare=prepare_runtime)
+    assert retrying.prepare(admission) == workspace
+    assert not (external / "ready").exists()
+    assert not runtime.is_symlink()
+    assert (runtime / "ready").read_text() == "prepared"
+    retrying.release(admission)
+
+
+def test_prepare_refuses_committed_redirected_runtime_root(prepared, tmp_path):
+    rig, _, escrow, _, _ = prepared
+    external = tmp_path / "external-runtime"
+    external.mkdir()
+    (rig.root / ".venv").symlink_to(external, target_is_directory=True)
+    rig.run("add", ".venv")
+    rig.run("commit", "-m", "track redirected runtime root")
+    rig.target = rig.run("rev-parse", "HEAD")
+    admission, sources = real_capture(rig, tmp_path / "redirect-source")
+    escrow.capture(admission, sources)
+    setup_called = False
+
+    def prepare_runtime(checkout):
+        nonlocal setup_called
+        setup_called = True
+        (checkout / ".venv" / "escaped").write_text("unsafe")
+
+    owner = EscrowPublicationWorkspaces(root=publication_root(escrow), repository=rig.root,
+        repo_slug="owner/repo", escrow=escrow, git=rig.git, prepare=prepare_runtime)
+    with pytest.raises(ValueError, match="setup root redirects"):
+        owner.prepare(admission)
+    assert not setup_called
+    assert not (external / "escaped").exists()
+
+
+def test_retry_cleanup_preserves_tracked_files_in_mixed_runtime_root(prepared, tmp_path):
+    rig, _, escrow, _, _ = prepared
+    dist = rig.root / "packages" / "vscode" / "dist"
+    dist.mkdir(parents=True)
+    (dist / "index.js").write_text("tracked")
+    rig.run("add", "packages/vscode/dist/index.js", "-f")
+    rig.run("commit", "-m", "track generated-directory input")
+    rig.target = rig.run("rev-parse", "HEAD")
+    admission, sources = real_capture(rig, tmp_path / "mixed-root-source")
+    escrow.capture(admission, sources)
+
+    def prepare_runtime(checkout):
+        generated = checkout / "packages" / "vscode" / "dist" / "generated.cache"
+        generated.write_text("generated")
+
+    owner = EscrowPublicationWorkspaces(root=publication_root(escrow), repository=rig.root,
+        repo_slug="owner/repo", escrow=escrow, git=rig.git, prepare=prepare_runtime)
+    workspace = owner.prepare(admission)
+    assert owner.prepare(admission) == workspace
+    assert (workspace.checkout / "packages/vscode/dist/index.js").read_text() == "tracked"
+    assert (workspace.checkout / "packages/vscode/dist/generated.cache").read_text() == "generated"
+    owner.release(admission)
+
+
+def test_prepare_refuses_runtime_output_that_git_clean_cannot_remove(prepared, tmp_path):
+    rig, admission, escrow, owner, _ = prepared
+    workspace = owner.prepare(admission)
+    external = tmp_path / "external-runtime"
+    external.mkdir()
+    runtime = workspace.checkout / ".venv"
+    runtime.mkdir()
+    rig.git.run(runtime, ["init"])
+    (runtime / "lib").symlink_to(external, target_is_directory=True)
+    setup_called = False
+
+    def prepare_runtime(checkout):
+        nonlocal setup_called
+        setup_called = True
+        (checkout / ".venv" / "lib" / "escaped").write_text("unsafe")
+
+    retrying = EscrowPublicationWorkspaces(root=publication_root(escrow), repository=rig.root,
+        repo_slug="owner/repo", escrow=escrow, git=rig.git, prepare=prepare_runtime)
+    with pytest.raises(ValueError, match="dirty publication checkout"):
+        retrying.prepare(admission)
+    assert not setup_called
+    assert not (external / "escaped").exists()
+    assert runtime.exists()
 
 
 @pytest.mark.parametrize("damage", ["tracked", "untracked", "ignored", "head", "branch", "artifact", "unknown-run", "unknown-root"])
@@ -129,7 +289,8 @@ def test_owned_partial_creation_or_release_can_resume(prepared, phase):
 
 def test_unowned_directory_is_not_adopted_or_removed(prepared):
     _, admission, escrow, owner, _ = prepared
-    directory = escrow.root / admission.escrow_dir / "publication"
+    directory = publication_directory(escrow, admission)
+    directory.parent.mkdir(parents=True)
     directory.mkdir()
     (directory / "operator-work").write_text("keep")
     for operation in (owner.prepare, owner.release):
@@ -199,12 +360,12 @@ def test_allocation_crash_before_git_dispatch_replays_from_durable_receipt(prepa
             raise OSError("crash before checkout creation")
         return rig.git.run(repo, argv, **kwargs)
     git.run.side_effect = run
-    interrupted = EscrowPublicationWorkspaces(root=escrow.root, repository=rig.root,
-                    repo_slug="owner/repo", escrow=escrow, git=git)
+    interrupted = EscrowPublicationWorkspaces(root=publication_root(escrow), repository=rig.root,
+                    repo_slug="owner/repo", escrow=escrow, git=git, prepare=lambda _: None)
     with pytest.raises(OSError, match="crash"):
         interrupted.prepare(admission)
-    owner = EscrowPublicationWorkspaces(root=escrow.root, repository=rig.root,
-                    repo_slug="owner/repo", escrow=escrow, git=rig.git)
+    owner = EscrowPublicationWorkspaces(root=publication_root(escrow), repository=rig.root,
+                    repo_slug="owner/repo", escrow=escrow, git=rig.git, prepare=lambda _: None)
     workspace = owner.prepare(admission)
     assert rig.git.head_sha(workspace.checkout) == admission.evidence.identity.key.validated_head_sha
     owner.release(admission)
@@ -236,8 +397,8 @@ def test_exact_blob_check_does_not_trust_an_unchanged_stat_cache(prepared):
             return GitResult(argv, 0, "", "")
         return rig.git.run(repo, argv, **kwargs)
     git.run.side_effect = run
-    checking = EscrowPublicationWorkspaces(root=escrow.root, repository=rig.root,
-                    repo_slug="owner/repo", escrow=escrow, git=git)
+    checking = EscrowPublicationWorkspaces(root=publication_root(escrow), repository=rig.root,
+                    repo_slug="owner/repo", escrow=escrow, git=git, prepare=lambda _: None)
     for operation in (checking.prepare, checking.release):
         with pytest.raises(ValueError, match="content differs"):
             operation(admission)
@@ -267,8 +428,7 @@ def test_interrupted_atomic_publication_cannot_leave_a_torn_final_file(prepared,
     assert workspace.artifacts.completion.read_bytes() == escrow.read_capture(admission.escrow_dir).completion
     owner.release(admission)
     assert not workspace.checkout.exists()
-    _, report = escrow.inventory()
-    assert report.problems  # Interrupted staging is retained for diagnosis.
+    assert any((publication_root(escrow) / ".tmp").iterdir())
 
 
 def test_atomic_write_never_replaces_an_existing_final_name(tmp_path):
@@ -325,12 +485,12 @@ def test_interrupted_git_initialization_preserves_remnants_and_replays(prepared,
             raise OSError("interrupted checkout move")
         return rig.git.run(repo, argv, **kwargs)
     git.run.side_effect = run
-    interrupted = EscrowPublicationWorkspaces(root=escrow.root, repository=rig.root,
-                    repo_slug="owner/repo", escrow=escrow, git=git)
+    interrupted = EscrowPublicationWorkspaces(root=publication_root(escrow), repository=rig.root,
+                    repo_slug="owner/repo", escrow=escrow, git=git, prepare=lambda _: None)
     with pytest.raises(OSError, match="interrupted checkout"):
         interrupted.prepare(admission)
-    owner = EscrowPublicationWorkspaces(root=escrow.root, repository=rig.root,
-                    repo_slug="owner/repo", escrow=escrow, git=rig.git)
+    owner = EscrowPublicationWorkspaces(root=publication_root(escrow), repository=rig.root,
+                    repo_slug="owner/repo", escrow=escrow, git=rig.git, prepare=lambda _: None)
     workspace = owner.prepare(admission)
     assert rig.git.head_sha(workspace.checkout) == rig.target
     assert str(workspace.checkout) in rig.run("worktree", "list", "--porcelain")

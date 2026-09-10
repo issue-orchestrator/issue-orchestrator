@@ -57,6 +57,7 @@ def build_completion_intake(
         ConfiguredCompletionEvidenceValidator,
     )
     from ..control.historical_completion_intake import HistoricalCompletionIntake
+    from ..control.worktree_context import prepare_worktree_environment
     from ..execution.historical_intake_custody import (
         HistoricalIntakeCustody,
         IsolatedCompletionValidationWorkspace,
@@ -66,7 +67,15 @@ def build_completion_intake(
     validator = ConfiguredCompletionEvidenceValidator(
         working_copy,
         command_runner,
-        IsolatedCompletionValidationWorkspace(root, git),
+        IsolatedCompletionValidationWorkspace(
+            root,
+            git,
+            lambda worktree: prepare_worktree_environment(
+                config=config,
+                command_runner=command_runner,
+                worktree_path=worktree,
+            ),
+        ),
         command=config.validation.quick.cmd,
         timeout_seconds=config.validation.quick.timeout_seconds,
     )

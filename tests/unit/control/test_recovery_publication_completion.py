@@ -58,8 +58,8 @@ def completion(publication):
     finalizer = StagedPublishedWorkFinalizer(effects=rig.effects, phases=rig.store,
         recovery=aggregate, fresh_issue_reader=labels, action_applier=labels,
         review_policy=RetryReviewPolicy(code_review_agent_configured=True), routing_label="pr-pending")
-    workspaces = EscrowPublicationWorkspaces(root=rig.custody.escrow.root, repository=rig.custody.repo,
-        repo_slug="owner/repo", escrow=rig.custody.escrow, git=rig.custody.git)
+    workspaces = EscrowPublicationWorkspaces(root=rig.custody.escrow.root.parent / "validated-work-publications", repository=rig.custody.repo,
+        repo_slug="owner/repo", escrow=rig.custody.escrow, git=rig.custody.git, prepare=lambda _: None)
     def build_owner(assets):
         cleanup = RecoveryPublicationCleanup(store=rig.store, effects=rig.effects,
             blocks=aggregate, workspaces=assets, gate=gate)

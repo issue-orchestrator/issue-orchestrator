@@ -35,10 +35,10 @@ class RemoteAuthorityRefreshRequest:
             raise ValueError("remote authority refresh requires unobserved authority")
         if self.state is ValidatedWorkState.PUBLISHING and self.failure is None:
             return
-        if (
-            self.state is ValidatedWorkState.PARKED
-            and self.failure is ValidatedWorkFailure.REMOTE_UNREADABLE
-        ):
+        if self.state is ValidatedWorkState.PARKED and self.failure in {
+            None,
+            ValidatedWorkFailure.REMOTE_UNREADABLE,
+        }:
             return
         raise ValueError("remote authority refresh requires a retryable disposition")
 
@@ -61,11 +61,10 @@ class RemoteAuthorityRefreshRequest:
             return "Remote authority was already observed"
         if self.state is ValidatedWorkState.PUBLISHING:
             return None
-        if (
-            self.state is ValidatedWorkState.PARKED
-            and self.failure is ValidatedWorkFailure.REMOTE_UNREADABLE
-            and disposition.lineage_role is LineageRole.HEAD
-        ):
+        if self.state is ValidatedWorkState.PARKED and self.failure in {
+            None,
+            ValidatedWorkFailure.REMOTE_UNREADABLE,
+        } and disposition.lineage_role is LineageRole.HEAD:
             return None
         return "Retained work is not eligible for automatic remote refresh"
 
@@ -88,8 +87,8 @@ class RemoteAuthorityDecision:
             raise ValueError("remote authority decision requires a typed state")
         if self.failure is not None and type(self.failure) is not ValidatedWorkFailure:
             raise ValueError("remote authority decision requires a typed failure")
-        if (self.state is ValidatedWorkState.QUEUED) != (self.failure is None):
-            raise ValueError("only a failure-free remote authority decision may queue")
+        if self.state is ValidatedWorkState.QUEUED and self.failure is not None:
+            raise ValueError("queued remote authority decisions cannot carry a failure")
         if self.failure not in {
             None,
             ValidatedWorkFailure.DUPLICATE_OPEN_PR,
@@ -151,6 +150,16 @@ def refreshed_remote_authority(
             ValidatedWorkState.PARKED,
             failure,
             f"Remote authority refreshed; {failure.value}",
+        )
+    if (
+        record.disposition.state is ValidatedWorkState.PARKED
+        and record.disposition.failure is None
+    ):
+        return RemoteAuthorityDecision(
+            observations,
+            ValidatedWorkState.PARKED,
+            None,
+            "Remote authority refreshed; explicit recovery approval still required",
         )
     return RemoteAuthorityDecision(
         observations,

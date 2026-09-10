@@ -32,6 +32,12 @@ def escrow_locator(evidence: ValidatedWorkEvidence) -> str:
     return f"{evidence.identity.key.issue_number}/{evidence.evidence_id}"
 
 
+def publication_locator(evidence: ValidatedWorkEvidence) -> str:
+    """Return the path-safe locator for disposable publication assets."""
+    issue = evidence.identity.key.issue_number
+    return f"{issue}/{evidence.evidence_id.replace(':', '-')}"
+
+
 def evidence_pins(evidence: ValidatedWorkEvidence) -> tuple[tuple[str, str], ...]:
     key = evidence.identity.key
     # ':' is forbidden by git-check-ref-format. This encoding is lossless for v1 IDs.

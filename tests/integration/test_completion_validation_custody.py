@@ -52,7 +52,7 @@ def intake(tmp_path: Path, validation_command: str):
         ConfiguredCompletionEvidenceValidator(
             GitWorkingCopy(git),
             LocalCommandRunner(),
-            IsolatedCompletionValidationWorkspace(state, git),
+            IsolatedCompletionValidationWorkspace(state, git, lambda _path: None),
             command=validation_command,
             timeout_seconds=30,
         ),

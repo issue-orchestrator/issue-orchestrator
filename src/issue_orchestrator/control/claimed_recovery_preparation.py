@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from functools import partial
 
+from ..domain.completion_intake import CompletionIntakeError
 from ..domain.completion_processing import ProcessingResult
 from ..domain.issue_disposition_gate import IssueDispositionGateStatus
 from ..domain.recovery_attempt import RecoveryAttemptPending
@@ -58,7 +59,11 @@ class ClaimedRecoveryPreparation:
         with self._gate.try_acquire(self._repo, key.issue_number) as acquired:
             if acquired is IssueDispositionGateStatus.BUSY:
                 return RecoveryAttemptPending("Issue disposition mutation is busy")
-            workspace = perform(lambda: self._workspaces.prepare(record.current_evidence.admission))
+            try:
+                workspace = perform(lambda: self._workspaces.prepare(
+                    record.current_evidence.admission))
+            except CompletionIntakeError as error:
+                return RecoveryAttemptPending(str(error), ValidatedWorkFailure.WORKSPACE_INTEGRITY)
         prepared = perform(lambda: self._preparation.prepare(record.current_evidence, workspace, issue.title))
         if isinstance(prepared, ProcessingResult):
             return RecoveryAttemptPending(prepared.message)

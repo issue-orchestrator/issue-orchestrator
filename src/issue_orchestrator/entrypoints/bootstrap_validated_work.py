@@ -154,6 +154,7 @@ def build_validated_work_runtime(
         OperatorValidatedWorkAbandonment,
     )
     from ..control.validated_work_effects import FencedValidatedWorkEffects
+    from ..control.worktree_context import prepare_worktree_environment
     from ..execution.publication_workspace import EscrowPublicationWorkspaces
     from ..execution.git_tools import create_git
     from ..execution.validated_work_ancestry import GitValidatedWorkAncestry
@@ -213,11 +214,16 @@ def build_validated_work_runtime(
     custody = ValidatedWorkCustody(escrow, blocks)
     repair = EscrowReconciliation(escrow=escrow, store=blocks)
     workspaces = EscrowPublicationWorkspaces(
-        root=escrow.root,
+        root=root / "validated-work-publications",
         repository=config.repo_root,
         repo_slug=config.repo,
         escrow=escrow,
         git=git,
+        prepare=lambda worktree: prepare_worktree_environment(
+            config=config,
+            command_runner=command_runner,
+            worktree_path=worktree,
+        ),
     )
     return ValidatedWorkRecoveryOwners(
         store=blocks,

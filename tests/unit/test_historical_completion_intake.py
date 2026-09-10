@@ -42,7 +42,7 @@ from issue_orchestrator.ports.command_runner import CommandResult, CommandRunner
 from tests.unit.test_completion_evidence_intake import completion
 
 
-def historical(tmp_path: Path):
+def historical(tmp_path: Path, *, prepare=None):
     repo = tmp_path / "repo"
     repo.mkdir(parents=True)
     git = create_git(LocalCommandRunner())
@@ -74,7 +74,9 @@ def historical(tmp_path: Path):
     validator = ConfiguredCompletionEvidenceValidator(
         wc,
         runner,
-        IsolatedCompletionValidationWorkspace(state, git),
+        IsolatedCompletionValidationWorkspace(
+            state, git, prepare or (lambda _path: None)
+        ),
         command="configured-validation",
         timeout_seconds=30,
     )
@@ -109,6 +111,29 @@ def historical(tmp_path: Path):
         "recover sidecar",
     )
     return owner, ledger, command, runner
+
+
+def test_isolated_checkout_is_prepared_before_configured_validation(tmp_path):
+    def prepare(workspace: Path) -> None:
+        (workspace / ".git" / "runtime-ready").write_text("prepared")
+
+    owner, _, command, runner = historical(tmp_path, prepare=prepare)
+
+    assert isinstance(owner.import_historical(command), HistoricalIntakeParked)
+    workspace = runner.run.call_args.kwargs["cwd"]
+    assert (workspace / ".git" / "runtime-ready").read_text() == "prepared"
+
+
+def test_workspace_setup_failure_is_a_retained_prerequisite_failure(tmp_path):
+    def fail_setup(_workspace: Path) -> None:
+        raise RuntimeError("setup failed")
+
+    owner, _, command, runner = historical(tmp_path, prepare=fail_setup)
+
+    assert owner.import_historical(command) == HistoricalIntakeRefused(
+        HistoricalIntakeRefusal.PREREQUISITE_UNAVAILABLE
+    )
+    runner.run.assert_not_called()
 
 
 def test_fresh_failed_validation_then_success_always_parks(tmp_path):
