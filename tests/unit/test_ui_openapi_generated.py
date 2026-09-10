@@ -22,8 +22,35 @@ def test_ui_openapi_artifacts_match_generated(tmp_path: Path) -> None:
 
     generate_artifacts(python_out=python_out, dts_out=dts_out)
 
-    assert python_out.read_text() == Path("src/issue_orchestrator/contracts/ui_openapi_models.py").read_text()
-    assert dts_out.read_text() == Path("src/issue_orchestrator/static/js/ui-contracts.d.ts").read_text()
+    assert (
+        python_out.read_text()
+        == Path("src/issue_orchestrator/contracts/ui_openapi_models.py").read_text()
+    )
+    assert (
+        dts_out.read_text()
+        == Path("src/issue_orchestrator/static/js/ui-contracts.d.ts").read_text()
+    )
+
+
+def test_control_center_recovery_read_is_registered_in_ui_openapi() -> None:
+    from issue_orchestrator.contracts.ui_openapi_generator import load_schema
+
+    operation = load_schema()["paths"][
+        "/api/control-center/repositories/{repo_key}/validated-work"
+    ]["get"]
+    assert operation["operationId"] == "getControlCenterValidatedWork"
+    assert operation["parameters"] == [
+        {
+            "name": "repo_key",
+            "in": "path",
+            "required": True,
+            "schema": {"type": "string", "pattern": "^repo-[0-9a-f]{64}$"},
+            "description": "Opaque key issued by the configured repository registry",
+        }
+    ]
+    assert operation["responses"]["200"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/ControlCenterRecoveryRowsPayload"
+    }
 
 
 def _python_class_body(source: str, class_name: str) -> str:
@@ -158,8 +185,7 @@ def test_ui_openapi_generator_preserves_array_cardinality() -> None:
 
     assert "empty: list[str] = Field(..., max_length=0)" in python_models
     assert (
-        "populated: list[str] = Field(..., min_length=1, max_length=3)"
-        in python_models
+        "populated: list[str] = Field(..., min_length=1, max_length=3)" in python_models
     )
 
 
@@ -183,9 +209,7 @@ def test_ui_openapi_generator_keeps_nullable_constrained_integers_strict() -> No
 
     python_models = render_python_models(components)
 
-    assert (
-        "pr_number: int | None = Field(..., ge=1, strict=True)" in python_models
-    )
+    assert "pr_number: int | None = Field(..., ge=1, strict=True)" in python_models
 
 
 def test_ui_openapi_generator_keeps_boolean_fields_strict() -> None:
@@ -207,9 +231,7 @@ def test_ui_openapi_generator_keeps_boolean_fields_strict() -> None:
     python_models = render_python_models(components)
 
     assert "retained: bool = Field(..., strict=True)" in python_models
-    assert (
-        "maybe_retained: bool | None = Field(..., strict=True)" in python_models
-    )
+    assert "maybe_retained: bool | None = Field(..., strict=True)" in python_models
 
 
 def test_ui_openapi_generator_renders_bare_enum_component_as_reusable_alias() -> None:
@@ -240,7 +262,9 @@ def test_ui_openapi_generator_renders_bare_enum_component_as_reusable_alias() ->
     python_models = render_python_models(components)
     dts_types = render_dts_types(components)
 
-    assert "ViewEnum: TypeAlias = Literal['user', 'ops', 'debug', 'raw']" in python_models
+    assert (
+        "ViewEnum: TypeAlias = Literal['user', 'ops', 'debug', 'raw']" in python_models
+    )
     # No empty model was emitted for the enum component.
     assert "class ViewEnum(BaseModel)" not in python_models
     # The referencing field resolves to the alias name.
@@ -287,7 +311,12 @@ def test_ui_openapi_generator_detects_nullable_schema_variants() -> None:
         resolve_type(
             {
                 "type": ["string", "null"],
-                "enum": ["validation_artifacts", "session_evidence", "diagnostics", None],
+                "enum": [
+                    "validation_artifacts",
+                    "session_evidence",
+                    "diagnostics",
+                    None,
+                ],
             }
         )
         == "Literal['validation_artifacts', 'session_evidence', 'diagnostics'] | None"

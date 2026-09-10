@@ -22,6 +22,7 @@ from ..execution.control_center_runtime import (
 )
 from ..infra.repo_identity import deserialize_repo_identity
 from .control_api_repo_support import ControlApiRepoDependency
+from .control_api_recovery_routes import control_recovery_router
 
 logger = logging.getLogger(__name__)
 
@@ -410,6 +411,9 @@ async def discover_repos_endpoint(
 
     discovered = discover_repos(search_paths=paths_to_search, max_depth=max_depth)
     return JSONResponse({"discovered": discovered})
+
+
+control_repo_router.include_router(control_recovery_router)
 
 
 __all__ = ["control_repo_router"]
