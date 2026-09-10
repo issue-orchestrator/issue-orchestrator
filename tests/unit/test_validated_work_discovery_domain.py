@@ -9,6 +9,7 @@ import pytest
 from issue_orchestrator.domain.validated_work import (
     FinalizationPhase,
     LineageRole,
+    RemoteBaselineStatus,
     ValidatedWorkKey,
     ValidatedWorkState,
 )
@@ -42,6 +43,7 @@ def _snapshot(
         worktree_head_sha=key.validated_head_sha,
         branch_name=key.branch_name,
         expected_remote_head_sha=None,
+        remote_baseline_status=RemoteBaselineStatus.UNOBSERVED,
         superseded_evidence_ids=(),
         attached_evidence_ids=(),
         lineage_role=LineageRole.HEAD,
@@ -60,6 +62,9 @@ def _snapshot(
 
 def test_snapshot_rejects_disagreeing_identity_and_action_shapes() -> None:
     snapshot = _snapshot()
+
+    assert snapshot.authority.record_id == snapshot.record_id
+    assert snapshot.authority.remote_baseline_status is RemoteBaselineStatus.UNOBSERVED
 
     with pytest.raises(ValueError, match="branches disagree"):
         replace(snapshot, branch_name="other")
@@ -83,6 +88,10 @@ def test_snapshot_rejects_disagreeing_identity_and_action_shapes() -> None:
             can_abandon=False,
             abandon_unavailable=AbandonStatus.ATTACHED_EVIDENCE_PENDING,
         )
+    with pytest.raises(ValueError, match="remote baseline status"):
+        replace(snapshot, remote_baseline_status="unobserved")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="unobserved snapshot"):
+        replace(snapshot, expected_remote_head_sha="2" * 40)
 
 
 def test_discovery_accepts_empty_success_and_rejects_ambiguous_unavailability() -> None:

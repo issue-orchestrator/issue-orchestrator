@@ -23,6 +23,7 @@ from issue_orchestrator.domain.repository_engine_lifecycle import (
 from issue_orchestrator.domain.validated_work import (
     FinalizationPhase,
     LineageRole,
+    RemoteBaselineStatus,
     ValidatedWorkKey,
     ValidatedWorkState,
 )
@@ -70,6 +71,7 @@ def _snapshot(
         worktree_head_sha=key.validated_head_sha,
         branch_name=key.branch_name,
         expected_remote_head_sha=None,
+        remote_baseline_status=RemoteBaselineStatus.UNOBSERVED,
         superseded_evidence_ids=(),
         attached_evidence_ids=(),
         lineage_role=LineageRole.HEAD,

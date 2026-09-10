@@ -206,6 +206,11 @@ def test_discovery_orders_unresolved_records_and_maps_current_facts(
     assert parked.record_id == earlier.evidence.record_id
     assert parked.worktree_head_sha == ROOT
     assert parked.observation_revision == 0
+    assert (
+        parked.remote_baseline_status
+        is earlier.evidence.observations.remote_baseline_status
+    )
+    assert parked.authority.remote_baseline_status is parked.remote_baseline_status
     assert parked.escrow_retained
     assert parked.can_recover
     assert parked.can_abandon
