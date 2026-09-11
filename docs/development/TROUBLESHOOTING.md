@@ -417,6 +417,47 @@ If a fixture starts failing because the contract LEGITIMATELY changed
 (matcher logic, view-model shape), re-bless it by re-running the
 snapshot script against the same run.
 
+## Tech Lead Pattern Registry
+
+**Symptom:** `flag_pattern` fails with a shared pattern-registry error, or a
+case-file marker is found without a registry mapping.
+
+The cross-client authority is the Git ref
+`refs/issue-orchestrator/registry/tech-lead-patterns`. Its commit message is a
+strict, versioned JSON ledger. The local `.issue-orchestrator` authority SQLite
+database is a replica and rolling-upgrade source; GitHub issue titles, bodies,
+and comments are evidence only. A configuration with
+`tech_lead.authority.flag_pattern: execute` therefore needs repository
+Contents write permission in addition to issue permissions; startup creates or
+updates the empty/shared registry and fails immediately if that authority is
+unavailable.
+
+Inspect the shared ref without changing it:
+
+```bash
+git fetch origin refs/issue-orchestrator/registry/tech-lead-patterns
+git show --format=%B --no-patch FETCH_HEAD
+```
+
+An active creation or evidence reservation names its claimant and expiry. A
+reservation that has not started publication may be taken over after expiry;
+creation recovery first performs an authoritative marker lookup. Once its
+`publication_started_at` is present, the operation deliberately does not
+expire: GitHub supplies no idempotency key that could fence a delayed issue or
+comment request. Another client may finalize the operation after its exact
+marker or comment receipt becomes observable, but an absent receipt preserves
+the ambiguous operation and blocks republication. This state merits inspection
+only if it persists beyond GitHub's normal visibility delay; never clear it or
+retry the write without first accounting for a delayed remote result. If an
+issue exists with no shared or local mapping, restore the trusted local
+authority database from backup and restart so startup can import it. Do not
+reconstruct a mapping from editable issue prose or delete the shared ref:
+either action can create a second canonical case file and split its evidence.
+
+An unreadable or forward-version registry fails closed. Upgrade the older
+client or restore the ref to a known valid commit; the orchestrator deliberately
+does not treat an unreadable record as an empty registry.
+
 ## Claude Session Logs
 
 Each Claude Code session creates logs useful for debugging:

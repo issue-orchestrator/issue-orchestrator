@@ -53,6 +53,7 @@ if TYPE_CHECKING:
     )
     from ..ports.promotion_target import PromotionTargetHost
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
+    from ..ports.pattern_registry import PatternCaseFileRegistry
     from .retry_history_state import ExpediteLane
     from .session_history import SessionHistoryOwner
     from .tech_lead_kill_session import TechLeadKillSessionExecutor
@@ -212,6 +213,7 @@ class ActionApplier:
         "TechLeadValidatedWorkRecoveryExecutor"
     ] = None
     tech_lead_ops: Optional["TechLeadAuthorityStore"] = None
+    pattern_registry: Optional["PatternCaseFileRegistry"] = None
     # Cross-repo filing seam for the finding-promotion lane (#6957). Unwired
     # means promotion actions fail loudly instead of silently no-oping — the
     # lane is only ever planned when tech_lead.findings is enabled.
@@ -311,6 +313,7 @@ class ActionApplier:
                 require_mutation_authority=self._require_mutation_authority,
                 repository_host=self.repository_host,
                 authority=self.tech_lead_ops,
+                pattern_registry=self.pattern_registry,
                 promotion_target=self.promotion_target,
             ),
             # Cleanup operations
@@ -1468,6 +1471,7 @@ class ActionApplier:
             repository_host=self.repository_host,
             events=self.events,
             ops=self.tech_lead_ops,
+            pattern_registry=self.pattern_registry,
             add_comment=self.repository_host.add_comment,
             emit_labels_changed=self._emit_issue_labels_changed,
             before_case_file_write=lambda: self._require_mutation_authority(action, reconciliation_subject_for(action)),

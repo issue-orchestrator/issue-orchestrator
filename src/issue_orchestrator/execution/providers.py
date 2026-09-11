@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from ..infra.config import Config
     from ..ports import RepositoryHost
     from ..ports.promotion_target import PromotionTargetHost
+    from ..ports.pattern_registry import PatternCaseFileRegistry
     from ..ports.repository_setup import RepositorySetupGitHubVerification
 
 
@@ -51,6 +52,30 @@ def create_repository_host(
     from ..adapters.github import GitHubAdapter
 
     return GitHubAdapter(repo=repo, config=config)
+
+
+def create_shared_pattern_registry(
+    repository_host: "RepositoryHost | None",
+    *,
+    claimant_id: str,
+    lease_seconds: int,
+) -> "PatternCaseFileRegistry | None":
+    """Build GitHub-backed pattern authority when the host supports it.
+
+    Adapter capability detection and access to the underlying GitHub client
+    stay on the execution side of the composition boundary. Offline and fake
+    hosts return ``None`` so the caller can select its explicit local mode.
+    """
+    from ..adapters.github.github_adapter import GitHubAdapter
+    from ..adapters.github.pattern_registry import GitHubRefPatternRegistry
+
+    if not isinstance(repository_host, GitHubAdapter):
+        return None
+    return GitHubRefPatternRegistry(
+        repository_host.http_client,
+        claimant_id=claimant_id,
+        lease_seconds=lease_seconds,
+    )
 
 
 def create_promotion_target_host(

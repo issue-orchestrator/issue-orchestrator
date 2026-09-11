@@ -1096,7 +1096,6 @@ def build_test_orchestrator_deps(
     from issue_orchestrator.execution.tech_lead_downloader import TechLeadDownloader
     manifest_downloader = TechLeadDownloader(
         repository_host=repo_host,
-        command_runner=command_runner,
     )
 
     # Create claim components (NullClaimManager by default for tests)
@@ -1171,6 +1170,10 @@ def build_test_orchestrator_deps(
 
     readiness_probe = provider_readiness_probe or NO_PROVIDER_READINESS_PROBE
 
+    from issue_orchestrator.control.pattern_registry import LocalPatternCaseFileRegistry
+
+    pattern_registry = LocalPatternCaseFileRegistry(tech_lead_authority)
+
     infra_services = InfraServices(
         pair_registry=pair_registry,
         budgeted_validation=DisabledBudgetedValidation(),
@@ -1188,6 +1191,7 @@ def build_test_orchestrator_deps(
         goal_pilot_store=goal_pilot_store,
         attempt_store=attempt_store,
         tech_lead_authority=tech_lead_authority,
+        pattern_registry=pattern_registry,
         open_issue_corpus=open_issue_corpus,
         # An EXPLICIT choice: this bounded composition keeps no durable history
         # and preserves no run artifacts (#6858 A2).

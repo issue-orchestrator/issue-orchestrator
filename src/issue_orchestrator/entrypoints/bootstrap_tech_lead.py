@@ -12,6 +12,7 @@ per read).
 from __future__ import annotations
 
 import logging
+import os
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
@@ -39,6 +40,7 @@ if TYPE_CHECKING:
     from ..ports.queue_cache_store import QueueCacheStore
     from ..ports.timeline_store import TimelineStore
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
+    from ..ports.pattern_registry import PatternCaseFileRegistry
     from ..ports.open_issue_corpus_store import OpenIssueCorpusStore
     from ..ports.working_copy import WorkingCopy
 
@@ -50,6 +52,7 @@ class TechLeadComposition:
     """Dependencies that must share one authority and projection owner."""
 
     authority: "TechLeadAuthorityStore"
+    pattern_registry: "PatternCaseFileRegistry"
     # ADR-0033's local visibility owner: what ran, when, and what it concluded.
     run_activity: "TechLeadRunActivity"
     open_issue_corpus: "OpenIssueCorpusManager"
@@ -144,6 +147,7 @@ def wire_tech_lead_act_executors(orchestrator: "Orchestrator") -> None:
     from ..control.scoped_rework import RequestReworkExecutor
     from ..control.pending_work_successors import PendingWorkSuccessors
     applier.tech_lead_ops = orchestrator.deps.services.tech_lead_authority
+    applier.pattern_registry = orchestrator.deps.services.pattern_registry
     if orchestrator.deps.repository_host is not None:
         applier.request_rework = RequestReworkExecutor(
             repository=orchestrator.deps.repository_host,
@@ -300,6 +304,7 @@ def create_tech_lead_composition(
 ) -> TechLeadComposition:
     """Build the tech_lead store and ensure both projections share one publisher."""
     authority = create_tech_lead_authority_store(config)
+    pattern_registry = create_pattern_registry(config, repository_host, authority)
     open_issue_corpus = create_open_issue_corpus_store(config)
     promotion_target = create_promotion_target_host(repository_host, config)
     from ..control.open_issue_corpus import OpenIssueCorpusManager
@@ -328,12 +333,46 @@ def create_tech_lead_composition(
         )
     return TechLeadComposition(
         authority=authority,
+        pattern_registry=pattern_registry,
         run_activity=create_tech_lead_run_activity(config),
         open_issue_corpus=open_issue_corpus_manager,
         board_publisher=board_publisher,
         fact_gatherer=fact_gatherer,
         promotion_target=promotion_target,
     )
+
+
+def create_pattern_registry(
+    config: "Config",
+    repository_host: "RepositoryHost | None",
+    authority: "TechLeadAuthorityStore",
+) -> "PatternCaseFileRegistry":
+    """Select shared GitHub authority or the explicit single-instance adapter."""
+    from ..control.pattern_registry import (
+        LocalPatternCaseFileRegistry,
+        MirroredPatternCaseFileRegistry,
+    )
+
+    if (
+        not config.tech_lead_enabled
+        or config.tech_lead.authority.flag_pattern != "execute"
+    ):
+        return LocalPatternCaseFileRegistry(authority)
+    from ..execution.providers import create_shared_pattern_registry
+
+    claimant_id = config.claims.claimant_id or f"orchestrator-{os.getpid()}"
+    shared = create_shared_pattern_registry(
+        repository_host,
+        claimant_id=claimant_id,
+        lease_seconds=config.claims.lease_seconds,
+    )
+    if shared is None:
+        return LocalPatternCaseFileRegistry(authority)
+    mirrored = MirroredPatternCaseFileRegistry(
+        shared=shared, local=authority, claimant_id=claimant_id
+    )
+    mirrored.synchronize()
+    return mirrored
 
 
 def create_promotion_target_host(
