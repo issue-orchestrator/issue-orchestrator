@@ -1,17 +1,22 @@
 import pytest
 from pydantic import ValidationError
 
-from issue_orchestrator.view_models.dialog_commands import DialogAction, OpenPathCommand
+from issue_orchestrator.view_models.dialog_commands import (
+    DialogAction,
+    OpenPathCommand,
+    build_dialog_action_sections,
+)
 from issue_orchestrator.view_models.dialogs import (
-    _build_validation_failure_action_sections,
-    build_blocked_issues_dialog,
     build_config_dialog,
     build_debug_dialog,
     build_doctor_dialog,
     build_info_dialog,
-    build_phase_dialog,
     build_session_diagnostics_dialog,
     build_validation_failure_dialog,
+)
+from issue_orchestrator.view_models.issue_state_dialogs import (
+    build_blocked_issues_dialog,
+    build_phase_dialog,
 )
 
 
@@ -202,7 +207,10 @@ def test_build_session_diagnostics_dialog_actions():
     assert rows["Prompt Mode"] == "arg"
     assert rows["Validation Status"] == "failed"
     assert rows["Validation Reason"] == "Missing packages/vscode/node_modules"
-    assert dialog["analysis"]["headline"] == "Validation failed: Missing packages/vscode/node_modules"
+    assert (
+        dialog["analysis"]["headline"]
+        == "Validation failed: Missing packages/vscode/node_modules"
+    )
     assert dialog["follow_up_issues"] == [
         {
             "title": "Open follow-up for env-sensitive test isolation",
@@ -225,7 +233,9 @@ def test_build_session_diagnostics_dialog_actions():
     assert all(set(action) == {"command", "group"} for action in dialog["actions"])
 
     def _command(kind: str) -> dict:
-        return next(a["command"] for a in dialog["actions"] if a["command"]["kind"] == kind)
+        return next(
+            a["command"] for a in dialog["actions"] if a["command"]["kind"] == kind
+        )
 
     assert _command("open_session_recording")["run_dir"] == "/run/dir"
     assert _command("open_session_recording")["error_surface"] == "inline"
@@ -323,8 +333,12 @@ def test_build_session_diagnostics_dialog_fallbacks_without_worktree():
     assert rows["Session"] == "fallback-session"
     assert rows["Worktree"] == "-"
     commands = [action["command"] for action in dialog["actions"]]
-    agent_log_command = next(c for c in commands if c["kind"] == "open_session_recording")
-    orchestrator_command = next(c for c in commands if c["kind"] == "open_orchestrator_log")
+    agent_log_command = next(
+        c for c in commands if c["kind"] == "open_session_recording"
+    )
+    orchestrator_command = next(
+        c for c in commands if c["kind"] == "open_orchestrator_log"
+    )
     assert agent_log_command["run_dir"] == "/run/fallback"
     assert orchestrator_command["run_dir"] == "/run/fallback"
     assert all(c["kind"] != "view_claude_log" for c in commands)
@@ -349,7 +363,9 @@ def test_build_session_diagnostics_dialog_keeps_absolute_validation_path():
     )
 
     paths = {
-        a["command"]["path"] for a in dialog["actions"] if a["command"]["kind"] == "open_path"
+        a["command"]["path"]
+        for a in dialog["actions"]
+        if a["command"]["kind"] == "open_path"
     }
     assert "/wt/.issue-orchestrator/sessions/r1/validation-record.json" in paths
     assert "/wt//wt/.issue-orchestrator/sessions/r1/validation-record.json" not in paths
@@ -369,7 +385,9 @@ def test_build_session_diagnostics_dialog_keeps_absolute_validation_output_path(
     )
 
     paths = {
-        a["command"]["path"] for a in dialog["actions"] if a["command"]["kind"] == "open_path"
+        a["command"]["path"]
+        for a in dialog["actions"]
+        if a["command"]["kind"] == "open_path"
     }
     assert "/wt/.issue-orchestrator/sessions/r1/validation-output.log" in paths
 
@@ -413,7 +431,11 @@ def test_build_validation_failure_dialog_includes_failed_tests_and_artifacts():
         {"label": "Suite", "value": "publish_gate"},
         {"label": "Command", "value": "make validate"},
         {"label": "Exit Code", "value": "2"},
-        {"label": "Started", "value": "2026-03-22T04:53:14Z", "value_kind": "timestamp"},
+        {
+            "label": "Started",
+            "value": "2026-03-22T04:53:14Z",
+            "value_kind": "timestamp",
+        },
         {"label": "Ended", "value": "2026-03-22T04:53:58Z", "value_kind": "timestamp"},
         {"label": "Failing Tests", "value": "1"},
     ]
@@ -587,7 +609,9 @@ def test_dialog_action_rejects_unknown_group() -> None:
     # than by an ad hoc runtime check inside the section builder.
     with pytest.raises(ValidationError):
         DialogAction(
-            command=OpenPathCommand(label="Open Validation Record", path="/tmp/validation-record.json"),
+            command=OpenPathCommand(
+                label="Open Validation Record", path="/tmp/validation-record.json"
+            ),
             group="sesion_evidence",  # type: ignore[arg-type]
         )
 
@@ -595,12 +619,24 @@ def test_dialog_action_rejects_unknown_group() -> None:
 def test_build_validation_failure_action_sections_groups_by_section() -> None:
     # Well-typed actions bucket into their declared sections in canonical order.
     actions = [
-        DialogAction(command=OpenPathCommand(label="Record", path="/r"), group="validation_artifacts"),
-        DialogAction(command=OpenPathCommand(label="Dir", path="/d"), group="diagnostics"),
+        DialogAction(
+            command=OpenPathCommand(label="Record", path="/r"),
+            group="validation_artifacts",
+        ),
+        DialogAction(
+            command=OpenPathCommand(label="Dir", path="/d"), group="diagnostics"
+        ),
     ]
-    sections = _build_validation_failure_action_sections(actions)
-    assert [section["title"] for section in sections] == ["Validation Artifacts", "Diagnostics"]
-    assert sections[0]["actions"][0]["command"] == {"kind": "open_path", "label": "Record", "path": "/r"}
+    sections = build_dialog_action_sections(actions)
+    assert [section["title"] for section in sections] == [
+        "Validation Artifacts",
+        "Diagnostics",
+    ]
+    assert sections[0]["actions"][0]["command"] == {
+        "kind": "open_path",
+        "label": "Record",
+        "path": "/r",
+    }
 
 
 def test_build_session_diagnostics_dialog_drops_malformed_analysis():
@@ -655,7 +691,9 @@ def test_build_phase_dialog_review_and_default():
         ]
     }
 
-    review_dialog = build_phase_dialog(phases_payload, issue_number=9, phase_key="review")
+    review_dialog = build_phase_dialog(
+        phases_payload, issue_number=9, phase_key="review"
+    )
     assert review_dialog["title"] == "Review 1"
     assert review_dialog["phase"]["name"] == "review-1"
 

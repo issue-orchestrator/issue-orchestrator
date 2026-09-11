@@ -64,14 +64,16 @@ from issue_orchestrator.ports.provider_resilience import NO_PROVIDER_CIRCUIT_STA
 from issue_orchestrator.view_models.dashboard import build_dashboard_view_model
 from tests.unit.session_run_helpers import make_session_run_assets
 from issue_orchestrator.view_models.dialogs import (
-    build_blocked_issues_dialog,
     build_config_dialog,
     build_debug_dialog,
     build_doctor_dialog,
     build_info_dialog,
-    build_phase_dialog,
     build_session_diagnostics_dialog,
     build_validation_failure_dialog,
+)
+from issue_orchestrator.view_models.issue_state_dialogs import (
+    build_blocked_issues_dialog,
+    build_phase_dialog,
 )
 from issue_orchestrator.view_models.issue_detail import build_issue_detail_view_model
 from issue_orchestrator.view_models.lifecycle_semantics import (
@@ -1901,7 +1903,9 @@ def test_blocked_issue_dialog_payload_rejects_untyped_entries() -> None:
     validator.validate(valid)
 
     with pytest.raises(JsonSchemaValidationError):
-        validator.validate({"title": "Blocked Issues", "blocked_issues": [{"issue": 1}]})
+        validator.validate(
+            {"title": "Blocked Issues", "blocked_issues": [{"issue": 1}]}
+        )
 
     incomplete = _blocked_issue_entry()
     del incomplete["has_completion"]
@@ -2032,16 +2036,29 @@ def test_dialog_action_commands_parse_through_generated_contract() -> None:
             "run_dir": "/run/dir",
         },
     )
-    parsed = [DialogActionPayload.model_validate(action) for action in dialog["actions"]]
+    parsed = [
+        DialogActionPayload.model_validate(action) for action in dialog["actions"]
+    ]
     kinds = {action.command.kind for action in parsed}
     # Reused canonical recording command + the dialog-only command union.
     assert "open_session_recording" in kinds
-    assert {"open_path", "copy_session_recording", "view_claude_log", "open_orchestrator_log"} <= kinds
+    assert {
+        "open_path",
+        "copy_session_recording",
+        "view_claude_log",
+        "open_orchestrator_log",
+    } <= kinds
     # A loose/legacy action (bare ``type`` string, no ``command``) must NOT
     # satisfy the typed contract anymore.
     with pytest.raises(ValueError):
         DialogActionPayload.model_validate(
-            {"type": "open_agent_log", "label": "x", "issue_number": 7, "run_dir": "/r", "group": "session_evidence"}
+            {
+                "type": "open_agent_log",
+                "label": "x",
+                "issue_number": 7,
+                "run_dir": "/r",
+                "group": "session_evidence",
+            }
         )
 
 

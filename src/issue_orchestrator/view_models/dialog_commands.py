@@ -16,7 +16,7 @@ small discriminated union.
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Protocol, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -105,15 +105,236 @@ class DialogAction(DialogCommandBase):
     group: SessionActionGroup
 
 
+class SessionDiagnosticsActionContext(Protocol):
+    """Fields required to derive dialog commands from one recorded session."""
+
+    @property
+    def issue_number(self) -> int: ...
+
+    @property
+    def run_dir(self) -> str: ...
+
+    @property
+    def session_settings_path(self) -> str: ...
+
+    @property
+    def claude_log_path(self) -> str: ...
+
+    @property
+    def claude_log_dir(self) -> str: ...
+
+    @property
+    def orchestrator_log(self) -> str: ...
+
+    @property
+    def diagnostic_path(self) -> str: ...
+
+    @property
+    def run_audit_path(self) -> str: ...
+
+    @property
+    def validation_path(self) -> str: ...
+
+    @property
+    def validation_output_path(self) -> str: ...
+
+    @property
+    def validation_stderr_path(self) -> str: ...
+
+
+class DialogActionSectionPayload(TypedDict):
+    """Presentation group containing serialized dialog actions."""
+
+    title: str
+    actions: list[object]
+
+
+_SECTION_TITLES: tuple[tuple[SessionActionGroup, str], ...] = (
+    ("validation_artifacts", "Validation Artifacts"),
+    ("session_evidence", "Session Evidence"),
+    ("diagnostics", "Diagnostics"),
+)
+
+
+def build_session_diagnostics_actions(
+    ctx: SessionDiagnosticsActionContext,
+) -> list[DialogAction]:
+    """Derive typed commands for all available recorded-session artifacts."""
+    actions: list[DialogAction] = []
+    _append_open_path(actions, "Open Session Dir", ctx.run_dir, group="diagnostics")
+    _append_open_path(
+        actions,
+        "Open Session Settings",
+        ctx.session_settings_path,
+        group="diagnostics",
+    )
+    _append_recording_actions(actions, ctx)
+    _append_claude_log_actions(actions, ctx)
+    _append_open_path(
+        actions,
+        "Open Claude Log Dir",
+        ctx.claude_log_dir,
+        group="session_evidence",
+    )
+    _append_orchestrator_log_action(actions, ctx)
+    _append_open_path(
+        actions,
+        "Open Full Log",
+        ctx.orchestrator_log,
+        group="session_evidence",
+    )
+    _append_diagnostic_paths(actions, ctx)
+    return actions
+
+
+def append_session_diagnostics_action(
+    actions: list[DialogAction],
+    ctx: SessionDiagnosticsActionContext,
+) -> None:
+    """Append the command that opens full diagnostics when a run is available."""
+    if ctx.run_dir:
+        actions.append(
+            DialogAction(
+                command=OpenSessionDiagnosticsCommand(
+                    issue_number=ctx.issue_number,
+                    run_dir=ctx.run_dir,
+                ),
+                group="diagnostics",
+            )
+        )
+
+
+def build_dialog_action_sections(
+    actions: list[DialogAction],
+) -> list[DialogActionSectionPayload]:
+    """Bucket typed actions into their canonical display order."""
+    grouped = {group: [] for group, _title in _SECTION_TITLES}
+    for action in actions:
+        grouped[action.group].append(action)
+
+    return [
+        {
+            "title": title,
+            "actions": [action.model_dump() for action in grouped[group]],
+        }
+        for group, title in _SECTION_TITLES
+        if grouped[group]
+    ]
+
+
+def _append_recording_actions(
+    actions: list[DialogAction],
+    ctx: SessionDiagnosticsActionContext,
+) -> None:
+    if not ctx.run_dir:
+        return
+    actions.extend(
+        (
+            DialogAction(
+                command=OpenSessionRecordingCommand(
+                    label="View Session Recording",
+                    issue_number=ctx.issue_number,
+                    run_dir=ctx.run_dir,
+                    error_surface="inline",
+                ),
+                group="session_evidence",
+            ),
+            DialogAction(
+                command=CopySessionRecordingCommand(
+                    issue_number=ctx.issue_number,
+                    run_dir=ctx.run_dir,
+                ),
+                group="session_evidence",
+            ),
+        )
+    )
+
+
+def _append_claude_log_actions(
+    actions: list[DialogAction],
+    ctx: SessionDiagnosticsActionContext,
+) -> None:
+    if not ctx.claude_log_path:
+        return
+    if ctx.run_dir:
+        actions.append(
+            DialogAction(
+                command=ViewClaudeLogCommand(
+                    issue_number=ctx.issue_number,
+                    run_dir=ctx.run_dir,
+                ),
+                group="session_evidence",
+            )
+        )
+    _append_open_path(
+        actions,
+        "Open Claude Log File",
+        ctx.claude_log_path,
+        group="session_evidence",
+    )
+
+
+def _append_orchestrator_log_action(
+    actions: list[DialogAction],
+    ctx: SessionDiagnosticsActionContext,
+) -> None:
+    if ctx.run_dir:
+        actions.append(
+            DialogAction(
+                command=OpenOrchestratorLogCommand(
+                    issue_number=ctx.issue_number,
+                    run_dir=ctx.run_dir,
+                ),
+                group="session_evidence",
+            )
+        )
+
+
+def _append_diagnostic_paths(
+    actions: list[DialogAction],
+    ctx: SessionDiagnosticsActionContext,
+) -> None:
+    paths: tuple[tuple[str, str, SessionActionGroup], ...] = (
+        ("Open Diagnostic", ctx.diagnostic_path, "diagnostics"),
+        ("Open Run Audit", ctx.run_audit_path, "diagnostics"),
+        ("Open Validation Record", ctx.validation_path, "validation_artifacts"),
+        ("Open Validation Output", ctx.validation_output_path, "validation_artifacts"),
+        ("Open Validation Stderr", ctx.validation_stderr_path, "validation_artifacts"),
+    )
+    for label, path, group in paths:
+        _append_open_path(actions, label, path, group=group)
+
+
+def _append_open_path(
+    actions: list[DialogAction],
+    label: str,
+    path: str,
+    *,
+    group: SessionActionGroup,
+) -> None:
+    if path:
+        actions.append(
+            DialogAction(
+                command=OpenPathCommand(label=label, path=path),
+                group=group,
+            )
+        )
+
+
 __all__ = [
     "CopySessionRecordingCommand",
     "DialogAction",
     "DialogActionCommand",
+    "DialogActionSectionPayload",
     "ErrorSurface",
     "OpenOrchestratorLogCommand",
     "OpenPathCommand",
     "OpenSessionDiagnosticsCommand",
     "OpenSessionRecordingCommand",
     "SessionActionGroup",
+    "SessionDiagnosticsActionContext",
     "ViewClaudeLogCommand",
+    "append_session_diagnostics_action",
+    "build_dialog_action_sections",
+    "build_session_diagnostics_actions",
 ]

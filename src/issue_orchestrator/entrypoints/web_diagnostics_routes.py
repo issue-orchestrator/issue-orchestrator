@@ -37,14 +37,16 @@ from ..execution.recorded_session_runs import RecordedSessionRunLookup
 from ..infra.doctor import run_doctor
 from ..infra.repo_identity import build_repo_identity
 from ..view_models.dialogs import (
-    build_blocked_issues_dialog,
     build_config_dialog,
     build_debug_dialog,
     build_doctor_dialog,
     build_info_dialog,
-    build_phase_dialog,
     build_session_diagnostics_dialog,
     build_validation_failure_dialog,
+)
+from ..view_models.issue_state_dialogs import (
+    build_blocked_issues_dialog,
+    build_phase_dialog,
 )
 from .web_session_context import WebOrchestratorDependency
 from .web_session_routes import session_manifest_response, session_phases_response
@@ -113,36 +115,39 @@ def _info_payload(
     commit_sha = repo_identity.commit_sha
     client_capabilities = deps.get_client_host().capabilities()
 
-    return OrchestratorInfoPayload.model_validate({
-        "version": package_version("issue-orchestrator"),
-        "repo": config.repo,
-        "repo_root": str(config.repo_root) if config.repo_root else None,
-        "configuration_mode": config.configuration_mode,
-        "config_name": config.config_name,
-        "config_fingerprint": config.config_fingerprint,
-        "ui_mode": config.ui_mode,
-        "terminal_backend": config.terminal_adapter or "subprocess",
-        "client_capabilities": {
-            "focus_session": (config.terminal_adapter or "subprocess") != "subprocess",
-            "open_path": client_capabilities.open_path,
-            "reveal_worktree": client_capabilities.reveal_worktree,
-            "local_server_paths_only": client_capabilities.local_only,
-            "host_platform": platform.system().lower(),
-        },
-        "commit_sha": commit_sha,
-        "commit_short": commit_sha[:7] if commit_sha else None,
-        "repo_identity": repo_identity.to_dict(),
-        "max_sessions": config.max_concurrent_sessions,
-        "active_sessions": len(state.active_sessions),
-        "completed_today": len(state.completed_today),
-        # Whether the engine has finished its initial GitHub fetch and
-        # state reconcile. The Control Center polls this so it can keep
-        # the per-repo "Open dashboard" button disabled until the engine
-        # would render a settled view — without this, opening during
-        # the ~10 s cold-start window shows a procession of SSE-driven
-        # UI updates as the dashboard catches up to the engine state.
-        "startup_status": state.startup_status,
-    })
+    return OrchestratorInfoPayload.model_validate(
+        {
+            "version": package_version("issue-orchestrator"),
+            "repo": config.repo,
+            "repo_root": str(config.repo_root) if config.repo_root else None,
+            "configuration_mode": config.configuration_mode,
+            "config_name": config.config_name,
+            "config_fingerprint": config.config_fingerprint,
+            "ui_mode": config.ui_mode,
+            "terminal_backend": config.terminal_adapter or "subprocess",
+            "client_capabilities": {
+                "focus_session": (config.terminal_adapter or "subprocess")
+                != "subprocess",
+                "open_path": client_capabilities.open_path,
+                "reveal_worktree": client_capabilities.reveal_worktree,
+                "local_server_paths_only": client_capabilities.local_only,
+                "host_platform": platform.system().lower(),
+            },
+            "commit_sha": commit_sha,
+            "commit_short": commit_sha[:7] if commit_sha else None,
+            "repo_identity": repo_identity.to_dict(),
+            "max_sessions": config.max_concurrent_sessions,
+            "active_sessions": len(state.active_sessions),
+            "completed_today": len(state.completed_today),
+            # Whether the engine has finished its initial GitHub fetch and
+            # state reconcile. The Control Center polls this so it can keep
+            # the per-repo "Open dashboard" button disabled until the engine
+            # would render a settled view — without this, opening during
+            # the ~10 s cold-start window shows a procession of SSE-driven
+            # UI updates as the dashboard catches up to the engine state.
+            "startup_status": state.startup_status,
+        }
+    )
 
 
 def _config_payload(orchestrator: "Orchestrator") -> RawConfigPayload:
@@ -244,14 +249,16 @@ def _debug_payload(orchestrator: "Orchestrator") -> DebugSnapshotPayload:
         "max_sessions": config.max_concurrent_sessions,
     }
 
-    return DebugSnapshotPayload.model_validate({
-        "paused": state.paused,
-        "config_path": str(config.config_path) if config.config_path else "None",
-        "repo_root": str(config.repo_root),
-        "priority_queue": state.priority_queue,
-        "agents": agents,
-        "startup_options": startup_options,
-    })
+    return DebugSnapshotPayload.model_validate(
+        {
+            "paused": state.paused,
+            "config_path": str(config.config_path) if config.config_path else "None",
+            "repo_root": str(config.repo_root),
+            "priority_queue": state.priority_queue,
+            "agents": agents,
+            "startup_options": startup_options,
+        }
+    )
 
 
 def _doctor_payload(orchestrator: "Orchestrator | None") -> DoctorReportPayload:
