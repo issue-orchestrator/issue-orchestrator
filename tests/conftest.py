@@ -676,6 +676,7 @@ class MockTerminalPlugin:
         working_dir: str,
         title: str | None,
         session_name: str,  # Required - caller must provide explicit name
+        secret_env: dict[str, str] | None = None,
     ) -> bool:
         """Track session creation."""
         self.create_session_calls.append({
@@ -745,6 +746,7 @@ class MockPluginManager:
         working_dir: str,
         title: str | None,
         session_name: str,  # Required - caller must provide explicit name
+        secret_env: dict[str, str] | None = None,
     ) -> bool:
         return self._plugin.create_session(
             session_id=session_id,
@@ -819,6 +821,7 @@ class MockSessionRunner:
         working_dir: str,
         title: str | None,
         session_name: str,  # Required - caller must provide explicit name
+        secret_env: dict[str, str] | None = None,
     ) -> bool:
         return self._plugin.create_session(
             session_id=session_id,
