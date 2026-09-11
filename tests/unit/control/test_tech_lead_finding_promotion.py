@@ -31,8 +31,14 @@ from issue_orchestrator.control.tech_lead_finding_promotion import (
     select_promotion_updates,
     select_promotable_findings,
 )
+from issue_orchestrator.control.claim_gate import ClaimLostError
 from issue_orchestrator.control.pattern_registry import LocalPatternCaseFileRegistry
+from issue_orchestrator.control.reconciliation import (
+    ExternalSnapshot,
+    ReconciliationRequired,
+)
 from issue_orchestrator.domain.tech_lead_findings import (
+    CASE_FILE_ACTIVE,
     PROMOTION_STATE_DECLINED,
     PROMOTION_STATE_SHIPPED,
     PatternEvidence,
@@ -51,6 +57,7 @@ from issue_orchestrator.ports.promotion_target import (
     PromotedIssueOutcome,
 )
 from issue_orchestrator.ports.comment_receipt import IssueCommentReceipt
+from issue_orchestrator.ports.pattern_registry import PatternRetirementPhase
 from issue_orchestrator.ports.tech_lead_authority import (
     InMemoryTechLeadAuthorityStore,
     TechLeadPromotionConflictError,
@@ -86,6 +93,20 @@ def _settlement_ports(authority, *, signature: str, case_file: int):
     repository.add_comment.side_effect = add_comment
     repository.find_issue_comment_receipt.side_effect = receipt
     return repository, LocalPatternCaseFileRegistry(authority)
+
+
+def _claim_lost() -> ClaimLostError:
+    return ClaimLostError(65, "settle tech_lead promotion")
+
+
+def _reconciliation_required() -> ReconciliationRequired:
+    return ReconciliationRequired(
+        entity_type="issue",
+        entity_id=65,
+        expected=ExternalSnapshot.for_issue(65, {"tech-lead-observation"}),
+        actual=ExternalSnapshot.for_issue(65, set()),
+        reason="the case file lost its observation label",
+    )
 
 
 def _route(**entries) -> dict[str, PromotionRouteTarget]:
@@ -1749,6 +1770,78 @@ class TestSettlement:
         # Declined is still terminal for refiling, and still durably recorded.
         assert authority.load_promotion(signature="anchor-close").state == (
             PROMOTION_STATE_DECLINED
+        )
+
+    @pytest.mark.parametrize(
+        "lost_authority",
+        (_claim_lost(), _reconciliation_required()),
+        ids=("claim-lost", "reconciliation-required"),
+    )
+    def test_losing_authority_mid_settlement_aborts_the_tick(self, lost_authority):
+        """Authority loss must ABORT the tick, not fail one action.
+
+        ``ActionApplier.apply`` re-raises ``ReconciliationRequired`` and
+        ``ClaimLostError`` on purpose: the plan or the claim this settlement was
+        authorized under is gone, so the orchestrator has to reconcile. Returning
+        ``ActionResult.fail`` instead would let ``apply_all`` keep applying the
+        REST of the same stale plan after authority was lost — which is exactly
+        what every other ``before_write`` boundary re-raises to prevent (#7247
+        review F5).
+
+        The loss is staged AFTER one successful check, so this also proves the
+        abort is immediate: the write that check authorized stands, and nothing
+        after it — the publication fence, the comment, the close, the shipped-fix
+        row, the ledger state — happens at all.
+        """
+        authority = InMemoryTechLeadAuthorityStore()
+        authority.record_promotion(promotion=_promotion("anchor-close"))
+        action = SettleTechLeadPromotionAction(
+            signature="anchor-close",
+            case_file_issue_number=65,
+            target_repo=UPSTREAM,
+            target_issue_number=500,
+            shipped=True,
+            merged_pr_url="https://github.com/x/y/pull/6956",
+        )
+        repository, registry = _settlement_ports(
+            authority, signature=action.signature, case_file=65
+        )
+        checks = 0
+
+        def before_write() -> None:
+            nonlocal checks
+            checks += 1
+            if checks > 1:
+                raise lost_authority
+
+        with pytest.raises(type(lost_authority)) as caught:
+            apply_settle_tech_lead_promotion(
+                action,
+                repository_host=repository,
+                authority=authority,
+                pattern_registry=registry,
+                before_write=before_write,
+                now_iso="2026-09-10T12:00:00+00:00",
+            )
+
+        assert caught.value is lost_authority
+        assert checks == 2
+        # 1. GitHub: the case file was neither commented on nor closed.
+        repository.add_comment.assert_not_called()
+        repository.update_issue_state.assert_not_called()
+        # 2. Registry: the reservation the FIRST check authorized stands, and no
+        #    write after it — publication fence or terminal commit — happened.
+        entry = registry.read(signature="anchor-close")
+        assert entry is not None
+        assert entry.lifecycle == ()
+        assert entry.disposition == CASE_FILE_ACTIVE
+        assert entry.pending_retirement is not None
+        assert entry.pending_retirement.phase is PatternRetirementPhase.COMMENT
+        assert entry.publication_started_at is None
+        # 3. Authority: no shipped-fix row, promotion still in flight.
+        assert authority.list_recent_shipped_fixes(limit=5) == ()
+        assert authority.load_promotion(signature="anchor-close").state != (
+            PROMOTION_STATE_SHIPPED
         )
 
     def test_shipped_settlement_requires_the_merged_pr_evidence(self):

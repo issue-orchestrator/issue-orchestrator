@@ -36,6 +36,8 @@ from .actions import (
     ReportPromotedFindingEvidenceAction,
     SettleTechLeadPromotionAction,
 )
+from .claim_gate import ClaimLostError
+from .reconciliation import ReconciliationRequired
 from .tech_lead_promotion_filing import PromotionFilingOwner
 from .tech_lead_case_file_lifecycle import PatternCaseFileLifecycleOwner
 
@@ -283,6 +285,14 @@ def apply_settle_tech_lead_promotion(
             else PROMOTION_STATE_DECLINED,
             shipped_pr_url=action.merged_pr_url,
         )
+    except (ReconciliationRequired, ClaimLostError):
+        # NOT an operational failure of this action: the plan or the claim this
+        # settlement was authorized under is gone. ``ActionApplier.apply`` lets
+        # both escape so the tick aborts and reconciles; swallowing them into
+        # ActionResult.fail would let ``apply_all`` keep applying the REST of
+        # the same stale plan after authority was lost. Every other
+        # ``before_write`` boundary re-raises for this reason (#7247 review F5).
+        raise
     except Exception as exc:
         logger.exception(
             "Failed to settle promoted tech_lead finding %r", action.signature
