@@ -331,6 +331,17 @@ class TestProviderCredentialsStayOutOfArgv:
         assert env["ANTHROPIC_BASE_URL"] == DeepSeekProvider.BASE_URL
         assert not any(secret in str(arg) for arg in argv)
 
+    def test_the_real_context_window_is_declared(self):
+        """Claude Code assumes 200k for slugs it does not recognise.
+
+        Every DeepSeek slug is unrecognised, and DeepSeek serves 1M. Without
+        this the agent auto-compacts at a fifth of its real window, silently
+        discarding context part-way through every long session.
+        """
+        env = DeepSeekProvider().session_env(secrets={})
+
+        assert env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "1000000"
+
     def test_a_missing_key_yields_no_empty_credential(self):
         """An empty key would authenticate as nobody and fail confusingly."""
         env = DeepSeekProvider().session_env(secrets={})

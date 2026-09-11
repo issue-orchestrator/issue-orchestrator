@@ -48,6 +48,9 @@ class DeepSeekProvider(ClaudeCodeProvider):
     BASE_URL = "https://api.deepseek.com/anthropic"
     #: The keyring/env name holding the DeepSeek credential.
     API_KEY_NAME = "DEEPSEEK_API_KEY"
+    #: Context window both shipped DeepSeek models serve. Claude Code assumes
+    #: 200k for slugs it does not recognise, which is every DeepSeek slug.
+    CONTEXT_WINDOW_TOKENS = 1_000_000
 
     #: DeepSeek model slugs. Deliberately replaces Claude's aliases rather than
     #: extending them: ``--model opus`` against DeepSeek's endpoint is a
@@ -83,9 +86,20 @@ class DeepSeekProvider(ClaudeCodeProvider):
         in the process environment instead.
 
         ``ANTHROPIC_API_KEY`` is the variable DeepSeek's own integration guide
-        documents for this endpoint.
+        documents for this endpoint, and it is what makes the CLI route here
+        rather than to the operator's claude.ai login — verified live by
+        ``tests/integration/test_live_deepseek.py``.
+
+        ``CLAUDE_CODE_MAX_CONTEXT_TOKENS`` is not optional bookkeeping. Claude
+        Code does not recognise DeepSeek's model slugs, so it assumes the 200k
+        window it uses for unknown models and auto-compacts there. DeepSeek
+        serves 1M, so without this the agent would silently throw away four
+        fifths of its context part-way through every long session.
         """
-        env = {"ANTHROPIC_BASE_URL": self.BASE_URL}
+        env = {
+            "ANTHROPIC_BASE_URL": self.BASE_URL,
+            "CLAUDE_CODE_MAX_CONTEXT_TOKENS": str(self.CONTEXT_WINDOW_TOKENS),
+        }
         key = secrets.get(self.API_KEY_NAME)
         if key:
             env["ANTHROPIC_API_KEY"] = key

@@ -96,22 +96,101 @@ def test_the_endpoint_accepts_the_environment_our_provider_builds() -> None:
     )
 
 
+@pytest.mark.skipif(
+    shutil.which("claude") is None, reason="claude CLI not installed"
+)
+def test_the_cli_sends_the_request_where_the_provider_points_it() -> None:
+    """The failure mode that would make this mode a lie, proved hermetically.
+
+    DeepSeek runs THROUGH the Claude Code CLI. If the CLI preferred an
+    operator's existing claude.ai subscription over the injected base URL, a
+    "DeepSeek" session would silently bill Anthropic quota while passing every
+    unit test.
+
+    Two oracles were tried and rejected before this one:
+
+    * Asking the model who trained it. Claude Code injects a system prompt
+      telling the model it is Claude Code, so it answers "Anthropic" no matter
+      who served the request. That reported a routing bug that did not exist.
+    * Sending a deliberately invalid credential and reading the rejection.
+      Without a TTY the CLI retries an auth failure instead of returning, so the
+      test hung for its full timeout rather than failing.
+
+    So the request is pointed at a local server this test owns. If the CLI
+    honours the provider's base URL the server receives the call; if it falls
+    back to the claude.ai login the server hears nothing. No spend, no external
+    dependency, and no reliance on how a failure is reported.
+    """
+    import http.server
+    import threading
+
+    received: list[tuple[str, str]] = []
+
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802 - http.server's required spelling
+            received.append((self.path, self.headers.get("x-api-key", "")))
+            body = b'{"error":{"type":"invalid_request_error","message":"stub"}}'
+            self.send_response(400)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):  # keep pytest output clean
+            return
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), _Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    port = server.server_address[1]
+
+    provider = DeepSeekProvider()
+    env = dict(os.environ)
+    env.update(provider.session_env(secrets={provider.API_KEY_NAME: "sk-routing-probe"}))
+    # Same shape the provider builds, pointed at this test's server.
+    env["ANTHROPIC_BASE_URL"] = f"http://127.0.0.1:{port}"
+
+    try:
+        subprocess.run(
+            [
+                provider.executable,
+                "--model",
+                SMOKE_MODEL,
+                "--permission-mode",
+                "bypassPermissions",
+                "--mcp-config",
+                '{"mcpServers":{}}',
+                "--strict-mcp-config",
+                "-p",
+                "Say OK.",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=90,
+            stdin=subprocess.DEVNULL,
+            env=env,
+        )
+    except subprocess.TimeoutExpired:
+        pass  # the CLI may retry the stub's 400; arrival is what is asserted
+    finally:
+        server.shutdown()
+
+    assert received, (
+        "the CLI never called the base URL the provider set, so a DeepSeek "
+        "session would not reach DeepSeek — it most likely used the operator's "
+        "claude.ai login instead"
+    )
+    assert any(key == "sk-routing-probe" for _, key in received), (
+        f"the CLI reached the endpoint but did not send the injected "
+        f"credential: {received!r}"
+    )
+
+
 @requires_key
 @pytest.mark.skipif(
     shutil.which("claude") is None, reason="claude CLI not installed"
 )
-def test_the_cli_routes_to_deepseek_rather_than_an_existing_claude_login() -> None:
-    """The failure mode that would make this mode a lie.
-
-    DeepSeek runs THROUGH the Claude Code CLI. If the CLI prefers an operator's
-    existing claude.ai subscription over the injected key and base URL, a
-    "DeepSeek" session would silently bill Anthropic quota — passing every unit
-    test, drawing down the wrong lane, and invalidating the whole reason
-    ``deepseek`` is a separate provider.
-
-    So this launches the real CLI with the real injected environment and asks
-    the model which family it belongs to.
-    """
+def test_a_real_deepseek_session_completes_through_the_cli() -> None:
+    """End to end with the real key: the configuration actually does work."""
     provider = DeepSeekProvider()
     env = dict(os.environ)
     env.update(provider.session_env(secrets={provider.API_KEY_NAME: _api_key() or ""}))
@@ -127,7 +206,7 @@ def test_the_cli_routes_to_deepseek_rather_than_an_existing_claude_login() -> No
             '{"mcpServers":{}}',
             "--strict-mcp-config",
             "-p",
-            "Name the company that trained you. Reply with one word.",
+            "Reply with exactly: READY",
         ],
         capture_output=True,
         text=True,
@@ -136,14 +215,24 @@ def test_the_cli_routes_to_deepseek_rather_than_an_existing_claude_login() -> No
     )
 
     assert result.returncode == 0, (
-        f"claude CLI failed against the DeepSeek endpoint "
-        f"(exit {result.returncode}): {result.stderr[:600]}"
+        f"claude CLI failed against DeepSeek (exit {result.returncode}): "
+        f"{result.stderr[:600]}"
     )
-    answer = result.stdout.lower()
-    assert "deepseek" in answer, (
-        "the CLI did not reach DeepSeek — it most likely used the operator's "
-        f"claude.ai login instead. Model replied: {result.stdout[:300]!r}"
-    )
+    assert result.stdout.strip(), "DeepSeek session produced no output"
+    assert "authentication fails" not in result.stdout.lower()
+
+
+def test_the_context_window_is_declared_to_the_cli() -> None:
+    """Claude Code assumes 200k for slugs it does not know; DeepSeek serves 1M.
+
+    Without this the agent auto-compacts at a fifth of its real window, silently
+    discarding context part-way through every long session. Asserted here rather
+    than only in unit tests because the live suite is where the CLI's own
+    "unrecognized_model" warning is observable.
+    """
+    env = DeepSeekProvider().session_env(secrets={})
+
+    assert env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "1000000"
 
 
 @requires_key
