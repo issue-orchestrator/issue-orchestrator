@@ -11,6 +11,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const { uiContractJson } = require('./ui_contract_test_support.js');
 
 function escapeHtml(value) {
     return String(value)
@@ -272,6 +273,7 @@ test('the published Commands dispatch to the existing artifact openers', () => {
     // the same handlers every other run-scoped drill-down uses.
     const calls = [];
     const context = {
+        uiContractJson,
         showToast: (message, severity) => calls.push(['toast', message, severity]),
         openAgentLogAction: (...args) => calls.push(['openAgentLogAction', ...args]),
         openReviewArtifact: (...args) => calls.push(['openReviewArtifact', ...args]),

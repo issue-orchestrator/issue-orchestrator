@@ -351,6 +351,30 @@ def test_ui_openapi_generator_detects_nullable_schema_variants() -> None:
     )
 
 
+def test_ui_openapi_generator_orders_composed_union_aliases() -> None:
+    components = [
+        ComponentSchema(
+            "OuterPayload",
+            {
+                "anyOf": [
+                    {"$ref": "#/components/schemas/ZInnerPayload"},
+                    {"type": "null"},
+                ]
+            },
+        ),
+        ComponentSchema(
+            "ZInnerPayload",
+            {"oneOf": [{"type": "string"}, {"type": "integer"}]},
+        ),
+    ]
+
+    python_models = render_python_models(components)
+
+    assert python_models.index("ZInnerPayload: TypeAlias") < python_models.index(
+        "OuterPayload: TypeAlias"
+    )
+
+
 def test_ui_openapi_generator_rejects_mixed_union_object_schema() -> None:
     components = [
         ComponentSchema(
@@ -377,7 +401,12 @@ def test_browser_validators_cover_every_component() -> None:
     validators_js = Path("src/issue_orchestrator/static/js/ui-contracts.validators.js").read_text()
     python_models = Path("src/issue_orchestrator/contracts/ui_openapi_models.py").read_text()
 
-    for name in ("TimelineCommandPayload", "RecentE2ERunsPayload", "OpenE2ERunCommandPayload"):
+    for name in (
+        "LifecycleCommandPayload",
+        "TimelineCommandPayload",
+        "RecentE2ERunsPayload",
+        "OpenE2ERunCommandPayload",
+    ):
         assert f'"{name}"' in validators_js, f"{name} missing from the browser schema registry"
 
     # Every generated Pydantic model has a browser counterpart.

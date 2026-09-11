@@ -2809,7 +2809,8 @@
         "anyOf": [
           {"$ref": "#/components/schemas/TimelineCommandPayload"},
           {"$ref": "#/components/schemas/DialogActionCommandPayload"}
-        ]
+        ],
+        "discriminator": {"propertyName": "kind"}
       },
       "E2ERunResultCountsPayload": {
         "type": "object",

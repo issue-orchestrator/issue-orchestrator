@@ -235,6 +235,35 @@ def _classify_components(components: list[ComponentSchema]) -> ClassifiedCompone
     return ClassifiedComponents(tuple(enum_aliases), tuple(union_aliases), tuple(models))
 
 
+def _ordered_union_aliases(
+    components: tuple[ComponentSchema, ...],
+) -> tuple[ComponentSchema, ...]:
+    """Order union aliases after any union aliases they reference."""
+    by_name = {component.name: component for component in components}
+    ordered: list[ComponentSchema] = []
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(component: ComponentSchema) -> None:
+        if component.name in visited:
+            return
+        if component.name in visiting:
+            raise ValueError(f"cyclic union alias reference involving {component.name}")
+        visiting.add(component.name)
+        for branch in component.schema.get("oneOf") or component.schema.get("anyOf") or []:
+            ref = branch.get("$ref") if isinstance(branch, dict) else None
+            dependency = by_name.get(ref_name(ref)) if isinstance(ref, str) else None
+            if dependency is not None:
+                visit(dependency)
+        visiting.remove(component.name)
+        visited.add(component.name)
+        ordered.append(component)
+
+    for component in components:
+        visit(component)
+    return tuple(ordered)
+
+
 def render_python_models(components: list[ComponentSchema]) -> str:
     lines: list[str] = [
         HEADER,
@@ -258,7 +287,7 @@ def render_python_models(components: list[ComponentSchema]) -> str:
         lines.append("")
     for component in classified.models:
         lines.extend(_render_python_model(component))
-    for component in classified.union_aliases:
+    for component in _ordered_union_aliases(classified.union_aliases):
         lines.append(f"{component.name}: TypeAlias = {resolve_type(component.schema)}")
         lines.append("")
 
@@ -563,7 +592,14 @@ _VALIDATOR_ENGINE = """
     function _branchForTag(branches, propertyName, tag) {
         for (const branch of branches) {
             const resolved = _resolve(branch, '$', []);
-            if (!resolved || !resolved.properties) continue;
+            if (!resolved) continue;
+            const nested = resolved.oneOf || resolved.anyOf;
+            if (nested) {
+                const nestedBranch = _branchForTag(nested, propertyName, tag);
+                if (nestedBranch) return nestedBranch;
+                continue;
+            }
+            if (!resolved.properties) continue;
             const tagSchema = resolved.properties[propertyName];
             if (!tagSchema) continue;
             if (Object.prototype.hasOwnProperty.call(tagSchema, 'const')) {

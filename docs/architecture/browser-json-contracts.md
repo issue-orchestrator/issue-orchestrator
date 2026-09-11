@@ -106,7 +106,7 @@ follow-up list is a ratchet: it may shrink, never grow.
 
 | Site | Boundary | Class | Status |
 |------|----------|-------|--------|
-| `lifecycle_commands.js` — `data-lifecycle-command` | DOM `data-*` | contract-covered | Validated as `TimelineCommandPayload` |
+| `lifecycle_commands.js` — `data-lifecycle-command` | DOM `data-*` | contract-covered | Validated as `LifecycleCommandPayload`, the generated union of timeline and dialog commands |
 | `lifecycle_commands.js` — `runLifecycleCommand(cmd)` | in-JS callers | contract-covered | Validated at the dispatcher, so JS-built commands are held to the same contract |
 | `e2e_runs_list.js` — `#recentE2ERunsData` | inline `<script>` | contract-covered | Validated as `RecentE2ERunsPayload` |
 | `e2e_runs_list.js` — `/api/e2e-runs/recent` | `fetch().json()` | contract-covered | Validated as `RecentE2ERunsPayload` |
@@ -124,6 +124,7 @@ follow-up list is a ratchet: it may shrink, never grow.
 | `issue_detail_drawer.js`, `inline_agent_attempts.js`, `timeline.js` — `/api/issue-detail/*`, `/api/e2e-run/{run_id}/issue-detail/*` | `fetch().json()` | contract-missing | `IssueDetailPayload` exists; readers not yet applied. Follow-up |
 | `e2e_canonical_payload.js` — `/api/e2e-run/{run_id}/test-output` | `fetch().json()` | contract-missing | `E2ETestOutputPayload` exists; reader not yet applied. Follow-up |
 | `kanban_columns.js` — `/api/view-model` | `fetch().json()` | contract-missing | `DashboardViewModelPayload` exists; reader not yet applied. Follow-up |
+| `controls_refresh.js`, `diagnostics_actions.js`, `issue_metadata.js` — contract-covered endpoint reads | `fetch().json()` | contract-missing | Their response components exist; these current-main boundaries postdate the original #6337 work and still need the shared reader. Follow-up |
 | `ui_action_contract.js` — `/api/retrospective-review`, `/api/retrospective-review/preflight` | `fetch().json()` | contract-missing | Components exist; readers not yet applied. Follow-up |
 | `issue_metadata.js` — SSE `e.data` (6 sites) | EventSource | contract-missing | SSE payloads are defined in `contracts/public.py`, not `ui-openapi.json`; needs a contract before a reader. Follow-up |
 | `issue_menus.js` — `dataset.labels`, `dataset.dependencies` | DOM `data-*` | contract-missing | Bare JSON arrays with no component. Follow-up |
@@ -132,9 +133,9 @@ follow-up list is a ratchet: it may shrink, never grow.
 | `kanban_columns.js`, `compact_card_state.js`, `expanded_column_state.js`, `control_center.js` — `localStorage` reads | browser-local | raw-json-intentional | Browser-local UI state, never crosses a UI boundary; corrupt data degrades to defaults |
 | `flash_debug.js` — SSE `e.data` | debug probe | raw-json-intentional | Opt-in diagnostic probe, not a product surface |
 
-### Control Center (`static/js/control_center.js`)
+### Control Center (`static/js/control_center*.js`)
 
-`raw-json-intentional` for now. The Control Center is a separate app with
-its own endpoints, outside the dashboard UI contract surface
-(`docs/api/ui-openapi.json` covers view-model, issue-detail, dialog, and
-E2E routes). Bringing it under contract is its own issue.
+The UI contract now includes Control Center status, setup, worktree-audit,
+and validated-work recovery responses. Their existing readers predate the
+browser validator and remain classified follow-ups. `control_center_setup_commands.js`
+only builds typed request descriptions and does not read response bodies.

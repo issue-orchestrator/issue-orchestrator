@@ -188,8 +188,12 @@ test('validates nested arrays of $ref items and reports the offending index', ()
 });
 
 test('free-form objects (additionalProperties: true) accept arbitrary keys', () => {
-    // ``BlockedIssuePayload`` is an open dict in the contract, so the
-    // validator must not invent a closed shape for it.
-    const result = validators.validate('BlockedIssuePayload', { anything: 1, nested: { x: 'y' } });
+    // ``IssueItemPayload`` deliberately permits source-specific fields,
+    // so the validator must not invent a closed shape for it.
+    const result = validators.validate('IssueItemPayload', {
+        show_stale_badge: false,
+        anything: 1,
+        nested: { x: 'y' },
+    });
     assert.strictEqual(result.ok, true);
 });

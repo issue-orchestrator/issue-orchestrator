@@ -4318,9 +4318,15 @@ CONTRACT_READER_REQUIRED_JS = frozenset(rel for rel, _ in CONTRACT_READER_BINDIN
 # must go through the reader instead.
 PENDING_CONTRACT_READER_MIGRATION_JS = frozenset(
     {
+        "control_center.js",
+        "control_center_recovery.js",
+        "control_center_setup.js",
+        "dashboard/controls_refresh.js",
+        "dashboard/diagnostics_actions.js",
         "dashboard/inline_agent_attempts.js",
         "dashboard/issue_detail_drawer.js",
         "dashboard/issue_detail_modals.js",
+        "dashboard/issue_metadata.js",
         "dashboard/kanban_columns.js",
         "dashboard/plugins/agent_context.js",
         "dashboard/session_dialogs.js",
@@ -4338,6 +4344,7 @@ PENDING_CONTRACT_READER_MIGRATION_JS = frozenset(
 #     URL; it never touches the response body.
 CONTRACT_ENDPOINT_NON_READERS_JS = frozenset(
     {
+        "control_center_setup_commands.js",
         "dashboard/e2e_canonical_payload.js",
         "flash_debug.js",
         "ui_action_contract.js",

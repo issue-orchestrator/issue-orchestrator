@@ -3666,7 +3666,10 @@
                 {
                     "$ref": "#/components/schemas/DialogActionCommandPayload"
                 }
-            ]
+            ],
+            "discriminator": {
+                "propertyName": "kind"
+            }
         },
         "LifecycleTimelineContainerPayload": {
             "discriminator": {
@@ -8437,7 +8440,14 @@
     function _branchForTag(branches, propertyName, tag) {
         for (const branch of branches) {
             const resolved = _resolve(branch, '$', []);
-            if (!resolved || !resolved.properties) continue;
+            if (!resolved) continue;
+            const nested = resolved.oneOf || resolved.anyOf;
+            if (nested) {
+                const nestedBranch = _branchForTag(nested, propertyName, tag);
+                if (nestedBranch) return nestedBranch;
+                continue;
+            }
+            if (!resolved.properties) continue;
             const tagSchema = resolved.properties[propertyName];
             if (!tagSchema) continue;
             if (Object.prototype.hasOwnProperty.call(tagSchema, 'const')) {
