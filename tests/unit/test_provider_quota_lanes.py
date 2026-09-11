@@ -58,6 +58,35 @@ class _Runner:
         return _Result(self._by_executable.get(argv[0], ""))
 
 
+
+def _installed_probe(runner: "_Runner") -> CLIProviderReadinessProbe:
+    """A probe whose adapters report their CLI as installed.
+
+    Lane splitting depends on billing, billing comes from the credential probe,
+    and the probe short-circuits to NOT_INSTALLED when the CLI is absent from
+    PATH. Resolving real adapters would therefore make these tests assert
+    whatever happens to be installed on the host: they passed on a developer
+    machine with claude and codex present and collapsed every lane to its bare
+    provider in CI, where neither is. The adapter's own availability check is
+    covered by its readiness tests; what these assert is lane identity, so the
+    CLI's presence is injected rather than inherited from the environment.
+    """
+    adapters = {
+        "claude-code": ClaudeCodeProvider,
+        "codex": CodexProvider,
+        "deepseek": DeepSeekProvider,
+    }
+
+    def resolve(name: str):
+        if name not in adapters:
+            raise ValueError(f"Unknown provider: {name!r}")
+        adapter = adapters[name]()
+        adapter.is_available = lambda: True  # type: ignore[method-assign]
+        return adapter
+
+    return CLIProviderReadinessProbe(runner, resolve_provider=resolve)
+
+
 # ---------------------------------------------------------------------------
 # Lane identity
 # ---------------------------------------------------------------------------
@@ -178,14 +207,14 @@ class TestLaneResolutionProbesRatherThanGuessing:
         most lane resolution happens.
         """
         runner = _Runner({"claude": SUBSCRIPTION_CLAUDE})
-        probe = CLIProviderReadinessProbe(runner)
+        probe = _installed_probe(runner)
 
         assert probe.lane_for("claude-code", "fable").key == "claude-code:fable"
 
     def test_repeat_resolution_reuses_one_credential_sample(self):
         """Planning resolves a lane per candidate launch; probing each is waste."""
         runner = _Runner({"codex": CHATGPT_CODEX})
-        probe = CLIProviderReadinessProbe(runner)
+        probe = _installed_probe(runner)
 
         for _ in range(5):
             probe.lane_for("codex", "gpt-5.3-codex-spark")
@@ -194,7 +223,7 @@ class TestLaneResolutionProbesRatherThanGuessing:
 
     def test_an_unknown_provider_yields_a_usable_single_lane(self):
         """Choosing a circuit row must not raise on an unrecognised name."""
-        probe = CLIProviderReadinessProbe(_Runner({}))
+        probe = _installed_probe(_Runner({}))
 
         assert probe.lane_for("not-a-provider", "whatever").key == "not-a-provider"
 
@@ -465,7 +494,7 @@ def _policy(config, circuit, runner):
     return ProviderAvailabilityPolicy(
         config=config,
         provider_resilience=circuit,
-        readiness_probe=CLIProviderReadinessProbe(runner),
+        readiness_probe=_installed_probe(runner),
     )
 
 
