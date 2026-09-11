@@ -196,15 +196,18 @@ def apply_create_tech_lead_issue(
             # than to whichever later action recovers it (#6957 R3 F10).
             assert case_files is not None
             case_files.begin(action)
-            before_case_file_write()
         if isinstance(action, CreateTechLeadProposalIssueAction):
             assert ops is not None
-            number = TechLeadProposalCreation(ops, repository_host).create(action, milestone, guard=proposal_guard)
+            number = TechLeadProposalCreation(ops, repository_host).create(
+                action, milestone, guard=proposal_guard
+            )
             result = {"number": number}
         else:
             result = repository_host.create_issue(
-                title=action.title, body=action.body,
-                labels=list(action.labels), milestone=milestone,
+                title=action.title,
+                body=action.body,
+                labels=list(action.labels),
+                milestone=milestone,
             )
     except (ReconciliationRequired, ClaimLostError):
         raise
@@ -310,6 +313,8 @@ def _finalize_ledger_backed_creation(
     except (ReconciliationRequired, ClaimLostError):
         raise
     except Exception as exc:
-        logger.exception("Failed to finalize ledger-backed tech_lead issue #%d", issue_number)
+        logger.exception(
+            "Failed to finalize ledger-backed tech_lead issue #%d", issue_number
+        )
         return str(exc)
     return None

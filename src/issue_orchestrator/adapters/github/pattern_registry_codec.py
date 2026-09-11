@@ -30,6 +30,7 @@ _ENTRY_FIELDS = frozenset(
         "observation_ids",
         "classification",
         "pending_observation",
+        "publication_started_at",
     )
 )
 _PENDING_FIELDS = frozenset(
@@ -105,6 +106,7 @@ def _entry_to_dict(entry: PatternRegistryEntry) -> dict[str, object]:
             if entry.pending_observation is not None
             else None
         ),
+        "publication_started_at": entry.publication_started_at,
     }
 
 
@@ -114,6 +116,16 @@ def _entry_from_dict(value: object) -> PatternRegistryEntry:
     _require_exact_fields(value, _ENTRY_FIELDS, "entry")
     expires_at = _required_text(value, "expires_at")
     datetime.fromisoformat(expires_at)
+    publication_started_at = value["publication_started_at"]
+    if publication_started_at is not None:
+        if (
+            not isinstance(publication_started_at, str)
+            or not publication_started_at.strip()
+        ):
+            raise ValueError(
+                "publication_started_at must be a non-empty string or null"
+            )
+        datetime.fromisoformat(publication_started_at)
     return PatternRegistryEntry(
         signature=_required_text(value, "signature"),
         reservation_id=_required_text(value, "reservation_id"),
@@ -124,6 +136,7 @@ def _entry_from_dict(value: object) -> PatternRegistryEntry:
         observation_ids=_decode_observation_ids(value["observation_ids"]),
         classification=_decode_classification(value["classification"]),
         pending_observation=_decode_pending_observation(value["pending_observation"]),
+        publication_started_at=publication_started_at,
     )
 
 

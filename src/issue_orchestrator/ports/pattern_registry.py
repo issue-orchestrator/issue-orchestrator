@@ -22,6 +22,7 @@ class PatternReservationState(Enum):
     COMMITTED = "committed"
     HELD = "held"
     RECOVERABLE = "recoverable"
+    PUBLISHING = "publishing"
 
 
 @dataclass(frozen=True)
@@ -45,6 +46,7 @@ class PatternRegistryEntry:
     observation_ids: tuple[str, ...]
     classification: CaseFileClassification
     pending_observation: PendingPatternObservation | None = None
+    publication_started_at: str | None = None
 
     def __post_init__(self) -> None:
         for name in ("signature", "reservation_id", "claimant_id", "expires_at"):
@@ -52,8 +54,14 @@ class PatternRegistryEntry:
                 raise ValueError(f"pattern registry entry requires {name}")
         if self.issue_number is None:
             if self.pending is None or self.observation_ids or self.pending_observation:
-                raise ValueError("a reserved pattern requires pending data and no observations")
-        elif self.issue_number <= 0 or not self.observation_ids or self.pending is not None:
+                raise ValueError(
+                    "a reserved pattern requires pending data and no observations"
+                )
+        elif (
+            self.issue_number <= 0
+            or not self.observation_ids
+            or self.pending is not None
+        ):
             raise ValueError(
                 "a committed pattern requires a positive issue, observations,"
                 " and no creation intent"
@@ -62,6 +70,11 @@ class PatternRegistryEntry:
             raise ValueError("pattern observation identities must be unique")
         if self.pending is not None and self.pending.signature != self.signature:
             raise ValueError("pending case-file signature disagrees with registry key")
+        has_pending_effect = (
+            self.pending is not None or self.pending_observation is not None
+        )
+        if self.publication_started_at is not None and not has_pending_effect:
+            raise ValueError("publication state requires a pending external effect")
 
     @property
     def committed(self) -> bool:
@@ -95,10 +108,10 @@ class PatternCaseFileRegistry(Protocol):
         """Bind the reserved signature to its canonical GitHub issue."""
         ...
 
-    def renew_creation(
+    def begin_creation_publication(
         self, *, signature: str, reservation_id: str
     ) -> PatternReservation:
-        """Fence and renew the exact reservation at the publication boundary."""
+        """Durably enter the non-expiring ambiguous-write phase for creation."""
         ...
 
     def reserve_observation(
@@ -117,15 +130,13 @@ class PatternCaseFileRegistry(Protocol):
         """Fence an exact recoverable evidence reservation for this client."""
         ...
 
-    def renew_observation(
+    def begin_observation_publication(
         self, *, signature: str, reservation_id: str
     ) -> PatternReservation:
-        """Fence the exact evidence token at the comment publication boundary."""
+        """Durably enter the non-expiring ambiguous-write phase for evidence."""
         ...
 
-    def finalize_observation(
-        self, *, signature: str, reservation_id: str
-    ) -> bool:
+    def finalize_observation(self, *, signature: str, reservation_id: str) -> bool:
         """Commit one admitted observation after its comment is durable."""
         ...
 

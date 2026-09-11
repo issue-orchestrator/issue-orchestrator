@@ -92,7 +92,10 @@ def test_two_clients_converge_on_one_reservation_and_case_file() -> None:
         reservation_id=won.entry.reservation_id,
         issue_number=81,
     )
-    assert second.reserve(_pending("stuck-retry")).state is PatternReservationState.COMMITTED
+    assert (
+        second.reserve(_pending("stuck-retry")).state
+        is PatternReservationState.COMMITTED
+    )
     assert committed.issue_number == 81
 
 
@@ -147,12 +150,29 @@ def test_stale_creator_cannot_renew_after_exact_takeover() -> None:
         pending=_pending("stuck-retry", "run:session:A2"),
     )
 
-    fenced = first.renew_creation(
+    fenced = first.begin_creation_publication(
         signature="stuck-retry", reservation_id=stale.entry.reservation_id
     )
 
     assert takeover.state is PatternReservationState.ACQUIRED
     assert fenced.state is PatternReservationState.HELD
+
+
+def test_started_creation_token_cannot_admit_a_second_publication() -> None:
+    client = FakeGitHubRefClient()
+    now = [datetime(2026, 9, 10, tzinfo=timezone.utc)]
+    registry = _registry(client, "engine-a", now)
+    reserved = registry.reserve(_pending("stuck-retry"))
+
+    started = registry.begin_creation_publication(
+        signature="stuck-retry", reservation_id=reserved.entry.reservation_id
+    )
+    replay = registry.begin_creation_publication(
+        signature="stuck-retry", reservation_id=reserved.entry.reservation_id
+    )
+
+    assert started.state is PatternReservationState.ACQUIRED
+    assert replay.state is PatternReservationState.PUBLISHING
 
 
 def test_interrupted_finalize_is_recoverable_from_original_pending_payload() -> None:
@@ -232,9 +252,7 @@ def test_observation_reservation_serializes_publication_and_classification() -> 
         second.reserve_observation(
             signature="stuck-retry",
             observation=_observation("run:session:A3"),
-            classification=CaseFileClassification(
-                fix_class="human", area="runtime"
-            ),
+            classification=CaseFileClassification(fix_class="human", area="runtime"),
         )
 
     assert admitted.state is PatternReservationState.ACQUIRED
@@ -253,6 +271,39 @@ def test_observation_reservation_serializes_publication_and_classification() -> 
     )
 
 
+def test_same_claimant_cannot_take_over_live_observation_token() -> None:
+    """A process name is not unique authority for overlapping operations."""
+    client = FakeGitHubRefClient()
+    now = [datetime(2026, 9, 10, tzinfo=timezone.utc)]
+    first = _registry(client, "engine-a", now)
+    retry = _registry(client, "engine-a", now)
+    created = first.reserve(_pending("stuck-retry"))
+    first.finalize(
+        signature="stuck-retry",
+        reservation_id=created.entry.reservation_id,
+        issue_number=81,
+    )
+    admitted = first.reserve_observation(
+        signature="stuck-retry",
+        observation=_observation("run:session:A2"),
+        classification=CaseFileClassification(),
+    )
+
+    observed = retry.reserve_observation(
+        signature="stuck-retry",
+        observation=_observation("run:session:A2"),
+        classification=CaseFileClassification(),
+    )
+    takeover = retry.take_over_observation(
+        signature="stuck-retry",
+        stale_reservation_id=admitted.entry.reservation_id,
+    )
+
+    assert observed.state is PatternReservationState.HELD
+    assert takeover.state is PatternReservationState.HELD
+    assert takeover.entry.reservation_id == admitted.entry.reservation_id
+
+
 def test_different_signatures_retain_independent_records() -> None:
     client = FakeGitHubRefClient()
     now = [datetime(2026, 9, 10, tzinfo=timezone.utc)]
@@ -261,13 +312,19 @@ def test_different_signatures_retain_independent_records() -> None:
     first = registry.reserve(_pending("pattern-a"))
     second = registry.reserve(_pending("pattern-b", "run:session:B1"))
     registry.finalize(
-        signature="pattern-a", reservation_id=first.entry.reservation_id, issue_number=81
+        signature="pattern-a",
+        reservation_id=first.entry.reservation_id,
+        issue_number=81,
     )
     registry.finalize(
-        signature="pattern-b", reservation_id=second.entry.reservation_id, issue_number=82
+        signature="pattern-b",
+        reservation_id=second.entry.reservation_id,
+        issue_number=82,
     )
 
-    assert [(entry.signature, entry.issue_number) for entry in registry.list_entries()] == [
+    assert [
+        (entry.signature, entry.issue_number) for entry in registry.list_entries()
+    ] == [
         ("pattern-a", 81),
         ("pattern-b", 82),
     ]
@@ -308,3 +365,18 @@ def test_existing_blank_or_unmarked_registry_fails_closed() -> None:
         client.commits[client.refs[ref]]["message"] = message
         with pytest.raises(PatternRegistryError, match="unreadable"):
             registry.list_entries()
+
+
+def test_invalid_publication_state_fails_closed() -> None:
+    client = FakeGitHubRefClient()
+    now = [datetime(2026, 9, 10, tzinfo=timezone.utc)]
+    registry = _registry(client, "engine-a", now)
+    registry.reserve(_pending("pattern-a"))
+    ref = f"{PATTERN_REGISTRY_REF_PREFIX}/{PATTERN_REGISTRY_REF_KEY}"
+    message = client.commits[client.refs[ref]]["message"]
+    client.commits[client.refs[ref]]["message"] = message.replace(
+        '"publication_started_at":null', '"publication_started_at":true'
+    )
+
+    with pytest.raises(PatternRegistryError, match="unreadable"):
+        registry.list_entries()

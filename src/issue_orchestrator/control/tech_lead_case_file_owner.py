@@ -60,12 +60,14 @@ from ..domain.tech_lead_findings import CaseFileClassification, PendingCaseFile
 from ..ports.pattern_registry import (
     PatternCaseFileRegistry,
     PatternRegistryError,
+    PatternReservation,
     PatternReservationState,
 )
 
 if TYPE_CHECKING:
     from ..domain.tech_lead_findings import PatternObservation
     from ..ports import RepositoryHost
+    from ..ports.pattern_registry import PatternRegistryEntry
     from .actions import CreateTechLeadCaseFileIssueAction
 
 logger = logging.getLogger(__name__)
@@ -80,6 +82,16 @@ class OrphanedCaseFileError(RuntimeError):
     adopting the orphan would invent its observation identity and classification
     from an unrelated action, and creating another would split the signature's
     evidence. So the lane stops and says so.
+    """
+
+
+class AmbiguousPatternPublicationError(PatternRegistryError):
+    """An external write began but its durable outcome is not observable yet.
+
+    GitHub issue and comment creation do not accept a caller idempotency key or
+    fencing token. Once a write starts, expiry therefore cannot safely license
+    a second write: the first request may still land. The durable publishing
+    state is deliberately retained until the exact remote marker is observed.
     """
 
 
@@ -198,27 +210,7 @@ class PatternCaseFileOwner:
             area=action.area or "",
             diagnosis=action.diagnosis,
         )
-        current = self._registry.read(signature=action.pattern_signature)
-        if (
-            current is None
-            and getattr(self, "_orphan_checked_signature", "")
-            != action.pattern_signature
-        ):
-            # Catch a pre-registry remote orphan before taking the shared
-            # reservation. A concurrent legitimate creator must reserve first,
-            # so the subsequent atomic reserve still closes this read/create gap.
-            found = self._repository_host.find_issue_by_marker(
-                title=action.title,
-                marker=action.idempotency_marker,
-                authoritative=False,
-            )
-            if found is not None:
-                raise OrphanedCaseFileError(
-                    f"case file #{found} exists for signature"
-                    f" {action.pattern_signature!r} but the registry has neither a"
-                    " ledger row nor a record of creating it; import the trusted"
-                    " local ledger before proceeding"
-                )
+        self._guard_unregistered_remote(action)
         self._before_write()
         reservation = self._registry.reserve(pending)
         if reservation.state is PatternReservationState.COMMITTED:
@@ -236,6 +228,41 @@ class PatternCaseFileOwner:
             self._reservation_id = reservation.entry.reservation_id
             return CaseFileResolution(CaseFileState.ABSENT)
 
+        if reservation.state is PatternReservationState.PUBLISHING:
+            return self._recover_started_creation(reservation.entry)
+        return self._recover_reserved_creation(action, pending, reservation)
+
+    def _guard_unregistered_remote(
+        self, action: "CreateTechLeadCaseFileIssueAction"
+    ) -> None:
+        """Reject remote identity whose durable registry provenance is absent."""
+        current = self._registry.read(signature=action.pattern_signature)
+        if current is not None or (
+            getattr(self, "_orphan_checked_signature", "") == action.pattern_signature
+        ):
+            return
+        # A concurrent legitimate creator must reserve first, so the later
+        # atomic reserve closes the gap after this pre-registry orphan check.
+        found = self._repository_host.find_issue_by_marker(
+            title=action.title,
+            marker=action.idempotency_marker,
+            authoritative=False,
+        )
+        if found is not None:
+            raise OrphanedCaseFileError(
+                f"case file #{found} exists for signature"
+                f" {action.pattern_signature!r} but the registry has neither a"
+                " ledger row nor a record of creating it; import the trusted"
+                " local ledger before proceeding"
+            )
+
+    def _recover_reserved_creation(
+        self,
+        action: "CreateTechLeadCaseFileIssueAction",
+        pending: PendingCaseFile,
+        reservation: PatternReservation,
+    ) -> CaseFileResolution:
+        """Recover or safely replace a reservation that never began its write."""
         assert reservation.state is PatternReservationState.RECOVERABLE
         original = reservation.entry.pending
         if original is None:
@@ -279,23 +306,51 @@ class PatternCaseFileOwner:
         return CaseFileResolution(CaseFileState.RECOVERED, committed.issue_number)
 
     def begin(self, action: "CreateTechLeadCaseFileIssueAction") -> None:
-        """Fence and renew the exact reservation immediately before create."""
+        """Fence the token and durably mark publication immediately before create."""
         reservation_id = getattr(self, "_reservation_id", "")
         if not reservation_id:
             raise PatternRegistryError(
                 f"pattern {action.pattern_signature!r} was not reserved"
             )
         self._before_write()
-        renewed = self._registry.renew_creation(
+        started = self._registry.begin_creation_publication(
             signature=action.pattern_signature,
             reservation_id=reservation_id,
         )
-        if renewed.state is not PatternReservationState.ACQUIRED:
+        if started.state is not PatternReservationState.ACQUIRED:
             raise PatternRegistryError(
                 f"pattern {action.pattern_signature!r} creation reservation"
                 " changed before publication"
             )
-        self._reservation_id = renewed.entry.reservation_id
+        self._reservation_id = started.entry.reservation_id
+
+    def _recover_started_creation(
+        self, entry: "PatternRegistryEntry"
+    ) -> CaseFileResolution:
+        """Finalize a proven create; never reissue an ambiguous started write."""
+        pending = entry.pending
+        if pending is None:
+            raise PatternRegistryError("started creation has no pending intent")
+        found = self._repository_host.find_issue_by_marker(
+            title=pending.title,
+            marker=pending.idempotency_marker,
+            authoritative=True,
+        )
+        if found is None:
+            raise AmbiguousPatternPublicationError(
+                f"pattern {entry.signature!r} issue publication started at"
+                f" {entry.publication_started_at}, but its marker is not yet"
+                " observable; preserving publication state to prevent a"
+                " duplicate issue"
+            )
+        self._before_write()
+        committed = self._registry.finalize(
+            signature=entry.signature,
+            reservation_id=entry.reservation_id,
+            issue_number=found,
+        )
+        assert committed.issue_number is not None
+        return CaseFileResolution(CaseFileState.RECOVERED, committed.issue_number)
 
     def open(
         self, action: "CreateTechLeadCaseFileIssueAction", *, issue_number: int
@@ -364,7 +419,7 @@ class PatternCaseFileOwner:
            preflight, including recovery paths planning could not see.
         1. an identity ALREADY committed means a previous attempt completed —
            do nothing;
-        2. otherwise renew the exact token at the publication boundary, recover
+        2. otherwise start durable publication at the exact token boundary, recover
            or publish the authoritative comment receipt, then finalize the
            reserved count. A crash between publication and finalization recovers
            the exact receipt and reservation without reposting or double counting.
@@ -404,45 +459,29 @@ class PatternCaseFileOwner:
     ) -> ObservationAppendOutcome:
         """Reserve, publish, and commit one observation under one shared token."""
         self._before_write()
-        reservation = self._registry.reserve_observation(
+        admission = self._admit_observation(
             signature=signature,
+            issue_number=issue_number,
             observation=observation,
             classification=classification,
         )
-        if reservation.entry.issue_number != issue_number:
-            raise PatternRegistryError(
-                f"pattern {signature!r} belongs to issue"
-                f" #{reservation.entry.issue_number}, not #{issue_number}"
-            )
-        if reservation.state is PatternReservationState.COMMITTED:
-            return ObservationAppendOutcome(recorded=0, skipped=1)
-        if reservation.state is PatternReservationState.HELD:
-            raise PatternRegistryError(
-                f"pattern {signature!r} evidence is being published by"
-                f" {reservation.entry.claimant_id}; retry after"
-                f" {reservation.entry.expires_at}"
-            )
-        if reservation.state is PatternReservationState.RECOVERABLE:
-            self._before_write()
-            reservation = self._registry.take_over_observation(
-                signature=signature,
-                stale_reservation_id=reservation.entry.reservation_id,
-            )
-            if reservation.state is not PatternReservationState.ACQUIRED:
-                raise PatternRegistryError(
-                    f"pattern {signature!r} evidence changed during recovery"
-                )
+        if isinstance(admission, ObservationAppendOutcome):
+            return admission
+        reservation = admission
+
         pending = reservation.entry.pending_observation
         if pending is None:
-            raise PatternRegistryError("evidence reservation has no pending observation")
+            raise PatternRegistryError(
+                "evidence reservation has no pending observation"
+            )
 
         def admit_comment() -> None:
             self._before_write()
-            renewed = self._registry.renew_observation(
+            started = self._registry.begin_observation_publication(
                 signature=signature,
                 reservation_id=reservation.entry.reservation_id,
             )
-            if renewed.state is not PatternReservationState.ACQUIRED:
+            if started.state is not PatternReservationState.ACQUIRED:
                 raise PatternRegistryError(
                     f"pattern {signature!r} evidence reservation changed"
                     " before publication"
@@ -476,4 +515,95 @@ class PatternCaseFileOwner:
         return ObservationAppendOutcome(
             recorded=outcome.recorded + current.recorded,
             skipped=outcome.skipped + current.skipped,
+        )
+
+    def _admit_observation(
+        self,
+        *,
+        signature: str,
+        issue_number: int,
+        observation: "PatternObservation",
+        classification: CaseFileClassification,
+    ) -> PatternReservation | ObservationAppendOutcome:
+        """Return one acquired token or the complete replay/recovery outcome."""
+        reservation = self._registry.reserve_observation(
+            signature=signature,
+            observation=observation,
+            classification=classification,
+        )
+        if reservation.entry.issue_number != issue_number:
+            raise PatternRegistryError(
+                f"pattern {signature!r} belongs to issue"
+                f" #{reservation.entry.issue_number}, not #{issue_number}"
+            )
+        if reservation.state is PatternReservationState.COMMITTED:
+            return ObservationAppendOutcome(recorded=0, skipped=1)
+        if reservation.state is PatternReservationState.HELD:
+            raise PatternRegistryError(
+                f"pattern {signature!r} evidence is being published by"
+                f" {reservation.entry.claimant_id}; retry after"
+                f" {reservation.entry.expires_at}"
+            )
+        if reservation.state is PatternReservationState.PUBLISHING:
+            return self._recover_started_observation(
+                signature=signature,
+                issue_number=issue_number,
+                requested=observation,
+                classification=classification,
+                entry=reservation.entry,
+            )
+        if reservation.state is PatternReservationState.RECOVERABLE:
+            self._before_write()
+            reservation = self._registry.take_over_observation(
+                signature=signature,
+                stale_reservation_id=reservation.entry.reservation_id,
+            )
+            if reservation.state is not PatternReservationState.ACQUIRED:
+                raise PatternRegistryError(
+                    f"pattern {signature!r} evidence changed during recovery"
+                )
+        return reservation
+
+    def _recover_started_observation(
+        self,
+        *,
+        signature: str,
+        issue_number: int,
+        requested: "PatternObservation",
+        classification: CaseFileClassification,
+        entry: "PatternRegistryEntry",
+    ) -> ObservationAppendOutcome:
+        """Finalize a proven comment; retain an unprovable in-flight write."""
+        pending = entry.pending_observation
+        if pending is None:
+            raise PatternRegistryError("started evidence publication has no payload")
+        receipt = self._repository_host.find_issue_comment_receipt(
+            issue_number, body=pending.observation.comment
+        )
+        if receipt is None:
+            raise AmbiguousPatternPublicationError(
+                f"pattern {signature!r} evidence publication started at"
+                f" {entry.publication_started_at}, but its comment is not yet"
+                " observable; preserving publication state to prevent a"
+                " duplicate comment"
+            )
+        self._before_write()
+        recorded = self._registry.finalize_observation(
+            signature=signature,
+            reservation_id=entry.reservation_id,
+        )
+        recovered = ObservationAppendOutcome(
+            recorded=int(recorded), skipped=int(not recorded)
+        )
+        if pending.observation.observation_id == requested.observation_id:
+            return recovered
+        current = self._append_observation(
+            signature=signature,
+            issue_number=issue_number,
+            observation=requested,
+            classification=classification,
+        )
+        return ObservationAppendOutcome(
+            recorded=recovered.recorded + current.recorded,
+            skipped=recovered.skipped + current.skipped,
         )

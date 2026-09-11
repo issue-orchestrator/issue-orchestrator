@@ -40,7 +40,9 @@ class MirroredPatternCaseFileRegistry(PatternCaseFileRegistry):
 
     def synchronize(self) -> None:
         """Merge rolling-upgrade rows, then rebuild this client's local cache."""
-        seeds = tuple(self._seed(evidence) for evidence in self._local.list_pattern_evidence())
+        seeds = tuple(
+            self._seed(evidence) for evidence in self._local.list_pattern_evidence()
+        )
         self._shared.seed_committed(seeds)
         for entry in self._shared.list_entries():
             if entry.committed:
@@ -50,7 +52,9 @@ class MirroredPatternCaseFileRegistry(PatternCaseFileRegistry):
         # Preserve an interrupted pre-registry create's original payload before
         # allowing a newer observation to participate in recovery.
         if self._shared.read(signature=pending.signature) is None:
-            old_pending = self._local.load_pending_case_file(signature=pending.signature)
+            old_pending = self._local.load_pending_case_file(
+                signature=pending.signature
+            )
             if old_pending is not None:
                 self._shared.reserve(old_pending)
         outcome = self._shared.reserve(pending)
@@ -79,10 +83,10 @@ class MirroredPatternCaseFileRegistry(PatternCaseFileRegistry):
         self._mirror(entry)
         return entry
 
-    def renew_creation(
+    def begin_creation_publication(
         self, *, signature: str, reservation_id: str
     ) -> PatternReservation:
-        outcome = self._shared.renew_creation(
+        outcome = self._shared.begin_creation_publication(
             signature=signature, reservation_id=reservation_id
         )
         if outcome.entry.committed:
@@ -115,19 +119,17 @@ class MirroredPatternCaseFileRegistry(PatternCaseFileRegistry):
             self._mirror(outcome.entry)
         return outcome
 
-    def renew_observation(
+    def begin_observation_publication(
         self, *, signature: str, reservation_id: str
     ) -> PatternReservation:
-        outcome = self._shared.renew_observation(
+        outcome = self._shared.begin_observation_publication(
             signature=signature, reservation_id=reservation_id
         )
         if outcome.entry.committed:
             self._mirror(outcome.entry)
         return outcome
 
-    def finalize_observation(
-        self, *, signature: str, reservation_id: str
-    ) -> bool:
+    def finalize_observation(self, *, signature: str, reservation_id: str) -> bool:
         recorded = self._shared.finalize_observation(
             signature=signature, reservation_id=reservation_id
         )
@@ -216,7 +218,10 @@ class LocalPatternCaseFileRegistry(PatternCaseFileRegistry):
     def reserve(self, pending: PendingCaseFile) -> PatternReservation:
         committed = self.read(signature=pending.signature)
         if committed is not None and committed.committed:
-            if self._local.load_pending_case_file(signature=pending.signature) is not None:
+            if (
+                self._local.load_pending_case_file(signature=pending.signature)
+                is not None
+            ):
                 self._before_write()
                 self._local.discard_pending_case_file(signature=pending.signature)
             return PatternReservation(PatternReservationState.COMMITTED, committed)
@@ -226,17 +231,26 @@ class LocalPatternCaseFileRegistry(PatternCaseFileRegistry):
                 PatternReservationState.RECOVERABLE, self._reserved(existing)
             )
         self._local.record_pending_case_file(pending=pending)
-        return PatternReservation(PatternReservationState.ACQUIRED, self._reserved(pending))
+        return PatternReservation(
+            PatternReservationState.ACQUIRED, self._reserved(pending)
+        )
 
     def take_over(
         self, *, stale_reservation_id: str, pending: PendingCaseFile
     ) -> PatternReservation:
         existing = self._local.load_pending_case_file(signature=pending.signature)
-        if existing is not None and self._reservation_id(existing) != stale_reservation_id:
-            return PatternReservation(PatternReservationState.HELD, self._reserved(existing))
+        if (
+            existing is not None
+            and self._reservation_id(existing) != stale_reservation_id
+        ):
+            return PatternReservation(
+                PatternReservationState.HELD, self._reserved(existing)
+            )
         self._local.discard_pending_case_file(signature=pending.signature)
         self._local.record_pending_case_file(pending=pending)
-        return PatternReservation(PatternReservationState.ACQUIRED, self._reserved(pending))
+        return PatternReservation(
+            PatternReservationState.ACQUIRED, self._reserved(pending)
+        )
 
     def finalize(
         self, *, signature: str, reservation_id: str, issue_number: int
@@ -261,7 +275,7 @@ class LocalPatternCaseFileRegistry(PatternCaseFileRegistry):
         assert entry is not None
         return entry
 
-    def renew_creation(
+    def begin_creation_publication(
         self, *, signature: str, reservation_id: str
     ) -> PatternReservation:
         current = self.read(signature=signature)
@@ -332,7 +346,7 @@ class LocalPatternCaseFileRegistry(PatternCaseFileRegistry):
         assert current is not None
         return PatternReservation(PatternReservationState.ACQUIRED, current)
 
-    def renew_observation(
+    def begin_observation_publication(
         self, *, signature: str, reservation_id: str
     ) -> PatternReservation:
         current = self.read(signature=signature)
@@ -347,9 +361,7 @@ class LocalPatternCaseFileRegistry(PatternCaseFileRegistry):
             return PatternReservation(PatternReservationState.HELD, current)
         return PatternReservation(PatternReservationState.ACQUIRED, current)
 
-    def finalize_observation(
-        self, *, signature: str, reservation_id: str
-    ) -> bool:
+    def finalize_observation(self, *, signature: str, reservation_id: str) -> bool:
         existing = self._pending_observations.get(signature)
         if existing is None:
             return False

@@ -66,6 +66,10 @@ class GitHubRefPatternRegistry(PatternCaseFileRegistry):
                     return PatternReservation(
                         PatternReservationState.COMMITTED, current
                     )
+                if current.publication_started_at is not None:
+                    return PatternReservation(
+                        PatternReservationState.PUBLISHING, current
+                    )
                 if not self._expired(current):
                     # A claimant ID names a process/configuration, not this
                     # call's ownership token.  Seeing an existing reservation
@@ -94,6 +98,8 @@ class GitHubRefPatternRegistry(PatternCaseFileRegistry):
                 return self.reserve(pending)
             if current.committed:
                 return PatternReservation(PatternReservationState.COMMITTED, current)
+            if current.publication_started_at is not None:
+                return PatternReservation(PatternReservationState.PUBLISHING, current)
             if current.reservation_id != stale_reservation_id or not self._expired(
                 current
             ):
@@ -131,6 +137,7 @@ class GitHubRefPatternRegistry(PatternCaseFileRegistry):
             entry = replace(
                 current,
                 pending=None,
+                publication_started_at=None,
                 issue_number=issue_number,
                 observation_ids=(current.pending.body_observation_id,),
                 classification=CaseFileClassification(
@@ -144,10 +151,10 @@ class GitHubRefPatternRegistry(PatternCaseFileRegistry):
                 return entry
         raise PatternRegistryError("pattern registry kept changing during finalization")
 
-    def renew_creation(
+    def begin_creation_publication(
         self, *, signature: str, reservation_id: str
     ) -> PatternReservation:
-        """Renew only the exact creation token immediately before publication."""
+        """Fence the token and make ambiguous creation non-reissuable."""
         for _ in range(MAX_CAS_ATTEMPTS):
             snapshot, entries = self._load()
             current = entries.get(signature)
@@ -157,16 +164,18 @@ class GitHubRefPatternRegistry(PatternCaseFileRegistry):
                 return PatternReservation(PatternReservationState.COMMITTED, current)
             if current.reservation_id != reservation_id:
                 return PatternReservation(PatternReservationState.HELD, current)
+            if current.publication_started_at is not None:
+                return PatternReservation(PatternReservationState.PUBLISHING, current)
             entry = replace(
                 current,
-                expires_at=(
-                    self._aware_now() + timedelta(seconds=self._lease_seconds)
-                ).isoformat(),
+                publication_started_at=self._aware_now().isoformat(),
             )
             entries[signature] = entry
             if self._commit(snapshot, entries):
                 return PatternReservation(PatternReservationState.ACQUIRED, entry)
-        raise PatternRegistryError("pattern registry kept changing during renewal")
+        raise PatternRegistryError(
+            "pattern registry kept changing while starting publication"
+        )
 
     def reserve_observation(
         self,
@@ -187,10 +196,13 @@ class GitHubRefPatternRegistry(PatternCaseFileRegistry):
                 return PatternReservation(PatternReservationState.COMMITTED, current)
             pending = current.pending_observation
             if pending is not None:
+                if current.publication_started_at is not None:
+                    return PatternReservation(
+                        PatternReservationState.PUBLISHING, current
+                    )
                 state = (
                     PatternReservationState.RECOVERABLE
-                    if current.claimant_id == self._claimant_id
-                    or self._expired(current)
+                    if self._expired(current)
                     else PatternReservationState.HELD
                 )
                 return PatternReservation(state, current)
@@ -224,11 +236,13 @@ class GitHubRefPatternRegistry(PatternCaseFileRegistry):
                 )
             if current.pending_observation is None:
                 return PatternReservation(PatternReservationState.COMMITTED, current)
+            if current.publication_started_at is not None:
+                return PatternReservation(PatternReservationState.PUBLISHING, current)
             if current.reservation_id != stale_reservation_id or (
-                current.claimant_id != self._claimant_id and not self._expired(current)
+                not self._expired(current)
             ):
                 return PatternReservation(PatternReservationState.HELD, current)
-            entry = self._renewed_observation_entry(current, rotate=True)
+            entry = self._reassigned_observation_entry(current)
             entries[signature] = entry
             if self._commit(snapshot, entries):
                 return PatternReservation(PatternReservationState.ACQUIRED, entry)
@@ -236,7 +250,7 @@ class GitHubRefPatternRegistry(PatternCaseFileRegistry):
             "pattern registry kept changing during evidence takeover"
         )
 
-    def renew_observation(
+    def begin_observation_publication(
         self, *, signature: str, reservation_id: str
     ) -> PatternReservation:
         for _ in range(MAX_CAS_ATTEMPTS):
@@ -250,12 +264,17 @@ class GitHubRefPatternRegistry(PatternCaseFileRegistry):
                 return PatternReservation(PatternReservationState.COMMITTED, current)
             if current.reservation_id != reservation_id:
                 return PatternReservation(PatternReservationState.HELD, current)
-            entry = self._renewed_observation_entry(current, rotate=False)
+            if current.publication_started_at is not None:
+                return PatternReservation(PatternReservationState.PUBLISHING, current)
+            entry = replace(
+                current,
+                publication_started_at=self._aware_now().isoformat(),
+            )
             entries[signature] = entry
             if self._commit(snapshot, entries):
                 return PatternReservation(PatternReservationState.ACQUIRED, entry)
         raise PatternRegistryError(
-            "pattern registry kept changing during evidence renewal"
+            "pattern registry kept changing while starting evidence publication"
         )
 
     def finalize_observation(self, *, signature: str, reservation_id: str) -> bool:
@@ -275,13 +294,18 @@ class GitHubRefPatternRegistry(PatternCaseFileRegistry):
                 )
             observation_id = pending.observation.observation_id
             if observation_id in current.observation_ids:
-                entries[signature] = replace(current, pending_observation=None)
+                entries[signature] = replace(
+                    current,
+                    pending_observation=None,
+                    publication_started_at=None,
+                )
                 if self._commit(snapshot, entries):
                     return False
                 continue
             entry = replace(
                 current,
                 pending_observation=None,
+                publication_started_at=None,
                 observation_ids=(*current.observation_ids, observation_id),
                 classification=current.classification.merged_with(
                     pending.classification, signature=signature
@@ -360,16 +384,17 @@ class GitHubRefPatternRegistry(PatternCaseFileRegistry):
             classification=CaseFileClassification(),
         )
 
-    def _renewed_observation_entry(
-        self, entry: PatternRegistryEntry, *, rotate: bool
+    def _reassigned_observation_entry(
+        self, entry: PatternRegistryEntry
     ) -> PatternRegistryEntry:
         return replace(
             entry,
-            reservation_id=uuid.uuid4().hex if rotate else entry.reservation_id,
+            reservation_id=uuid.uuid4().hex,
             claimant_id=self._claimant_id,
             expires_at=(
                 self._aware_now() + timedelta(seconds=self._lease_seconds)
             ).isoformat(),
+            publication_started_at=None,
         )
 
     def _expired(self, entry: PatternRegistryEntry) -> bool:

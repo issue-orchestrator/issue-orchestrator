@@ -11,7 +11,11 @@ import pytest
 from issue_orchestrator.adapters.github.pattern_registry import GitHubRefPatternRegistry
 from issue_orchestrator.adapters.github.github_adapter import GitHubAdapter
 from issue_orchestrator.control.pattern_registry import MirroredPatternCaseFileRegistry
-from issue_orchestrator.control.tech_lead_case_file_owner import PatternCaseFileOwner
+from issue_orchestrator.control.tech_lead_case_file_owner import (
+    AmbiguousPatternPublicationError,
+    CaseFileState,
+    PatternCaseFileOwner,
+)
 from issue_orchestrator.control.actions import CreateTechLeadCaseFileIssueAction
 from issue_orchestrator.control.reconciliation import build_expected_for_mutation
 from issue_orchestrator.domain.tech_lead_findings import (
@@ -40,6 +44,22 @@ def _pending(observation: str) -> PendingCaseFile:
         fix_class="code",
         area="runtime",
         diagnosis="A retry owner can be stranded.",
+    )
+
+
+def _action() -> CreateTechLeadCaseFileIssueAction:
+    observation = PatternObservation(
+        observation_id="run:a:A1", comment="first observation"
+    )
+    return CreateTechLeadCaseFileIssueAction(
+        title="Pattern case file: stuck-retry",
+        body="body\n\n<!-- marker:stuck-retry -->",
+        labels=("tech-lead-observation",),
+        pattern_signature="stuck-retry",
+        idempotency_marker="<!-- marker:stuck-retry -->",
+        observations=(observation,),
+        origin=TechLeadCreationOrigin.derived_from_anchor(7),
+        expected=build_expected_for_mutation(),
     )
 
 
@@ -222,7 +242,7 @@ def test_expired_observation_recovery_fences_old_publisher_and_posts_once() -> N
         area="runtime",
         diagnosis="",
     )
-    fenced = first_registry.renew_observation(
+    fenced = first_registry.begin_observation_publication(
         signature="stuck-retry",
         reservation_id=admitted.entry.reservation_id,
     )
@@ -302,19 +322,7 @@ def test_creation_owner_revalidates_exact_token_after_takeover() -> None:
     )
     repository = MagicMock()
     repository.find_issue_by_marker.return_value = None
-    observation = PatternObservation(
-        observation_id="run:a:A1", comment="first observation"
-    )
-    action = CreateTechLeadCaseFileIssueAction(
-        title="Pattern case file: stuck-retry",
-        body="body\n\n<!-- marker:stuck-retry -->",
-        labels=("tech-lead-observation",),
-        pattern_signature="stuck-retry",
-        idempotency_marker="<!-- marker:stuck-retry -->",
-        observations=(observation,),
-        origin=TechLeadCreationOrigin.derived_from_anchor(7),
-        expected=build_expected_for_mutation(),
-    )
+    action = _action()
     first_owner = PatternCaseFileOwner(
         registry=first_registry,
         repository_host=repository,
@@ -337,6 +345,142 @@ def test_creation_owner_revalidates_exact_token_after_takeover() -> None:
     repository.create_issue.assert_not_called()
 
 
+def test_unresolved_issue_write_cannot_be_reissued_after_lease_expiry() -> None:
+    """A second client entering during the HTTP call cannot create a duplicate."""
+    client = FakeGitHubRefClient()
+    now = [datetime(2026, 9, 10, tzinfo=timezone.utc)]
+    first_registry = GitHubRefPatternRegistry(
+        cast(Any, client),
+        claimant_id="engine-a",
+        lease_seconds=30,
+        clock=lambda: now[0],
+    )
+    second_registry = GitHubRefPatternRegistry(
+        cast(Any, client),
+        claimant_id="engine-b",
+        lease_seconds=30,
+        clock=lambda: now[0],
+    )
+    created: list[int] = []
+    repository = MagicMock()
+    repository.find_issue_by_marker.side_effect = lambda **_kwargs: (
+        created[0] if created else None
+    )
+    first_owner = PatternCaseFileOwner(
+        registry=first_registry,
+        repository_host=repository,
+        add_comment=repository.add_comment,
+        before_write=lambda: None,
+    )
+    second_owner = PatternCaseFileOwner(
+        registry=second_registry,
+        repository_host=repository,
+        add_comment=repository.add_comment,
+        before_write=lambda: None,
+    )
+    action = _action()
+
+    assert first_owner.resolve(action).state is CaseFileState.ABSENT
+    first_owner.begin(action)
+
+    def delayed_create() -> int:
+        now[0] += timedelta(seconds=31)
+        with pytest.raises(
+            AmbiguousPatternPublicationError, match="prevent a duplicate issue"
+        ):
+            second_owner.resolve(action)
+        created.append(81)
+        return 81
+
+    repository.create_issue.side_effect = delayed_create
+    issue_number = repository.create_issue()
+    # Simulate the first process crashing after the HTTP effect, before finalize.
+    recovered = second_owner.resolve(action)
+
+    assert issue_number == 81
+    repository.create_issue.assert_called_once_with()
+    assert recovered == type(recovered)(CaseFileState.RECOVERED, 81)
+    entry = first_registry.read(signature="stuck-retry")
+    assert entry is not None and entry.issue_number == 81
+
+
+def test_unresolved_comment_write_cannot_be_reissued_after_lease_expiry() -> None:
+    """A second client entering inside add_comment cannot duplicate evidence."""
+    client = FakeGitHubRefClient()
+    now = [datetime(2026, 9, 10, tzinfo=timezone.utc)]
+    first_registry = GitHubRefPatternRegistry(
+        cast(Any, client),
+        claimant_id="engine-a",
+        lease_seconds=30,
+        clock=lambda: now[0],
+    )
+    second_registry = GitHubRefPatternRegistry(
+        cast(Any, client),
+        claimant_id="engine-b",
+        lease_seconds=30,
+        clock=lambda: now[0],
+    )
+    created = first_registry.reserve(_pending("run:a:A1"))
+    first_registry.finalize(
+        signature="stuck-retry",
+        reservation_id=created.entry.reservation_id,
+        issue_number=81,
+    )
+    observation = PatternObservation(
+        observation_id="run:a:A2",
+        comment="observed again\n\n<!-- obs:a2 -->",
+    )
+    comments: list[str] = []
+    receipt = object()
+    repository = MagicMock()
+    repository.find_issue_comment_receipt.side_effect = lambda _number, *, body: (
+        receipt if body in comments else None
+    )
+    second_owner = PatternCaseFileOwner(
+        registry=second_registry,
+        repository_host=repository,
+        add_comment=repository.add_comment,
+        before_write=lambda: None,
+    )
+
+    def delayed_comment(_number: int, body: str) -> str:
+        now[0] += timedelta(seconds=31)
+        with pytest.raises(
+            AmbiguousPatternPublicationError, match="prevent a duplicate comment"
+        ):
+            second_owner.append_observations(
+                signature="stuck-retry",
+                issue_number=81,
+                observations=(observation,),
+                fix_class="code",
+                area="runtime",
+                diagnosis="",
+            )
+        comments.append(body)
+        return "comment"
+
+    first_owner = PatternCaseFileOwner(
+        registry=first_registry,
+        repository_host=repository,
+        add_comment=delayed_comment,
+        before_write=lambda: None,
+    )
+    outcome = first_owner.append_observations(
+        signature="stuck-retry",
+        issue_number=81,
+        observations=(observation,),
+        fix_class="code",
+        area="runtime",
+        diagnosis="",
+    )
+
+    assert outcome.recorded == 1
+    assert comments == [observation.comment]
+    entry = first_registry.read(signature="stuck-retry")
+    assert entry is not None
+    assert entry.observation_ids == ("run:a:A1", "run:a:A2")
+
+
 def test_production_composition_initializes_shared_registry(tmp_path) -> None:
     client = FakeGitHubRefClient()
     host = GitHubAdapter(repo="owner/repo", http_client=cast(Any, client))
@@ -345,9 +489,7 @@ def test_production_composition_initializes_shared_registry(tmp_path) -> None:
     config.tech_lead_enabled = True
     config.tech_lead.authority.flag_pattern = "execute"
 
-    registry = create_pattern_registry(
-        config, host, InMemoryTechLeadAuthorityStore()
-    )
+    registry = create_pattern_registry(config, host, InMemoryTechLeadAuthorityStore())
 
     assert isinstance(registry, MirroredPatternCaseFileRegistry)
     assert "refs/issue-orchestrator/registry/tech-lead-patterns" in client.refs

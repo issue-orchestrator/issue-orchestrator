@@ -439,16 +439,20 @@ git fetch origin refs/issue-orchestrator/registry/tech-lead-patterns
 git show --format=%B --no-patch FETCH_HEAD
 ```
 
-An active creation or evidence reservation names its claimant and expiry. Let
-another client retry after expiry; creation recovery performs an authoritative
-marker lookup and either recovers the created issue or takes over the exact
-stale reservation. Evidence recovery takes over the exact observation token,
-recovers or publishes its exact comment receipt, and finalizes the count before
-admitting another observation. If an issue exists
-with no shared or local mapping, restore the trusted local authority database
-from backup and restart so startup can import it. Do not reconstruct a mapping
-from editable issue prose or delete the shared ref: either action can create a
-second canonical case file and split its evidence.
+An active creation or evidence reservation names its claimant and expiry. A
+reservation that has not started publication may be taken over after expiry;
+creation recovery first performs an authoritative marker lookup. Once its
+`publication_started_at` is present, the operation deliberately does not
+expire: GitHub supplies no idempotency key that could fence a delayed issue or
+comment request. Another client may finalize the operation after its exact
+marker or comment receipt becomes observable, but an absent receipt preserves
+the ambiguous operation and blocks republication. This state merits inspection
+only if it persists beyond GitHub's normal visibility delay; never clear it or
+retry the write without first accounting for a delayed remote result. If an
+issue exists with no shared or local mapping, restore the trusted local
+authority database from backup and restart so startup can import it. Do not
+reconstruct a mapping from editable issue prose or delete the shared ref:
+either action can create a second canonical case file and split its evidence.
 
 An unreadable or forward-version registry fails closed. Upgrade the older
 client or restore the ref to a known valid commit; the orchestrator deliberately
