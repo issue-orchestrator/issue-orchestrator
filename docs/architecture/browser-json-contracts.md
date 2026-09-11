@@ -116,7 +116,8 @@ follow-up list is a ratchet: it may shrink, never grow.
 | `e2e_runs_list.js` — run detail (`loadE2ERunIntoRow`) | delegated | contract-covered | Delegates to `_fetchE2ERunDetail`; previously duplicated the fetch and swallowed a malformed body into `{}` |
 | `validation_viewer.js` — `/api/e2e-run/{run_id}/test-output` | `fetch().json()` | contract-covered | Validated as `E2ETestOutputPayload`; replaced a `.catch(() => ({}))` that rendered "no captured output" for a malformed body. The URL arrives via `data-cvv-output-url`, so the guardrail's endpoint scan cannot see it — the binding is pinned explicitly |
 | `e2e_run_view.js`, `validation_viewer.js` — error bodies | `fetch()` error body | raw-json-intentional | The contract defines the 200 only, so a failure body has no schema; yields a display string, never a payload the renderer sees |
-| `core.js` — `/api/info`, `e2e_run_view.js` — `/control/e2e/create-issues/{run_id}` | `fetch().json()` | raw-json-intentional | Not in `ui-openapi.json`; no component to validate against |
+| `core.js` — `/api/info` | `fetch().json()` | contract-missing | `OrchestratorInfoPayload` exists; its reader is not yet applied. Follow-up |
+| `e2e_run_view.js` — `/control/e2e/create-issues/{run_id}` | `fetch().json()` | raw-json-intentional | Not in `ui-openapi.json`; no component to validate against |
 | `e2e_canonical_payload.js`, `ui_action_contract.js`, `flash_debug.js` — endpoint names | not a JSON read | n/a | Name a contract-covered endpoint without reading its body: a URL builder, a URL registry, and a `fetch` timing probe respectively |
 | `e2e_run_view.js` — `resolveRowCommandContext()` | DOM row identity | context-local | Stays local: proves a *valid* command targets the row that dispatched it |
 | `timeline.js` — `dataset.action` (`runTimelineEventAction`) | DOM `data-*` | contract-missing | Legacy action payload keyed by `type`, not `kind`; no OpenAPI component. Follow-up |
