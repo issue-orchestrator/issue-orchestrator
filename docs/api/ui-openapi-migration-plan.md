@@ -26,12 +26,14 @@ After editing the schema, regenerate and drop the now-satisfied baseline entries
 ```bash
 python scripts/generate_ui_contracts.py
 python tools/quality_guardrails.py --check-stale   # confirm which entries went stale
+python tools/quality_guardrails.py \
+  --prune 'ui_openapi_routes:uncontracted:GET /api/status' \
+  --prune 'ui_openapi_routes:uncontracted:GET /api/excluded-issues'
 ```
 
-`--prune` rewrites *every* stale entry in the baseline, including unrelated debt
-other files happen to have shed. Use it only when `--check-stale` shows nothing
-but this group's routes; otherwise delete exactly this group's
-`ui_openapi_routes:uncontracted:*` keys so the baseline diff stays reviewable.
+Pass one repeatable `--prune KEY` argument for each route in the group. It removes
+only the named stale entries and rejects keys that are not stale. Never hand-edit
+the baseline or include stale keys from another group in the same change.
 
 ## Group order
 
