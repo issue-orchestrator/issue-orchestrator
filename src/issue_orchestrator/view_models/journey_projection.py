@@ -37,9 +37,9 @@ from .lifecycle_event_sets import (
     VALIDATION_FAILED_EVENTS,
     VALIDATION_PASSED_EVENTS,
 )
+from .issue_lifecycle_attempt import Attempt
 from .lifecycle_projection import project_cycle_stages
 from .lifecycle_semantics import (
-    Attempt,
     CycleArtifacts,
     CycleReviewArtifact,
     CycleValidationBadge,

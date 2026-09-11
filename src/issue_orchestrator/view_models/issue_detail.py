@@ -18,6 +18,7 @@ from ..domain.event_taxonomy import (
 from ..domain.logical_run_projection import LogicalRunProjector
 from ..events import EventName
 from .blocked_explanations import invalid_or_validation_blocked_explanation
+from .issue_detail_history import build_previous_cycles, format_time_label
 # Canonical event-set ownership lives in ``view_models.lifecycle_event_sets``
 # (issue #6310 AC-4).  Issue_detail aliases ``OUTCOME_EVENTS`` and
 # ``BLOCKED_EVENT_NAMES`` for blocked-detail derivation and the AC-4 guard
@@ -84,7 +85,7 @@ def build_issue_detail_view_model(
     projection_events = _filter_events_by_view(events, projection_view)
     story_events = _story_projection_events(projection_events, projection_view)
     timeline_steps = _build_journey_steps(story_events, today)
-    previous_runs = _build_previous_cycles(cycles, today)
+    previous_runs = build_previous_cycles(cycles, today)
 
     # Typed projection pipeline (issue #6310): journey cycles + attempts are
     # now built by ``lifecycle_projection`` as typed models, including the
@@ -837,7 +838,7 @@ def _build_journey_steps(
 
         narrative = _event_to_narrative(event)
         ts = event.get("timestamp") or ""
-        time_label = _format_time_label(ts, today)
+        time_label = format_time_label(ts, today)
         day = str(ts)[:10] if ts else ""
 
         detail = event.get("detail")
@@ -953,94 +954,6 @@ def filter_last_run_cycles(cycles: list[dict[str, Any]]) -> list[dict[str, Any]]
 # We only surface "Not validated" once coding has actually finished without
 # recording any test evidence.
 
-
-
-def _format_time_label(timestamp: Any, today: str = "") -> str:
-    """Format a timestamp to a label like '8:15:30 PM' (today) or 'Feb 8, 8:15:30 PM' (other days)."""
-    if not timestamp:
-        return ""
-    ts = str(timestamp)
-    try:
-        dt = datetime.fromisoformat(ts)
-        time_part = dt.strftime("%-I:%M:%S %p").lstrip("0")
-        if today and ts[:10] == today:
-            return time_part
-        # Include short date for non-today events
-        date_part = dt.strftime("%b %-d")
-        return f"{date_part}, {time_part}"
-    except (ValueError, TypeError):
-        # Fallback: show the time portion
-        if "T" in ts and len(ts) >= 19:
-            return ts[11:19]
-        return ts
-
-
-# ---------------------------------------------------------------------------
-# Previous cycles
-# ---------------------------------------------------------------------------
-
-def _build_previous_cycles(
-    cycles: list[dict[str, Any]],
-    today: str,
-) -> list[dict[str, Any]]:
-    """Build summarised cards for cycles that completed before today."""
-    previous: list[dict[str, Any]] = []
-    for cycle_data in cycles:
-        start = str(cycle_data.get("start") or "")
-        # Include cycles that started before today
-        if start[:10] >= today:
-            continue
-        duration = _compute_duration_label(cycle_data.get("start"), cycle_data.get("end"))
-        # Extract summary from last event in the cycle
-        cycle_events = cycle_data.get("events") or []
-        summary = ""
-        for evt in reversed(cycle_events):
-            s = evt.get("summary")
-            if s:
-                summary = str(s)
-                break
-
-        previous.append({
-            "cycle": cycle_data.get("cycle", 0),
-            "duration_label": duration,
-            "outcome": str(cycle_data.get("status") or "unknown"),
-            "pr_url": _extract_pr_url(cycle_events),
-            "summary": summary,
-        })
-    return previous
-
-
-def _compute_duration_label(start: Any, end: Any) -> str:
-    if not start or not end:
-        return ""
-    try:
-        s = datetime.fromisoformat(str(start))
-        e = datetime.fromisoformat(str(end))
-        delta = e - s
-        minutes = int(delta.total_seconds() / 60)
-        if minutes < 1:
-            return "<1 min"
-        if minutes < 60:
-            return f"{minutes} min"
-        hours = minutes // 60
-        remaining = minutes % 60
-        if remaining == 0:
-            return f"{hours}h"
-        return f"{hours}h {remaining}m"
-    except (ValueError, TypeError):
-        return ""
-
-
-def _extract_pr_url(events: list[dict[str, Any]]) -> str | None:
-    """Find a PR URL from event artifacts."""
-    for event in reversed(events):
-        for artifact in event.get("artifacts") or []:
-            if not isinstance(artifact, dict):
-                continue
-            value = str(artifact.get("value") or "")
-            if "/pull/" in value:
-                return value
-    return None
 
 
 # ---------------------------------------------------------------------------

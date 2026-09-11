@@ -937,28 +937,6 @@ class IssueCycle(LifecycleBase):
         return self
 
 
-class Attempt(LifecycleBase):
-    """A logical-run grouping of issue cycles for the drawer view.
-
-    Named "Attempt" to match the user-facing vocabulary locked in #6322
-    (Test run → Test → Issue → Attempt → Cycle → Event).  The session
-    recording ``run_id`` field is a filesystem path, unrelated to this
-    journey concept, and keeps its name.
-    """
-
-    attempt_number: int
-    attempt_label: str
-    outcome: OutcomeBadge
-    attempt_key: str = ""
-    run_id: str | None = None
-    session_run_ids: tuple[str, ...] = ()
-    timestamp: str = ""
-    time_label: str = ""
-    expanded: bool = False
-    reset_from_scratch: bool = False
-    cycles: tuple[IssueCycle, ...] = ()
-
-
 class IssueLifecycle(LifecycleBase):
     issue_number: int
     title: str
@@ -1305,7 +1283,6 @@ def command_kinds(commands: tuple[TimelineCommand, ...]) -> tuple[str, ...]:
 
 __all__ = [
     "AgentIdentity",
-    "Attempt",
     "BlockedCodingAttempt",
     "CodingAttempt",
     "CodingOutputs",
