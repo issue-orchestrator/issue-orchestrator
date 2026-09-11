@@ -27,6 +27,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const { uiContractJson } = require('./ui_contract_test_support.js');
 
 const DASHBOARD_JS_DIR = path.join(
     __dirname,
@@ -40,6 +41,7 @@ function _readJs(relative) {
 function _baseStubs() {
     return {
         console,
+        uiContractJson,
         URLSearchParams,
         escapeHtml: (v) => String(v == null ? '' : v)
             .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -146,7 +148,7 @@ function loadDispatcherWithSpies() {
 
 test('dispatch: open_path → openPath(path)', () => {
     const ctx = loadDispatcherWithSpies();
-    ctx.runLifecycleCommand({ kind: 'open_path', path: '/tmp/x.log' });
+    ctx.runLifecycleCommand({ kind: 'open_path', label: 'Open Path', path: '/tmp/x.log' });
     assert.deepEqual(ctx.calls, [['openPath', '/tmp/x.log']]);
 });
 
@@ -173,7 +175,7 @@ test('dispatch: open_orchestrator_log / open_session_diagnostics / open_review_f
     const ctx = loadDispatcherWithSpies();
     ctx.runLifecycleCommand(_ORCH);
     ctx.runLifecycleCommand(_DIAG);
-    ctx.runLifecycleCommand({ kind: 'open_review_feedback', issue_number: 42 });
+    ctx.runLifecycleCommand({ kind: 'open_review_feedback', label: 'Review Feedback', issue_number: 42 });
     assert.deepEqual(ctx.calls, [
         ['openFilteredOrchestratorLog', 42, '/run/x', 'inline'],
         ['openSessionManifest', 42, '/run/x'],
@@ -183,8 +185,8 @@ test('dispatch: open_orchestrator_log / open_session_diagnostics / open_review_f
 
 test('dispatch: run-dir-optional commands tolerate a null run_dir', () => {
     const ctx = loadDispatcherWithSpies();
-    ctx.runLifecycleCommand({ kind: 'open_orchestrator_log', issue_number: 42, run_dir: null, error_surface: 'inline' });
-    ctx.runLifecycleCommand({ kind: 'open_session_diagnostics', issue_number: 42, run_dir: null });
+    ctx.runLifecycleCommand({ kind: 'open_orchestrator_log', label: 'Orchestrator Log', issue_number: 42, run_dir: null, error_surface: 'inline' });
+    ctx.runLifecycleCommand({ kind: 'open_session_diagnostics', label: 'Diagnostics', issue_number: 42, run_dir: null });
     assert.deepEqual(ctx.calls, [
         ['openFilteredOrchestratorLog', 42, null, 'inline'],
         ['openSessionManifest', 42, null],
@@ -193,8 +195,8 @@ test('dispatch: run-dir-optional commands tolerate a null run_dir', () => {
 
 test('dispatch: a dialog command missing its required run_dir is a no-op (no handler, no crash)', () => {
     const ctx = loadDispatcherWithSpies();
-    ctx.runLifecycleCommand({ kind: 'copy_session_recording', issue_number: 42 });
-    ctx.runLifecycleCommand({ kind: 'view_claude_log', issue_number: 42 });
+    ctx.runLifecycleCommand({ kind: 'copy_session_recording', label: 'Copy Recording', issue_number: 42 });
+    ctx.runLifecycleCommand({ kind: 'view_claude_log', label: 'Claude Log', issue_number: 42, error_surface: 'inline' });
     assert.deepEqual(ctx.calls, []);
 });
 

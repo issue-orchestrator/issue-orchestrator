@@ -1821,6 +1821,8 @@ export type E2ETestExecutionPayload = PassedE2ETestExecutionPayload | FailedE2ET
 
 export type HistoricalIntakeOutcomePayload = HistoricalIntakeParkedPayload | HistoricalIntakeRefusedPayload | HistoricalIntakeValidationFailedPayload;
 
+export type LifecycleCommandPayload = TimelineCommandPayload | DialogActionCommandPayload;
+
 export type LifecycleTimelineContainerPayload = DashboardTimelineContainerPayload | E2ESuiteTimelineContainerPayload;
 
 export type ReviewStagePayload = ReviewNotReachedPayload | ReviewSkippedPayload | ReviewRunningPayload | ReviewApprovedPayload | ReviewChangesRequestedPayload | ReviewFailedPayload | MissingReviewEvidencePayload;

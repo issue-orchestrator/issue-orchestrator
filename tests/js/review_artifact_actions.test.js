@@ -4,6 +4,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
+const { uiContractJson } = require('./ui_contract_test_support.js');
+
 const DASHBOARD_JS_DIR = path.join(
     __dirname,
     '../../src/issue_orchestrator/static/js/dashboard',
@@ -51,6 +53,7 @@ function loadTimelineSlice(overrides = {}) {
         openReviewArtifact: (...args) => calls.push(['openReviewArtifact', ...args]),
         openModal: (...args) => calls.push(['openModal', ...args]),
         escapeHtml: _escapeHtml,
+        uiContractJson,
         showToast: (...args) => calls.push(['showToast', ...args]),
         ...overrides,
     };
@@ -87,6 +90,7 @@ function loadReviewDialogSlice(overrides = {}) {
     ].join('\n');
     const context = {
         escapeHtml: _escapeHtml,
+        uiContractJson,
         showToast: (...args) => calls.push(['showToast', ...args]),
         openModal: (...args) => calls.push(['openModal', ...args]),
         modalOverlay: { querySelector: () => ({ classList: { add: () => {} } }) },
@@ -116,6 +120,7 @@ function loadLifecycleCommands(overrides = {}) {
     const source = fs.readFileSync(path.join(DASHBOARD_JS_DIR, 'lifecycle_commands.js'), 'utf8');
     const context = {
         openReviewArtifact: (...args) => calls.push(['openReviewArtifact', ...args]),
+        uiContractJson,
         showToast: (...args) => calls.push(['showToast', ...args]),
         ...overrides,
     };
@@ -173,6 +178,7 @@ test('typed lifecycle dispatcher opens review artifact commands', () => {
 
     context.runLifecycleCommand({
         kind: 'open_review_artifact',
+        label: 'Review Artifact',
         issue_number: 4057,
         run_dir: '/tmp/run',
         artifact_path: '/tmp/run/review-decision.json',
@@ -242,6 +248,7 @@ test('lifecycle review report command fetches and renders report content', async
 
     context.runLifecycleCommand({
         kind: 'open_review_artifact',
+        label: 'Review Artifact',
         issue_number: 4057,
         run_dir: '/tmp/run',
         artifact_path: '/tmp/run/review-exchange/turns/review-report.md',
@@ -285,6 +292,7 @@ test('lifecycle decision command fetches and renders JSON content', async () => 
 
     context.runLifecycleCommand({
         kind: 'open_review_artifact',
+        label: 'Review Artifact',
         issue_number: 4057,
         run_dir: '/tmp/run',
         artifact_path: '/tmp/run/review-exchange/turns/review-decision.json',

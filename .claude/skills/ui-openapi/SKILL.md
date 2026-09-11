@@ -19,6 +19,7 @@ Use this skill when:
 - Generated artifacts:
   - Server models: `src/issue_orchestrator/contracts/ui_openapi_models.py`
   - Client types: `src/issue_orchestrator/static/js/ui-contracts.d.ts`
+  - Browser runtime validators: `src/issue_orchestrator/static/js/ui-contracts.validators.js`
 
 ## Required Workflow
 
@@ -29,6 +30,20 @@ Use this skill when:
 4. Run tests that enforce guardrails:
    - `tests/unit/test_ui_openapi_generated.py`
    - `tests/unit/test_ui_openapi_payloads.py`
+   - `node --test tests/js/ui_contract_validators.test.js tests/js/ui_contract_json.test.js`
+
+## Browser Consumption
+
+Browser code must read contract-covered JSON through the shared readers in
+`src/issue_orchestrator/static/js/ui_contract_json.js` (`fromDataset`,
+`fromInlineScript`, `fromResponse`, `fromEventData`, `fromValue`) — not via
+`JSON.parse` / `response.json()`, and not by calling the generated
+`validate()` directly. Readers fail closed (return `null`) and emit one
+diagnostic. Payload shape belongs to the generated validators; DOM/user
+context invariants stay in the UI owner abstraction.
+
+Adding a JSON Schema keyword the browser engine does not enforce fails
+generation on purpose. See `docs/architecture/browser-json-contracts.md`.
 
 Review artifact UI wiring uses `open_review_artifact` timeline commands and `CycleArtifactsPayload.review_report` / `review_decision`. Add or update those schemas before regenerating when changing review artifact buttons, menus, or E2E issue-detail payloads.
 

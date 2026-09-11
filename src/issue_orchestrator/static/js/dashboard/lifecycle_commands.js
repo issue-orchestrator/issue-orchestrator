@@ -12,6 +12,14 @@
 // ``openPath``) live in other modules and are invoked here at click time —
 // not import time — so load order between this file and those handlers
 // only needs to settle before the user clicks a Command button.
+//
+// Payload shape is NOT checked here (issue #6337). Both entry points validate
+// against the generated ``LifecycleCommandPayload`` schema via
+// ``uiContractJson``, so by the time a handler runs, the contract has already
+// guaranteed the kind, required fields, enum values, and absence of unknown
+// fields. Contextual invariants that a schema cannot express remain here.
+
+const LIFECYCLE_COMMAND_SCHEMA = 'LifecycleCommandPayload';
 
 function _renderLifecycleCommandButton(command, fallbackLabel = null, cssClass = 'issue-action-btn') {
     if (!command || typeof command !== 'object') return '';
@@ -27,14 +35,15 @@ function _renderLifecycleCommandAttr(command) {
 
 function _lifecycleCommandFromElement(element) {
     if (!element || !element.dataset) return null;
-    const raw = element.dataset.lifecycleCommand || '';
-    if (!raw) return null;
-    try {
-        return JSON.parse(raw);
-    } catch (err) {
-        showToast(`Failed to decode lifecycle command: ${err instanceof Error ? err.message : String(err)}`, 'error');
-        return null;
-    }
+    // Absent vs present-but-empty are different facts, and only the
+    // first one is quiet.  An absent attribute means the element
+    // carries no Command — nothing to report.  A present attribute is
+    // owned by ``uiContractJson``, INCLUDING ``data-lifecycle-command=""``:
+    // an empty value is a render bug that would otherwise look like a
+    // dead control, so it must reach the reader and get its diagnostic.
+    // Testing truthiness here would collapse the two, because '' is falsy.
+    if (element.dataset.lifecycleCommand === undefined) return null;
+    return uiContractJson.fromDataset(element, 'lifecycleCommand', LIFECYCLE_COMMAND_SCHEMA);
 }
 
 function runLifecycleCommandFromButton(button) {
@@ -70,52 +79,46 @@ function runLifecycleCommandFromToggle(detailsEl) {
 // only the dialog-specific kinds with no timeline counterpart.
 //
 // Each entry wires a Command ``kind`` to its handler and returns ``true`` on
-// dispatch (``false`` when a required field is absent — an unreachable path
-// from real buttons, which the backend omits entirely when their run context
-// is missing).  Handlers are referenced lazily at click time, so load order
+// dispatch. Payload fields have already passed the generated union contract.
+// Handlers are referenced lazily at click time, so load order
 // between this module and the handler modules only needs to settle before the
 // user clicks.  ``error_surface`` (default ``toast``) lets the dialog report a
 // failed fetch inside the open dialog instead of via a page toast.
 const _DIALOG_ACTION_COMMAND_DISPATCH = {
     open_path: (command) => {
-        if (!command.path) return false;
         openPath(command.path);
         return true;
     },
     copy_session_recording: (command) => {
-        if (!command.issue_number || !command.run_dir) return false;
         copyAgentLogAction(command.issue_number, command.run_dir);
         return true;
     },
     view_claude_log: (command) => {
-        if (!command.issue_number || !command.run_dir) return false;
         viewClaudeLog(command.issue_number, command.run_dir, command.error_surface || 'toast');
         return true;
     },
     open_orchestrator_log: (command) => {
-        if (!command.issue_number) return false;
         openFilteredOrchestratorLog(command.issue_number, command.run_dir || null, command.error_surface || 'toast');
         return true;
     },
     open_session_diagnostics: (command) => {
-        if (!command.issue_number) return false;
         openSessionManifest(command.issue_number, command.run_dir || null);
         return true;
     },
 };
 
-function runLifecycleCommand(command, triggerEl = null) {
-    if (!command || typeof command !== 'object') return;
-    const kind = String(command.kind || '').trim();
-    if (!kind) return;
-    if (kind === 'open_issue_timeline' && command.issue_number) {
+function runLifecycleCommand(rawCommand, triggerEl = null) {
+    const command = uiContractJson.fromValue(rawCommand, LIFECYCLE_COMMAND_SCHEMA, 'runLifecycleCommand');
+    if (!command) return;
+    const kind = command.kind;
+    if (kind === 'open_issue_timeline') {
         const opts = command.scope_kind === 'e2e_run' && command.e2e_run_id
             ? { e2eRunId: command.e2e_run_id }
             : {};
         openIssueTimeline(command.issue_number, null, opts);
         return;
     }
-    if (kind === 'open_session_recording' && command.issue_number && command.run_dir) {
+    if (kind === 'open_session_recording') {
         const label = command.label ? String(command.label) : 'Session Recording';
         // ``error_surface`` lets the emitter pick where load failures show:
         // timeline chips leave it unset (default ``toast``); dialog action
@@ -126,7 +129,7 @@ function runLifecycleCommand(command, triggerEl = null) {
         });
         return;
     }
-    if (kind === 'open_review_transcript' && command.issue_number && command.run_dir) {
+    if (kind === 'open_review_transcript') {
         // ``error_surface`` lets a caller pick where load failures show:
         // chips/timeline use the default ``toast``; dialog action buttons
         // pass ``inline`` so the error renders inside the open modal.
@@ -137,13 +140,7 @@ function runLifecycleCommand(command, triggerEl = null) {
         }, command.error_surface || 'toast');
         return;
     }
-    if (
-        kind === 'open_review_artifact'
-        && command.issue_number
-        && command.run_dir
-        && command.artifact_path
-        && command.artifact_type
-    ) {
+    if (kind === 'open_review_artifact') {
         openReviewArtifact(
             command.issue_number,
             command.run_dir,
@@ -153,18 +150,18 @@ function runLifecycleCommand(command, triggerEl = null) {
         );
         return;
     }
-    if (kind === 'open_validation_details' && command.issue_number) {
+    if (kind === 'open_validation_details') {
         openValidationFailure(command.issue_number, command.run_dir || null, 'toast');
         return;
     }
-    if (kind === 'open_completion_record' && command.path) {
+    if (kind === 'open_completion_record') {
         openPath(command.path);
         return;
     }
     // ``open_review_feedback`` is a canonical ``TimelineCommand`` (emitted by
     // review/changes-requested cycles); it lives here with the other typed
     // command branches rather than the dialog-action table.
-    if (kind === 'open_review_feedback' && command.issue_number) {
+    if (kind === 'open_review_feedback') {
         openReviewFeedback(command.issue_number);
         return;
     }
@@ -174,7 +171,7 @@ function runLifecycleCommand(command, triggerEl = null) {
     // driver ``expandE2ERunRow``, which opens (and scrolls to) the
     // matching row.  ``expand_run_details`` opens the row's nested
     // Diagnostics row once it mounts.
-    if (kind === 'open_e2e_run' && command.run_id) {
+    if (kind === 'open_e2e_run') {
         const expandRunDetails = command.expand_run_details === true;
         if (typeof expandE2ERunRow !== 'function') {
             showToast('E2E runs list is not loaded.', 'warning');
@@ -186,7 +183,7 @@ function runLifecycleCommand(command, triggerEl = null) {
     // ``expand_e2e_run`` fires from the row's ``ontoggle`` the first
     // time it opens.  ``triggerEl`` is the ``<details>`` itself,
     // forwarded by ``runLifecycleCommandFromToggle``.
-    if (kind === 'expand_e2e_run' && command.run_id) {
+    if (kind === 'expand_e2e_run') {
         if (typeof loadE2ERunIntoRow !== 'function') return;
         loadE2ERunIntoRow(command.run_id, triggerEl);
         return;
@@ -196,12 +193,12 @@ function runLifecycleCommand(command, triggerEl = null) {
     // route through ``resolveRowCommandContext`` (single owner of
     // row-targeting policy) — the dispatcher just forwards the
     // typed payload + trigger element.
-    if (kind === 'switch_e2e_timeline_view' && command.run_id && command.view) {
+    if (kind === 'switch_e2e_timeline_view') {
         if (typeof switchE2ETimelineView !== 'function') return;
         switchE2ETimelineView(command.run_id, command.view, triggerEl);
         return;
     }
-    if (kind === 'create_e2e_untriaged_issues' && command.run_id) {
+    if (kind === 'create_e2e_untriaged_issues') {
         if (typeof createIssuesForUntriaged !== 'function') return;
         createIssuesForUntriaged(command.run_id, triggerEl);
         return;
@@ -211,7 +208,7 @@ function runLifecycleCommand(command, triggerEl = null) {
     // carrying ``data-issue-number`` and the per-expander body that
     // the loader populates.  Backed by ``OpenInlineAgentAttemptsCommand``
     // in ``view_models/lifecycle_semantics.py``.
-    if (kind === 'open_inline_agent_attempts' && command.issue_number) {
+    if (kind === 'open_inline_agent_attempts') {
         if (typeof loadInlineAgentAttempts !== 'function') return;
         loadInlineAgentAttempts(command.issue_number, triggerEl);
         return;
@@ -219,9 +216,7 @@ function runLifecycleCommand(command, triggerEl = null) {
     // Dialog action-button Commands (issue #6327) route through a single
     // decision table (``_DIALOG_ACTION_COMMAND_DISPATCH``) rather than a
     // chain of per-kind branches — one owner for the whole dialog-command
-    // family.  The handler returns ``true`` once it dispatches; a known kind
-    // whose required fields are missing returns ``false`` and falls through
-    // to the unsupported-command signal, matching the branch-chain kinds.
+    // family. The handler returns ``true`` once it dispatches.
     const dialogHandler = _DIALOG_ACTION_COMMAND_DISPATCH[kind];
     if (dialogHandler && dialogHandler(command)) return;
     showToast(`Unsupported lifecycle command: ${kind}`, 'warning');

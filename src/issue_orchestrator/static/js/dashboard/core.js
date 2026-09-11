@@ -421,8 +421,15 @@ async function refreshIssueRows(vm, rowsOverride = null) {
 
         const res = await fetch(url.toString());
         if (!res.ok) return;
-        const data = await res.json();
-        rows = data.rows || [];
+        // Contract-validated (issue #6337).  The reconciliation below
+        // trusts this payload structurally: ``row.html`` is written
+        // straight into the DOM and ``row.issue_number`` keys which
+        // existing rows survive.  A malformed payload used to degrade
+        // to ``[]``, which removed every rendered row and read as
+        // "no issues" for what was actually a payload bug.
+        const payload = await uiContractJson.fromResponse(res, 'IssueRowsPayload', '/api/issue-rows');
+        if (!payload) return;
+        rows = payload.rows;
     }
 
     const nextIds = new Set(rows.map(row => String(row.issue_number)));
@@ -525,15 +532,16 @@ async function _refreshViewModelImpl({ reloadOnListChange = true } = {}) {
 
         const res = await fetch(url.toString());
         if (!res.ok) return;
-        const payload = await res.json();
-        if (reloadOnListChange) {
-            if (!payload.view_model || !Array.isArray(payload.rows)) {
-                throw new Error('Invalid /api/view-model-snapshot payload shape');
-            }
-            viewModel = payload.view_model;
-        } else {
-            viewModel = payload;
-        }
+        // Contract-validated (issue #6337).  Both endpoints serialize
+        // through their generated response models server-side, so the
+        // schema is authoritative for what the browser may accept.  A
+        // payload that fails validation leaves the last good view model
+        // in place rather than half-applying a malformed refresh across
+        // the badge, pause menu, and usage panels below.
+        const schemaName = reloadOnListChange ? 'ViewModelSnapshotPayload' : 'DashboardViewModelPayload';
+        const payload = await uiContractJson.fromResponse(res, schemaName, endpoint);
+        if (!payload) return;
+        viewModel = reloadOnListChange ? payload.view_model : payload;
         window.dashboardData = viewModel.dashboard_data || window.dashboardData;
         // The tech-lead run projection just changed, so every tech-lead
         // affordance on screen has to be re-rendered from it — the global menu

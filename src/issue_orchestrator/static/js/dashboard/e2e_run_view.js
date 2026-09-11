@@ -27,10 +27,17 @@
 // The single ownership rule this enforces: row-targeting policy
 // lives in this function, nowhere else.
 function resolveRowCommandContext(runId, triggerEl) {
-    // Strict-Number gate: mirrors the typed Pydantic Command's
-    // ``strict=True`` invariant.  Reject string, boolean, NaN,
-    // null/undefined, etc. before any conversion — only a real
-    // JS number that is a positive integer is accepted.
+    // This function owns the CONTEXTUAL invariant the contract cannot
+    // express: that a command targets the DOM row that dispatched it
+    // (issue #6337).  Payload shape is not our job — commands reaching
+    // the handlers below already satisfy the generated
+    // ``TimelineCommandPayload`` schema, which requires run_id to be an
+    // integer >= 1.
+    //
+    // The strict-Number gate stays as this owner's own precondition, not
+    // as a mirror of the contract: it is what makes the row comparison
+    // below meaningful for any caller, and it keeps a non-number from
+    // reaching Number() coercion.
     if (typeof runId !== 'number' || !Number.isInteger(runId) || runId <= 0) {
         return null;
     }
@@ -86,17 +93,29 @@ function _emptyE2EResultCategories() {
     };
 }
 
+// Single owner for "fetch one E2E run's detail payload".  Both mount
+// paths — the runs-list row loader and the timeline view switcher —
+// come through here, so the contract is applied once rather than at
+// each call site.  Throws on failure; every caller renders the message
+// into its own error state.
 async function _fetchE2ERunDetail(runId, view = 'user') {
-    const response = await fetch(`/api/e2e-run-detail/${runId}?view=${encodeURIComponent(view)}`);
-    const payload = await response.json().catch(() => ({}));
+    const endpoint = `/api/e2e-run-detail/${runId}`;
+    const response = await fetch(`${endpoint}?view=${encodeURIComponent(view)}`);
     if (!response.ok) {
-        const message = payload && typeof payload === 'object'
-            ? payload.error || payload.detail || 'Failed to load run details'
-            : 'Failed to load run details';
-        throw new Error(String(message));
+        // Failure bodies have no schema; the shared reader owns that
+        // one sanctioned raw read. No fallback string: callers prefix
+        // their own ("Failed to load run details: …"), so the bare
+        // status is what adds information here.
+        throw new Error(await uiContractJson.errorMessage(response));
     }
-    if (!payload || typeof payload !== 'object') {
-        throw new Error('Run detail payload was not an object');
+    // Contract-validated (issue #6337).  Replaces a ``typeof payload
+    // === 'object'`` check that let wrong fields, missing required
+    // fields, bad enum values, and forbidden extras reach the
+    // renderer.  The reader has already reported the diagnostic; the
+    // throw is what keeps a rejected payload from being rendered.
+    const payload = await uiContractJson.fromResponse(response, 'E2ERunDetailPayload', endpoint);
+    if (!payload) {
+        throw new Error('Run details did not match the E2ERunDetailPayload contract.');
     }
     return payload;
 }
@@ -105,7 +124,7 @@ async function _fetchE2ERunDetail(runId, view = 'user') {
 // ``renderUnifiedRunView`` (its renderer) were removed in issue
 // #6334 along with ``#e2eDiagnosisModal``.  The new mount path lives
 // in ``e2e_runs_list.js → loadE2ERunIntoRow``: it lazy-fetches via
-// the same ``_fetchE2ERunDetail`` helper exported below, mounts
+// the same ``_fetchE2ERunDetail`` helper above, mounts
 // ``renderE2EResultsPanel(data)`` inline in the run's row, and runs
 // the same accessibility / timeline enhancements.  The dispatcher
 // re-routes ``open_e2e_run`` to ``expandE2ERunRow`` — single owner
