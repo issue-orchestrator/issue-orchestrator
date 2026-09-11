@@ -46,7 +46,7 @@ them is a schema + `response_model` change rather than a refactor.
 | 3 | Operator action writes | #6417 | 11 | pending |
 | 4 | Refresh / retry / reset / history | #6418 | 14 | pending |
 | 5 | Settings, auth, and dev/test routes | #6419 | 8 | pending |
-| 6 | Legacy issue timeline route | #6421 | 1 | pending — contract *or retire* |
+| 6 | Legacy issue timeline route | #6421 | 1 | **done** — contracted independently |
 
 Each group below enumerates its routes as inline-code `METHOD /path` tokens
 written exactly as the baseline spells them.

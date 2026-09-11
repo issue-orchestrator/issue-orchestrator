@@ -905,6 +905,9 @@ export interface OrchestratorInfoPayload {
   commit_sha: string | null;
   commit_short: string | null;
   completed_today: number;
+  config_fingerprint: string;
+  config_name: string;
+  configuration_mode: string;
   max_sessions: number;
   repo: string | null;
   repo_identity: RepoIdentityPayload;

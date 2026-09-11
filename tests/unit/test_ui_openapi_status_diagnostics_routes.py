@@ -163,6 +163,7 @@ def test_status_route_active_session_status_vocabulary_is_closed() -> None:
         "agent_type": "agent:web",
         "status": "slow",
         "branch": "feature/41",
+        "worktree_path": "/tmp/worktrees/41",
     }
     _assert_conforms(session, "ActiveSessionSummaryPayload", ActiveSessionSummaryPayload)
 
@@ -177,6 +178,12 @@ def test_status_route_rejects_unknown_startup_status() -> None:
     it is a closed enum rather than a free string on both layers."""
     payload = {
         "paused": False,
+        "pause_reason": None,
+        "pause_actor": None,
+        "pause_detail": None,
+        "paused_since": None,
+        "paused_held_seconds": 0.0,
+        "pause_is_incident": False,
         "shutdown_requested": False,
         "startup_status": "settled",
         "active_sessions": [],

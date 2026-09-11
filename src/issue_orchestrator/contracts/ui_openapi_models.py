@@ -987,6 +987,9 @@ class OrchestratorInfoPayload(BaseModel):
     commit_sha: str | None
     commit_short: str | None
     completed_today: int
+    config_fingerprint: str
+    config_name: str
+    configuration_mode: str
     max_sessions: int
     repo: str | None
     repo_identity: RepoIdentityPayload
