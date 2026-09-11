@@ -1680,32 +1680,69 @@ class TestSettlement:
         assert append.pattern_signature == "anchor-close"
 
     def test_declined_closure_removes_the_case_file_from_board_facts(self):
-        """The board effect of the migration, asserted rather than implied.
+        """The board effect of the migration, driven through the REAL scan.
 
-        The Tech Lead surfaces project the fact gatherer's OPEN-issue scan, so a
-        retired case file leaves the board while its typed disposition stays
-        readable in durable authority (#7240 clutter reduction; #7247 review F3).
+        Every Tech Lead surface projects the fact gatherer's open-issue scan
+        (``discover_open_tech_lead_anchor_issues``), so the close settlement
+        performs is what takes a retired case file off the board. Asserting that
+        against a hand-built list would prove nothing, so one board runs through
+        the real discovery twice: open, it is surfaced as a case file; closed by
+        this settlement's own ``update_issue_state`` calls, it is gone, while its
+        disposition stays durably readable (#7240 clutter reduction; #7247
+        review F3).
         """
+        from issue_orchestrator.control.health_review_trigger import (
+            discover_open_tech_lead_anchor_issues,
+        )
         from issue_orchestrator.control.tech_lead_case_files import (
             split_tech_lead_case_file_issues,
         )
         from issue_orchestrator.domain.models import Issue
+        from issue_orchestrator.domain.tech_lead_session import (
+            TECH_LEAD_OBSERVATION_LABEL,
+        )
 
-        result, repository_host, authority = self._settle(shipped=False)
-        assert result.success
-        closed = repository_host.update_issue_state.call_args[0][0]
-        assert closed == 65
-
-        # The scan only ever sees open issues; the closed case file is not in it.
-        board_issues = [
+        config = _config()
+        board = [
             Issue(
                 number=99,
                 title="Tech lead batch anchor",
-                labels=["tech-lead:anchor"],
-                state="open",
-            )
+                labels=[config.tech_lead_review_agent],
+            ),
+            Issue(
+                number=65,
+                title="[tech-lead] anchor-close",
+                labels=[config.tech_lead_review_agent, TECH_LEAD_OBSERVATION_LABEL],
+            ),
         ]
-        remaining, case_files = split_tech_lead_case_file_issues(board_issues)
+
+        class Board(MagicMock):
+            """The anchor scan as GitHub answers it: open issues only."""
+
+            def list_issues(self, *, state, **_kwargs):
+                return [issue for issue in board if state in ("all", issue.state)]
+
+        host = Board()
+
+        # Control: the fixture IS visible on the board while it is open.
+        _, before = split_tech_lead_case_file_issues(
+            discover_open_tech_lead_anchor_issues(host, config)
+        )
+        assert [summary.issue_number for summary in before] == [65]
+
+        result, repository_host, authority = self._settle(shipped=False)
+        assert result.success
+        for number, state in (
+            call.args for call in repository_host.update_issue_state.call_args_list
+        ):
+            for issue in board:
+                if issue.number == number:
+                    issue.state = state
+        assert [issue.state for issue in board] == ["open", "closed"]
+
+        remaining, case_files = split_tech_lead_case_file_issues(
+            discover_open_tech_lead_anchor_issues(host, config)
+        )
 
         assert case_files == ()
         assert [issue.number for issue in remaining] == [99]

@@ -155,6 +155,43 @@ def require_canonical_case_file(entry: PatternRegistryEntry, issue_number: int) 
         )
 
 
+def admit_lifecycle_transition(
+    entry: PatternRegistryEntry, transition: CaseFileLifecycleTransition
+) -> bool:
+    """THE admission rule for one durable lifecycle write, in one place.
+
+    Returns ``True`` when *transition* is ALREADY recorded on *entry* — the
+    idempotent replay a retry must answer with the committed entry instead of a
+    second write — and ``False`` when it is new and admissible. It raises when
+    the write must not be admitted at all: a ``transition_id`` whose payload
+    changed (two different reviewed intents cannot share one identity), or any
+    further transition on a signature that already reached a terminal
+    disposition.
+
+    Both registries and both lifecycle write paths call this. The rule was
+    previously written out once per path and had already drifted: the
+    single-process registry omitted the already-terminal guard, so a second,
+    different retirement of a retired signature was refused by shared authority
+    but admitted locally — closing the case file twice and appending two
+    terminal transitions, depending only on which registry a deployment runs
+    (#7247 final abstraction pass).
+    """
+    for recorded in entry.lifecycle:
+        if recorded.transition_id != transition.transition_id:
+            continue
+        if not recorded.same_intent(transition):
+            raise PatternRegistryError(
+                f"lifecycle transition {transition.transition_id!r} changed payload"
+            )
+        return True
+    if entry.lifecycle and entry.lifecycle[-1].terminal:
+        raise PatternRegistryError(
+            f"pattern {entry.signature!r} is terminal ({entry.disposition!r});"
+            " reopening requires an explicit reopen transition"
+        )
+    return False
+
+
 class PatternCaseFileRegistry(Protocol):
     """Atomic, cross-client owner of one case file and its evidence per signature."""
 

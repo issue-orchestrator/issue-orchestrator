@@ -15,6 +15,7 @@ from ..domain.tech_lead_findings import (
     PendingCaseFile,
 )
 from ..ports.pattern_registry import (
+    admit_lifecycle_transition,
     PendingPatternObservation,
     PendingPatternRetirement,
     PatternCaseFileRegistry,
@@ -448,20 +449,13 @@ class LocalPatternCaseFileRegistry(PatternCaseFileRegistry):
         if transition.terminal:
             raise ValueError("terminal lifecycle changes require retirement")
         current = self._require_committed(signature)
-        lifecycle = self._lifecycle.setdefault(signature, current.lifecycle)
-        for item in lifecycle:
-            if item.transition_id != transition.transition_id:
-                continue
-            if item.same_intent(transition):
-                return current
+        if admit_lifecycle_transition(current, transition):
+            return current
+        if current.pending_observation or current.pending_retirement:
             raise PatternRegistryError(
-                f"lifecycle transition {transition.transition_id!r} changed payload"
+                f"pattern {signature!r} has another lifecycle effect in flight"
             )
-        if lifecycle and lifecycle[-1].terminal:
-            raise PatternRegistryError(
-                f"pattern {signature!r} is terminal; reopening must be explicit"
-            )
-        self._lifecycle[signature] = (*lifecycle, transition)
+        self._lifecycle[signature] = (*current.lifecycle, transition)
         return self._require_committed(signature)
 
     def reserve_retirement(
@@ -476,13 +470,8 @@ class LocalPatternCaseFileRegistry(PatternCaseFileRegistry):
             raise ValueError("retirement requires a terminal disposition")
         current = self._require_committed(signature)
         require_canonical_case_file(current, issue_number)
-        for item in current.lifecycle:
-            if item.transition_id == transition.transition_id:
-                if item.same_intent(transition):
-                    return PatternReservation(PatternReservationState.COMMITTED, current)
-                raise PatternRegistryError(
-                    f"lifecycle transition {transition.transition_id!r} changed payload"
-                )
+        if admit_lifecycle_transition(current, transition):
+            return PatternReservation(PatternReservationState.COMMITTED, current)
         existing = self._pending_retirements.get(signature)
         if existing is not None:
             reservation_id, pending, started = existing

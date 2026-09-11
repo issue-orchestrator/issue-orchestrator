@@ -20,6 +20,7 @@ from ...domain.tech_lead_findings import (
 )
 from ...infra import gh_audit
 from ...ports.pattern_registry import (
+    admit_lifecycle_transition,
     PatternCaseFileRegistry,
     PendingPatternObservation,
     PendingPatternRetirement,
@@ -341,9 +342,8 @@ class GitHubRefPatternRegistry(PatternCaseFileRegistry):
         for _ in range(MAX_CAS_ATTEMPTS):
             snapshot, entries = self._load()
             current = self._committed(entries, signature)
-            replay = self._lifecycle_replay(current, transition)
-            if replay is not None:
-                return replay
+            if admit_lifecycle_transition(current, transition):
+                return current
             if current.pending_observation or current.pending_retirement:
                 raise PatternRegistryError(
                     f"pattern {signature!r} has another lifecycle effect in flight"
@@ -374,14 +374,8 @@ class GitHubRefPatternRegistry(PatternCaseFileRegistry):
             snapshot, entries = self._load()
             current = self._committed(entries, signature)
             require_canonical_case_file(current, issue_number)
-            replay = self._lifecycle_replay(current, transition)
-            if replay is not None:
-                return PatternReservation(PatternReservationState.COMMITTED, replay)
-            if current.lifecycle and current.lifecycle[-1].terminal:
-                raise PatternRegistryError(
-                    f"pattern {signature!r} already has terminal disposition"
-                    f" {current.disposition!r}"
-                )
+            if admit_lifecycle_transition(current, transition):
+                return PatternReservation(PatternReservationState.COMMITTED, current)
             pending = current.pending_retirement
             if pending is not None:
                 return self._existing_retirement(current, desired)
@@ -591,20 +585,6 @@ class GitHubRefPatternRegistry(PatternCaseFileRegistry):
         if current is None or not current.committed:
             raise PatternRegistryError(f"pattern {signature!r} has no committed case file")
         return current
-
-    @staticmethod
-    def _lifecycle_replay(
-        current: PatternRegistryEntry, transition: CaseFileLifecycleTransition
-    ) -> PatternRegistryEntry | None:
-        for recorded in current.lifecycle:
-            if recorded.transition_id != transition.transition_id:
-                continue
-            if not recorded.same_intent(transition):
-                raise PatternRegistryError(
-                    f"lifecycle transition {transition.transition_id!r} changed payload"
-                )
-            return current
-        return None
 
     def _reassigned_observation_entry(
         self, entry: PatternRegistryEntry
