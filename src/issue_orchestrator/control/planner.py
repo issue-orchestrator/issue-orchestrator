@@ -745,7 +745,7 @@ class Planner:
     def _provider_blocking_launch(
         self, snapshot: OrchestratorSnapshot, agent_label: str | None
     ) -> str | None:
-        """The provider this queue item must not launch against, if any.
+        """The quota lane this queue item must not launch against, if any.
 
         A pure read of the tick's sampled fact: the probe ran, and the circuit
         was consulted and updated, before planning began (#6999 A3). Every
@@ -754,9 +754,11 @@ class Planner:
         policy = self.provider_policy
         if policy is None:
             return None
-        provider = policy.provider_for_agent_label(agent_label)
-        if provider and snapshot.provider_launch.blocks(provider):
-            return provider
+        # The lane, not the provider: the tick's sample is keyed by lane so an
+        # exhausted Fable or Spark meter parks only the agents drawing on it.
+        lane = policy.lane_key_for_agent_label(agent_label)
+        if lane and snapshot.provider_launch.blocks(lane):
+            return lane
         return None
 
     def _record_provider_skip(

@@ -763,7 +763,7 @@ class SessionLauncher:
             return freshness.failure
 
         # Provider circuit breaker check
-        if result := self._check_provider_ready(agent_config.provider, issue.number):
+        if result := self._check_provider_ready(agent_config.provider, issue.number, agent_config.model):
             return result
 
         log_transition("issue", issue.number, "AVAILABLE", "LAUNCHING", "no conflicts")
@@ -1186,7 +1186,7 @@ class SessionLauncher:
             return LaunchResult.required_input_unavailable(
                 prepared_coder_prompt.reason
             )
-        if result := self._check_provider_ready(agent_config.provider, issue.number):
+        if result := self._check_provider_ready(agent_config.provider, issue.number, agent_config.model):
             return result
         return issue, agent_config, agent_label, prepared_coder_prompt
 
@@ -1575,7 +1575,7 @@ class SessionLauncher:
         if not agent_config:
             return LaunchResult(None, False, f"No agent config for {agent_label}")
 
-        if result := self._check_provider_ready(agent_config.provider, review.issue_number):
+        if result := self._check_provider_ready(agent_config.provider, review.issue_number, agent_config.model):
             return result
 
         session_name = f"review-{review.pr_number}"
@@ -1883,7 +1883,7 @@ class SessionLauncher:
         if not agent_config:
             return LaunchResult(None, False, f"No agent config for {agent_label}")
 
-        if result := self._check_provider_ready(agent_config.provider, review.issue_number):
+        if result := self._check_provider_ready(agent_config.provider, review.issue_number, agent_config.model):
             return result
 
         session_name = SessionRef.for_retrospective_review(review.issue_number).name
@@ -2217,11 +2217,20 @@ class SessionLauncher:
             )
         return self._provider_command_wrapper
 
-    def _check_provider_ready(self, provider: str | None, issue_number: int) -> Optional["LaunchResult"]:
-        """Ask the provider launch gate whether this provider can do work now."""
+    def _check_provider_ready(
+        self,
+        provider: str | None,
+        issue_number: int,
+        model: str | None = None,
+    ) -> Optional["LaunchResult"]:
+        """Ask the launch gate whether this agent's quota lane can do work now.
+
+        ``model`` is what distinguishes the lane: two agents on one provider
+        draw on different meters when one runs a separately-metered model.
+        """
         if self._provider_gate is None:
             return None
-        return self._provider_gate.check(provider, issue_number)
+        return self._provider_gate.check(provider, issue_number, model)
 
     def _trigger_issue_session_state_transitions(
         self,

@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Protocol
 
-from ..domain.provider_lane import BillingMode
+from ..domain.provider_lane import BillingMode, ProviderLane
 from .provider_resilience import ProviderErrorType
 
 
@@ -214,6 +214,17 @@ class ProviderReadinessProbe(Protocol):
         """Answer "is this live session's output a provider auth failure?"."""
         ...
 
+    def lane_for(self, provider: str, model: str | None = None) -> ProviderLane:
+        """Answer "which independently-metered lane does this draw from?".
+
+        Lives on the readiness probe because lane identity is derived from
+        exactly the two things this probe already owns: the provider adapter's
+        map of separately-metered models, and the billing mode its credential
+        sample observed. A separate port would need the same two dependencies
+        and the same wiring — a second name for one responsibility.
+        """
+        ...
+
 
 @dataclass(frozen=True)
 class StaticProviderReadinessProbe:
@@ -241,6 +252,18 @@ class StaticProviderReadinessProbe:
     ) -> ProviderReadiness:
         del output  # a static probe interprets no output
         return self._readiness(provider)
+
+    def lane_for(self, provider: str, model: str | None = None) -> ProviderLane:
+        """Report the provider's undivided lane.
+
+        A static probe resolves no provider adapter, so it cannot know which
+        models bill against a separate meter. It reports the single lane and the
+        fail-safe metered billing, which keeps every model on one circuit —
+        conservative rather than wrong: work is never launched against a lane
+        this probe believes is exhausted.
+        """
+        del model  # no adapter to ask about sub-meters
+        return ProviderLane(provider=provider, billing=BillingMode.METERED)
 
     def _readiness(self, provider: str) -> ProviderReadiness:
         return ProviderReadiness(

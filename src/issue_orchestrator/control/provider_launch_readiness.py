@@ -27,10 +27,15 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class ProviderLaunchReadiness:
-    """One tick's answer for every provider the fleet can launch against.
+    """One tick's answer for every quota lane the fleet can launch against.
 
-    A *fact*, not a decision: it says which providers are eligible right now
-    and why, and it is read the same way by every queue.
+    A *fact*, not a decision: it says which lanes are eligible right now and
+    why, and it is read the same way by every queue.
+
+    Keyed by lane rather than provider so that an exhausted Fable or Spark meter
+    parks only the agents that draw on it. For an agent whose model has no
+    separate meter the lane key is the provider name, so this is unchanged for
+    every configuration that predates lanes.
     """
 
     outcomes: Mapping[str, ProviderLaunchOutcome]
@@ -46,14 +51,14 @@ class ProviderLaunchReadiness:
         """
         return cls(outcomes={})
 
-    def outcome_for(self, provider: str | None) -> ProviderLaunchOutcome | None:
-        """The sampled outcome for ``provider``, or ``None`` if unsampled."""
-        if not provider:
+    def outcome_for(self, lane: str | None) -> ProviderLaunchOutcome | None:
+        """The sampled outcome for ``lane``, or ``None`` if unsampled."""
+        if not lane:
             return None
-        return self.outcomes.get(provider)
+        return self.outcomes.get(lane)
 
-    def blocks(self, provider: str | None) -> bool:
-        """Whether planning must not queue work for ``provider`` this tick.
+    def blocks(self, lane: str | None) -> bool:
+        """Whether planning must not queue work for ``lane`` this tick.
 
         The *circuit* decides, not the raw readiness. That is deliberate: a
         readiness refusal that has not opened the circuit — a sub-threshold auth
@@ -68,7 +73,7 @@ class ProviderLaunchReadiness:
         up front and the impact command records it. Every non-launchable state
         therefore has exactly one owner and one issue-scoped outcome.
         """
-        outcome = self.outcome_for(provider)
+        outcome = self.outcome_for(lane)
         return outcome is not None and outcome.circuit_open
 
 
@@ -85,24 +90,31 @@ class ProviderLaunchReadinessSampler:
     policy: ProviderAvailabilityPolicy
 
     def sample(self, now: datetime | None = None) -> ProviderLaunchReadiness:
-        """Assess every provider any configured agent could launch against."""
-        providers = sorted(
+        """Assess every quota lane any configured agent could launch against.
+
+        Iterates ``(provider, model)`` pairs rather than bare providers: two
+        agents on the same provider draw on different meters when one of them
+        runs a separately-metered model, and sampling only the provider would
+        collapse them back into the single circuit row lanes exist to split.
+        Pairs that resolve to the same lane are sampled once.
+        """
+        pairs = sorted(
             {
-                agent.provider
+                (agent.provider, agent.model or "")
                 for agent in self.config.agents.values()
                 if agent.provider
             }
         )
-        outcomes = {
-            provider: self.policy.assess_launch(provider, now=now)
-            for provider in providers
-        }
-        for provider, outcome in outcomes.items():
+        outcomes: dict[str, ProviderLaunchOutcome] = {}
+        for provider, model in pairs:
+            outcome = self.policy.assess_launch(provider, model=model, now=now)
+            outcomes.setdefault(outcome.lane_key, outcome)
+        for lane, outcome in outcomes.items():
             if not outcome.may_launch:
                 logger.info(
-                    "[PROVIDER] %s is not launchable this tick: readiness=%s "
+                    "[PROVIDER] lane %s is not launchable this tick: readiness=%s "
                     "circuit_open=%s (planning %s)",
-                    provider,
+                    lane,
                     outcome.readiness.state.value,
                     outcome.circuit_open,
                     "parks the work" if outcome.circuit_open else "defers to the launch gate",

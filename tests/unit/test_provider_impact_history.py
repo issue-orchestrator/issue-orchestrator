@@ -267,7 +267,7 @@ def test_provider_outage_lifecycle_survives_in_issue_history():
 def test_blocked_record_names_only_the_open_provider():
     """F4 case 1: two relevant providers, exactly one circuit open.
 
-    ``providers_for_snapshot`` deliberately aggregates the coding agent's
+    ``lanes_for_snapshot`` deliberately aggregates the coding agent's
     provider AND the reviewer's. The blocked record must name only the circuit
     that is actually open — calling a healthy provider "unavailable" would make
     the operator-facing audit trail wrong.
@@ -293,7 +293,7 @@ def test_blocked_record_names_only_the_open_provider():
     snapshot = make_snapshot(issues=[issue], pending_reviews=[review])
 
     # Both providers really are in scope for this issue...
-    assert policy.providers_for_snapshot(snapshot)[ISSUE] == {PROVIDER, REVIEW_PROVIDER}
+    assert policy.lanes_for_snapshot(snapshot)[ISSUE] == {PROVIDER, REVIEW_PROVIDER}
     # ...but only one circuit is open.
     assessment = policy.assess({PROVIDER, REVIEW_PROVIDER}, now=NOW)
     assert assessment.open_providers == (PROVIDER,)

@@ -74,6 +74,7 @@ from issue_orchestrator.observation.observation import (
 )
 from issue_orchestrator.ports import InMemoryProviderCircuitStore
 from issue_orchestrator.ports.command_runner import CommandResult, OutputNewlines
+from issue_orchestrator.domain.provider_lane import BillingMode, ProviderLane
 from issue_orchestrator.ports.provider_readiness import (
     NO_PROVIDER_READINESS_PROBE,
     ProviderReadiness,
@@ -216,6 +217,11 @@ class StubReadinessProbe:
     def diagnose_session_output(self, provider: str, output: str) -> ProviderReadiness:
         self.diagnose_calls.append(provider)
         return self.readiness
+
+    def lane_for(self, provider: str, model: str | None = None) -> ProviderLane:
+        """Report the provider's single lane; these stubs declare no sub-meters."""
+        del model
+        return ProviderLane(provider=provider, billing=BillingMode.METERED)
 
 
 class RecordingEvents:
@@ -1416,6 +1422,11 @@ class _RecordingProbe:
     def diagnose_session_output(self, provider: str, output: str) -> ProviderReadiness:
         del output
         return self._sample()
+
+    def lane_for(self, provider: str, model: str | None = None) -> ProviderLane:
+        """Report the provider's single lane; these stubs declare no sub-meters."""
+        del model
+        return ProviderLane(provider=provider, billing=BillingMode.METERED)
 
 
 def _recovery_config(tmp_path: Path):
@@ -4004,6 +4015,11 @@ class _BannerConfirmingProbe:
         if not matched or not self.confirms:
             return ProviderReadiness.unknown(provider, "no confirmed auth failure")
         return ProviderReadiness.auth_expired(provider, "not logged in")
+
+    def lane_for(self, provider: str, model: str | None = None) -> ProviderLane:
+        """Report the provider's single lane; these stubs declare no sub-meters."""
+        del model
+        return ProviderLane(provider=provider, billing=BillingMode.METERED)
 
 
 class TestAnAuthBannerPastTheHeadOfTheLog:
