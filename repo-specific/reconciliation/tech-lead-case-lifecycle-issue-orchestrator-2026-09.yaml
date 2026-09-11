@@ -1,0 +1,132 @@
+# Reviewed Tech Lead case-file lifecycle plan for #7240.
+# Dry-run: issue-orchestrator reconcile-case-files --plan repo-specific/reconciliation/tech-lead-case-lifecycle-issue-orchestrator-2026-09.yaml
+# Apply only after reviewing every outcome: add --apply.
+# Revisions generated from the ALREADY-SHARED registry projection (this repo's
+# engine has published its rows), reconfirmed 2026-09-11 against
+# .issue-orchestrator/state/tech_lead_authority.sqlite: 13/13 match.
+# Two rows carry an observation_count one higher than their stored observation
+# identities (review-exchange-coder-no-completion #6913 and
+# stuck-sweep-ghost-failure-reinjection #6927). If those two are not yet in
+# shared authority, the apply seeds them with a padded synthetic identity and
+# their revision moves; the plan is then refused for exactly those two and must
+# be regenerated from the seeded projection. See the runbook.
+plan_id: 7240-issue-orchestrator-case-files-2026-09
+repository: issue-orchestrator/issue-orchestrator
+recorded_at: '2026-09-10T23:15:00+00:00'
+outcomes:
+- signature: review-exchange-coder-no-completion
+  issue: 6913
+  disposition: superseded
+  expected_revision: b4abb0b7d54e37c224495c152ac9889181794df7e106fbdb760bc22d9a339a80
+  reason: Validated coder work now enters durable escrow and recovery instead of being destroyed when
+    review cannot complete.
+  evidence:
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7179
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7198
+  - https://github.com/issue-orchestrator/issue-orchestrator/issues/6913
+- signature: stuck-sweep-ghost-failure-reinjection
+  issue: 6927
+  disposition: shipped
+  expected_revision: 8b6c49576da08bc976934a834a9a1e3f7d6da21b005247db1fdfceb4c667b597
+  reason: Tech Lead investigations now require durable follow-through, preventing completed diagnoses
+    from returning as unowned ghost failures.
+  evidence:
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7178
+  - https://github.com/issue-orchestrator/issue-orchestrator/issues/6927
+- signature: provider-auth-expired-zombie-session
+  issue: 7006
+  disposition: shipped
+  expected_revision: 12c12ef19ab0001cdd7b80a823a48f860503b9b72b562e9380b33ac39dec3a88
+  reason: Provider-owned readiness and authentication classification now rejects expired credentials before
+    a 90-minute zombie session.
+  evidence:
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7047
+  - https://github.com/issue-orchestrator/issue-orchestrator/issues/7006
+- signature: review-exchange-max-rounds-strands-validated-work
+  issue: 7012
+  disposition: superseded
+  expected_revision: 65935760081088e2f069031dcbe4ece93db4f9c1aa5637b52178f08d347b2c2c
+  reason: Review exhaustion now preserves validated work in escrow and exposes an explicit recovery path.
+  evidence:
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7183
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7198
+  - https://github.com/issue-orchestrator/issue-orchestrator/issues/7012
+- signature: review-exchange-detached-head-invalidates-review-evidence
+  issue: 7017
+  disposition: shipped
+  expected_revision: 4c2cc82a87fe518fdde5758256dd5b74e97f04a1f92f82e91c73af4634ab578d
+  reason: Publication and review custody are fenced to the exact validated head across Git and GitHub.
+  evidence:
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7188
+  - https://github.com/issue-orchestrator/issue-orchestrator/issues/7017
+- signature: tech-lead-dedup-redirect-gate-orphans-offgrant-evidence
+  issue: 7037
+  disposition: needs_human
+  expected_revision: 2e3cf6aa8e7927f442c92839276a64d25dea57d3be103cc776bfd4b9dc6ae993
+  reason: The authority boundary is intentional; the remaining choice between operator-approved redirects
+    and launch-derived grants needs an explicit design decision.
+  evidence:
+  - https://github.com/issue-orchestrator/issue-orchestrator/issues/7037
+- signature: tech-lead-decision-deferred-into-review-exchange-then-destroyed
+  issue: 7081
+  disposition: shipped
+  expected_revision: 263966bfaae0e86c4684ab92473f813cadd3632dd0c0ed3f25fdf302ed0f83b0
+  reason: Clean Tech Lead decisions no longer require code publication, and all launches and follow-through
+    now have durable custody.
+  evidence:
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7173
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7176
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7178
+  - https://github.com/issue-orchestrator/issue-orchestrator/issues/7081
+- signature: host-suspend-lapses-run-ownership-lease
+  issue: 7082
+  disposition: shipped
+  expected_revision: 8e24b29675ea77b0db362f5584ef625da6635d3d19a4ee0bb327a531ad4ce1b7
+  reason: Run deadlines and owner backoff now distinguish host suspension from live elapsed work.
+  evidence:
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7118
+  - https://github.com/issue-orchestrator/issue-orchestrator/issues/7082
+- signature: provider-quota-exhausted-modal-misclassified-as-prompt-not-accepted
+  issue: 7083
+  disposition: shipped
+  expected_revision: 55cb3b8d5eace525eaae8b81f881f8e2a927aefe5edc663a8d24ec77c79ab0bd
+  reason: Provider quota exhaustion is now a typed human-fixable outage and does not consume retry rounds
+    as prompt failure.
+  evidence:
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7098
+  - https://github.com/issue-orchestrator/issue-orchestrator/issues/7083
+- signature: review-exchange-restart-rederives-reviewer-verdict
+  issue: 7084
+  disposition: active
+  expected_revision: 00cb51baacc14508c0a00a0c0af8c0694815d64f0f7c6dd82bbaafcf3a353fe3
+  reason: Review evidence is retained, but reuse of a completed verdict for an unchanged head still needs
+    direct verification before retirement.
+  evidence:
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7141
+  - https://github.com/issue-orchestrator/issue-orchestrator/issues/7084
+- signature: search-api-budget-exhaustion
+  issue: 7235
+  disposition: active
+  expected_revision: 89fc546b7d505f6a70872ba783b8c050157cbb252beaf7e16d3587e930d54d05
+  reason: The case was freshly reconciled from accumulated sightings and its underlying API-budget tracker
+    remains active.
+  evidence:
+  - https://github.com/issue-orchestrator/issue-orchestrator/issues/7235
+- signature: stranded-branch-recovery
+  issue: 7236
+  disposition: superseded
+  expected_revision: 611a4c49f9d81a4eb2218a9090d45c28925d21f358511f2480be815b1a9d65e0
+  reason: The retained-work recovery stack now discovers, publishes, and exposes stranded validated branches
+    through one durable owner.
+  evidence:
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7191
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7215
+  - https://github.com/issue-orchestrator/issue-orchestrator/issues/7236
+- signature: e2e-suite-chronic-red
+  issue: 7237
+  disposition: active
+  expected_revision: 401991afd2ba56ff7ca5a9bc32f29b567ef241fee323bd12052eadaf3832f4dd
+  reason: The case was freshly reconciled and still represents unresolved E2E signal health rather than
+    completed work.
+  evidence:
+  - https://github.com/issue-orchestrator/issue-orchestrator/issues/7237

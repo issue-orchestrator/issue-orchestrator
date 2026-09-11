@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+from dataclasses import asdict
 from dataclasses import dataclass
 from enum import Enum
 from typing import Protocol
@@ -125,6 +128,39 @@ class PatternRegistryEntry:
     def disposition(self) -> CaseFileDisposition:
         return self.lifecycle[-1].disposition if self.lifecycle else CASE_FILE_ACTIVE
 
+    def review_revision(self) -> str:
+        """Fingerprint the settled facts an operator reviewed for this entry.
+
+        Covers exactly what a reviewed disposition is a decision ABOUT — the
+        canonical case file, its evidence identities, its merged classification,
+        and its lifecycle history — and deliberately omits the lease fields
+        (``reservation_id``, ``claimant_id``, ``expires_at``), which change on
+        every unrelated client hand-off and would make every plan stale within
+        minutes without any reviewed fact having moved.
+
+        An entry with an external effect in flight has NO review revision: its
+        settled state is not yet knowable, so a plan cannot be bound to it and
+        asking is a caller error rather than a mismatch. Registries admit
+        idempotent replay and resume an in-flight retirement before they reach
+        :func:`require_reviewed_revision`, so this never fires on a retry of a
+        write that was already admitted (#7248 review P2).
+        """
+        if self.pending is not None or any(
+            (self.pending_observation is not None, self.pending_retirement is not None)
+        ):
+            raise PatternRegistryError(
+                f"pattern {self.signature!r} has an external effect in flight"
+            )
+        payload = {
+            "signature": self.signature,
+            "issue_number": self.issue_number,
+            "observation_ids": self.observation_ids,
+            "classification": asdict(self.classification),
+            "lifecycle": [asdict(item) for item in self.lifecycle],
+        }
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        return hashlib.sha256(encoded).hexdigest()
+
 
 @dataclass(frozen=True)
 class PatternReservation:
@@ -192,6 +228,39 @@ def admit_lifecycle_transition(
     return False
 
 
+def require_reviewed_revision(
+    entry: PatternRegistryEntry, expected_revision: str | None
+) -> None:
+    """THE staleness rule binding one reviewed plan to the state it reviewed.
+
+    A reconciliation plan is authored against a registry an operator actually
+    read. Between that review and the write, evidence can be reclassified, a
+    lifecycle transition can land, or the case file can be reassigned — and the
+    reviewed disposition is then a decision about facts that no longer exist.
+    ``expected_revision`` is :meth:`PatternRegistryEntry.review_revision` as of
+    the review, and every registry checks it INSIDE the compare-and-swap that
+    admits the write, so a stale plan is refused atomically rather than in a
+    check-then-write gap (#7248 review P2).
+
+    ``None`` means the caller is not replaying a reviewed decision and opts out.
+    Callers admit idempotent replay before reaching here, so re-running an
+    already-recorded transition stays green even once the revision has moved on.
+
+    Both registries and both lifecycle write paths call this, for the same
+    reason ``admit_lifecycle_transition`` exists in one place: a rule written
+    out once per path drifts, and a rule that drifts here decides whether a
+    stale plan mutates GitHub based on which registry a deployment runs.
+    """
+    if expected_revision is None:
+        return
+    actual = entry.review_revision()
+    if actual != expected_revision:
+        raise PatternRegistryError(
+            f"pattern {entry.signature!r} changed since lifecycle review"
+            f" (reviewed {expected_revision}, now {actual})"
+        )
+
+
 class PatternCaseFileRegistry(Protocol):
     """Atomic, cross-client owner of one case file and its evidence per signature."""
 
@@ -253,9 +322,19 @@ class PatternCaseFileRegistry(Protocol):
         ...
 
     def record_lifecycle(
-        self, *, signature: str, transition: CaseFileLifecycleTransition
+        self,
+        *,
+        signature: str,
+        transition: CaseFileLifecycleTransition,
+        expected_revision: str | None = None,
     ) -> PatternRegistryEntry:
-        """Record an active/needs-human classification without GitHub mutation."""
+        """Record an active/needs-human classification without GitHub mutation.
+
+        ``expected_revision`` carries the guarantee described in
+        :func:`require_reviewed_revision`: the reviewed state is re-checked
+        inside the admitting compare-and-swap, so a plan written against facts
+        that have since moved writes nothing.
+        """
         ...
 
     def reserve_retirement(
@@ -265,6 +344,7 @@ class PatternCaseFileRegistry(Protocol):
         transition: CaseFileLifecycleTransition,
         comment: str,
         issue_number: int,
+        expected_revision: str | None = None,
     ) -> PatternReservation:
         """Reserve one exact terminal transition against its canonical case file.
 
@@ -274,6 +354,11 @@ class PatternCaseFileRegistry(Protocol):
         subject and the issue this retirement actually comments on and closes
         cannot diverge — no separate pre-read, and therefore no check/use gap
         (#7247 review F2/A1).
+
+        ``expected_revision`` adds the second half of the same guarantee for a
+        reviewed plan: see :func:`require_reviewed_revision`. It is checked once
+        the reservation is known to be new — an in-flight retirement is a resume
+        of the same reviewed intent, not a second decision.
         """
         ...
 

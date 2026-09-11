@@ -30,6 +30,7 @@ from ...ports.pattern_registry import (
     PatternReservation,
     PatternReservationState,
     require_canonical_case_file,
+    require_reviewed_revision,
 )
 from .ref_store import GitRefCasStore, GitRefSnapshot
 from .pattern_registry_codec import format_entries, parse_entries
@@ -335,7 +336,11 @@ class GitHubRefPatternRegistry(PatternCaseFileRegistry):
         return entry is not None and observation_id in entry.observation_ids
 
     def record_lifecycle(
-        self, *, signature: str, transition: CaseFileLifecycleTransition
+        self,
+        *,
+        signature: str,
+        transition: CaseFileLifecycleTransition,
+        expected_revision: str | None = None,
     ) -> PatternRegistryEntry:
         if transition.terminal:
             raise ValueError("terminal lifecycle changes require retirement")
@@ -348,6 +353,7 @@ class GitHubRefPatternRegistry(PatternCaseFileRegistry):
                 raise PatternRegistryError(
                     f"pattern {signature!r} has another lifecycle effect in flight"
                 )
+            require_reviewed_revision(current, expected_revision)
             if current.lifecycle and current.lifecycle[-1].terminal:
                 raise PatternRegistryError(
                     f"pattern {signature!r} is terminal; reopening requires an"
@@ -366,6 +372,7 @@ class GitHubRefPatternRegistry(PatternCaseFileRegistry):
         transition: CaseFileLifecycleTransition,
         comment: str,
         issue_number: int,
+        expected_revision: str | None = None,
     ) -> PatternReservation:
         if not transition.terminal:
             raise ValueError("retirement requires a terminal disposition")
@@ -381,6 +388,7 @@ class GitHubRefPatternRegistry(PatternCaseFileRegistry):
                 return self._existing_retirement(current, desired)
             if current.pending_observation is not None:
                 return PatternReservation(PatternReservationState.HELD, current)
+            require_reviewed_revision(current, expected_revision)
             entry = replace(
                 current,
                 reservation_id=uuid.uuid4().hex,

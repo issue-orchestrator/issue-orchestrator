@@ -595,3 +595,144 @@ def test_no_registry_admits_a_second_terminal_transition(build) -> None:
     assert entry is not None
     assert entry.pending_retirement is None
     assert [item.transition_id for item in entry.lifecycle] == ["plan:first"]
+
+
+def test_explicit_lifecycle_preview_requires_shared_authority_without_seeding(
+    tmp_path,
+) -> None:
+    client = FakeGitHubRefClient()
+    host = GitHubAdapter(repo="owner/repo", http_client=cast(Any, client))
+    config = Config(repo_root=tmp_path)
+    config.tech_lead_enabled = False
+
+    registry = create_pattern_registry(
+        config,
+        host,
+        InMemoryTechLeadAuthorityStore(),
+        shared_required=True,
+        publish_local_seed=False,
+    )
+
+    assert isinstance(registry, MirroredPatternCaseFileRegistry)
+    assert "refs/issue-orchestrator/registry/tech-lead-patterns" not in client.refs
+
+
+def test_explicit_lifecycle_command_refuses_a_non_shared_host(tmp_path) -> None:
+    config = Config(repo_root=tmp_path)
+
+    with pytest.raises(RuntimeError, match="requires shared GitHub authority"):
+        create_pattern_registry(
+            config,
+            None,
+            InMemoryTechLeadAuthorityStore(),
+            shared_required=True,
+            publish_local_seed=False,
+        )
+
+
+def _classification(transition_id: str) -> CaseFileLifecycleTransition:
+    return CaseFileLifecycleTransition(
+        transition_id=transition_id,
+        disposition="needs_human",
+        reason="New evidence arrived after the plan was reviewed.",
+        evidence=("owner/repo#99",),
+        recorded_at="2026-09-11T09:00:00+00:00",
+    )
+
+
+@pytest.mark.parametrize(
+    "build", (_shared_registry_with_case_file, _local_registry_with_case_file)
+)
+def test_no_registry_admits_a_plan_reviewed_against_changed_facts(build) -> None:
+    """A reviewed revision is enforced atomically, in BOTH registries.
+
+    A reconciliation plan is a decision about facts an operator read. The window
+    between reading them and writing is exactly where a concurrent observation
+    or classification lands, so the revision is checked INSIDE the write that
+    admits the transition, not before it — and it is checked the same way in the
+    single-process registry and in shared authority, because a rule that holds
+    in only one of them lets a stale plan comment on and close a case file
+    purely by virtue of which registry a deployment runs (#7248 review P2).
+    """
+    registry = build()
+    reviewed = registry.read(signature="stuck-retry")
+    assert reviewed is not None
+    stale = reviewed.review_revision()
+    registry.record_lifecycle(
+        signature="stuck-retry", transition=_classification("concurrent")
+    )
+
+    with pytest.raises(PatternRegistryError, match="changed since lifecycle review"):
+        registry.reserve_retirement(
+            signature="stuck-retry",
+            transition=_retirement("plan:stale"),
+            comment="<!-- retirement -->",
+            issue_number=81,
+            expected_revision=stale,
+        )
+    with pytest.raises(PatternRegistryError, match="changed since lifecycle review"):
+        registry.record_lifecycle(
+            signature="stuck-retry",
+            transition=_classification("plan:stale-classify"),
+            expected_revision=stale,
+        )
+
+    entry = registry.read(signature="stuck-retry")
+    assert entry is not None
+    assert entry.pending_retirement is None
+    assert [item.transition_id for item in entry.lifecycle] == ["concurrent"]
+
+    # The current revision is admitted by the very same call.
+    accepted = registry.reserve_retirement(
+        signature="stuck-retry",
+        transition=_retirement("plan:current"),
+        comment="<!-- retirement -->",
+        issue_number=81,
+        expected_revision=entry.review_revision(),
+    )
+    assert accepted.state is PatternReservationState.ACQUIRED
+
+
+@pytest.mark.parametrize(
+    "build", (_shared_registry_with_case_file, _local_registry_with_case_file)
+)
+def test_every_registry_replays_an_applied_outcome_after_its_revision_moves(
+    build,
+) -> None:
+    """Resuming an applied plan must not be refused by its own effect.
+
+    Recording the transition changes the entry, so the reviewed revision is
+    stale the instant the plan's own write lands. A resumed apply therefore has
+    to reach idempotent replay BEFORE the staleness rule, or every interrupted
+    reconciliation would be permanently unfinishable (#7248 review P2).
+    """
+    registry = build()
+    reviewed = registry.read(signature="stuck-retry")
+    assert reviewed is not None
+    revision = reviewed.review_revision()
+    first = registry.reserve_retirement(
+        signature="stuck-retry",
+        transition=_retirement("plan:only"),
+        comment="<!-- retirement -->",
+        issue_number=81,
+        expected_revision=revision,
+    )
+    registry.confirm_retirement_comment(
+        signature="stuck-retry", reservation_id=first.entry.reservation_id
+    )
+    registry.finalize_retirement(
+        signature="stuck-retry", reservation_id=first.entry.reservation_id
+    )
+
+    replay = registry.reserve_retirement(
+        signature="stuck-retry",
+        transition=_retirement("plan:only"),
+        comment="<!-- retirement -->",
+        issue_number=81,
+        expected_revision=revision,
+    )
+
+    assert replay.state is PatternReservationState.COMMITTED
+    entry = registry.read(signature="stuck-retry")
+    assert entry is not None
+    assert [item.transition_id for item in entry.lifecycle] == ["plan:only"]

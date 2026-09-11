@@ -64,12 +64,18 @@ class PatternCaseFileLifecycleOwner:
         self._before_write = before_write
 
     def classify(
-        self, *, signature: str, transition: CaseFileLifecycleTransition
+        self,
+        *,
+        signature: str,
+        transition: CaseFileLifecycleTransition,
+        expected_revision: str | None = None,
     ) -> "PatternRegistryEntry":
         """Record a reviewed active/needs-human outcome without closing GitHub."""
         self._before_write()
         return self._registry.record_lifecycle(
-            signature=signature, transition=transition
+            signature=signature,
+            transition=transition,
+            expected_revision=expected_revision,
         )
 
     def retire(
@@ -78,6 +84,7 @@ class PatternCaseFileLifecycleOwner:
         signature: str,
         transition: CaseFileLifecycleTransition,
         issue_number: int,
+        expected_revision: str | None = None,
     ) -> CaseFileRetirementOutcome:
         """Publish evidence, close idempotently, then commit terminal authority.
 
@@ -95,6 +102,7 @@ class PatternCaseFileLifecycleOwner:
             transition=transition,
             comment=comment,
             issue_number=issue_number,
+            expected_revision=expected_revision,
         )
         if reservation.state is PatternReservationState.COMMITTED:
             return self._outcome(

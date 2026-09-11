@@ -346,6 +346,9 @@ def create_pattern_registry(
     config: "Config",
     repository_host: "RepositoryHost | None",
     authority: "TechLeadAuthorityStore",
+    *,
+    shared_required: bool = False,
+    publish_local_seed: bool = True,
 ) -> "PatternCaseFileRegistry":
     """Select shared GitHub authority or the explicit single-instance adapter."""
     from ..control.pattern_registry import (
@@ -357,7 +360,10 @@ def create_pattern_registry(
         config.tech_lead.authority.flag_pattern == "execute"
         or config.tech_lead.findings.promote != "off"
     )
-    if not config.tech_lead_enabled or not pattern_consumers_active:
+    if (
+        not shared_required
+        and (not config.tech_lead_enabled or not pattern_consumers_active)
+    ):
         return LocalPatternCaseFileRegistry(authority)
     from ..execution.providers import create_shared_pattern_registry
 
@@ -368,11 +374,15 @@ def create_pattern_registry(
         lease_seconds=config.claims.lease_seconds,
     )
     if shared is None:
+        if shared_required:
+            raise RuntimeError(
+                "case-file lifecycle reconciliation requires shared GitHub authority"
+            )
         return LocalPatternCaseFileRegistry(authority)
     mirrored = MirroredPatternCaseFileRegistry(
         shared=shared, local=authority, claimant_id=claimant_id
     )
-    mirrored.synchronize()
+    mirrored.synchronize(publish_local_seed=publish_local_seed)
     return mirrored
 
 

@@ -29,6 +29,7 @@ from ..infra.logging_config import issue_log
 from ..ports.fresh_issue_reader import FreshIssueReadError, FreshIssueReader
 from .action_base import Action
 from .reconciliation import (
+    ExpectedState,
     ExternalSnapshot,
     ReconciliationRequired,
     require_reconciliation,
@@ -81,6 +82,10 @@ class ReconciliationGate:
         """
         if action.expected is None:
             return
+        self.require_state(action.expected, issue_number)
+
+    def require_state(self, expected: ExpectedState, issue_number: int) -> None:
+        """Require one explicit expected state without manufacturing an action."""
         if not self.reconcile:
             return
 
@@ -96,7 +101,7 @@ class ReconciliationGate:
                 entity_type="issue",
                 entity_id=issue_number,
                 expected=ExternalSnapshot.for_issue(
-                    issue_number, set(action.expected.required_labels)
+                    issue_number, set(expected.required_labels)
                 ),
                 actual=ExternalSnapshot.for_issue(issue_number, set()),
                 reason="Cannot fetch current labels to verify expected state",
@@ -104,7 +109,7 @@ class ReconciliationGate:
 
         # Raises ReconciliationRequired when the constraints are not satisfied.
         require_reconciliation(
-            action.expected,
+            expected,
             ExternalSnapshot.for_issue(issue_number, current_labels),
             entity_type="issue",
         )

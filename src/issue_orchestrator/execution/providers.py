@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from ..ports.promotion_target import PromotionTargetHost
     from ..ports.pattern_registry import PatternCaseFileRegistry
     from ..ports.repository_setup import RepositorySetupGitHubVerification
+    from ..ports.fresh_issue_reader import FreshIssueReader
 
 
 # =============================================================================
@@ -52,6 +53,13 @@ def create_repository_host(
     from ..adapters.github import GitHubAdapter
 
     return GitHubAdapter(repo=repo, config=config)
+
+
+def create_fresh_issue_reader(repo: str, config: "Config") -> "FreshIssueReader":
+    """Create the uncached issue-label reader used by mutation gates."""
+    from ..adapters.github.fresh_issue_reader import GitHubFreshIssueReader
+
+    return GitHubFreshIssueReader(repo=repo, config=config)
 
 
 def create_shared_pattern_registry(

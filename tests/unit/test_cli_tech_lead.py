@@ -27,12 +27,21 @@ from issue_orchestrator.control.reconciliation import (
 from issue_orchestrator.control.tech_lead_case_file_reconciliation import (
     CaseFileReconciliationPlan,
 )
+from issue_orchestrator.control.tech_lead_case_file_lifecycle_reconciliation import (
+    CaseFileLifecycleReconciliationPlan,
+    CaseFileLifecycleReconciliationResult,
+)
 from issue_orchestrator.domain.tech_lead_findings import PatternEvidence
-from issue_orchestrator.execution.case_file_reconciliation_adapter import CaseFileReconciliationAdapter
-from issue_orchestrator.entrypoints.bootstrap_case_file_reconciliation import build_case_file_reconciliation_host
+from issue_orchestrator.execution.case_file_reconciliation_adapter import (
+    CaseFileReconciliationAdapter,
+)
+from issue_orchestrator.entrypoints.bootstrap_case_file_reconciliation import (
+    build_case_file_reconciliation_host,
+)
 from issue_orchestrator.entrypoints.cli_tech_lead import (
     load_reconciliation_plan,
     run_case_file_reconciliation,
+    run_case_file_lifecycle_reconciliation,
 )
 from issue_orchestrator.infra.config import Config
 
@@ -45,6 +54,20 @@ clusters:
     duplicates:
       - issue: 101
         note: A re-sighting.
+"""
+
+VALID_LIFECYCLE_PLAN = """
+plan_id: "lifecycle-test-plan"
+repository: owner/repo
+recorded_at: "2026-09-10T12:00:00+00:00"
+outcomes:
+  - signature: some-recurring-class
+    issue: 100
+    disposition: shipped
+    expected_revision: "0000000000000000000000000000000000000000000000000000000000000000"
+    reason: The underlying fix shipped.
+    evidence:
+      - https://example.test/pull/1
 """
 
 
@@ -61,6 +84,17 @@ def test_valid_plan_loads(tmp_path: Path):
     assert plan.clusters[0].duplicate_issue_numbers == (101,)
 
 
+def test_lifecycle_plan_loads_through_the_same_command_surface(tmp_path: Path):
+    path = tmp_path / "lifecycle.yaml"
+    path.write_text(VALID_LIFECYCLE_PLAN, encoding="utf-8")
+
+    plan = load_reconciliation_plan(path)
+
+    assert isinstance(plan, CaseFileLifecycleReconciliationPlan)
+    assert plan.repository == "owner/repo"
+    assert plan.outcomes[0].disposition == "shipped"
+
+
 def test_malformed_yaml_is_reported_as_an_invalid_plan(tmp_path: Path):
     """A syntax error is a bad plan, not an unhandled yaml exception."""
     path = tmp_path / "plan.yaml"
@@ -71,7 +105,9 @@ def test_malformed_yaml_is_reported_as_an_invalid_plan(tmp_path: Path):
 
 
 @pytest.mark.parametrize(
-    "document", ["- a\n- list\n", "just a scalar\n", ""], ids=["list", "scalar", "empty"]
+    "document",
+    ["- a\n- list\n", "just a scalar\n", ""],
+    ids=["list", "scalar", "empty"],
 )
 def test_a_document_that_is_not_a_plan_is_rejected(tmp_path: Path, document: str):
     path = tmp_path / "plan.yaml"
@@ -285,3 +321,70 @@ def test_a_gate_rejection_is_reported_not_a_traceback(capsys, error):
 
     assert code == 1
     assert "Reconciliation halted" in capsys.readouterr().out
+
+
+class _LifecycleReconciler:
+    def __init__(self, result: CaseFileLifecycleReconciliationResult) -> None:
+        self.result = result
+        self.calls: list[tuple[str, bool]] = []
+
+    def run(self, plan, *, configured_repository, apply_writes):
+        self.calls.append((configured_repository, apply_writes))
+        return self.result
+
+
+def _lifecycle_plan() -> CaseFileLifecycleReconciliationPlan:
+    import yaml
+
+    return CaseFileLifecycleReconciliationPlan.from_mapping(
+        yaml.safe_load(VALID_LIFECYCLE_PLAN)
+    )
+
+
+def test_lifecycle_dry_run_renders_review_counts_and_writes_nothing(capsys):
+    reconciler = _LifecycleReconciler(
+        CaseFileLifecycleReconciliationResult(
+            plan_id="lifecycle-test-plan",
+            dry_run=True,
+            active=0,
+            needs_human=0,
+            terminal=1,
+            applied=0,
+        )
+    )
+
+    code = run_case_file_lifecycle_reconciliation(
+        _lifecycle_plan(),
+        reconciler,  # type: ignore[arg-type]
+        configured_repository="owner/repo",
+        apply_writes=False,
+    )
+
+    assert code == 0
+    assert reconciler.calls == [("owner/repo", False)]
+    assert "1 terminal" in capsys.readouterr().out
+
+
+def test_lifecycle_failure_is_a_nonzero_bounded_stop(capsys):
+    reconciler = _LifecycleReconciler(
+        CaseFileLifecycleReconciliationResult(
+            plan_id="lifecycle-test-plan",
+            dry_run=False,
+            active=0,
+            needs_human=0,
+            terminal=1,
+            applied=0,
+            failures=("some-recurring-class: ambiguous write",),
+        )
+    )
+
+    code = run_case_file_lifecycle_reconciliation(
+        _lifecycle_plan(),
+        reconciler,  # type: ignore[arg-type]
+        configured_repository="owner/repo",
+        apply_writes=True,
+    )
+
+    assert code == 1
+    assert reconciler.calls == [("owner/repo", True)]
+    assert "ambiguous write" in capsys.readouterr().out

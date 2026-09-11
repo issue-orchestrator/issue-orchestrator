@@ -25,6 +25,7 @@ from ..ports.pattern_registry import (
     PatternReservation,
     PatternReservationState,
     require_canonical_case_file,
+    require_reviewed_revision,
 )
 from ..ports.tech_lead_authority import TechLeadAuthorityStore
 
@@ -43,12 +44,21 @@ class MirroredPatternCaseFileRegistry(PatternCaseFileRegistry):
         self._local = local
         self._claimant_id = claimant_id
 
-    def synchronize(self) -> None:
-        """Merge rolling-upgrade rows, then rebuild this client's local cache."""
-        seeds = tuple(
-            self._seed(evidence) for evidence in self._local.list_pattern_evidence()
-        )
-        self._shared.seed_committed(seeds)
+    def synchronize(self, *, publish_local_seed: bool = True) -> None:
+        """Merge rolling-upgrade rows, then rebuild this client's local cache.
+
+        ``publish_local_seed=False`` builds the same read path WITHOUT the
+        one-time migration write. A dry run composes durable authority purely to
+        show the operator what an apply would do, and seeding on that path would
+        publish this client's legacy rows to shared authority as a side effect
+        of previewing — a write the operator never asked for, from a command
+        that promised to write nothing (#7248 review P2).
+        """
+        if publish_local_seed:
+            seeds = tuple(
+                self._seed(evidence) for evidence in self._local.list_pattern_evidence()
+            )
+            self._shared.seed_committed(seeds)
         for entry in self._shared.list_entries():
             if entry.committed:
                 self._mirror(entry)
@@ -149,9 +159,17 @@ class MirroredPatternCaseFileRegistry(PatternCaseFileRegistry):
         return recorded
 
     def record_lifecycle(
-        self, *, signature: str, transition: CaseFileLifecycleTransition
+        self,
+        *,
+        signature: str,
+        transition: CaseFileLifecycleTransition,
+        expected_revision: str | None = None,
     ) -> PatternRegistryEntry:
-        return self._shared.record_lifecycle(signature=signature, transition=transition)
+        return self._shared.record_lifecycle(
+            signature=signature,
+            transition=transition,
+            expected_revision=expected_revision,
+        )
 
     def reserve_retirement(
         self,
@@ -160,12 +178,14 @@ class MirroredPatternCaseFileRegistry(PatternCaseFileRegistry):
         transition: CaseFileLifecycleTransition,
         comment: str,
         issue_number: int,
+        expected_revision: str | None = None,
     ) -> PatternReservation:
         return self._shared.reserve_retirement(
             signature=signature,
             transition=transition,
             comment=comment,
             issue_number=issue_number,
+            expected_revision=expected_revision,
         )
 
     def take_over_retirement(
@@ -444,7 +464,11 @@ class LocalPatternCaseFileRegistry(PatternCaseFileRegistry):
         return recorded
 
     def record_lifecycle(
-        self, *, signature: str, transition: CaseFileLifecycleTransition
+        self,
+        *,
+        signature: str,
+        transition: CaseFileLifecycleTransition,
+        expected_revision: str | None = None,
     ) -> PatternRegistryEntry:
         if transition.terminal:
             raise ValueError("terminal lifecycle changes require retirement")
@@ -455,6 +479,7 @@ class LocalPatternCaseFileRegistry(PatternCaseFileRegistry):
             raise PatternRegistryError(
                 f"pattern {signature!r} has another lifecycle effect in flight"
             )
+        require_reviewed_revision(current, expected_revision)
         self._lifecycle[signature] = (*current.lifecycle, transition)
         return self._require_committed(signature)
 
@@ -465,6 +490,7 @@ class LocalPatternCaseFileRegistry(PatternCaseFileRegistry):
         transition: CaseFileLifecycleTransition,
         comment: str,
         issue_number: int,
+        expected_revision: str | None = None,
     ) -> PatternReservation:
         if not transition.terminal:
             raise ValueError("retirement requires a terminal disposition")
@@ -492,6 +518,7 @@ class LocalPatternCaseFileRegistry(PatternCaseFileRegistry):
             return PatternReservation(state, self._require_committed(signature))
         if signature in self._pending_observations:
             return PatternReservation(PatternReservationState.HELD, current)
+        require_reviewed_revision(current, expected_revision)
         reservation_id = uuid.uuid4().hex
         self._pending_retirements[signature] = (
             reservation_id,

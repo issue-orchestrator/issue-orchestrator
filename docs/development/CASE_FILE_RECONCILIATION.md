@@ -1,4 +1,4 @@
-# Case-File Reconciliation Runbook (#6989)
+# Case-File Reconciliation Runbook (#6989, #7240)
 
 Folding an **already-accumulated** duplicate cluster onto its durable pattern
 case file.
@@ -17,7 +17,8 @@ issue. That fix is forward-looking. It cannot retro-collapse the clusters that
 had already piled up, and it cannot register a recurring class nobody ever
 flagged.
 
-This runbook is for that backlog.
+This runbook covers that evidence backlog and reviewed lifecycle cleanup for
+case files whose underlying work has shipped, moved, or needs a human decision.
 
 ## The mechanism
 
@@ -26,7 +27,11 @@ issue-orchestrator reconcile-case-files --plan <plan.yaml>          # dry run
 issue-orchestrator reconcile-case-files --plan <plan.yaml> --apply  # execute
 ```
 
-The command is **dry-run by default**. It plans in two phases:
+The command accepts two strict, checked-in plan forms. It is **dry-run by
+default**.
+
+An evidence plan contains `clusters` and folds older duplicate issues onto one
+tracker. It plans in two phases:
 
 1. **Evidence.** Each cluster's signature gets (or joins) one pattern case file,
    and every accumulated duplicate lands there as an observation carrying that
@@ -39,6 +44,15 @@ The command is **dry-run by default**. It plans in two phases:
 
 If phase 1 fails for any action, phase 2 does not run — the command refuses to
 close an issue whose evidence went nowhere.
+
+A lifecycle plan contains `repository`, `recorded_at`, and `outcomes`. It must
+name every signature and exact issue mapping in the shared registry snapshot.
+The dry run refuses a partial, stale, or wrong-repository plan before any write.
+Each outcome is one of `active`, `needs_human`, `shipped`, `superseded`,
+`invalid`, or `declined`. Terminal outcomes post an auditable explanation and
+evidence to the case file before closing it; nonterminal outcomes remain open
+with their reviewed state recorded in the shared registry. A retry resumes the
+same stable transition even when its wall clock has advanced.
 
 ### Properties you can rely on
 
@@ -103,6 +117,49 @@ identity the plan writes. **Do not edit it after applying** — changing it
 re-posts every observation the plan already landed. A later backlog gets a new
 plan file with its own id.
 
+Lifecycle plans use the same immutable `plan_id` rule:
+
+```yaml
+plan_id: "7240-porchpin-case-files-2026-09"
+repository: porchpin/porchpin
+recorded_at: "2026-09-10T23:15:00+00:00"
+outcomes:
+  - signature: example-recurring-class
+    issue: 123
+    disposition: shipped
+    expected_revision: "<SHA-256 review revision from the dry-run snapshot>"
+    reason: The concrete reason this case file is complete.
+    evidence:
+      - https://github.com/porchpin/porchpin/pull/456
+```
+
+`expected_revision` binds the decision to the exact evidence, classification,
+and lifecycle history that was reviewed. If any of those facts change before
+apply, the whole plan is refused and must be regenerated and reviewed. Do not
+trim a lifecycle plan to the open issues shown by GitHub search. The
+shared registry can contain already-closed case files, and complete coverage is
+what prevents an unreviewed historical entry from disappearing during cleanup.
+
+Take every revision from the **shared registry as the apply will see it**, which
+is not always what a local SQLite read shows. The two diverge on a repository
+whose rows have not been published to shared authority yet: the first apply
+seeds them, and seeding pads any legacy row whose `observation_count` exceeds
+its stored observation identities with synthetic `legacy:` identities — which
+are themselves part of the revision.
+
+That splits into two cases, and a plan must be generated from the right one:
+
+- **Already-shared registry** (an engine has run against this repo): the dry run
+  reports it, the local mirror agrees with it, and either is a valid source.
+- **Not yet seeded**: the dry run cannot preview it at all, because it refuses
+  to write and therefore refuses to seed — it reports every planned signature as
+  `unknown`. Generate the revisions from the seeded projection the first apply
+  will publish (local evidence rows padded to `observation_count`).
+
+A revision taken from the wrong side of that migration is refused as stale. That
+is the correct outcome, but it costs a review cycle to rediscover, so record
+which case a plan was generated under alongside its `plan_id`.
+
 ## Running it
 
 1. Stop the engine. The command holds the repo lock for its whole lifecycle
@@ -154,3 +211,37 @@ case file #7012 `review-exchange-max-rounds-strands-validated-work` (promoted to
 Applying that plan is an **operator action**, not part of the code change:
 agents report intent and never write to GitHub. #6989 stays open until it has
 been run.
+
+## Reviewed Tech Lead lifecycle backlog
+
+Two checked-in plans classify the full durable registry as reviewed for #7240:
+
+| Plan | Registry entries | Open `Pattern case file:` issues at review time |
+|---|---:|---:|
+| `tech-lead-case-lifecycle-issue-orchestrator-2026-09.yaml` | 13 | 13 |
+| `tech-lead-case-lifecycle-porchpin-2026-09.yaml` | 53 | 49 |
+
+The four extra Porchpin entries are already-closed case files retained by the
+registry. They stay in the plan so the reconciliation is complete and
+repeatable. Dry-run and apply each plan from the repository named inside it;
+an absolute plan path is fine when operating Porchpin from an
+issue-orchestrator checkout.
+
+Across both plans: 66 reviewed outcomes, 42 terminal, 24 retained as active or
+needs-human. Both were reconfirmed on 2026-09-11 against their repositories'
+`.issue-orchestrator/state/tech_lead_authority.sqlite`, each under the
+projection named in its own header — issue-orchestrator against the shared
+projection (13/13) and Porchpin against the seeded projection (53/53).
+
+One ambiguity is carried deliberately rather than resolved: two
+issue-orchestrator rows (`review-exchange-coder-no-completion` #6913 and
+`stuck-sweep-ghost-failure-reinjection` #6927) hold an `observation_count` one
+higher than their stored observation identities, so the two projections disagree
+for them. Whether their plan revisions hold depends on whether shared authority
+already carries those signatures, which cannot be read from a checkout. If it
+does not, the apply refuses exactly those two outcomes as stale and they are
+regenerated — the fail-closed path, which is why this is safe to leave to the
+operator rather than guessed at here.
+
+PR #7234 keeps every surviving active or needs-human case file on the dedicated
+Tech Lead surface without repeating it in the general Blocked work lane.
