@@ -112,6 +112,10 @@ class SessionContext:
     command: str
     working_dir: Path
     title: Optional[str] = None
+    #: Provider credentials for the session process, deliberately separate from
+    #: ``command``: argv is world-readable through ``ps``, so a model API key
+    #: spliced into the command string would leak to every local user.
+    secret_env: Optional[dict] = None
 
 
 class SessionManager:
@@ -184,6 +188,7 @@ class SessionManager:
             working_dir=str(ctx.working_dir),
             title=ctx.title,
             session_name=ctx.ref.name,
+            secret_env=ctx.secret_env,
         )
 
         if success:

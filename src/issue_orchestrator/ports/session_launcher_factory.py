@@ -27,6 +27,25 @@ if TYPE_CHECKING:
     from .issue import Issue as IssueProtocol
 
 
+class CreateSessionFn(Protocol):
+    """Start a terminal session for an agent.
+
+    A Protocol rather than a ``Callable`` alias because the trailing arguments
+    are optional: a call site that needs no provider credentials omits
+    ``secret_env`` entirely, which a ``Callable[...]`` signature cannot express
+    without widening to ``...`` and losing the parameter types altogether.
+    """
+
+    def __call__(
+        self,
+        name: str,
+        cmd: str,
+        wd: Path,
+        title: str | None = None,
+        secret_env: dict | None = None,
+    ) -> bool:
+        ...
+
 class SessionLauncherFactory(Protocol):
     """Builds a launcher from facade-owned callbacks.
 
@@ -39,7 +58,7 @@ class SessionLauncherFactory(Protocol):
         *,
         board_snapshot_provider: "BoardSnapshotProvider",
         session_exists_fn: Callable[[str], bool],
-        create_session_fn: Callable[[str, str, Path, str | None], bool],
+        create_session_fn: "CreateSessionFn",
         get_issue_machine: Callable[
             ["IssueProtocol"], Optional["IssueStateMachine"]
         ],

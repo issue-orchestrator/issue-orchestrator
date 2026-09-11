@@ -45,6 +45,7 @@ class TerminalSpec:
         working_dir: str,
         title: str | None,
         session_name: str,  # Required - caller must provide explicit name
+        secret_env: dict | None = None,
     ) -> bool | None:
         """Create a new terminal session for an agent.
 
@@ -54,6 +55,11 @@ class TerminalSpec:
             working_dir: Working directory path
             title: Optional human-readable title
             session_name: Full session name (e.g., "issue-123", "review-456")
+            secret_env: Provider credentials for the session process. Kept out
+                of ``command`` on purpose: argv is world-readable through
+                ``ps``, so a key in the command string would leak to every
+                local user. Implementations that cannot inject environment must
+                ignore it rather than splice it into the command.
 
         Returns:
             True if created, False if failed, None to defer to next plugin.

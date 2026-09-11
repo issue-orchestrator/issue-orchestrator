@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Optional, Callable, Mapping, Sequence
 if TYPE_CHECKING:
     from ..ports.agent_callback_endpoint import AgentCallbackEndpoint
     from ..ports.board_snapshot_provider import BoardSnapshotProvider
+    from ..ports.session_launcher_factory import CreateSessionFn
     from ..domain.state_machines.issue_machine import IssueStateMachine
     from ..domain.state_machines.session_machine import SessionStateMachine
     from ..domain.state_machines.review_machine import ReviewStateMachine
@@ -69,6 +70,10 @@ from ..ports import (
     Issue as IssueProtocol,
     WorkingCopy,
     CommandRunner,
+)
+from ..ports.provider_credentials import (
+    NO_PROVIDER_CREDENTIALS,
+    ProviderCredentials,
 )
 from ..ports.provider_readiness import (
     NO_PROVIDER_READINESS_PROBE,
@@ -168,7 +173,7 @@ class SessionLauncher:
         manifest_downloader: ManifestDownloader,
         tech_lead_authority: "TechLeadAuthorityStore",
         session_exists_fn: Callable[[str], bool],
-        create_session_fn: Callable[[str, str, Path, str | None], bool],
+        create_session_fn: "CreateSessionFn",
         get_issue_machine: Callable[["IssueProtocol"], Optional["IssueStateMachine"]],
         get_session_machine: Callable[[str, int, int], Optional["SessionStateMachine"]],
         get_review_machine: Callable[[int, int], Optional["ReviewStateMachine"]],
@@ -194,6 +199,10 @@ class SessionLauncher:
         # provider adapter names that fact instead of silently claiming the
         # provider is authenticated.
         provider_readiness_probe: ProviderReadinessProbe = NO_PROVIDER_READINESS_PROBE,
+        # Resolves the secrets a provider declares it needs (#7253). Defaults to
+        # the explicit "nothing is wired" resolver rather than an empty dict, so
+        # a composition without a provider registry names that fact.
+        provider_credentials: ProviderCredentials = NO_PROVIDER_CREDENTIALS,
         # Every OTHER durable cause of the shared needs-human label (#6999 F4).
         needs_human_block: SharedNeedsHumanBlock = NO_OTHER_NEEDS_HUMAN_CAUSES,
         coder_prompt_addendum: CoderPromptAddendumProvider = NO_CODER_PROMPT_ADDENDUM,
@@ -225,6 +234,7 @@ class SessionLauncher:
         self._claim_manager = claim_manager
         self._provider_resilience = provider_resilience
         self._coder_prompt_addendum = coder_prompt_addendum
+        self._provider_credentials = provider_credentials
         self._provider_gate = (
             ProviderLaunchGate(
                 policy=ProviderAvailabilityPolicy(
@@ -1065,7 +1075,13 @@ class SessionLauncher:
 
             # Create terminal session
             step_start = time.time()
-            session_created = self._create_session(session_name, command, worktree_path, issue.title)
+            session_created = self._create_session(
+                session_name,
+                command,
+                worktree_path,
+                issue.title,
+                self._session_secret_env(agent_config.provider),
+            )
             logger.info(
                 "[launch] Issue session create result: issue=%s session=%s created=%s",
                 issue.number,
@@ -1371,7 +1387,13 @@ class SessionLauncher:
                 command,
             )
 
-            session_created = self._create_session(session_name, command, worktree_path, issue.title)
+            session_created = self._create_session(
+                session_name,
+                command,
+                worktree_path,
+                issue.title,
+                self._session_secret_env(agent_config.provider),
+            )
             if not session_created:
                 log_transition("issue", issue.number, "LAUNCHING", "FAILED", "session creation failed")
                 self._apply_actions([
@@ -1769,7 +1791,13 @@ class SessionLauncher:
             )
 
             # Create session
-            session_created = self._create_session(session_name, command, worktree_path, f"Review PR #{review.pr_number}")
+            session_created = self._create_session(
+                session_name,
+                command,
+                worktree_path,
+                f"Review PR #{review.pr_number}",
+                self._session_secret_env(agent_config.provider),
+            )
             logger.info(
                 "[launch] Review session create result: issue=%s pr=%s session=%s created=%s",
                 review.issue_number,
@@ -2066,7 +2094,13 @@ class SessionLauncher:
                 command,
             )
 
-            session_created = self._create_session(session_name, command, worktree_path, issue_title)
+            session_created = self._create_session(
+                session_name,
+                command,
+                worktree_path,
+                issue_title,
+                self._session_secret_env(agent_config.provider),
+            )
             logger.info(
                 "[launch] Retrospective review create result: issue=%s session=%s created=%s",
                 review.issue_number,
@@ -2216,6 +2250,15 @@ class SessionLauncher:
                 self.config.provider_resilience.short_retry
             )
         return self._provider_command_wrapper
+
+    def _session_secret_env(self, provider: str | None) -> dict | None:
+        """Provider credentials for this launch, or ``None`` when it needs none.
+
+        ``None`` rather than an empty dict so the runner can tell "this provider
+        supplies its own login" from "the key resolved to nothing".
+        """
+        resolved = dict(self._provider_credentials.session_env(provider))
+        return resolved or None
 
     def _check_provider_ready(
         self,

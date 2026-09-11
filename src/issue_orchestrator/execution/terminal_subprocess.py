@@ -324,11 +324,22 @@ class SubprocessPlugin:
             return None
         return SessionInteractionHandler(session_name=session_name, rules=rules)
 
-    def _start_process(self, command: str, working_dir: Path, session_name: str) -> AgentSession:
+    def _start_process(
+        self,
+        command: str,
+        working_dir: Path,
+        session_name: str,
+        secret_env: dict | None = None,
+    ) -> AgentSession:
         """Start an agent session via :class:`AgentRunner`.
 
         Builds the full command with isolation prefix, constructs an
         :class:`AgentSpec`, and delegates to ``AgentRunner.start()``.
+
+        ``secret_env`` becomes ``env_overrides`` rather than part of the command
+        string. That is the whole point of carrying it separately: the command
+        is visible in ``ps`` to every local user, and a model API key in it
+        would be readable fleet-wide on a shared machine.
         """
         full_cmd = self._build_process_command(command, working_dir)
         log_path = self._session_log_path(working_dir, session_name, command)
@@ -340,6 +351,7 @@ class SubprocessPlugin:
             timeout_seconds=7200,  # Sessions manage their own timeout via provider_runner
             log_path=log_path,
             output_dir=log_path.parent,
+            env_overrides=dict(secret_env or {}),
         )
         runner = AgentRunner()
         session = runner.start(spec, interaction_handler=interaction_handler)
@@ -390,17 +402,21 @@ class SubprocessPlugin:
         working_dir: str,
         title: str | None,
         session_name: str,  # Required - caller must provide explicit name
+        secret_env: dict | None = None,
     ) -> bool | None:
         logger.info(
-            "[subprocess] create_session called: session_id=%s session_name=%r",
+            "[subprocess] create_session called: session_id=%s session_name=%r "
+            "secret_env_keys=%s",
             session_id,
             session_name,
+            # Names only. The values are credentials and must never be logged.
+            sorted(secret_env or {}),
         )
         worktree = Path(working_dir)
         if self.session_exists(session_id, session_name):
             return False
 
-        session = self._start_process(command, worktree, session_name)
+        session = self._start_process(command, worktree, session_name, secret_env)
         is_review = session_name.startswith("review-")
         tab_name = title or session_name
         if is_review:

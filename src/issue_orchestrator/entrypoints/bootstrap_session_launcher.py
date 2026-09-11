@@ -18,6 +18,7 @@ from ..ports.coder_prompt import (
     CoderPromptAddendumProvider,
     NO_CODER_PROMPT_ADDENDUM,
 )
+from ..ports.provider_credentials import ProviderCredentials
 from ..ports.provider_readiness import ProviderReadinessProbe
 from ..ports.issue_run_allocator import IssueRunAllocator
 
@@ -30,7 +31,10 @@ if TYPE_CHECKING:
     from ..ports.agent_callback_endpoint import AgentCallbackEndpoint
     from ..ports.board_snapshot_provider import BoardSnapshotProvider
     from ..ports.issue import Issue as IssueProtocol
-    from ..ports.session_launcher_factory import SessionLauncherFactory
+    from ..ports.session_launcher_factory import (
+        CreateSessionFn,
+        SessionLauncherFactory,
+    )
 
 
 def build_session_launcher_factory(
@@ -54,6 +58,7 @@ def build_session_launcher_factory(
     label_manager,
     agent_callback_endpoint: "AgentCallbackEndpoint",
     provider_readiness_probe: ProviderReadinessProbe,
+    provider_credentials: ProviderCredentials,
     needs_human_block: SharedNeedsHumanBlock,
     coder_prompt_addendum: CoderPromptAddendumProvider = NO_CODER_PROMPT_ADDENDUM,
 ) -> "SessionLauncherFactory":
@@ -63,7 +68,7 @@ def build_session_launcher_factory(
         *,
         board_snapshot_provider: "BoardSnapshotProvider",
         session_exists_fn: Callable[[str], bool],
-        create_session_fn: Callable[[str, str, Path, str | None], bool],
+        create_session_fn: "CreateSessionFn",
         get_issue_machine: Callable[
             ["IssueProtocol"], Optional["IssueStateMachine"]
         ],
@@ -93,6 +98,7 @@ def build_session_launcher_factory(
             agent_callback_endpoint=agent_callback_endpoint,
             issue_run_allocator=issue_run_allocator,
             provider_readiness_probe=provider_readiness_probe,
+            provider_credentials=provider_credentials,
             needs_human_block=needs_human_block,
             coder_prompt_addendum=coder_prompt_addendum,
         )

@@ -31,8 +31,10 @@ from .bootstrap_budgeted_validation import (
     build_budgeted_validation_services,
 )
 from ..infra.agent_callback_endpoint import RuntimeAgentCallbackEndpoint
+from ..ports.provider_credentials import NO_PROVIDER_CREDENTIALS
 from .bootstrap_provider import (
     build_provider_circuit_store,
+    build_provider_credentials,
     build_provider_launch_sampler,
     build_provider_readiness_probe,
     build_provider_resilience,
@@ -525,6 +527,7 @@ def build_orchestrator(
     coder_prompt_addendum = build_coder_prompt_addendum_provider(config)
 
     provider_readiness_probe = build_provider_readiness_probe(command_runner)
+    provider_credentials = build_provider_credentials()
     provider_launch_sampler = build_provider_launch_sampler(
         config, provider_resilience, provider_readiness_probe, label_manager
     )
@@ -794,6 +797,7 @@ def build_orchestrator(
         label_manager=label_manager,
         agent_callback_endpoint=agent_callback_endpoint,
         provider_readiness_probe=provider_readiness_probe,
+        provider_credentials=provider_credentials,
         needs_human_block=pending_work.needs_human_block,
         coder_prompt_addendum=coder_prompt_addendum,
     )
@@ -979,6 +983,9 @@ def build_orchestrator_for_testing(
     # defaults to the explicit "no probe wired" reader (UNKNOWN => launchable,
     # no circuit writes) and tests inject a fake when they mean to exercise it.
     provider_readiness_probe = provider_readiness_probe or NO_PROVIDER_READINESS_PROBE
+    # Same reasoning for credentials: a test composition resolves nothing rather
+    # than reaching into the operator's keyring.
+    provider_credentials = NO_PROVIDER_CREDENTIALS
     provider_launch_sampler = build_provider_launch_sampler(
         config, provider_resilience, provider_readiness_probe, label_manager
     )
@@ -1238,6 +1245,7 @@ def build_orchestrator_for_testing(
         label_manager=label_manager,
         agent_callback_endpoint=agent_callback_endpoint,
         provider_readiness_probe=provider_readiness_probe,
+        provider_credentials=provider_credentials,
         needs_human_block=pending_work.needs_human_block,
         coder_prompt_addendum=coder_prompt_addendum,
     )
