@@ -7,6 +7,10 @@ import os
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
+from ..contracts.ui_openapi_models import (
+    ExcludedIssuesPayload,
+    OrchestratorStatusPayload,
+)
 from ..infra.audit import SkipReason, audit_queue
 from ..infra.e2e_slot_policy import get_e2e_role
 from ..view_models.dashboard import flow_steps_for, issue_url_for
@@ -16,8 +20,10 @@ from .web_session_context import WebOrchestratorDependency
 web_status_router = APIRouter()
 
 
-@web_status_router.get("/api/status")
-async def get_status(orchestrator: WebOrchestratorDependency) -> JSONResponse:
+@web_status_router.get("/api/status", response_model=OrchestratorStatusPayload)
+async def get_status(
+    orchestrator: WebOrchestratorDependency,
+) -> OrchestratorStatusPayload | JSONResponse:
     """Get current orchestrator status as JSON."""
     if orchestrator is None:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
@@ -61,7 +67,7 @@ async def get_status(orchestrator: WebOrchestratorDependency) -> JSONResponse:
     instance_id = os.environ.get("INSTANCE_ID")
     e2e_role = get_e2e_role(config.e2e, instance_id=instance_id)
 
-    return JSONResponse({
+    return OrchestratorStatusPayload.model_validate({
         # Carries ``paused`` plus its provenance: why, who, since when. Without
         # the provenance the UI can only show that the engine is stopped, never
         # why — which left a breaker-tripped engine looking indistinguishable
@@ -86,8 +92,10 @@ async def get_status(orchestrator: WebOrchestratorDependency) -> JSONResponse:
     })
 
 
-@web_status_router.get("/api/excluded-issues")
-async def get_excluded_issues(orchestrator: WebOrchestratorDependency) -> JSONResponse:
+@web_status_router.get("/api/excluded-issues", response_model=ExcludedIssuesPayload)
+async def get_excluded_issues(
+    orchestrator: WebOrchestratorDependency,
+) -> ExcludedIssuesPayload | JSONResponse:
     """Get issues known to the system but excluded from scheduling."""
     if orchestrator is None:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
@@ -136,4 +144,4 @@ async def get_excluded_issues(orchestrator: WebOrchestratorDependency) -> JSONRe
             ),
         })
 
-    return JSONResponse({"excluded": excluded})
+    return ExcludedIssuesPayload.model_validate({"excluded": excluded})

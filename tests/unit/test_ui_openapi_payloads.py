@@ -1864,6 +1864,50 @@ def test_open_inline_agent_attempts_command_payload_matches_openapi() -> None:
         )
 
 
+def _blocked_issue_entry(**overrides: object) -> dict[str, object]:
+    """A complete ``BlockedIssuePayload`` as ``_blocked_issues_payload`` emits it.
+
+    ``BlockedIssuePayload`` used to be ``additionalProperties: true`` with no
+    declared fields, so the dialog contract accepted literally any dict. It is
+    now the strict shape shared by ``/api/blocked-issues`` and
+    ``/api/dialog/blocked-issues`` (#6410 group 1); route-level conformance is
+    covered in ``test_ui_openapi_status_diagnostics_routes.py``.
+    """
+    entry: dict[str, object] = {
+        "issue_number": 1,
+        "title": "Blocked issue",
+        "agent_type": "web",
+        "blocking_label": "blocked",
+        "all_blocking_labels": ["blocked"],
+        "needs_human": False,
+        "failure_reason": None,
+        "issue_url": "https://github.com/test/repo/issues/1",
+        "worktree_path": None,
+        "run_dir": None,
+        "has_completion": False,
+    }
+    entry.update(overrides)
+    return entry
+
+
+def test_blocked_issue_dialog_payload_rejects_untyped_entries() -> None:
+    """The blocked-issues dialog no longer accepts an arbitrary dict per issue —
+    the Resume affordance reads ``run_dir``/``has_completion``, so a payload
+    missing them must fail validation instead of rendering a dead button."""
+    validator = _validator("BlockedIssuesDialogPayload")
+
+    valid = {"title": "Blocked Issues", "blocked_issues": [_blocked_issue_entry()]}
+    validator.validate(valid)
+
+    with pytest.raises(JsonSchemaValidationError):
+        validator.validate({"title": "Blocked Issues", "blocked_issues": [{"issue": 1}]})
+
+    incomplete = _blocked_issue_entry()
+    del incomplete["has_completion"]
+    with pytest.raises(JsonSchemaValidationError):
+        validator.validate({"title": "Blocked Issues", "blocked_issues": [incomplete]})
+
+
 def test_dialog_payloads_match_ui_openapi() -> None:
     info = build_info_dialog(
         {
@@ -1930,7 +1974,9 @@ def test_dialog_payloads_match_ui_openapi() -> None:
     )
     _validator("SessionDiagnosticsDialogPayload").validate(session_diag)
 
-    blocked_dialog = build_blocked_issues_dialog({"blocked_issues": [{"issue": 1}]})
+    blocked_dialog = build_blocked_issues_dialog(
+        {"blocked_issues": [_blocked_issue_entry()]}
+    )
     _validator("BlockedIssuesDialogPayload").validate(blocked_dialog)
 
     phase_dialog = build_phase_dialog(

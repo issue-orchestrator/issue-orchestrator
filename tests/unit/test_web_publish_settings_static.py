@@ -942,12 +942,27 @@ class TestIssueAuditEndpoint:
     """Tests for explicit issue audit refresh endpoint."""
 
     def test_force_issue_audit_returns_failure_diagnosis(self):
+        from issue_orchestrator.infra.session_failure_diagnosis import (
+            SessionFailureDiagnosis,
+        )
+
         mock_orch = create_mock_orchestrator()
-        mock_orch.get_failure_diagnosis.return_value = {
-            "issue_number": 4057,
-            "analysis_headline": "Timed out while exploring unrelated files",
-            "suggestions": ["Narrow the task prompt"],
-        }
+        # The route is contracted (SessionFailureDiagnosisPayload), so the
+        # producer's full shape is what crosses the boundary - a partial dict
+        # would now fail response validation instead of silently shipping.
+        mock_orch.get_failure_diagnosis.return_value = SessionFailureDiagnosis(
+            issue_number=4057,
+            ai_system="claude",
+            permission_mode="bypassPermissions",
+            worktree_path=None,
+            log_path=None,
+            log_exists=False,
+            log_context=None,
+            history_status="failed",
+            history_reason="timeout",
+            suggestions=["Narrow the task prompt"],
+            analysis_headline="Timed out while exploring unrelated files",
+        ).to_dict()
         set_orchestrator(mock_orch)
 
         client = TestClient(app)

@@ -348,10 +348,21 @@ contracted route goes missing or stops using its generated response model.
 
 | Path | Scope |
 |---|---|
+| `/api/blocked-issues` | Repository Engine |
 | `/api/completion/submissions` | Repository Engine |
+| `/api/config` | Repository Engine |
 | `/api/control-center/repositories/{repo_key}/engines/{instance_key}/stop-validated-work-owner` | Control Center |
 | `/api/control-center/repositories/{repo_key}/validated-work` | Control Center |
+| `/api/debug` | Repository Engine |
+| `/api/dependency-problems` | Repository Engine |
+| `/api/doctor` | Repository Engine |
+| `/api/excluded-issues` | Repository Engine |
+| `/api/failure-diagnosis/{issue_number}` | Repository Engine |
+| `/api/info` | Repository Engine |
+| `/api/issues/{issue_number}/audit` | Repository Engine |
 | `/api/issues/{issue_number}/resume` | Repository Engine |
+| `/api/stale-issues` | Repository Engine |
+| `/api/status` | Repository Engine |
 | `/api/validated-work/intake` | Repository Engine |
 | `/api/dialog/blocked-issues` | Repository Engine |
 | `/api/dialog/config` | Repository Engine |
