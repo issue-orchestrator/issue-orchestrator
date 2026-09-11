@@ -131,6 +131,7 @@ def test_remote_evidence_commit_hydrates_local_replica() -> None:
             observation_id="run:b:A1", comment="observed again"
         ),
         classification=CaseFileClassification(fix_class="code", area="runtime"),
+        issue_number=81,
     )
     assert second.finalize_observation(
         signature="stuck-retry",
@@ -210,6 +211,7 @@ def test_expired_observation_recovery_fences_old_publisher_and_posts_once() -> N
         signature="stuck-retry",
         observation=observation,
         classification=CaseFileClassification(fix_class="code", area="runtime"),
+        issue_number=81,
     )
     now[0] += timedelta(seconds=31)
     repository = MagicMock()
@@ -276,6 +278,7 @@ def test_live_peer_observation_reservation_prevents_comment_publication() -> Non
         signature="stuck-retry",
         observation=observation,
         classification=CaseFileClassification(),
+        issue_number=81,
     )
     second = GitHubRefPatternRegistry(
         cast(Any, client),

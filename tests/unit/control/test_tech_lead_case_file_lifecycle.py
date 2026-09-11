@@ -247,7 +247,7 @@ def test_retirement_refuses_a_case_file_the_command_did_not_authorize() -> None:
     _seed(registry)
     repository = _Repository()
 
-    with pytest.raises(PatternRegistryError, match="refusing to retire"):
+    with pytest.raises(PatternRegistryError, match="refusing to mutate"):
         _owner(registry, repository).retire(
             signature="stale-pattern",
             transition=_transition(),
@@ -280,6 +280,7 @@ def test_terminal_signature_accepts_later_evidence_without_reopening() -> None:
             observation_id="run:session:A2", comment="It happened again"
         ),
         classification=CaseFileClassification(),
+        issue_number=CASE_FILE,
     )
     assert admitted.state is PatternReservationState.ACQUIRED
     registry.finalize_observation(

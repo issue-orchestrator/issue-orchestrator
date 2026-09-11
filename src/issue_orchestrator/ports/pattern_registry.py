@@ -137,20 +137,21 @@ class PatternReservation:
 def require_canonical_case_file(entry: PatternRegistryEntry, issue_number: int) -> None:
     """Reject a caller whose authorized case file is not this signature's.
 
-    THE rule, in one place, so the shared CAS registry and the single-process
-    registry cannot drift on it. A settlement command is guarded against the
-    issue named in the action; the retirement it drives comments on and closes
-    the issue named in the REGISTRY. If those two identities disagree, the
-    expected-state gate would authorize one issue while the owner mutates
-    another, and the ledger would then record the first as settled. Both
-    registries call this inside the compare-and-swap that reserves the
-    retirement, before any state is written (#7247 review F2/A1).
+    THE rule, in one place, so the shared CAS registry, the single-process
+    registry, and both write paths cannot drift on it. A case-file command is
+    guarded against the issue named in the ACTION, while the evidence comment or
+    the retirement close lands on the issue named in the REGISTRY. If those two
+    identities disagree, the expected-state gate would authorize one issue while
+    the owner mutates another, and durable memory would then record the first as
+    settled. Every registry calls this inside the compare-and-swap that reserves
+    the write, before any state is written, so a mismatch leaves no reservation
+    behind to recover (#7247 review F2/A1).
     """
     if entry.issue_number != issue_number:
         raise PatternRegistryError(
             f"pattern {entry.signature!r} is registered to case file"
-            f" #{entry.issue_number}, but this retirement is authorized for"
-            f" #{issue_number}; refusing to retire a different issue"
+            f" #{entry.issue_number}, but this write is authorized for"
+            f" #{issue_number}; refusing to mutate a different issue"
         )
 
 
@@ -185,8 +186,17 @@ class PatternCaseFileRegistry(Protocol):
         signature: str,
         observation: PatternObservation,
         classification: CaseFileClassification,
+        issue_number: int,
     ) -> PatternReservation:
-        """Admit one exact evidence publication through shared authority."""
+        """Admit one exact evidence publication against its canonical case file.
+
+        ``issue_number`` carries the same guarantee it carries into
+        :meth:`reserve_retirement`, through :func:`require_canonical_case_file`:
+        the caller's authorized case file is checked inside the reserving
+        compare-and-swap, so a signature whose registry row names a different
+        issue admits nothing rather than reserving first and being rejected
+        afterwards (#7247 review A1, applied to both write paths).
+        """
         ...
 
     def take_over_observation(

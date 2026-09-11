@@ -1603,7 +1603,7 @@ class TestSettlement:
         )
 
         assert not result.success
-        assert "refusing to retire" in result.error
+        assert "refusing to mutate" in result.error
         # 1. GitHub: neither issue was commented on or closed.
         repository.add_comment.assert_not_called()
         repository.update_issue_state.assert_not_called()

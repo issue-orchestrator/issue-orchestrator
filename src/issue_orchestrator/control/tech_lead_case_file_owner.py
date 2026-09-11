@@ -525,17 +525,21 @@ class PatternCaseFileOwner:
         observation: "PatternObservation",
         classification: CaseFileClassification,
     ) -> PatternReservation | ObservationAppendOutcome:
-        """Return one acquired token or the complete replay/recovery outcome."""
+        """Return one acquired token or the complete replay/recovery outcome.
+
+        The authorized case file rides INTO the reservation rather than being
+        checked after it: shared authority applies the one
+        :func:`~..ports.pattern_registry.require_canonical_case_file` rule inside
+        the same compare-and-swap, so a signature whose registry row names a
+        different issue leaves no reservation behind, exactly as on the
+        retirement path (#7247 review A1).
+        """
         reservation = self._registry.reserve_observation(
             signature=signature,
             observation=observation,
             classification=classification,
+            issue_number=issue_number,
         )
-        if reservation.entry.issue_number != issue_number:
-            raise PatternRegistryError(
-                f"pattern {signature!r} belongs to issue"
-                f" #{reservation.entry.issue_number}, not #{issue_number}"
-            )
         if reservation.state is PatternReservationState.COMMITTED:
             return ObservationAppendOutcome(recorded=0, skipped=1)
         if reservation.state is PatternReservationState.HELD:

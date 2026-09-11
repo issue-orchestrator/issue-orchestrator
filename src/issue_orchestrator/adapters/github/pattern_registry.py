@@ -187,6 +187,7 @@ class GitHubRefPatternRegistry(PatternCaseFileRegistry):
         signature: str,
         observation: PatternObservation,
         classification: CaseFileClassification,
+        issue_number: int,
     ) -> PatternReservation:
         for _ in range(MAX_CAS_ATTEMPTS):
             snapshot, entries = self._load()
@@ -195,6 +196,7 @@ class GitHubRefPatternRegistry(PatternCaseFileRegistry):
                 raise PatternRegistryError(
                     f"pattern {signature!r} has no committed case file"
                 )
+            require_canonical_case_file(current, issue_number)
             current.classification.merged_with(classification, signature=signature)
             if observation.observation_id in current.observation_ids:
                 return PatternReservation(PatternReservationState.COMMITTED, current)

@@ -75,6 +75,7 @@ def _record(
         signature="stuck-retry",
         observation=_observation(identity),
         classification=classification,
+        issue_number=81,
     )
     assert admitted.state is PatternReservationState.ACQUIRED
     return registry.finalize_observation(
@@ -184,6 +185,39 @@ def test_every_committed_lifecycle_timestamp_stays_readable() -> None:
     assert reloaded.lifecycle == (transition,)
 
 
+def test_reserving_evidence_for_another_issue_writes_nothing() -> None:
+    """Both write paths admit nothing when the authorized case file disagrees.
+
+    The evidence path used to reserve first and reject afterwards, leaving a
+    pending observation behind on a mismatch. It now applies the same rule in
+    the same place as retirement (#7247 review A1).
+    """
+    client = FakeGitHubRefClient()
+    now = [datetime(2026, 9, 10, tzinfo=timezone.utc)]
+    registry = _registry(client, "engine-a", now)
+    reserved = registry.reserve(_pending("stuck-retry"))
+    registry.finalize(
+        signature="stuck-retry",
+        reservation_id=reserved.entry.reservation_id,
+        issue_number=81,
+    )
+
+    with pytest.raises(PatternRegistryError, match="refusing to mutate"):
+        registry.reserve_observation(
+            signature="stuck-retry",
+            observation=PatternObservation(
+                observation_id="run:session:A2", comment="It happened again"
+            ),
+            classification=CaseFileClassification(),
+            issue_number=82,
+        )
+
+    entry = registry.read(signature="stuck-retry")
+    assert entry is not None
+    assert entry.pending_observation is None
+    assert entry.observation_ids == ("run:session:A1",)
+
+
 def test_reserving_a_retirement_for_another_issue_writes_nothing() -> None:
     """Shared authority, not a caller pre-read, owns the identity check (A1)."""
     client = FakeGitHubRefClient()
@@ -196,7 +230,7 @@ def test_reserving_a_retirement_for_another_issue_writes_nothing() -> None:
         issue_number=81,
     )
 
-    with pytest.raises(PatternRegistryError, match="refusing to retire"):
+    with pytest.raises(PatternRegistryError, match="refusing to mutate"):
         registry.reserve_retirement(
             signature="stuck-retry",
             transition=CaseFileLifecycleTransition(
@@ -355,6 +389,7 @@ def test_concurrent_evidence_retries_preserve_both_observations() -> None:
         signature="stuck-retry",
         observation=_observation("run:session:A3"),
         classification=classification,
+        issue_number=81,
     )
     assert replay.state is PatternReservationState.COMMITTED
     entry = second.read(signature="stuck-retry")
@@ -381,18 +416,21 @@ def test_observation_reservation_serializes_publication_and_classification() -> 
         signature="stuck-retry",
         observation=_observation("run:session:A2"),
         classification=CaseFileClassification(fix_class="code", area="runtime"),
+        issue_number=81,
     )
 
     duplicate = second.reserve_observation(
         signature="stuck-retry",
         observation=_observation("run:session:A2"),
         classification=CaseFileClassification(fix_class="code", area="runtime"),
+        issue_number=81,
     )
     with pytest.raises(PatternClassificationConflictError):
         second.reserve_observation(
             signature="stuck-retry",
             observation=_observation("run:session:A3"),
             classification=CaseFileClassification(fix_class="human", area="runtime"),
+            issue_number=81,
         )
 
     assert admitted.state is PatternReservationState.ACQUIRED
@@ -406,6 +444,7 @@ def test_observation_reservation_serializes_publication_and_classification() -> 
             signature="stuck-retry",
             observation=_observation("run:session:A2"),
             classification=CaseFileClassification(fix_class="code", area="runtime"),
+            issue_number=81,
         ).state
         is PatternReservationState.COMMITTED
     )
@@ -427,12 +466,14 @@ def test_same_claimant_cannot_take_over_live_observation_token() -> None:
         signature="stuck-retry",
         observation=_observation("run:session:A2"),
         classification=CaseFileClassification(),
+        issue_number=81,
     )
 
     observed = retry.reserve_observation(
         signature="stuck-retry",
         observation=_observation("run:session:A2"),
         classification=CaseFileClassification(),
+        issue_number=81,
     )
     takeover = retry.take_over_observation(
         signature="stuck-retry",

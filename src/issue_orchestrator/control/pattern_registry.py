@@ -103,11 +103,13 @@ class MirroredPatternCaseFileRegistry(PatternCaseFileRegistry):
         signature: str,
         observation: "PatternObservation",
         classification: CaseFileClassification,
+        issue_number: int,
     ) -> PatternReservation:
         outcome = self._shared.reserve_observation(
             signature=signature,
             observation=observation,
             classification=classification,
+            issue_number=issue_number,
         )
         if outcome.entry.committed:
             self._mirror(outcome.entry)
@@ -349,12 +351,14 @@ class LocalPatternCaseFileRegistry(PatternCaseFileRegistry):
         signature: str,
         observation: "PatternObservation",
         classification: CaseFileClassification,
+        issue_number: int,
     ) -> PatternReservation:
         current = self.read(signature=signature)
         if current is None or not current.committed:
             raise PatternRegistryError(
                 f"pattern {signature!r} has no committed case file"
             )
+        require_canonical_case_file(current, issue_number)
         current.classification.merged_with(classification, signature=signature)
         if observation.observation_id in current.observation_ids:
             return PatternReservation(PatternReservationState.COMMITTED, current)
