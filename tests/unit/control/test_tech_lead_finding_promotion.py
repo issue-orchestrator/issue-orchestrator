@@ -6,6 +6,7 @@ the durable ledger, and loop closure.
 """
 
 from unittest.mock import MagicMock, Mock
+import hashlib
 
 import pytest
 
@@ -30,6 +31,7 @@ from issue_orchestrator.control.tech_lead_finding_promotion import (
     select_promotion_updates,
     select_promotable_findings,
 )
+from issue_orchestrator.control.pattern_registry import LocalPatternCaseFileRegistry
 from issue_orchestrator.domain.tech_lead_findings import (
     PROMOTION_STATE_DECLINED,
     PROMOTION_STATE_SHIPPED,
@@ -48,12 +50,42 @@ from issue_orchestrator.ports.promotion_target import (
     InMemoryPromotionTargetHost,
     PromotedIssueOutcome,
 )
+from issue_orchestrator.ports.comment_receipt import IssueCommentReceipt
 from issue_orchestrator.ports.tech_lead_authority import (
     InMemoryTechLeadAuthorityStore,
     TechLeadPromotionConflictError,
 )
 
 UPSTREAM = "issue-orchestrator/issue-orchestrator"
+
+
+def _settlement_ports(authority, *, signature: str, case_file: int):
+    if authority.load_pattern_evidence(signature=signature) is None:
+        authority.record_pattern(
+            signature=signature,
+            issue_number=case_file,
+            observation_id="settlement:test:A1",
+        )
+    repository = Mock()
+    published: list[str] = []
+
+    def add_comment(_number, body):
+        published.append(body)
+        return "https://example.test/comments/1"
+
+    def receipt(_number, *, body):
+        if body not in published:
+            return None
+        return IssueCommentReceipt(
+            comment_id="1",
+            url="https://example.test/comments/1",
+            author_key="app:test",
+            body_sha256=hashlib.sha256(body.encode()).hexdigest(),
+        )
+
+    repository.add_comment.side_effect = add_comment
+    repository.find_issue_comment_receipt.side_effect = receipt
+    return repository, LocalPatternCaseFileRegistry(authority)
 
 
 def _route(**entries) -> dict[str, PromotionRouteTarget]:
@@ -1039,8 +1071,15 @@ class TestAreaUpgradedWhileFilingWasInFlight:
         [action] = plan_promotion_settlements(settled)
         assert isinstance(action, SettleTechLeadPromotionAction)
         assert action.area == "db"
+        repository, registry = _settlement_ports(
+            authority, signature=action.signature, case_file=action.case_file_issue_number
+        )
         assert apply_settle_tech_lead_promotion(
-            action, repository_host=Mock(), authority=authority
+            action,
+            repository_host=repository,
+            authority=authority,
+            pattern_registry=registry,
+            now_iso="2026-09-10T12:00:00+00:00",
         ).success
 
         [fix] = authority.list_recent_shipped_fixes(limit=5)
@@ -1485,9 +1524,15 @@ class TestSettlement:
         facts = classify_promotion_outcomes(authority.list_promotions(), target=target)
         [action] = plan_promotion_settlements(facts)
         assert isinstance(action, SettleTechLeadPromotionAction)
-        repository_host = Mock()
+        repository_host, registry = _settlement_ports(
+            authority, signature=action.signature, case_file=action.case_file_issue_number
+        )
         result = apply_settle_tech_lead_promotion(
-            action, repository_host=repository_host, authority=authority
+            action,
+            repository_host=repository_host,
+            authority=authority,
+            pattern_registry=registry,
+            now_iso="2026-09-10T12:00:00+00:00",
         )
         return result, repository_host, authority
 
@@ -1507,11 +1552,11 @@ class TestSettlement:
             PROMOTION_STATE_SHIPPED
         )
 
-    def test_declined_leaves_the_case_file_open_and_blocks_refiling(self):
+    def test_declined_closes_the_case_file_and_blocks_refiling(self):
         result, repository_host, authority = self._settle(shipped=False)
 
         assert result.success
-        repository_host.update_issue_state.assert_not_called()
+        repository_host.update_issue_state.assert_called_once_with(65, "closed")
         assert authority.load_promotion(signature="anchor-close").state == (
             PROMOTION_STATE_DECLINED
         )

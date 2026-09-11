@@ -20,11 +20,14 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from ..domain.tech_lead_findings import (
+    CASE_FILE_DECLINED,
+    CASE_FILE_SHIPPED,
     PROMOTION_STATE_DECLINED,
     PROMOTION_STATE_SHIPPED,
+    CaseFileLifecycleTransition,
 )
 from .actions import (
     Action,
@@ -34,9 +37,11 @@ from .actions import (
     SettleTechLeadPromotionAction,
 )
 from .tech_lead_promotion_filing import PromotionFilingOwner
+from .tech_lead_case_file_lifecycle import PatternCaseFileLifecycleOwner
 
 if TYPE_CHECKING:
     from ..ports import RepositoryHost
+    from ..ports.pattern_registry import PatternCaseFileRegistry
     from ..ports.promotion_target import PromotionTargetHost
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
 
@@ -179,29 +184,33 @@ def apply_report_promoted_finding_evidence(
     )
 
 
-def _shipped_case_file_comment(action: SettleTechLeadPromotionAction) -> str:
-    return (
-        "## ✅ Fixed upstream\n\n"
-        f"The promoted issue {action.target_repo}#{action.target_issue_number}"
-        " closed with a merged pull request, so this pattern is fixed by"
-        f" {action.target_repo}#{action.target_issue_number}"
-        f"{f' ({action.merged_pr_url})' if action.merged_pr_url else ''}.\n\n"
-        "Closing this case file; the shipped fix is recorded in the tech lead's"
-        " durable operational memory.\n\nIf this pattern recurs, later"
-        " observations still land here as evidence — but the signature is NOT"
-        " promoted again. A recurrence after a shipped fix is the signal to"
-        " step back and fix the design, not to file another point patch."
-    )
-
-
-def _declined_case_file_comment(action: SettleTechLeadPromotionAction) -> str:
-    return (
-        "## 🚫 Promotion declined\n\n"
-        f"The promoted issue {action.target_repo}#{action.target_issue_number}"
-        " was closed without a merged fix, which is an operator decline. This"
-        " signature will never be promoted again.\n\n"
-        "This case file stays OPEN and keeps accruing observations — the"
-        " evidence is still worth having even when the fix is not being taken."
+def _promotion_lifecycle_transition(
+    action: SettleTechLeadPromotionAction, *, recorded_at: str
+) -> CaseFileLifecycleTransition:
+    target = f"{action.target_repo}#{action.target_issue_number}"
+    if action.shipped:
+        reason = (
+            f"Promoted issue {target} closed with a merged pull request; the"
+            " case-file history is retained after closure."
+        )
+        evidence = (target, action.merged_pr_url)
+        disposition = CASE_FILE_SHIPPED
+    else:
+        reason = (
+            f"Promoted issue {target} was deliberately closed without a merged"
+            " fix; the operator decline is terminal and prevents refiling."
+        )
+        evidence = (target,)
+        disposition = CASE_FILE_DECLINED
+    return CaseFileLifecycleTransition(
+        transition_id=(
+            f"promotion:{action.signature}:{action.target_repo}:"
+            f"{action.target_issue_number}:{disposition}"
+        ),
+        disposition=disposition,
+        reason=reason,
+        evidence=tuple(item for item in evidence if item),
+        recorded_at=recorded_at,
     )
 
 
@@ -210,6 +219,9 @@ def apply_settle_tech_lead_promotion(
     *,
     repository_host: "RepositoryHost | None",
     authority: "TechLeadAuthorityStore | None",
+    pattern_registry: "PatternCaseFileRegistry | None" = None,
+    before_write: Callable[[], None] = lambda: None,
+    now_iso: str | None = None,
 ) -> ActionResult:
     """Close the loop for a terminal promotion (the ONE settlement boundary).
 
@@ -224,28 +236,31 @@ def apply_settle_tech_lead_promotion(
     whole lane exists to produce).
     """
     assert isinstance(action, SettleTechLeadPromotionAction)
-    if repository_host is None or authority is None:
+    if repository_host is None or authority is None or pattern_registry is None:
         return ActionResult.fail(
             action,
             "tech_lead promotion settlement requires repository_host and the"
-            " TechLeadAuthorityStore wired into this applier",
+            " TechLeadAuthorityStore and PatternCaseFileRegistry wired into this"
+            " applier",
         )
     try:
+        transition = _promotion_lifecycle_transition(
+            action, recorded_at=now_iso or _utc_now_iso()
+        )
+        PatternCaseFileLifecycleOwner(
+            registry=pattern_registry,
+            repository_host=repository_host,
+            before_write=before_write,
+        ).retire(signature=action.signature, transition=transition)
         if action.shipped:
+            before_write()
             authority.record_shipped_fix(
                 issue_number=action.case_file_issue_number,
                 title=action.title or action.signature,
                 pr_url=action.merged_pr_url,
                 area=action.area,
             )
-            repository_host.add_comment(
-                action.case_file_issue_number, _shipped_case_file_comment(action)
-            )
-            repository_host.update_issue_state(action.case_file_issue_number, "closed")
-        else:
-            repository_host.add_comment(
-                action.case_file_issue_number, _declined_case_file_comment(action)
-            )
+        before_write()
         authority.settle_promotion(
             signature=action.signature,
             state=PROMOTION_STATE_SHIPPED

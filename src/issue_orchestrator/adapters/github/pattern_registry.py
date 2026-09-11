@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Callable
 
 from ...domain.tech_lead_findings import (
     CaseFileClassification,
+    CaseFileLifecycleTransition,
     PatternObservation,
     PendingCaseFile,
 )
@@ -21,8 +22,10 @@ from ...infra import gh_audit
 from ...ports.pattern_registry import (
     PatternCaseFileRegistry,
     PendingPatternObservation,
+    PendingPatternRetirement,
     PatternRegistryEntry,
     PatternRegistryError,
+    PatternRetirementPhase,
     PatternReservation,
     PatternReservationState,
 )
@@ -194,6 +197,8 @@ class GitHubRefPatternRegistry(PatternCaseFileRegistry):
             current.classification.merged_with(classification, signature=signature)
             if observation.observation_id in current.observation_ids:
                 return PatternReservation(PatternReservationState.COMMITTED, current)
+            if current.pending_retirement is not None:
+                return PatternReservation(PatternReservationState.HELD, current)
             pending = current.pending_observation
             if pending is not None:
                 if current.publication_started_at is not None:
@@ -325,6 +330,195 @@ class GitHubRefPatternRegistry(PatternCaseFileRegistry):
         entry = self.read(signature=signature)
         return entry is not None and observation_id in entry.observation_ids
 
+    def record_lifecycle(
+        self, *, signature: str, transition: CaseFileLifecycleTransition
+    ) -> PatternRegistryEntry:
+        if transition.terminal:
+            raise ValueError("terminal lifecycle changes require retirement")
+        for _ in range(MAX_CAS_ATTEMPTS):
+            snapshot, entries = self._load()
+            current = self._committed(entries, signature)
+            replay = self._lifecycle_replay(current, transition)
+            if replay is not None:
+                return replay
+            if current.pending_observation or current.pending_retirement:
+                raise PatternRegistryError(
+                    f"pattern {signature!r} has another lifecycle effect in flight"
+                )
+            if current.lifecycle and current.lifecycle[-1].terminal:
+                raise PatternRegistryError(
+                    f"pattern {signature!r} is terminal; reopening requires an"
+                    " explicit reopen transition"
+                )
+            entry = replace(current, lifecycle=(*current.lifecycle, transition))
+            entries[signature] = entry
+            if self._commit(snapshot, entries):
+                return entry
+        raise PatternRegistryError("pattern registry kept changing during lifecycle update")
+
+    def reserve_retirement(
+        self,
+        *,
+        signature: str,
+        transition: CaseFileLifecycleTransition,
+        comment: str,
+    ) -> PatternReservation:
+        if not transition.terminal:
+            raise ValueError("retirement requires a terminal disposition")
+        desired = PendingPatternRetirement(transition=transition, comment=comment)
+        for _ in range(MAX_CAS_ATTEMPTS):
+            snapshot, entries = self._load()
+            current = self._committed(entries, signature)
+            replay = self._lifecycle_replay(current, transition)
+            if replay is not None:
+                return PatternReservation(PatternReservationState.COMMITTED, replay)
+            if current.lifecycle and current.lifecycle[-1].terminal:
+                raise PatternRegistryError(
+                    f"pattern {signature!r} already has terminal disposition"
+                    f" {current.disposition!r}"
+                )
+            pending = current.pending_retirement
+            if pending is not None:
+                return self._existing_retirement(current, desired)
+            if current.pending_observation is not None:
+                return PatternReservation(PatternReservationState.HELD, current)
+            entry = replace(
+                current,
+                reservation_id=uuid.uuid4().hex,
+                claimant_id=self._claimant_id,
+                expires_at=(
+                    self._aware_now() + timedelta(seconds=self._lease_seconds)
+                ).isoformat(),
+                pending_retirement=desired,
+            )
+            entries[signature] = entry
+            if self._commit(snapshot, entries):
+                return PatternReservation(PatternReservationState.ACQUIRED, entry)
+        raise PatternRegistryError("pattern registry kept changing during retirement")
+
+    def _existing_retirement(
+        self,
+        current: PatternRegistryEntry,
+        desired: PendingPatternRetirement,
+    ) -> PatternReservation:
+        pending = current.pending_retirement
+        assert pending is not None
+        if pending.transition != desired.transition:
+            raise PatternRegistryError(
+                f"pattern {current.signature!r} has a different retirement in flight"
+            )
+        if pending.comment != desired.comment:
+            raise PatternRegistryError(
+                f"pattern {current.signature!r} retirement comment changed"
+            )
+        if pending.phase is PatternRetirementPhase.CLOSE:
+            return PatternReservation(PatternReservationState.RECOVERABLE, current)
+        if current.publication_started_at is not None:
+            return PatternReservation(PatternReservationState.PUBLISHING, current)
+        state = (
+            PatternReservationState.RECOVERABLE
+            if current.claimant_id == self._claimant_id or self._expired(current)
+            else PatternReservationState.HELD
+        )
+        return PatternReservation(state, current)
+
+    def take_over_retirement(
+        self, *, signature: str, stale_reservation_id: str
+    ) -> PatternReservation:
+        for _ in range(MAX_CAS_ATTEMPTS):
+            snapshot, entries = self._load()
+            current = self._committed(entries, signature)
+            pending = current.pending_retirement
+            if pending is None:
+                return PatternReservation(PatternReservationState.COMMITTED, current)
+            if pending.phase is PatternRetirementPhase.CLOSE:
+                return PatternReservation(PatternReservationState.RECOVERABLE, current)
+            if current.publication_started_at is not None:
+                return PatternReservation(PatternReservationState.PUBLISHING, current)
+            if current.reservation_id != stale_reservation_id or not self._expired(current):
+                return PatternReservation(PatternReservationState.HELD, current)
+            entry = replace(
+                current,
+                reservation_id=uuid.uuid4().hex,
+                claimant_id=self._claimant_id,
+                expires_at=(
+                    self._aware_now() + timedelta(seconds=self._lease_seconds)
+                ).isoformat(),
+            )
+            entries[signature] = entry
+            if self._commit(snapshot, entries):
+                return PatternReservation(PatternReservationState.ACQUIRED, entry)
+        raise PatternRegistryError("pattern registry kept changing during retirement takeover")
+
+    def begin_retirement_publication(
+        self, *, signature: str, reservation_id: str
+    ) -> PatternReservation:
+        for _ in range(MAX_CAS_ATTEMPTS):
+            snapshot, entries = self._load()
+            current = self._committed(entries, signature)
+            if current.pending_retirement is None:
+                return PatternReservation(PatternReservationState.COMMITTED, current)
+            if current.reservation_id != reservation_id:
+                return PatternReservation(PatternReservationState.HELD, current)
+            if current.pending_retirement.phase is PatternRetirementPhase.CLOSE:
+                return PatternReservation(PatternReservationState.RECOVERABLE, current)
+            if current.publication_started_at is not None:
+                return PatternReservation(PatternReservationState.PUBLISHING, current)
+            entry = replace(current, publication_started_at=self._aware_now().isoformat())
+            entries[signature] = entry
+            if self._commit(snapshot, entries):
+                return PatternReservation(PatternReservationState.ACQUIRED, entry)
+        raise PatternRegistryError("pattern registry kept changing while starting retirement")
+
+    def confirm_retirement_comment(
+        self, *, signature: str, reservation_id: str
+    ) -> PatternRegistryEntry:
+        for _ in range(MAX_CAS_ATTEMPTS):
+            snapshot, entries = self._load()
+            current = self._committed(entries, signature)
+            pending = current.pending_retirement
+            if pending is None:
+                return current
+            if current.reservation_id != reservation_id:
+                raise PatternRegistryError(f"pattern {signature!r} retirement changed")
+            if pending.phase is PatternRetirementPhase.CLOSE:
+                return current
+            entry = replace(
+                current,
+                pending_retirement=replace(pending, phase=PatternRetirementPhase.CLOSE),
+                publication_started_at=None,
+            )
+            entries[signature] = entry
+            if self._commit(snapshot, entries):
+                return entry
+        raise PatternRegistryError("pattern registry kept changing after retirement comment")
+
+    def finalize_retirement(
+        self, *, signature: str, reservation_id: str
+    ) -> PatternRegistryEntry:
+        for _ in range(MAX_CAS_ATTEMPTS):
+            snapshot, entries = self._load()
+            current = self._committed(entries, signature)
+            pending = current.pending_retirement
+            if pending is None:
+                return current
+            if current.reservation_id != reservation_id:
+                raise PatternRegistryError(f"pattern {signature!r} retirement changed")
+            if pending.phase is not PatternRetirementPhase.CLOSE:
+                raise PatternRegistryError(
+                    f"pattern {signature!r} retirement comment is not confirmed"
+                )
+            entry = replace(
+                current,
+                lifecycle=(*current.lifecycle, pending.transition),
+                pending_retirement=None,
+                publication_started_at=None,
+            )
+            entries[signature] = entry
+            if self._commit(snapshot, entries):
+                return entry
+        raise PatternRegistryError("pattern registry kept changing during retirement commit")
+
     def list_entries(self) -> tuple[PatternRegistryEntry, ...]:
         entries = self._load()[1]
         return tuple(entries[key] for key in sorted(entries))
@@ -383,6 +577,29 @@ class GitHubRefPatternRegistry(PatternCaseFileRegistry):
             observation_ids=(),
             classification=CaseFileClassification(),
         )
+
+    @staticmethod
+    def _committed(
+        entries: dict[str, PatternRegistryEntry], signature: str
+    ) -> PatternRegistryEntry:
+        current = entries.get(signature)
+        if current is None or not current.committed:
+            raise PatternRegistryError(f"pattern {signature!r} has no committed case file")
+        return current
+
+    @staticmethod
+    def _lifecycle_replay(
+        current: PatternRegistryEntry, transition: CaseFileLifecycleTransition
+    ) -> PatternRegistryEntry | None:
+        for recorded in current.lifecycle:
+            if recorded.transition_id != transition.transition_id:
+                continue
+            if recorded != transition:
+                raise PatternRegistryError(
+                    f"lifecycle transition {transition.transition_id!r} changed payload"
+                )
+            return current
+        return None
 
     def _reassigned_observation_entry(
         self, entry: PatternRegistryEntry

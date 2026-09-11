@@ -8,18 +8,21 @@ from datetime import datetime
 
 from ...domain.tech_lead_findings import (
     CaseFileClassification,
+    CaseFileLifecycleTransition,
     PatternObservation,
     PendingCaseFile,
 )
 from ...ports.pattern_registry import (
+    PatternRetirementPhase,
     PatternRegistryEntry,
     PatternRegistryError,
     PendingPatternObservation,
+    PendingPatternRetirement,
 )
 
-PATTERN_REGISTRY_VERSION = 1
+PATTERN_REGISTRY_VERSION = 2
 _TOP_LEVEL_FIELDS = frozenset(("version", "entries"))
-_ENTRY_FIELDS = frozenset(
+_ENTRY_FIELDS_V1 = frozenset(
     (
         "signature",
         "reservation_id",
@@ -33,6 +36,7 @@ _ENTRY_FIELDS = frozenset(
         "publication_started_at",
     )
 )
+_ENTRY_FIELDS = _ENTRY_FIELDS_V1 | frozenset(("lifecycle", "pending_retirement"))
 _PENDING_FIELDS = frozenset(
     (
         "signature",
@@ -47,6 +51,10 @@ _PENDING_FIELDS = frozenset(
 _CLASSIFICATION_FIELDS = frozenset(("fix_class", "area", "diagnosis"))
 _PENDING_OBSERVATION_FIELDS = frozenset(("observation", "classification"))
 _OBSERVATION_FIELDS = frozenset(("observation_id", "comment"))
+_LIFECYCLE_FIELDS = frozenset(
+    ("transition_id", "disposition", "reason", "evidence", "recorded_at")
+)
+_PENDING_RETIREMENT_FIELDS = frozenset(("transition", "comment", "phase"))
 
 
 def format_entries(entries: dict[str, PatternRegistryEntry]) -> str:
@@ -74,11 +82,14 @@ def parse_entries(message: str) -> dict[str, PatternRegistryEntry]:
             payload.get("version"), bool
         ):
             raise ValueError("registry version must be an integer")
-        if payload["version"] != PATTERN_REGISTRY_VERSION:
+        if payload["version"] not in (1, PATTERN_REGISTRY_VERSION):
             raise ValueError(f"unsupported version {payload.get('version')!r}")
         if not isinstance(payload["entries"], list):
             raise ValueError("registry entries must be a list")
-        entries = tuple(_entry_from_dict(item) for item in payload["entries"])
+        entries = tuple(
+            _entry_from_dict(item, version=payload["version"])
+            for item in payload["entries"]
+        )
     except (IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise PatternRegistryError(
             f"shared pattern registry is unreadable: {exc}"
@@ -106,14 +117,18 @@ def _entry_to_dict(entry: PatternRegistryEntry) -> dict[str, object]:
             if entry.pending_observation is not None
             else None
         ),
+        "lifecycle": [asdict(item) for item in entry.lifecycle],
+        "pending_retirement": _pending_retirement_to_dict(entry.pending_retirement),
         "publication_started_at": entry.publication_started_at,
     }
 
 
-def _entry_from_dict(value: object) -> PatternRegistryEntry:
+def _entry_from_dict(value: object, *, version: int) -> PatternRegistryEntry:
     if not isinstance(value, dict):
         raise ValueError("registry entry must be an object")
-    _require_exact_fields(value, _ENTRY_FIELDS, "entry")
+    _require_exact_fields(
+        value, _ENTRY_FIELDS_V1 if version == 1 else _ENTRY_FIELDS, "entry"
+    )
     expires_at = _required_text(value, "expires_at")
     datetime.fromisoformat(expires_at)
     publication_started_at = value["publication_started_at"]
@@ -136,7 +151,65 @@ def _entry_from_dict(value: object) -> PatternRegistryEntry:
         observation_ids=_decode_observation_ids(value["observation_ids"]),
         classification=_decode_classification(value["classification"]),
         pending_observation=_decode_pending_observation(value["pending_observation"]),
+        lifecycle=_decode_lifecycle(value.get("lifecycle", [])),
+        pending_retirement=_decode_pending_retirement(
+            value.get("pending_retirement")
+        ),
         publication_started_at=publication_started_at,
+    )
+
+
+def _pending_retirement_to_dict(
+    pending: PendingPatternRetirement | None,
+) -> dict[str, object] | None:
+    if pending is None:
+        return None
+    return {
+        "transition": asdict(pending.transition),
+        "comment": pending.comment,
+        "phase": pending.phase.value,
+    }
+
+
+def _decode_lifecycle(value: object) -> tuple[CaseFileLifecycleTransition, ...]:
+    if not isinstance(value, list):
+        raise ValueError("lifecycle must be a list")
+    transitions: list[CaseFileLifecycleTransition] = []
+    for position, item in enumerate(value):
+        if not isinstance(item, dict):
+            raise ValueError(f"lifecycle transition #{position} must be an object")
+        _require_exact_fields(item, _LIFECYCLE_FIELDS, "lifecycle transition")
+        evidence = item["evidence"]
+        if not isinstance(evidence, list) or not all(
+            isinstance(entry, str) for entry in evidence
+        ):
+            raise ValueError("lifecycle transition evidence must be a string list")
+        transition = CaseFileLifecycleTransition(
+            transition_id=_required_text(item, "transition_id"),
+            disposition=_required_text(item, "disposition"),  # type: ignore[arg-type]
+            reason=_required_text(item, "reason"),
+            evidence=tuple(evidence),
+            recorded_at=_required_text(item, "recorded_at"),
+        )
+        datetime.fromisoformat(transition.recorded_at)
+        transitions.append(transition)
+    return tuple(transitions)
+
+
+def _decode_pending_retirement(value: object) -> PendingPatternRetirement | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("pending_retirement must be an object or null")
+    _require_exact_fields(value, _PENDING_RETIREMENT_FIELDS, "pending_retirement")
+    transitions = _decode_lifecycle([value["transition"]])
+    phase = value["phase"]
+    if not isinstance(phase, str):
+        raise ValueError("pending retirement phase must be a string")
+    return PendingPatternRetirement(
+        transition=transitions[0],
+        comment=_required_text(value, "comment"),
+        phase=PatternRetirementPhase(phase),
     )
 
 

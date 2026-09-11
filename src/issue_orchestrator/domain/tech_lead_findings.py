@@ -67,6 +67,52 @@ VALID_PROMOTION_STATES: frozenset[str] = frozenset(
     )
 )
 
+CaseFileDisposition = Literal[
+    "active", "needs_human", "shipped", "superseded", "invalid", "declined"
+]
+
+CASE_FILE_ACTIVE: CaseFileDisposition = "active"
+CASE_FILE_NEEDS_HUMAN: CaseFileDisposition = "needs_human"
+CASE_FILE_SHIPPED: CaseFileDisposition = "shipped"
+CASE_FILE_SUPERSEDED: CaseFileDisposition = "superseded"
+CASE_FILE_INVALID: CaseFileDisposition = "invalid"
+CASE_FILE_DECLINED: CaseFileDisposition = "declined"
+TERMINAL_CASE_FILE_DISPOSITIONS: frozenset[str] = frozenset(
+    (CASE_FILE_SHIPPED, CASE_FILE_SUPERSEDED, CASE_FILE_INVALID, CASE_FILE_DECLINED)
+)
+VALID_CASE_FILE_DISPOSITIONS: frozenset[str] = frozenset(
+    (CASE_FILE_ACTIVE, CASE_FILE_NEEDS_HUMAN, *TERMINAL_CASE_FILE_DISPOSITIONS)
+)
+
+
+@dataclass(frozen=True)
+class CaseFileLifecycleTransition:
+    """One reviewed, durable change to a pattern case file's disposition."""
+
+    transition_id: str
+    disposition: CaseFileDisposition
+    reason: str
+    evidence: tuple[str, ...]
+    recorded_at: str
+
+    def __post_init__(self) -> None:
+        for name in ("transition_id", "reason", "recorded_at"):
+            if not str(getattr(self, name)).strip():
+                raise ValueError(f"case-file lifecycle transition requires {name}")
+        if self.disposition not in VALID_CASE_FILE_DISPOSITIONS:
+            raise ValueError(
+                f"unknown case-file disposition {self.disposition!r}; expected one of"
+                f" {sorted(VALID_CASE_FILE_DISPOSITIONS)}"
+            )
+        if not self.evidence or any(not item.strip() for item in self.evidence):
+            raise ValueError(
+                "case-file lifecycle transition requires non-empty evidence"
+            )
+
+    @property
+    def terminal(self) -> bool:
+        return self.disposition in TERMINAL_CASE_FILE_DISPOSITIONS
+
 
 class PatternClassificationConflictError(ValueError):
     """Two observations disagree about a signature's ``fix_class``/``area``.

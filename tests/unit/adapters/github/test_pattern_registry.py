@@ -12,12 +12,19 @@ from issue_orchestrator.adapters.github.pattern_registry import (
     PATTERN_REGISTRY_REF_KEY,
     PATTERN_REGISTRY_REF_PREFIX,
 )
+from issue_orchestrator.adapters.github.pattern_registry_codec import (
+    format_entries,
+    parse_entries,
+)
 from issue_orchestrator.domain.tech_lead_findings import (
+    CASE_FILE_INVALID,
     CaseFileClassification,
+    CaseFileLifecycleTransition,
     PatternClassificationConflictError,
     PatternObservation,
     PendingCaseFile,
 )
+from issue_orchestrator.ports.pattern_registry import PatternRegistryEntry
 from issue_orchestrator.ports.pattern_registry import (
     PatternRegistryError,
     PatternReservationState,
@@ -74,6 +81,45 @@ def _record(
         signature="stuck-retry",
         reservation_id=admitted.entry.reservation_id,
     )
+
+
+def test_codec_round_trips_lifecycle_and_reads_version_one_as_active() -> None:
+    now = datetime(2026, 9, 10, tzinfo=timezone.utc).isoformat()
+    transition = CaseFileLifecycleTransition(
+        transition_id="plan:stuck-retry",
+        disposition=CASE_FILE_INVALID,
+        reason="The historical report is no longer actionable.",
+        evidence=("issue #7 was invalidated by the owning subsystem",),
+        recorded_at=now,
+    )
+    entry = PatternRegistryEntry(
+        signature="stuck-retry",
+        reservation_id="complete",
+        claimant_id="engine-a",
+        expires_at=now,
+        pending=None,
+        issue_number=81,
+        observation_ids=("run:session:A1",),
+        classification=CaseFileClassification(),
+        lifecycle=(transition,),
+    )
+
+    assert parse_entries(format_entries({entry.signature: entry}))[entry.signature] == entry
+    version_one = format_entries({entry.signature: entry}).replace(
+        '"version":2', '"version":1'
+    )
+    import json
+
+    prefix, payload_text = version_one.split("\n\n", 1)
+    payload = json.loads(payload_text)
+    payload["entries"][0].pop("lifecycle")
+    payload["entries"][0].pop("pending_retirement")
+    migrated = parse_entries(prefix + "\n\n" + json.dumps(payload))[
+        entry.signature
+    ]
+
+    assert migrated.lifecycle == ()
+    assert migrated.disposition == "active"
 
 
 def test_two_clients_converge_on_one_reservation_and_case_file() -> None:
