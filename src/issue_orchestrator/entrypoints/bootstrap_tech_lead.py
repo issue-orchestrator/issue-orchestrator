@@ -348,7 +348,6 @@ def create_pattern_registry(
     authority: "TechLeadAuthorityStore",
 ) -> "PatternCaseFileRegistry":
     """Select shared GitHub authority or the explicit single-instance adapter."""
-    from ..adapters.github.github_adapter import GitHubAdapter
     from ..control.pattern_registry import (
         LocalPatternCaseFileRegistry,
         MirroredPatternCaseFileRegistry,
@@ -357,17 +356,18 @@ def create_pattern_registry(
     if (
         not config.tech_lead_enabled
         or config.tech_lead.authority.flag_pattern != "execute"
-        or not isinstance(repository_host, GitHubAdapter)
     ):
         return LocalPatternCaseFileRegistry(authority)
-    from ..adapters.github.pattern_registry import GitHubRefPatternRegistry
+    from ..execution.providers import create_shared_pattern_registry
 
     claimant_id = config.claims.claimant_id or f"orchestrator-{os.getpid()}"
-    shared = GitHubRefPatternRegistry(
-        repository_host.http_client,
+    shared = create_shared_pattern_registry(
+        repository_host,
         claimant_id=claimant_id,
         lease_seconds=config.claims.lease_seconds,
     )
+    if shared is None:
+        return LocalPatternCaseFileRegistry(authority)
     mirrored = MirroredPatternCaseFileRegistry(
         shared=shared, local=authority, claimant_id=claimant_id
     )
