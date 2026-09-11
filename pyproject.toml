@@ -121,6 +121,7 @@ markers = [
     "live: Tests that require network access and external services",
     "live_agent: Tests that make real model calls; excluded from deterministic PR validation",
     "live_codex: Live Codex CLI smoke tests collected by e2e or dedicated live lanes",
+    "live_deepseek: Live DeepSeek smoke tests (real API spend) — excluded from PR validation, run in the budgeted live lane",
     "xdist_group(name): Group tests to run serially under pytest-xdist --dist=loadgroup",
     "gh_activity_limit: Enforce GH API activity limits per test (test_gh_activity_limit, system_gh_activity_limit)",
     "requires_infra: Tests requiring external infrastructure (GitHub token, running services). Run in CI, excluded from pre-push.",

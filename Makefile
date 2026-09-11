@@ -570,10 +570,10 @@ ifeq ($(LANE_EXECUTOR),condor)
 			$(GMAKE) test-unit LANE_EXECUTOR=direct UNIT_PARALLEL=$(UNIT_PARALLEL))
 else ifeq ($(UNIT_PARALLEL),0)
 	$(call TIMED_RUN,test-unit,\
-		$(PYTEST) tests/unit packages/agent_runner/tests -m "not live_agent and not live_codex" -x -q --tb=short $(PYTEST_TIMINGS))
+		$(PYTEST) tests/unit packages/agent_runner/tests -m "not live_agent and not live_codex and not live_deepseek" -x -q --tb=short $(PYTEST_TIMINGS))
 else
 	$(call TIMED_RUN,test-unit,\
-		$(PYTEST) tests/unit packages/agent_runner/tests -m "not live_agent and not live_codex" -x -q --tb=short -n $(UNIT_PARALLEL) --dist=loadgroup $(PYTEST_TIMINGS))
+		$(PYTEST) tests/unit packages/agent_runner/tests -m "not live_agent and not live_codex and not live_deepseek" -x -q --tb=short -n $(UNIT_PARALLEL) --dist=loadgroup $(PYTEST_TIMINGS))
 endif
 
 test-simulated: sync-deps
@@ -592,11 +592,11 @@ ifeq ($(LANE_EXECUTOR),condor)
 else ifeq ($(SIMULATED_PARALLEL),0)
 	$(call TIMED_RUN,test-simulated-core,\
 		$(PYTEST) tests/simulated_scenarios -x -q --tb=short \
-			-m "not live_agent and not live_codex" $(PYTEST_TIMINGS))
+			-m "not live_agent and not live_codex and not live_deepseek" $(PYTEST_TIMINGS))
 else
 	$(call TIMED_RUN,test-simulated-core,\
 		$(PYTEST) tests/simulated_scenarios -x -q --tb=short -n $(SIMULATED_PARALLEL) --dist=loadgroup \
-			-m "not live_agent and not live_codex" $(PYTEST_TIMINGS))
+			-m "not live_agent and not live_codex and not live_deepseek" $(PYTEST_TIMINGS))
 endif
 
 
@@ -636,11 +636,11 @@ ifeq ($(LANE_EXECUTOR),condor)
 			$(GMAKE) test-integration-core-local LANE_EXECUTOR=direct)
 else ifeq ($(INTEGRATION_PARALLEL),0)
 	$(call TIMED_RUN,test-integration-core,\
-		$(PYTEST) tests/integration -x -q --tb=short -m "not requires_infra and not live_agent and not live_codex" \
+		$(PYTEST) tests/integration -x -q --tb=short -m "not requires_infra and not live_agent and not live_codex and not live_deepseek" \
 			$(PYTEST_TIMINGS))
 else
 	$(call TIMED_RUN,test-integration-core,\
-		$(PYTEST) tests/integration -x -q --tb=short -m "not requires_infra and not live_agent and not live_codex" -n $(INTEGRATION_PARALLEL) --dist=loadgroup \
+		$(PYTEST) tests/integration -x -q --tb=short -m "not requires_infra and not live_agent and not live_codex and not live_deepseek" -n $(INTEGRATION_PARALLEL) --dist=loadgroup \
 			$(PYTEST_TIMINGS))
 endif
 
@@ -684,7 +684,7 @@ else
 		if [ -z "$$targets" ]; then \
 			echo "lane_slices: slice $* selects no tests"; \
 		else \
-			$(PYTEST) $$targets -x -q --tb=short -m "not requires_infra and not live_agent and not live_codex" \
+			$(PYTEST) $$targets -x -q --tb=short -m "not requires_infra and not live_agent and not live_codex and not live_deepseek" \
 				-p $(SLICE_DURATIONS_PLUGIN) \
 				-n $(LANE_WORKERS_INTEGRATION_SLICE) --dist=loadgroup $(PYTEST_TIMINGS); \
 		fi)
@@ -999,7 +999,7 @@ FORCE:
 # The coordinator owns serialization across worktrees, cadence, and live verdicts.
 test-agent-live: sync-deps
 	$(PYTEST) tests/unit packages/agent_runner/tests tests/integration tests/simulated_scenarios \
-		-m "(live_agent or live_codex) and not requires_infra" -x -q --tb=short \
+		-m "(live_agent or live_codex or live_deepseek) and not requires_infra" -x -q --tb=short \
 		-p scripts.agent_test_report
 
 agent-test-status:

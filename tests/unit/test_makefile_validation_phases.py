@@ -202,7 +202,10 @@ def test_agent_validation_targets_emit_timing_markers():
 def test_core_validation_excludes_model_calls_but_keeps_mixed_test_files():
     lines = _dry_run("test-integration-core", INTEGRATION_PARALLEL="0")
     core = _find_line(lines, 'target="test-integration-core"')
-    assert '-m "not requires_infra and not live_agent and not live_codex"' in lines[core]
+    assert (
+        '-m "not requires_infra and not live_agent and not live_codex '
+        'and not live_deepseek"'
+    ) in lines[core]
     assert "--ignore=tests/integration/test_claude_execution.py" not in lines[core]
     assert all('target="test-integration-core-live-codex"' not in line for line in lines)
 
@@ -291,3 +294,41 @@ def test_live_agent_transport_is_scheduled_by_e2e_not_agent_integration():
     e2e_pytest_line = e2e_lines[_find_line(e2e_lines, "tests/e2e")]
     assert "--ignore" not in e2e_pytest_line
     assert " -m " not in f" {e2e_pytest_line} "
+
+
+def _declared_live_markers() -> list[str]:
+    """Every ``live_*`` marker declared in pyproject."""
+    import tomllib
+
+    with (REPO_ROOT / "pyproject.toml").open("rb") as handle:
+        markers = tomllib.load(handle)["tool"]["pytest"]["ini_options"]["markers"]
+    return sorted(
+        entry.split(":", 1)[0].strip()
+        for entry in markers
+        if entry.split(":", 1)[0].strip().startswith("live_")
+    )
+
+
+@pytest.mark.parametrize(
+    "target",
+    ["test-unit", "test-integration-core"],
+)
+def test_every_live_marker_is_excluded_from_the_gate_lanes(target: str):
+    """Adding a provider must not quietly put real model spend on the gate.
+
+    Pinning one literal exclusion string caught live_agent and live_codex but
+    would have said nothing about the next marker. This asserts the property
+    instead: whatever ``live_*`` markers exist, the deterministic lanes exclude
+    all of them.
+    """
+    lines = _dry_run(target, UNIT_PARALLEL="0", INTEGRATION_PARALLEL="0")
+    selector_lines = [line for line in lines if " -m " in line]
+
+    assert selector_lines, f"no marker selector found in {target}"
+    for marker in _declared_live_markers():
+        assert all(
+            f"not {marker}" in line for line in selector_lines
+        ), (
+            f"{target} does not exclude {marker}; a gate run would make real "
+            "model calls (and, for a metered provider, spend real money)"
+        )

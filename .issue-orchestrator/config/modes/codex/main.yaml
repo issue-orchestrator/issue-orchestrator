@@ -169,7 +169,7 @@ validation:
         - tests/integration
         - tests/simulated_scenarios
         - -m
-        - "(live_agent or live_codex) and not requires_infra"
+        - "(live_agent or live_codex or live_deepseek) and not requires_infra"
         - -p
         - scripts.agent_test_report
         - -q
