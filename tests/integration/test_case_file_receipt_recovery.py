@@ -120,7 +120,7 @@ def test_cli_restart_recovers_paginated_evidence_without_reposting(tmp_path, mon
             if failure == "after_record":
                 original_note(**kwargs)
             raise RuntimeError("local recording interrupted")
-        original_note(**kwargs)
+        return original_note(**kwargs)
 
     with patch.object(host.authority, "note_pattern_observation", side_effect=note):
         exit_code = run_case_file_reconciliation(
