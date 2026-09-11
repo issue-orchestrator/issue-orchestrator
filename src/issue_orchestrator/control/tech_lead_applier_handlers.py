@@ -218,7 +218,11 @@ def tech_lead_action_handlers(
         ),
         ActionType.SETTLE_TECH_LEAD_PROMOTION: lambda action: (
             apply_settle_tech_lead_promotion(
-                action, repository_host=repository_host, authority=authority
+                action, repository_host=repository_host, authority=authority,
+                pattern_registry=pattern_registry,
+                before_write=lambda: require_mutation_authority(
+                    action, reconciliation_subject_for(action)
+                ),
             )
         ),
     }

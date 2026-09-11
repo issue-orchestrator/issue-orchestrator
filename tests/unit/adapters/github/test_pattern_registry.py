@@ -12,12 +12,19 @@ from issue_orchestrator.adapters.github.pattern_registry import (
     PATTERN_REGISTRY_REF_KEY,
     PATTERN_REGISTRY_REF_PREFIX,
 )
+from issue_orchestrator.adapters.github.pattern_registry_codec import (
+    format_entries,
+    parse_entries,
+)
 from issue_orchestrator.domain.tech_lead_findings import (
+    CASE_FILE_INVALID,
     CaseFileClassification,
+    CaseFileLifecycleTransition,
     PatternClassificationConflictError,
     PatternObservation,
     PendingCaseFile,
 )
+from issue_orchestrator.ports.pattern_registry import PatternRegistryEntry
 from issue_orchestrator.ports.pattern_registry import (
     PatternRegistryError,
     PatternReservationState,
@@ -68,12 +75,179 @@ def _record(
         signature="stuck-retry",
         observation=_observation(identity),
         classification=classification,
+        issue_number=81,
     )
     assert admitted.state is PatternReservationState.ACQUIRED
     return registry.finalize_observation(
         signature="stuck-retry",
         reservation_id=admitted.entry.reservation_id,
     )
+
+
+def test_codec_round_trips_lifecycle_and_reads_version_one_as_active() -> None:
+    now = datetime(2026, 9, 10, tzinfo=timezone.utc).isoformat()
+    transition = CaseFileLifecycleTransition(
+        transition_id="plan:stuck-retry",
+        disposition=CASE_FILE_INVALID,
+        reason="The historical report is no longer actionable.",
+        evidence=("issue #7 was invalidated by the owning subsystem",),
+        recorded_at=now,
+    )
+    entry = PatternRegistryEntry(
+        signature="stuck-retry",
+        reservation_id="complete",
+        claimant_id="engine-a",
+        expires_at=now,
+        pending=None,
+        issue_number=81,
+        observation_ids=("run:session:A1",),
+        classification=CaseFileClassification(),
+        lifecycle=(transition,),
+    )
+
+    assert parse_entries(format_entries({entry.signature: entry}))[entry.signature] == entry
+    version_one = format_entries({entry.signature: entry}).replace(
+        '"version":2', '"version":1'
+    )
+    import json
+
+    prefix, payload_text = version_one.split("\n\n", 1)
+    payload = json.loads(payload_text)
+    payload["entries"][0].pop("lifecycle")
+    payload["entries"][0].pop("pending_retirement")
+    migrated = parse_entries(prefix + "\n\n" + json.dumps(payload))[
+        entry.signature
+    ]
+
+    assert migrated.lifecycle == ()
+    assert migrated.disposition == "active"
+
+
+@pytest.mark.parametrize(
+    "recorded_at, message",
+    (
+        ("the tenth of September", "ISO-8601"),
+        ("2026-09-10T12:00:00", "timezone"),
+    ),
+)
+def test_a_timestamp_the_codec_cannot_read_never_reaches_the_registry(
+    recorded_at: str, message: str
+) -> None:
+    """The writable path must be strictly narrower than the readable one.
+
+    A malformed ``recorded_at`` that committed successfully would make every
+    subsequent registry load fail as unreadable, poisoning shared authority for
+    every client (#7247 review F4).
+    """
+    with pytest.raises(ValueError, match=message):
+        CaseFileLifecycleTransition(
+            transition_id="plan:stuck-retry",
+            disposition=CASE_FILE_INVALID,
+            reason="The historical report is no longer actionable.",
+            evidence=("issue #7 was invalidated by the owning subsystem",),
+            recorded_at=recorded_at,
+        )
+
+
+def test_every_committed_lifecycle_timestamp_stays_readable() -> None:
+    client = FakeGitHubRefClient()
+    now = [datetime(2026, 9, 10, tzinfo=timezone.utc)]
+    registry = _registry(client, "engine-a", now)
+    reserved = registry.reserve(_pending("stuck-retry"))
+    registry.finalize(
+        signature="stuck-retry",
+        reservation_id=reserved.entry.reservation_id,
+        issue_number=81,
+    )
+    transition = CaseFileLifecycleTransition(
+        transition_id="plan:stuck-retry",
+        disposition=CASE_FILE_INVALID,
+        reason="The historical report is no longer actionable.",
+        evidence=("issue #7 was invalidated by the owning subsystem",),
+        recorded_at=now[0].isoformat(),
+    )
+    admitted = registry.reserve_retirement(
+        signature="stuck-retry",
+        transition=transition,
+        comment="<!-- retirement -->",
+        issue_number=81,
+    )
+    registry.confirm_retirement_comment(
+        signature="stuck-retry", reservation_id=admitted.entry.reservation_id
+    )
+    registry.finalize_retirement(
+        signature="stuck-retry", reservation_id=admitted.entry.reservation_id
+    )
+
+    reloaded = _registry(client, "engine-b", now).read(signature="stuck-retry")
+
+    assert reloaded is not None
+    assert reloaded.lifecycle == (transition,)
+
+
+def test_reserving_evidence_for_another_issue_writes_nothing() -> None:
+    """Both write paths admit nothing when the authorized case file disagrees.
+
+    The evidence path used to reserve first and reject afterwards, leaving a
+    pending observation behind on a mismatch. It now applies the same rule in
+    the same place as retirement (#7247 review A1).
+    """
+    client = FakeGitHubRefClient()
+    now = [datetime(2026, 9, 10, tzinfo=timezone.utc)]
+    registry = _registry(client, "engine-a", now)
+    reserved = registry.reserve(_pending("stuck-retry"))
+    registry.finalize(
+        signature="stuck-retry",
+        reservation_id=reserved.entry.reservation_id,
+        issue_number=81,
+    )
+
+    with pytest.raises(PatternRegistryError, match="refusing to mutate"):
+        registry.reserve_observation(
+            signature="stuck-retry",
+            observation=PatternObservation(
+                observation_id="run:session:A2", comment="It happened again"
+            ),
+            classification=CaseFileClassification(),
+            issue_number=82,
+        )
+
+    entry = registry.read(signature="stuck-retry")
+    assert entry is not None
+    assert entry.pending_observation is None
+    assert entry.observation_ids == ("run:session:A1",)
+
+
+def test_reserving_a_retirement_for_another_issue_writes_nothing() -> None:
+    """Shared authority, not a caller pre-read, owns the identity check (A1)."""
+    client = FakeGitHubRefClient()
+    now = [datetime(2026, 9, 10, tzinfo=timezone.utc)]
+    registry = _registry(client, "engine-a", now)
+    reserved = registry.reserve(_pending("stuck-retry"))
+    registry.finalize(
+        signature="stuck-retry",
+        reservation_id=reserved.entry.reservation_id,
+        issue_number=81,
+    )
+
+    with pytest.raises(PatternRegistryError, match="refusing to mutate"):
+        registry.reserve_retirement(
+            signature="stuck-retry",
+            transition=CaseFileLifecycleTransition(
+                transition_id="plan:stuck-retry",
+                disposition=CASE_FILE_INVALID,
+                reason="The historical report is no longer actionable.",
+                evidence=("issue #7 was invalidated by the owning subsystem",),
+                recorded_at=now[0].isoformat(),
+            ),
+            comment="<!-- retirement -->",
+            issue_number=82,
+        )
+
+    entry = registry.read(signature="stuck-retry")
+    assert entry is not None
+    assert entry.pending_retirement is None
+    assert entry.lifecycle == ()
 
 
 def test_two_clients_converge_on_one_reservation_and_case_file() -> None:
@@ -215,6 +389,7 @@ def test_concurrent_evidence_retries_preserve_both_observations() -> None:
         signature="stuck-retry",
         observation=_observation("run:session:A3"),
         classification=classification,
+        issue_number=81,
     )
     assert replay.state is PatternReservationState.COMMITTED
     entry = second.read(signature="stuck-retry")
@@ -241,18 +416,21 @@ def test_observation_reservation_serializes_publication_and_classification() -> 
         signature="stuck-retry",
         observation=_observation("run:session:A2"),
         classification=CaseFileClassification(fix_class="code", area="runtime"),
+        issue_number=81,
     )
 
     duplicate = second.reserve_observation(
         signature="stuck-retry",
         observation=_observation("run:session:A2"),
         classification=CaseFileClassification(fix_class="code", area="runtime"),
+        issue_number=81,
     )
     with pytest.raises(PatternClassificationConflictError):
         second.reserve_observation(
             signature="stuck-retry",
             observation=_observation("run:session:A3"),
             classification=CaseFileClassification(fix_class="human", area="runtime"),
+            issue_number=81,
         )
 
     assert admitted.state is PatternReservationState.ACQUIRED
@@ -266,6 +444,7 @@ def test_observation_reservation_serializes_publication_and_classification() -> 
             signature="stuck-retry",
             observation=_observation("run:session:A2"),
             classification=CaseFileClassification(fix_class="code", area="runtime"),
+            issue_number=81,
         ).state
         is PatternReservationState.COMMITTED
     )
@@ -287,12 +466,14 @@ def test_same_claimant_cannot_take_over_live_observation_token() -> None:
         signature="stuck-retry",
         observation=_observation("run:session:A2"),
         classification=CaseFileClassification(),
+        issue_number=81,
     )
 
     observed = retry.reserve_observation(
         signature="stuck-retry",
         observation=_observation("run:session:A2"),
         classification=CaseFileClassification(),
+        issue_number=81,
     )
     takeover = retry.take_over_observation(
         signature="stuck-retry",

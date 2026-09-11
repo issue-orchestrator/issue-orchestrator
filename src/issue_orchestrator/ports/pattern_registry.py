@@ -7,7 +7,10 @@ from enum import Enum
 from typing import Protocol
 
 from ..domain.tech_lead_findings import (
+    CASE_FILE_ACTIVE,
     CaseFileClassification,
+    CaseFileDisposition,
+    CaseFileLifecycleTransition,
     PatternObservation,
     PendingCaseFile,
 )
@@ -33,6 +36,26 @@ class PendingPatternObservation:
     classification: CaseFileClassification
 
 
+class PatternRetirementPhase(Enum):
+    COMMENT = "comment"
+    CLOSE = "close"
+
+
+@dataclass(frozen=True)
+class PendingPatternRetirement:
+    """A terminal lifecycle transition whose GitHub effects are in flight."""
+
+    transition: CaseFileLifecycleTransition
+    comment: str
+    phase: PatternRetirementPhase = PatternRetirementPhase.COMMENT
+
+    def __post_init__(self) -> None:
+        if not self.transition.terminal:
+            raise ValueError("only a terminal disposition may retire a case file")
+        if not self.comment.strip():
+            raise ValueError("pattern retirement requires a non-empty comment")
+
+
 @dataclass(frozen=True)
 class PatternRegistryEntry:
     """The complete shared record for one pattern signature."""
@@ -46,6 +69,8 @@ class PatternRegistryEntry:
     observation_ids: tuple[str, ...]
     classification: CaseFileClassification
     pending_observation: PendingPatternObservation | None = None
+    lifecycle: tuple[CaseFileLifecycleTransition, ...] = ()
+    pending_retirement: PendingPatternRetirement | None = None
     publication_started_at: str | None = None
 
     def __post_init__(self) -> None:
@@ -70,15 +95,35 @@ class PatternRegistryEntry:
             raise ValueError("pattern observation identities must be unique")
         if self.pending is not None and self.pending.signature != self.signature:
             raise ValueError("pending case-file signature disagrees with registry key")
-        has_pending_effect = (
-            self.pending is not None or self.pending_observation is not None
+        self._validate_lifecycle()
+        has_pending_effect = self.pending is not None or any(
+            (self.pending_observation is not None, self.pending_retirement is not None)
         )
         if self.publication_started_at is not None and not has_pending_effect:
             raise ValueError("publication state requires a pending external effect")
 
+    def _validate_lifecycle(self) -> None:
+        transition_ids = tuple(item.transition_id for item in self.lifecycle)
+        if len(set(transition_ids)) != len(transition_ids):
+            raise ValueError("case-file lifecycle transition identities must be unique")
+        if self.pending_retirement is not None and self.issue_number is None:
+            raise ValueError("only a committed pattern can be retired")
+        if self.pending_observation is not None and self.pending_retirement is not None:
+            raise ValueError("pattern observation and retirement cannot be pending together")
+        if (
+            self.pending_retirement is not None
+            and self.lifecycle
+            and self.lifecycle[-1].terminal
+        ):
+            raise ValueError("a terminal pattern cannot have a pending retirement")
+
     @property
     def committed(self) -> bool:
         return self.issue_number is not None
+
+    @property
+    def disposition(self) -> CaseFileDisposition:
+        return self.lifecycle[-1].disposition if self.lifecycle else CASE_FILE_ACTIVE
 
 
 @dataclass(frozen=True)
@@ -87,6 +132,64 @@ class PatternReservation:
 
     state: PatternReservationState
     entry: PatternRegistryEntry
+
+
+def require_canonical_case_file(entry: PatternRegistryEntry, issue_number: int) -> None:
+    """Reject a caller whose authorized case file is not this signature's.
+
+    THE rule, in one place, so the shared CAS registry, the single-process
+    registry, and both write paths cannot drift on it. A case-file command is
+    guarded against the issue named in the ACTION, while the evidence comment or
+    the retirement close lands on the issue named in the REGISTRY. If those two
+    identities disagree, the expected-state gate would authorize one issue while
+    the owner mutates another, and durable memory would then record the first as
+    settled. Every registry calls this inside the compare-and-swap that reserves
+    the write, before any state is written, so a mismatch leaves no reservation
+    behind to recover (#7247 review F2/A1).
+    """
+    if entry.issue_number != issue_number:
+        raise PatternRegistryError(
+            f"pattern {entry.signature!r} is registered to case file"
+            f" #{entry.issue_number}, but this write is authorized for"
+            f" #{issue_number}; refusing to mutate a different issue"
+        )
+
+
+def admit_lifecycle_transition(
+    entry: PatternRegistryEntry, transition: CaseFileLifecycleTransition
+) -> bool:
+    """THE admission rule for one durable lifecycle write, in one place.
+
+    Returns ``True`` when *transition* is ALREADY recorded on *entry* — the
+    idempotent replay a retry must answer with the committed entry instead of a
+    second write — and ``False`` when it is new and admissible. It raises when
+    the write must not be admitted at all: a ``transition_id`` whose payload
+    changed (two different reviewed intents cannot share one identity), or any
+    further transition on a signature that already reached a terminal
+    disposition.
+
+    Both registries and both lifecycle write paths call this. The rule was
+    previously written out once per path and had already drifted: the
+    single-process registry omitted the already-terminal guard, so a second,
+    different retirement of a retired signature was refused by shared authority
+    but admitted locally — closing the case file twice and appending two
+    terminal transitions, depending only on which registry a deployment runs
+    (#7247 final abstraction pass).
+    """
+    for recorded in entry.lifecycle:
+        if recorded.transition_id != transition.transition_id:
+            continue
+        if not recorded.same_intent(transition):
+            raise PatternRegistryError(
+                f"lifecycle transition {transition.transition_id!r} changed payload"
+            )
+        return True
+    if entry.lifecycle and entry.lifecycle[-1].terminal:
+        raise PatternRegistryError(
+            f"pattern {entry.signature!r} is terminal ({entry.disposition!r});"
+            " reopening requires an explicit reopen transition"
+        )
+    return False
 
 
 class PatternCaseFileRegistry(Protocol):
@@ -120,8 +223,17 @@ class PatternCaseFileRegistry(Protocol):
         signature: str,
         observation: PatternObservation,
         classification: CaseFileClassification,
+        issue_number: int,
     ) -> PatternReservation:
-        """Admit one exact evidence publication through shared authority."""
+        """Admit one exact evidence publication against its canonical case file.
+
+        ``issue_number`` carries the same guarantee it carries into
+        :meth:`reserve_retirement`, through :func:`require_canonical_case_file`:
+        the caller's authorized case file is checked inside the reserving
+        compare-and-swap, so a signature whose registry row names a different
+        issue admits nothing rather than reserving first and being rejected
+        afterwards (#7247 review A1, applied to both write paths).
+        """
         ...
 
     def take_over_observation(
@@ -138,6 +250,55 @@ class PatternCaseFileRegistry(Protocol):
 
     def finalize_observation(self, *, signature: str, reservation_id: str) -> bool:
         """Commit one admitted observation after its comment is durable."""
+        ...
+
+    def record_lifecycle(
+        self, *, signature: str, transition: CaseFileLifecycleTransition
+    ) -> PatternRegistryEntry:
+        """Record an active/needs-human classification without GitHub mutation."""
+        ...
+
+    def reserve_retirement(
+        self,
+        *,
+        signature: str,
+        transition: CaseFileLifecycleTransition,
+        comment: str,
+        issue_number: int,
+    ) -> PatternReservation:
+        """Reserve one exact terminal transition against its canonical case file.
+
+        ``issue_number`` is the case file the CALLER was authorized to mutate.
+        It is validated against ``current.issue_number`` inside the same
+        compare-and-swap that reserves the retirement, so the guarded command's
+        subject and the issue this retirement actually comments on and closes
+        cannot diverge — no separate pre-read, and therefore no check/use gap
+        (#7247 review F2/A1).
+        """
+        ...
+
+    def take_over_retirement(
+        self, *, signature: str, stale_reservation_id: str
+    ) -> PatternReservation:
+        """Fence an expired retirement before its remote comment began."""
+        ...
+
+    def begin_retirement_publication(
+        self, *, signature: str, reservation_id: str
+    ) -> PatternReservation:
+        """Make an ambiguous retirement comment permanently non-reissuable."""
+        ...
+
+    def confirm_retirement_comment(
+        self, *, signature: str, reservation_id: str
+    ) -> PatternRegistryEntry:
+        """Advance a verified comment to the idempotent close phase."""
+        ...
+
+    def finalize_retirement(
+        self, *, signature: str, reservation_id: str
+    ) -> PatternRegistryEntry:
+        """Commit the terminal disposition after the case file is closed."""
         ...
 
     def has_observation(self, *, signature: str, observation_id: str) -> bool:

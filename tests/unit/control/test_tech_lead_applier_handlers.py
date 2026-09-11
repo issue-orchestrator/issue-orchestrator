@@ -262,6 +262,7 @@ class _Registry:
         self.repository_host = MagicMock()
         self.authority = MagicMock()
         self.promotion_target = MagicMock()
+        self.pattern_registry = MagicMock()
         inert = self._inert
         self.handlers = tech_lead_action_handlers(
             require_mutation_authority=lambda *args: None, create_tech_lead_issue=inert,
@@ -276,6 +277,7 @@ class _Registry:
             require_expected=self._require_expected,
             repository_host=self.repository_host,
             authority=self.authority,
+            pattern_registry=self.pattern_registry,
             promotion_target=self.promotion_target,
         )
 
@@ -296,6 +298,7 @@ class _Registry:
             or self.repository_host.method_calls
             or self.authority.method_calls
             or self.promotion_target.method_calls
+            or self.pattern_registry.method_calls
         )
 
     def apply(self, action: Action) -> ActionResult:

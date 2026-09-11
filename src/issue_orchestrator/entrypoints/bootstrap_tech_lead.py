@@ -353,10 +353,11 @@ def create_pattern_registry(
         MirroredPatternCaseFileRegistry,
     )
 
-    if (
-        not config.tech_lead_enabled
-        or config.tech_lead.authority.flag_pattern != "execute"
-    ):
+    pattern_consumers_active = (
+        config.tech_lead.authority.flag_pattern == "execute"
+        or config.tech_lead.findings.promote != "off"
+    )
+    if not config.tech_lead_enabled or not pattern_consumers_active:
         return LocalPatternCaseFileRegistry(authority)
     from ..execution.providers import create_shared_pattern_registry
 

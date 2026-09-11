@@ -10,7 +10,10 @@ import pytest
 
 from issue_orchestrator.adapters.github.pattern_registry import GitHubRefPatternRegistry
 from issue_orchestrator.adapters.github.github_adapter import GitHubAdapter
-from issue_orchestrator.control.pattern_registry import MirroredPatternCaseFileRegistry
+from issue_orchestrator.control.pattern_registry import (
+    LocalPatternCaseFileRegistry,
+    MirroredPatternCaseFileRegistry,
+)
 from issue_orchestrator.control.tech_lead_case_file_owner import (
     AmbiguousPatternPublicationError,
     CaseFileState,
@@ -19,7 +22,9 @@ from issue_orchestrator.control.tech_lead_case_file_owner import (
 from issue_orchestrator.control.actions import CreateTechLeadCaseFileIssueAction
 from issue_orchestrator.control.reconciliation import build_expected_for_mutation
 from issue_orchestrator.domain.tech_lead_findings import (
+    CASE_FILE_INVALID,
     CaseFileClassification,
+    CaseFileLifecycleTransition,
     PatternObservation,
     PendingCaseFile,
 )
@@ -131,6 +136,7 @@ def test_remote_evidence_commit_hydrates_local_replica() -> None:
             observation_id="run:b:A1", comment="observed again"
         ),
         classification=CaseFileClassification(fix_class="code", area="runtime"),
+        issue_number=81,
     )
     assert second.finalize_observation(
         signature="stuck-retry",
@@ -210,6 +216,7 @@ def test_expired_observation_recovery_fences_old_publisher_and_posts_once() -> N
         signature="stuck-retry",
         observation=observation,
         classification=CaseFileClassification(fix_class="code", area="runtime"),
+        issue_number=81,
     )
     now[0] += timedelta(seconds=31)
     repository = MagicMock()
@@ -276,6 +283,7 @@ def test_live_peer_observation_reservation_prevents_comment_publication() -> Non
         signature="stuck-retry",
         observation=observation,
         classification=CaseFileClassification(),
+        issue_number=81,
     )
     second = GitHubRefPatternRegistry(
         cast(Any, client),
@@ -493,3 +501,97 @@ def test_production_composition_initializes_shared_registry(tmp_path) -> None:
 
     assert isinstance(registry, MirroredPatternCaseFileRegistry)
     assert "refs/issue-orchestrator/registry/tech-lead-patterns" in client.refs
+
+
+def test_promotion_settlement_initializes_shared_registry(tmp_path) -> None:
+    """A promotion-only lane must retain retirement authority on restart."""
+    client = FakeGitHubRefClient()
+    host = GitHubAdapter(repo="owner/repo", http_client=cast(Any, client))
+    config = Config(repo_root=tmp_path)
+    config.tech_lead_review_agent = "agent:tech-lead"
+    config.tech_lead_enabled = True
+    config.tech_lead.authority.flag_pattern = "propose"
+    config.tech_lead.findings.promote = "auto"
+
+    registry = create_pattern_registry(
+        config, host, InMemoryTechLeadAuthorityStore()
+    )
+
+    assert isinstance(registry, MirroredPatternCaseFileRegistry)
+    assert "refs/issue-orchestrator/registry/tech-lead-patterns" in client.refs
+
+
+def _retirement(transition_id: str) -> CaseFileLifecycleTransition:
+    return CaseFileLifecycleTransition(
+        transition_id=transition_id,
+        disposition=CASE_FILE_INVALID,
+        reason="The historical report is no longer actionable.",
+        evidence=("issue #7 was invalidated by the owning subsystem",),
+        recorded_at="2026-09-10T12:00:00+00:00",
+    )
+
+
+def _shared_registry_with_case_file() -> GitHubRefPatternRegistry:
+    registry = GitHubRefPatternRegistry(
+        cast(Any, FakeGitHubRefClient()),
+        claimant_id="engine-a",
+        lease_seconds=30,
+        clock=lambda: datetime(2026, 9, 10, tzinfo=timezone.utc),
+    )
+    reserved = registry.reserve(_pending("run:a:A1"))
+    registry.finalize(
+        signature="stuck-retry",
+        reservation_id=reserved.entry.reservation_id,
+        issue_number=81,
+    )
+    return registry
+
+
+def _local_registry_with_case_file() -> LocalPatternCaseFileRegistry:
+    local = InMemoryTechLeadAuthorityStore()
+    local.record_pattern(
+        signature="stuck-retry", issue_number=81, observation_id="run:a:A1"
+    )
+    return LocalPatternCaseFileRegistry(local)
+
+
+@pytest.mark.parametrize(
+    "build", (_shared_registry_with_case_file, _local_registry_with_case_file)
+)
+def test_no_registry_admits_a_second_terminal_transition(build) -> None:
+    """Terminal means terminal in BOTH registries, or it means nothing.
+
+    The single-process registry omitted the already-terminal guard shared
+    authority enforces, so a second, different retirement of a retired signature
+    was refused remotely and admitted locally — a reservation that would comment
+    on and close the case file again and append a second terminal transition,
+    decided only by which registry a deployment happens to run. One shared
+    admission rule now owns it (#7247 final abstraction pass).
+    """
+    registry = build()
+    first = registry.reserve_retirement(
+        signature="stuck-retry",
+        transition=_retirement("plan:first"),
+        comment="<!-- retirement -->",
+        issue_number=81,
+    )
+    assert first.state is PatternReservationState.ACQUIRED
+    registry.confirm_retirement_comment(
+        signature="stuck-retry", reservation_id=first.entry.reservation_id
+    )
+    registry.finalize_retirement(
+        signature="stuck-retry", reservation_id=first.entry.reservation_id
+    )
+
+    with pytest.raises(PatternRegistryError, match="terminal"):
+        registry.reserve_retirement(
+            signature="stuck-retry",
+            transition=_retirement("plan:second"),
+            comment="<!-- second retirement -->",
+            issue_number=81,
+        )
+
+    entry = registry.read(signature="stuck-retry")
+    assert entry is not None
+    assert entry.pending_retirement is None
+    assert [item.transition_id for item in entry.lifecycle] == ["plan:first"]
