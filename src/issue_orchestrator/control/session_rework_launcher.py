@@ -73,8 +73,15 @@ class SessionCreatorFn(Protocol):
         command: str,
         worktree_path: Path,
         title: str | None,
+        secret_env: dict | None = None,
         /,
     ) -> bool: ...
+
+
+class SessionSecretEnvFn(Protocol):
+    """Resolve the provider credentials a launch needs, by provider name."""
+
+    def __call__(self, provider: str | None, /) -> dict | None: ...
 
 
 class WorktreeReuseOptionsFactory(Protocol):
@@ -158,6 +165,7 @@ class ReworkLaunchDependencies:
     wrap_provider_command: ProviderCommandWrapper
     build_session_env: SessionEnvBuilder
     check_provider_ready: ProviderReadinessChecker
+    session_secret_env: SessionSecretEnvFn
     resolve_stack_decision: StackDecisionResolverFn
     coder_prompt_addendum: CoderPromptAddendumProvider
     scoped_rework: ScopedReworkLaunch
@@ -523,7 +531,13 @@ def launch_rework_session(
 
         if failure := deps.scoped_rework.before_spawn(scoped.keys, run.identity):
             return failure
-        session_created = deps.create_session(session_name, command, worktree_path, f"Rework #{issue_number}")
+        session_created = deps.create_session(
+            session_name,
+            command,
+            worktree_path,
+            f"Rework #{issue_number}",
+            deps.session_secret_env(agent_config.provider),
+        )
         logger.info(
             "[launch] Rework session create result: issue=%s pr=%s session=%s created=%s",
             issue_number,

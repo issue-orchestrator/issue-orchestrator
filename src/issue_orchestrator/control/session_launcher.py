@@ -2195,6 +2195,7 @@ class SessionLauncher:
             wrap_provider_command=self._wrap_provider_command,
             build_session_env=self._build_session_env,
             check_provider_ready=self._check_provider_ready,
+            session_secret_env=self._session_secret_env,
             resolve_stack_decision=self._dependency_gate.stack_base_decision_for_issue,
             coder_prompt_addendum=self._coder_prompt_addendum,
             scoped_rework=ScopedReworkLaunch(self._tech_lead_authority, self.repository_host, self._apply_actions),

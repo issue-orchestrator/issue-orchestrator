@@ -522,3 +522,41 @@ class TestThePolicyChoosesTheLaneNotTheProvider:
         sample = ProviderLaunchReadinessSampler(config=config, policy=policy).sample()
 
         assert set(sample.outcomes) == {"codex", "codex:spark"}
+
+
+def test_every_launch_path_passes_provider_credentials():
+    """A new launch path must not silently omit the credential argument.
+
+    There are five places that spawn an agent session. A provider whose key is
+    dropped at one of them fails at run time with an authentication error that
+    looks like a bad key rather than a missing wire-up, so this is checked
+    structurally instead of trusting five call sites to stay in sync.
+    """
+    import ast
+    from pathlib import Path
+
+    control = Path(__file__).resolve().parents[2] / "src/issue_orchestrator/control"
+    offenders: list[str] = []
+
+    for source in sorted(control.glob("session_*launcher*.py")):
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = (
+                func.attr if isinstance(func, ast.Attribute)
+                else getattr(func, "id", "")
+            )
+            if name != "create_session" and not name.endswith("_create_session"):
+                continue
+            passes_secret = len(node.args) >= 5 or any(
+                kw.arg == "secret_env" for kw in node.keywords
+            )
+            if not passes_secret:
+                offenders.append(f"{source.name}:{node.lineno}")
+
+    assert offenders == [], (
+        "these session launches drop provider credentials, so an agent on a "
+        f"key-authenticated provider would launch unauthenticated: {offenders}"
+    )
