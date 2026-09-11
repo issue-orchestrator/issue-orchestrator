@@ -23,6 +23,7 @@ from ..ports.pattern_registry import (
     PatternRetirementPhase,
     PatternReservation,
     PatternReservationState,
+    require_canonical_case_file,
 )
 from ..ports.tech_lead_authority import TechLeadAuthorityStore
 
@@ -155,9 +156,13 @@ class MirroredPatternCaseFileRegistry(PatternCaseFileRegistry):
         signature: str,
         transition: CaseFileLifecycleTransition,
         comment: str,
+        issue_number: int,
     ) -> PatternReservation:
         return self._shared.reserve_retirement(
-            signature=signature, transition=transition, comment=comment
+            signature=signature,
+            transition=transition,
+            comment=comment,
+            issue_number=issue_number,
         )
 
     def take_over_retirement(
@@ -461,10 +466,12 @@ class LocalPatternCaseFileRegistry(PatternCaseFileRegistry):
         signature: str,
         transition: CaseFileLifecycleTransition,
         comment: str,
+        issue_number: int,
     ) -> PatternReservation:
         if not transition.terminal:
             raise ValueError("retirement requires a terminal disposition")
         current = self._require_committed(signature)
+        require_canonical_case_file(current, issue_number)
         for item in current.lifecycle:
             if item.transition_id == transition.transition_id:
                 if item.same_intent(transition):

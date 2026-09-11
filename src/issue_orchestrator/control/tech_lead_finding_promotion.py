@@ -33,11 +33,16 @@ policy owner for the lane that connects them, mirroring
   promotions are polled this tick (at most ``max_open_promoted`` per target,
   rotating), :func:`classify_promotion_outcomes` turns those target-repo reads
   into typed :class:`SettledPromotion` facts (read-only), and
-  :func:`apply_settle_tech_lead_promotion` performs the writes: a close whose
-  CLOSING pull request merged records the ``tech_lead_shipped_fixes`` row,
-  comments ``fixed by <target>#N`` on the case file and closes it; any other
-  close is the operator declining, which marks the signature declined forever
-  and leaves the case file open to keep accruing evidence.
+  :func:`apply_settle_tech_lead_promotion` performs the writes. Both terminal
+  outcomes RETIRE the case file through the single
+  :class:`~.tech_lead_case_file_lifecycle.PatternCaseFileLifecycleOwner`
+  (evidence comment, then close): a close whose CLOSING pull request merged
+  also records the ``tech_lead_shipped_fixes`` row and retires as ``shipped``;
+  any other close is the operator declining, which marks the signature declined
+  forever and retires as ``declined`` (#7240). Retirement closes the GitHub
+  issue only — the registry keeps the signature, its canonical case file, and
+  its evidence, so later observations still append there and never file a
+  replacement.
 
 Promotion FILES issues, full stop. Nothing here approves, merges, labels, or
 executes anything in the target repo — the target's own orchestrator runs the

@@ -184,15 +184,18 @@ def _decode_lifecycle(value: object) -> tuple[CaseFileLifecycleTransition, ...]:
             isinstance(entry, str) for entry in evidence
         ):
             raise ValueError("lifecycle transition evidence must be a string list")
-        transition = CaseFileLifecycleTransition(
-            transition_id=_required_text(item, "transition_id"),
-            disposition=_required_text(item, "disposition"),  # type: ignore[arg-type]
-            reason=_required_text(item, "reason"),
-            evidence=tuple(evidence),
-            recorded_at=_required_text(item, "recorded_at"),
+        # ``recorded_at`` needs no decoder-side ISO check: the domain value
+        # object rejects a non-ISO or naive timestamp at construction, so a
+        # readable row can only have been written by a valid transition.
+        transitions.append(
+            CaseFileLifecycleTransition(
+                transition_id=_required_text(item, "transition_id"),
+                disposition=_required_text(item, "disposition"),  # type: ignore[arg-type]
+                reason=_required_text(item, "reason"),
+                evidence=tuple(evidence),
+                recorded_at=_required_text(item, "recorded_at"),
+            )
         )
-        datetime.fromisoformat(transition.recorded_at)
-        transitions.append(transition)
     return tuple(transitions)
 
 

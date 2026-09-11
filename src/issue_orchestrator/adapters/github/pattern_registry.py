@@ -28,6 +28,7 @@ from ...ports.pattern_registry import (
     PatternRetirementPhase,
     PatternReservation,
     PatternReservationState,
+    require_canonical_case_file,
 )
 from .ref_store import GitRefCasStore, GitRefSnapshot
 from .pattern_registry_codec import format_entries, parse_entries
@@ -362,6 +363,7 @@ class GitHubRefPatternRegistry(PatternCaseFileRegistry):
         signature: str,
         transition: CaseFileLifecycleTransition,
         comment: str,
+        issue_number: int,
     ) -> PatternReservation:
         if not transition.terminal:
             raise ValueError("retirement requires a terminal disposition")
@@ -369,6 +371,7 @@ class GitHubRefPatternRegistry(PatternCaseFileRegistry):
         for _ in range(MAX_CAS_ATTEMPTS):
             snapshot, entries = self._load()
             current = self._committed(entries, signature)
+            require_canonical_case_file(current, issue_number)
             replay = self._lifecycle_replay(current, transition)
             if replay is not None:
                 return PatternReservation(PatternReservationState.COMMITTED, replay)

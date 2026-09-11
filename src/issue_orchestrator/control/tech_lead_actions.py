@@ -750,11 +750,19 @@ class SettleTechLeadPromotionAction(Action):
     """Close the loop on a promoted finding that went terminal (#6957).
 
     ``shipped`` distinguishes the two terminal outcomes the applier must handle
-    differently: closed by a MERGED PR (record the shipped fix, comment and
-    close the case file) versus closed without one, which is the operator
-    declining (mark the signature declined forever, leave the case file open to
-    keep accruing evidence). Every write this action performs lands in the
-    SOURCE repo — only the read that produced the fact crossed repos.
+    differently: closed by a MERGED PR records the ``tech_lead_shipped_fixes``
+    row, while closed without one is the operator declining, which marks the
+    signature declined forever. BOTH retire the case file through the one
+    lifecycle owner — evidence comment, then close — under the terminal
+    dispositions ``shipped`` and ``declined`` respectively (#7240; #7247 review
+    F3 made the decline half explicit). Closing is a GitHub state only: later
+    evidence still appends to the closed case file from the durable ledger.
+
+    Every write this action performs lands in the SOURCE repo — only the read
+    that produced the fact crossed repos. :meth:`reconciliation_subject` names
+    that one case file, and the settlement applier passes the SAME number into
+    the lifecycle owner, so shared authority rejects a registry that disagrees
+    rather than closing an issue this action was never authorized to touch.
     """
 
     signature: str = ""

@@ -1570,6 +1570,150 @@ class TestSettlement:
             == ()
         )
 
+    def test_a_registry_naming_another_case_file_blocks_every_settlement_write(self):
+        """Ledger/registry drift must stop before ANY of the three write surfaces.
+
+        The command is guarded against ``case_file_issue_number``; the registry
+        names the canonical case file independently. If they disagree, settling
+        anyway would comment on and close one issue while recording the OTHER as
+        settled in durable memory. Registry, GitHub, and authority must all be
+        untouched instead (#7247 review F2).
+        """
+        authority = InMemoryTechLeadAuthorityStore()
+        authority.record_promotion(promotion=_promotion("anchor-close"))
+        action = SettleTechLeadPromotionAction(
+            signature="anchor-close",
+            case_file_issue_number=65,
+            target_repo=UPSTREAM,
+            target_issue_number=500,
+            shipped=True,
+            merged_pr_url="https://github.com/x/y/pull/6956",
+        )
+        # The registry's canonical case file is #66, not the authorized #65.
+        repository, registry = _settlement_ports(
+            authority, signature=action.signature, case_file=66
+        )
+
+        result = apply_settle_tech_lead_promotion(
+            action,
+            repository_host=repository,
+            authority=authority,
+            pattern_registry=registry,
+            now_iso="2026-09-10T12:00:00+00:00",
+        )
+
+        assert not result.success
+        assert "refusing to retire" in result.error
+        # 1. GitHub: neither issue was commented on or closed.
+        repository.add_comment.assert_not_called()
+        repository.update_issue_state.assert_not_called()
+        # 2. Registry: no lifecycle transition, no reservation in flight.
+        entry = registry.read(signature="anchor-close")
+        assert entry is not None
+        assert entry.issue_number == 66
+        assert entry.lifecycle == ()
+        assert entry.pending_retirement is None
+        # 3. Authority: no shipped-fix row, promotion still in flight.
+        assert authority.list_recent_shipped_fixes(limit=5) == ()
+        assert authority.load_promotion(signature="anchor-close").state != (
+            PROMOTION_STATE_SHIPPED
+        )
+
+    def test_declined_closure_keeps_the_case_file_taking_later_evidence(self):
+        """Closing a declined case file is a GITHUB state, not a ledger state.
+
+        #7240 names "deliberately declined" as a retirement rule, so settlement
+        now closes that case file instead of leaving it open. The property the
+        old open-on-decline behavior protected — later evidence keeps accruing
+        and never mints a replacement case file — has to survive the migration,
+        and it does, because the durable ledger, not the open-issue scan, is what
+        routes an observation to its case file (#7247 review F3).
+        """
+        from issue_orchestrator.control.actions import AppendPatternObservationAction
+        from issue_orchestrator.control.reconciliation import (
+            build_expected_for_mutation,
+        )
+        from issue_orchestrator.control.tech_lead_case_files import (
+            CaseFileIntake,
+            PatternCaseFilePlanner,
+            build_pattern_ledger,
+        )
+        from issue_orchestrator.domain.tech_lead_artifacts import (
+            ProposedTechLeadAction,
+        )
+
+        result, repository_host, authority = self._settle(shipped=False)
+        assert result.success
+        repository_host.update_issue_state.assert_called_once_with(65, "closed")
+
+        # The durable row survives closure, canonical issue and all.
+        ledger = build_pattern_ledger(authority.list_pattern_evidence())
+        assert ledger["anchor-close"].case_file_issue_number == 65
+
+        actions: list = []
+        PatternCaseFilePlanner(
+            config=_config(),
+            actions=actions,
+            anchor_issue_number=99,
+            pattern_ledger=ledger,
+            findings={},
+            source_run_id="run-later",
+            source_session_name="issue-99",
+            observed_at="2026-09-12T00:00:00+00:00",
+            expected=build_expected_for_mutation(),
+        ).plan(
+            CaseFileIntake.sighting(
+                ProposedTechLeadAction(
+                    id="A7",
+                    action_type="flag_pattern",
+                    body="It happened again after the decline.",
+                    pattern_signature="anchor-close",
+                    area=None,
+                    finding_ids=(),
+                )
+            )
+        )
+
+        [append] = actions
+        assert isinstance(append, AppendPatternObservationAction)
+        assert append.issue_number == 65
+        assert append.pattern_signature == "anchor-close"
+
+    def test_declined_closure_removes_the_case_file_from_board_facts(self):
+        """The board effect of the migration, asserted rather than implied.
+
+        The Tech Lead surfaces project the fact gatherer's OPEN-issue scan, so a
+        retired case file leaves the board while its typed disposition stays
+        readable in durable authority (#7240 clutter reduction; #7247 review F3).
+        """
+        from issue_orchestrator.control.tech_lead_case_files import (
+            split_tech_lead_case_file_issues,
+        )
+        from issue_orchestrator.domain.models import Issue
+
+        result, repository_host, authority = self._settle(shipped=False)
+        assert result.success
+        closed = repository_host.update_issue_state.call_args[0][0]
+        assert closed == 65
+
+        # The scan only ever sees open issues; the closed case file is not in it.
+        board_issues = [
+            Issue(
+                number=99,
+                title="Tech lead batch anchor",
+                labels=["tech-lead:anchor"],
+                state="open",
+            )
+        ]
+        remaining, case_files = split_tech_lead_case_file_issues(board_issues)
+
+        assert case_files == ()
+        assert [issue.number for issue in remaining] == [99]
+        # Declined is still terminal for refiling, and still durably recorded.
+        assert authority.load_promotion(signature="anchor-close").state == (
+            PROMOTION_STATE_DECLINED
+        )
+
     def test_shipped_settlement_requires_the_merged_pr_evidence(self):
         with pytest.raises(ValueError, match="merged"):
             SettleTechLeadPromotionAction(

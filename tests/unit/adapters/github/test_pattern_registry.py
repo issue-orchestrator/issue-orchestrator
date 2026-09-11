@@ -122,6 +122,100 @@ def test_codec_round_trips_lifecycle_and_reads_version_one_as_active() -> None:
     assert migrated.disposition == "active"
 
 
+@pytest.mark.parametrize(
+    "recorded_at, message",
+    (
+        ("the tenth of September", "ISO-8601"),
+        ("2026-09-10T12:00:00", "timezone"),
+    ),
+)
+def test_a_timestamp_the_codec_cannot_read_never_reaches_the_registry(
+    recorded_at: str, message: str
+) -> None:
+    """The writable path must be strictly narrower than the readable one.
+
+    A malformed ``recorded_at`` that committed successfully would make every
+    subsequent registry load fail as unreadable, poisoning shared authority for
+    every client (#7247 review F4).
+    """
+    with pytest.raises(ValueError, match=message):
+        CaseFileLifecycleTransition(
+            transition_id="plan:stuck-retry",
+            disposition=CASE_FILE_INVALID,
+            reason="The historical report is no longer actionable.",
+            evidence=("issue #7 was invalidated by the owning subsystem",),
+            recorded_at=recorded_at,
+        )
+
+
+def test_every_committed_lifecycle_timestamp_stays_readable() -> None:
+    client = FakeGitHubRefClient()
+    now = [datetime(2026, 9, 10, tzinfo=timezone.utc)]
+    registry = _registry(client, "engine-a", now)
+    reserved = registry.reserve(_pending("stuck-retry"))
+    registry.finalize(
+        signature="stuck-retry",
+        reservation_id=reserved.entry.reservation_id,
+        issue_number=81,
+    )
+    transition = CaseFileLifecycleTransition(
+        transition_id="plan:stuck-retry",
+        disposition=CASE_FILE_INVALID,
+        reason="The historical report is no longer actionable.",
+        evidence=("issue #7 was invalidated by the owning subsystem",),
+        recorded_at=now[0].isoformat(),
+    )
+    admitted = registry.reserve_retirement(
+        signature="stuck-retry",
+        transition=transition,
+        comment="<!-- retirement -->",
+        issue_number=81,
+    )
+    registry.confirm_retirement_comment(
+        signature="stuck-retry", reservation_id=admitted.entry.reservation_id
+    )
+    registry.finalize_retirement(
+        signature="stuck-retry", reservation_id=admitted.entry.reservation_id
+    )
+
+    reloaded = _registry(client, "engine-b", now).read(signature="stuck-retry")
+
+    assert reloaded is not None
+    assert reloaded.lifecycle == (transition,)
+
+
+def test_reserving_a_retirement_for_another_issue_writes_nothing() -> None:
+    """Shared authority, not a caller pre-read, owns the identity check (A1)."""
+    client = FakeGitHubRefClient()
+    now = [datetime(2026, 9, 10, tzinfo=timezone.utc)]
+    registry = _registry(client, "engine-a", now)
+    reserved = registry.reserve(_pending("stuck-retry"))
+    registry.finalize(
+        signature="stuck-retry",
+        reservation_id=reserved.entry.reservation_id,
+        issue_number=81,
+    )
+
+    with pytest.raises(PatternRegistryError, match="refusing to retire"):
+        registry.reserve_retirement(
+            signature="stuck-retry",
+            transition=CaseFileLifecycleTransition(
+                transition_id="plan:stuck-retry",
+                disposition=CASE_FILE_INVALID,
+                reason="The historical report is no longer actionable.",
+                evidence=("issue #7 was invalidated by the owning subsystem",),
+                recorded_at=now[0].isoformat(),
+            ),
+            comment="<!-- retirement -->",
+            issue_number=82,
+        )
+
+    entry = registry.read(signature="stuck-retry")
+    assert entry is not None
+    assert entry.pending_retirement is None
+    assert entry.lifecycle == ()
+
+
 def test_two_clients_converge_on_one_reservation_and_case_file() -> None:
     client = FakeGitHubRefClient()
     now = [datetime(2026, 9, 10, tzinfo=timezone.utc)]

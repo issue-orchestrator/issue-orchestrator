@@ -228,6 +228,12 @@ def apply_settle_tech_lead_promotion(
     All writes here are IN the source repo (case-file comment/close, shipped-fix
     memory, ledger state) — only the READ that produced this fact crossed repos.
 
+    Both terminal outcomes retire the case file through the lifecycle owner: a
+    merged fix as ``shipped``, an operator decline as ``declined`` (#7240's named
+    retirement rules). The decline half used to comment and leave the issue open;
+    see :class:`~.actions.SettleTechLeadPromotionAction` for why closing loses no
+    evidence.
+
     Ordering makes a crash mid-settlement self-healing: the durable ledger state
     is written LAST, so an interrupted settlement is re-planned next tick and the
     comment/close/record steps are individually idempotent (``record_shipped_fix``
@@ -251,7 +257,16 @@ def apply_settle_tech_lead_promotion(
             registry=pattern_registry,
             repository_host=repository_host,
             before_write=before_write,
-        ).retire(signature=action.signature, transition=transition)
+        ).retire(
+            signature=action.signature,
+            transition=transition,
+            # The SAME issue every ``before_write`` gate authorizes
+            # (``reconciliation_subject()``). Passing it through makes shared
+            # authority reject a registry that names a different canonical case
+            # file, so the gate and the mutation can never address two issues
+            # (#7247 review F2).
+            issue_number=action.case_file_issue_number,
+        )
         if action.shipped:
             before_write()
             authority.record_shipped_fix(

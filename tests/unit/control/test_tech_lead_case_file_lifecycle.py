@@ -26,9 +26,16 @@ from issue_orchestrator.domain.tech_lead_findings import (
     PendingCaseFile,
 )
 from issue_orchestrator.ports.comment_receipt import IssueCommentReceipt
-from issue_orchestrator.ports.pattern_registry import PatternReservationState
+from issue_orchestrator.ports.pattern_registry import (
+    PatternRegistryError,
+    PatternReservationState,
+)
 
 from tests.unit.adapters.github.test_ref_claim_adapter import FakeGitHubRefClient
+
+
+CASE_FILE = 81
+"""The canonical case file ``_seed`` binds to the ``stale-pattern`` signature."""
 
 
 def _registry(
@@ -53,7 +60,7 @@ def _seed(registry: GitHubRefPatternRegistry) -> None:
     registry.finalize(
         signature=pending.signature,
         reservation_id=reserved.entry.reservation_id,
-        issue_number=81,
+        issue_number=CASE_FILE,
     )
 
 
@@ -115,10 +122,10 @@ def test_two_clients_converge_on_one_terminal_disposition() -> None:
     repository = _Repository()
 
     outcome = _owner(first, repository).retire(
-        signature="stale-pattern", transition=_transition()
+        signature="stale-pattern", transition=_transition(), issue_number=CASE_FILE
     )
     replay = _owner(second, repository).retire(
-        signature="stale-pattern", transition=_transition()
+        signature="stale-pattern", transition=_transition(), issue_number=CASE_FILE
     )
 
     assert not outcome.deduplicated
@@ -142,18 +149,18 @@ def test_ambiguous_comment_is_never_reissued_and_later_receipt_recovers() -> Non
 
     with pytest.raises(RuntimeError, match="ambiguous transport"):
         _owner(first, repository).retire(
-            signature="stale-pattern", transition=_transition()
+            signature="stale-pattern", transition=_transition(), issue_number=CASE_FILE
         )
     now[0] += timedelta(hours=1)
     with pytest.raises(AmbiguousPatternPublicationError):
         _owner(second, repository).retire(
-            signature="stale-pattern", transition=_transition()
+            signature="stale-pattern", transition=_transition(), issue_number=CASE_FILE
         )
 
     repository.fail_comment = False
     repository.comments.append((81, retirement_comment(_transition())))
     recovered = _owner(second, repository).retire(
-        signature="stale-pattern", transition=_transition()
+        signature="stale-pattern", transition=_transition(), issue_number=CASE_FILE
     )
 
     assert not recovered.deduplicated
@@ -169,7 +176,10 @@ def test_restart_after_close_phase_finishes_without_reposting_comment() -> None:
     transition = _transition()
     comment = retirement_comment(transition)
     reserved = registry.reserve_retirement(
-        signature="stale-pattern", transition=transition, comment=comment
+        signature="stale-pattern",
+        transition=transition,
+        comment=comment,
+        issue_number=CASE_FILE,
     )
     registry.begin_retirement_publication(
         signature="stale-pattern", reservation_id=reserved.entry.reservation_id
@@ -182,7 +192,7 @@ def test_restart_after_close_phase_finishes_without_reposting_comment() -> None:
     repository.closures.append(81)  # the first process closed, then crashed
 
     _owner(registry, repository).retire(
-        signature="stale-pattern", transition=transition
+        signature="stale-pattern", transition=transition, issue_number=CASE_FILE
     )
 
     assert len(repository.comments) == 1
@@ -198,8 +208,8 @@ def test_retry_keeps_first_recorded_timestamp_authoritative() -> None:
     _seed(registry)
     repository = _Repository()
     original = _transition()
-    _owner(registry, repository).retire(
-        signature="stale-pattern", transition=original
+    first = _owner(registry, repository).retire(
+        signature="stale-pattern", transition=original, issue_number=CASE_FILE
     )
     later_retry = CaseFileLifecycleTransition(
         transition_id=original.transition_id,
@@ -210,12 +220,48 @@ def test_retry_keeps_first_recorded_timestamp_authoritative() -> None:
     )
 
     replay = _owner(registry, repository).retire(
-        signature="stale-pattern", transition=later_retry
+        signature="stale-pattern", transition=later_retry, issue_number=CASE_FILE
     )
 
     assert replay.deduplicated
     entry = registry.read(signature="stale-pattern")
     assert entry is not None and entry.lifecycle == (original,)
+    # The OUTCOME must agree with durable authority, not with the attempt that
+    # produced it: a retry that reported its own later clock would hand the next
+    # layer a timestamp the registry contradicts (#7247 review F1).
+    assert first.transition == original
+    assert replay.transition == original
+    assert replay.transition.recorded_at == "2026-09-10T12:00:00+00:00"
+
+
+def test_retirement_refuses_a_case_file_the_command_did_not_authorize() -> None:
+    """A guarded command must never close an issue its gate did not check.
+
+    The command is authorized against ``case_file_issue_number``; the registry
+    names the canonical case file independently. If those drift, the gate would
+    approve issue A while the owner closes issue B (#7247 review F2).
+    """
+    client = FakeGitHubRefClient()
+    now = [datetime(2026, 9, 10, tzinfo=timezone.utc)]
+    registry = _registry(client, "engine-a", now)
+    _seed(registry)
+    repository = _Repository()
+
+    with pytest.raises(PatternRegistryError, match="refusing to retire"):
+        _owner(registry, repository).retire(
+            signature="stale-pattern",
+            transition=_transition(),
+            issue_number=CASE_FILE + 1,
+        )
+
+    assert repository.comments == []
+    assert repository.closures == []
+    entry = registry.read(signature="stale-pattern")
+    assert entry is not None
+    assert entry.issue_number == CASE_FILE
+    assert entry.lifecycle == ()
+    assert entry.pending_retirement is None
+    assert entry.disposition == CASE_FILE_ACTIVE
 
 
 def test_terminal_signature_accepts_later_evidence_without_reopening() -> None:
@@ -225,7 +271,7 @@ def test_terminal_signature_accepts_later_evidence_without_reopening() -> None:
     _seed(registry)
     repository = _Repository()
     _owner(registry, repository).retire(
-        signature="stale-pattern", transition=_transition()
+        signature="stale-pattern", transition=_transition(), issue_number=CASE_FILE
     )
 
     admitted = registry.reserve_observation(

@@ -134,6 +134,26 @@ class PatternReservation:
     entry: PatternRegistryEntry
 
 
+def require_canonical_case_file(entry: PatternRegistryEntry, issue_number: int) -> None:
+    """Reject a caller whose authorized case file is not this signature's.
+
+    THE rule, in one place, so the shared CAS registry and the single-process
+    registry cannot drift on it. A settlement command is guarded against the
+    issue named in the action; the retirement it drives comments on and closes
+    the issue named in the REGISTRY. If those two identities disagree, the
+    expected-state gate would authorize one issue while the owner mutates
+    another, and the ledger would then record the first as settled. Both
+    registries call this inside the compare-and-swap that reserves the
+    retirement, before any state is written (#7247 review F2/A1).
+    """
+    if entry.issue_number != issue_number:
+        raise PatternRegistryError(
+            f"pattern {entry.signature!r} is registered to case file"
+            f" #{entry.issue_number}, but this retirement is authorized for"
+            f" #{issue_number}; refusing to retire a different issue"
+        )
+
+
 class PatternCaseFileRegistry(Protocol):
     """Atomic, cross-client owner of one case file and its evidence per signature."""
 
@@ -197,8 +217,17 @@ class PatternCaseFileRegistry(Protocol):
         signature: str,
         transition: CaseFileLifecycleTransition,
         comment: str,
+        issue_number: int,
     ) -> PatternReservation:
-        """Reserve one exact terminal transition and its evidence comment."""
+        """Reserve one exact terminal transition against its canonical case file.
+
+        ``issue_number`` is the case file the CALLER was authorized to mutate.
+        It is validated against ``current.issue_number`` inside the same
+        compare-and-swap that reserves the retirement, so the guarded command's
+        subject and the issue this retirement actually comments on and closes
+        cannot diverge — no separate pre-read, and therefore no check/use gap
+        (#7247 review F2/A1).
+        """
         ...
 
     def take_over_retirement(

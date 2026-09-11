@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Literal, Sequence
 
 # The tech lead's fix classification on a ``flag_pattern`` action. A finding
@@ -85,6 +86,32 @@ VALID_CASE_FILE_DISPOSITIONS: frozenset[str] = frozenset(
 )
 
 
+def _validate_lifecycle_timestamp(value: str) -> None:
+    """Reject a ``recorded_at`` the durable registry could never read back.
+
+    The wire codec requires :func:`datetime.fromisoformat`, so a malformed
+    timestamp accepted HERE would commit successfully and then make every
+    subsequent registry load fail as unreadable — an unrecoverable shared
+    authority poisoned by one bad value. Validating at construction keeps the
+    only writable path strictly narrower than the readable one (#7247 review
+    F4). Timezone awareness is required for the same reason
+    :class:`~..domain.tech_lead_session.TechLeadDisposition` requires it: a
+    naive instant is not comparable across clients in different zones.
+    """
+    try:
+        recorded = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError(
+            "case-file lifecycle transition recorded_at must be ISO-8601,"
+            f" got {value!r}"
+        ) from exc
+    if recorded.tzinfo is None:
+        raise ValueError(
+            "case-file lifecycle transition recorded_at must include a timezone,"
+            f" got {value!r}"
+        )
+
+
 @dataclass(frozen=True)
 class CaseFileLifecycleTransition:
     """One reviewed, durable change to a pattern case file's disposition."""
@@ -99,6 +126,7 @@ class CaseFileLifecycleTransition:
         for name in ("transition_id", "reason", "recorded_at"):
             if not str(getattr(self, name)).strip():
                 raise ValueError(f"case-file lifecycle transition requires {name}")
+        _validate_lifecycle_timestamp(self.recorded_at)
         if self.disposition not in VALID_CASE_FILE_DISPOSITIONS:
             raise ValueError(
                 f"unknown case-file disposition {self.disposition!r}; expected one of"
@@ -634,9 +662,18 @@ class SettledPromotion:
     """A promoted issue observed terminal in its target repo.
 
     ``shipped`` distinguishes "closed by a merged PR" (the loop closed: record
-    the shipped fix, comment and close the case file) from "closed while still
-    gated" (the operator DECLINED it: mark the signature declined so it is
-    never re-filed, and leave the case file open to keep accruing).
+    the shipped fix) from "closed while still gated" (the operator DECLINED it:
+    mark the signature declined so it is never re-filed). BOTH are terminal
+    case-file dispositions — ``shipped`` and ``declined`` — and both retire the
+    case file through the one lifecycle owner: evidence comment, then close.
+
+    Declined case files were previously left OPEN to keep accruing. #7240
+    replaced that: "deliberately declined" is one of its named retirement rules,
+    and closure is what clears the historical case-file backlog off the board.
+    Nothing is lost by closing, because closure is a GITHUB state, not a ledger
+    state — the registry keeps the signature, its canonical issue, and its
+    evidence trail, later observations still append to the closed case file, and
+    a terminal signature can never be re-promoted or re-filed (#7247 review F3).
     """
 
     promotion: PromotedFinding
