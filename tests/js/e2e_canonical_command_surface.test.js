@@ -282,16 +282,15 @@ test('cmd surface: all-passing run produces NO Commands and only the Passed grou
 test('cmd surface: skipped tests render their skip reason verbatim, no Commands', () => {
     const ctx = loadCanonicalSurface();
     const reason = "Skipped: not implemented on macOS — see PR #5500 for the shim";
-    // The E2E run-detail payload puts the JUnit ``<skipped>`` text
-    // on ``failure_details``.  The translator must preserve it for
-    // skipped tests (not just failed ones) so the viewer can render
-    // the reason inline.
+    // The contracted E2E run-detail payload puts the JUnit ``<skipped>``
+    // text on ``failure_summary``. The translator maps it to the canonical
+    // viewer's ``failure_details`` field.
     const canonical = ctx.e2eRunToCanonicalPayload({
         results_by_category: {
             skipped: [{
                 nodeid: 'tests/integration/test_platform.py::test_macos',
                 outcome: 'skipped',
-                failure_details: reason,
+                failure_summary: reason,
             }],
         },
     });
@@ -307,22 +306,7 @@ test('cmd surface: skipped tests render their skip reason verbatim, no Commands'
     // Test name still appears.
     assert.match(html, /test_macos/);
 
-    // Also accept ``skip_reason`` as an alternative source.  Some E2E
-    // payload shapes put it there; the translator should honor either.
-    const altCanonical = ctx.e2eRunToCanonicalPayload({
-        results_by_category: {
-            skipped: [{
-                nodeid: 'tests/integration/test_platform.py::test_other',
-                outcome: 'skipped',
-                skip_reason: 'flaky-on-CI: tracked in #6310',
-            }],
-        },
-    });
-    assert.strictEqual(altCanonical.junit_cases[0].failure_details,
-        'flaky-on-CI: tracked in #6310',
-        'translator should also accept ``skip_reason`` for skipped tests');
-
-    // And: if NEITHER source carries a reason, failure_details stays
+    // If neither contracted source carries a reason, failure_details stays
     // null and the viewer falls back to the placeholder.
     const noneCanonical = ctx.e2eRunToCanonicalPayload({
         results_by_category: {
