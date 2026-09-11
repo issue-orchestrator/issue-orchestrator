@@ -420,8 +420,8 @@ def test_logical_run_scenarios(scenario: LogicalRunScenario) -> None:
         cycles=[],
     )
 
-    assert payload["run_count"] == scenario.expected_run_count
-    runs = payload["runs"]
+    assert payload["attempt_count"] == scenario.expected_run_count
+    runs = payload["attempts"]
     assert [len(run["cycles"]) for run in runs] == scenario.expected_cycles_per_run
 
     latest_run = runs[-1]
@@ -466,5 +466,5 @@ def test_logical_run_projection_is_restart_stable(scenario: LogicalRunScenario) 
         phase_toc=[],
         cycles=[],
     )
-    assert payload_a["run_count"] == payload_b["run_count"]
-    assert payload_a["runs"] == payload_b["runs"]
+    assert payload_a["attempt_count"] == payload_b["attempt_count"]
+    assert payload_a["attempts"] == payload_b["attempts"]

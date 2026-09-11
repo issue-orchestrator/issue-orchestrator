@@ -18,7 +18,7 @@ def _wait_for_issue_detail_hydration(page: Page) -> None:
     expect(drawer).to_be_visible()
     expect(drawer).to_have_attribute("data-lifecycle-kind", "dashboard")
     journey = page.locator("#issueDetailJourney")
-    expect(journey.locator(".journey-run").first).to_be_visible(timeout=5000)
+    expect(journey.locator(".journey-attempt").first).to_be_visible(timeout=5000)
     expect(journey.locator(".journey-cycle").first).to_be_visible(timeout=5000)
 
 
@@ -82,7 +82,7 @@ def test_issue_card_timeline_button_opens_cycle_timeline(
     expect(journey).to_contain_text("Review approved")
     expect(journey.locator(".timeline-empty")).to_have_count(0)
 
-    run_row = journey.locator("details.journey-run").first
+    run_row = journey.locator("details.journey-attempt").first
     cycle_row = journey.locator("details.journey-cycle").first
     expect(run_row).to_be_visible()
     expect(run_row).to_have_attribute("open", "")

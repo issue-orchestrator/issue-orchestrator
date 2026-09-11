@@ -2,7 +2,7 @@
 
 This module owns the dict-shape→typed-model transition for the issue detail
 drawer. Inputs are timeline events plus ``IssueProjectionContext``; outputs are
-typed ``JourneyRun`` / ``IssueCycle`` / ``JourneyStep`` /
+typed ``Attempt`` / ``IssueCycle`` / ``JourneyStep`` /
 ``JourneyPhaseGroup`` / ``CycleArtifacts`` / ``CycleValidationBadge`` models.
 
 Separation of concerns (per reviewer guidance on PR #6312):
@@ -37,6 +37,7 @@ from .lifecycle_event_sets import (
     VALIDATION_FAILED_EVENTS,
     VALIDATION_PASSED_EVENTS,
 )
+from .issue_lifecycle_attempt import Attempt
 from .lifecycle_projection import project_cycle_stages
 from .lifecycle_semantics import (
     CycleArtifacts,
@@ -46,7 +47,6 @@ from .lifecycle_semantics import (
     IssueProjectionContext,
     JourneyPhaseGroup,
     JourneyPhaseKey,
-    JourneyRun,
     JourneyStep,
     OpenValidationDetailsCommand,
     OutcomeBadge,
@@ -566,15 +566,15 @@ def format_date_time_label(timestamp: str) -> str:
         return timestamp
 
 
-def build_journey_runs(cycles: Sequence[IssueCycle]) -> tuple[JourneyRun, ...]:
-    """Group typed ``IssueCycle`` rows into typed ``JourneyRun`` containers."""
+def build_attempts(cycles: Sequence[IssueCycle]) -> tuple[Attempt, ...]:
+    """Group typed ``IssueCycle`` rows into typed ``Attempt`` containers."""
     if not cycles:
         return ()
 
     cycle_dicts = [_cycle_to_run_proxy(cycle) for cycle in cycles]
     run_dicts = _logical_run_projector.build_runs(cycle_dicts)
 
-    typed_runs: list[JourneyRun] = []
+    typed_runs: list[Attempt] = []
     cycles_by_key: dict[tuple[int, int], IssueCycle] = {
         (cycle.lifecycle or 0, cycle.iteration or 0): cycle for cycle in cycles
     }
@@ -603,19 +603,19 @@ def build_journey_runs(cycles: Sequence[IssueCycle]) -> tuple[JourneyRun, ...]:
         run_number = int(run.get("run_number") or 0)
         outcome = outcome_badge(str(run.get("outcome") or ""))
         run_label = (
-            f"Run {run_number} (scratch retry)"
+            f"Attempt {run_number} (scratch retry)"
             if reset_from_scratch
-            else f"Run {run_number}"
+            else f"Attempt {run_number}"
         )
         run_session_ids = tuple(
             str(rid) for rid in (run.get("session_run_ids") or []) if rid
         )
         typed_runs.append(
-            JourneyRun(
-                run_number=run_number,
-                run_label=run_label,
+            Attempt(
+                attempt_number=run_number,
+                attempt_label=run_label,
                 outcome=outcome,
-                run_key=str(run.get("run_key") or ""),
+                attempt_key=str(run.get("run_key") or ""),
                 run_id=(str(run["run_id"]) if run.get("run_id") else None),
                 session_run_ids=run_session_ids,
                 timestamp=str(run.get("timestamp") or ""),
@@ -628,7 +628,7 @@ def build_journey_runs(cycles: Sequence[IssueCycle]) -> tuple[JourneyRun, ...]:
 
     if typed_runs:
         latest = typed_runs[-1]
-        if not _run_contains_review_events_typed(latest):
+        if not _attempt_contains_review_events_typed(latest):
             coerced_outcome = _coerce_non_review_latest_outcome(latest.outcome)
             coerced_cycles = tuple(
                 cycle.model_copy(
@@ -668,7 +668,7 @@ def _cycle_to_run_proxy(cycle: IssueCycle) -> dict[str, Any]:
     }
 
 
-def _run_contains_review_events_typed(run: JourneyRun) -> bool:
+def _attempt_contains_review_events_typed(run: Attempt) -> bool:
     for cycle in run.cycles:
         if any(
             step.event.startswith(("review.", "review_exchange."))
@@ -1048,9 +1048,9 @@ def _optional_str_strict(value: Any) -> str | None:
 
 __all__ = [
     "blocked_explanation_for_event",
+    "build_attempts",
     "build_journey_cycles_from_events",
     "build_journey_phase_groups",
-    "build_journey_runs",
     "build_journey_step",
     "collect_cycle_artifacts",
     "derive_cycle_outcome",

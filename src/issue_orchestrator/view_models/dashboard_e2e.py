@@ -233,7 +233,7 @@ def _e2e_run_status_label(status: str | None) -> str:
 
 # Issue #6334: tone mapping for the runs-list outcome badge.  The
 # E2E run row carries a typed ``OutcomeBadge`` (same type powering
-# JourneyRun / IssueCycle outcomes), so the UI reads ``tone`` to
+# Attempt / IssueCycle outcomes), so the UI reads ``tone`` to
 # pick its CSS class instead of string-matching status text — the
 # same bug the OutcomeBadge migration killed for the inline Attempts
 # expander (PR #6333).  Unknown status → ``neutral``, never silently

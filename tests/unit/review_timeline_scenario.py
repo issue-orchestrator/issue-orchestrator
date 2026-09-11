@@ -122,7 +122,7 @@ class RenderedIssueDetail:
         return matches[0]
 
     def _latest_cycle(self) -> dict[str, Any]:
-        runs = self.payload["runs"]
+        runs = self.payload["attempts"]
         assert isinstance(runs, list) and runs
         latest_run = runs[-1]
         cycles = latest_run["cycles"]

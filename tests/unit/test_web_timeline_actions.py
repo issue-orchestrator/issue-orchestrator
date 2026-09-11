@@ -195,8 +195,8 @@ class TestTimelineActionWiring:
             assert lifecycle_issue["issue_number"] == 123
 
             # Run cycles must exist and carry actions on steps
-            runs = payload.get("runs", [])
-            assert len(runs) > 0, "Expected at least one run"
+            runs = payload.get("attempts", [])
+            assert len(runs) > 0, "Expected at least one attempt"
             cycles = runs[0].get("cycles", [])
             assert len(cycles) > 0, "Expected at least one cycle"
             steps = cycles[0].get("steps", [])
@@ -369,7 +369,7 @@ class TestTimelineActionWiring:
             response = client.get("/api/issue-detail/4057")
             assert response.status_code == 200
             payload = response.json()
-            steps = payload["runs"][0]["cycles"][0]["steps"]
+            steps = payload["attempts"][0]["cycles"][0]["steps"]
             approved_step = next(step for step in steps if step["event"] == "review.approved")
             review_action = next(
                 action for action in approved_step["actions"] if action["type"] == "open_agent_log"

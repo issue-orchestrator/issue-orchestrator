@@ -771,7 +771,7 @@ class CycleValidationBadge(LifecycleBase):
 
 
 class OutcomeBadge(LifecycleBase):
-    """Typed (label, tone) for a JourneyRun / IssueCycle outcome.
+    """Typed (label, tone) for an Attempt / IssueCycle outcome.
 
     Background — reviewer blocker on PR #6333: the inline Attempts
     expander rendered unknown outcome labels as green ✓ because the UI
@@ -935,22 +935,6 @@ class IssueCycle(LifecycleBase):
         elif isinstance(self.coder, CompletedCodingAttempt) and isinstance(self.coder.validation, ValidationFailed):
             _ensure_review_not_reached_reason(self.review, "validation_failed")
         return self
-
-
-class JourneyRun(LifecycleBase):
-    """A logical-run grouping of issue cycles for the drawer view."""
-
-    run_number: int
-    run_label: str
-    outcome: OutcomeBadge
-    run_key: str = ""
-    run_id: str | None = None
-    session_run_ids: tuple[str, ...] = ()
-    timestamp: str = ""
-    time_label: str = ""
-    expanded: bool = False
-    reset_from_scratch: bool = False
-    cycles: tuple[IssueCycle, ...] = ()
 
 
 class IssueLifecycle(LifecycleBase):
@@ -1327,7 +1311,6 @@ __all__ = [
     "IssueProjectionContext",
     "JourneyPhaseGroup",
     "JourneyPhaseKey",
-    "JourneyRun",
     "JourneyStep",
     "LinkedIssueLifecycle",
     "MissingCodingEvidence",
