@@ -440,9 +440,11 @@ class LocalPatternCaseFileRegistry(PatternCaseFileRegistry):
             raise ValueError("terminal lifecycle changes require retirement")
         current = self._require_committed(signature)
         lifecycle = self._lifecycle.setdefault(signature, current.lifecycle)
-        if transition in lifecycle:
-            return current
-        if any(item.transition_id == transition.transition_id for item in lifecycle):
+        for item in lifecycle:
+            if item.transition_id != transition.transition_id:
+                continue
+            if item.same_intent(transition):
+                return current
             raise PatternRegistryError(
                 f"lifecycle transition {transition.transition_id!r} changed payload"
             )
@@ -463,12 +465,20 @@ class LocalPatternCaseFileRegistry(PatternCaseFileRegistry):
         if not transition.terminal:
             raise ValueError("retirement requires a terminal disposition")
         current = self._require_committed(signature)
-        if transition in current.lifecycle:
-            return PatternReservation(PatternReservationState.COMMITTED, current)
+        for item in current.lifecycle:
+            if item.transition_id == transition.transition_id:
+                if item.same_intent(transition):
+                    return PatternReservation(PatternReservationState.COMMITTED, current)
+                raise PatternRegistryError(
+                    f"lifecycle transition {transition.transition_id!r} changed payload"
+                )
         existing = self._pending_retirements.get(signature)
         if existing is not None:
             reservation_id, pending, started = existing
-            if pending.transition != transition or pending.comment != comment:
+            if (
+                not pending.transition.same_intent(transition)
+                or pending.comment != comment
+            ):
                 raise PatternRegistryError(
                     f"pattern {signature!r} has a different retirement in flight"
                 )

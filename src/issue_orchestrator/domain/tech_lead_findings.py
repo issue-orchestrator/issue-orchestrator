@@ -113,6 +113,26 @@ class CaseFileLifecycleTransition:
     def terminal(self) -> bool:
         return self.disposition in TERMINAL_CASE_FILE_DISPOSITIONS
 
+    def same_intent(self, other: "CaseFileLifecycleTransition") -> bool:
+        """Whether *other* is a retry of this transition's stable payload.
+
+        ``recorded_at`` belongs to the first successful reservation. A retry
+        rebuilds the command later, so its wall-clock value cannot participate
+        in identity without making every crash-recovery attempt conflict with
+        its own durable intent.
+        """
+        return (
+            self.transition_id,
+            self.disposition,
+            self.reason,
+            self.evidence,
+        ) == (
+            other.transition_id,
+            other.disposition,
+            other.reason,
+            other.evidence,
+        )
+
 
 class PatternClassificationConflictError(ValueError):
     """Two observations disagree about a signature's ``fix_class``/``area``.

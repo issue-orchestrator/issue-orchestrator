@@ -403,7 +403,7 @@ class GitHubRefPatternRegistry(PatternCaseFileRegistry):
     ) -> PatternReservation:
         pending = current.pending_retirement
         assert pending is not None
-        if pending.transition != desired.transition:
+        if not pending.transition.same_intent(desired.transition):
             raise PatternRegistryError(
                 f"pattern {current.signature!r} has a different retirement in flight"
             )
@@ -594,7 +594,7 @@ class GitHubRefPatternRegistry(PatternCaseFileRegistry):
         for recorded in current.lifecycle:
             if recorded.transition_id != transition.transition_id:
                 continue
-            if recorded != transition:
+            if not recorded.same_intent(transition):
                 raise PatternRegistryError(
                     f"lifecycle transition {transition.transition_id!r} changed payload"
                 )

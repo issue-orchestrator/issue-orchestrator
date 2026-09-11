@@ -493,3 +493,21 @@ def test_production_composition_initializes_shared_registry(tmp_path) -> None:
 
     assert isinstance(registry, MirroredPatternCaseFileRegistry)
     assert "refs/issue-orchestrator/registry/tech-lead-patterns" in client.refs
+
+
+def test_promotion_settlement_initializes_shared_registry(tmp_path) -> None:
+    """A promotion-only lane must retain retirement authority on restart."""
+    client = FakeGitHubRefClient()
+    host = GitHubAdapter(repo="owner/repo", http_client=cast(Any, client))
+    config = Config(repo_root=tmp_path)
+    config.tech_lead_review_agent = "agent:tech-lead"
+    config.tech_lead_enabled = True
+    config.tech_lead.authority.flag_pattern = "propose"
+    config.tech_lead.findings.promote = "auto"
+
+    registry = create_pattern_registry(
+        config, host, InMemoryTechLeadAuthorityStore()
+    )
+
+    assert isinstance(registry, MirroredPatternCaseFileRegistry)
+    assert "refs/issue-orchestrator/registry/tech-lead-patterns" in client.refs

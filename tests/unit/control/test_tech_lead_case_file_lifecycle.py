@@ -191,6 +191,33 @@ def test_restart_after_close_phase_finishes_without_reposting_comment() -> None:
     assert entry is not None and entry.disposition == CASE_FILE_DECLINED
 
 
+def test_retry_keeps_first_recorded_timestamp_authoritative() -> None:
+    client = FakeGitHubRefClient()
+    now = [datetime(2026, 9, 10, tzinfo=timezone.utc)]
+    registry = _registry(client, "engine-a", now)
+    _seed(registry)
+    repository = _Repository()
+    original = _transition()
+    _owner(registry, repository).retire(
+        signature="stale-pattern", transition=original
+    )
+    later_retry = CaseFileLifecycleTransition(
+        transition_id=original.transition_id,
+        disposition=original.disposition,
+        reason=original.reason,
+        evidence=original.evidence,
+        recorded_at="2026-09-11T12:00:00+00:00",
+    )
+
+    replay = _owner(registry, repository).retire(
+        signature="stale-pattern", transition=later_retry
+    )
+
+    assert replay.deduplicated
+    entry = registry.read(signature="stale-pattern")
+    assert entry is not None and entry.lifecycle == (original,)
+
+
 def test_terminal_signature_accepts_later_evidence_without_reopening() -> None:
     client = FakeGitHubRefClient()
     now = [datetime(2026, 9, 10, tzinfo=timezone.utc)]

@@ -1580,6 +1580,50 @@ class TestSettlement:
                 shipped=True,
             )
 
+    def test_later_clock_retry_finishes_local_settlement(self):
+        class FailsFirstSettlement(InMemoryTechLeadAuthorityStore):
+            attempts = 0
+
+            def settle_promotion(self, **kwargs):
+                self.attempts += 1
+                if self.attempts == 1:
+                    raise RuntimeError("crash after remote retirement")
+                return super().settle_promotion(**kwargs)
+
+        authority = FailsFirstSettlement()
+        authority.record_promotion(promotion=_promotion("anchor-close"))
+        action = SettleTechLeadPromotionAction(
+            signature="anchor-close",
+            case_file_issue_number=65,
+            target_repo=UPSTREAM,
+            target_issue_number=500,
+            shipped=False,
+        )
+        repository, registry = _settlement_ports(
+            authority, signature=action.signature, case_file=65
+        )
+
+        first = apply_settle_tech_lead_promotion(
+            action,
+            repository_host=repository,
+            authority=authority,
+            pattern_registry=registry,
+            now_iso="2026-09-10T12:00:00+00:00",
+        )
+        retry = apply_settle_tech_lead_promotion(
+            action,
+            repository_host=repository,
+            authority=authority,
+            pattern_registry=registry,
+            now_iso="2026-09-11T12:00:00+00:00",
+        )
+
+        assert not first.success
+        assert retry.success
+        assert authority.attempts == 2
+        assert repository.update_issue_state.call_count == 1
+        assert repository.add_comment.call_count == 1
+
 
 # ---------------------------------------------------------------------------
 # Fact gathering + planning integration
