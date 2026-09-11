@@ -11,12 +11,17 @@ import subprocess
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
-from issue_orchestrator.ports.provider_readiness import ProviderReadiness
+from issue_orchestrator.domain.provider_lane import BillingMode, ProviderLane
+from issue_orchestrator.ports.provider_readiness import (
+    ProviderEntitlement,
+    ProviderReadiness,
+)
 from issue_orchestrator.ports.provider_resilience import ProviderErrorType
 
 from ..agent_runner_errors import classify_provider_output
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
     from pathlib import Path
 
     from issue_orchestrator.domain.sandbox_scope import SandboxScope
@@ -148,6 +153,83 @@ class CLIProvider(ABC):
         return ProviderReadiness.unknown(
             self.name, f"{self.executable} has no non-interactive auth probe"
         )
+
+    #: Models that bill against a *separate* meter from this provider's main
+    #: pool, mapped to that meter's short name. Empty for a provider whose
+    #: capacity is one undivided pool.
+    #:
+    #: Only consulted under prepaid billing. An API-key account buys one pool of
+    #: currency, so there are no sub-meters to split — see
+    #: :class:`~issue_orchestrator.domain.provider_lane.ProviderLane`.
+    QUOTA_METERS: dict[str, str] = {}
+
+    def meter_for_model(self, model: str | None) -> str | None:
+        """Return the separately-metered pool *model* bills against, if any.
+
+        Subclasses override ``QUOTA_METERS`` rather than this method unless the
+        mapping needs to be computed (e.g. matching a model family prefix).
+        """
+        if model is None:
+            return None
+        return self.QUOTA_METERS.get(model.strip().lower())
+
+    def lane_for(
+        self,
+        model: str | None = None,
+        entitlement: ProviderEntitlement | None = None,
+    ) -> ProviderLane:
+        """Return the independently-metered lane this invocation draws from.
+
+        The lane — not the provider name — is what the circuit breaker keys on,
+        so that an exhausted Fable or Spark meter does not close the door on the
+        main pool it never touched.
+
+        Sub-meters exist only under prepaid billing. Under metered billing every
+        model draws down the same balance, so this collapses to one lane per
+        provider and the circuit correctly refuses to launch anything once that
+        balance is gone.
+        """
+        resolved = entitlement or ProviderEntitlement()
+        billing = resolved.effective_billing
+        meter = (
+            self.meter_for_model(model) if billing is BillingMode.PREPAID else None
+        )
+        return ProviderLane(provider=self.name, meter=meter, billing=billing)
+
+    @property
+    def required_secret_names(self) -> tuple[str, ...]:
+        """Secret names this provider needs at launch, by keyring/env name.
+
+        Empty for providers that authenticate through their own CLI login and
+        carry no credential the orchestrator has to supply. Only what a provider
+        names here is read and injected — the orchestrator does not hand every
+        stored key to every session.
+        """
+        return ()
+
+    def session_env(self, *, secrets: "Mapping[str, str]") -> dict[str, str]:
+        """Environment this provider needs inside the session process.
+
+        Returned as environment rather than an argv prefix on purpose: argv is
+        world-readable through ``ps``, so a credential passed as ``env VAR=...``
+        would be visible to every local user. These land in
+        ``AgentSpec.env_overrides``.
+
+        ``secrets`` holds only the names from :attr:`required_secret_names` that
+        were actually resolved; a missing one is absent rather than empty.
+        """
+        del secrets  # most providers need nothing injected
+        return {}
+
+    def read_entitlement(self, output: str, exit_code: int | None) -> ProviderEntitlement:
+        """Interpret this CLI's auth output into a billing observation.
+
+        Default: report nothing. A provider that ships no entitlement signal
+        answers an undetermined :class:`ProviderEntitlement`, which resolves to
+        metered — the direction that spends nobody's money by accident.
+        """
+        del output, exit_code  # the default reads nothing
+        return ProviderEntitlement()
 
     def classify_output(self, output: str) -> ProviderErrorType | None:
         """Classify raw provider output through the one classification table.
