@@ -406,7 +406,7 @@ class Orchestrator:
         cmd: str,
         wd: Path,
         title: str | None = None,
-        secret_env: dict | None = None,
+        secret_env: dict[str, str] | None = None,
     ) -> bool:
         return _create_session(
             name, cmd, wd, title, self.deps.session_manager, self.deps.events, secret_env

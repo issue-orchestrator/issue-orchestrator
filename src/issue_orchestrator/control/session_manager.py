@@ -115,7 +115,7 @@ class SessionContext:
     #: Provider credentials for the session process, deliberately separate from
     #: ``command``: argv is world-readable through ``ps``, so a model API key
     #: spliced into the command string would leak to every local user.
-    secret_env: Optional[dict] = None
+    secret_env: Optional[dict[str, str]] = None
 
 
 class SessionManager:

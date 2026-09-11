@@ -36,7 +36,7 @@ class SessionRunner(Protocol):
         working_dir: str,
         title: str | None,
         session_name: str,  # Required - caller must provide explicit name
-        secret_env: dict | None = None,
+        secret_env: dict[str, str] | None = None,
     ) -> bool:
         """Create a new terminal session for an agent.
 
@@ -196,7 +196,7 @@ class NullSessionRunner:
         working_dir: str,
         title: str | None,
         session_name: str,
-        secret_env: dict | None = None,
+        secret_env: dict[str, str] | None = None,
     ) -> bool:
         return True
 

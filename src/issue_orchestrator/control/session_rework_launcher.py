@@ -73,7 +73,7 @@ class SessionCreatorFn(Protocol):
         command: str,
         worktree_path: Path,
         title: str | None,
-        secret_env: dict | None = None,
+        secret_env: dict[str, str] | None = None,
         /,
     ) -> bool: ...
 
@@ -81,7 +81,7 @@ class SessionCreatorFn(Protocol):
 class SessionSecretEnvFn(Protocol):
     """Resolve the provider credentials a launch needs, by provider name."""
 
-    def __call__(self, provider: str | None, /) -> dict | None: ...
+    def __call__(self, provider: str | None, /) -> dict[str, str] | None: ...
 
 
 class WorktreeReuseOptionsFactory(Protocol):

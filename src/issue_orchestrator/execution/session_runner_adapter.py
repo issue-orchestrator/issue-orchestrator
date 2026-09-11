@@ -42,7 +42,7 @@ class PluggySessionRunner:
         working_dir: str,
         title: str | None,
         session_name: str,  # Required - caller must provide explicit name
-        secret_env: dict | None = None,
+        secret_env: dict[str, str] | None = None,
     ) -> bool:
         """Create a terminal session via pluggy hook."""
         logger.info(
@@ -138,7 +138,7 @@ class PluggySessionRunner:
         logger.info("Calling on_orchestrator_shutdown hook")
         self._pm.hook.on_orchestrator_shutdown()
 
-    def terminal_health_check(self) -> dict | None:
+    def terminal_health_check(self) -> dict[str, str] | None:
         """Check health of the terminal backend.
 
         Returns:

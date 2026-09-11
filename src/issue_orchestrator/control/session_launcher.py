@@ -2222,12 +2222,13 @@ class SessionLauncher:
             )
         return self._provider_command_wrapper
 
-    def _rework_secret_env(self, provider: str | None) -> dict | None:
+    def _rework_secret_env(self, provider: str | None) -> dict[str, str] | None:
         """The same credential resolution, for the launch path that owns its own spawn."""
         return dict(self._provider_credentials.session_env(provider)) or None
 
     def _spawn(
-        self, name: str, command: str, worktree: Path, title: str, agent_config
+        self, name: str, command: str, worktree: Path, title: str,
+        agent_config: "AgentConfig",
     ) -> bool:
         """Start one agent session, always with its provider credentials.
 

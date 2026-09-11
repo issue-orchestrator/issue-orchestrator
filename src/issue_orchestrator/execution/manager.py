@@ -154,7 +154,7 @@ class PluginManager:
         working_dir: str,
         title: str | None,
         session_name: str,  # Required - caller must provide explicit name
-        secret_env: dict | None = None,
+        secret_env: dict[str, str] | None = None,
     ) -> bool:
         """Create a terminal session."""
         result = self._pm.hook.create_session(

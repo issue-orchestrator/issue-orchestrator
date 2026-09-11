@@ -498,7 +498,7 @@ def create_session(
     title: str | None,
     session_manager: SessionManager,
     events: EventSink,
-    secret_env: dict | None = None,
+    secret_env: dict[str, str] | None = None,
 ) -> bool:
     """Create a terminal session through SessionManager."""
     from .session_manager import SessionContext

@@ -329,7 +329,7 @@ class SubprocessPlugin:
         command: str,
         working_dir: Path,
         session_name: str,
-        secret_env: dict | None = None,
+        secret_env: dict[str, str] | None = None,
     ) -> AgentSession:
         """Start an agent session via :class:`AgentRunner`.
 
@@ -402,7 +402,7 @@ class SubprocessPlugin:
         working_dir: str,
         title: str | None,
         session_name: str,  # Required - caller must provide explicit name
-        secret_env: dict | None = None,
+        secret_env: dict[str, str] | None = None,
     ) -> bool | None:
         logger.info(
             "[subprocess] create_session called: session_id=%s session_name=%r "
