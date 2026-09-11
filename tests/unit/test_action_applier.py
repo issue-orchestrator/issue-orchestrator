@@ -3175,6 +3175,8 @@ class TestTechLeadMutationsCrossTheReconciliationGate:
             "io:needs-reconcile",
         ]
         authority = MagicMock()
+        authority.load_pattern_evidence.return_value = None
+        authority.load_pending_case_file.return_value = None
         target = MagicMock()
         applier = make_action_applier(
             labels=mock_labels,
@@ -3275,17 +3277,24 @@ class TestTechLeadMutationsCrossTheReconciliationGate:
 
     def test_an_unpaused_case_file_reaches_its_owner(self, guarded):
         """The gate blocks a PAUSED case file, not every promotion action."""
+        from issue_orchestrator.domain.tech_lead_findings import PatternEvidence
+
         applier, authority, _target, _repository_host = guarded
         applier.fresh_issue_reader.read_issue_labels.return_value = [
             "tech-lead-observation"
         ]
-        authority.has_pattern_observation.return_value = True  # already recorded
+        authority.load_pattern_evidence.return_value = PatternEvidence(
+            signature="sig",
+            case_file_issue_number=self.CASE_FILE,
+            observation_count=1,
+        )
+        authority.list_pattern_observation_ids.return_value = ("r1:s:A1",)
 
         [append, *_rest] = self._actions(self.CASE_FILE)
         result = applier.apply(append)
 
         assert result.success
-        authority.has_pattern_observation.assert_called_once()
+        authority.list_pattern_observation_ids.assert_called_once()
 
 
 class TestActLevelOpsCrossTheGateExactlyOnce:

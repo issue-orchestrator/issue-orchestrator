@@ -345,6 +345,23 @@ class TechLeadAuthorityStore(Protocol):
         """
         ...
 
+    def list_pattern_observation_ids(self, *, signature: str) -> tuple[str, ...]:
+        """Stable observation identities for shared-registry reconstruction."""
+        ...
+
+    def mirror_pattern(
+        self,
+        *,
+        signature: str,
+        issue_number: int,
+        observation_ids: tuple[str, ...],
+        fix_class: str,
+        area: str,
+        diagnosis: str,
+    ) -> None:
+        """Replace one local cache row from the shared pattern authority."""
+        ...
+
     def lookup_pattern(self, *, signature: str) -> int | None:
         """Return the case-file issue for a signature, or None when absent."""
         ...
@@ -706,6 +723,40 @@ class InMemoryTechLeadAuthorityStore:
 
     def has_pattern_observation(self, *, signature: str, observation_id: str) -> bool:
         return observation_id in self._observations.get(signature, set())
+
+    def list_pattern_observation_ids(self, *, signature: str) -> tuple[str, ...]:
+        return tuple(sorted(self._observations.get(signature, set())))
+
+    def mirror_pattern(
+        self,
+        *,
+        signature: str,
+        issue_number: int,
+        observation_ids: tuple[str, ...],
+        fix_class: str,
+        area: str,
+        diagnosis: str,
+    ) -> None:
+        from ..domain.tech_lead_findings import PatternEvidence
+
+        if issue_number <= 0 or not observation_ids:
+            raise ValueError("a mirrored pattern requires an issue and observations")
+        existing = self._patterns.get(signature)
+        if existing is not None and existing != issue_number:
+            raise TechLeadPatternConflictError(
+                f"pattern signature {signature!r} is already recorded for"
+                f" case-file issue #{existing}"
+            )
+        self._patterns[signature] = issue_number
+        self._observations[signature] = set(observation_ids)
+        self._evidence[signature] = PatternEvidence(
+            signature=signature,
+            case_file_issue_number=issue_number,
+            observation_count=len(set(observation_ids)),
+            fix_class=fix_class,
+            area=area,
+            diagnosis=diagnosis,
+        )
 
     def lookup_pattern(self, *, signature: str) -> int | None:
         return self._patterns.get(signature)

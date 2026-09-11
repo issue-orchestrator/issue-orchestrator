@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from ..ports.timeline_writer import TimelineWriter
     from ..ports.promotion_target import PromotionTargetHost
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
+    from ..ports.pattern_registry import PatternCaseFileRegistry
     from .open_issue_corpus import OpenIssueCorpusManager
     from .background_job_supervisor import BackgroundJobSupervisor
     from .label_manager import LabelManager
@@ -64,6 +65,8 @@ class InfraServices:
     attempt_store: "AttemptStore"
     # Orchestrator-owned tech_lead launch authority port (ADR-0031 / #6769 F2).
     tech_lead_authority: "TechLeadAuthorityStore"
+    # Shared cross-client identity/evidence authority for pattern case files.
+    pattern_registry: "PatternCaseFileRegistry"
     # Rebuildable GitHub open-issue corpus owner (#6881).
     open_issue_corpus: "OpenIssueCorpusManager"
     # The LOCAL half of ADR-0033: what tech-lead runs this engine executed and
