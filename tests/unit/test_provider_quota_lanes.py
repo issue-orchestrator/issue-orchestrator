@@ -527,10 +527,12 @@ class TestThePolicyChoosesTheLaneNotTheProvider:
 def test_every_launch_path_passes_provider_credentials():
     """A new launch path must not silently omit the credential argument.
 
-    There are five places that spawn an agent session. A provider whose key is
-    dropped at one of them fails at run time with an authentication error that
-    looks like a bad key rather than a missing wire-up, so this is checked
-    structurally instead of trusting five call sites to stay in sync.
+    The launcher funnels its four launch paths through one ``_spawn`` seam and
+    the rework path owns its own, so there are two places a session is actually
+    created. A provider whose key is dropped at either fails at run time with an
+    authentication error that looks like a bad key rather than a missing
+    wire-up, so this is checked structurally rather than by trusting call sites
+    to stay in sync as paths are added.
     """
     import ast
     from pathlib import Path

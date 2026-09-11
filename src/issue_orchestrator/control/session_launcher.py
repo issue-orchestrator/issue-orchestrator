@@ -71,10 +71,7 @@ from ..ports import (
     WorkingCopy,
     CommandRunner,
 )
-from ..ports.provider_credentials import (
-    NO_PROVIDER_CREDENTIALS,
-    ProviderCredentials,
-)
+from ..ports.provider_credentials import NO_PROVIDER_CREDENTIALS, ProviderCredentials
 from ..ports.provider_readiness import (
     NO_PROVIDER_READINESS_PROBE,
     ProviderReadinessProbe,
@@ -199,9 +196,6 @@ class SessionLauncher:
         # provider adapter names that fact instead of silently claiming the
         # provider is authenticated.
         provider_readiness_probe: ProviderReadinessProbe = NO_PROVIDER_READINESS_PROBE,
-        # Resolves the secrets a provider declares it needs (#7253). Defaults to
-        # the explicit "nothing is wired" resolver rather than an empty dict, so
-        # a composition without a provider registry names that fact.
         provider_credentials: ProviderCredentials = NO_PROVIDER_CREDENTIALS,
         # Every OTHER durable cause of the shared needs-human label (#6999 F4).
         needs_human_block: SharedNeedsHumanBlock = NO_OTHER_NEEDS_HUMAN_CAUSES,
@@ -1075,13 +1069,7 @@ class SessionLauncher:
 
             # Create terminal session
             step_start = time.time()
-            session_created = self._create_session(
-                session_name,
-                command,
-                worktree_path,
-                issue.title,
-                self._session_secret_env(agent_config.provider),
-            )
+            session_created = self._spawn(session_name, command, worktree_path, issue.title, agent_config)
             logger.info(
                 "[launch] Issue session create result: issue=%s session=%s created=%s",
                 issue.number,
@@ -1387,13 +1375,7 @@ class SessionLauncher:
                 command,
             )
 
-            session_created = self._create_session(
-                session_name,
-                command,
-                worktree_path,
-                issue.title,
-                self._session_secret_env(agent_config.provider),
-            )
+            session_created = self._spawn(session_name, command, worktree_path, issue.title, agent_config)
             if not session_created:
                 log_transition("issue", issue.number, "LAUNCHING", "FAILED", "session creation failed")
                 self._apply_actions([
@@ -1791,13 +1773,7 @@ class SessionLauncher:
             )
 
             # Create session
-            session_created = self._create_session(
-                session_name,
-                command,
-                worktree_path,
-                f"Review PR #{review.pr_number}",
-                self._session_secret_env(agent_config.provider),
-            )
+            session_created = self._spawn(session_name, command, worktree_path, f"Review PR #{review.pr_number}", agent_config)
             logger.info(
                 "[launch] Review session create result: issue=%s pr=%s session=%s created=%s",
                 review.issue_number,
@@ -2094,13 +2070,7 @@ class SessionLauncher:
                 command,
             )
 
-            session_created = self._create_session(
-                session_name,
-                command,
-                worktree_path,
-                issue_title,
-                self._session_secret_env(agent_config.provider),
-            )
+            session_created = self._spawn(session_name, command, worktree_path, issue_title, agent_config)
             logger.info(
                 "[launch] Retrospective review create result: issue=%s session=%s created=%s",
                 review.issue_number,
@@ -2195,7 +2165,7 @@ class SessionLauncher:
             wrap_provider_command=self._wrap_provider_command,
             build_session_env=self._build_session_env,
             check_provider_ready=self._check_provider_ready,
-            session_secret_env=self._session_secret_env,
+            session_secret_env=self._rework_secret_env,
             resolve_stack_decision=self._dependency_gate.stack_base_decision_for_issue,
             coder_prompt_addendum=self._coder_prompt_addendum,
             scoped_rework=ScopedReworkLaunch(self._tech_lead_authority, self.repository_host, self._apply_actions),
@@ -2252,25 +2222,34 @@ class SessionLauncher:
             )
         return self._provider_command_wrapper
 
-    def _session_secret_env(self, provider: str | None) -> dict | None:
-        """Provider credentials for this launch, or ``None`` when it needs none.
+    def _rework_secret_env(self, provider: str | None) -> dict | None:
+        """The same credential resolution, for the launch path that owns its own spawn."""
+        return dict(self._provider_credentials.session_env(provider)) or None
 
-        ``None`` rather than an empty dict so the runner can tell "this provider
-        supplies its own login" from "the key resolved to nothing".
+    def _spawn(
+        self, name: str, command: str, worktree: Path, title: str, agent_config
+    ) -> bool:
+        """Start one agent session, always with its provider credentials.
+
+        The single place a session is spawned from this class. Credentials are
+        resolved here rather than at each launch path so a new path cannot
+        launch a key-authenticated provider unauthenticated — the failure looks
+        like a bad key rather than a missing wire-up. ``None`` rather than an
+        empty mapping distinguishes "this provider supplies its own login" from
+        "the key resolved to nothing".
         """
-        resolved = dict(self._provider_credentials.session_env(provider))
-        return resolved or None
+        secret_env = dict(
+            self._provider_credentials.session_env(agent_config.provider)
+        )
+        return self._create_session(name, command, worktree, title, secret_env or None)
 
     def _check_provider_ready(
-        self,
-        provider: str | None,
-        issue_number: int,
-        model: str | None = None,
+        self, provider: str | None, issue_number: int, model: str | None = None
     ) -> Optional["LaunchResult"]:
-        """Ask the launch gate whether this agent's quota lane can do work now.
+        """Ask the launch gate whether this agent's quota lane can work now.
 
-        ``model`` is what distinguishes the lane: two agents on one provider
-        draw on different meters when one runs a separately-metered model.
+        ``model`` selects the lane: two agents on one provider draw on different
+        meters when one runs a separately-metered model.
         """
         if self._provider_gate is None:
             return None

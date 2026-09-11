@@ -9,7 +9,6 @@ rather than handing the whole bundle across a layer boundary
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional
 
 from ..control.needs_human_block import SharedNeedsHumanBlock
@@ -18,7 +17,10 @@ from ..ports.coder_prompt import (
     CoderPromptAddendumProvider,
     NO_CODER_PROMPT_ADDENDUM,
 )
-from ..ports.provider_credentials import ProviderCredentials
+from ..ports.provider_credentials import (
+    NO_PROVIDER_CREDENTIALS,
+    ProviderCredentials,
+)
 from ..ports.provider_readiness import ProviderReadinessProbe
 from ..ports.issue_run_allocator import IssueRunAllocator
 
@@ -58,7 +60,7 @@ def build_session_launcher_factory(
     label_manager,
     agent_callback_endpoint: "AgentCallbackEndpoint",
     provider_readiness_probe: ProviderReadinessProbe,
-    provider_credentials: ProviderCredentials,
+    provider_credentials: ProviderCredentials = NO_PROVIDER_CREDENTIALS,
     needs_human_block: SharedNeedsHumanBlock,
     coder_prompt_addendum: CoderPromptAddendumProvider = NO_CODER_PROMPT_ADDENDUM,
 ) -> "SessionLauncherFactory":
