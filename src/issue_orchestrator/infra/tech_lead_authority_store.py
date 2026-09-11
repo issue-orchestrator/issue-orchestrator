@@ -481,6 +481,58 @@ class SqliteTechLeadAuthorityStore:
         ).fetchone()
         return row is not None
 
+    def list_pattern_observation_ids(self, *, signature: str) -> tuple[str, ...]:
+        """Stable observation identities used to seed the shared authority."""
+        conn = self._get_connection()
+        rows = conn.execute(
+            "SELECT observation_id FROM tech_lead_pattern_observations"
+            " WHERE signature = ? ORDER BY recorded_at, observation_id",
+            (signature,),
+        ).fetchall()
+        return tuple(str(row["observation_id"]) for row in rows)
+
+    def mirror_pattern(
+        self,
+        *,
+        signature: str,
+        issue_number: int,
+        observation_ids: tuple[str, ...],
+        fix_class: str,
+        area: str,
+        diagnosis: str,
+    ) -> None:
+        """Replace one SQLite cache row from the shared pattern authority."""
+        if issue_number <= 0 or not observation_ids:
+            raise ValueError("a mirrored pattern requires an issue and observations")
+        unique_ids = tuple(dict.fromkeys(observation_ids))
+        now = datetime.now(timezone.utc).isoformat()
+        with self._transaction() as tx:
+            row = tx.execute(
+                "SELECT issue_number FROM tech_lead_patterns WHERE signature = ?",
+                (signature,),
+            ).fetchone()
+            if row is not None and int(row["issue_number"]) != issue_number:
+                raise TechLeadPatternConflictError(
+                    f"pattern signature {signature!r} is already recorded for"
+                    f" case-file issue #{int(row['issue_number'])}"
+                )
+            tx.execute(
+                "INSERT INTO tech_lead_patterns (signature, issue_number, recorded_at,"
+                " observation_count, fix_class, area, diagnosis) VALUES (?, ?, ?, ?, ?, ?, ?)"
+                " ON CONFLICT(signature) DO UPDATE SET observation_count=excluded.observation_count,"
+                " fix_class=excluded.fix_class, area=excluded.area, diagnosis=excluded.diagnosis",
+                (signature, issue_number, now, len(unique_ids), fix_class, area, diagnosis),
+            )
+            tx.execute(
+                "DELETE FROM tech_lead_pattern_observations WHERE signature = ?",
+                (signature,),
+            )
+            tx.executemany(
+                "INSERT INTO tech_lead_pattern_observations"
+                " (signature, observation_id, recorded_at) VALUES (?, ?, ?)",
+                ((signature, observation_id, now) for observation_id in unique_ids),
+            )
+
     def lookup_pattern(self, *, signature: str) -> int | None:
         """Return the case-file issue for a signature, or None when absent."""
         conn = self._get_connection()

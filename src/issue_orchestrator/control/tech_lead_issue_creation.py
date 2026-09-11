@@ -33,6 +33,7 @@ from .tech_lead_issue_policy import resolve_tech_lead_milestone_number
 
 if TYPE_CHECKING:
     from ..ports import EventSink, RepositoryHost
+    from ..ports.pattern_registry import PatternCaseFileRegistry
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
     from .retry_history_state import ExpediteLane
 
@@ -72,6 +73,20 @@ def _creation_preflight(
     if is_case_file:
         assert isinstance(action, CreateTechLeadCaseFileIssueAction)
         assert case_files is not None
+        inspected = _inspect_existing_case_file(action, case_files)
+        if inspected is not None:
+            return inspected
+        label_error = required_label_provisioning_error(
+            action,
+            repository_host=repository_host,
+            before_write=before_case_file_write,
+        )
+        if label_error is not None:
+            logger.error("[APPLIER] %s", label_error)
+            return ActionResult.fail(action, label_error)
+    if is_case_file:
+        assert isinstance(action, CreateTechLeadCaseFileIssueAction)
+        assert case_files is not None
         try:
             # "Does a case file already exist for this signature?" is the
             # owner's question, not this boundary's: it checks the ledger AND
@@ -97,20 +112,36 @@ def _creation_preflight(
                 "Failed to reconcile pattern ledger before case-file creation"
             )
             return ActionResult.fail(action, str(exc))
-    if is_case_file:
-        assert isinstance(
-            action,
-            (CreateTechLeadProposalIssueAction, CreateTechLeadCaseFileIssueAction),
-        )
-        label_error = required_label_provisioning_error(
-            action,
-            repository_host=repository_host,
-            before_write=before_case_file_write,
-        )
-        if label_error is not None:
-            logger.error("[APPLIER] %s", label_error)
-            return ActionResult.fail(action, label_error)
     return None
+
+
+def _inspect_existing_case_file(
+    action: CreateTechLeadCaseFileIssueAction,
+    case_files: PatternCaseFileOwner,
+) -> ActionResult | None:
+    """Resolve an existing case file before unnecessary label provisioning."""
+    try:
+        inspected = case_files.inspect(action)
+        if inspected is None:
+            return None
+        # ``inspect`` is deliberately read-only.  Let the owner pass through
+        # its authoritative reservation boundary before adopting so a local
+        # rolling-upgrade row that was committed just before authority was
+        # lost can retire the matching creation intent on recovery.
+        resolved = case_files.resolve(action)
+        assert resolved.issue_number is not None
+        case_files.adopt(action, issue_number=resolved.issue_number)
+        return ActionResult.ok(
+            action,
+            issue_number=resolved.issue_number,
+            pr_count=action.pr_count,
+            deduplicated=True,
+        )
+    except (ReconciliationRequired, ClaimLostError):
+        raise
+    except Exception as exc:
+        logger.exception("Failed to inspect pattern registry before creation")
+        return ActionResult.fail(action, str(exc))
 
 
 def apply_create_tech_lead_issue(
@@ -119,6 +150,7 @@ def apply_create_tech_lead_issue(
     repository_host: "RepositoryHost",
     events: "EventSink",
     ops: "TechLeadAuthorityStore | None",
+    pattern_registry: "PatternCaseFileRegistry | None" = None,
     add_comment: Callable[[int, str], str],
     emit_labels_changed: Callable[[int, list[str], list[str]], None],
     before_case_file_write: Callable[[], None],
@@ -129,14 +161,20 @@ def apply_create_tech_lead_issue(
     # Case-file identity (ledger lookup, remote recovery, observation accrual)
     # belongs to ONE owner; this boundary owns milestone resolution, the GitHub
     # create, and the trace event, and asks the owner for outcomes (#6957 R2 A1).
+    if pattern_registry is None and ops is not None:
+        from .pattern_registry import LocalPatternCaseFileRegistry
+
+        pattern_registry = LocalPatternCaseFileRegistry(
+            ops, before_write=before_case_file_write
+        )
     case_files = (
         PatternCaseFileOwner(
-            authority=ops,
+            registry=pattern_registry,
             repository_host=repository_host,
             add_comment=add_comment,
             before_write=before_case_file_write,
         )
-        if ops is not None
+        if pattern_registry is not None
         else None
     )
     preflight = _creation_preflight(

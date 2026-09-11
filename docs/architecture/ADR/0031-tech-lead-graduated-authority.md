@@ -171,6 +171,25 @@ Semantics:
   accumulated cross-job evidence. The `mode="pattern"` trace event still fires.
   Under `propose`, `flag_pattern` stays a shadow *would-have-done* record and
   opens no case file.
+- **Shared pattern identity (amended by #6789).** The canonical mapping and
+  observation identities live in a versioned compare-and-swap ledger at
+  `refs/issue-orchestrator/registry/tech-lead-patterns`. The ref points to a
+  commit whose message contains the complete bounded registry; non-force
+  fast-forward updates make concurrent decisions atomic. A lease-backed
+  creation reservation carries the original issue marker, observation
+  identity, and classification across both crash windows. A stale reservation
+  is taken over only after an authoritative marker lookup proves the issue was
+  not created; if it was created, the original reservation is finalized.
+  The exact creation token is renewed at the issue-publication boundary so a
+  creator fenced by a takeover cannot resume from cached ownership. Evidence
+  comments use the same two-phase rule: shared authority first reserves the
+  observation identity and classification, the owner publishes or recovers its
+  exact comment receipt, and only then does shared authority finalize the
+  evidence count. A live peer cannot publish while that reservation is held.
+  `triage_authority.sqlite` is a local replica used by planning. Startup merges
+  trusted rows from a rolling upgrade into the shared ledger, then rebuilds
+  the local replica from the shared record. Editable issue titles, bodies, and
+  comments are never the signature authority or the evidence count.
 - **Duplicate observations accrue to the ledger (amended by #6989).** A
   `create_issue` proposal carrying `duplicate_of` has exactly one non-filing
   route in the dedup gate (#6878): commenting on the candidate, which requires

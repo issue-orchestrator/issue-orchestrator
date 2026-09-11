@@ -13,8 +13,9 @@ invariants make it trustworthy:
   and ``area`` decide whether a finding is promotable at all and which repo it
   routes to, so they must come from the command that actually wrote the issue.
 
-All three span an authority-store write AND a GitHub write, in an order that
-matters, and this module is the owner of that transaction.
+All three span a shared registry write, a local planning-replica write, and a
+GitHub issue write, in an order that matters. This module owns that transaction
+while the registry owns cross-client compare-and-swap.
 
 **The creation transaction.** The GitHub issue is created before its ledger row
 exists, so a crash in between leaves an issue nothing knows about. A marker
@@ -25,19 +26,24 @@ observation of that signature can be the one that recovers it. Adopting the
 orphan with the retrying action's metadata therefore recorded the wrong
 observation identity and could rewrite a ``fix:human`` finding as ``fix:code``,
 with no durable row for the classification preflight to defend (#6957 round-3
-review F10). So the owner writes a durable :class:`PendingCaseFile` BEFORE the
-create and finalizes a recovered issue FROM THAT INTENT; the retrying action is
-then handled separately, as an ordinary append.
+review F10). So the owner acquires a leased shared reservation containing a
+durable :class:`PendingCaseFile` BEFORE the create and finalizes a recovered
+issue FROM THAT INTENT. A different client may recover an expired reservation,
+while a live peer's reservation stops the competing create. The retrying action
+is then handled separately, as an ordinary append.
 
-Four operations, one owner:
+Five operations, one owner:
 
+* :meth:`PatternCaseFileOwner.inspect` — read-only orphan detection before
+  provisioning labels;
 * :meth:`PatternCaseFileOwner.resolve` — typed :class:`CaseFileResolution`:
-  already committed, recovered from its intent just now, or absent (create it).
-* :meth:`PatternCaseFileOwner.begin` — record the creation intent; call
-  immediately before the GitHub create.
+  already committed, reserved for this client, or recovered from the original
+  intent;
+* :meth:`PatternCaseFileOwner.begin` — assert the reservation immediately
+  before the GitHub create;
 * :meth:`PatternCaseFileOwner.open` — commit the ledger row for an issue this
   process just created, and append the rest of its decision's observations.
-* :meth:`PatternCaseFileOwner.adopt` / :meth:`append_observations` — reconcile
+* :meth:`PatternCaseFileOwner.adopt` and :meth:`append_observations` — reconcile
   an action's observations onto an existing case file.
 """
 
@@ -50,15 +56,16 @@ from typing import TYPE_CHECKING, Callable, Iterable
 
 from .comment_publication import ensure_comment_published
 
-from ..domain.tech_lead_findings import (
-    CaseFileClassification,
-    PendingCaseFile,
+from ..domain.tech_lead_findings import CaseFileClassification, PendingCaseFile
+from ..ports.pattern_registry import (
+    PatternCaseFileRegistry,
+    PatternRegistryError,
+    PatternReservationState,
 )
 
 if TYPE_CHECKING:
     from ..domain.tech_lead_findings import PatternObservation
     from ..ports import RepositoryHost
-    from ..ports.tech_lead_authority import TechLeadAuthorityStore
     from .actions import CreateTechLeadCaseFileIssueAction
 
 logger = logging.getLogger(__name__)
@@ -122,15 +129,40 @@ class PatternCaseFileOwner:
     def __init__(
         self,
         *,
-        authority: "TechLeadAuthorityStore",
+        registry: PatternCaseFileRegistry,
         repository_host: "RepositoryHost",
         add_comment: Callable[[int, str], str],
         before_write: Callable[[], None],
     ) -> None:
-        self._authority = authority
+        self._registry = registry
         self._repository_host = repository_host
         self._add_comment = add_comment
         self._before_write = before_write
+
+    def inspect(
+        self, action: "CreateTechLeadCaseFileIssueAction"
+    ) -> CaseFileResolution | None:
+        """Read authority and detect pre-registry orphans without writing."""
+        current = self._registry.read(signature=action.pattern_signature)
+        if current is not None:
+            if current.committed:
+                assert current.issue_number is not None
+                return CaseFileResolution(CaseFileState.COMMITTED, current.issue_number)
+            return None
+        found = self._repository_host.find_issue_by_marker(
+            title=action.title,
+            marker=action.idempotency_marker,
+            authoritative=False,
+        )
+        if found is not None:
+            raise OrphanedCaseFileError(
+                f"case file #{found} exists for signature"
+                f" {action.pattern_signature!r} but the registry has neither a"
+                " ledger row nor a record of creating it; import the trusted"
+                " local ledger before proceeding"
+            )
+        self._orphan_checked_signature = action.pattern_signature
+        return None
 
     def resolve(
         self, action: "CreateTechLeadCaseFileIssueAction"
@@ -157,84 +189,113 @@ class PatternCaseFileOwner:
         A lookup that FAILS propagates: "unknown" must never be mistaken for
         "no case file exists", because that is what files a duplicate.
         """
-        committed = self._authority.lookup_pattern(signature=action.pattern_signature)
-        if committed is not None:
-            # Belt and braces: an intent left behind by a crash between the
-            # ledger write and its discard is inert, but it should not linger.
-            self._discard_pending(signature=action.pattern_signature)
-            return CaseFileResolution(CaseFileState.COMMITTED, committed)
-
-        pending = self._authority.load_pending_case_file(
-            signature=action.pattern_signature
-        )
-        # Which lookup depends on what a NEGATIVE answer will be used for
-        # (#6957 round-5 review F13). With an intent present, a miss retires
-        # that intent and lets a fresh issue be created — load-bearing, so it
-        # must be PROVEN. With no intent, a miss only means "carry on and
-        # create", which is already the right move unless the authority store
-        # was lost; a bounded best-effort scan is the proportionate safety net
-        # there, since the exhaustive one would run on every new case file.
-        found = self._repository_host.find_issue_by_marker(
+        pending = PendingCaseFile(
+            signature=action.pattern_signature,
             title=action.title,
-            marker=action.idempotency_marker,
-            authoritative=pending is not None,
+            idempotency_marker=action.idempotency_marker,
+            body_observation_id=action.body_observation.observation_id,
+            fix_class=action.fix_class,
+            area=action.area or "",
+            diagnosis=action.diagnosis,
         )
-        if pending is None:
-            if found is None:
-                return CaseFileResolution(CaseFileState.ABSENT)
-            raise OrphanedCaseFileError(
-                f"case file #{found} exists for signature"
-                f" {action.pattern_signature!r} but the orchestrator has neither a"
-                " ledger row nor a record of creating it. Its observation identity"
-                " and fix classification cannot be reconstructed safely; recover"
-                " the authority store, or close that issue to let the signature"
-                " open a fresh case file"
+        current = self._registry.read(signature=action.pattern_signature)
+        if (
+            current is None
+            and getattr(self, "_orphan_checked_signature", "")
+            != action.pattern_signature
+        ):
+            # Catch a pre-registry remote orphan before taking the shared
+            # reservation. A concurrent legitimate creator must reserve first,
+            # so the subsequent atomic reserve still closes this read/create gap.
+            found = self._repository_host.find_issue_by_marker(
+                title=action.title,
+                marker=action.idempotency_marker,
+                authoritative=False,
             )
+            if found is not None:
+                raise OrphanedCaseFileError(
+                    f"case file #{found} exists for signature"
+                    f" {action.pattern_signature!r} but the registry has neither a"
+                    " ledger row nor a record of creating it; import the trusted"
+                    " local ledger before proceeding"
+                )
+        self._before_write()
+        reservation = self._registry.reserve(pending)
+        if reservation.state is PatternReservationState.COMMITTED:
+            assert reservation.entry.issue_number is not None
+            return CaseFileResolution(
+                CaseFileState.COMMITTED, reservation.entry.issue_number
+            )
+        if reservation.state is PatternReservationState.HELD:
+            raise PatternRegistryError(
+                f"pattern {action.pattern_signature!r} is being created by"
+                f" {reservation.entry.claimant_id}; retry after"
+                f" {reservation.entry.expires_at}"
+            )
+        if reservation.state is PatternReservationState.ACQUIRED:
+            self._reservation_id = reservation.entry.reservation_id
+            return CaseFileResolution(CaseFileState.ABSENT)
+
+        assert reservation.state is PatternReservationState.RECOVERABLE
+        original = reservation.entry.pending
+        if original is None:
+            raise PatternRegistryError("recoverable reservation has no creation intent")
+        found = self._repository_host.find_issue_by_marker(
+            title=original.title,
+            marker=original.idempotency_marker,
+            authoritative=True,
+        )
         if found is None:
-            logger.info(
-                "[tech_lead] Discarding a stale case-file creation intent for"
-                " signature %r: no issue carries its marker, so the create never"
-                " happened",
-                action.pattern_signature,
+            self._before_write()
+            takeover = self._registry.take_over(
+                stale_reservation_id=reservation.entry.reservation_id,
+                pending=pending,
             )
-            self._discard_pending(signature=action.pattern_signature)
+            if takeover.state is PatternReservationState.COMMITTED:
+                assert takeover.entry.issue_number is not None
+                return CaseFileResolution(
+                    CaseFileState.COMMITTED, takeover.entry.issue_number
+                )
+            if takeover.state is not PatternReservationState.ACQUIRED:
+                raise PatternRegistryError(
+                    f"pattern {action.pattern_signature!r} changed during recovery"
+                )
+            self._reservation_id = takeover.entry.reservation_id
             return CaseFileResolution(CaseFileState.ABSENT)
 
         logger.warning(
-            "[tech_lead] Recovered orphaned case file #%d for signature %r from its"
-            " creation intent (interrupted creation); adopting it instead of filing"
-            " a second one",
+            "[tech_lead] Recovered interrupted case file #%d for signature %r"
+            " from the shared creation reservation",
             found,
             action.pattern_signature,
         )
-        self._commit(
+        self._before_write()
+        committed = self._registry.finalize(
             signature=action.pattern_signature,
+            reservation_id=reservation.entry.reservation_id,
             issue_number=found,
-            body_observation_id=pending.body_observation_id,
-            fix_class=pending.fix_class,
-            area=pending.area,
-            diagnosis=pending.diagnosis,
         )
-        return CaseFileResolution(CaseFileState.RECOVERED, found)
+        assert committed.issue_number is not None
+        return CaseFileResolution(CaseFileState.RECOVERED, committed.issue_number)
 
     def begin(self, action: "CreateTechLeadCaseFileIssueAction") -> None:
-        """Record the creation intent. Call immediately BEFORE the GitHub create.
-
-        This is the whole point of the transaction: whatever happens next, the
-        orchestrator can say which command wrote the issue and what it meant.
-        """
-        self._before_write()
-        self._authority.record_pending_case_file(
-            pending=PendingCaseFile(
-                signature=action.pattern_signature,
-                title=action.title,
-                idempotency_marker=action.idempotency_marker,
-                body_observation_id=action.body_observation.observation_id,
-                fix_class=action.fix_class,
-                area=action.area or "",
-                diagnosis=action.diagnosis,
+        """Fence and renew the exact reservation immediately before create."""
+        reservation_id = getattr(self, "_reservation_id", "")
+        if not reservation_id:
+            raise PatternRegistryError(
+                f"pattern {action.pattern_signature!r} was not reserved"
             )
+        self._before_write()
+        renewed = self._registry.renew_creation(
+            signature=action.pattern_signature,
+            reservation_id=reservation_id,
         )
+        if renewed.state is not PatternReservationState.ACQUIRED:
+            raise PatternRegistryError(
+                f"pattern {action.pattern_signature!r} creation reservation"
+                " changed before publication"
+            )
+        self._reservation_id = renewed.entry.reservation_id
 
     def open(
         self, action: "CreateTechLeadCaseFileIssueAction", *, issue_number: int
@@ -247,13 +308,11 @@ class PatternCaseFileOwner:
         rather than pre-counted. Pre-counting them claimed evidence a crash
         might never post, and the retry counted it all again.
         """
-        self._commit(
+        self._before_write()
+        self._registry.finalize(
             signature=action.pattern_signature,
+            reservation_id=self._reservation_id,
             issue_number=issue_number,
-            body_observation_id=action.body_observation.observation_id,
-            fix_class=action.fix_class,
-            area=action.area or "",
-            diagnosis=action.diagnosis,
         )
         self.append_observations(
             signature=action.pattern_signature,
@@ -263,33 +322,6 @@ class PatternCaseFileOwner:
             area=action.area or "",
             diagnosis=action.diagnosis,
         )
-
-    def _commit(
-        self,
-        *,
-        signature: str,
-        issue_number: int,
-        body_observation_id: str,
-        fix_class: str,
-        area: str,
-        diagnosis: str,
-    ) -> None:
-        """Write the ledger row and retire the creation intent."""
-        self._before_write()
-        self._authority.record_pattern(
-            signature=signature,
-            issue_number=issue_number,
-            observation_id=body_observation_id,
-            fix_class=fix_class,
-            area=area,
-            diagnosis=diagnosis,
-        )
-        self._discard_pending(signature=signature)
-
-    def _discard_pending(self, *, signature: str) -> None:
-        """Retire intent only while still authorized; interrupted retirement is recoverable."""
-        self._before_write()
-        self._authority.discard_pending_case_file(signature=signature)
 
     def adopt(
         self, action: "CreateTechLeadCaseFileIssueAction", *, issue_number: int
@@ -326,20 +358,16 @@ class PatternCaseFileOwner:
 
         The ordering is deliberate and shared by every caller:
 
-        0. RECONCILE the incoming durable facts against the recorded row first.
-           A classification conflict raises before anything is published — the
-           apply-time mirror of the planner's preflight, and the one that
-           matters on the recovery path, where the durable row appears only
-           moments earlier and planning could not have seen it (#6957 round-3
-           review F10). The canonical ``diagnosis`` merges by the same
-           first-non-empty rule, which is what durably establishes it when a
-           reviewed ``flag_pattern`` lands on a case file an evidence-only
-           sighting opened (#6989 round-1 review F1).
-        1. an identity ALREADY recorded means a previous attempt completed —
-           do nothing (a purely local ledger read, no GitHub call);
-        2. otherwise recover or publish an authoritative comment receipt,
-           then record create-once. A crash between publication and recording
-           recovers the exact-body receipt without reposting or double counting.
+        0. RESERVE the incoming identity and classification in shared authority.
+           A conflicting classification or a live peer reservation raises before
+           anything is published. This is the apply-time mirror of the planner's
+           preflight, including recovery paths planning could not see.
+        1. an identity ALREADY committed means a previous attempt completed —
+           do nothing;
+        2. otherwise renew the exact token at the publication boundary, recover
+           or publish the authoritative comment receipt, then finalize the
+           reserved count. A crash between publication and finalization recovers
+           the exact receipt and reservation without reposting or double counting.
 
         The merged diagnosis rides the SAME create-once write as the
         classification upgrade, so a signature can never end up promotable with
@@ -351,40 +379,101 @@ class PatternCaseFileOwner:
         Returns what actually happened, so callers report a replay honestly
         instead of inferring it from the absence of an error.
         """
-        recorded_row = self._authority.load_pattern_evidence(signature=signature)
-        if recorded_row is not None:
-            # Preflight only — the result is deliberately discarded. Its job is
-            # to RAISE on a classification conflict before any comment is
-            # published; the authoritative merge runs inside the store's own
-            # transaction, beside the create-once count, so the row and its
-            # comment can never disagree.
-            recorded_row.classification.merged_with(
-                CaseFileClassification(
-                    fix_class=fix_class, area=area, diagnosis=diagnosis
-                ),
-                signature=signature,
-            )
         recorded = 0
         skipped = 0
         for observation in observations:
-            if self._authority.has_pattern_observation(
-                signature=signature, observation_id=observation.observation_id
-            ):
-                skipped += 1
-                continue
-            ensure_comment_published(
-                issue_number, observation.comment,
-                find_receipt=lambda number, body: self._repository_host.find_issue_comment_receipt(number, body=body),
-                post_comment=self._add_comment,
-                before_write=self._before_write,
-            )
-            self._before_write()
-            self._authority.note_pattern_observation(
+            outcome = self._append_observation(
                 signature=signature,
-                observation_id=observation.observation_id,
-                fix_class=fix_class,
-                area=area,
-                diagnosis=diagnosis,
+                issue_number=issue_number,
+                observation=observation,
+                classification=CaseFileClassification(
+                    fix_class=fix_class, area=area, diagnosis=diagnosis
+                ),
             )
-            recorded += 1
+            recorded += outcome.recorded
+            skipped += outcome.skipped
         return ObservationAppendOutcome(recorded=recorded, skipped=skipped)
+
+    def _append_observation(
+        self,
+        *,
+        signature: str,
+        issue_number: int,
+        observation: "PatternObservation",
+        classification: CaseFileClassification,
+    ) -> ObservationAppendOutcome:
+        """Reserve, publish, and commit one observation under one shared token."""
+        self._before_write()
+        reservation = self._registry.reserve_observation(
+            signature=signature,
+            observation=observation,
+            classification=classification,
+        )
+        if reservation.entry.issue_number != issue_number:
+            raise PatternRegistryError(
+                f"pattern {signature!r} belongs to issue"
+                f" #{reservation.entry.issue_number}, not #{issue_number}"
+            )
+        if reservation.state is PatternReservationState.COMMITTED:
+            return ObservationAppendOutcome(recorded=0, skipped=1)
+        if reservation.state is PatternReservationState.HELD:
+            raise PatternRegistryError(
+                f"pattern {signature!r} evidence is being published by"
+                f" {reservation.entry.claimant_id}; retry after"
+                f" {reservation.entry.expires_at}"
+            )
+        if reservation.state is PatternReservationState.RECOVERABLE:
+            self._before_write()
+            reservation = self._registry.take_over_observation(
+                signature=signature,
+                stale_reservation_id=reservation.entry.reservation_id,
+            )
+            if reservation.state is not PatternReservationState.ACQUIRED:
+                raise PatternRegistryError(
+                    f"pattern {signature!r} evidence changed during recovery"
+                )
+        pending = reservation.entry.pending_observation
+        if pending is None:
+            raise PatternRegistryError("evidence reservation has no pending observation")
+
+        def admit_comment() -> None:
+            self._before_write()
+            renewed = self._registry.renew_observation(
+                signature=signature,
+                reservation_id=reservation.entry.reservation_id,
+            )
+            if renewed.state is not PatternReservationState.ACQUIRED:
+                raise PatternRegistryError(
+                    f"pattern {signature!r} evidence reservation changed"
+                    " before publication"
+                )
+
+        ensure_comment_published(
+            issue_number,
+            pending.observation.comment,
+            find_receipt=lambda number, body: (
+                self._repository_host.find_issue_comment_receipt(number, body=body)
+            ),
+            post_comment=self._add_comment,
+            before_write=admit_comment,
+        )
+        self._before_write()
+        was_recorded = self._registry.finalize_observation(
+            signature=signature,
+            reservation_id=reservation.entry.reservation_id,
+        )
+        outcome = ObservationAppendOutcome(
+            recorded=int(was_recorded), skipped=int(not was_recorded)
+        )
+        if pending.observation.observation_id == observation.observation_id:
+            return outcome
+        current = self._append_observation(
+            signature=signature,
+            issue_number=issue_number,
+            observation=observation,
+            classification=classification,
+        )
+        return ObservationAppendOutcome(
+            recorded=outcome.recorded + current.recorded,
+            skipped=outcome.skipped + current.skipped,
+        )

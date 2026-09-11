@@ -78,6 +78,7 @@ from .tech_lead_issue_policy import case_file_issue_labels
 if TYPE_CHECKING:
     from ..domain.tech_lead_artifacts import ProposedTechLeadAction, TechLeadFinding
     from ..infra.config import Config
+    from ..ports.pattern_registry import PatternCaseFileRegistry
     from ..ports import RepositoryHost
     from ..ports.issue import Issue
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
@@ -608,6 +609,7 @@ def apply_append_pattern_observation(
     *,
     repository_host: "RepositoryHost | None",
     authority: "TechLeadAuthorityStore | None",
+    pattern_registry: "PatternCaseFileRegistry | None" = None,
     before_write: Callable[[], None],
 ) -> "ActionResult":
     """Post a repeat observation and count it create-once (#6781/#6957).
@@ -633,9 +635,15 @@ def apply_append_pattern_observation(
             " TechLeadAuthorityStore wired into this applier",
         )
     assert action.observation is not None  # enforced by the action's __post_init__
+    if pattern_registry is None:
+        from .pattern_registry import LocalPatternCaseFileRegistry
+
+        pattern_registry = LocalPatternCaseFileRegistry(
+            authority, before_write=before_write
+        )
     try:
         outcome = PatternCaseFileOwner(
-            authority=authority,
+            registry=pattern_registry,
             repository_host=repository_host,
             add_comment=repository_host.add_comment,
             before_write=before_write,

@@ -67,6 +67,7 @@ if TYPE_CHECKING:
     from .label_manager import LabelManager
     from ..ports.promotion_target import PromotionTargetHost
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
+    from ..ports.pattern_registry import PatternCaseFileRegistry
 
 ActionHandler = Callable[[Action], ActionResult]
 #: ``(action, issue_number) -> None``; raises when the mutation must not proceed.
@@ -151,6 +152,7 @@ def tech_lead_action_handlers(
     require_mutation_authority: ExpectedStateGuard,
     repository_host: "RepositoryHost | None",
     authority: "TechLeadAuthorityStore | None",
+    pattern_registry: "PatternCaseFileRegistry | None" = None,
     promotion_target: "PromotionTargetHost | None",
     recover_validated_work: ActionHandler | None = None,
 ) -> dict[ActionType, ActionHandler]:
@@ -188,6 +190,7 @@ def tech_lead_action_handlers(
         ActionType.APPEND_PATTERN_OBSERVATION: lambda action: (
             apply_append_pattern_observation(
                 action, repository_host=repository_host, authority=authority,
+                pattern_registry=pattern_registry,
                 before_write=lambda: require_mutation_authority(action, reconciliation_subject_for(action)),
             )
         ),

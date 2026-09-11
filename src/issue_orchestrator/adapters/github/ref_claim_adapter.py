@@ -12,7 +12,6 @@ import logging
 import random
 import time
 import uuid
-from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Protocol as TypingProtocol
 
@@ -36,7 +35,7 @@ from ...domain.run_ledger import (
 from ...infra import gh_audit
 from ...ports.claim_manager import ClaimManager
 from .claim_parser import format_claim_comment, parse_claim_comment
-from .errors import GitHubHttpError
+from .ref_store import GitRefCasStore, GitRefSnapshot
 
 if TYPE_CHECKING:
     from ...ports.event_sink import EventSink
@@ -47,118 +46,6 @@ logger = logging.getLogger(__name__)
 CLAIM_REF_PREFIX = "refs/issue-orchestrator/claims"
 CLAIM_COMMIT_PREFIX = "issue-orchestrator claim lock"
 MAX_CAS_ATTEMPTS = 3
-
-
-@dataclass(frozen=True)
-class _ClaimRefSnapshot:
-    """Current state of a claim ref.
-
-    ``message`` is the raw commit message the ref points at. The store owns the
-    compare-and-swap; the ADAPTER owns the record format, so the same CAS cell
-    backs both key spaces (``issue-N`` and ``run-<slug>``) without the storage
-    helper needing to know what a claim record means.
-    """
-
-    ref: str
-    commit_sha: str
-    tree_sha: str
-    message: str
-
-
-class _GitRefClaimStore:
-    """CAS-oriented storage helper for one-record-per-ref GitHub refs.
-
-    Keyed by an opaque ref key, not by issue number: an issue claim uses
-    ``issue-42`` and the tech-lead run ledger uses ``tech-lead-runs``, which is
-    what lets a whole-repository run be coordinated before any issue exists.
-    """
-
-    def __init__(
-        self,
-        client: "GitHubHttpClient",
-        ref_prefix: str = CLAIM_REF_PREFIX,
-    ) -> None:
-        self._client = client
-        self._ref_prefix = ref_prefix.rstrip("/")
-        self._default_branch: str | None = None
-
-    def claim_ref(self, key: str) -> str:
-        return f"{self._ref_prefix}/{key}"
-
-    def _default_branch_name(self) -> str:
-        if self._default_branch is None:
-            self._default_branch = self._client.get_default_branch()
-        return self._default_branch
-
-    def read(self, key: str) -> _ClaimRefSnapshot | None:
-        ref = self.claim_ref(key)
-        ref_payload = self._client.get_git_ref(ref)
-        if ref_payload is None:
-            return None
-
-        commit_sha = _payload_commit_sha(ref_payload)
-        commit_payload = self._client.get_git_commit(commit_sha)
-        tree_sha = _payload_tree_sha(commit_payload)
-        return _ClaimRefSnapshot(
-            ref=ref,
-            commit_sha=commit_sha,
-            tree_sha=tree_sha,
-            message=str(commit_payload.get("message") or ""),
-        )
-
-    def create(self, key: str, message: str) -> bool:
-        default_branch = self._default_branch_name()
-        base_ref = self._client.get_git_ref(f"refs/heads/{default_branch}")
-        if base_ref is None:
-            raise ClaimFetchError(
-                f"Default branch ref refs/heads/{default_branch} was not found"
-            )
-
-        base_sha = _payload_commit_sha(base_ref)
-        base_commit = self._client.get_git_commit(base_sha)
-        base_tree_sha = _payload_tree_sha(base_commit)
-        commit = self._client.create_git_commit(
-            message=message,
-            tree_sha=base_tree_sha,
-            parents=[base_sha],
-        )
-        try:
-            self._client.create_git_ref(
-                ref=self.claim_ref(key),
-                sha=_payload_sha(commit),
-            )
-            return True
-        except GitHubHttpError as exc:
-            if _is_ref_conflict(exc):
-                return False
-            raise
-
-    def update(self, snapshot: _ClaimRefSnapshot, message: str) -> bool:
-        commit = self._client.create_git_commit(
-            message=message,
-            tree_sha=snapshot.tree_sha,
-            parents=[snapshot.commit_sha],
-        )
-        try:
-            self._client.update_git_ref(
-                ref=snapshot.ref,
-                sha=_payload_sha(commit),
-                force=False,
-            )
-            return True
-        except GitHubHttpError as exc:
-            if _is_ref_conflict(exc):
-                return False
-            raise
-
-    def delete(self, snapshot: _ClaimRefSnapshot) -> bool:
-        try:
-            self._client.delete_git_ref(snapshot.ref)
-            return True
-        except GitHubHttpError as exc:
-            if exc.status_code == 404:
-                return True
-            raise
 
 
 def _issue_ref_key(issue_number: int) -> str:
@@ -202,7 +89,7 @@ class GitHubRefRunLedgerAdapter:
     ) -> None:
         self._claimant_id = claimant_id
         self._config = config or LeaseConfig()
-        self._store = _GitRefClaimStore(client=client, ref_prefix=ref_prefix)
+        self._store = GitRefCasStore(client, ref_prefix=ref_prefix)
 
     def submit(self, request: "RunLedgerRequest") -> "RunLedgerOutcome":
         """One atomic read-decide-write against the shared ledger.
@@ -288,7 +175,7 @@ class GitHubRefRunLedgerAdapter:
         )
 
     def _commit(
-        self, snapshot: _ClaimRefSnapshot | None, ledger: "RunLedger"
+        self, snapshot: GitRefSnapshot | None, ledger: "RunLedger"
     ) -> bool:
         with gh_audit.context(
             reason=gh_audit.AuditReason.GH_WRITE,
@@ -301,7 +188,7 @@ class GitHubRefRunLedgerAdapter:
             return self._store.update(snapshot, message)
 
 
-def _ledger_of(snapshot: _ClaimRefSnapshot | None) -> "RunLedger":
+def _ledger_of(snapshot: GitRefSnapshot | None) -> "RunLedger":
     """The ledger a ref snapshot carries; an absent ref is an empty ledger."""
     if snapshot is None:
         return RunLedger()
@@ -342,7 +229,7 @@ class GitHubRefClaimAdapter(ClaimManager):
         self._events = events
         self._labels = label_adapter
         self._io_claimed_label = io_claimed_label
-        self._store = _GitRefClaimStore(client=client, ref_prefix=ref_prefix)
+        self._store = GitRefCasStore(client, ref_prefix=ref_prefix)
 
     def attempt_claim(self, issue_number: int) -> ClaimResult:
         """Atomically attempt to acquire the issue claim ref."""
@@ -510,7 +397,7 @@ class GitHubRefClaimAdapter(ClaimManager):
         snapshot = self._read_snapshot(issue_number)
         return self._active_claim(snapshot, issue_number)
 
-    def _read_snapshot(self, issue_number: int) -> _ClaimRefSnapshot | None:
+    def _read_snapshot(self, issue_number: int) -> GitRefSnapshot | None:
         try:
             with gh_audit.context(
                 reason=gh_audit.AuditReason.GH_READ,
@@ -526,7 +413,7 @@ class GitHubRefClaimAdapter(ClaimManager):
             ) from exc
 
     def _active_claim(
-        self, snapshot: _ClaimRefSnapshot | None, issue_number: int
+        self, snapshot: GitRefSnapshot | None, issue_number: int
     ) -> Claim | None:
         if snapshot is None:
             return None
@@ -655,37 +542,6 @@ class GitHubRefClaimAdapter(ClaimManager):
 
 def _format_claim_commit_message(claim: Claim) -> str:
     return f"{CLAIM_COMMIT_PREFIX}\n\n{format_claim_comment(claim)}"
-
-
-def _payload_sha(payload: dict) -> str:
-    sha = payload.get("sha")
-    if not isinstance(sha, str) or not sha:
-        raise ClaimFetchError(f"GitHub payload missing sha: {payload}")
-    return sha
-
-
-def _payload_commit_sha(payload: dict) -> str:
-    obj = payload.get("object")
-    if not isinstance(obj, dict):
-        raise ClaimFetchError(f"GitHub ref payload missing object: {payload}")
-    sha = obj.get("sha")
-    if not isinstance(sha, str) or not sha:
-        raise ClaimFetchError(f"GitHub ref payload missing object.sha: {payload}")
-    return sha
-
-
-def _payload_tree_sha(payload: dict) -> str:
-    tree = payload.get("tree")
-    if not isinstance(tree, dict):
-        raise ClaimFetchError(f"GitHub commit payload missing tree: {payload}")
-    sha = tree.get("sha")
-    if not isinstance(sha, str) or not sha:
-        raise ClaimFetchError(f"GitHub commit payload missing tree.sha: {payload}")
-    return sha
-
-
-def _is_ref_conflict(exc: GitHubHttpError) -> bool:
-    return exc.status_code in {409, 422}
 
 
 class LabelSetProtocol(TypingProtocol):
