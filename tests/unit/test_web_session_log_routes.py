@@ -1551,17 +1551,20 @@ class TestIssueLogEndpointsUseLatestHistory:
             response = client.get(f"/api/dialog/session-diagnostics/123?run_dir={run_a.run_dir}")
             assert response.status_code == 200
             payload = response.json()
+            # Issue #6327: each action carries a typed command under "command".
             settings_paths = [
-                action.get("path")
+                action["command"].get("path")
                 for action in payload.get("actions", [])
-                if action.get("type") == "open_path" and action.get("label") == "Open Session Settings"
+                if action["command"].get("kind") == "open_path"
+                and action["command"].get("label") == "Open Session Settings"
             ]
             assert settings_paths == [f"{run_a.run_dir}/session-identity.json"]
             actions = payload.get("actions", [])
             validation_paths = [
-                action.get("path")
+                action["command"].get("path")
                 for action in actions
-                if action.get("type") == "open_path" and "Validation" in str(action.get("label"))
+                if action["command"].get("kind") == "open_path"
+                and "Validation" in str(action["command"].get("label"))
             ]
             assert any(path and path.endswith("a.json") for path in validation_paths)
             assert not any(path and path.endswith("b.json") for path in validation_paths)

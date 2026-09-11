@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 
 from playwright.sync_api import Page, expect
@@ -428,20 +429,20 @@ def test_validation_failure_dialog_renders_results_and_artifacts(
                 {
                   "title": "Validation Artifacts",
                   "actions": [
-                    {"type": "open_path", "label": "Open Validation Record", "path": "/tmp/validation-record.json"},
-                    {"type": "open_path", "label": "Open Validation Output", "path": "/tmp/validation-output.log"}
+                    {"command": {"kind": "open_path", "label": "Open Validation Record", "path": "/tmp/validation-record.json"}, "group": "validation_artifacts"},
+                    {"command": {"kind": "open_path", "label": "Open Validation Output", "path": "/tmp/validation-output.log"}, "group": "validation_artifacts"}
                   ]
                 },
                 {
                   "title": "Session Evidence",
                   "actions": [
-                    {"type": "open_agent_log", "label": "View Session Recording", "issue_number": 408, "run_dir": "/tmp/run-408"}
+                    {"command": {"kind": "open_session_recording", "label": "View Session Recording", "issue_number": 408, "run_dir": "/tmp/run-408", "session_role": null, "round_index": null, "error_surface": "inline"}, "group": "session_evidence"}
                   ]
                 },
                 {
                   "title": "Diagnostics",
                   "actions": [
-                    {"type": "open_session_diagnostics", "label": "Full Diagnostics", "issue_number": 408, "run_dir": "/tmp/run-408"}
+                    {"command": {"kind": "open_session_diagnostics", "label": "Full Diagnostics", "issue_number": 408, "run_dir": "/tmp/run-408"}, "group": "diagnostics"}
                   ]
                 }
               ]
@@ -464,5 +465,37 @@ def test_validation_failure_dialog_renders_results_and_artifacts(
     expect(page.locator("#modalBody")).to_contain_text("Full Diagnostics")
     expect(page.locator("#modalBody")).to_contain_text("tests/unit/test_example.py::test_breaks")
     expect(page.locator("#modalBody .diag-validation-action-group")).to_have_count(3)
+
+    # Issue #6327: dialog action buttons route through the shared typed-Command
+    # pipeline rather than per-action inline onclicks. Each rendered button
+    # carries a ``data-lifecycle-command`` and dispatches through
+    # ``runLifecycleCommandFromButton`` -> ``runLifecycleCommand`` -> handler.
+    # The artifacts footer is a collapsed <details> in the canonical viewer;
+    # open it so the action buttons become interactable.
+    page.locator("#modalBody summary", has_text="Validation artifacts").click()
+
+    diagnostics_btn = page.locator(
+        "#modalBody button[data-lifecycle-command]", has_text="Full Diagnostics"
+    )
+    expect(diagnostics_btn).to_be_visible()
+    expect(diagnostics_btn).to_have_count(1)
+    command_json = diagnostics_btn.get_attribute("data-lifecycle-command")
+    assert command_json is not None
+    command = json.loads(command_json)
+    assert command == {
+        "kind": "open_session_diagnostics",
+        "label": "Full Diagnostics",
+        "issue_number": 408,
+        "run_dir": "/tmp/run-408",
+    }
+    # Clicking dispatches through the shared owner to the wired handler with
+    # the args carried by the typed Command.
+    page.evaluate(
+        "() => { window.__dispatchedManifest = null;"
+        " window.openSessionManifest = (issueNumber, runDir) =>"
+        " { window.__dispatchedManifest = [issueNumber, runDir]; }; }"
+    )
+    diagnostics_btn.click()
+    assert page.evaluate("() => window.__dispatchedManifest") == [408, "/tmp/run-408"]
 
     assert errors == []

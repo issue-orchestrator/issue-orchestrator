@@ -59,6 +59,8 @@ def test_open_session_recording_command_wire_shape() -> None:
         "run_dir": "/tmp/run-1",
         "session_role": "coder",
         "round_index": 2,
+        # Optional dialog error-surface (issue #6327): unset on timeline chips.
+        "error_surface": None,
     }
 
 

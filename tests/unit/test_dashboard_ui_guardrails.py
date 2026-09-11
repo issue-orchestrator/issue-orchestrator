@@ -1527,7 +1527,10 @@ def test_timeline_overflow_menu_renders_as_floating_popover() -> None:
 def test_session_diagnostics_tracks_timeout_and_session_settings_action() -> None:
     js = _read(DASHBOARD_JS)
     body = _function_body(js, "openSessionManifest")
-    assert "currentDiagnosticsRunDir" in body
+    # Issue #6327: the dialog no longer tracks a fallback run dir — the backend
+    # emits self-complete typed commands, so actions route straight through the
+    # grouped renderer (which drops each command into data-lifecycle-command).
+    assert "renderGroupedDialogActions(actions)" in body
     assert "'timeout'" in body
 
 
@@ -2218,12 +2221,15 @@ def test_review_feedback_modal_includes_exchange_round_events() -> None:
 def test_session_diagnostics_actions_use_primary_plus_visible_secondary_actions() -> None:
     js = _read(DASHBOARD_JS)
     body = _function_body(js, "renderGroupedDialogActions")
-    assert "primaryTypes" in body
+    # Issue #6327: primary grouping is keyed off the typed command kind.
+    assert "primaryKinds" in body
     assert "diag-secondary-actions" in body
     assert "Artifacts & Logs ▾" not in body
     assert "Issue-Scoped Orchestrator Log" in js
     assert "Copy Session Recording" in js
-    assert "openSessionManifest(action.issue_number, action.run_dir || null)" in js
+    # The diagnostics action dispatches to openSessionManifest through the shared
+    # typed-command owner (dialog-command dispatch table in lifecycle_commands.js).
+    assert "openSessionManifest(command.issue_number, command.run_dir || null)" in js
 
 
 def test_timeline_exact_run_actions_forward_issue_and_run_identity_together() -> None:

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, get_args
+from collections.abc import Mapping
+from typing import Any, Literal, NotRequired, TypedDict
 
 from ..domain.artifact_contracts import (
     ValidationFailed,
@@ -13,6 +14,12 @@ from ..domain.artifact_contracts import (
     ValidationRetry,
     validation_outcome_from_manifest_fields,
 )
+from .dialog_commands import (
+    append_session_diagnostics_action,
+    build_dialog_action_sections,
+    build_session_diagnostics_actions,
+)
+
 
 @dataclass(frozen=True)
 class DialogRow:
@@ -21,7 +28,9 @@ class DialogRow:
     value_kind: Literal["timestamp"] | None = None
 
     def to_dict(self) -> dict[str, str]:
-        return {"label": self.label, "value": self.value} | ({"value_kind": self.value_kind} if self.value_kind else {})
+        return {"label": self.label, "value": self.value} | (
+            {"value_kind": self.value_kind} if self.value_kind else {}
+        )
 
 
 @dataclass(frozen=True)
@@ -85,9 +94,13 @@ class SessionDiagnosticsContext:
         manifest = manifest_payload.get("manifest") or {}
         session_identity = manifest_payload.get("session_identity") or {}
         worktree = str(manifest.get("worktree") or "")
-        session_name = str(manifest.get("session_name") or manifest_payload.get("session_name") or "")
+        session_name = str(
+            manifest.get("session_name") or manifest_payload.get("session_name") or ""
+        )
         diagnostic_path = _join_worktree_path(worktree, manifest.get("diagnostic_path"))
-        validation_path = _join_worktree_path(worktree, manifest.get("validation_record_path"))
+        validation_path = _join_worktree_path(
+            worktree, manifest.get("validation_record_path")
+        )
         validation_output_path = _join_worktree_path(
             worktree,
             manifest.get("validation_output_path") or manifest.get("validation_stdout"),
@@ -108,8 +121,14 @@ class SessionDiagnosticsContext:
             worktree=worktree,
             retention_tier=str(manifest.get("retention_tier") or ""),
             retention_expires_at=str(manifest.get("retention_expires_at") or ""),
-            retention_pinned=str(manifest.get("retention_pinned") if "retention_pinned" in manifest else ""),
-            run_dir=str(manifest.get("run_dir") or manifest_payload.get("run_dir") or ""),
+            retention_pinned=str(
+                manifest.get("retention_pinned")
+                if "retention_pinned" in manifest
+                else ""
+            ),
+            run_dir=str(
+                manifest.get("run_dir") or manifest_payload.get("run_dir") or ""
+            ),
             claude_log_path=str(manifest.get("claude_log_path") or ""),
             claude_log_dir=str(manifest.get("claude_log_dir") or ""),
             orchestrator_log=str(manifest.get("orchestrator_log") or ""),
@@ -131,11 +150,33 @@ class SessionDiagnosticsContext:
             model=str(session_identity.get("model") or ""),
             permission_mode=str(session_identity.get("permission_mode") or ""),
             timeout_minutes=str(session_identity.get("timeout_minutes") or ""),
-            extra_provider_args=_format_extra_provider_args(session_identity.get("extra_provider_args")),
-            session_settings_path=str(Path(manifest_payload.get("run_dir") or "") / "session-identity.json")
+            extra_provider_args=_format_extra_provider_args(
+                session_identity.get("extra_provider_args")
+            ),
+            session_settings_path=str(
+                Path(manifest_payload.get("run_dir") or "") / "session-identity.json"
+            )
             if manifest_payload.get("run_dir")
             else "",
         )
+
+
+class SessionDiagnosticAnalysisPayload(TypedDict):
+    """Validated analysis data emitted by the diagnostics view model."""
+
+    headline: str
+    detail: NotRequired[str]
+    suggestions: NotRequired[list[str]]
+
+
+class SessionDiagnosticFollowUpIssuePayload(TypedDict):
+    """Validated follow-up data emitted by the diagnostics view model."""
+
+    title: str
+    reason: str
+    blocking: bool
+    evidence: NotRequired[str]
+    suggested_labels: NotRequired[list[str]]
 
 
 @dataclass(frozen=True)
@@ -147,7 +188,10 @@ class SessionDiagnosticAnalysis:
     suggestions: tuple[str, ...] = ()
 
     @classmethod
-    def from_payload(cls, payload: dict[str, Any] | None) -> "SessionDiagnosticAnalysis | None":
+    def from_payload(
+        cls,
+        payload: Mapping[str, object] | None,
+    ) -> "SessionDiagnosticAnalysis | None":
         if not isinstance(payload, dict):
             return None
         headline = payload.get("headline")
@@ -155,18 +199,23 @@ class SessionDiagnosticAnalysis:
             return None
         detail = payload.get("detail")
         suggestions_raw = payload.get("suggestions")
-        suggestions = tuple(
-            item for item in suggestions_raw
-            if isinstance(item, str) and item.strip()
-        ) if isinstance(suggestions_raw, list) else ()
+        suggestions = (
+            tuple(
+                item
+                for item in suggestions_raw
+                if isinstance(item, str) and item.strip()
+            )
+            if isinstance(suggestions_raw, list)
+            else ()
+        )
         return cls(
             headline=headline,
             detail=detail if isinstance(detail, str) and detail.strip() else None,
             suggestions=suggestions,
         )
 
-    def to_dict(self) -> dict[str, Any]:
-        payload: dict[str, Any] = {"headline": self.headline}
+    def to_dict(self) -> SessionDiagnosticAnalysisPayload:
+        payload: SessionDiagnosticAnalysisPayload = {"headline": self.headline}
         if self.detail is not None:
             payload["detail"] = self.detail
         if self.suggestions:
@@ -183,7 +232,10 @@ class SessionDiagnosticFollowUpIssue:
     blocking: bool = False
 
     @classmethod
-    def from_payload(cls, payload: dict[str, Any]) -> "SessionDiagnosticFollowUpIssue | None":
+    def from_payload(
+        cls,
+        payload: Mapping[str, object],
+    ) -> "SessionDiagnosticFollowUpIssue | None":
         if not isinstance(payload, dict):
             return None
         title = payload.get("title")
@@ -194,20 +246,24 @@ class SessionDiagnosticFollowUpIssue:
             return None
         evidence = payload.get("evidence")
         labels_raw = payload.get("suggested_labels")
-        suggested_labels = tuple(
-            item for item in labels_raw if isinstance(item, str) and item.strip()
-        ) if isinstance(labels_raw, list) else ()
+        suggested_labels = (
+            tuple(item for item in labels_raw if isinstance(item, str) and item.strip())
+            if isinstance(labels_raw, list)
+            else ()
+        )
         blocking = payload.get("blocking", False)
         return cls(
             title=title,
             reason=reason,
-            evidence=evidence if isinstance(evidence, str) and evidence.strip() else None,
+            evidence=evidence
+            if isinstance(evidence, str) and evidence.strip()
+            else None,
             suggested_labels=suggested_labels,
             blocking=blocking if isinstance(blocking, bool) else False,
         )
 
-    def to_dict(self) -> dict[str, Any]:
-        payload: dict[str, Any] = {
+    def to_dict(self) -> SessionDiagnosticFollowUpIssuePayload:
+        payload: SessionDiagnosticFollowUpIssuePayload = {
             "title": self.title,
             "reason": self.reason,
             "blocking": self.blocking,
@@ -268,7 +324,9 @@ def _build_session_diagnostics_rows(ctx: SessionDiagnosticsContext) -> list[Dial
         DialogRow("Prompt Mode", ctx.claude_prompt_mode or "-"),
         DialogRow("Claude Session", ctx.claude_session_id or "-"),
         DialogRow("Retention Tier", ctx.retention_tier or "-"),
-        DialogRow("Retention Expires", ctx.retention_expires_at or "-", value_kind="timestamp"),
+        DialogRow(
+            "Retention Expires", ctx.retention_expires_at or "-", value_kind="timestamp"
+        ),
         DialogRow("Retention Pinned", ctx.retention_pinned or "-"),
         DialogRow("Worktree", ctx.worktree or "-"),
     ]
@@ -287,105 +345,6 @@ def _build_session_diagnostics_rows(ctx: SessionDiagnosticsContext) -> list[Dial
         rows.append(DialogRow("Validation Status", "retry"))
         rows.append(DialogRow("Validation Reason", outcome.reason))
     return rows
-
-
-def _build_session_diagnostics_actions(ctx: SessionDiagnosticsContext) -> list[dict[str, Any]]:
-    actions: list[dict[str, Any]] = []
-    _append_open_path(actions, "Open Session Dir", ctx.run_dir, group="diagnostics")
-    _append_open_path(actions, "Open Session Settings", ctx.session_settings_path, group="diagnostics")
-    _append_run_scoped_action(
-        actions,
-        ctx,
-        action_type="open_agent_log",
-        label="View Session Recording",
-        group="session_evidence",
-    )
-    _append_run_scoped_action(
-        actions,
-        ctx,
-        action_type="copy_agent_log",
-        label="Copy Session Recording",
-        group="session_evidence",
-    )
-    if ctx.claude_log_path:
-        _append_run_scoped_action(
-            actions,
-            ctx,
-            action_type="view_claude_log",
-            label="View Claude Log",
-            group="session_evidence",
-        )
-        _append_open_path(actions, "Open Claude Log File", ctx.claude_log_path, group="session_evidence")
-    _append_open_path(actions, "Open Claude Log Dir", ctx.claude_log_dir, group="session_evidence")
-    _append_run_scoped_action(
-        actions,
-        ctx,
-        action_type="open_orchestrator_log",
-        label="Open Orchestrator Log",
-        group="session_evidence",
-    )
-    _append_open_path(actions, "Open Full Log", ctx.orchestrator_log, group="session_evidence")
-    _append_open_path(actions, "Open Diagnostic", ctx.diagnostic_path, group="diagnostics")
-    _append_open_path(actions, "Open Run Audit", ctx.run_audit_path, group="diagnostics")
-    _append_open_path(actions, "Open Validation Record", ctx.validation_path, group="validation_artifacts")
-    _append_open_path(actions, "Open Validation Output", ctx.validation_output_path, group="validation_artifacts")
-    _append_open_path(actions, "Open Validation Stderr", ctx.validation_stderr_path, group="validation_artifacts")
-    return actions
-
-
-SessionActionGroup = Literal["validation_artifacts", "session_evidence", "diagnostics"]
-
-_SESSION_DIAGNOSTIC_SECTION_TITLES: tuple[tuple[SessionActionGroup, str], ...] = (
-    ("validation_artifacts", "Validation Artifacts"),
-    ("session_evidence", "Session Evidence"),
-    ("diagnostics", "Diagnostics"),
-)
-_SESSION_DIAGNOSTIC_ACTION_GROUPS: frozenset[str] = frozenset(get_args(SessionActionGroup))
-
-
-def _append_open_path(
-    actions: list[dict[str, Any]],
-    label: str,
-    path: str,
-    *,
-    group: SessionActionGroup,
-) -> None:
-    if not path:
-        return
-    payload: dict[str, Any] = {
-        "type": "open_path",
-        "label": label,
-        "path": path,
-        "group": _validated_session_action_group(group),
-    }
-    actions.append(payload)
-
-
-def _append_run_scoped_action(
-    actions: list[dict[str, Any]],
-    ctx: SessionDiagnosticsContext,
-    *,
-    action_type: str,
-    label: str,
-    group: SessionActionGroup,
-) -> None:
-    if not ctx.run_dir:
-        return
-    payload: dict[str, Any] = {
-        "type": action_type,
-        "label": label,
-        "issue_number": ctx.issue_number,
-        "run_dir": ctx.run_dir,
-        "group": _validated_session_action_group(group),
-    }
-    actions.append(payload)
-
-
-def _validated_session_action_group(group: str) -> str:
-    if group not in _SESSION_DIAGNOSTIC_ACTION_GROUPS:
-        allowed = ", ".join(sorted(_SESSION_DIAGNOSTIC_ACTION_GROUPS))
-        raise ValueError(f"Unknown session diagnostics action group {group!r}; expected one of: {allowed}")
-    return group
 
 
 def _format_extra_provider_args(raw: Any) -> str:
@@ -430,7 +389,9 @@ def build_debug_dialog(debug_data: dict[str, Any]) -> dict[str, Any]:
                 DialogRow("Web Port", str(startup.get("web_port") or "-")),
                 DialogRow("Test Mode", "yes" if startup.get("test_mode") else "no"),
                 DialogRow("Filter Label", str(filtering.get("label") or "none")),
-                DialogRow("Filter Milestone", str(filtering.get("milestone") or "none")),
+                DialogRow(
+                    "Filter Milestone", str(filtering.get("milestone") or "none")
+                ),
                 DialogRow("Max Sessions", str(startup.get("max_sessions") or "-")),
             ],
         ),
@@ -440,7 +401,8 @@ def build_debug_dialog(debug_data: dict[str, Any]) -> dict[str, Any]:
                 DialogRow("Paused", str(debug_data.get("paused"))),
                 DialogRow(
                     "Priority Queue",
-                    ", ".join(map(str, debug_data.get("priority_queue") or [])) or "empty",
+                    ", ".join(map(str, debug_data.get("priority_queue") or []))
+                    or "empty",
                 ),
             ],
         ),
@@ -494,18 +456,22 @@ def build_session_diagnostics_dialog(
     ctx = SessionDiagnosticsContext.from_payload(issue_number, manifest_payload)
     analysis = SessionDiagnosticAnalysis.from_payload(manifest_payload.get("analysis"))
     follow_up_payload = (manifest_payload.get("manifest") or {}).get("follow_up_issues")
-    follow_up_issues = [
-        issue.to_dict()
-        for item in follow_up_payload
-        if (issue := SessionDiagnosticFollowUpIssue.from_payload(item)) is not None
-    ] if isinstance(follow_up_payload, list) else []
+    follow_up_issues = (
+        [
+            issue.to_dict()
+            for item in follow_up_payload
+            if (issue := SessionDiagnosticFollowUpIssue.from_payload(item)) is not None
+        ]
+        if isinstance(follow_up_payload, list)
+        else []
+    )
     rows = _build_session_diagnostics_rows(ctx)
-    actions = _build_session_diagnostics_actions(ctx)
+    actions = build_session_diagnostics_actions(ctx)
 
     return {
         "title": f"Session Diagnostics #{issue_number}",
         "rows": [row.to_dict() for row in rows],
-        "actions": actions,
+        "actions": [action.model_dump() for action in actions],
         "analysis": analysis.to_dict() if analysis else None,
         "follow_up_issues": follow_up_issues,
     }
@@ -540,18 +506,14 @@ def build_validation_failure_dialog(
         for item in validation.get("junit_cases", [])
         if isinstance(item, dict) and item.get("case_id")
     ]
-    actions = _build_session_diagnostics_actions(ctx)
-    _append_run_scoped_action(
-        actions,
-        ctx,
-        action_type="open_session_diagnostics",
-        label="Full Diagnostics",
-        group="diagnostics",
-    )
+    actions = build_session_diagnostics_actions(ctx)
+    append_session_diagnostics_action(actions, ctx)
     summary_rows = _build_validation_failure_summary_rows(
-        validation, failed_tests, status,
+        validation,
+        failed_tests,
+        status,
     )
-    action_sections = _build_validation_failure_action_sections(actions)
+    action_sections = build_dialog_action_sections(actions)
 
     title_outcome = "Passed" if status == "passed" else "Failure"
     return {
@@ -616,8 +578,12 @@ def _build_validation_failure_summary_rows(
         DialogRow("Suite", str(validation.get("suite") or "-")),
         DialogRow("Command", str(validation.get("command") or "-")),
         DialogRow("Exit Code", exit_code_display),
-        DialogRow("Started", str(validation.get("started_at") or "-"), value_kind="timestamp"),
-        DialogRow("Ended", str(validation.get("ended_at") or "-"), value_kind="timestamp"),
+        DialogRow(
+            "Started", str(validation.get("started_at") or "-"), value_kind="timestamp"
+        ),
+        DialogRow(
+            "Ended", str(validation.get("ended_at") or "-"), value_kind="timestamp"
+        ),
         DialogRow(
             "Failing Tests",
             str(len(failed_tests)) if failed_tests else "0",
@@ -625,71 +591,7 @@ def _build_validation_failure_summary_rows(
     ]
 
 
-def _build_validation_failure_action_sections(
-    actions: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    grouped_actions: dict[str, list[dict[str, Any]]] = {
-        group: [] for group, _title in _SESSION_DIAGNOSTIC_SECTION_TITLES
-    }
-
-    for action in actions:
-        group = action.get("group")
-        if not isinstance(group, str):
-            raise ValueError(f"Validation failure action {action.get('label')!r} is missing a group")
-        if group not in grouped_actions:
-            allowed = ", ".join(sorted(grouped_actions))
-            raise ValueError(f"Unknown validation failure action group {group!r}; expected one of: {allowed}")
-        grouped_actions[group].append(action)
-
-    sections: list[dict[str, Any]] = []
-    for group, title in _SESSION_DIAGNOSTIC_SECTION_TITLES:
-        if grouped_actions[group]:
-            sections.append({"title": title, "actions": grouped_actions[group]})
-    return sections
-
-
 def _optional_int(value: Any) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int):
         return None
     return value
-
-
-def build_blocked_issues_dialog(blocked_payload: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "title": "Blocked Issues",
-        "blocked_issues": blocked_payload.get("blocked_issues", []),
-    }
-
-
-def _find_last_phase_with_prefix(phases: list[dict[str, Any]], prefix: str) -> dict[str, Any] | None:
-    for phase in reversed(phases):
-        if phase.get("name", "").startswith(prefix):
-            return phase
-    return None
-
-
-def _select_phase(phases: list[dict[str, Any]], phase_key: str | None) -> dict[str, Any] | None:
-    if phase_key in ("in_progress", "rework"):
-        return _find_last_phase_with_prefix(phases, "coding-")
-    if phase_key in ("review", "tech_lead"):
-        return _find_last_phase_with_prefix(phases, "review-")
-    if phase_key:
-        for phase in phases:
-            if phase.get("name") == phase_key:
-                return phase
-    return None
-
-
-def build_phase_dialog(phases_payload: dict[str, Any], issue_number: int, phase_key: str | None) -> dict[str, Any]:
-    phases = phases_payload.get("phases", [])
-    current = _select_phase(phases, phase_key)
-
-    if current is None and phases:
-        current = phases[-1]
-
-    return {
-        "title": current.get("display_name") if current else "Phase Details",
-        "issue_number": issue_number,
-        "phase": current,
-        "phases": phases,
-    }

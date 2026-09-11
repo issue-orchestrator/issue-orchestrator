@@ -82,13 +82,12 @@ async function openSessionManifest(issueNumber, runDir = null) {
 
     const rows = data.rows || [];
     const actions = data.actions || [];
-    currentDiagnosticsRunDir = runDir || ((actions.find(action => action && action.run_dir) || {}).run_dir || null);
     const rowByLabel = new Map(rows.map(row => [String(row.label || '').toLowerCase(), String(row.value || '')]));
     const worktree = rowByLabel.get('worktree') || '';
 
     const hasWorktree = worktree && worktree !== '-';
-    const hasDiagnostic = actions.some(action => action.type === 'open_path' && (action.label || '').toLowerCase().includes('diagnostic'));
-    const hasValidation = actions.some(action => action.type === 'open_path' && (action.label || '').toLowerCase().includes('validation'));
+    const hasDiagnostic = actions.some(action => _isOpenPathAction(action, 'diagnostic'));
+    const hasValidation = actions.some(action => _isOpenPathAction(action, 'validation'));
 
     const chips = [
         `<span class="diag-chip ${hasWorktree ? 'is-ok' : 'is-muted'}">${hasWorktree ? 'Worktree Present' : 'Worktree Unavailable'}</span>`,
@@ -203,13 +202,12 @@ async function openSessionManifest(issueNumber, runDir = null) {
 }
 
 // Pure data → DOM mapping. Takes the dialog payload (the "command result"
-// from /api/dialog/validation-failure/) and returns {title, html, runDir}.
+// from /api/dialog/validation-failure/) and returns {title, html}.
 // No fetch, no globals beyond rendering helpers — so unit tests can call
 // this directly with hand-rolled payloads instead of stubbing the network
 // and going through the openValidationFailure entry point.
-function renderValidationDialog(data, issueNumber, runDir = null) {
+function renderValidationDialog(data, issueNumber) {
     const actionSections = Array.isArray(data.action_sections) ? data.action_sections : [];
-    const resolvedRunDir = runDir || firstRunDirFromActionSections(actionSections);
     const failedTests = Array.isArray(data.failed_tests) ? data.failed_tests : [];
     const stdoutExcerpt = Array.isArray(data.stdout_excerpt) ? data.stdout_excerpt : [];
     const stderrExcerpt = Array.isArray(data.stderr_excerpt) ? data.stderr_excerpt : [];
@@ -258,7 +256,6 @@ function renderValidationDialog(data, issueNumber, runDir = null) {
     return {
         title: data.title || `Validation Failure #${issueNumber}`,
         html,
-        runDir: resolvedRunDir,
     };
 }
 
@@ -278,8 +275,7 @@ async function openValidationFailure(issueNumber, runDir = null, mode = 'modal')
         return;
     }
 
-    const rendered = renderValidationDialog(data, issueNumber, runDir);
-    currentDiagnosticsRunDir = rendered.runDir;
+    const rendered = renderValidationDialog(data, issueNumber);
     openModal(rendered.title, rendered.html);
     // Phase D (issue #6310 follow-up): enhance the just-mounted
     // canonical viewer with ARIA tree semantics + keyboard nav.  The
@@ -313,15 +309,16 @@ function renderValidationFailureChips(status, failedTests, stdoutExcerpt, stderr
     return chips.join('');
 }
 
-function firstRunDirFromActionSections(actionSections) {
-    for (const section of actionSections || []) {
-        const actions = Array.isArray(section && section.actions) ? section.actions : [];
-        const runScopedAction = actions.find(action => action && action.run_dir);
-        if (runScopedAction && runScopedAction.run_dir) {
-            return runScopedAction.run_dir;
-        }
-    }
-    return null;
+// Dialog action buttons (issue #6327) each carry a typed
+// ``DialogActionCommand`` in ``action.command`` — the JS renders it directly
+// into ``data-lifecycle-command`` and never rebuilds a command from a loose
+// ``action.type`` dict.  ``_isOpenPathAction`` classifies the summary chips
+// off the typed command kind + label.
+function _isOpenPathAction(action, labelSubstr) {
+    const command = action && action.command;
+    return !!command
+        && command.kind === 'open_path'
+        && String(command.label || '').toLowerCase().includes(labelSubstr);
 }
 
 function renderValidationFailureActionSections(actionSections) {
@@ -385,27 +382,18 @@ function renderDialogAction(action) {
 function renderGroupedDialogActions(actions) {
     const items = (actions || []).map(action => ({
         action,
-        label: _dialogActionShortLabel(action),
+        label: _dialogActionShortLabel(action && action.command),
     }));
     if (items.length === 0) return '';
 
-    const primaryTypes = [
-        'open_validation_failure',
-        'open_agent_log',
-        'open_review_feedback',
-        'open_review_transcript',
-    ];
+    // The session recording is the one primary affordance the diagnostics
+    // dialog surfaces as a button; everything else drops into the "more" menu.
+    const primaryKinds = ['open_session_recording'];
     const primary = [];
     const used = new Set();
-    for (const type of primaryTypes) {
-        const item = items.find(candidate => String(candidate.action?.type || '') === type);
+    for (const kind of primaryKinds) {
+        const item = items.find(candidate => String(candidate.action?.command?.kind || '') === kind);
         if (!item) continue;
-        primary.push(item);
-        used.add(item);
-    }
-    for (const item of items) {
-        if (used.has(item)) continue;
-        if (!item.action || item.action.primary !== true) continue;
         primary.push(item);
         used.add(item);
     }
@@ -430,23 +418,16 @@ function renderGroupedDialogActions(actions) {
     return html;
 }
 
-function _dialogActionShortLabel(action) {
-    if (!action) return 'Action';
-    const type = String(action.type || '');
-    const label = String(action.label || '');
-    if (type === 'open_agent_log') return 'Session Recording';
-    if (type === 'open_review_transcript') return 'Review Transcript';
-    if (type === 'open_review_artifact') {
-        if (action.artifact_type === 'review_decision') return 'Decision JSON';
-        return label || 'Review report';
-    }
-    if (type === 'open_validation_failure') return 'Validation Details';
-    if (type === 'copy_agent_log') return 'Copy Session Recording';
-    if (type === 'view_claude_log') return 'Claude Log';
-    if (type === 'open_orchestrator_log') return 'Issue-Scoped Orchestrator Log';
-    if (type === 'open_review_feedback') return 'Review Feedback';
-    if (type === 'open_session_diagnostics') return label || 'Diagnostics';
-    if (type === 'open_path') {
+function _dialogActionShortLabel(command) {
+    if (!command) return 'Action';
+    const kind = String(command.kind || '');
+    const label = String(command.label || '');
+    if (kind === 'open_session_recording') return 'Session Recording';
+    if (kind === 'copy_session_recording') return 'Copy Session Recording';
+    if (kind === 'view_claude_log') return 'Claude Log';
+    if (kind === 'open_orchestrator_log') return 'Issue-Scoped Orchestrator Log';
+    if (kind === 'open_session_diagnostics') return label || 'Diagnostics';
+    if (kind === 'open_path') {
         const normalized = label.replace(/^Open\s+/i, '').replace(/\s+↗$/, '').trim();
         if (/^completion$/i.test(normalized)) return 'Completion Record';
         if (/^validation$/i.test(normalized)) return 'Validation Record';
@@ -475,119 +456,59 @@ function renderDialogActionMenuItem(action, labelOverride = null) {
 //           Honest about today's behavior; migration to pages is
 //           filed as follow-up work.
 //   (none) — local action; does the thing in place, no navigation
-//           and no overlay.  Example: ``copy_agent_log`` writes
+//           and no overlay.  Example: ``copy_session_recording`` writes
 //           to the clipboard.
-// The glyph is appended to whatever label the action carried in,
+// The glyph is appended to whatever label the command carried in,
 // so backend label assertions still pass on the bare string.
 //
-// Mapping rationale per action type:
-//   open_path                  → OS host opens the file via
-//                                ``uiActionContract.buildHostOpenPathRequest``
-//                                — external viewer → ``↗``.
-//   open_orchestrator_log      → fetches a filtered log, then
-//                                ``openPath()`` opens it externally
-//                                — external viewer → ``↗``.
-//   open_validation_failure    → ``openModal()`` on success
-//                                — modal → ``⧉``.
-//   open_review_transcript     → ``openModal()`` with the transcript
-//                                — modal → ``⧉``.
-//   open_review_feedback       → toggles ``#modalOverlay.visible``
-//                                — modal → ``⧉``.
-//   open_session_diagnostics   → ``openSessionManifest()`` calls
-//                                ``openModal()`` — modal → ``⧉``.
-//   open_agent_log             → opens the session recording in the
+// Keyed off the typed command ``kind`` (issue #6327) — the backend dialog
+// view models emit these ``DialogActionCommand`` payloads, so the glyph maps
+// straight off ``command.kind`` with no ``action.type`` translation:
+//   open_path                  → OS host opens the file — external → ``↗``.
+//   open_orchestrator_log      → fetches a filtered log, then opens it
+//                                externally — external → ``↗``.
+//   open_session_recording     → opens the session recording in the
 //                                session-replay modal — modal → ``⧉``.
+//   open_session_diagnostics   → ``openSessionManifest()`` opens a modal
+//                                — modal → ``⧉``.
 //   view_claude_log            → opens the Claude log viewer modal
 //                                — modal → ``⧉``.
-//   copy_agent_log             → writes to clipboard, no UI change
+//   copy_session_recording     → writes to clipboard, no UI change
 //                                — local action → (none).
-const _AFFORDANCE_GLYPH_BY_ACTION_TYPE = {
+const _AFFORDANCE_GLYPH_BY_COMMAND_KIND = {
     // External — opens in an OS app / external viewer.
     open_path: ' ↗',
     open_orchestrator_log: ' ↗',
-    // Modal — opens ``#modalOverlay`` on this page.  Reviewer flagged
-    // the four mid-list entries on PR #6325 round 1: they were
-    // mapped to ``↗`` but their handlers actually open modals.
-    // Corrected.
-    open_validation_failure: ' ⧉',
-    open_review_transcript: ' ⧉',
-    open_review_artifact: ' ⧉',
-    open_review_feedback: ' ⧉',
-    open_session_diagnostics: ' ⧉',
-    open_agent_log: ' ⧉',
+    // Modal — opens ``#modalOverlay`` on this page.
+    open_session_recording: ' ⧉',
     view_claude_log: ' ⧉',
+    open_session_diagnostics: ' ⧉',
     // Local action — no glyph.
-    copy_agent_log: '',
+    copy_session_recording: '',
 };
 
-function _affordanceGlyphForAction(action) {
-    const type = action && action.type;
-    return Object.prototype.hasOwnProperty.call(_AFFORDANCE_GLYPH_BY_ACTION_TYPE, type)
-        ? _AFFORDANCE_GLYPH_BY_ACTION_TYPE[type]
+function _affordanceGlyphForCommand(command) {
+    const kind = command && command.kind;
+    return Object.prototype.hasOwnProperty.call(_AFFORDANCE_GLYPH_BY_COMMAND_KIND, kind)
+        ? _AFFORDANCE_GLYPH_BY_COMMAND_KIND[kind]
         : '';
 }
 
+// Dialog action buttons carry the typed ``DialogActionCommand`` the backend
+// view model produced (issue #6327).  The renderer drops that command straight
+// into ``data-lifecycle-command`` via the shared ``_renderLifecycleCommandButton``
+// owner — no ``action.type`` → command translation, no run-dir backfill (the
+// backend emits self-complete commands).  Buttons dispatch through
+// ``runLifecycleCommandFromButton`` → ``runLifecycleCommand`` like every other
+// affordance.
 function _renderDialogActionButton(action, labelOverride, cssClass) {
-    if (!action) return '';
-    const baseLabel = escapeHtml(labelOverride || action.label || 'Action');
-    const label = baseLabel + _affordanceGlyphForAction(action);
-    const fallbackRunDir = action.run_dir || currentDiagnosticsRunDir || null;
-    if (action.type === 'open_path') {
-        return `<button class="${cssClass}" onclick="openPath('${escapeHtml(action.path)}')">${label}</button>`;
-    }
-    if (action.type === 'open_validation_failure') {
-        if (!fallbackRunDir) return '';
-        return `<button class="${cssClass}" onclick="openValidationFailure(${action.issue_number}, ${JSON.stringify(String(fallbackRunDir))}, 'inline')">${label}</button>`;
-    }
-    if (action.type === 'open_agent_log') {
-        if (!fallbackRunDir) return '';
-        const runDirFirstArg = `${JSON.stringify(String(fallbackRunDir))}, `;
-        const contextLiteral = JSON.stringify({
-            round_index: Number.isInteger(Number(action.round_index)) ? Number(action.round_index) : null,
-            session_role: action.session_role || null,
-        });
-        return `<button class="${cssClass}" onclick="openAgentLogAction(${action.issue_number}, ${runDirFirstArg}'Session Recording', 'inline', ${contextLiteral})">${label}</button>`;
-    }
-    if (action.type === 'open_review_transcript') {
-        if (!fallbackRunDir) return '';
-        const roundIndexLiteral = Number.isInteger(Number(action.round_index))
-            ? String(Number(action.round_index))
-            : 'null';
-        const roleLiteral = JSON.stringify(action.transcript_role || null);
-        return `<button class="${cssClass}" onclick="openReviewTranscript(${action.issue_number}, ${JSON.stringify(String(fallbackRunDir))}, { round_index: ${roundIndexLiteral}, transcript_role: ${roleLiteral} }, 'inline')">${label}</button>`;
-    }
-    if (action.type === 'open_review_artifact') {
-        if (!fallbackRunDir || !action.artifact_path || !action.artifact_type) return '';
-        const runDirLiteral = escapeAttr(JSON.stringify(String(fallbackRunDir)));
-        const pathLiteral = escapeAttr(JSON.stringify(String(action.artifact_path)));
-        const typeLiteral = escapeAttr(JSON.stringify(String(action.artifact_type)));
-        const modeLiteral = escapeAttr(JSON.stringify(String(action.render_mode || '')));
-        return `<button class="${cssClass}" onclick="openReviewArtifact(${action.issue_number}, ${runDirLiteral}, ${pathLiteral}, ${typeLiteral}, ${modeLiteral})">${label}</button>`;
-    }
-    if (action.type === 'copy_agent_log') {
-        if (!fallbackRunDir) return '';
-        return `<button class="${cssClass}" onclick="copyAgentLogAction(${action.issue_number}, ${JSON.stringify(String(fallbackRunDir))})">${label}</button>`;
-    }
-    if (action.type === 'view_claude_log') {
-        if (!fallbackRunDir) return '';
-        return `<button class="${cssClass}" onclick="viewClaudeLog(${action.issue_number}, ${JSON.stringify(String(fallbackRunDir))}, 'inline')">${label}</button>`;
-    }
-    if (action.type === 'open_orchestrator_log') {
-        if (fallbackRunDir) {
-            return `<button class="${cssClass}" onclick="openFilteredOrchestratorLog(${action.issue_number}, ${JSON.stringify(String(fallbackRunDir))}, 'inline')">${label}</button>`;
-        }
-        return `<button class="${cssClass}" onclick="openFilteredOrchestratorLog(${action.issue_number}, null, 'inline')">${label}</button>`;
-    }
-    if (action.type === 'open_review_feedback') {
-        return `<button class="${cssClass}" onclick="openReviewFeedback(${action.issue_number})">${label}</button>`;
-    }
-    if (action.type === 'open_session_diagnostics') {
-        if (fallbackRunDir) {
-            return `<button class="${cssClass}" onclick="openSessionManifest(${action.issue_number}, ${JSON.stringify(String(fallbackRunDir))})">${label}</button>`;
-        }
-        return `<button class="${cssClass}" onclick="openSessionManifest(${action.issue_number})">${label}</button>`;
-    }
-    return '';
+    const command = action && action.command;
+    if (!command) return '';
+    // Visible label = backend command label + affordance glyph.  Passed
+    // unescaped as the fallback label; ``_renderLifecycleCommandButton``
+    // escapes it once (the glyph chars are escape-safe).
+    const rawLabel = `${labelOverride || command.label || 'Action'}${_affordanceGlyphForCommand(command)}`;
+    return _renderLifecycleCommandButton(command, rawLabel, cssClass);
 }
 
 function _renderReviewMarkdownInline(text) {

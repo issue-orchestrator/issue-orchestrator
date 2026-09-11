@@ -20,6 +20,7 @@ from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 
 from issue_orchestrator.contracts.ui_openapi_models import (
     ControlCenterRecoveryRowsPayload,
+    DialogActionPayload,
     E2ERunDetailPayload,
     E2ERunTimelinePayload,
     IssueDetailActionPayload,
@@ -63,14 +64,16 @@ from issue_orchestrator.ports.provider_resilience import NO_PROVIDER_CIRCUIT_STA
 from issue_orchestrator.view_models.dashboard import build_dashboard_view_model
 from tests.unit.session_run_helpers import make_session_run_assets
 from issue_orchestrator.view_models.dialogs import (
-    build_blocked_issues_dialog,
     build_config_dialog,
     build_debug_dialog,
     build_doctor_dialog,
     build_info_dialog,
-    build_phase_dialog,
     build_session_diagnostics_dialog,
     build_validation_failure_dialog,
+)
+from issue_orchestrator.view_models.issue_state_dialogs import (
+    build_blocked_issues_dialog,
+    build_phase_dialog,
 )
 from issue_orchestrator.view_models.issue_detail import build_issue_detail_view_model
 from issue_orchestrator.view_models.lifecycle_semantics import (
@@ -1900,7 +1903,9 @@ def test_blocked_issue_dialog_payload_rejects_untyped_entries() -> None:
     validator.validate(valid)
 
     with pytest.raises(JsonSchemaValidationError):
-        validator.validate({"title": "Blocked Issues", "blocked_issues": [{"issue": 1}]})
+        validator.validate(
+            {"title": "Blocked Issues", "blocked_issues": [{"issue": 1}]}
+        )
 
     incomplete = _blocked_issue_entry()
     del incomplete["has_completion"]
@@ -2009,6 +2014,52 @@ def test_dialog_payloads_match_ui_openapi() -> None:
         },
     )
     _validator("ValidationFailureDialogPayload").validate(validation_dialog)
+
+
+def test_dialog_action_commands_parse_through_generated_contract() -> None:
+    """Issue #6327: the dialog view models emit typed ``DialogActionCommand``
+    payloads that round-trip through the generated ``DialogActionPayload``
+    contract (extra=forbid, discriminated on ``command.kind``).  This guards
+    the producer→command boundary against drift in either the schema or the
+    view model."""
+    dialog = build_session_diagnostics_dialog(
+        7,
+        {
+            "manifest": {
+                "session_name": "sess",
+                "worktree": "/wt",
+                "claude_log_path": "/logs/claude.log",
+                "claude_log_dir": "/logs",
+                "orchestrator_log": "/logs/orch.log",
+                "validation_record_path": "/wt/validate.json",
+            },
+            "run_dir": "/run/dir",
+        },
+    )
+    parsed = [
+        DialogActionPayload.model_validate(action) for action in dialog["actions"]
+    ]
+    kinds = {action.command.kind for action in parsed}
+    # Reused canonical recording command + the dialog-only command union.
+    assert "open_session_recording" in kinds
+    assert {
+        "open_path",
+        "copy_session_recording",
+        "view_claude_log",
+        "open_orchestrator_log",
+    } <= kinds
+    # A loose/legacy action (bare ``type`` string, no ``command``) must NOT
+    # satisfy the typed contract anymore.
+    with pytest.raises(ValueError):
+        DialogActionPayload.model_validate(
+            {
+                "type": "open_agent_log",
+                "label": "x",
+                "issue_number": 7,
+                "run_dir": "/r",
+                "group": "session_evidence",
+            }
+        )
 
 
 def test_issue_detail_payload_matches_ui_openapi() -> None:

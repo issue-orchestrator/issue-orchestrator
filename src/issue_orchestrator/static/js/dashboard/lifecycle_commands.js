@@ -57,6 +57,53 @@ function runLifecycleCommandFromToggle(detailsEl) {
     runLifecycleCommand(command, detailsEl);
 }
 
+// Single owner for the dialog-only action-button Command family (issue #6327).
+//
+// The validation / diagnostics dialogs render their action buttons through the
+// same ``data-lifecycle-command`` pipeline as every other affordance.  The
+// backend dialog view models (``view_models/dialog_commands.py``) emit these
+// typed ``DialogActionCommand`` payloads directly, so ``session_dialogs.js``
+// renders the provided command without reconstructing one from a loose
+// ``action.type`` dict.  Kinds that already have a canonical timeline command
+// (``open_session_recording``, ``open_review_feedback``) are handled by the
+// branch chain above and reused here rather than duplicated; this table owns
+// only the dialog-specific kinds with no timeline counterpart.
+//
+// Each entry wires a Command ``kind`` to its handler and returns ``true`` on
+// dispatch (``false`` when a required field is absent — an unreachable path
+// from real buttons, which the backend omits entirely when their run context
+// is missing).  Handlers are referenced lazily at click time, so load order
+// between this module and the handler modules only needs to settle before the
+// user clicks.  ``error_surface`` (default ``toast``) lets the dialog report a
+// failed fetch inside the open dialog instead of via a page toast.
+const _DIALOG_ACTION_COMMAND_DISPATCH = {
+    open_path: (command) => {
+        if (!command.path) return false;
+        openPath(command.path);
+        return true;
+    },
+    copy_session_recording: (command) => {
+        if (!command.issue_number || !command.run_dir) return false;
+        copyAgentLogAction(command.issue_number, command.run_dir);
+        return true;
+    },
+    view_claude_log: (command) => {
+        if (!command.issue_number || !command.run_dir) return false;
+        viewClaudeLog(command.issue_number, command.run_dir, command.error_surface || 'toast');
+        return true;
+    },
+    open_orchestrator_log: (command) => {
+        if (!command.issue_number) return false;
+        openFilteredOrchestratorLog(command.issue_number, command.run_dir || null, command.error_surface || 'toast');
+        return true;
+    },
+    open_session_diagnostics: (command) => {
+        if (!command.issue_number) return false;
+        openSessionManifest(command.issue_number, command.run_dir || null);
+        return true;
+    },
+};
+
 function runLifecycleCommand(command, triggerEl = null) {
     if (!command || typeof command !== 'object') return;
     const kind = String(command.kind || '').trim();
@@ -70,17 +117,24 @@ function runLifecycleCommand(command, triggerEl = null) {
     }
     if (kind === 'open_session_recording' && command.issue_number && command.run_dir) {
         const label = command.label ? String(command.label) : 'Session Recording';
-        openAgentLogAction(command.issue_number, command.run_dir, label, 'toast', {
+        // ``error_surface`` lets the emitter pick where load failures show:
+        // timeline chips leave it unset (default ``toast``); dialog action
+        // buttons set ``inline`` so the error renders inside the open dialog.
+        openAgentLogAction(command.issue_number, command.run_dir, label, command.error_surface || 'toast', {
             round_index: command.round_index || null,
             session_role: command.session_role || null,
         });
         return;
     }
     if (kind === 'open_review_transcript' && command.issue_number && command.run_dir) {
+        // ``error_surface`` lets a caller pick where load failures show:
+        // chips/timeline use the default ``toast``; dialog action buttons
+        // pass ``inline`` so the error renders inside the open modal.
+        // ``?? null`` (not ``|| null``) preserves a legitimate round 0.
         openReviewTranscript(command.issue_number, command.run_dir, {
-            round_index: command.round_index || null,
+            round_index: command.round_index ?? null,
             transcript_role: command.transcript_role || null,
-        }, 'toast');
+        }, command.error_surface || 'toast');
         return;
     }
     if (
@@ -105,6 +159,13 @@ function runLifecycleCommand(command, triggerEl = null) {
     }
     if (kind === 'open_completion_record' && command.path) {
         openPath(command.path);
+        return;
+    }
+    // ``open_review_feedback`` is a canonical ``TimelineCommand`` (emitted by
+    // review/changes-requested cycles); it lives here with the other typed
+    // command branches rather than the dialog-action table.
+    if (kind === 'open_review_feedback' && command.issue_number) {
+        openReviewFeedback(command.issue_number);
         return;
     }
     // ``open_e2e_run`` is the typed "navigate the user to run #N"
@@ -155,5 +216,13 @@ function runLifecycleCommand(command, triggerEl = null) {
         loadInlineAgentAttempts(command.issue_number, triggerEl);
         return;
     }
+    // Dialog action-button Commands (issue #6327) route through a single
+    // decision table (``_DIALOG_ACTION_COMMAND_DISPATCH``) rather than a
+    // chain of per-kind branches — one owner for the whole dialog-command
+    // family.  The handler returns ``true`` once it dispatches; a known kind
+    // whose required fields are missing returns ``false`` and falls through
+    // to the unsupported-command signal, matching the branch-chain kinds.
+    const dialogHandler = _DIALOG_ACTION_COMMAND_DISPATCH[kind];
+    if (dialogHandler && dialogHandler(command)) return;
     showToast(`Unsupported lifecycle command: ${kind}`, 'warning');
 }

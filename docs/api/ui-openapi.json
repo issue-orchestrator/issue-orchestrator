@@ -2380,19 +2380,80 @@
           "checks": {"type": "array", "items": {"$ref": "#/components/schemas/DoctorCheckPayload"}}
         }
       },
-      "SessionDiagnosticsActionPayload": {
+      "OpenPathCommandPayload": {
         "type": "object",
-        "additionalProperties": true,
-        "required": ["type", "label"],
+        "additionalProperties": false,
+        "required": ["kind", "label", "path"],
         "properties": {
-          "type": {"type": "string"},
+          "kind": {"const": "open_path"},
           "label": {"type": "string"},
-          "path": {"type": ["string", "null"]},
-          "issue_number": {"type": ["integer", "null"]},
-          "group": {
-            "type": ["string", "null"],
-            "enum": ["validation_artifacts", "session_evidence", "diagnostics", null]
-          }
+          "path": {"type": "string"}
+        }
+      },
+      "CopySessionRecordingCommandPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "label", "issue_number", "run_dir"],
+        "properties": {
+          "kind": {"const": "copy_session_recording"},
+          "label": {"type": "string"},
+          "issue_number": {"type": "integer"},
+          "run_dir": {"type": "string"}
+        }
+      },
+      "ViewClaudeLogCommandPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "label", "issue_number", "run_dir", "error_surface"],
+        "properties": {
+          "kind": {"const": "view_claude_log"},
+          "label": {"type": "string"},
+          "issue_number": {"type": "integer"},
+          "run_dir": {"type": "string"},
+          "error_surface": {"enum": ["toast", "inline"]}
+        }
+      },
+      "OpenOrchestratorLogCommandPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "label", "issue_number", "error_surface"],
+        "properties": {
+          "kind": {"const": "open_orchestrator_log"},
+          "label": {"type": "string"},
+          "issue_number": {"type": "integer"},
+          "run_dir": {"type": ["string", "null"]},
+          "error_surface": {"enum": ["toast", "inline"]}
+        }
+      },
+      "OpenSessionDiagnosticsCommandPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "label", "issue_number"],
+        "properties": {
+          "kind": {"const": "open_session_diagnostics"},
+          "label": {"type": "string"},
+          "issue_number": {"type": "integer"},
+          "run_dir": {"type": ["string", "null"]}
+        }
+      },
+      "DialogActionCommandPayload": {
+        "oneOf": [
+          {"$ref": "#/components/schemas/OpenPathCommandPayload"},
+          {"$ref": "#/components/schemas/OpenSessionRecordingCommandPayload"},
+          {"$ref": "#/components/schemas/CopySessionRecordingCommandPayload"},
+          {"$ref": "#/components/schemas/ViewClaudeLogCommandPayload"},
+          {"$ref": "#/components/schemas/OpenOrchestratorLogCommandPayload"},
+          {"$ref": "#/components/schemas/OpenSessionDiagnosticsCommandPayload"}
+        ],
+        "discriminator": {"propertyName": "kind"}
+      },
+      "DialogActionPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["command", "group"],
+        "properties": {
+          "command": {"$ref": "#/components/schemas/DialogActionCommandPayload"},
+          "group": {"enum": ["validation_artifacts", "session_evidence", "diagnostics"]}
         }
       },
       "SessionDiagnosticsDialogPayload": {
@@ -2402,7 +2463,7 @@
         "properties": {
           "title": {"type": "string"},
           "rows": {"type": "array", "items": {"$ref": "#/components/schemas/DialogRowPayload"}},
-          "actions": {"type": "array", "items": {"$ref": "#/components/schemas/SessionDiagnosticsActionPayload"}},
+          "actions": {"type": "array", "items": {"$ref": "#/components/schemas/DialogActionPayload"}},
           "analysis": {
             "oneOf": [
               {"$ref": "#/components/schemas/SessionDiagnosticsAnalysisPayload"},
@@ -2443,7 +2504,7 @@
         "required": ["title", "actions"],
         "properties": {
           "title": {"type": "string"},
-          "actions": {"type": "array", "items": {"$ref": "#/components/schemas/SessionDiagnosticsActionPayload"}}
+          "actions": {"type": "array", "items": {"$ref": "#/components/schemas/DialogActionPayload"}}
         }
       },
       "ValidationExtraPayload": {
@@ -2621,7 +2682,8 @@
           "issue_number": {"type": "integer"},
           "run_dir": {"type": "string"},
           "session_role": {"type": ["string", "null"]},
-          "round_index": {"type": ["integer", "null"]}
+          "round_index": {"type": ["integer", "null"]},
+          "error_surface": {"type": ["string", "null"], "enum": ["toast", "inline", null]}
         }
       },
       "OpenReviewFeedbackCommandPayload": {
