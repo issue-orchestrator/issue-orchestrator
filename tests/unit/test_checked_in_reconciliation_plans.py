@@ -1,4 +1,4 @@
-"""Freshness guardrails for the reviewed lifecycle plans checked into this repo.
+"""Publication guards for the reviewed lifecycle plans checked into this repo.
 
 A lifecycle plan is a decision set an operator reviewed by hand at one moment
 and then committed. Everything downstream protects the APPLY — the registry
@@ -6,17 +6,32 @@ refuses a stale revision, preflight admits the whole plan before writing any of
 it — but nothing protected the plan itself between review and merge. #7248 round
 3 found exactly that: a retained outcome whose reason said its fix "remains in
 open PR #7238 and must merge before retirement", published on a branch whose own
-merge base already contained that merge. The apply would have faithfully
-recorded a reviewed decision whose premise was gone, leaving a case file open
-that the plan's own stated condition said to close.
+merge base already contained that merge.
 
-These run in the unit suite, so the publish gate is where that goes red.
+Round 4 then found that the guard written for it was worse than no guard. It
+scanned this repository's ambient git history for merged pull requests, and:
+
+* CI checks out one commit (``actions/checkout`` has defaulted to
+  ``fetch-depth: 1`` since v2), so in the environment that gates publication it
+  saw an empty history and passed vacuously — a silent degradation this repo's
+  fail-fast policy does not allow from an authoritative guard;
+* it recognized only squash subjects ending ``(#<n>)`` and missed the 777
+  ``Merge pull request #<n> from …`` subjects in this repository's own history;
+* and, fatally, it could not say WHICH repository a bare ``#<n>`` belonged to.
+  These plans cover two repositories, so a porchpin number would be answered
+  from issue-orchestrator's history. That is a false positive on a correct
+  plan, and a gate that fails correct work is how guards get weakened.
+
+The lesson is that "is this pull request merged?" is a GitHub question, not a
+local-history one, and a unit test must not pretend otherwise. So the enforced
+guards below are the ones that can be answered deterministically and offline
+from the repository's own content, and the operator's pre-publish re-check is
+documented in the runbook instead of being faked here.
 """
 
 from __future__ import annotations
 
 import re
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -35,24 +50,16 @@ PLAN_DIR = REPO_ROOT / "repo-specific" / "reconciliation"
 RUNBOOK = REPO_ROOT / "docs" / "development" / "CASE_FILE_RECONCILIATION.md"
 PLAN_PATHS = sorted(PLAN_DIR.glob("tech-lead-case-lifecycle-*.yaml"))
 
-# A squash merge lands as one commit whose subject ends in "(#<pr>)".
-_PR_REFERENCE = re.compile(r"#(\d+)")
+# The two forms these plans use to name a numbered GitHub item.
+_NUMBERED_ITEM = re.compile(r"#\d+|/(?:pull|issues)/\d+")
 
 
-def _merged_pull_requests() -> frozenset[int]:
-    """Every PR number this repository's history records as merged."""
-    subjects = subprocess.run(
-        ["git", "-C", str(REPO_ROOT), "log", "--format=%s", "HEAD"],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.splitlines()
-    merged = set()
-    for subject in subjects:
-        match = re.search(r"\(#(\d+)\)$", subject.strip())
-        if match:
-            merged.add(int(match.group(1)))
-    return frozenset(merged)
+def _outcomes(path: Path) -> list[dict]:
+    return yaml.safe_load(path.read_text(encoding="utf-8"))["outcomes"]
+
+
+def _is_retained(outcome: dict) -> bool:
+    return outcome["disposition"] not in TERMINAL_CASE_FILE_DISPOSITIONS
 
 
 def test_the_repository_has_checked_in_lifecycle_plans() -> None:
@@ -66,7 +73,9 @@ def test_every_checked_in_plan_loads_through_the_command_surface(path: Path) -> 
 
     Plan loading constructs each outcome's domain transition, so this also
     proves every checked-in plan can build the transitions its apply needs —
-    the invariant a timezone-naive ``recorded_at`` used to slip past.
+    the invariant a timezone-naive ``recorded_at`` used to slip past. It earns
+    its keep on ordinary editing too: the round 3 plan correction first landed
+    with an unquoted ``#``, which YAML reads as a comment, and this caught it.
     """
     plan = load_reconciliation_plan(path)
 
@@ -75,39 +84,68 @@ def test_every_checked_in_plan_loads_through_the_command_surface(path: Path) -> 
 
 
 @pytest.mark.parametrize("path", PLAN_PATHS, ids=lambda p: p.name)
-def test_no_retained_outcome_rests_on_an_already_merged_pull_request(
-    path: Path,
-) -> None:
-    """A reviewed "not yet fixed" must not cite a fix this repo already merged.
+def test_no_retained_reason_asserts_the_state_of_a_numbered_item(path: Path) -> None:
+    """A retained decision may not rest on a claim that decays.
 
-    A retained outcome (``active`` or ``needs_human``) asserts the class is not
-    resolved. When its own reason names a pull request that is merged here, the
-    reason a human wrote is no longer true and the decision needs re-review
-    before the plan is published.
+    This is the F5 shape rather than the F5 instance. A retained outcome
+    (``active`` or ``needs_human``) asserts a class is not resolved. When its
+    reason also asserts the STATE of a numbered GitHub item — "remains in open
+    PR #7238", "tracker #229 is still open" — it has written down a fact about
+    the world that can be overtaken between review and merge, and nothing in
+    the apply path re-checks it. That is precisely what happened: the premise
+    was false at the branch's own merge base and the apply would still have
+    recorded the reviewed decision faithfully.
 
-    The rule reads the ``reason`` field only, and that is the escape hatch as
-    well as the check: ``reason`` carries the CLAIM, ``evidence`` carries the
-    links. An outcome that stays retained even though a related PR merged — the
-    merge fixed a neighbouring path, say — says so in prose and puts the PR in
-    ``evidence``, which is not scanned. Nothing has to be weakened to express
-    that, so the guard can stay strict about the case that actually bit.
+    The rule is deterministic and offline because it reads only the plan: no
+    git history, no network, no clone-depth dependency, and no guessing which
+    repository a number belongs to. ``reason`` carries the CLAIM and must stay
+    durable prose; ``evidence`` carries the LINKS and is deliberately not
+    scanned. So an outcome legitimately retained alongside related merged work
+    says why in prose and cites the work under ``evidence`` — as
+    ``review-exchange-restart-rederives-reviewer-verdict`` does with merged PR
+    #7141 today. Nothing has to be weakened to express that.
     """
-    merged = _merged_pull_requests()
-    document = yaml.safe_load(path.read_text(encoding="utf-8"))
-
-    stale = [
-        (outcome["signature"], number, outcome["reason"])
-        for outcome in document["outcomes"]
-        if outcome["disposition"] not in TERMINAL_CASE_FILE_DISPOSITIONS
-        for number in {int(n) for n in _PR_REFERENCE.findall(outcome["reason"])}
-        if number in merged
+    offenders = [
+        (outcome["signature"], match.group(0), outcome["reason"])
+        for outcome in _outcomes(path)
+        if _is_retained(outcome)
+        for match in [_NUMBERED_ITEM.search(outcome["reason"])]
+        if match is not None
     ]
 
-    assert not stale, "\n".join(
-        f"{path.name}: {signature!r} is retained but its reason cites merged"
-        f" PR #{number}; re-review the outcome (retire it, or state why it"
-        f" stays retained without naming the PR in the reason):\n    {reason}"
-        for signature, number, reason in stale
+    assert not offenders, "\n".join(
+        f"{path.name}: {signature!r} is retained but its reason asserts the state"
+        f" of {reference}. A reviewed plan cannot vouch for that between review"
+        f" and merge. Re-review the outcome: retire it if the work landed, or"
+        f" state the condition in durable prose and move the link to"
+        f" 'evidence':\n    {reason}"
+        for signature, reference, reason in offenders
+    )
+
+
+def test_the_merged_transport_fix_stays_retired() -> None:
+    """Pin the exact correction round 3 made, so it cannot silently come back.
+
+    ``fc1ac91c2e8f201b9ee469ab1cdffb622a58b926`` — "Fetch Tech Lead PR diffs and
+    coordinate pattern case files (#7238)" — is an ancestor of ``origin/main``
+    and carries the ``RepositoryHost`` diff-fetch fix this signature names, so
+    the outcome's own stated retirement condition is met. The plan said
+    ``active``. This asserts the corrected decision directly rather than
+    re-deriving it from ambient history the test cannot trust.
+    """
+    signature = "tech-lead-batch-manifest-diff-fetch-blocked-by-gh-guard"
+    plan = PLAN_DIR / "tech-lead-case-lifecycle-porchpin-2026-09.yaml"
+    matching = [item for item in _outcomes(plan) if item["signature"] == signature]
+
+    assert len(matching) == 1, f"{signature!r} is not in {plan.name}"
+    outcome = matching[0]
+    assert outcome["disposition"] in TERMINAL_CASE_FILE_DISPOSITIONS, (
+        f"{signature!r} must stay retired: its transport fix merged in PR #7238"
+        f" (fc1ac91), which is an ancestor of origin/main"
+    )
+    assert (
+        "https://github.com/issue-orchestrator/issue-orchestrator/pull/7238"
+        in outcome["evidence"]
     )
 
 
@@ -118,15 +156,8 @@ def test_the_runbook_reports_the_counts_the_plans_actually_carry() -> None:
     that stops matching the files it describes the moment one outcome is
     re-reviewed. Deriving it in a test means the runbook cannot drift.
     """
-    outcomes = [
-        outcome
-        for path in PLAN_PATHS
-        for outcome in yaml.safe_load(path.read_text(encoding="utf-8"))["outcomes"]
-    ]
-    terminal = sum(
-        outcome["disposition"] in TERMINAL_CASE_FILE_DISPOSITIONS
-        for outcome in outcomes
-    )
+    outcomes = [outcome for path in PLAN_PATHS for outcome in _outcomes(path)]
+    retained = sum(_is_retained(outcome) for outcome in outcomes)
     stated = re.search(
         r"Across both plans: (\d+) reviewed outcomes, (\d+) terminal, (\d+) retained",
         RUNBOOK.read_text(encoding="utf-8"),
@@ -135,6 +166,6 @@ def test_the_runbook_reports_the_counts_the_plans_actually_carry() -> None:
     assert stated is not None, f"{RUNBOOK} no longer states the plan totals"
     assert [int(group) for group in stated.groups()] == [
         len(outcomes),
-        terminal,
-        len(outcomes) - terminal,
+        len(outcomes) - retained,
+        retained,
     ]

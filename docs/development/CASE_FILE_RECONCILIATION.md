@@ -252,14 +252,38 @@ issue-orchestrator checkout.
 
 Across both plans: 66 reviewed outcomes, 43 terminal, 23 retained as active or
 needs-human — a total `tests/unit/test_checked_in_reconciliation_plans.py`
-derives from the plan files rather than trusting this sentence. That suite also
-refuses a retained outcome whose `reason` names a pull request this repository
-has already merged, which is the freshness check to run before publishing a
-reviewed plan: the premise a human wrote can be overtaken between review and
-merge, and Porchpin `tech-lead-batch-manifest-diff-fetch-blocked-by-gh-guard`
-was retired here for exactly that reason once PR #7238 landed. An outcome that
-legitimately stays retained after a related merge states why in prose and cites
-the PR under `evidence`, which the guard does not read.
+derives from the plan files rather than trusting this sentence.
+
+### Keeping a reviewed plan fresh
+
+A plan is a snapshot of a judgement. The apply is protected against the
+registry moving underneath it (`expected_revision`, whole-plan admission), but
+nothing re-checks the reasoning a human wrote, and the gap between review and
+merge is where that goes stale. Porchpin
+`tech-lead-batch-manifest-diff-fetch-blocked-by-gh-guard` was published saying
+its fix "remains in open PR #7238 and must merge before retirement" on a branch
+whose own merge base already contained that merge; it is `shipped` here now.
+
+Two halves, split by what can actually be known where:
+
+- **Enforced in the unit suite, deterministically.** A retained (`active` or
+  `needs_human`) outcome's `reason` may not assert the STATE of a numbered
+  GitHub item — no `#1234`, no `/pull/` or `/issues/` link. Such a claim decays,
+  and no part of the apply re-checks it. `reason` carries the durable claim;
+  `evidence` carries the links and is deliberately not scanned, so an outcome
+  that legitimately stays retained alongside related merged work says why in
+  prose and cites the work under `evidence` — as
+  `review-exchange-restart-rederives-reviewer-verdict` does with merged PR
+  #7141. The suite also pins the corrected Porchpin outcome terminal so that
+  specific regression cannot return.
+- **Yours, before you publish a revised plan.** Re-check every retained outcome
+  against GitHub: tracker still open, no fix merged since. A test cannot do
+  this. "Is this pull request merged?" is a GitHub question, and these plans
+  span two repositories, so a bare number cannot even be attributed to one of
+  them. An earlier version of the guard tried to answer it from this
+  repository's local history and was worse than nothing: CI checks out a single
+  commit, so it saw no history and passed vacuously in the one environment that
+  gates publication.
 
 Both plans were reconfirmed on 2026-09-11 against their repositories'
 `.issue-orchestrator/state/tech_lead_authority.sqlite`, each under the
