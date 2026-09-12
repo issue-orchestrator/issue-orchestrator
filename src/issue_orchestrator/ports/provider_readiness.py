@@ -20,10 +20,11 @@ watcher. This port is the single typed outcome all three consumers share:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Protocol
 
+from ..domain.provider_lane import BillingMode, ProviderLane
 from .provider_resilience import ProviderErrorType
 
 
@@ -40,6 +41,47 @@ class ProviderReadinessState(str, Enum):
     NOT_INSTALLED = "not_installed"
     AUTH_EXPIRED = "auth_expired"
     UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class ProviderEntitlement:
+    """What the auth probe observed about how this account pays for capacity.
+
+    Deliberately a record rather than an ``is_prepaid`` flag: the same probe
+    execution is where remaining-capacity readings will land (#7250), and codex
+    already reports a usable percentage while Claude reports nothing at all.
+    Growing that here must be adding a field, not reshaping a boolean.
+
+    ``billing`` is ``None`` when the probe ran but could not tell — which is a
+    third state, distinct from both prepaid and metered, exactly as
+    ``ProviderReadinessState.UNKNOWN`` is distinct from ``READY``. Callers act
+    on :attr:`effective_billing` so the fail-safe choice is visible at the call
+    site instead of hidden in a default argument.
+    """
+
+    #: ``None`` means "the probe could not determine it", never "metered".
+    billing: BillingMode | None = None
+    #: Short descriptor of how the account authenticated, for operator-facing
+    #: detail only (e.g. ``claude.ai``, ``chatgpt``, ``api_key``). Control never
+    #: branches on this string; the adapter already turned it into ``billing``.
+    auth_method: str = ""
+    #: Subscription tier when the provider reports one (e.g. ``max``, ``pro``).
+    plan: str = ""
+
+    @property
+    def determined(self) -> bool:
+        """Whether the probe positively established the billing mode."""
+        return self.billing is not None
+
+    @property
+    def effective_billing(self) -> BillingMode:
+        """The billing mode to act on, defaulting safely when undetermined.
+
+        Undetermined resolves to ``METERED``. Mis-reading prepaid capacity as
+        metered only under-uses a lane the operator already paid for; the
+        reverse spends their money on the assumption it was free.
+        """
+        return self.billing or BillingMode.METERED
 
 
 @dataclass(frozen=True)
@@ -61,6 +103,10 @@ class ProviderReadiness:
     # "not produced by a probe" — a hand-built or adapter-level value that no
     # one can replay.
     sample_id: str = ""
+    # What the same probe execution observed about billing. Empty (undetermined)
+    # for every provider that ships no entitlement signal, and for hand-built
+    # values — those resolve to METERED, the fail-safe direction.
+    entitlement: ProviderEntitlement = field(default_factory=ProviderEntitlement)
 
     @property
     def launchable(self) -> bool:
@@ -88,29 +134,63 @@ class ProviderReadiness:
         return None
 
     @classmethod
-    def ready(cls, provider: str, detail: str = "") -> "ProviderReadiness":
-        return cls(provider=provider, state=ProviderReadinessState.READY, detail=detail)
+    def ready(
+        cls,
+        provider: str,
+        detail: str = "",
+        entitlement: ProviderEntitlement | None = None,
+    ) -> "ProviderReadiness":
+        # A confirmed login is the one moment billing is knowable, so this is
+        # the constructor that carries it. The others accept it too, because a
+        # provider can report an expired credential while still telling you
+        # which kind of account it belonged to.
+        return cls(
+            provider=provider,
+            state=ProviderReadinessState.READY,
+            detail=detail,
+            entitlement=entitlement or ProviderEntitlement(),
+        )
 
     @classmethod
-    def auth_expired(cls, provider: str, detail: str) -> "ProviderReadiness":
+    def auth_expired(
+        cls,
+        provider: str,
+        detail: str,
+        entitlement: ProviderEntitlement | None = None,
+    ) -> "ProviderReadiness":
         return cls(
             provider=provider,
             state=ProviderReadinessState.AUTH_EXPIRED,
             detail=detail,
+            entitlement=entitlement or ProviderEntitlement(),
         )
 
     @classmethod
-    def not_installed(cls, provider: str, detail: str) -> "ProviderReadiness":
+    def not_installed(
+        cls,
+        provider: str,
+        detail: str,
+        entitlement: ProviderEntitlement | None = None,
+    ) -> "ProviderReadiness":
         return cls(
             provider=provider,
             state=ProviderReadinessState.NOT_INSTALLED,
             detail=detail,
+            entitlement=entitlement or ProviderEntitlement(),
         )
 
     @classmethod
-    def unknown(cls, provider: str, detail: str = "") -> "ProviderReadiness":
+    def unknown(
+        cls,
+        provider: str,
+        detail: str = "",
+        entitlement: ProviderEntitlement | None = None,
+    ) -> "ProviderReadiness":
         return cls(
-            provider=provider, state=ProviderReadinessState.UNKNOWN, detail=detail
+            provider=provider,
+            state=ProviderReadinessState.UNKNOWN,
+            detail=detail,
+            entitlement=entitlement or ProviderEntitlement(),
         )
 
 
@@ -132,6 +212,17 @@ class ProviderReadinessProbe(Protocol):
         self, provider: str, output: str
     ) -> ProviderReadiness:
         """Answer "is this live session's output a provider auth failure?"."""
+        ...
+
+    def lane_for(self, provider: str, model: str | None = None) -> ProviderLane:
+        """Answer "which independently-metered lane does this draw from?".
+
+        Lives on the readiness probe because lane identity is derived from
+        exactly the two things this probe already owns: the provider adapter's
+        map of separately-metered models, and the billing mode its credential
+        sample observed. A separate port would need the same two dependencies
+        and the same wiring — a second name for one responsibility.
+        """
         ...
 
 
@@ -162,6 +253,18 @@ class StaticProviderReadinessProbe:
         del output  # a static probe interprets no output
         return self._readiness(provider)
 
+    def lane_for(self, provider: str, model: str | None = None) -> ProviderLane:
+        """Report the provider's undivided lane.
+
+        A static probe resolves no provider adapter, so it cannot know which
+        models bill against a separate meter. It reports the single lane and the
+        fail-safe metered billing, which keeps every model on one circuit —
+        conservative rather than wrong: work is never launched against a lane
+        this probe believes is exhausted.
+        """
+        del model  # no adapter to ask about sub-meters
+        return ProviderLane(provider=provider, billing=BillingMode.METERED)
+
     def _readiness(self, provider: str) -> ProviderReadiness:
         return ProviderReadiness(
             provider=provider,
@@ -181,6 +284,7 @@ NO_PROVIDER_READINESS_PROBE: StaticProviderReadinessProbe = (
 
 __all__ = [
     "NO_PROVIDER_READINESS_PROBE",
+    "ProviderEntitlement",
     "ProviderReadiness",
     "ProviderReadinessProbe",
     "ProviderReadinessState",

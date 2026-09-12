@@ -252,9 +252,13 @@ def test_mode_path_rejects_traversal(tmp_path: Path) -> None:
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SHIPPED_MODES_DIR = _REPO_ROOT / ".issue-orchestrator" / "config" / "modes"
 
-# Per-mode purity contract: every agent in the mode runs on this provider and
-# pins the provider-specific reasoning ceiling, so the claude and codex modes
-# stay a controlled A/B pair (effort: xhigh <-> reasoning_effort: xhigh).
+# Per-mode purity contract: every agent in the mode runs on this provider.
+#
+# `effort_key` is the provider-specific reasoning dial, or None for a mode that
+# deliberately does NOT pin one. A pinned ceiling is what makes a mode a
+# controlled A/B arm; pinning a dial whose effect is unverified would make this
+# suite assert a fiction, so the exemptions below are stated with their reason
+# rather than left as an omission.
 _SINGLE_PROVIDER_MODES = {
     "claude": {
         "provider": "claude-code",
@@ -265,6 +269,34 @@ _SINGLE_PROVIDER_MODES = {
         "provider": "codex",
         "ai_system": "codex",
         "effort_key": "reasoning_effort",
+    },
+    "fable": {
+        "provider": "claude-code",
+        "ai_system": "claude-code",
+        "effort_key": "effort",
+    },
+    "deepseek": {
+        "provider": "deepseek",
+        # DeepSeek runs THROUGH the Claude Code CLI, so the session writes the
+        # same ~/.claude/projects JSONL and the ai_system that parses it is
+        # claude-code. The provider differs because the endpoint, credential
+        # and quota lane do.
+        "ai_system": "claude-code",
+        "effort_key": "effort",
+        # DeepSeek is reached via its Anthropic-compatible endpoint and whether
+        # `--effort` survives that translation is unverified, so no agent here
+        # pins a ceiling. See the header of modes/deepseek/main.yaml.
+        "unpinned_models": frozenset({"deepseek-v4-pro", "deepseek-flash"}),
+    },
+    "spark": {
+        "provider": "codex",
+        "ai_system": "codex",
+        "effort_key": "reasoning_effort",
+        # Spark is a speed-tuned research preview whose supported effort levels
+        # are undocumented. The reviewer and tech-lead agents in this mode run
+        # on gpt-6-astra and DO pin the ceiling — only the Spark coders are
+        # exempt. See the header of modes/spark/main.yaml.
+        "unpinned_models": frozenset({"gpt-5.3-codex-spark"}),
     },
 }
 
@@ -310,17 +342,43 @@ def test_single_provider_modes_are_provider_pure(mode: str) -> None:
         assert agent["ai_system"] == contract["ai_system"], agent_name
 
 
+_EFFORT_DIALS = ("effort", "reasoning_effort", "model_reasoning_effort")
+
+
 @pytest.mark.parametrize("mode", sorted(_SINGLE_PROVIDER_MODES))
 def test_single_provider_modes_pin_the_effort_ceiling(mode: str) -> None:
+    """Pin the reasoning ceiling wherever the dial is known to reach the model.
+
+    Two rules, because a blanket "always pin xhigh" would be a lie for models
+    whose effort handling nobody has verified:
+
+    * A model NOT listed as unpinned must pin ``xhigh``, so the A/B arms stay
+      controlled.
+    * A model that IS listed must pin no dial at all — an exemption has to be
+      real rather than a forgotten key, or the config asserts a ceiling that
+      may never reach the model.
+    """
     contract = _SINGLE_PROVIDER_MODES[mode]
+    unpinned = contract.get("unpinned_models", frozenset())
     agents = _load_shipped_mode(mode)["agents"]
 
+    assert agents, f"modes/{mode}/main.yaml ships no agents"
     for agent_name, agent in agents.items():
-        effort = agent.get("provider_args", {}).get(contract["effort_key"])
+        provider_args = agent.get("provider_args", {})
+        if agent["model"] in unpinned:
+            present = [dial for dial in _EFFORT_DIALS if dial in provider_args]
+            assert not present, (
+                f"{agent_name} in modes/{mode}/main.yaml runs {agent['model']}, "
+                f"which is documented as unable to honour a pinned effort "
+                f"ceiling, yet pins {present}. Either verify the dial reaches "
+                "the model and drop it from unpinned_models, or remove the key."
+            )
+            continue
+        effort = provider_args.get(contract["effort_key"])
         assert effort == "xhigh", (
             f"{agent_name} in modes/{mode}/main.yaml does not pin "
             f"{contract['effort_key']}: xhigh (found {effort!r}), so the "
-            "claude/codex A/B is uncontrolled"
+            "A/B between the effort-pinned modes is uncontrolled"
         )
 
 

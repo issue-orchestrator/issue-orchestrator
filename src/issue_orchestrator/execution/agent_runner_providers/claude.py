@@ -8,7 +8,11 @@ Previously in ``_vendor/agent_runner/providers/claude.py``.
 import json
 from typing import TYPE_CHECKING
 
-from issue_orchestrator.ports.provider_readiness import ProviderReadiness
+from issue_orchestrator.domain.provider_lane import BillingMode
+from issue_orchestrator.ports.provider_readiness import (
+    ProviderEntitlement,
+    ProviderReadiness,
+)
 from issue_orchestrator.ports.provider_resilience import ProviderErrorType
 
 from .base import CLIProvider
@@ -34,8 +38,15 @@ class ClaudeCodeProvider(CLIProvider):
         "haiku": "haiku",
         "sonnet": "sonnet",
         "opus": "opus",
+        "fable": "fable",
     }
     EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+
+    # Fable bills against its own weekly meter on subscription plans, separate
+    # from the Opus/Sonnet/Haiku pool. Without this the circuit breaker treats
+    # an exhausted Fable meter as "claude-code is down" and stops Opus agents
+    # whose own capacity is untouched.
+    QUOTA_METERS: dict[str, str] = {"fable": "fable"}
 
     @property
     def name(self) -> str:
@@ -162,30 +173,96 @@ class ClaudeCodeProvider(CLIProvider):
         delegated to the shared classification table so no second table exists.
         """
         logged_in = self._logged_in_flag(output)
+        # Billing comes from the SAME probe execution as the login verdict. It
+        # is attached to every outcome, not just the successful one: an expired
+        # credential still tells you which kind of account it belonged to, and
+        # the circuit needs that to decide whether the lane heals on a timer.
+        entitlement = self.read_entitlement(output, exit_code)
         if logged_in is True:
             return ProviderReadiness.ready(
-                self.name, f"{self.executable} auth status: logged in"
+                self.name,
+                f"{self.executable} auth status: logged in",
+                entitlement,
             )
         if logged_in is False:
             return ProviderReadiness.auth_expired(
                 self.name,
                 f"{self.executable} auth status reports not logged in — "
                 "run `claude /login`",
+                entitlement,
             )
         if self.classify_output(output) is ProviderErrorType.AUTH:
             return ProviderReadiness.auth_expired(
                 self.name,
                 f"{self.executable} auth status reported an auth failure — "
                 "run `claude /login`",
+                entitlement,
             )
         return ProviderReadiness.unknown(
             self.name,
             f"`{self.executable} auth status` gave no verdict (exit={exit_code})",
+            entitlement,
         )
 
+    #: ``apiProvider`` values that mean "billed per token against a cloud
+    #: account" rather than against a Claude subscription.
+    _METERED_API_PROVIDERS = frozenset({"bedrock", "vertex", "apikey", "console"})
+    #: ``authMethod`` substrings that mean the same thing.
+    _METERED_AUTH_MARKERS = ("apikey", "api_key", "api key", "bedrock", "vertex")
+
+    def read_entitlement(
+        self, output: str, exit_code: int | None
+    ) -> ProviderEntitlement:
+        """Read how this Claude account pays, from the probe already running.
+
+        ``claude auth status --json`` reports ``authMethod``, ``apiProvider``
+        and ``subscriptionType`` alongside ``loggedIn``. Before #7253 only
+        ``loggedIn`` was read and the rest was discarded, so the orchestrator
+        could not tell a Max subscription (prepaid, self-refilling weekly) from
+        an API key (metered, real money per token) — a distinction that decides
+        whether an exhausted lane may reopen on its own.
+
+        Only a positive subscription signal yields ``PREPAID``. Anything
+        unrecognised stays undetermined and therefore resolves to metered: this
+        is the direction that cannot spend an operator's money by mistake.
+        """
+        del exit_code  # the JSON body carries the verdict
+        payload = self._auth_payload(output)
+        if payload is None:
+            return ProviderEntitlement()
+        auth_method = str(payload.get("authMethod", "") or "")
+        api_provider = str(payload.get("apiProvider", "") or "")
+        plan = str(payload.get("subscriptionType", "") or "")
+        normalized_auth = auth_method.strip().lower()
+        normalized_api = api_provider.strip().lower()
+
+        billing: BillingMode | None = None
+        if normalized_api in self._METERED_API_PROVIDERS or any(
+            marker in normalized_auth for marker in self._METERED_AUTH_MARKERS
+        ):
+            billing = BillingMode.METERED
+        elif plan.strip():
+            # A subscription tier is the only positive evidence of prepaid
+            # capacity. `apiProvider: firstParty` alone is not enough — it says
+            # the request goes to Anthropic, not how it is paid for.
+            billing = BillingMode.PREPAID
+        return ProviderEntitlement(
+            billing=billing,
+            auth_method=auth_method,
+            plan=plan,
+        )
+
+    @classmethod
+    def _logged_in_flag(cls, output: str) -> bool | None:
+        """Read ``loggedIn`` out of the probe's JSON, or ``None`` if absent."""
+        payload = cls._auth_payload(output)
+        if payload is None or "loggedIn" not in payload:
+            return None
+        return bool(payload["loggedIn"])
+
     @staticmethod
-    def _logged_in_flag(output: str) -> bool | None:
-        """Read ``loggedIn`` out of the probe's JSON, or ``None`` if absent.
+    def _auth_payload(output: str) -> dict | None:
+        """Extract the probe's JSON object, or ``None`` if it is not there.
 
         The CLI may prefix diagnostics before the JSON document, so the object
         is extracted by brace span rather than assuming the whole stream parses.
@@ -198,9 +275,7 @@ class ClaudeCodeProvider(CLIProvider):
             payload = json.loads(output[start : end + 1])
         except json.JSONDecodeError:
             return None
-        if not isinstance(payload, dict) or "loggedIn" not in payload:
-            return None
-        return bool(payload["loggedIn"])
+        return payload if isinstance(payload, dict) else None
 
     def apply_scope(self, scope: "SandboxScope") -> list[str]:
         """Translate a :class:`SandboxScope` into claude-code sandbox argv.

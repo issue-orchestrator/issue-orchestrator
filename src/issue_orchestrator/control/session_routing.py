@@ -498,13 +498,20 @@ def create_session(
     title: str | None,
     session_manager: SessionManager,
     events: EventSink,
+    secret_env: dict[str, str] | None = None,
 ) -> bool:
     """Create a terminal session through SessionManager."""
     from .session_manager import SessionContext
 
     ref = parse_session_ref(name, "create", events)
     return session_manager.start(
-        SessionContext(ref=ref, command=cmd, working_dir=wd, title=title)
+        SessionContext(
+            ref=ref,
+            command=cmd,
+            working_dir=wd,
+            title=title,
+            secret_env=secret_env,
+        )
     )
 
 

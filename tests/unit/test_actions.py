@@ -72,6 +72,7 @@ class MockSessionRunner:
         working_dir: str,
         title: str | None = None,
         session_name: str | None = None,
+        secret_env: dict[str, str] | None = None,
     ) -> bool:
         self.sessions[session_id] = {"command": command, "working_dir": working_dir}
         return True

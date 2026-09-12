@@ -33,6 +33,7 @@ from .bootstrap_budgeted_validation import (
 from ..infra.agent_callback_endpoint import RuntimeAgentCallbackEndpoint
 from .bootstrap_provider import (
     build_provider_circuit_store,
+    build_provider_credentials,
     build_provider_launch_sampler,
     build_provider_readiness_probe,
     build_provider_resilience,
@@ -794,6 +795,7 @@ def build_orchestrator(
         label_manager=label_manager,
         agent_callback_endpoint=agent_callback_endpoint,
         provider_readiness_probe=provider_readiness_probe,
+        provider_credentials=build_provider_credentials(),
         needs_human_block=pending_work.needs_human_block,
         coder_prompt_addendum=coder_prompt_addendum,
     )

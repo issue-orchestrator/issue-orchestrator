@@ -41,6 +41,7 @@ class MockSessionRunner:
         working_dir: str,
         title: str | None = None,
         session_name: str | None = None,
+        secret_env: dict | None = None,
     ) -> bool:
         self.create_calls.append({
             "session_id": session_id,

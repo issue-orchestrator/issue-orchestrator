@@ -1,20 +1,18 @@
-# Codex-only mode: every agent runs on codex, and nothing runs on Claude.
+# Fable-only mode: every agent runs on Claude Fable.
 #
-# The strict mirror of `modes/claude/main.yaml`. Use it to run the whole
-# pipeline on one provider when the Anthropic side is rate-limited or its
-# monthly spend cap has tripped, and to A/B a full Codex pipeline against the
-# full Claude one with every other setting held constant.
+# Fable bills against its OWN weekly meter, separate from the Opus/Sonnet/Haiku
+# pool the `claude` mode draws on. That makes this a genuinely independent lane
+# rather than a restyling of `modes/claude`: when the main Claude meter is
+# drained, this one still has capacity, and the circuit breaker tracks them
+# separately (lane `claude-code:fable` vs `claude-code`).
+#
+# NOTE: that independence exists only under SUBSCRIPTION billing. On an
+# API-key account there are no per-model meters — just one pool of dollars — so
+# for an API-billed operator this mode is a model choice, not a capacity story.
 #
 # Modes have NO inheritance: each config file is complete and standalone. This
 # file is a copy of `modes/default/main.yaml` and differs from it ONLY in the
-# `agents` section — the four Claude agents (backend, frontend, mobile,
-# tech-lead) move to codex; reviewer was already codex and is untouched, and
-# goal-pilot (also already codex) additionally pins reasoning_effort so every
-# agent in this mode runs at the same ceiling. Everything else (validation,
-# review, merge queue, tech lead, e2e, hooks) is deliberately identical, so a
-# diff against the default mode should show agent provider/model/effort lines
-# and nothing more. Keep it that way: any non-agent change belongs in every
-# mode file or in none. tests/unit/test_config_modes.py enforces this.
+# `agents` section. tests/unit/test_config_modes.py enforces that.
 
 repo:
   name: issue-orchestrator/issue-orchestrator
@@ -34,71 +32,63 @@ worktrees:
 agents:
   agent:backend:
     prompt: repo-specific/prompts/simple-fix.md
-    provider: "codex"
-    ai_system: "codex"
-    model: "gpt-5.6-sol"
+    provider: "claude-code"
+    ai_system: "claude-code"
+    model: "fable"
     timeout_minutes: 90
     reviewer: "agent:reviewer"
     provider_args:
-      approval_mode: "full-auto"
-      sandbox: "workspace-write"
-      reasoning_effort: "xhigh"
+      effort: "xhigh"
+      permission_mode: "bypassPermissions"
   agent:frontend:
     prompt: repo-specific/prompts/simple-fix.md
-    provider: "codex"
-    ai_system: "codex"
-    model: "gpt-5.6-sol"
+    provider: "claude-code"
+    ai_system: "claude-code"
+    model: "fable"
     timeout_minutes: 90
     reviewer: "agent:reviewer"
     provider_args:
-      approval_mode: "full-auto"
-      sandbox: "workspace-write"
-      reasoning_effort: "xhigh"
+      effort: "xhigh"
+      permission_mode: "bypassPermissions"
   agent:mobile:
     prompt: repo-specific/prompts/simple-fix.md
-    provider: "codex"
-    ai_system: "codex"
-    model: "gpt-5.6-sol"
+    provider: "claude-code"
+    ai_system: "claude-code"
+    model: "fable"
     timeout_minutes: 90
     reviewer: "agent:reviewer"
     provider_args:
-      approval_mode: "full-auto"
-      sandbox: "workspace-write"
-      reasoning_effort: "xhigh"
+      effort: "xhigh"
+      permission_mode: "bypassPermissions"
   agent:reviewer:
     prompt: repo-specific/prompts/reviewer.md
-    provider: "codex"
-    ai_system: "codex"
-    model: "gpt-5.6-sol"
+    provider: "claude-code"
+    ai_system: "claude-code"
+    model: "fable"
     timeout_minutes: 45
     provider_args:
-      approval_mode: "full-auto"
-      sandbox: "workspace-write"
-      reasoning_effort: "xhigh"
+      effort: "xhigh"
+      permission_mode: "bypassPermissions"
   agent:tech-lead:
     prompt: repo-specific/prompts/tech-lead.md
-    provider: "codex"
-    ai_system: "codex"
-    model: "gpt-6-astra"
+    provider: "claude-code"
+    ai_system: "claude-code"
+    model: "fable"
     timeout_minutes: 90
     reviewer: "agent:reviewer"
     provider_args:
-      approval_mode: "full-auto"
-      sandbox: "workspace-write"
-      reasoning_effort: "xhigh"
+      effort: "xhigh"
+      permission_mode: "bypassPermissions"
     initial_prompt: "Tech Lead review for issue #{issue_number}: {issue_title}. Follow the instructions in {prompt}. When done, use coding-done to report completion."
-  # Pinned to the same reasoning ceiling as every other agent in this mode so
-  # the A/B against the claude mode (effort: xhigh) stays controlled; without
-  # the explicit key CodexProvider falls back to the ambient Codex default.
   agent:goal-pilot:
     prompt: repo-specific/prompts/goal-pilot.md
-    provider: codex
-    model: gpt-5.6-sol
-    ai_system: codex
+    provider: "claude-code"
+    ai_system: "claude-code"
+    model: "fable"
+    timeout_minutes: 90
     provider_args:
-      approval_mode: full-auto
-      sandbox: workspace-write
-      reasoning_effort: xhigh
+      effort: "xhigh"
+      permission_mode: "bypassPermissions"
 
 execution:
   concurrency:
@@ -181,11 +171,21 @@ validation:
       cadence:
         max_merges_since_success: 10
         max_delay_hours: 24
-  # TEMPORARILY on the direct backend — see #7163. The condor backend runs
-  # the unit lane at UNIT_PARALLEL=12 inside a 3-CPU reservation, and the
-  # resulting oversubscription fails condor's own forking adapter tests.
-  # Restore LANE_EXECUTOR=condor once the reservation and the worker count
-  # are decided together; see modes/default/main.yaml for the detail.
+  # TEMPORARILY on the direct backend — see #7163.
+  #
+  # The condor backend submits the unit lane with `request_cpus = 3` and then
+  # runs `UNIT_PARALLEL=12` inside that reservation, so the pool schedules the
+  # rest of the gate believing the job is a quarter of its real width. Under
+  # that oversubscription condor's own adapter tests fail, because they fork
+  # shell stubs and wait on them with 10s timeouts. The same suite passes
+  # 14394/14394 on the direct backend on the same machine, so this is the
+  # dispatcher, not the tests.
+  #
+  # Condor lanes are opt-in (#7113) and direct is the baseline path, so this
+  # restores a gate that can pass. Put `LANE_EXECUTOR=condor` back once the
+  # reservation and the worker count are decided together (#7163); the pool
+  # setup in docs/user/condor_lanes.md is unaffected and still works for
+  # `make ... LANE_EXECUTOR=condor` per invocation.
   quick:
     cmd: LANE_EXECUTOR=direct make validate-quick
     timeout_seconds: 600

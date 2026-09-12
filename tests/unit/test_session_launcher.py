@@ -600,8 +600,17 @@ def _build_launcher_bundle(
 
     create_session_override = [None]  # List so tests can replace the callable
 
-    def mock_create_session(name: str, cmd: str, wd: Path, title: str | None) -> bool:
-        create_session_calls.append({"name": name, "cmd": cmd, "wd": wd, "title": title})
+    def mock_create_session(
+        name: str,
+        cmd: str,
+        wd: Path,
+        title: str | None,
+        secret_env: dict | None = None,
+    ) -> bool:
+        create_session_calls.append(
+            {"name": name, "cmd": cmd, "wd": wd, "title": title,
+             "secret_env": secret_env}
+        )
         if create_session_override[0] is not None:
             return create_session_override[0](name, cmd, wd, title)
         return True
@@ -1569,7 +1578,7 @@ class TestLaunchIssueSession:
             manifest_downloader=NullManifestDownloader(),
             tech_lead_authority=SqliteTechLeadAuthorityStore.for_repo(sample_config.repo_root),
             session_exists_fn=lambda name: False,
-            create_session_fn=lambda name, cmd, wd, title: True,
+            create_session_fn=lambda name, cmd, wd, title, secret_env=None: True,
             get_issue_machine=lambda issue: IssueStateMachine(issue),
             get_session_machine=lambda name, n, timeout: SessionStateMachine(
                 name, n, timeout_minutes=timeout
@@ -7725,7 +7734,7 @@ class TestStackRelaunchGate:
             manifest_downloader=NullManifestDownloader(),
             tech_lead_authority=SqliteTechLeadAuthorityStore.for_repo(sample_config.repo_root),
             session_exists_fn=lambda name: False,
-            create_session_fn=lambda name, cmd, wd, title: True,
+            create_session_fn=lambda name, cmd, wd, title, secret_env=None: True,
             get_issue_machine=lambda issue: IssueStateMachine(issue),
             get_session_machine=lambda name, n, timeout: SessionStateMachine(
                 name, n, timeout_minutes=timeout

@@ -400,8 +400,17 @@ class Orchestrator:
     def _parse_session_ref(self, session_name: str, operation: str) -> "SessionRef":
         return _parse_session_ref(session_name, operation, self.deps.events)
 
-    def _create_session(self, name: str, cmd: str, wd: Path, title: str | None = None) -> bool:
-        return _create_session(name, cmd, wd, title, self.deps.session_manager, self.deps.events)
+    def _create_session(
+        self,
+        name: str,
+        cmd: str,
+        wd: Path,
+        title: str | None = None,
+        secret_env: dict[str, str] | None = None,
+    ) -> bool:
+        return _create_session(
+            name, cmd, wd, title, self.deps.session_manager, self.deps.events, secret_env
+        )
 
     def _session_exists(self, name: str) -> bool:
         return _session_exists(name, self.deps.session_manager, self.deps.events)
