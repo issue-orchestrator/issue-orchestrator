@@ -14,6 +14,7 @@ from ..ports.pattern_registry import (
     PatternReservationState,
     PatternRetirementPhase,
     require_canonical_case_file,
+    resolve_recorded_transition,
 )
 from .comment_publication import ensure_comment_published
 from .tech_lead_case_file_owner import AmbiguousPatternPublicationError
@@ -64,12 +65,18 @@ class PatternCaseFileLifecycleOwner:
         self._before_write = before_write
 
     def classify(
-        self, *, signature: str, transition: CaseFileLifecycleTransition
+        self,
+        *,
+        signature: str,
+        transition: CaseFileLifecycleTransition,
+        expected_revision: str | None = None,
     ) -> "PatternRegistryEntry":
         """Record a reviewed active/needs-human outcome without closing GitHub."""
         self._before_write()
         return self._registry.record_lifecycle(
-            signature=signature, transition=transition
+            signature=signature,
+            transition=transition,
+            expected_revision=expected_revision,
         )
 
     def retire(
@@ -78,6 +85,7 @@ class PatternCaseFileLifecycleOwner:
         signature: str,
         transition: CaseFileLifecycleTransition,
         issue_number: int,
+        expected_revision: str | None = None,
     ) -> CaseFileRetirementOutcome:
         """Publish evidence, close idempotently, then commit terminal authority.
 
@@ -95,6 +103,7 @@ class PatternCaseFileLifecycleOwner:
             transition=transition,
             comment=comment,
             issue_number=issue_number,
+            expected_revision=expected_revision,
         )
         if reservation.state is PatternReservationState.COMMITTED:
             return self._outcome(
@@ -248,16 +257,10 @@ class PatternCaseFileLifecycleOwner:
         entry: "PatternRegistryEntry", requested: CaseFileLifecycleTransition
     ) -> CaseFileLifecycleTransition:
         """The durable record of *requested*, matched on its stable identity."""
-        for recorded in entry.lifecycle:
-            if recorded.transition_id != requested.transition_id:
-                continue
-            if not recorded.same_intent(requested):
-                raise PatternRegistryError(
-                    f"lifecycle transition {requested.transition_id!r} changed"
-                    " payload"
-                )
-            return recorded
-        raise PatternRegistryError(
-            f"pattern {entry.signature!r} reports a completed retirement, but"
-            f" durable authority has no transition {requested.transition_id!r}"
-        )
+        recorded = resolve_recorded_transition(entry, requested)
+        if recorded is None:
+            raise PatternRegistryError(
+                f"pattern {entry.signature!r} reports a completed retirement, but"
+                f" durable authority has no transition {requested.transition_id!r}"
+            )
+        return recorded

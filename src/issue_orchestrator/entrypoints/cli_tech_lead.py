@@ -7,20 +7,32 @@ Three commands share this module and the same in-process-orchestrator setup:
 * ``orchestrator health-review`` — run one whole-board ``health_review`` on
   demand, the manual counterpart of the timer-based periodic review
   (:func:`cmd_health_review`); and
-* ``orchestrator reconcile-case-files`` — apply a checked-in reconciliation plan
-  that folds an already-accumulated duplicate cluster onto its durable case
-  file (:func:`cmd_reconcile_case_files`, #6989).
+* ``orchestrator reconcile-case-files`` — apply a checked-in reconciliation
+  plan, in either of its two reviewed forms (:func:`cmd_reconcile_case_files`,
+  #6989, #7248).
 
 The first two build their own in-process orchestrator and drive the real
 tech-lead-launch path — see :mod:`..control.tech_lead_trigger`, whose owners
 reuse ``launch_tech_lead_session`` (and, for the health review, the timer path's
 anchor lifecycle) so evidence-map staging + authority are identical to a
-reactive launch. The third builds the same orchestrator but plans through
-:mod:`..control.tech_lead_case_file_reconciliation` and applies through the
-ordinary ``ActionApplier``, so a backfill executes exactly the writes the live
-lane would. Extracted from ``cli.py`` (a line-budgeted hotspot) alongside the
-other per-area command modules (``cli_queue_commands``,
-``cli_utility_commands``).
+reactive launch.
+
+The third routes by plan form, because the two forms need different authority:
+
+* An EVIDENCE plan folds an already-accumulated duplicate cluster onto its
+  durable case file. It builds the same orchestrator as the first two, plans
+  through :mod:`..control.tech_lead_case_file_reconciliation`, and applies
+  through the ordinary ``ActionApplier``, so a backfill executes exactly the
+  writes the live lane would.
+* A LIFECYCLE plan classifies the complete shared registry snapshot and retires
+  its terminal case files. It deliberately does NOT build an orchestrator:
+  :mod:`.bootstrap_case_file_reconciliation` composes shared pattern authority
+  and a ``PatternCaseFileLifecycleOwner`` directly, so the command never starts
+  background services, and ``--apply`` selects between a read-only preview
+  composition and a write-capable one.
+
+Extracted from ``cli.py`` (a line-budgeted hotspot) alongside the other per-area
+command modules (``cli_queue_commands``, ``cli_utility_commands``).
 """
 
 from __future__ import annotations
@@ -41,6 +53,10 @@ if TYPE_CHECKING:
         CaseFileReconciliationHost,
         CaseFileReconciliationPlan,
         ReconciliationPhase,
+    )
+    from ..control.tech_lead_case_file_lifecycle_reconciliation import (
+        CaseFileLifecycleReconciler,
+        CaseFileLifecycleReconciliationPlan,
     )
     from ..control.tech_lead_trigger import TechLeadTerminationOutcome
     from ..infra.config import Config
@@ -168,7 +184,7 @@ def cmd_health_review(args: argparse.Namespace) -> int:
 
 
 def cmd_reconcile_case_files(args: argparse.Namespace) -> int:
-    """Fold an already-accumulated duplicate cluster onto its case file (#6989).
+    """Apply a reviewed case-file evidence or lifecycle plan.
 
     The routing fix stops NEW daily mints; it cannot retro-collapse the clusters
     that accumulated before it. This applies a checked-in, reviewable plan that
@@ -177,12 +193,19 @@ def cmd_reconcile_case_files(args: argparse.Namespace) -> int:
     only then is that duplicate closed with a pointer to both the tracker and
     the case file.
 
-    **Dry-run by default.** Without ``--apply`` it prints the plan and writes
-    nothing. Re-running an applied plan is a no-op: the case file is create-once
-    by signature, each observation is create-once by an identity derived from
-    the plan file, and a duplicate that is already closed is not closed again.
+    Lifecycle plans classify the complete shared registry snapshot and retire
+    terminal case files through the same durable owner used by promotion
+    settlement. **Dry-run by default.** Without ``--apply`` the command prints
+    the plan and writes nothing. Both plan forms are safe to resume.
     """
-    from .bootstrap_case_file_reconciliation import build_case_file_reconciliation_host
+    from .bootstrap_case_file_reconciliation import (
+        build_case_file_lifecycle_reconciler,
+        build_case_file_reconciliation_host,
+    )
+    from ..control.tech_lead_case_file_lifecycle_reconciliation import (
+        CaseFileLifecycleReconciliationPlan,
+        require_plan_repository,
+    )
     from ..infra.repo_lock import AlreadyRunning, held_repo_lock
 
     try:
@@ -198,6 +221,29 @@ def cmd_reconcile_case_files(args: argparse.Namespace) -> int:
         # owns, so the two must never be live at once.
         with held_repo_lock(config.repo_root):
             _configure_one_shot_tech_lead_run(config, label="reconcile-case-files")
+            if isinstance(plan, CaseFileLifecycleReconciliationPlan):
+                # Composing write-capable authority can publish a durable local
+                # seed, so the plan must be bound to THIS repository before the
+                # reconciler exists at all, not inside its run (#7248 review P2).
+                # ``apply_writes`` also SELECTS the composition: without
+                # --apply the command gets read-only authority that cannot
+                # write even if something later asks it to (#7248 review F1).
+                try:
+                    require_plan_repository(plan, config.repo)
+                    reconciler = build_case_file_lifecycle_reconciler(
+                        config, apply_writes=bool(args.apply)
+                    )
+                except (RuntimeError, ValueError) as exc:
+                    console.print(
+                        f"[red]Lifecycle reconciliation refused:[/red] {exc}"
+                    )
+                    return 1
+                return run_case_file_lifecycle_reconciliation(
+                    plan,
+                    reconciler,
+                    configured_repository=config.repo,
+                    apply_writes=bool(args.apply),
+                )
             orchestrator = _build_orchestrator(config)
             try:
                 return run_case_file_reconciliation(
@@ -213,7 +259,9 @@ def cmd_reconcile_case_files(args: argparse.Namespace) -> int:
         return 1
 
 
-def load_reconciliation_plan(path: Path) -> "CaseFileReconciliationPlan":
+def load_reconciliation_plan(
+    path: Path,
+) -> "CaseFileReconciliationPlan | CaseFileLifecycleReconciliationPlan":
     """Read and validate the plan file.
 
     Exactly TWO failure modes, so the command can report every bad plan the
@@ -231,12 +279,66 @@ def load_reconciliation_plan(path: Path) -> "CaseFileReconciliationPlan":
     from ..control.tech_lead_case_file_reconciliation import (
         CaseFileReconciliationPlan,
     )
+    from ..control.tech_lead_case_file_lifecycle_reconciliation import (
+        CaseFileLifecycleReconciliationPlan,
+    )
 
     try:
         document = yaml.safe_load(path.read_text(encoding="utf-8"))
     except yaml.YAMLError as exc:
         raise ValueError(f"{path} is not valid YAML: {exc}") from exc
+    if isinstance(document, dict) and "outcomes" in document:
+        return CaseFileLifecycleReconciliationPlan.from_mapping(document)
     return CaseFileReconciliationPlan.from_mapping(document)
+
+
+def run_case_file_lifecycle_reconciliation(
+    plan: "CaseFileLifecycleReconciliationPlan",
+    reconciler: "CaseFileLifecycleReconciler",
+    *,
+    configured_repository: str | None,
+    apply_writes: bool,
+) -> int:
+    """Render exact lifecycle counts and apply only through the registry owner."""
+    from ..control.tech_lead_case_file_lifecycle_reconciliation import (
+        CaseFileLifecycleReconciliationRefused,
+    )
+
+    try:
+        result = reconciler.run(
+            plan,
+            configured_repository=configured_repository,
+            apply_writes=apply_writes,
+        )
+    except CaseFileLifecycleReconciliationRefused as exc:
+        # THE one refusal the owner raises, for every reason a reviewed plan
+        # can stop before its first write — including a shared-authority read
+        # failure, which is a normal operational outcome of a live GitHub-ref
+        # read and used to escape as a traceback (#7248 review F3).
+        console.print(f"[red]Lifecycle reconciliation refused:[/red] {exc}")
+        return 1
+    console.print(
+        f"[bold]Lifecycle plan `{plan.plan_id}`[/bold]: {len(plan.outcomes)}"
+        f" case file(s) — {result.active} active, {result.needs_human}"
+        f" needs-human, {result.terminal} terminal"
+    )
+    if result.dry_run:
+        console.print(
+            "[yellow]Dry run — nothing was written.[/yellow] Re-run with --apply"
+            " after reviewing every outcome in the checked-in plan."
+        )
+        return 0
+    if result.failures:
+        console.print(
+            f"[red]Stopped after {result.applied} outcome(s):[/red]"
+            f" {result.failures[0]}"
+        )
+        return 1
+    console.print(
+        f"[green]Lifecycle reconciliation complete:[/green] {result.applied}"
+        " outcome(s) converged."
+    )
+    return 0
 
 
 def run_case_file_reconciliation(

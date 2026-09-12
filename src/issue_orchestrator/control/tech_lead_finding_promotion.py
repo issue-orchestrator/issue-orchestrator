@@ -219,6 +219,15 @@ def select_promotable_findings(
     # already filed (later observations comment on it), declined = the operator
     # rejected it and it must NEVER be re-filed, shipped = already fixed.
     settled_signatures = {row.signature for row in promotions}
+    # So does a retired case file, which is the OTHER way a signature settles
+    # and the one a promotion row cannot express. Backlog reconciliation retires
+    # case files that never had a promotion row, and without this the very next
+    # tick re-filed work for a signature the operator had just declared shipped.
+    # ``blocks_promotion`` is the registry's own decision, projected onto this
+    # durable row, so it covers a retirement that is admitted but not yet
+    # finalized as well as a settled one — and survives restart, resync, and a
+    # cold second client exactly as the promotion ledger does (#7248 rounds 7
+    # and 8, F9/F11).
     in_flight: dict[str, int] = {}
     for row in promotions:
         if row.is_open:
@@ -230,6 +239,7 @@ def select_promotable_findings(
             row
             for row in evidence
             if row.signature not in settled_signatures
+            and not row.blocks_promotion
             and row.is_code_fix
             and row.observation_count >= findings.min_evidence
         ),

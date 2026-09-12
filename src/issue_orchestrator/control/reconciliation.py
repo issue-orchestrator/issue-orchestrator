@@ -79,10 +79,21 @@ class ExternalSnapshot:
     # PR number if this is an issue with a linked PR
     linked_pr: Optional[int] = None
 
+    # Issue state when it was OBSERVED; None when it was not read at all.
+    # Distinct from pr_state, which describes a linked pull request.
+    issue_state: Optional[str] = None  # "open", "closed", None
+
     @classmethod
-    def for_issue(cls, number: int, labels: set[str]) -> "ExternalSnapshot":
-        """Create snapshot for an issue."""
-        return cls(number=number, labels=frozenset(labels))
+    def for_issue(
+        cls, number: int, labels: set[str], issue_state: Optional[str] = None
+    ) -> "ExternalSnapshot":
+        """Create snapshot for an issue.
+
+        ``issue_state`` is only populated when a caller actually needed it, so
+        ``None`` means "not read", never "not closed" — the same unknown-is-not-
+        an-observation rule the fresh reader port enforces for labels.
+        """
+        return cls(number=number, labels=frozenset(labels), issue_state=issue_state)
 
     @classmethod
     def for_pr(
@@ -127,6 +138,11 @@ class ExpectedState:
     # If set, PR must be in this state
     required_pr_state: Optional[str] = None  # "open", "closed", "merged"
 
+    # If set, the ISSUE itself must be in this state. A mutation that only makes
+    # sense against a live issue says so here rather than checking separately
+    # after the gate has already passed (#7248 round 6 review F8/A3).
+    required_issue_state: Optional[str] = None  # "open", "closed"
+
     @classmethod
     def with_labels(
         cls,
@@ -161,6 +177,17 @@ class ExpectedState:
                 return False, (
                     f"PR state mismatch: expected {self.required_pr_state}, "
                     f"found {snapshot.pr_state}"
+                )
+
+        # Check issue state if required. An unread state (None) is UNKNOWN and
+        # must not satisfy a requirement — the snapshot's producer fails closed
+        # before it gets here, and this is the second half of that contract.
+        if self.required_issue_state is not None:
+            if snapshot.issue_state != self.required_issue_state:
+                return False, (
+                    f"issue state mismatch: expected"
+                    f" {self.required_issue_state}, found"
+                    f" {snapshot.issue_state if snapshot.issue_state else 'unknown'}"
                 )
 
         return True, ""

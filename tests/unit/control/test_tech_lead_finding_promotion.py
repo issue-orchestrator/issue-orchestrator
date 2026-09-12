@@ -5,6 +5,7 @@ per-target cap, permanent decline, the fix:human exclusion, restart resume of
 the durable ledger, and loop closure.
 """
 
+from typing import Any, cast
 from unittest.mock import MagicMock, Mock
 import hashlib
 
@@ -33,12 +34,18 @@ from issue_orchestrator.control.tech_lead_finding_promotion import (
 )
 from issue_orchestrator.control.claim_gate import ClaimLostError
 from issue_orchestrator.control.pattern_registry import LocalPatternCaseFileRegistry
+from issue_orchestrator.control.tech_lead_case_file_lifecycle import (
+    PatternCaseFileLifecycleOwner,
+    retirement_comment,
+)
 from issue_orchestrator.control.reconciliation import (
     ExternalSnapshot,
     ReconciliationRequired,
 )
 from issue_orchestrator.domain.tech_lead_findings import (
     CASE_FILE_ACTIVE,
+    CaseFileClassification,
+    PatternObservation,
     PROMOTION_STATE_DECLINED,
     PROMOTION_STATE_SHIPPED,
     PatternEvidence,
@@ -2331,3 +2338,422 @@ class TestAccruedSightingNeverBecomesTheDiagnosis:
         [row] = authority.list_pattern_evidence()
         assert row.diagnosis == "Mechanism: the renewer blocks."
         assert row.observation_count == 2
+
+
+# --- terminal case files leave the promotion lane (#7248 round 7 F9/A4) -----
+
+
+class TestTerminalCaseFilesAreNeverPromoted:
+    """Backlog reconciliation retires case files that have NO promotion row.
+
+    Eligibility used to be derived from evidence plus promotion rows alone, so a
+    terminal, code-fix signature above the evidence threshold looked exactly
+    like an unpromoted one. Applying the reviewed backlog plan would close the
+    case file and let the very next promotion tick re-file work for the same
+    signature — contradicting the documented invariant that a terminal signature
+    is never re-promoted.
+    """
+
+    SIGNATURE = "stuck-sweep-ghost-failure-reinjection"
+
+    def _retire(self, authority, *, issue_number: int = 65) -> None:
+        """Retire through the real owner, not by poking the ledger."""
+        from issue_orchestrator.control.pattern_registry import (
+            LocalPatternCaseFileRegistry,
+        )
+        from issue_orchestrator.control.tech_lead_case_file_lifecycle import (
+            PatternCaseFileLifecycleOwner,
+        )
+        from issue_orchestrator.domain.tech_lead_findings import (
+            CaseFileLifecycleTransition,
+        )
+
+        repository = _RecordingRepository()
+        PatternCaseFileLifecycleOwner(
+            registry=LocalPatternCaseFileRegistry(authority),
+            repository_host=cast(Any, repository),
+        ).retire(
+            signature=self.SIGNATURE,
+            transition=CaseFileLifecycleTransition(
+                transition_id=f"7240-plan:{self.SIGNATURE}",
+                disposition="shipped",
+                reason="The underlying fix shipped.",
+                evidence=("owner/repo#1",),
+                recorded_at="2026-09-12T01:40:00+00:00",
+            ),
+            issue_number=issue_number,
+        )
+
+    def _promotable(self, config, authority):
+        promotable, _updates, _settled = gather_finding_promotion_facts(
+            config,
+            authority=authority,
+            target=None,
+            read_budget=PromotionReadBudget(),
+        )
+        return promotable
+
+    def test_a_retired_signature_stops_being_promotable(self):
+        config = _config(min_evidence=2)
+        authority = InMemoryTechLeadAuthorityStore()
+        _record_case_file(
+            authority, signature=self.SIGNATURE, observations=4, fix_class="code"
+        )
+
+        assert [item.evidence.signature for item in self._promotable(config, authority)] == [
+            self.SIGNATURE
+        ], "baseline: this signature is promotable before it is retired"
+
+        self._retire(authority)
+
+        assert self._promotable(config, authority) == ()
+        assert plan_finding_promotions(config, promotable=()) == []
+
+    def test_later_evidence_cannot_reactivate_a_retired_signature(self):
+        """Evidence keeps accruing on the case file; it does not revive it."""
+        config = _config(min_evidence=2)
+        authority = InMemoryTechLeadAuthorityStore()
+        _record_case_file(
+            authority, signature=self.SIGNATURE, observations=2, fix_class="code"
+        )
+        self._retire(authority)
+
+        authority.note_pattern_observation(
+            signature=self.SIGNATURE, observation_id=f"{self.SIGNATURE}:obs-9"
+        )
+
+        [evidence] = authority.list_pattern_evidence()
+        assert evidence.observation_count == 3 and evidence.is_terminal
+        assert self._promotable(config, authority) == ()
+
+    def test_the_terminal_fact_survives_restart(self, tmp_path):
+        """A registry's in-memory lifecycle dies with the process; this must not."""
+        from issue_orchestrator.infra.tech_lead_authority_store import (
+            SqliteTechLeadAuthorityStore,
+        )
+
+        config = _config(min_evidence=2)
+        store = SqliteTechLeadAuthorityStore.for_repo(tmp_path)
+        _record_case_file(
+            store, signature=self.SIGNATURE, observations=3, fix_class="code"
+        )
+        self._retire(store)
+
+        restarted = SqliteTechLeadAuthorityStore.for_repo(tmp_path)
+
+        assert self._promotable(config, restarted) == ()
+
+    def test_the_terminal_fact_survives_synchronizing_with_shared_authority(self):
+        """The mirror projects shared lifecycle, and never un-retires a row."""
+        from issue_orchestrator.adapters.github.pattern_registry import (
+            GitHubRefPatternRegistry,
+        )
+        from issue_orchestrator.control.pattern_registry import (
+            MirroredPatternCaseFileRegistry,
+        )
+        from issue_orchestrator.control.tech_lead_case_file_lifecycle import (
+            PatternCaseFileLifecycleOwner,
+        )
+        from issue_orchestrator.domain.tech_lead_findings import (
+            CaseFileLifecycleTransition,
+            PendingCaseFile,
+        )
+        from tests.unit.adapters.github.test_ref_claim_adapter import (
+            FakeGitHubRefClient,
+        )
+
+        config = _config(min_evidence=2)
+        client = FakeGitHubRefClient()
+        shared = GitHubRefPatternRegistry(
+            cast(Any, client), claimant_id="engine-a", lease_seconds=30
+        )
+        reserved = shared.reserve(
+            PendingCaseFile(
+                signature=self.SIGNATURE,
+                title="Pattern case file",
+                idempotency_marker="<!-- m -->",
+                body_observation_id="obs-1",
+                fix_class="code",
+            )
+        )
+        shared.finalize(
+            signature=self.SIGNATURE,
+            reservation_id=reserved.entry.reservation_id,
+            issue_number=65,
+        )
+        shared.reserve_observation(
+            signature=self.SIGNATURE,
+            observation=PatternObservation(observation_id="obs-2", comment="again"),
+            classification=CaseFileClassification(fix_class="code"),
+            issue_number=65,
+        )
+        pending = shared.read(signature=self.SIGNATURE)
+        assert pending is not None
+        shared.finalize_observation(
+            signature=self.SIGNATURE, reservation_id=pending.reservation_id
+        )
+
+        authority = InMemoryTechLeadAuthorityStore()
+        mirrored = MirroredPatternCaseFileRegistry(
+            shared=shared, local=authority, claimant_id="engine-a"
+        )
+        mirrored.synchronize()
+        assert [item.evidence.signature for item in self._promotable(config, authority)] == [
+            self.SIGNATURE
+        ], "baseline: promotable before shared authority retires it"
+
+        PatternCaseFileLifecycleOwner(
+            registry=mirrored, repository_host=cast(Any, _RecordingRepository())
+        ).retire(
+            signature=self.SIGNATURE,
+            transition=CaseFileLifecycleTransition(
+                transition_id=f"7240-plan:{self.SIGNATURE}",
+                disposition="shipped",
+                reason="The underlying fix shipped.",
+                evidence=("owner/repo#1",),
+                recorded_at="2026-09-12T01:40:00+00:00",
+            ),
+            issue_number=65,
+        )
+
+        assert self._promotable(config, authority) == ()
+
+        # A cold client rebuilding its replica from shared authority sees it too.
+        cold_authority = InMemoryTechLeadAuthorityStore()
+        MirroredPatternCaseFileRegistry(
+            shared=shared, local=cold_authority, claimant_id="engine-b"
+        ).synchronize()
+
+        assert self._promotable(config, cold_authority) == ()
+
+
+class _RecordingRepository:
+    def __init__(self) -> None:
+        self.comments: list[tuple[int, str]] = []
+        self.closed: list[int] = []
+
+    def add_comment(self, issue: int, body: str) -> str:
+        self.comments.append((issue, body))
+        return "comment"
+
+    def find_issue_comment_receipt(self, issue: int, *, body: str):
+        if (issue, body) not in self.comments:
+            return None
+        return IssueCommentReceipt(
+            comment_id="1",
+            url="comment",
+            author_key="app:test",
+            body_sha256=hashlib.sha256(body.encode()).hexdigest(),
+        )
+
+    def update_issue_state(self, issue: int, state: str) -> None:
+        assert state == "closed"
+        self.closed.append(issue)
+
+
+class TestAnAdmittedRetirementLeavesThePromotionLaneImmediately:
+    """A retirement blocks from its reservation, not from its finalization.
+
+    Those are separated by a comment, a remote close, and a final
+    compare-and-swap. A process that stops anywhere in between leaves shared
+    authority holding a durable terminal intent — and a restart, or a second
+    client of the same shared registry, used to rebuild the signature as
+    ``active`` and file the very work the reviewed retirement exists to
+    suppress (#7248 round 8 review F11/A5).
+    """
+
+    SIGNATURE = "host-suspend-lapses-run-ownership-lease"
+    CASE_FILE = 216
+
+    def _shared_with_evidence(self):
+        """Shared authority holding code-fix evidence above the threshold."""
+        from issue_orchestrator.adapters.github.pattern_registry import (
+            GitHubRefPatternRegistry,
+        )
+        from issue_orchestrator.domain.tech_lead_findings import PendingCaseFile
+        from tests.unit.adapters.github.test_ref_claim_adapter import (
+            FakeGitHubRefClient,
+        )
+
+        shared = GitHubRefPatternRegistry(
+            cast(Any, FakeGitHubRefClient()), claimant_id="engine-a", lease_seconds=30
+        )
+        reserved = shared.reserve(
+            PendingCaseFile(
+                signature=self.SIGNATURE,
+                title="Pattern case file",
+                idempotency_marker="<!-- m -->",
+                body_observation_id="obs-1",
+                fix_class="code",
+            )
+        )
+        shared.finalize(
+            signature=self.SIGNATURE,
+            reservation_id=reserved.entry.reservation_id,
+            issue_number=self.CASE_FILE,
+        )
+        shared.reserve_observation(
+            signature=self.SIGNATURE,
+            observation=PatternObservation(observation_id="obs-2", comment="again"),
+            classification=CaseFileClassification(fix_class="code"),
+            issue_number=self.CASE_FILE,
+        )
+        entry = shared.read(signature=self.SIGNATURE)
+        assert entry is not None
+        shared.finalize_observation(
+            signature=self.SIGNATURE, reservation_id=entry.reservation_id
+        )
+        return shared
+
+    def _cold_client(self, shared, *, claimant: str = "engine-cold"):
+        """A second client rebuilding its local replica from shared authority."""
+        from issue_orchestrator.control.pattern_registry import (
+            MirroredPatternCaseFileRegistry,
+        )
+
+        authority = InMemoryTechLeadAuthorityStore()
+        MirroredPatternCaseFileRegistry(
+            shared=shared, local=authority, claimant_id=claimant
+        ).synchronize()
+        return authority
+
+    def _promotable(self, authority):
+        promotable, _updates, _settled = gather_finding_promotion_facts(
+            _config(min_evidence=2),
+            authority=authority,
+            target=None,
+            read_budget=PromotionReadBudget(),
+        )
+        return [item.evidence.signature for item in promotable]
+
+    def _transition(self):
+        from issue_orchestrator.domain.tech_lead_findings import (
+            CaseFileLifecycleTransition,
+        )
+
+        return CaseFileLifecycleTransition(
+            transition_id=f"7240-plan:{self.SIGNATURE}",
+            disposition="shipped",
+            reason="The underlying fix shipped.",
+            evidence=(f"owner/repo#{self.CASE_FILE}",),
+            recorded_at="2026-09-12T01:40:00+00:00",
+        )
+
+    def _mirrored(self, shared, authority, claimant: str = "engine-a"):
+        from issue_orchestrator.control.pattern_registry import (
+            MirroredPatternCaseFileRegistry,
+        )
+
+        return MirroredPatternCaseFileRegistry(
+            shared=shared, local=authority, claimant_id=claimant
+        )
+
+    def test_a_reserved_retirement_blocks_before_any_remote_effect(self):
+        shared = self._shared_with_evidence()
+        assert self._promotable(self._cold_client(shared)) == [self.SIGNATURE], (
+            "baseline: promotable while the case file is untouched"
+        )
+
+        transition = self._transition()
+        shared.reserve_retirement(
+            signature=self.SIGNATURE,
+            transition=transition,
+            comment=retirement_comment(transition),
+            issue_number=self.CASE_FILE,
+        )
+
+        assert self._promotable(self._cold_client(shared)) == []
+
+    def test_an_interruption_after_the_close_still_blocks(self):
+        """The CLOSE phase: comment published, issue closed, CAS never landed."""
+        shared = self._shared_with_evidence()
+        transition = self._transition()
+        reserved = shared.reserve_retirement(
+            signature=self.SIGNATURE,
+            transition=transition,
+            comment=retirement_comment(transition),
+            issue_number=self.CASE_FILE,
+        )
+        shared.begin_retirement_publication(
+            signature=self.SIGNATURE, reservation_id=reserved.entry.reservation_id
+        )
+        shared.confirm_retirement_comment(
+            signature=self.SIGNATURE, reservation_id=reserved.entry.reservation_id
+        )
+        # The process stops here: finalize_retirement never runs.
+
+        entry = shared.read(signature=self.SIGNATURE)
+        assert entry is not None and entry.pending_retirement is not None
+        assert entry.pending_retirement.phase is PatternRetirementPhase.CLOSE
+        assert not entry.lifecycle, "nothing settled, so disposition is still active"
+
+        assert self._promotable(self._cold_client(shared)) == []
+
+    def test_the_original_client_is_blocked_from_the_reservation_onward(self):
+        """Not only cold clients: the local replica is projected immediately."""
+        shared = self._shared_with_evidence()
+        authority = self._cold_client(shared)
+        mirrored = self._mirrored(shared, authority)
+        assert self._promotable(authority) == [self.SIGNATURE]
+
+        transition = self._transition()
+        mirrored.reserve_retirement(
+            signature=self.SIGNATURE,
+            transition=transition,
+            comment=retirement_comment(transition),
+            issue_number=self.CASE_FILE,
+        )
+
+        assert self._promotable(authority) == []
+
+    def test_resuming_and_finalizing_keeps_the_signature_excluded(self):
+        shared = self._shared_with_evidence()
+        authority = self._cold_client(shared)
+        mirrored = self._mirrored(shared, authority)
+        repository = _RecordingRepository()
+        owner = PatternCaseFileLifecycleOwner(
+            registry=mirrored, repository_host=cast(Any, repository)
+        )
+        transition = self._transition()
+        reserved = shared.reserve_retirement(
+            signature=self.SIGNATURE,
+            transition=transition,
+            comment=retirement_comment(transition),
+            issue_number=self.CASE_FILE,
+        )
+        shared.begin_retirement_publication(
+            signature=self.SIGNATURE, reservation_id=reserved.entry.reservation_id
+        )
+        repository.add_comment(self.CASE_FILE, retirement_comment(transition))
+
+        owner.retire(
+            signature=self.SIGNATURE,
+            transition=transition,
+            issue_number=self.CASE_FILE,
+        )
+
+        settled = shared.read(signature=self.SIGNATURE)
+        assert settled is not None and settled.disposition == "shipped"
+        assert repository.closed == [self.CASE_FILE]
+        assert self._promotable(authority) == []
+        assert self._promotable(self._cold_client(shared, claimant="engine-b")) == []
+
+    def test_later_evidence_during_an_open_retirement_cannot_unblock_it(self):
+        shared = self._shared_with_evidence()
+        authority = self._cold_client(shared)
+        mirrored = self._mirrored(shared, authority)
+        transition = self._transition()
+        mirrored.reserve_retirement(
+            signature=self.SIGNATURE,
+            transition=transition,
+            comment=retirement_comment(transition),
+            issue_number=self.CASE_FILE,
+        )
+
+        authority.note_pattern_observation(
+            signature=self.SIGNATURE, observation_id="obs-9"
+        )
+
+        [evidence] = authority.list_pattern_evidence()
+        assert evidence.observation_count == 3 and evidence.blocks_promotion
+        assert self._promotable(authority) == []

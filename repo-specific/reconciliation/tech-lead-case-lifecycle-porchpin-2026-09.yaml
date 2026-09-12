@@ -1,0 +1,471 @@
+# Reviewed Tech Lead case-file lifecycle plan for #7240.
+# Dry-run: issue-orchestrator reconcile-case-files --plan repo-specific/reconciliation/tech-lead-case-lifecycle-porchpin-2026-09.yaml
+# Apply only after reviewing every outcome: add --apply.
+# Revisions generated from the SEEDED projection the first apply publishes
+# (local evidence rows padded to observation_count); Porchpin's shared
+# registry has not been seeded yet, so a dry run cannot preview it.
+# Reconfirmed 2026-09-11 against Porchpin's
+# .issue-orchestrator/state/tech_lead_authority.sqlite: 53/53 match.
+# Re-reviewed 2026-09-12 after PR #7238 merged (fc1ac91, 2026-09-11T16:03:09Z):
+# tech-lead-batch-manifest-diff-fetch-blocked-by-gh-guard moved active ->
+# shipped, and recorded_at advanced past that merge so the durable transition
+# this plan writes cannot claim a fix shipped before the merge existed. The
+# registry revisions are unaffected: a review revision fingerprints the
+# REGISTRY's settled facts, not the plan's decision about them.
+plan_id: 7240-porchpin-case-files-2026-09
+repository: porchpin/porchpin
+recorded_at: '2026-09-12T01:40:00+00:00'
+outcomes:
+- signature: a5-config-lock-rework-misroute
+  issue: 39
+  disposition: shipped
+  expected_revision: 5c7452dbed20668802c7d30612173623ecd558bafb51d7c7c3b41d59bebbbe91
+  reason: Settings YAML preservation and live concurrency updates removed the config-lock rewrite path
+    that caused this misroute.
+  evidence:
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/6940
+  - https://github.com/porchpin/porchpin/issues/39
+- signature: terminal-api-error-idles-to-timeout
+  issue: 40
+  disposition: shipped
+  expected_revision: 4ecc9e3f9ebe7b16de9c3784b469f4bd7eca6ede392eff1659a720eb57a4f338
+  reason: Provider adapters now classify terminal readiness and authentication errors before sessions
+    idle to timeout.
+  evidence:
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7047
+  - https://github.com/porchpin/porchpin/issues/40
+- signature: tech-lead-output-lost-post-session
+  issue: 49
+  disposition: shipped
+  expected_revision: b5e06a5c7c4714836b8d0ac777baa3c2dfa5a091201baa4fb8e060c3fad2938a
+  reason: Every Tech Lead launch and required follow-through is now recorded durably before session cleanup.
+  evidence:
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7176
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7178
+  - https://github.com/porchpin/porchpin/issues/49
+- signature: stale-blocked-failed-reinvestigation-loop
+  issue: 50
+  disposition: declined
+  expected_revision: fd3843b3218c84c2a36e30173debb98c0fbc6ffa243bd089989365eb76cb44b9
+  reason: The promoted issue was deliberately closed without a merged fix; the permanent promotion decline
+    is the reviewed operator disposition.
+  evidence:
+  - https://github.com/porchpin/porchpin/issues/203
+  - https://github.com/porchpin/porchpin/issues/50
+- signature: review-max-rounds-strands-validated-work
+  issue: 51
+  disposition: superseded
+  expected_revision: fde853da0eeb7562295c5664b6305ae84abb77938f16fe8153df2da548eb45d9
+  reason: The retained-work custody and recovery stack supersedes the older human-classified strand report.
+  evidence:
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7183
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7198
+  - https://github.com/porchpin/porchpin/issues/51
+- signature: reopened-issue-invisible-to-queue-after-merged-history
+  issue: 59
+  disposition: active
+  expected_revision: cc6cba87a776e29df01f99b187376926859b33cdf9ab87d724ff9914cb35305f
+  reason: The dedicated reopened-history reconciliation tracker remains open, so this failure class is
+    not retired.
+  evidence:
+  - https://github.com/issue-orchestrator/issue-orchestrator/issues/7041
+  - https://github.com/porchpin/porchpin/issues/59
+- signature: anchor-close-buries-needs-human-escalation
+  issue: 65
+  disposition: shipped
+  expected_revision: b3d047c3a650cec34eca73d1e89f734c4cc45d07fe9d1d0d9ab7aebeea8b06dd
+  reason: Durable Tech Lead follow-through retains escalation obligations past anchor closure.
+  evidence:
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7178
+  - https://github.com/porchpin/porchpin/issues/65
+- signature: test-skip-guard-false-positive-on-fixture-strings
+  issue: 73
+  disposition: shipped
+  expected_revision: 2288589980b7b52f50e2a8c7318a708516ecefb9bdadad45815980d301d56398
+  reason: The fixture-string false positive was fixed and its case file is already closed.
+  evidence:
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/6981
+  - https://github.com/porchpin/porchpin/issues/73
+- signature: observer-premature-exit-on-pr-bearing-issue
+  issue: 75
+  disposition: active
+  expected_revision: 910e3816178c71c727b4bc3f2fb42eedc37aa8cd252562ed21f7e24c61427f87
+  reason: No exact merged fix was identified for this observer exit path.
+  evidence:
+  - https://github.com/porchpin/porchpin/issues/75
+- signature: merged-unclosed-issue-relaunched-after-restart
+  issue: 81
+  disposition: shipped
+  expected_revision: 1c6aab7d67d419c6a48e4b8c05c8edf1b52e621710c616a3620bfe5bdc250e92
+  reason: Merged PRs now close still-open issues even when GitHub recorded no closing reference.
+  evidence:
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/6956
+  - https://github.com/porchpin/porchpin/issues/81
+- signature: review-exchange-wraps-artifact-only-session
+  issue: 83
+  disposition: shipped
+  expected_revision: 955cea2716a6cf4ad88f32571a71ab319978cf08b6624d47ab1f1bec590fa401
+  reason: Clean Tech Lead investigations can complete without manufacturing code publication work.
+  evidence:
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7173
+  - https://github.com/porchpin/porchpin/issues/83
+- signature: needs-human-reinjected-after-restart-budget-reset
+  issue: 85
+  disposition: shipped
+  expected_revision: 4f0739cc8235b50181dadc462bbd6b48323b332bf6882fa1655224ede3cd9869
+  reason: Required investigation follow-through is now durable across restarts rather than rederived from
+    a reset budget.
+  evidence:
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7178
+  - https://github.com/porchpin/porchpin/issues/85
+- signature: closed-anchor-relaunched-on-stale-pending-reservation
+  issue: 86
+  disposition: shipped
+  expected_revision: 6f057edefea85eb41b98596dd6f72de2a2e60d8265dbcb046941263f6a9c9d41
+  reason: Durable launch evidence and follow-through prevent stale pending reservations from recreating
+    closed work.
+  evidence:
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7176
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7178
+  - https://github.com/porchpin/porchpin/issues/86
+- signature: applier-created-issue-missed-by-incremental-fetch
+  issue: 87
+  disposition: active
+  expected_revision: dc543adce905358d703df42a0333a586675c5ffbb04fd8c62dcfd1a5798196e5
+  reason: The broader dedup-corpus reconciliation tracker remains open and no exact merged fix was identified.
+  evidence:
+  - https://github.com/issue-orchestrator/issue-orchestrator/issues/6926
+  - https://github.com/porchpin/porchpin/issues/87
+- signature: transport-error-in-fact-gather-aborts-tick
+  issue: 89
+  disposition: active
+  expected_revision: a14066d965f1dee9afada993304fb1685977332cdc121e6281779ecf262fc6be
+  reason: No exact merged fix was identified for repository fact-gather transport failure isolation.
+  evidence:
+  - https://github.com/porchpin/porchpin/issues/89
+- signature: failed-publish-orphan-invisible-to-board-snapshot
+  issue: 91
+  disposition: shipped
+  expected_revision: 3b42f34b282767c6525d6e594c3b0cde6681a317db9282c5914c833e52a1a975
+  reason: Cold retained-work reads and Control Center projection now expose preserved publication orphans.
+  evidence:
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7208
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7209
+  - https://github.com/porchpin/porchpin/issues/91
+- signature: tech-lead-slot-cap-bypassed-by-general-pipeline
+  issue: 92
+  disposition: needs_human
+  expected_revision: 5cc4177aa9705abd7fb7c87e8b8b30fd157fd93e66668869b17da3cbbb68a701
+  reason: The case needs a current operator check against the configured session and Tech Lead concurrency
+    limits.
+  evidence:
+  - https://github.com/porchpin/porchpin/issues/92
+- signature: timeout-recovered-looping-during-background-review-exchange
+  issue: 97
+  disposition: superseded
+  expected_revision: 7cfb62b2e92a33ba58e266b9755aabb69e06dc90159004ded3f8e5170dfdf911
+  reason: Exact recovery ownership and coordinated stop semantics supersede the timeout recovery loop.
+  evidence:
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7202
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7204
+  - https://github.com/porchpin/porchpin/issues/97
+- signature: review-exchange-unbounded-acceptance-non-convergence
+  issue: 101
+  disposition: superseded
+  expected_revision: 1c0ef53e739161b2ad28283688958f5268e4fd6f87c21bf7eaba4a867a52412f
+  reason: Bounded review failure now preserves validated work for explicit recovery rather than continuing
+    or destroying it.
+  evidence:
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7183
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7198
+  - https://github.com/porchpin/porchpin/issues/101
+- signature: dashboard-status-poll-unauthenticated-401
+  issue: 115
+  disposition: needs_human
+  expected_revision: ed008088b86433ffcd5f2f51372836182ba54d52feb2e3a376bb9ef25e1665bb
+  reason: The historical dashboard authentication failure needs a current reproduction before it can be
+    declared fixed.
+  evidence:
+  - https://github.com/porchpin/porchpin/issues/115
+- signature: health-review-refire-on-stale-creation-fingerprint
+  issue: 117
+  disposition: shipped
+  expected_revision: b943d01b25ecf1ad4750a67d12094e1356ba1f033f57dd07977f91609c714e13
+  reason: Durable launch evidence and follow-through replace stale creation fingerprints as the recovery
+    authority.
+  evidence:
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7176
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7178
+  - https://github.com/porchpin/porchpin/issues/117
+- signature: health-review-hung-flag-false-positive-during-background-exchange
+  issue: 120
+  disposition: active
+  expected_revision: 9610e9506c1eaf0a18fedd9a6069834d2e393f982d5abc416bcd7f53f53c44c2
+  reason: No exact merged fix was identified for the background-exchange health classification.
+  evidence:
+  - https://github.com/porchpin/porchpin/issues/120
+- signature: failed-coding-done-retry-writes-unwatched-suffixed-completion
+  issue: 123
+  disposition: superseded
+  expected_revision: 4018c2c507773d42eb13c998e405f945a638d314b8d47d6bda73e482eac2d11d
+  reason: Completion custody now uses durable allocated run evidence and resumable processing rather than
+    filename retry selection.
+  evidence:
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7176
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7179
+  - https://github.com/porchpin/porchpin/issues/123
+- signature: completion-path-poisoned-by-crash-record
+  issue: 124
+  disposition: declined
+  expected_revision: 5227f221de354d737850cdf6ecc0d0f4bf45857c9090c7fc7a0e872831ffd6f8
+  reason: The promoted issue was deliberately closed without a merged fix; the permanent promotion decline
+    is the reviewed operator disposition.
+  evidence:
+  - https://github.com/porchpin/porchpin/issues/199
+  - https://github.com/porchpin/porchpin/issues/124
+- signature: session-cleanup-destroys-referenced-recovery-artifacts
+  issue: 126
+  disposition: shipped
+  expected_revision: 7a568b2d8a188e0d179defaa362f4fe23e5050940cf1c9519884bdc815ad3a78
+  reason: Validated work now lives in verified escrow with explicit retention independently of disposable
+    session worktrees.
+  evidence:
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7183
+  - https://github.com/porchpin/porchpin/issues/126
+- signature: github-app-workflows-permission-publish-block
+  issue: 128
+  disposition: needs_human
+  expected_revision: b2c0d464f8bd412f1404035f0a053967ccb8c65372296a4ae4daed6f418d6847
+  reason: GitHub App workflow permission is an operator credential decision and cannot be retired from
+    code evidence alone.
+  evidence:
+  - https://github.com/porchpin/porchpin/issues/128
+- signature: github-app-missing-workflows-permission
+  issue: 129
+  disposition: superseded
+  expected_revision: dec7347391bfea7e350d5eec4c7587320efc9358e9a3e6efe9059f7eeea29116
+  reason: 'This already-closed case is the same operator permission condition retained under canonical
+    case file #128.'
+  evidence:
+  - https://github.com/porchpin/porchpin/issues/128
+  - https://github.com/porchpin/porchpin/issues/129
+- signature: publish-retry-rebase-conflict-strands-worktree
+  issue: 135
+  disposition: superseded
+  expected_revision: 069ce8c1798594de7b4fb861dbe8c5d7ddf009a4ef7fc523e11190d5f999d756
+  reason: Validated-head escrow and fenced publication now retain and recover work across publish conflicts.
+  evidence:
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7183
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7188
+  - https://github.com/porchpin/porchpin/issues/135
+- signature: branch-protection-required-approval-blocks-agent-merge
+  issue: 142
+  disposition: needs_human
+  expected_revision: 7966660552aa655abaddc0d1d5f44c21c9e812ef0419e49127553eac26b379be
+  reason: Required human approval is repository policy; the operator must decide whether the protection
+    rule or workflow should change.
+  evidence:
+  - https://github.com/porchpin/porchpin/issues/142
+- signature: orchestrator-src-drop-fails-repo-architecture-audit
+  issue: 198
+  disposition: needs_human
+  expected_revision: 6c986fc7a259de288c63a322e610fcbf51ab5989e4abb502e134e566e7b75832
+  reason: The product repository architecture exception requires an explicit owner decision rather than
+    inferred retirement.
+  evidence:
+  - https://github.com/porchpin/porchpin/issues/198
+- signature: host-disk-exhaustion-silently-idles-session-to-timeout
+  issue: 201
+  disposition: active
+  expected_revision: c5bb6adaf92e5cd1da7625a8873cdf936568c14b09649f656c882572d8dcefe8
+  reason: The dedicated disk-exhaustion detector tracker remains open.
+  evidence:
+  - https://github.com/issue-orchestrator/issue-orchestrator/issues/7075
+  - https://github.com/porchpin/porchpin/issues/201
+- signature: tech-lead-run-hold-lapses-inside-slow-tick
+  issue: 202
+  disposition: shipped
+  expected_revision: 4eee73cf21278904be3b514b1f32fe864e456c737193d758f45db2416db07d08
+  reason: Suspension-safe deadlines and owner-load backoff prevent slow or suspended ticks from consuming
+    live ownership time.
+  evidence:
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7118
+  - https://github.com/porchpin/porchpin/issues/202
+- signature: tech-lead-promotion-misroutes-foreign-defect-to-product-repo
+  issue: 204
+  disposition: shipped
+  expected_revision: b2f407f2ab124171d21d6c3c92f9558febb722e44c2f0617055436e9c0df8dbc
+  reason: Promotion targets now carry repository-scoped authentication and route through the configured
+    target repository.
+  evidence:
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7233
+  - https://github.com/porchpin/porchpin/issues/204
+- signature: tech-lead-batch-manifest-diff-fetch-blocked-by-gh-guard
+  issue: 216
+  disposition: shipped
+  expected_revision: 7355f6020ca7ad3a7b83224eb571f22929eb07e5b821801d73ada1f90bf05185
+  reason: 'Its promoted issue is closed and the exact transport fix merged in PR #7238 (fc1ac91), which
+    fetches Tech Lead PR diffs through RepositoryHost instead of the guarded gh path.'
+  evidence:
+  - https://github.com/porchpin/porchpin/issues/229
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7238
+  - https://github.com/porchpin/porchpin/issues/216
+- signature: refactor-merge-discards-reviewed-parallel-branches
+  issue: 217
+  disposition: superseded
+  expected_revision: bc558f0375cd7f16acb5175df81022983ec0fcb950ed92839d2d69cbeb4f1b34
+  reason: The retained-work recovery stack now preserves, ranks, and publishes reviewed parallel branches.
+  evidence:
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7191
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7215
+  - https://github.com/porchpin/porchpin/issues/217
+- signature: review-exchange-retry-spawns-after-session-timeout-cancel
+  issue: 218
+  disposition: shipped
+  expected_revision: 1ad5ab37a916e6e613a9d42d761da2a5e73c11992cf1ed3fb34ab56d90c95a4c
+  reason: Exact Repository Engine lifecycle stops and coordinated owner reservations prevent post-cancel
+    recovery workers from continuing.
+  evidence:
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7202
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7204
+  - https://github.com/porchpin/porchpin/issues/218
+- signature: cross-repo-blocking-finding-has-no-exchange-exit
+  issue: 219
+  disposition: shipped
+  expected_revision: 66da5127975b82a26911fd6cb35ab1c8fc138b716125508ecf3837c015e7562e
+  reason: Blocking Tech Lead findings now route into scoped rework with a durable exit path.
+  evidence:
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7197
+  - https://github.com/porchpin/porchpin/issues/219
+- signature: worktree-reuse-rebase-conflict-discards-committed-work
+  issue: 220
+  disposition: superseded
+  expected_revision: 44006deac54e4e19a9d572134a0d70f2bab1290c51e74bca13b3c06cbf407464
+  reason: Verified escrow and fenced recovery retain committed work independently of worktree reuse or
+    rebase failure.
+  evidence:
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7183
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7198
+  - https://github.com/porchpin/porchpin/issues/220
+- signature: completion-record-lands-inside-timeout-finalization-window
+  issue: 221
+  disposition: shipped
+  expected_revision: 86caa65a469d5aa86a1ca62c67c5e6797813eb42a4c16ee506a1a4f14b8905dc
+  reason: Run evidence is recorded before launch and completion publication is durably fenced.
+  evidence:
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7176
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7179
+  - https://github.com/porchpin/porchpin/issues/221
+- signature: coding-timeout-budget-shorter-than-issue-size
+  issue: 222
+  disposition: needs_human
+  expected_revision: d4489503eda5bde9a248f5f9e0641888407f7ff6696646cbb7bdb57181524976
+  reason: Session budget policy is an operator tradeoff and needs an explicit current configuration decision.
+  evidence:
+  - https://github.com/porchpin/porchpin/issues/222
+- signature: stuck-sweep-reinjects-publish-failed-with-no-republish-path
+  issue: 230
+  disposition: superseded
+  expected_revision: 265b92448c2d8ca68c8daf9ff2e9f2d0c3c9dfe77e731cbc00b2642cf60d9f3a
+  reason: Retained validated work now has automatic and manual fenced republication paths.
+  evidence:
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7195
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7198
+  - https://github.com/porchpin/porchpin/issues/230
+- signature: tech-lead-escalation-relabels-into-the-stuck-sweep
+  issue: 232
+  disposition: shipped
+  expected_revision: 91fc945a7c08dab3e29897afca7ac5ab6904e7066807a8d1238fdb890b74446b
+  reason: Tech Lead evidence is excluded from work queues and follow-through obligations are durable.
+  evidence:
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7177
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7178
+  - https://github.com/porchpin/porchpin/issues/232
+- signature: reactive-tech-lead-queue-dormant-for-days
+  issue: 233
+  disposition: shipped
+  expected_revision: d483267bc35d12c9fc715c3acef02e84c665216e6b9c51ca533e702698956560
+  reason: Tech Lead investigation follow-through is now a durable obligation with sustained-delivery reporting.
+  evidence:
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7178
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7180
+  - https://github.com/porchpin/porchpin/issues/233
+- signature: reviewer-respawn-turn-deadlock-invisible-to-idle-detector
+  issue: 236
+  disposition: active
+  expected_revision: 4078043a750168b0d0b07142165e4b098d48282ca8c99d39912b2557c87d5c8d
+  reason: No exact merged fix was identified for reviewer respawn deadlock detection.
+  evidence:
+  - https://github.com/porchpin/porchpin/issues/236
+- signature: session-budget-excludes-mandatory-review-and-rework
+  issue: 237
+  disposition: needs_human
+  expected_revision: 0b9b49c5138f478eb5eff4c19cf20194b9539ba58c6c3c7208783650ad27af07
+  reason: The desired total-session budget semantics require a current operator policy decision.
+  evidence:
+  - https://github.com/porchpin/porchpin/issues/237
+- signature: ok-verdict-rewritten-to-changes-requested-drops-decision-and-synthesizes-f1
+  issue: 238
+  disposition: active
+  expected_revision: 7c5b09d1f0e941e559660d8bbfa92f23300b3ff24e62e974c6fa3910627cb52e
+  reason: No exact merged fix was identified for verdict rewriting at this boundary.
+  evidence:
+  - https://github.com/porchpin/porchpin/issues/238
+- signature: pattern-classification-conflict-discards-whole-decision
+  issue: 239
+  disposition: active
+  expected_revision: 01da0702e0824d91dc32a1096c2a2dc7ea3cc298971dbe8ab1f07ada55f0ef2a
+  reason: The strict conflict is intentional, but preserving the rest of a mixed decision still needs
+    implementation.
+  evidence:
+  - https://github.com/porchpin/porchpin/issues/239
+- signature: recurring-anchor-branch-reuse-pins-session-to-stale-base
+  issue: 248
+  disposition: active
+  expected_revision: 76ae48f994b1b8736d504644581bd065956f58393354f37a26bc6686d3490ccd
+  reason: No exact merged fix was identified for recurring-anchor branch base refresh.
+  evidence:
+  - https://github.com/porchpin/porchpin/issues/248
+- signature: deferred-work-claim-requeued-every-tick-for-a-closed-subject
+  issue: 250
+  disposition: superseded
+  expected_revision: 6eb1f585b82c693491d07c4bcb2d6358af0f247554c938d4491b6994b3267bb2
+  reason: Shared retained-work claims now refresh remote authority and release dead claims before scheduling.
+  evidence:
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7196
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7200
+  - https://github.com/porchpin/porchpin/issues/250
+- signature: parked-issue-work-survives-only-as-an-unpushed-local-branch
+  issue: 251
+  disposition: shipped
+  expected_revision: b714f5dd05f6b8b03dda43efb30d4364d61692f7bf1876a71354d8b9e3e769c2
+  reason: Validated work is now copied into verified escrow and can be published by the recovery owner
+    after the source worktree disappears.
+  evidence:
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7183
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7198
+  - https://github.com/porchpin/porchpin/issues/251
+- signature: tech-lead-findings-have-no-route-to-a-shipped-fix
+  issue: 253
+  disposition: shipped
+  expected_revision: 79c66343b9b73e102dd33faceb8af6f102f3160a00ae19b28aa62b9fb03b2622
+  reason: The finding-promotion lane and repository-scoped target authentication provide the durable route
+    from case file to shipped fix.
+  evidence:
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/6990
+  - https://github.com/issue-orchestrator/issue-orchestrator/pull/7233
+  - https://github.com/porchpin/porchpin/issues/253
+- signature: coding-agent-followup-claimed-filed-but-never-created
+  issue: 258
+  disposition: active
+  expected_revision: 107fc62b1052f0300ec2d385c128467cb8e6b6bee4f246557ef4ef9227899b56
+  reason: No exact durable filing fix was identified for the claimed-but-absent follow-up issue.
+  evidence:
+  - https://github.com/porchpin/porchpin/issues/258
+- signature: codex-managed-config-guard-discards-tech-lead-decision
+  issue: 286
+  disposition: active
+  expected_revision: 7b990d9697437ddcf1266e5721e262f283f735d4a31df6ea27e66dfd5bd886b4
+  reason: This newly observed config-guard interaction has no identified merged fix.
+  evidence:
+  - https://github.com/porchpin/porchpin/issues/286

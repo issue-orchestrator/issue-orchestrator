@@ -8,9 +8,10 @@ path, a mis-spelled issue state, or an unhandled reconciliation exception would
 otherwise only surface during a real one-shot run.
 """
 
+import argparse
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -27,14 +28,27 @@ from issue_orchestrator.control.reconciliation import (
 from issue_orchestrator.control.tech_lead_case_file_reconciliation import (
     CaseFileReconciliationPlan,
 )
+from issue_orchestrator.control.tech_lead_case_file_lifecycle_reconciliation import (
+    CaseFileLifecycleReconciliationPlan,
+    CaseFileLifecycleReconciliationRefused,
+    CaseFileLifecycleReconciliationResult,
+)
 from issue_orchestrator.domain.tech_lead_findings import PatternEvidence
-from issue_orchestrator.execution.case_file_reconciliation_adapter import CaseFileReconciliationAdapter
-from issue_orchestrator.entrypoints.bootstrap_case_file_reconciliation import build_case_file_reconciliation_host
+from issue_orchestrator.execution.case_file_reconciliation_adapter import (
+    CaseFileReconciliationAdapter,
+)
+from issue_orchestrator.entrypoints.bootstrap_case_file_reconciliation import (
+    build_case_file_reconciliation_host,
+)
 from issue_orchestrator.entrypoints.cli_tech_lead import (
     load_reconciliation_plan,
     run_case_file_reconciliation,
+    run_case_file_lifecycle_reconciliation,
 )
+from issue_orchestrator.adapters.github.github_adapter import GitHubAdapter
 from issue_orchestrator.infra.config import Config
+
+from tests.unit.adapters.github.test_ref_claim_adapter import FakeGitHubRefClient
 
 VALID_PLAN = """
 plan_id: "test-plan"
@@ -45,6 +59,20 @@ clusters:
     duplicates:
       - issue: 101
         note: A re-sighting.
+"""
+
+VALID_LIFECYCLE_PLAN = """
+plan_id: "lifecycle-test-plan"
+repository: owner/repo
+recorded_at: "2026-09-10T12:00:00+00:00"
+outcomes:
+  - signature: some-recurring-class
+    issue: 100
+    disposition: shipped
+    expected_revision: "0000000000000000000000000000000000000000000000000000000000000000"
+    reason: The underlying fix shipped.
+    evidence:
+      - https://example.test/pull/1
 """
 
 
@@ -61,6 +89,65 @@ def test_valid_plan_loads(tmp_path: Path):
     assert plan.clusters[0].duplicate_issue_numbers == (101,)
 
 
+def test_lifecycle_plan_loads_through_the_same_command_surface(tmp_path: Path):
+    path = tmp_path / "lifecycle.yaml"
+    path.write_text(VALID_LIFECYCLE_PLAN, encoding="utf-8")
+
+    plan = load_reconciliation_plan(path)
+
+    assert isinstance(plan, CaseFileLifecycleReconciliationPlan)
+    assert plan.repository == "owner/repo"
+    assert plan.outcomes[0].disposition == "shipped"
+
+
+def test_a_timezone_less_lifecycle_timestamp_is_an_invalid_plan(
+    tmp_path: Path, monkeypatch, capsys
+):
+    """Valid ISO syntax, no timezone — refused at the boundary, not mid-run.
+
+    ``datetime.fromisoformat`` accepts a naive instant, so such a plan used to
+    LOAD and then fail during preflight, where the domain's transition
+    invariant rejected it: past the command's invalid-plan boundary, outside
+    its refusal boundary, as a traceback. The plan boundary now constructs
+    every outcome's transition, so the domain stays the single owner of that
+    rule and the command keeps its supported error path (#7248 round 2 F4).
+    """
+    from issue_orchestrator.entrypoints import (
+        bootstrap_case_file_reconciliation,
+        cli_tech_lead,
+    )
+
+    path = tmp_path / "naive.yaml"
+    path.write_text(
+        VALID_LIFECYCLE_PLAN.replace(
+            'recorded_at: "2026-09-10T12:00:00+00:00"',
+            'recorded_at: "2026-09-10T12:00:00"',
+        ),
+        encoding="utf-8",
+    )
+    composed: list[bool] = []
+    monkeypatch.setattr(cli_tech_lead, "load_config", lambda args: _lifecycle_config(tmp_path))
+    monkeypatch.setattr(
+        bootstrap_case_file_reconciliation,
+        "build_case_file_lifecycle_reconciler",
+        lambda config, *, apply_writes: composed.append(apply_writes),
+    )
+
+    with pytest.raises(ValueError, match="must include a timezone"):
+        load_reconciliation_plan(path)
+
+    code = cli_tech_lead.cmd_reconcile_case_files(
+        argparse.Namespace(plan=str(path), apply=True)
+    )
+
+    assert code == 2
+    assert composed == []
+    out = capsys.readouterr().out
+    assert "Invalid reconciliation plan" in out
+    # Rich wraps the console line, so match on words, not the whole sentence.
+    assert "recorded_at" in out and "timezone" in out
+
+
 def test_malformed_yaml_is_reported_as_an_invalid_plan(tmp_path: Path):
     """A syntax error is a bad plan, not an unhandled yaml exception."""
     path = tmp_path / "plan.yaml"
@@ -71,7 +158,9 @@ def test_malformed_yaml_is_reported_as_an_invalid_plan(tmp_path: Path):
 
 
 @pytest.mark.parametrize(
-    "document", ["- a\n- list\n", "just a scalar\n", ""], ids=["list", "scalar", "empty"]
+    "document",
+    ["- a\n- list\n", "just a scalar\n", ""],
+    ids=["list", "scalar", "empty"],
 )
 def test_a_document_that_is_not_a_plan_is_rejected(tmp_path: Path, document: str):
     path = tmp_path / "plan.yaml"
@@ -285,3 +374,397 @@ def test_a_gate_rejection_is_reported_not_a_traceback(capsys, error):
 
     assert code == 1
     assert "Reconciliation halted" in capsys.readouterr().out
+
+
+class _LifecycleReconciler:
+    def __init__(self, result: CaseFileLifecycleReconciliationResult) -> None:
+        self.result = result
+        self.calls: list[tuple[str, bool]] = []
+
+    def run(self, plan, *, configured_repository, apply_writes):
+        self.calls.append((configured_repository, apply_writes))
+        return self.result
+
+
+def _lifecycle_plan() -> CaseFileLifecycleReconciliationPlan:
+    import yaml
+
+    return CaseFileLifecycleReconciliationPlan.from_mapping(
+        yaml.safe_load(VALID_LIFECYCLE_PLAN)
+    )
+
+
+def test_lifecycle_dry_run_renders_review_counts_and_writes_nothing(capsys):
+    reconciler = _LifecycleReconciler(
+        CaseFileLifecycleReconciliationResult(
+            plan_id="lifecycle-test-plan",
+            dry_run=True,
+            active=0,
+            needs_human=0,
+            terminal=1,
+            applied=0,
+        )
+    )
+
+    code = run_case_file_lifecycle_reconciliation(
+        _lifecycle_plan(),
+        reconciler,  # type: ignore[arg-type]
+        configured_repository="owner/repo",
+        apply_writes=False,
+    )
+
+    assert code == 0
+    assert reconciler.calls == [("owner/repo", False)]
+    assert "1 terminal" in capsys.readouterr().out
+
+
+def test_lifecycle_failure_is_a_nonzero_bounded_stop(capsys):
+    reconciler = _LifecycleReconciler(
+        CaseFileLifecycleReconciliationResult(
+            plan_id="lifecycle-test-plan",
+            dry_run=False,
+            active=0,
+            needs_human=0,
+            terminal=1,
+            applied=0,
+            failures=("some-recurring-class: ambiguous write",),
+        )
+    )
+
+    code = run_case_file_lifecycle_reconciliation(
+        _lifecycle_plan(),
+        reconciler,  # type: ignore[arg-type]
+        configured_repository="owner/repo",
+        apply_writes=True,
+    )
+
+    assert code == 1
+    assert reconciler.calls == [("owner/repo", True)]
+    assert "ambiguous write" in capsys.readouterr().out
+
+
+def test_lifecycle_refusal_is_reported_as_a_bounded_nonzero_stop(capsys):
+    """Including the one the owner raises for a failed shared-authority read.
+
+    ``list_entries`` is a live GitHub-ref read that validation performs after
+    composition, so an operational failure in that window used to escape the
+    supported command as a traceback. The command now renders the owner's one
+    typed refusal and exits 1 (#7248 review F3).
+    """
+
+    class _Refusing:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, bool]] = []
+
+        def run(self, plan, *, configured_repository, apply_writes):
+            self.calls.append((configured_repository, apply_writes))
+            raise CaseFileLifecycleReconciliationRefused(
+                "shared pattern authority could not be read: registry ref 503"
+            )
+
+    reconciler = _Refusing()
+
+    code = run_case_file_lifecycle_reconciliation(
+        _lifecycle_plan(),
+        reconciler,  # type: ignore[arg-type]
+        configured_repository="owner/repo",
+        apply_writes=True,
+    )
+
+    assert code == 1
+    assert reconciler.calls == [("owner/repo", True)]
+    out = capsys.readouterr().out
+    assert "Lifecycle reconciliation refused" in out
+    assert "shared pattern authority could not be read" in out
+
+
+# --- lifecycle preview composition (#7248 review F1) ------------------------
+
+
+def _shared_registry(client) -> "GitHubRefPatternRegistry":
+    from issue_orchestrator.adapters.github.pattern_registry import (
+        GitHubRefPatternRegistry,
+    )
+
+    return GitHubRefPatternRegistry(
+        cast(Any, client), claimant_id="engine-a", lease_seconds=30
+    )
+
+
+def _seed_shared_case_file(client) -> str:
+    """Commit exactly one shared row, and return its reviewed revision."""
+    from issue_orchestrator.domain.tech_lead_findings import PendingCaseFile
+
+    registry = _shared_registry(client)
+    reserved = registry.reserve(
+        PendingCaseFile(
+            signature="narrow",
+            title="Pattern case file: narrow",
+            idempotency_marker="<!-- marker:narrow -->",
+            body_observation_id="run:a:A1",
+            fix_class="code",
+            area="runtime",
+            diagnosis="Shared authority knows only this row.",
+        )
+    )
+    entry = registry.finalize(
+        signature="narrow",
+        reservation_id=reserved.entry.reservation_id,
+        issue_number=1,
+    )
+    return entry.review_revision()
+
+
+def _seed_local_authority(repo_root: Path) -> None:
+    """Rolling-upgrade local state: richer than shared, plus a pending intent."""
+    from issue_orchestrator.domain.tech_lead_findings import PendingCaseFile
+    from issue_orchestrator.infra.tech_lead_authority_store import (
+        SqliteTechLeadAuthorityStore,
+    )
+
+    store = SqliteTechLeadAuthorityStore.for_repo(repo_root)
+    store.record_pattern(
+        signature="narrow", issue_number=1, observation_id="run:a:A1"
+    )
+    store.note_pattern_observation(signature="narrow", observation_id="run:a:A2")
+    store.record_pattern(
+        signature="local-only", issue_number=2, observation_id="run:b:B1"
+    )
+    store.record_pending_case_file(
+        pending=PendingCaseFile(
+            signature="narrow",
+            title="Pattern case file: narrow",
+            idempotency_marker="<!-- marker:narrow -->",
+            body_observation_id="run:a:A3",
+            fix_class="code",
+            area="runtime",
+            diagnosis="An interrupted create nobody has finished yet.",
+        )
+    )
+
+
+def _local_authority_state(repo_root: Path) -> dict[str, object]:
+    from issue_orchestrator.infra.tech_lead_authority_store import (
+        SqliteTechLeadAuthorityStore,
+    )
+
+    store = SqliteTechLeadAuthorityStore.for_repo(repo_root)
+    return {
+        "patterns": store.list_patterns(),
+        "narrow_observations": store.list_pattern_observation_ids(
+            signature="narrow"
+        ),
+        "local_only_observations": store.list_pattern_observation_ids(
+            signature="local-only"
+        ),
+        "pending": store.load_pending_case_file(signature="narrow"),
+    }
+
+
+def _lifecycle_config(tmp_path: Path):
+    config = Config(repo_root=tmp_path)
+    config.repo = "owner/repo"
+    config.tech_lead_enabled = False
+    return config
+
+
+def test_lifecycle_dry_run_leaves_shared_and_local_authority_untouched(
+    tmp_path: Path, monkeypatch
+):
+    """A dry run may not rewrite the authority it is previewing.
+
+    Composition used to suppress only the rolling-upgrade seed and then read
+    through the write-through mirror, whose ``list_entries`` migrates every
+    committed shared row into local SQLite and discards any matching pending
+    create intent. With shared authority narrower than local state, previewing
+    therefore replaced local evidence with the shared snapshot and destroyed a
+    pending intent — from the command that prints "nothing was written" (#7248
+    review F1/A1).
+    """
+    from issue_orchestrator.entrypoints import bootstrap_case_file_reconciliation
+    from issue_orchestrator.execution import providers
+
+    client = FakeGitHubRefClient()
+    revision = _seed_shared_case_file(client)
+    _seed_local_authority(tmp_path)
+    before_local = _local_authority_state(tmp_path)
+    before_refs = dict(client.refs)
+    monkeypatch.setattr(
+        providers,
+        "create_repository_host",
+        lambda repo, config: GitHubAdapter(repo=repo, http_client=cast(Any, client)),
+    )
+    plan = CaseFileLifecycleReconciliationPlan.from_mapping(
+        {
+            "plan_id": "preview-plan",
+            "repository": "owner/repo",
+            "recorded_at": "2026-09-10T12:00:00+00:00",
+            "outcomes": [
+                {
+                    "signature": "narrow",
+                    "issue": 1,
+                    "disposition": "shipped",
+                    "expected_revision": revision,
+                    "reason": "The underlying fix shipped.",
+                    "evidence": ["owner/repo#1"],
+                }
+            ],
+        }
+    )
+
+    reconciler = bootstrap_case_file_reconciliation.build_case_file_lifecycle_reconciler(
+        _lifecycle_config(tmp_path), apply_writes=False
+    )
+    result = reconciler.run(
+        plan, configured_repository="owner/repo", apply_writes=False
+    )
+
+    assert result.dry_run and result.terminal == 1 and result.applied == 0
+    assert dict(client.refs) == before_refs
+    assert _local_authority_state(tmp_path) == before_local
+    assert before_local["narrow_observations"] == ("run:a:A1", "run:a:A2")
+    assert before_local["pending"] is not None
+
+
+def test_lifecycle_dry_run_does_not_create_the_local_authority_store(
+    tmp_path: Path, monkeypatch
+):
+    """Preview must not so much as initialize the writable local database."""
+    from issue_orchestrator.entrypoints import bootstrap_case_file_reconciliation
+    from issue_orchestrator.execution import providers
+    from issue_orchestrator.infra.repo_identity import state_dir
+
+    client = FakeGitHubRefClient()
+    monkeypatch.setattr(
+        providers,
+        "create_repository_host",
+        lambda repo, config: GitHubAdapter(repo=repo, http_client=cast(Any, client)),
+    )
+
+    bootstrap_case_file_reconciliation.build_case_file_lifecycle_reconciler(
+        _lifecycle_config(tmp_path), apply_writes=False
+    )
+
+    assert not (state_dir(tmp_path) / "tech_lead_authority.sqlite").exists()
+
+
+def test_lifecycle_command_composes_read_only_authority_without_apply(
+    tmp_path: Path, monkeypatch, capsys
+):
+    """``--apply`` selects the composition, not just what the reconciler does."""
+    from issue_orchestrator.entrypoints import (
+        bootstrap_case_file_reconciliation,
+        cli_tech_lead,
+    )
+
+    path = tmp_path / "lifecycle.yaml"
+    path.write_text(VALID_LIFECYCLE_PLAN, encoding="utf-8")
+    config = _lifecycle_config(tmp_path)
+    selected: list[bool] = []
+
+    def _build(config_arg, *, apply_writes):
+        selected.append(apply_writes)
+        return _LifecycleReconciler(
+            CaseFileLifecycleReconciliationResult(
+                plan_id="lifecycle-test-plan",
+                dry_run=not apply_writes,
+                active=0,
+                needs_human=0,
+                terminal=1,
+                applied=0,
+            )
+        )
+
+    monkeypatch.setattr(cli_tech_lead, "load_config", lambda args: config)
+    monkeypatch.setattr(
+        bootstrap_case_file_reconciliation,
+        "build_case_file_lifecycle_reconciler",
+        _build,
+    )
+
+    for apply in (False, True):
+        code = cli_tech_lead.cmd_reconcile_case_files(
+            argparse.Namespace(plan=str(path), apply=apply)
+        )
+        assert code == 0
+
+    assert selected == [False, True]
+    capsys.readouterr()
+
+
+def test_the_apply_composition_wires_a_snapshot_reader_for_classifications(
+    tmp_path: Path, monkeypatch
+):
+    """The guarded command must not fall back to a labels-only check.
+
+    A nonterminal outcome's authority constrains the issue's own state, and the
+    gate refuses an expectation it has no snapshot reader for. So the wiring is
+    load-bearing in both directions: with it, an open case file records and a
+    closed one is refused; without it, every classification would fail closed.
+    This drives the real bootstrap rather than a hand-built gate, because the
+    defect F8 describes is a COMPOSITION gap (#7248 round 6 review F8/A3).
+    """
+    from issue_orchestrator.entrypoints import bootstrap_case_file_reconciliation
+    from issue_orchestrator.execution import providers
+    from issue_orchestrator.ports.fresh_issue_reader import FreshIssueSnapshot
+
+    class _FreshIssue:
+        def __init__(self) -> None:
+            self.state = "closed"
+            self.snapshot_reads: list[int] = []
+
+        def read_issue_labels(self, issue_number: int) -> list[str]:
+            return []
+
+        def read_issue_snapshot(self, issue_number: int) -> FreshIssueSnapshot:
+            self.snapshot_reads.append(issue_number)
+            return FreshIssueSnapshot(
+                number=issue_number, labels=(), state=self.state
+            )
+
+    client = FakeGitHubRefClient()
+    revision = _seed_shared_case_file(client)
+    fresh = _FreshIssue()
+    monkeypatch.setattr(
+        providers,
+        "create_repository_host",
+        lambda repo, config: GitHubAdapter(repo=repo, http_client=cast(Any, client)),
+    )
+    monkeypatch.setattr(
+        providers, "create_fresh_issue_reader", lambda repo, config: fresh
+    )
+    plan = CaseFileLifecycleReconciliationPlan.from_mapping(
+        {
+            "plan_id": "apply-plan",
+            "repository": "owner/repo",
+            "recorded_at": "2026-09-12T01:40:00+00:00",
+            "outcomes": [
+                {
+                    "signature": "narrow",
+                    "issue": 1,
+                    "disposition": "active",
+                    "expected_revision": revision,
+                    "reason": "Still unresolved.",
+                    "evidence": ["owner/repo#1"],
+                }
+            ],
+        }
+    )
+
+    reconciler = bootstrap_case_file_reconciliation.build_case_file_lifecycle_reconciler(
+        _lifecycle_config(tmp_path), apply_writes=True
+    )
+    refused = reconciler.run(
+        plan, configured_repository="owner/repo", apply_writes=True
+    )
+
+    assert fresh.snapshot_reads == [1], "the classification never consulted the state"
+    assert refused.applied == 0
+    assert "issue state mismatch" in refused.failures[0]
+
+    fresh.state = "open"
+    accepted = reconciler.run(
+        plan, configured_repository="owner/repo", apply_writes=True
+    )
+
+    assert accepted.ok and accepted.applied == 1
