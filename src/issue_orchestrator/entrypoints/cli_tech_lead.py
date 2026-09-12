@@ -7,20 +7,32 @@ Three commands share this module and the same in-process-orchestrator setup:
 * ``orchestrator health-review`` — run one whole-board ``health_review`` on
   demand, the manual counterpart of the timer-based periodic review
   (:func:`cmd_health_review`); and
-* ``orchestrator reconcile-case-files`` — apply a checked-in reconciliation plan
-  that folds an already-accumulated duplicate cluster onto its durable case
-  file (:func:`cmd_reconcile_case_files`, #6989).
+* ``orchestrator reconcile-case-files`` — apply a checked-in reconciliation
+  plan, in either of its two reviewed forms (:func:`cmd_reconcile_case_files`,
+  #6989, #7248).
 
 The first two build their own in-process orchestrator and drive the real
 tech-lead-launch path — see :mod:`..control.tech_lead_trigger`, whose owners
 reuse ``launch_tech_lead_session`` (and, for the health review, the timer path's
 anchor lifecycle) so evidence-map staging + authority are identical to a
-reactive launch. The third builds the same orchestrator but plans through
-:mod:`..control.tech_lead_case_file_reconciliation` and applies through the
-ordinary ``ActionApplier``, so a backfill executes exactly the writes the live
-lane would. Extracted from ``cli.py`` (a line-budgeted hotspot) alongside the
-other per-area command modules (``cli_queue_commands``,
-``cli_utility_commands``).
+reactive launch.
+
+The third routes by plan form, because the two forms need different authority:
+
+* An EVIDENCE plan folds an already-accumulated duplicate cluster onto its
+  durable case file. It builds the same orchestrator as the first two, plans
+  through :mod:`..control.tech_lead_case_file_reconciliation`, and applies
+  through the ordinary ``ActionApplier``, so a backfill executes exactly the
+  writes the live lane would.
+* A LIFECYCLE plan classifies the complete shared registry snapshot and retires
+  its terminal case files. It deliberately does NOT build an orchestrator:
+  :mod:`.bootstrap_case_file_reconciliation` composes shared pattern authority
+  and a ``PatternCaseFileLifecycleOwner`` directly, so the command never starts
+  background services, and ``--apply`` selects between a read-only preview
+  composition and a write-capable one.
+
+Extracted from ``cli.py`` (a line-budgeted hotspot) alongside the other per-area
+command modules (``cli_queue_commands``, ``cli_utility_commands``).
 """
 
 from __future__ import annotations

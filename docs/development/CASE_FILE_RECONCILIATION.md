@@ -250,8 +250,18 @@ repeatable. Dry-run and apply each plan from the repository named inside it;
 an absolute plan path is fine when operating Porchpin from an
 issue-orchestrator checkout.
 
-Across both plans: 66 reviewed outcomes, 42 terminal, 24 retained as active or
-needs-human. Both were reconfirmed on 2026-09-11 against their repositories'
+Across both plans: 66 reviewed outcomes, 43 terminal, 23 retained as active or
+needs-human — a total `tests/unit/test_checked_in_reconciliation_plans.py`
+derives from the plan files rather than trusting this sentence. That suite also
+refuses a retained outcome whose `reason` names a pull request this repository
+has already merged, which is the freshness check to run before publishing a
+reviewed plan: the premise a human wrote can be overtaken between review and
+merge, and Porchpin `tech-lead-batch-manifest-diff-fetch-blocked-by-gh-guard`
+was retired here for exactly that reason once PR #7238 landed. An outcome that
+legitimately stays retained after a related merge states why in prose and cites
+the PR under `evidence`, which the guard does not read.
+
+Both plans were reconfirmed on 2026-09-11 against their repositories'
 `.issue-orchestrator/state/tech_lead_authority.sqlite`, each under the
 projection named in its own header — issue-orchestrator against the shared
 projection (13/13) and Porchpin against the seeded projection (53/53).

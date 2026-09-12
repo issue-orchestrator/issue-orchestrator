@@ -296,10 +296,10 @@ outcomes:
   - https://github.com/porchpin/porchpin/issues/204
 - signature: tech-lead-batch-manifest-diff-fetch-blocked-by-gh-guard
   issue: 216
-  disposition: active
+  disposition: shipped
   expected_revision: 7355f6020ca7ad3a7b83224eb571f22929eb07e5b821801d73ada1f90bf05185
-  reason: 'Its promoted issue is closed, but the exact transport fix remains in open PR #7238 and must
-    merge before retirement.'
+  reason: 'Its promoted issue is closed and the exact transport fix merged in PR #7238 (fc1ac91), which
+    fetches Tech Lead PR diffs through RepositoryHost instead of the guarded gh path.'
   evidence:
   - https://github.com/porchpin/porchpin/issues/229
   - https://github.com/issue-orchestrator/issue-orchestrator/pull/7238
