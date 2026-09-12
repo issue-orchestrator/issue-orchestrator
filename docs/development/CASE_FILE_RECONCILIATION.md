@@ -49,10 +49,18 @@ A lifecycle plan contains `repository`, `recorded_at`, and `outcomes`. It must
 name every signature and exact issue mapping in the shared registry snapshot.
 The dry run refuses a partial, stale, or wrong-repository plan, and refuses one
 whose transitions are not admissible at all — a signature already terminal under
-a different transition, or a transition identity reused with a changed payload —
-before any write. The whole plan is admitted before any of it is applied, so a
-bad row at position 40 stops the command instead of stopping it after 39 case
-files have already been commented on and closed.
+a different transition, a transition identity reused with a changed payload, or
+an interrupted retirement whose pending comment is not the one this plan would
+render — before any write. Preflight asks the same rules the reserving
+compare-and-swap asks, so an outcome it admits is one the apply can perform. The
+whole plan is admitted before any of it is applied, so a bad row at position 40
+stops the command instead of stopping it after 39 case files have already been
+commented on and closed.
+
+A plan is rejected at load, before anything is composed, unless every outcome
+can build its lifecycle transition — which means `recorded_at` must be
+timezone-aware ISO-8601, not merely parseable. That is a plan error (exit 2),
+not a refusal.
 
 `--apply` selects the composition, not merely what it does afterwards. Without
 it the command holds read-only shared authority: it does not open, create, or

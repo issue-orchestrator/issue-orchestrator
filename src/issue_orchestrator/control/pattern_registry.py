@@ -25,6 +25,7 @@ from ..ports.pattern_registry import (
     PatternReservation,
     PatternReservationState,
     require_canonical_case_file,
+    require_resumable_retirement,
     require_reviewed_revision,
 )
 from ..ports.tech_lead_authority import TechLeadAuthorityStore
@@ -625,20 +626,15 @@ class LocalPatternCaseFileRegistry(PatternCaseFileRegistry):
     ) -> PatternReservation:
         if not transition.terminal:
             raise ValueError("retirement requires a terminal disposition")
+        desired = PendingPatternRetirement(transition=transition, comment=comment)
         current = self._require_committed(signature)
         require_canonical_case_file(current, issue_number)
         if admit_lifecycle_transition(current, transition):
             return PatternReservation(PatternReservationState.COMMITTED, current)
         existing = self._pending_retirements.get(signature)
         if existing is not None:
-            reservation_id, pending, started = existing
-            if (
-                not pending.transition.same_intent(transition)
-                or pending.comment != comment
-            ):
-                raise PatternRegistryError(
-                    f"pattern {signature!r} has a different retirement in flight"
-                )
+            _reservation_id, _pending, started = existing
+            pending = require_resumable_retirement(current, desired)
             state = (
                 PatternReservationState.RECOVERABLE
                 if pending.phase is PatternRetirementPhase.CLOSE
@@ -650,10 +646,9 @@ class LocalPatternCaseFileRegistry(PatternCaseFileRegistry):
         if signature in self._pending_observations:
             return PatternReservation(PatternReservationState.HELD, current)
         require_reviewed_revision(current, expected_revision)
-        reservation_id = uuid.uuid4().hex
         self._pending_retirements[signature] = (
-            reservation_id,
-            PendingPatternRetirement(transition=transition, comment=comment),
+            uuid.uuid4().hex,
+            desired,
             None,
         )
         return PatternReservation(

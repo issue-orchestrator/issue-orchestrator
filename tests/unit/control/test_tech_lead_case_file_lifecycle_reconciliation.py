@@ -15,6 +15,9 @@ from issue_orchestrator.control.tech_lead_case_file_lifecycle_reconciliation imp
     CaseFileLifecycleReconciliationPlan,
     CaseFileLifecycleReconciliationRefused,
 )
+from issue_orchestrator.control.tech_lead_case_file_lifecycle import (
+    retirement_comment,
+)
 from issue_orchestrator.domain.tech_lead_findings import CaseFileLifecycleTransition
 from issue_orchestrator.ports.comment_receipt import IssueCommentReceipt
 from issue_orchestrator.ports.pattern_registry import PatternRegistryError
@@ -347,31 +350,81 @@ def test_preflight_refuses_a_transition_identity_reused_with_a_new_payload() -> 
     assert registry.read(signature="a").lifecycle == ()  # type: ignore[union-attr]
 
 
-def test_preflight_resumes_an_interrupted_retirement_of_the_same_intent() -> None:
+def test_an_interrupted_retirement_of_the_same_intent_previews_and_resumes() -> None:
     """An in-flight terminal write of this plan's own intent is a resume.
 
     Its entry has no review revision to compare — a pending external effect
     means the settled facts are not yet knowable — so preflight must recognise
     the resume before it reaches the staleness rule, exactly as the registries
-    do inside their reserving compare-and-swap.
+    do inside their reserving compare-and-swap. The pending retirement here
+    carries the exact body ``retirement_comment`` renders, which is what makes
+    it genuinely resumable: the apply that follows the dry run drives the same
+    reservation through its comment and its close.
     """
     reconciler, registry, repository = _reconciler(("a", 1))
     plan = _plan(_reviewed_outcome(registry, "a", 1, "shipped"))
+    transition = plan.outcomes[0].transition(
+        plan_id=plan.plan_id, recorded_at=plan.recorded_at
+    )
     registry.reserve_retirement(
         signature="a",
-        transition=plan.outcomes[0].transition(
-            plan_id=plan.plan_id, recorded_at=plan.recorded_at
-        ),
-        comment="<!-- retirement -->",
+        transition=transition,
+        comment=retirement_comment(transition),
         issue_number=1,
     )
 
-    result = reconciler.run(
+    preview = reconciler.run(
         plan, configured_repository="owner/repo", apply_writes=False
     )
-
-    assert result.dry_run and result.terminal == 1
+    assert preview.dry_run and preview.terminal == 1
     assert repository.comments == [] and repository.closed == []
+
+    applied = reconciler.run(
+        plan, configured_repository="owner/repo", apply_writes=True
+    )
+
+    assert applied.ok and applied.applied == 1
+    assert repository.comments == [(1, retirement_comment(transition))]
+    assert repository.closed == [1]
+    assert registry.read(signature="a").disposition == "shipped"  # type: ignore[union-attr]
+
+
+def test_preflight_refuses_a_pending_retirement_whose_comment_changed() -> None:
+    """Same intent is not enough to inherit an interrupted retirement.
+
+    A retirement's pending comment is the idempotency key its recovery path
+    searches for, so both registries require the pending body to equal the one
+    the apply would render. Preflight asked only about transition intent, so an
+    entry it called resumable was one ``reserve_retirement`` would reject —
+    and the rejection landed mid-apply, after the earlier row had already been
+    commented on and closed (#7248 round 2 review F2/A2).
+    """
+    guarded: list[int] = []
+    reconciler, registry, repository = _reconciler(
+        ("a", 1), ("b", 2), require_mutation_authority=guarded.append
+    )
+    plan = _plan(
+        _reviewed_outcome(registry, "a", 1, "shipped"),
+        _reviewed_outcome(registry, "b", 2, "superseded"),
+    )
+    registry.reserve_retirement(
+        signature="b",
+        transition=plan.outcomes[1].transition(
+            plan_id=plan.plan_id, recorded_at=plan.recorded_at
+        ),
+        comment="<!-- a body an older build rendered -->",
+        issue_number=2,
+    )
+
+    with pytest.raises(
+        CaseFileLifecycleReconciliationRefused, match="retirement comment changed"
+    ):
+        reconciler.run(plan, configured_repository="owner/repo", apply_writes=True)
+
+    assert guarded == []
+    assert repository.comments == []
+    assert repository.closed == []
+    assert registry.read(signature="a").lifecycle == ()  # type: ignore[union-attr]
 
 
 def test_a_shared_registry_read_failure_is_a_bounded_refusal() -> None:

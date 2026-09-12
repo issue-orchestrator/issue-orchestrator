@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
 from typing import TYPE_CHECKING, Any, Callable, Mapping, cast
 
 from ..domain.tech_lead_findings import (
@@ -15,10 +14,15 @@ from ..domain.tech_lead_findings import (
 from ..ports.pattern_registry import (
     admit_lifecycle_transition,
     PatternRegistryError,
+    PendingPatternRetirement,
     require_canonical_case_file,
+    require_resumable_retirement,
     require_reviewed_revision,
 )
-from .tech_lead_case_file_lifecycle import PatternCaseFileLifecycleOwner
+from .tech_lead_case_file_lifecycle import (
+    PatternCaseFileLifecycleOwner,
+    retirement_comment,
+)
 
 if TYPE_CHECKING:
     from ..ports import RepositoryHost
@@ -91,12 +95,24 @@ class CaseFileLifecycleReconciliationPlan:
         plan_id = _text(mapping, "plan_id", "plan")
         repository = _text(mapping, "repository", "plan")
         recorded_at = _text(mapping, "recorded_at", "plan")
-        datetime.fromisoformat(recorded_at)
         raw = mapping.get("outcomes")
         if not isinstance(raw, list) or not raw:
             raise ValueError("plan 'outcomes' must be a non-empty list")
         outcomes = tuple(_outcome(item, position) for position, item in enumerate(raw))
         _reject_collisions(outcomes)
+        # Prove at the boundary that every outcome can BUILD its transition.
+        # A plan's fields are validated field by field here, but the thing the
+        # reconciler actually constructs from them is a domain
+        # CaseFileLifecycleTransition, which carries invariants this parser does
+        # not and must not restate — chiefly that ``recorded_at`` is timezone
+        # aware, which plain ``fromisoformat`` accepts without. A naive
+        # timestamp therefore LOADED and failed during preflight, past the
+        # command's invalid-plan boundary and outside its refusal boundary, as
+        # a traceback. Constructing them here keeps the domain the single owner
+        # of those rules and keeps a malformed plan on the supported error path
+        # (#7248 round 2 review F4).
+        for outcome in outcomes:
+            outcome.transition(plan_id=plan_id, recorded_at=recorded_at)
         return cls(
             plan_id=plan_id,
             repository=repository,
@@ -247,23 +263,35 @@ class CaseFileLifecycleReconciler:
         refused it mid-apply, after earlier rows had already commented on and
         closed their case files (#7248 review F2/A2).
 
-        So every rule here is the shared owner, called in write order:
-        :func:`require_canonical_case_file` for the issue mapping,
-        :func:`admit_lifecycle_transition` for admission and idempotent replay,
-        and :func:`require_reviewed_revision` for staleness. The one rule that
-        is genuinely local to reconciliation is the pending-retirement resume:
-        an in-flight terminal write of the SAME reviewed intent is this plan's
-        own interrupted apply being repeated, which the registry resumes rather
-        than re-admits, and whose entry has no review revision to compare.
+        So every rule here is the shared owner, asked in the same order the
+        reserving compare-and-swap asks them: :func:`require_canonical_case_file`
+        for the issue mapping, :func:`admit_lifecycle_transition` for admission
+        and idempotent replay, :func:`require_resumable_retirement` for an
+        in-flight terminal write, and :func:`require_reviewed_revision` for
+        staleness.
+
+        The resume case is where preflight most recently asked a WEAKER question
+        than the write path. Matching transition intent is not enough to inherit
+        a reservation: a retirement's pending comment is the idempotency key its
+        recovery searches for, so the registries also require the pending body to
+        equal the one this apply would render. Preflight now renders the same
+        comment the owner will (:func:`retirement_comment`) and asks the shared
+        rule, so an entry preflight calls resumable is one the apply can actually
+        resume (#7248 round 2 review F2/A2).
         """
         require_canonical_case_file(entry, outcome.issue_number)
         transition = outcome.transition(
             plan_id=plan.plan_id, recorded_at=plan.recorded_at
         )
-        pending = entry.pending_retirement
-        if pending is not None and pending.transition.same_intent(transition):
-            return
         if admit_lifecycle_transition(entry, transition):
+            return
+        if entry.pending_retirement is not None and transition.terminal:
+            require_resumable_retirement(
+                entry,
+                PendingPatternRetirement(
+                    transition=transition, comment=retirement_comment(transition)
+                ),
+            )
             return
         # The same rule the registries enforce inside their reserving
         # compare-and-swap. Running it here too is not a second policy: it

@@ -191,6 +191,36 @@ def require_canonical_case_file(entry: PatternRegistryEntry, issue_number: int) 
         )
 
 
+def resolve_recorded_transition(
+    entry: PatternRegistryEntry, requested: CaseFileLifecycleTransition
+) -> CaseFileLifecycleTransition | None:
+    """THE identity rule for one durable lifecycle transition, in one place.
+
+    Returns the transition *entry* already records for ``requested``'s stable
+    identity, or ``None`` when nothing is recorded under it. Raises when the
+    identity IS recorded with a different payload: a ``transition_id`` names one
+    reviewed intent, so two different ones cannot share it.
+
+    Both questions that ask about a recorded transition go through this —
+    :func:`admit_lifecycle_transition`, which needs to know whether a write is
+    an idempotent replay, and the lifecycle owner's result resolution, which
+    needs the recorded transition itself because ``same_intent`` excludes
+    ``recorded_at`` and a retry must report authority's timestamp rather than
+    its own. They previously spelled the same loop and the same rejection out
+    separately, which is the drift class the other rules in this module exist
+    to prevent.
+    """
+    for recorded in entry.lifecycle:
+        if recorded.transition_id != requested.transition_id:
+            continue
+        if not recorded.same_intent(requested):
+            raise PatternRegistryError(
+                f"lifecycle transition {requested.transition_id!r} changed payload"
+            )
+        return recorded
+    return None
+
+
 def admit_lifecycle_transition(
     entry: PatternRegistryEntry, transition: CaseFileLifecycleTransition
 ) -> bool:
@@ -212,13 +242,7 @@ def admit_lifecycle_transition(
     terminal transitions, depending only on which registry a deployment runs
     (#7247 final abstraction pass).
     """
-    for recorded in entry.lifecycle:
-        if recorded.transition_id != transition.transition_id:
-            continue
-        if not recorded.same_intent(transition):
-            raise PatternRegistryError(
-                f"lifecycle transition {transition.transition_id!r} changed payload"
-            )
+    if resolve_recorded_transition(entry, transition) is not None:
         return True
     if entry.lifecycle and entry.lifecycle[-1].terminal:
         raise PatternRegistryError(
@@ -226,6 +250,48 @@ def admit_lifecycle_transition(
             " reopening requires an explicit reopen transition"
         )
     return False
+
+
+def require_resumable_retirement(
+    entry: PatternRegistryEntry, desired: PendingPatternRetirement
+) -> PendingPatternRetirement:
+    """THE compatibility rule for resuming ONE in-flight terminal write.
+
+    A retirement reserves durable state and then performs external effects, so a
+    second attempt at the same signature is either a RESUME of the interrupted
+    write or a different decision that must not inherit its reservation. What
+    separates them is the whole pending payload: the transition's stable intent
+    AND the exact comment body already promised to the case file. The comment is
+    not decoration — it is the idempotency key the recovery path searches for
+    (``find_issue_comment_receipt``), so resuming with a changed body would look
+    for a receipt that cannot exist and republish over the one that does.
+
+    Both registries and the reconciliation preflight call this. Preflight asking
+    a weaker question than the write path is exactly the defect this centralizes
+    away: a plan whose entry has a pending retirement with the same intent but a
+    different comment passed preflight and was refused mid-apply, after earlier
+    rows had already been commented on and closed, breaking the guarantee that
+    the complete decision set is admitted before its first write (#7248 round 2
+    review F2/A2).
+
+    Returns the pending retirement so a caller that must then decide its
+    reservation STATE — recoverable, publishing, held — works from the payload
+    this rule just proved compatible.
+    """
+    pending = entry.pending_retirement
+    if pending is None:
+        raise PatternRegistryError(
+            f"pattern {entry.signature!r} has no retirement in flight"
+        )
+    if not pending.transition.same_intent(desired.transition):
+        raise PatternRegistryError(
+            f"pattern {entry.signature!r} has a different retirement in flight"
+        )
+    if pending.comment != desired.comment:
+        raise PatternRegistryError(
+            f"pattern {entry.signature!r} retirement comment changed"
+        )
+    return pending
 
 
 def require_reviewed_revision(

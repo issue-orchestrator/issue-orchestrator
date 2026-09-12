@@ -100,6 +100,54 @@ def test_lifecycle_plan_loads_through_the_same_command_surface(tmp_path: Path):
     assert plan.outcomes[0].disposition == "shipped"
 
 
+def test_a_timezone_less_lifecycle_timestamp_is_an_invalid_plan(
+    tmp_path: Path, monkeypatch, capsys
+):
+    """Valid ISO syntax, no timezone — refused at the boundary, not mid-run.
+
+    ``datetime.fromisoformat`` accepts a naive instant, so such a plan used to
+    LOAD and then fail during preflight, where the domain's transition
+    invariant rejected it: past the command's invalid-plan boundary, outside
+    its refusal boundary, as a traceback. The plan boundary now constructs
+    every outcome's transition, so the domain stays the single owner of that
+    rule and the command keeps its supported error path (#7248 round 2 F4).
+    """
+    from issue_orchestrator.entrypoints import (
+        bootstrap_case_file_reconciliation,
+        cli_tech_lead,
+    )
+
+    path = tmp_path / "naive.yaml"
+    path.write_text(
+        VALID_LIFECYCLE_PLAN.replace(
+            'recorded_at: "2026-09-10T12:00:00+00:00"',
+            'recorded_at: "2026-09-10T12:00:00"',
+        ),
+        encoding="utf-8",
+    )
+    composed: list[bool] = []
+    monkeypatch.setattr(cli_tech_lead, "load_config", lambda args: _lifecycle_config(tmp_path))
+    monkeypatch.setattr(
+        bootstrap_case_file_reconciliation,
+        "build_case_file_lifecycle_reconciler",
+        lambda config, *, apply_writes: composed.append(apply_writes),
+    )
+
+    with pytest.raises(ValueError, match="must include a timezone"):
+        load_reconciliation_plan(path)
+
+    code = cli_tech_lead.cmd_reconcile_case_files(
+        argparse.Namespace(plan=str(path), apply=True)
+    )
+
+    assert code == 2
+    assert composed == []
+    out = capsys.readouterr().out
+    assert "Invalid reconciliation plan" in out
+    # Rich wraps the console line, so match on words, not the whole sentence.
+    assert "recorded_at" in out and "timezone" in out
+
+
 def test_malformed_yaml_is_reported_as_an_invalid_plan(tmp_path: Path):
     """A syntax error is a bad plan, not an unhandled yaml exception."""
     path = tmp_path / "plan.yaml"

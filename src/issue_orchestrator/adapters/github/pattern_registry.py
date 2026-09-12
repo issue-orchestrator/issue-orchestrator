@@ -30,6 +30,7 @@ from ...ports.pattern_registry import (
     PatternReservation,
     PatternReservationState,
     require_canonical_case_file,
+    require_resumable_retirement,
     require_reviewed_revision,
 )
 from .ref_store import GitRefCasStore, GitRefSnapshot
@@ -408,16 +409,7 @@ class GitHubRefPatternRegistry(PatternCaseFileRegistry):
         current: PatternRegistryEntry,
         desired: PendingPatternRetirement,
     ) -> PatternReservation:
-        pending = current.pending_retirement
-        assert pending is not None
-        if not pending.transition.same_intent(desired.transition):
-            raise PatternRegistryError(
-                f"pattern {current.signature!r} has a different retirement in flight"
-            )
-        if pending.comment != desired.comment:
-            raise PatternRegistryError(
-                f"pattern {current.signature!r} retirement comment changed"
-            )
+        pending = require_resumable_retirement(current, desired)
         if pending.phase is PatternRetirementPhase.CLOSE:
             return PatternReservation(PatternReservationState.RECOVERABLE, current)
         if current.publication_started_at is not None:
