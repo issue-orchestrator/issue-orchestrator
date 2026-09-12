@@ -28,6 +28,12 @@ from ..domain.session_run import SessionRunAssets
 from ..domain.issue_run_evidence import IssueRunEvidence
 from ..domain.tech_lead_session import TechLeadSessionGeneration
 from .completion_review_exchange import is_review_exchange_job_for_issue
+from .issue_termination import (
+    IssueTerminationOutcome as IssueTerminationOutcome,
+    ValidatedWorkCustodyUnproven as ValidatedWorkCustodyUnproven,
+    capture_or_report,
+    terminate_every_session,
+)
 
 if TYPE_CHECKING:
     from ..domain.models import Session
@@ -595,6 +601,19 @@ class IssueRuntimeLifecycleOwners:
         evidence = self.run_evidence.evidence_for_issue(issue_number)
         return self.validated_work.dispose_at_termination(AutomaticCaptureCommand(issue_number, reason, evidence))
 
+    def preserve_completed_terminal(self, issue_number: int, terminal_id: str, reason: str, *,
+                                    run: SessionRunAssets | None = None) -> ValidatedWorkDispositionBatch | None:
+        """`preserve_terminal` for a session that has ALREADY reached a terminal
+        outcome, where the capture is a report and the teardown must finish.
+
+        Kept separate from `preserve_terminal` so the strict contract stays the
+        default and nothing inherits best-effort by accident (#7255).
+        """
+        return capture_or_report(
+            lambda: self.preserve_terminal(issue_number, terminal_id, reason, run=run),
+            issue_number=issue_number, reason=reason, events=self.events,
+        )
+
     def _observe(self, batch: ValidatedWorkDispositionBatch) -> None:
         self.events.publish(make_trace_event(EventName.VALIDATED_WORK_DISPOSITION_OBSERVED, disposition_observation(batch)))
 
@@ -626,16 +645,30 @@ class IssueRuntimeLifecycleOwners:
         return self.validated_work.for_issue(issue_number)
 
     def terminate(self, issue_number: int, reason: str) -> IssueRuntimeTermination:
+        # STRICT, deliberately. This stops live terminals and releases the
+        # exchange pair, so a capture fault means the work MIGHT be unpreserved
+        # and the whole termination must refuse atomically rather than destroy
+        # it. Do not make this best-effort.
         batch = self._capture(issue_number, reason)
         result = self.core.release_preserved(issue_number, reason, batch)
         self._observe(batch)
         return result
 
     def cancel_exchange(self, issue_number: int, reason: str) -> ReviewExchangeCancellation:
+        # Strict for the same reason as `terminate`: releasing the pair registry
+        # tears down live coder/reviewer processes.
         batch = self._capture(issue_number, reason)
         result = self.core.cancel_preserved_exchange(issue_number, reason, batch)
         self._observe(batch)
         return result
+
+    def terminate_every_session(self, issue_number: int, reason: str) -> "IssueTerminationOutcome":
+        """Terminate every terminal this issue owns. See `issue_termination`."""
+        return terminate_every_session(
+            self, issue_number, reason,
+            capture=lambda: self._capture(issue_number, reason),
+            observe=self._observe,
+        )
 
     def require_reset(self, issue_number: int, reason: str) -> ValidatedWorkDispositionBatch:
         batch = self.preserve(issue_number, reason)

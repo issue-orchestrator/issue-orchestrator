@@ -65,7 +65,7 @@ logger = logging.getLogger(__name__)
 
 def _validation_issue_key(session: Session, config: Config) -> IssueKey | None:
     repo = session.issue.repo or config.repo
-    if repo:
+    if repo and repo.strip():
         return GitHubIssueKey(repo=repo, external_id=str(session.issue.number))
     if config.is_validation_enabled():
         logger.info(
@@ -290,7 +290,15 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
         f"runtime={session.runtime_minutes}min",
     )
 
-    action_applier.runtime_lifecycle.preserve_terminal(session.issue.number, session.terminal_id, "session-completion", run=session.run_assets)
+    # Best-effort BY DESIGN. Everything below this line is what makes the session
+    # terminal - dropping it from active_sessions, killing the terminal, writing
+    # the labels. A raise here reverts none of that; it just skips it, and the
+    # next tick rediscovers the session and logs the SAME terminal transition
+    # again, forever (#7255: 218 re-completions in two hours, 566 wasted GitHub
+    # reads, and no label ever written).
+    action_applier.runtime_lifecycle.preserve_completed_terminal(
+        session.issue.number, session.terminal_id, "session-completion", run=session.run_assets
+    )
 
     # Remove by session name, NOT issue number - multiple sessions can share an issue number
     state.drop_active_session(session.terminal_id)

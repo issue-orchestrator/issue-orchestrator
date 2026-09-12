@@ -35,6 +35,8 @@ from .review_exchange_contracts import ReviewExchangeCanceller
 from .review_publish_pipeline import resolve_review_publish_pipeline
 
 
+from ..infra.repo_scope import require_repo
+
 if TYPE_CHECKING:
     from ..infra.config import Config
     from ..domain.review_exchange import ReviewExchangeOutcome
@@ -1061,9 +1063,13 @@ class CompletionReviewExchange:
         self, *, worktree: Path, issue_number: int, issue_title: str,
         parent_session_name: str, agent_label: str,
     ) -> ReviewExchangeRun:
-        if self._config is None or not self._config.repo:
+        if self._config is None:
             raise ValueError("Review exchange allocation requires a configured repository")
-        subject = Issue(number=issue_number, title=issue_title, labels=[], repo=self._config.repo)
+        # `require_repo` rather than the local `not self._config.repo` check it
+        # replaces: the scope requirement now has ONE owner, and the guardrail
+        # can prove this site is safe without reading two lines up.
+        subject = Issue(number=issue_number, title=issue_title, labels=[],
+                        repo=require_repo(self._config))
         return self._issue_run_allocator.allocate_exchange(IssueExchangeRunAllocation(
             worktree_path=worktree, issue_number=issue_number,
             session_key=SessionKey(subject.key, TaskKind.CODE),

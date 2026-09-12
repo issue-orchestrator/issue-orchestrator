@@ -3,9 +3,10 @@
 from ..domain.validated_work import ValidatedWorkEvidence
 
 import json
+import logging
 import os
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import closing, contextmanager
 from pathlib import Path
 from uuid import uuid4
@@ -30,6 +31,8 @@ from ..domain.issue_run_evidence import IssueRunEvidenceUnavailable, IssueRunRec
 from ..domain.session_run import SessionRunAssets
 from ..infra.sqlite_connection import open_sqlite
 
+logger = logging.getLogger(__name__)
+
 
 class SqliteIssueRunLedger:
     """Append-only launch facts; neither age nor launch failure erases ownership.
@@ -39,8 +42,9 @@ class SqliteIssueRunLedger:
     initialize missing schema: losing a database during runtime is not no work.
     """
 
-    def __init__(self, db_path: Path) -> None:
+    def __init__(self, db_path: Path, *, repo_slug: str) -> None:
         self._path = db_path
+        self._repo_slug = repo_slug
         db_path.parent.mkdir(parents=True, exist_ok=True)
         marker = db_path.with_suffix(db_path.suffix + ".initialized")
         if marker.exists():
@@ -51,6 +55,7 @@ class SqliteIssueRunLedger:
                     conn.execute("ALTER TABLE issue_runs ADD COLUMN branch_name TEXT")
                 if "terminal_binding" not in {row[1] for row in conn.execute("PRAGMA table_info(issue_runs)")}:
                     conn.execute("ALTER TABLE issue_runs ADD COLUMN terminal_binding TEXT")
+                self._backfill_issue_scope(conn)
             self._intake = CompletionIntakeTables(
                 self._connect, self._decode, db_path.parent / "completion-intake"
             )
@@ -117,14 +122,118 @@ class SqliteIssueRunLedger:
         with self._connect() as conn:
             return tuple(row[0] for row in conn.execute("SELECT DISTINCT issue_number FROM issue_runs ORDER BY issue_number"))
 
+    def _backfill_issue_scope(self, conn: sqlite3.Connection) -> None:
+        """Repair rows written before the scope was required.
+
+        The orchestrator only ever records runs for its own repository, so an
+        unscoped row is unambiguously this one's. Repairing beats refusing:
+        those rows describe real sessions, and leaving them unreadable would
+        strand every consumer that sweeps the whole ledger (#7255).
+        """
+        if not self._repo_slug.strip():
+            return
+        # ONE definition of "blank", shared with `_is_readable`. Spelling a
+        # whitespace set into SQL drifted from Python's `str.strip()` twice
+        # (spaces only, then ASCII only); selecting candidates and applying the
+        # Python predicate makes the two agree by construction.
+        candidates = [
+            row[0] for row in conn.execute(
+                "SELECT rowid, issue_scope FROM issue_runs WHERE issue_scope <> ?",
+                (self._repo_slug.strip(),),
+            ) if not str(row[1]).strip()
+        ]
+        if candidates:
+            conn.executemany(
+                "UPDATE issue_runs SET issue_scope=? WHERE rowid=?",
+                # Stripped, exactly as `IssueRunRow.from_record` stores it, so a
+                # padded slug cannot leave two spellings for one repository.
+                [(self._repo_slug.strip(), rowid) for rowid in candidates],
+            )
+        repaired = len(candidates)
+        if repaired:
+            logger.warning(
+                "[RUN_LEDGER] repaired %d run row(s) recorded with no repository "
+                "scope; backfilled issue_scope=%s", repaired, self._repo_slug,
+            )
+
     def recorded_runs(self, issue_number: int) -> tuple[IssueRunRecord, ...]:
+        rows = self._rows_for_issue(issue_number)
+        # Self-heal rather than refuse. A row inserted by another instance on an
+        # older build lands here AFTER the open-time backfill, and raising would
+        # fail `recorded_runs` for this issue -> `evidence_for_issue` ->
+        # `issues_for_worktree`, which sweeps EVERY issue: worktree custody
+        # cleanup stops repo-wide and re-plans every tick. That is the shape of
+        # #7255 reintroduced by its own fix. Repairing keeps the sweep alive and
+        # is still fail-closed, because nothing proceeds on unreadable evidence.
+        if self._repair_needed(rows):
+            self._repair_unscoped_rows()
+            rows = self._rows_for_issue(issue_number)
+        return tuple(self._decode_readable(row) for row in rows if self._is_readable(row))
+
+    def _repair_needed(self, rows: "Sequence[sqlite3.Row]") -> bool:
+        return bool(self._repo_slug.strip()) and any(
+            not str(row["issue_scope"]).strip() for row in rows
+        )
+
+    def _repair_unscoped_rows(self) -> None:
+        """Run the open-time backfill again, in this boundary's own error type.
+
+        Every other failure in a read surfaces as `IssueRunEvidenceUnavailable`;
+        a raw `sqlite3.OperationalError` from here would escape through
+        `issues_for_worktree`, which does not wrap it.
+        """
+        try:
+            with self._connect(write=True) as conn:
+                self._backfill_issue_scope(conn)
+        except (sqlite3.Error, ValueError, TypeError, KeyError) as exc:
+            raise IssueRunEvidenceUnavailable("Could not repair run ownership") from exc
+
+    def _rows_for_issue(self, issue_number: int) -> list[sqlite3.Row]:
         try:
             with self._connect() as conn:
-                rows = conn.execute(
+                return conn.execute(
                     "SELECT * FROM issue_runs WHERE issue_number=? "
                     "ORDER BY recorded_at, session_name, run_id, started_at", (issue_number,),
                 ).fetchall()
-            return tuple(self._decode(row) for row in rows)
+        except (sqlite3.Error, ValueError, TypeError, KeyError) as exc:
+            raise IssueRunEvidenceUnavailable("Could not read run ownership") from exc
+
+    def _is_readable(self, row: sqlite3.Row) -> bool:
+        """Whether this row still carries a usable identity.
+
+        Two different situations reach a blank row here, and they need different
+        answers:
+
+        * No slug to repair with (tests only -- `require_repo` at the
+          composition root makes it impossible in production). Skip LOUDLY: one
+          bad row failing the whole read stops worktree custody cleanup
+          repo-wide, which is #7255's own shape.
+        * A slug IS configured and the row is still blank after a repair pass --
+          a writer raced us. Refuse. Returning an empty tuple would make
+          `evidence_for_issue` report NO_RUNS_RECORDED, which capture reads as
+          "nothing to preserve": a false all-clear over work it could not read.
+          Refusing does fail the whole `issues_for_worktree` sweep for this tick
+          -- it has no per-issue guard -- but the next read repairs the row, so
+          this is transient and self-healing, unlike the permanent outage a
+          non-repairing refusal caused.
+        """
+        if str(row["issue_scope"]).strip():
+            return True
+        if self._repo_slug.strip():
+            raise IssueRunEvidenceUnavailable(
+                f"run {row['run_id']} for issue #{row['issue_number']} is still "
+                "unscoped after a repair pass; another writer may be racing"
+            )
+        logger.error(
+            "[RUN_LEDGER] skipping run %s for issue #%s: recorded with no "
+            "repository scope and no slug configured to repair it",
+            row["run_id"], row["issue_number"],
+        )
+        return False
+
+    def _decode_readable(self, row: sqlite3.Row) -> IssueRunRecord:
+        try:
+            return self._decode(row)
         except (sqlite3.Error, ValueError, TypeError, KeyError) as exc:
             raise IssueRunEvidenceUnavailable("Could not read run ownership") from exc
 
@@ -136,15 +245,24 @@ class SqliteIssueRunLedger:
         return self._intake.role(entry_id)
 
     def recorded_run(self, run: SessionRunAssets) -> IssueRunRecord:
+        # Heals like `recorded_runs`: this is the COMPLETION path
+        # (`CompletionIntake._prepare_receipt`), so refusing here strands a
+        # finished session -- the exact shape #7255 is about.
+        row = self._exact_row(run)
+        if row is not None and self._repair_needed([row]):
+            self._repair_unscoped_rows()
+            row = self._exact_row(run)
+        if row is None:
+            raise IssueRunEvidenceUnavailable("exact allocated run is not registered")
+        record = self._decode_readable(row)
+        if record.run != run:
+            raise IssueRunEvidenceUnavailable("exact allocated run assets differ from ledger")
+        return record
+
+    def _exact_row(self, run: SessionRunAssets) -> "sqlite3.Row | None":
         with self._connect() as conn:
-            row = conn.execute("SELECT * FROM issue_runs WHERE session_name=? AND run_id=? AND started_at=?",
+            return conn.execute("SELECT * FROM issue_runs WHERE session_name=? AND run_id=? AND started_at=?",
                 (run.session_name, run.run_id, run.started_at)).fetchone()
-            if row is None:
-                raise IssueRunEvidenceUnavailable("exact allocated run is not registered")
-            record = self._decode(row)
-            if record.run != run:
-                raise IssueRunEvidenceUnavailable("exact allocated run assets differ from ledger")
-            return record
 
     def run_for_capability(self, capability: str) -> SessionRunAssets:
         return self._intake.run_for_capability(capability)

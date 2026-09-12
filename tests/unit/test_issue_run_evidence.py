@@ -55,14 +55,14 @@ def source(ledger, live=()) -> IssueRunEvidenceService:
 
 def test_restart_retains_every_exact_run_without_worktree_discovery(tmp_path):
     path = tmp_path / "state" / "issue_run_ledger.sqlite"
-    ledger = SqliteIssueRunLedger(path)
+    ledger = SqliteIssueRunLedger(path, repo_slug="test-owner/test-repo")
     records = (run_record(tmp_path), run_record(tmp_path, "run-2"))
     for record in records:
         ledger.record_run(42, record)
     # No worktree, manifest, or artifact file was ever created. The ledger is
     # authoritative for ownership even when every worktree has disappeared.
     assert not records[0].run.worktree_path.exists()
-    evidence = source(SqliteIssueRunLedger(path)).evidence_for_issue(42)
+    evidence = source(SqliteIssueRunLedger(path, repo_slug="test-owner/test-repo")).evidence_for_issue(42)
     assert evidence.status is IssueRunEvidenceStatus.RUNS_RECORDED
     assert evidence.runs == records
     assert evidence.origin is IssueRunEvidenceOrigin.RUN_LEDGER
@@ -96,13 +96,13 @@ def test_test_composition_uses_the_same_durable_run_contract(sample_orchestrator
 
 
 def test_no_recorded_runs_is_an_explicit_positive_fact(tmp_path):
-    evidence = source(SqliteIssueRunLedger(tmp_path / "runs.sqlite")).evidence_for_issue(42)
+    evidence = source(SqliteIssueRunLedger(tmp_path / "runs.sqlite", repo_slug="test-owner/test-repo")).evidence_for_issue(42)
     assert evidence.status is IssueRunEvidenceStatus.NO_RUNS_RECORDED
     assert evidence.runs == ()
 
 
 def test_live_registry_requires_exact_matching_durable_ownership(tmp_path):
-    ledger = SqliteIssueRunLedger(tmp_path / "runs.sqlite")
+    ledger = SqliteIssueRunLedger(tmp_path / "runs.sqlite", repo_slug="test-owner/test-repo")
     record = run_record(tmp_path)
     with pytest.raises(IssueRunEvidenceUnavailable, match="no matching durable"):
         source(ledger, (record,)).evidence_for_issue(42)
@@ -116,7 +116,7 @@ def test_live_registry_requires_exact_matching_durable_ownership(tmp_path):
 
 
 def test_repeated_registration_is_idempotent_but_cannot_rebind_a_run(tmp_path):
-    ledger = SqliteIssueRunLedger(tmp_path / "runs.sqlite")
+    ledger = SqliteIssueRunLedger(tmp_path / "runs.sqlite", repo_slug="test-owner/test-repo")
     record = run_record(tmp_path)
     ledger.record_run(42, record)
     ledger.record_run(42, replace(record, recorded_at="2026-09-07T12:00:00Z"))
@@ -137,7 +137,7 @@ def test_repeated_registration_is_idempotent_but_cannot_rebind_a_run(tmp_path):
 @pytest.mark.parametrize("damage", ["missing", "table", "payload", "identity"])
 def test_unreadable_ledger_never_becomes_empty_evidence(tmp_path, damage):
     path = tmp_path / "runs.sqlite"
-    ledger = SqliteIssueRunLedger(path)
+    ledger = SqliteIssueRunLedger(path, repo_slug="test-owner/test-repo")
     ledger.record_run(42, run_record(tmp_path))
     if damage == "missing":
         path.unlink()
@@ -156,7 +156,7 @@ def test_unreadable_ledger_never_becomes_empty_evidence(tmp_path, damage):
 
 
 def test_unavailable_live_owner_is_not_ignored(tmp_path):
-    ledger = SqliteIssueRunLedger(tmp_path / "runs.sqlite")
+    ledger = SqliteIssueRunLedger(tmp_path / "runs.sqlite", repo_slug="test-owner/test-repo")
     service = IssueRunEvidenceService(
         ledger, live_runs=Mock(side_effect=RuntimeError("unavailable")), now=lambda: NOW,
     )
@@ -168,12 +168,12 @@ def test_unavailable_live_owner_is_not_ignored(tmp_path):
 @pytest.mark.parametrize("damage", ["replacement", "missing_identity", "extra_identity"])
 def test_every_connection_refuses_changed_ledger_identity(tmp_path, operation, damage):
     path = tmp_path / "runs.sqlite"
-    ledger = SqliteIssueRunLedger(path)
+    ledger = SqliteIssueRunLedger(path, repo_slug="test-owner/test-repo")
     record = run_record(tmp_path)
     ledger.record_run(42, record)
     if damage == "replacement":
         replacement_path = tmp_path / "replacement.sqlite"
-        SqliteIssueRunLedger(replacement_path)
+        SqliteIssueRunLedger(replacement_path, repo_slug="test-owner/test-repo")
         # Both databases have closed connections. Replace only the database,
         # retaining the established handle and its durable identity marker.
         replacement_path.replace(path)
@@ -190,7 +190,7 @@ def test_every_connection_refuses_changed_ledger_identity(tmp_path, operation, d
         elif operation == "write":
             ledger.record_run(43, run_record(tmp_path, "run-2"))
         else:
-            SqliteIssueRunLedger(path)
+            SqliteIssueRunLedger(path, repo_slug="test-owner/test-repo")
     # Refusal must happen before a writer alters the replacement/damaged ledger.
     with closing(sqlite3.connect(path)) as conn:
         assert conn.execute("SELECT COUNT(*) FROM issue_runs WHERE issue_number=43").fetchone()[0] == 0
@@ -207,13 +207,13 @@ def test_symlink_retarget_cannot_rebind_lexical_run_root(tmp_path, symlink_locat
     for target in targets:
         target.mkdir()
     link.symlink_to(targets[0], target_is_directory=True)
-    ledger = SqliteIssueRunLedger(path)
+    ledger = SqliteIssueRunLedger(path, repo_slug="test-owner/test-repo")
     ledger.record_run(42, original)
 
     link.unlink()
     link.symlink_to(targets[1], target_is_directory=True)
     if reconstruct:
-        ledger = SqliteIssueRunLedger(path)
+        ledger = SqliteIssueRunLedger(path, repo_slug="test-owner/test-repo")
     # Rebuild the typed assets just as a new process would after retargeting.
     reconstructed = replace(original, run=SessionRunAssets.from_dict(original.run.to_dict()))
     assert source(ledger).evidence_for_issue(42).runs == (reconstructed,)
@@ -231,7 +231,7 @@ def test_symlink_retarget_cannot_rebind_lexical_run_root(tmp_path, symlink_locat
 @pytest.mark.parametrize("damage", ["missing", "table", "identity", "marker"])
 def test_restart_refuses_lost_established_ownership(tmp_path, damage):
     path = tmp_path / "runs.sqlite"
-    ledger = SqliteIssueRunLedger(path)
+    ledger = SqliteIssueRunLedger(path, repo_slug="test-owner/test-repo")
     ledger.record_run(42, run_record(tmp_path))
     if damage == "missing":
         path.unlink()
@@ -241,13 +241,13 @@ def test_restart_refuses_lost_established_ownership(tmp_path, damage):
         with sqlite3.connect(path) as conn:
             conn.execute("DROP TABLE issue_runs" if damage == "table" else "DELETE FROM issue_run_ledger_identity")
     with pytest.raises(IssueRunEvidenceUnavailable):
-        SqliteIssueRunLedger(path)
+        SqliteIssueRunLedger(path, repo_slug="test-owner/test-repo")
     if damage == "missing":
         assert not path.exists()
 
 
 def test_a_different_identity_cannot_rebind_retained_run_directory(tmp_path):
-    ledger = SqliteIssueRunLedger(tmp_path / "runs.sqlite")
+    ledger = SqliteIssueRunLedger(tmp_path / "runs.sqlite", repo_slug="test-owner/test-repo")
     original = run_record(tmp_path)
     ledger.record_run(42, original)
     identity = replace(original.run.identity, started_at="2026-09-07T00:00:00Z")
@@ -301,30 +301,30 @@ def test_evidence_rejects_untyped_enum_values(field):
 def test_old_ledger_reopens_without_inventing_branch_binding(tmp_path):
     path = tmp_path / "runs.sqlite"
     record = run_record(tmp_path)
-    ledger = SqliteIssueRunLedger(path)
+    ledger = SqliteIssueRunLedger(path, repo_slug="test-owner/test-repo")
     ledger.record_run(42, record)
     with sqlite3.connect(path) as conn:
         conn.execute("ALTER TABLE issue_runs DROP COLUMN branch_name")
-    reopened = SqliteIssueRunLedger(path)
+    reopened = SqliteIssueRunLedger(path, repo_slug="test-owner/test-repo")
     assert reopened.recorded_runs(42) == (replace(record, branch_name=None),)
     with pytest.raises(IssueRunEvidenceUnavailable):
         reopened.record_run(42, record)
-    assert SqliteIssueRunLedger(path).recorded_runs(42)[0].branch_name is None
+    assert SqliteIssueRunLedger(path, repo_slug="test-owner/test-repo").recorded_runs(42)[0].branch_name is None
 
 
 def test_legacy_terminal_binding_is_unknown_and_phase_is_not_a_terminal(tmp_path):
     path = tmp_path / "runs.sqlite"
     original = run_record(tmp_path)
-    ledger = SqliteIssueRunLedger(path)
+    ledger = SqliteIssueRunLedger(path, repo_slug="test-owner/test-repo")
     ledger.record_run(42, original)
     assert source(ledger).terminal_issues("issue-42") == (42,)
     assert source(ledger).terminal_issues("coding-1") == ()
     with sqlite3.connect(path) as conn:
         conn.execute("ALTER TABLE issue_runs DROP COLUMN terminal_binding")
-    reopened = SqliteIssueRunLedger(path)
+    reopened = SqliteIssueRunLedger(path, repo_slug="test-owner/test-repo")
     assert reopened.recorded_runs(42)[0].terminal_binding is None
     with pytest.raises(IssueRunEvidenceUnavailable, match="terminal binding"):
         source(reopened).terminal_issues("issue-42")
     fresh = run_record(tmp_path, "new-run")
     reopened.record_run(42, fresh)
-    assert fresh in SqliteIssueRunLedger(path).recorded_runs(42)
+    assert fresh in SqliteIssueRunLedger(path, repo_slug="test-owner/test-repo").recorded_runs(42)

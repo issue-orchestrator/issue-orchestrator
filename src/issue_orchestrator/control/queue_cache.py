@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from .issue_scope import issue_scope_skip_detail
 
+
 if TYPE_CHECKING:
     from ..infra.config import Config
     from ..domain.models import OrchestratorState
@@ -214,7 +215,7 @@ class QueueCache:
         self._store.save_snapshot(
             self._state.cached_scope_issues,
             self._state.queue_delta_watermark,
-            repo=self._config.repo or "",
+            repo=self._config.repo or "",  # cache/display value, not work identity; identity uses require_repo (#7255)
         )
 
 

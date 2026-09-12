@@ -1049,6 +1049,12 @@
     "status": "completed",
     "step": "validated_work.abandoned"
   },
+  "validated_work.capture_failed": {
+    "level": "detail",
+    "phase": "system",
+    "status": "failed",
+    "step": "validated_work.capture_failed"
+  },
   "validated_work.disposition_observed": {
     "level": "detail",
     "phase": "system",

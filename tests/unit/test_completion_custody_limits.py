@@ -60,7 +60,7 @@ def test_configured_output_boundary_keeps_complete_evidence_and_allows_correctio
         assert log.read_bytes() == output.encode()
         owner.require_publication_ready(first, run)
     assert ledger.pending_receipts() == ()
-    reopened = SqliteIssueRunLedger(tmp_path / "state" / "issue_run_ledger.sqlite")
+    reopened = SqliteIssueRunLedger(tmp_path / "state" / "issue_run_ledger.sqlite", repo_slug="test-owner/test-repo")
     assert reopened.validation_for_receipt(first.entry_id) == attestation
     # The original owner's normal submission path performs global repair too.
     runner.run.return_value = CommandResult(returncode=0, stdout="corrected", stderr="")
@@ -71,7 +71,8 @@ def test_configured_output_boundary_keeps_complete_evidence_and_allows_correctio
     assert reopened.validation_for_receipt(corrected.entry_id).passed
     assert (
         SqliteIssueRunLedger(
-            tmp_path / "state" / "issue_run_ledger.sqlite"
+            tmp_path / "state" / "issue_run_ledger.sqlite",
+            repo_slug="test-owner/test-repo",
         ).pending_receipts()
         == ()
     )
@@ -106,7 +107,7 @@ def test_oversized_diagnostic_parts_remain_hash_checked_after_restart(tmp_path):
     assert attestation is not None
     (attestation.result_path.parent / "stdout.log.part-00000001").write_bytes(b"y")
     with pytest.raises(CompletionIntakeError, match="hash mismatch"):
-        SqliteIssueRunLedger(tmp_path / "state" / "issue_run_ledger.sqlite")
+        SqliteIssueRunLedger(tmp_path / "state" / "issue_run_ledger.sqlite", repo_slug="test-owner/test-repo")
 
 
 def test_interrupted_oversized_attestation_repairs_complete_failure_on_reopen(tmp_path):
@@ -126,7 +127,7 @@ def test_interrupted_oversized_attestation_repairs_complete_failure_on_reopen(tm
         owner.drain()
     with sqlite3.connect(db) as conn:
         conn.execute("DROP TRIGGER interrupt_attestation")
-    reopened = SqliteIssueRunLedger(db)
+    reopened = SqliteIssueRunLedger(db, repo_slug="test-owner/test-repo")
     attestation = reopened.validation_for_receipt(receipt.entry_id)
     assert attestation is not None and not attestation.passed
     descriptor = json.loads(

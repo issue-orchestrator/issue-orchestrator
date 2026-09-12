@@ -5,8 +5,46 @@
 from tests.unit import test_web as _support
 from tests.unit.test_web import *  # noqa: F403
 from issue_orchestrator.control.review_exchange_lifecycle import (
+    IssueRuntimeTermination,
+    IssueTerminationOutcome,
     ReviewExchangeCancellation,
+    ValidatedWorkCustodyUnproven,
 )
+
+
+def _termination(issue_number: int, stopped: tuple[str, ...]) -> IssueRuntimeTermination:
+    """What the runtime-lifecycle owner hands back on a successful terminate."""
+    batch = ValidatedWorkDispositionBatch.no_work(issue_number, "fixture")
+    return IssueRuntimeTermination(
+        issue_number=issue_number,
+        review_exchange=ReviewExchangeCancellation(
+            issue_number=issue_number,
+            cancelled_job_ids=(f"review-exchange:{issue_number}:issue-{issue_number}",),
+            validated_work=batch,
+        ),
+        stopped_session_ids=stopped,
+        cleared_active_session_ids=stopped,
+        validated_work=batch,
+    )
+
+
+def _arm_terminate(
+    mock_orch,
+    issue_number: int,
+    stopped: tuple[str, ...],
+    failures: tuple[tuple[str, str], ...] = (),
+    cleared: tuple[str, ...] = (),
+) -> None:
+    """The route reaches the owner through ONE facade.
+
+    Which terminals an issue owns and whether they all stopped is the owner's
+    policy now, so the route has exactly one seam to stub.
+    """
+    mock_orch.terminate_every_session_for_issue = MagicMock(
+        return_value=IssueTerminationOutcome(
+            _termination(issue_number, stopped), stopped, cleared, failures
+        )
+    )
 
 globals().update(
     {name: value for name, value in vars(_support).items() if not name.startswith("__")}
@@ -19,13 +57,7 @@ class TestKillSessionEndpoint:
         """Terminate-on-kill should stop and hold issue from automatic rerun."""
         from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
-        mock_orch.cancel_review_exchange_for_issue = MagicMock(
-            return_value=ReviewExchangeCancellation(
-                issue_number=1,
-                cancelled_job_ids=("review-exchange:1:issue-1",),
-                validated_work=ValidatedWorkDispositionBatch.no_work(1, "fixture"),
-            )
-        )
+        _arm_terminate(mock_orch, 1, ("issue-1",))
 
         issue = create_issue(1, "Issue to Kill")
         session = create_session(issue)
@@ -83,7 +115,13 @@ class TestKillSessionEndpoint:
             assert data["issue_number"] == 1
             assert data["title"] == "Issue to Kill"
             assert data["hold_label"] == "blocked-failed"
-            mock_orch.kill_session.assert_called_once_with("issue-1")
+            # The OWNER stops the terminals now; the route no longer hand-rolls
+            # per-session kills, which is what used to omit the publish-retry
+            # teardown that `terminate` performs.
+            mock_orch.terminate_every_session_for_issue.assert_called_once_with(
+                1, reason="operator-terminated"
+            )
+            assert data["killed_sessions"] == ["issue-1"]
             # Session should be removed from active sessions
             assert len(mock_orch.state.active_sessions) == 0
             # Queues/discovered facts should be cleared to prevent re-run.
@@ -106,10 +144,9 @@ class TestKillSessionEndpoint:
             mock_orch.repository_host.remove_label.assert_any_call(1, "pr-pending")
             mock_orch.repository_host.add_label.assert_any_call(4124, "blocked-failed")
             mock_orch.repository_host.remove_label.assert_any_call(4124, "needs-rework")
-            mock_orch.cancel_review_exchange_for_issue.assert_called_once_with(
-                1,
-                reason="operator-terminated",
-            )
+            # Custody is established inside the owner, before anything is torn
+            # down; the route no longer sequences that itself.
+            assert data["killed_sessions"] == ["issue-1"]
         finally:
             set_orchestrator(None)
 
@@ -136,7 +173,10 @@ class TestKillSessionEndpoint:
         issue = create_issue(1)
         session = create_session(issue)
         mock_orch.state.active_sessions = [session]
-        mock_orch.kill_session = MagicMock(side_effect=Exception("Kill failed"))
+        # Custody is fine; the teardown itself faults.
+        mock_orch.terminate_every_session_for_issue = MagicMock(
+            side_effect=Exception("Kill failed")
+        )
 
         set_orchestrator(mock_orch)
 
@@ -148,6 +188,8 @@ class TestKillSessionEndpoint:
             assert "error" in response.json()
             assert "Failed to terminate" in response.json()["error"]
             assert any("Kill failed" in item for item in response.json()["details"])
+            # A post-custody fault must NOT claim nothing was terminated.
+            assert "nothing was terminated" not in response.json()["error"]
         finally:
             set_orchestrator(None)
 
@@ -171,7 +213,7 @@ class TestKillSessionEndpoint:
         session = create_session(issue)
         session.pr_number = 4124
         mock_orch.state.active_sessions = [session]
-        mock_orch.kill_session = MagicMock()
+        _arm_terminate(mock_orch, 1, ("issue-1",))
 
         set_orchestrator(mock_orch)
         try:
@@ -181,7 +223,184 @@ class TestKillSessionEndpoint:
             payload = response.json()
             assert payload["terminated"] == [1]
             assert payload["failed"] == [{"issue_number": 999, "error": "Session not found"}]
-            mock_orch.kill_session.assert_called_once_with("issue-1")
+            mock_orch.terminate_every_session_for_issue.assert_called_once_with(
+                1, reason="operator-terminated"
+            )
+        finally:
+            set_orchestrator(None)
+
+    def test_kill_session_succeeds_when_the_terminal_was_already_dead(self):
+        """The most ordinary terminate there is, and it used to 500.
+
+        A terminal whose process already exited while its record lingers is
+        reconciled as CLEARED, never STOPPED. Judging success on
+        `stopped_session_ids` alone reported "Failed to terminate session(s)"
+        with an empty `details`, after the state had already been pruned -- so a
+        retry then 404'd. This is the shape the incident itself had.
+        """
+        mock_orch = create_mock_orchestrator()
+        issue = create_issue(1, "Issue whose agent already exited")
+        mock_orch.state.active_sessions = [create_session(issue)]
+        _arm_terminate(mock_orch, 1, stopped=(), cleared=("issue-1",))
+
+        set_orchestrator(mock_orch)
+        try:
+            response = TestClient(app).post("/api/kill/1")
+
+            assert response.status_code == 200, response.json()
+            assert response.json()["status"] == "terminated"
+            assert response.json()["settled_sessions"] == ["issue-1"]
+            # Accurate: nothing was actually killed, it was already gone.
+            assert response.json()["killed_sessions"] == []
+        finally:
+            set_orchestrator(None)
+
+    def test_partial_teardown_keeps_tracking_the_terminal_still_running(self):
+        """Do not delete the record of something reported as alive.
+
+        Otherwise the operator is told "may still be running" while the agent
+        goes invisible to the dashboard and a retry 404s.
+        """
+        mock_orch = create_mock_orchestrator()
+        issue = create_issue(1, "Issue under review")
+        live = create_session(issue)
+        live.terminal_id = "review-4124"
+        mock_orch.state.active_sessions = [live]
+        _arm_terminate(
+            mock_orch, 1, ("issue-1",), failures=(("review-4124", "tmux is gone"),)
+        )
+
+        set_orchestrator(mock_orch)
+        try:
+            response = TestClient(app).post("/api/kill/1")
+
+            assert response.status_code == 500
+            assert [s.terminal_id for s in mock_orch.state.active_sessions] == [
+                "review-4124"
+            ]
+        finally:
+            set_orchestrator(None)
+
+    def test_kill_session_reports_a_partial_teardown_as_a_failure(self):
+        """A terminal that would not stop is still ALIVE.
+
+        Returning 200 {"status":"terminated"} here is what let a live reviewer
+        agent be orphaned while the issue was labelled blocked-failed: every
+        caller branches on `status === 'terminated'` and shows "Terminated".
+        """
+        mock_orch = create_mock_orchestrator()
+        issue = create_issue(1, "Issue under review")
+        mock_orch.state.active_sessions = [create_session(issue)]
+        _arm_terminate(
+            mock_orch, 1, ("issue-1",), failures=(("review-4124", "tmux is gone"),)
+        )
+
+        set_orchestrator(mock_orch)
+        try:
+            response = TestClient(app).post("/api/kill/1")
+
+            assert response.status_code == 500
+            assert "Partially terminated" in response.json()["error"]
+            assert any("tmux is gone" in d for d in response.json()["details"])
+        finally:
+            set_orchestrator(None)
+
+    def test_bulk_kill_does_not_count_a_partial_teardown_as_terminated(self):
+        mock_orch = create_mock_orchestrator()
+        issue = create_issue(1, "Issue 1")
+        mock_orch.state.active_sessions = [create_session(issue)]
+        _arm_terminate(
+            mock_orch, 1, ("issue-1",), failures=(("review-4124", "tmux is gone"),)
+        )
+
+        set_orchestrator(mock_orch)
+        try:
+            response = TestClient(app).post("/api/bulk-kill", json={"issue_numbers": [1]})
+
+            payload = response.json()
+            assert payload["terminated"] == []
+            assert payload["failed"][0]["issue_number"] == 1
+        finally:
+            set_orchestrator(None)
+
+    def test_kill_session_defers_instead_of_500ing_when_reconciliation_is_required(self):
+        """`ReconciliationRequired` has no tick loop above an HTTP handler.
+
+        Letting it escape is a bodyless 500 on the operator's button - the exact
+        symptom this change exists to remove.
+        """
+        from issue_orchestrator.control.reconciliation import (
+            ExternalSnapshot,
+            ReconciliationRequired,
+        )
+
+        mock_orch = create_mock_orchestrator()
+        issue = create_issue(1, "Issue 1")
+        mock_orch.state.active_sessions = [create_session(issue)]
+        mock_orch.terminate_every_session_for_issue = MagicMock(
+            side_effect=ReconciliationRequired(
+                "issue", 1, ExternalSnapshot.for_issue(1, {"in-progress"}),
+                ExternalSnapshot.for_issue(1, {"blocked"}),
+            )
+        )
+
+        set_orchestrator(mock_orch)
+        try:
+            response = TestClient(app).post("/api/kill/1")
+
+            assert response.status_code == 409
+            assert "reconcile" in response.json()["error"].lower()
+            assert "Nothing was terminated" in response.json()["error"]
+        finally:
+            set_orchestrator(None)
+
+    def test_kill_session_refused_when_custody_cannot_be_established(self):
+        """A capture fault must refuse with 409 and destroy NOTHING.
+
+        Before #7255 this raise escaped as an unhandled 500 with no body, and it
+        escaped AFTER the sessions had already been killed -- so the operator saw
+        a failure, the terminals were dead, and neither the state prune nor the
+        hold labels had run. Terminate genuinely did not terminate.
+        """
+        mock_orch = create_mock_orchestrator()
+        issue = create_issue(1, "Issue to Kill")
+        session = create_session(issue)
+        mock_orch.state.active_sessions = [session]
+        mock_orch.terminate_every_session_for_issue = MagicMock(
+            side_effect=ValidatedWorkCustodyUnproven("repo_slug must be non-empty text")
+        )
+
+        set_orchestrator(mock_orch)
+        try:
+            response = TestClient(app).post("/api/kill/1")
+
+            assert response.status_code == 409
+            assert "nothing was terminated" in response.json()["error"]
+            assert any("repo_slug" in d for d in response.json()["details"])
+            # Nothing may be torn down and no hold label may be written.
+            assert mock_orch.state.active_sessions == [session]
+            mock_orch.repository_host.add_label.assert_not_called()
+            mock_orch.repository_host.remove_label.assert_not_called()
+        finally:
+            set_orchestrator(None)
+
+    def test_bulk_kill_reports_a_refusal_without_terminating(self):
+        mock_orch = create_mock_orchestrator()
+        issue = create_issue(1, "Issue 1")
+        mock_orch.state.active_sessions = [create_session(issue)]
+        mock_orch.terminate_every_session_for_issue = MagicMock(
+            side_effect=ValidatedWorkCustodyUnproven("repo_slug must be non-empty text")
+        )
+
+        set_orchestrator(mock_orch)
+        try:
+            response = TestClient(app).post("/api/bulk-kill", json={"issue_numbers": [1]})
+
+            assert response.status_code == 200
+            payload = response.json()
+            assert payload["terminated"] == []
+            assert payload["failed"][0]["issue_number"] == 1
+            assert payload["failed"][0]["error"] == "Terminate refused"
         finally:
             set_orchestrator(None)
 

@@ -86,7 +86,7 @@ def serve_completion_submission(
 class ExchangeIntakeFixture:
     def __init__(self, tmp_path: Path, monkeypatch) -> None:
         state = tmp_path / "receipt-owner"
-        self.ledger = SqliteIssueRunLedger(state / "issue_run_ledger.sqlite")
+        self.ledger = SqliteIssueRunLedger(state / "issue_run_ledger.sqlite", repo_slug="test-owner/test-repo")
         git = create_git(LocalCommandRunner())
         self.owner = CompletionEvidenceIntakeService(
             self.ledger,

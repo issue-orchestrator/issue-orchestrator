@@ -86,7 +86,7 @@ class HistoricalCompletionIntake:
                 terminal_id=None,
                 issue_number=command.issue_number,
                 session_key=SessionKey(
-                    GitHubIssueKey(command.repo_slug, str(command.issue_number)),
+                    GitHubIssueKey(repo=command.repo_slug, external_id=str(command.issue_number)),
                     TaskKind.CODE,
                 ),
                 worktree_path=worktree,

@@ -26,6 +26,7 @@ from ..domain.session_run import SessionRunAssets
 from ..ports.issue_run_allocator import IssueRunAllocator
 from ..events import EventName
 from ..infra.config import Config
+from ..infra.repo_scope import require_repo
 from ..infra.logging_config import issue_log, log_context
 from ..ports import EventSink, RepositoryHost
 from ..ports.event_sink import make_run_scoped_event, make_trace_event
@@ -548,6 +549,7 @@ def launch_rework_session(
             number=issue_number,
             title=f"Rework #{pr_number}",
             labels=[rework.agent_type],
+            repo=require_repo(deps.config),
         )
         session = Session(
             key=session_key,
