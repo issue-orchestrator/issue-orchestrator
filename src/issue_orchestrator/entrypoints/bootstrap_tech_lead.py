@@ -397,7 +397,7 @@ def create_pattern_registry_preview(
     to shared authority, and cannot overwrite richer local evidence with a
     narrower shared snapshot while reading (#7248 review F1/A1).
     """
-    from ..control.pattern_registry import ReadOnlyPatternCaseFileRegistry
+    from ..control.pattern_registry_preview import ReadOnlyPatternCaseFileRegistry
 
     shared = _create_shared_pattern_registry(config, repository_host)
     if shared is None:

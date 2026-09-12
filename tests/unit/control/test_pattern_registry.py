@@ -13,6 +13,8 @@ from issue_orchestrator.adapters.github.github_adapter import GitHubAdapter
 from issue_orchestrator.control.pattern_registry import (
     LocalPatternCaseFileRegistry,
     MirroredPatternCaseFileRegistry,
+)
+from issue_orchestrator.control.pattern_registry_preview import (
     ReadOnlyPatternCaseFileRegistry,
 )
 from issue_orchestrator.control.tech_lead_case_file_owner import (
