@@ -213,10 +213,13 @@ def cmd_reconcile_case_files(args: argparse.Namespace) -> int:
                 # Composing write-capable authority can publish a durable local
                 # seed, so the plan must be bound to THIS repository before the
                 # reconciler exists at all, not inside its run (#7248 review P2).
+                # ``apply_writes`` also SELECTS the composition: without
+                # --apply the command gets read-only authority that cannot
+                # write even if something later asks it to (#7248 review F1).
                 try:
                     require_plan_repository(plan, config.repo)
                     reconciler = build_case_file_lifecycle_reconciler(
-                        config, publish_local_seed=bool(args.apply)
+                        config, apply_writes=bool(args.apply)
                     )
                 except (RuntimeError, ValueError) as exc:
                     console.print(
@@ -285,13 +288,21 @@ def run_case_file_lifecycle_reconciliation(
     apply_writes: bool,
 ) -> int:
     """Render exact lifecycle counts and apply only through the registry owner."""
+    from ..control.tech_lead_case_file_lifecycle_reconciliation import (
+        CaseFileLifecycleReconciliationRefused,
+    )
+
     try:
         result = reconciler.run(
             plan,
             configured_repository=configured_repository,
             apply_writes=apply_writes,
         )
-    except ValueError as exc:
+    except CaseFileLifecycleReconciliationRefused as exc:
+        # THE one refusal the owner raises, for every reason a reviewed plan
+        # can stop before its first write — including a shared-authority read
+        # failure, which is a normal operational outcome of a live GitHub-ref
+        # read and used to escape as a traceback (#7248 review F3).
         console.print(f"[red]Lifecycle reconciliation refused:[/red] {exc}")
         return 1
     console.print(

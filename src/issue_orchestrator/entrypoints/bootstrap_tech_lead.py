@@ -348,9 +348,13 @@ def create_pattern_registry(
     authority: "TechLeadAuthorityStore",
     *,
     shared_required: bool = False,
-    publish_local_seed: bool = True,
 ) -> "PatternCaseFileRegistry":
-    """Select shared GitHub authority or the explicit single-instance adapter."""
+    """Select shared GitHub authority or the explicit single-instance adapter.
+
+    Every registry this returns is WRITE-CAPABLE, and the mirrored one writes
+    during composition and during ordinary reads. A caller that must not write
+    at all wants :func:`create_pattern_registry_preview` instead (#7248 F1).
+    """
     from ..control.pattern_registry import (
         LocalPatternCaseFileRegistry,
         MirroredPatternCaseFileRegistry,
@@ -365,14 +369,7 @@ def create_pattern_registry(
         and (not config.tech_lead_enabled or not pattern_consumers_active)
     ):
         return LocalPatternCaseFileRegistry(authority)
-    from ..execution.providers import create_shared_pattern_registry
-
-    claimant_id = config.claims.claimant_id or f"orchestrator-{os.getpid()}"
-    shared = create_shared_pattern_registry(
-        repository_host,
-        claimant_id=claimant_id,
-        lease_seconds=config.claims.lease_seconds,
-    )
+    shared = _create_shared_pattern_registry(config, repository_host)
     if shared is None:
         if shared_required:
             raise RuntimeError(
@@ -380,10 +377,47 @@ def create_pattern_registry(
             )
         return LocalPatternCaseFileRegistry(authority)
     mirrored = MirroredPatternCaseFileRegistry(
-        shared=shared, local=authority, claimant_id=claimant_id
+        shared=shared,
+        local=authority,
+        claimant_id=config.claims.claimant_id or f"orchestrator-{os.getpid()}",
     )
-    mirrored.synchronize(publish_local_seed=publish_local_seed)
+    mirrored.synchronize()
     return mirrored
+
+
+def create_pattern_registry_preview(
+    config: "Config", repository_host: "RepositoryHost | None"
+) -> "PatternCaseFileRegistry":
+    """Shared authority as a read-only view: no local store, no seed, no mirror.
+
+    The preview half of the same selection ``create_pattern_registry`` makes,
+    and deliberately a DIFFERENT composition rather than the same one with a
+    flag. It never touches the local SQLite authority store — it does not build
+    one — so a preview cannot initialize or migrate it, cannot publish its rows
+    to shared authority, and cannot overwrite richer local evidence with a
+    narrower shared snapshot while reading (#7248 review F1/A1).
+    """
+    from ..control.pattern_registry import ReadOnlyPatternCaseFileRegistry
+
+    shared = _create_shared_pattern_registry(config, repository_host)
+    if shared is None:
+        raise RuntimeError(
+            "case-file lifecycle reconciliation requires shared GitHub authority"
+        )
+    return ReadOnlyPatternCaseFileRegistry(shared)
+
+
+def _create_shared_pattern_registry(
+    config: "Config", repository_host: "RepositoryHost | None"
+) -> "PatternCaseFileRegistry | None":
+    """Build GitHub-ref authority with this process's claim identity, or None."""
+    from ..execution.providers import create_shared_pattern_registry
+
+    return create_shared_pattern_registry(
+        repository_host,
+        claimant_id=config.claims.claimant_id or f"orchestrator-{os.getpid()}",
+        lease_seconds=config.claims.lease_seconds,
+    )
 
 
 def create_promotion_target_host(

@@ -13,9 +13,11 @@ from issue_orchestrator.control.reconciliation import ExpectedState
 from issue_orchestrator.control.tech_lead_case_file_lifecycle_reconciliation import (
     CaseFileLifecycleReconciler,
     CaseFileLifecycleReconciliationPlan,
+    CaseFileLifecycleReconciliationRefused,
 )
 from issue_orchestrator.domain.tech_lead_findings import CaseFileLifecycleTransition
 from issue_orchestrator.ports.comment_receipt import IssueCommentReceipt
+from issue_orchestrator.ports.pattern_registry import PatternRegistryError
 from issue_orchestrator.ports.tech_lead_authority import (
     InMemoryTechLeadAuthorityStore,
 )
@@ -181,7 +183,7 @@ def test_wrong_issue_mapping_and_repository_fail_before_writes() -> None:
             configured_repository="elsewhere/repo",
             apply_writes=True,
         )
-    with pytest.raises(ValueError, match="registry maps it to #1"):
+    with pytest.raises(ValueError, match="registered to case file #1"):
         reconciler.run(
             _plan(
                 _outcome(
@@ -269,3 +271,163 @@ def test_reconciliation_hold_fails_closed_before_retirement_writes() -> None:
     assert repository.comments == []
     assert repository.closed == []
     assert registry.read(signature="a").lifecycle == ()  # type: ignore[union-attr]
+
+
+def test_preflight_refuses_a_plan_whose_later_row_is_inadmissible() -> None:
+    """The WHOLE plan is admitted before any of it is applied.
+
+    Preflight used to ask a narrower question than the write path: a private
+    copy of the successful-replay half of ``admit_lifecycle_transition``. A
+    signature already terminal under a DIFFERENT transition therefore passed
+    preflight whenever its ``expected_revision`` still matched, and the registry
+    only refused it in the middle of the apply — after the earlier rows had
+    already commented on and closed their case files. A reviewed plan is one
+    decision set, so an inadmissible row anywhere in it must stop the command
+    before its first write (#7248 review F2/A2).
+    """
+    guarded: list[int] = []
+    reconciler, registry, repository = _reconciler(
+        ("a", 1), ("b", 2), require_mutation_authority=guarded.append
+    )
+    # Retire "b" under a different transition BEFORE the plan is reviewed, so
+    # its expected_revision matches the terminal state exactly. The staleness
+    # rule therefore has nothing to object to, and admission is the only rule
+    # left that can refuse this row.
+    _retire(registry, "b", 2)
+    plan = _plan(
+        _reviewed_outcome(registry, "a", 1, "shipped"),
+        _reviewed_outcome(registry, "b", 2, "superseded"),
+    )
+
+    with pytest.raises(CaseFileLifecycleReconciliationRefused, match="terminal"):
+        reconciler.run(plan, configured_repository="owner/repo", apply_writes=True)
+
+    assert guarded == []
+    assert repository.comments == []
+    assert repository.closed == []
+    assert registry.read(signature="a").lifecycle == ()  # type: ignore[union-attr]
+
+
+def test_preflight_refuses_a_transition_identity_reused_with_a_new_payload() -> None:
+    """One reviewed intent per transition identity, checked for the whole plan.
+
+    The second half of the admission rule preflight was skipping: a
+    ``transition_id`` already recorded with a DIFFERENT payload is not a replay
+    and must never be admitted, whatever the reviewed revision says. Because the
+    identity is derived from the plan id and signature, this is what a plan
+    re-authored under its old id looks like (#7248 review F2).
+    """
+    guarded: list[int] = []
+    reconciler, registry, repository = _reconciler(
+        ("a", 1), ("b", 2), require_mutation_authority=guarded.append
+    )
+    registry.record_lifecycle(
+        signature="b",
+        transition=CaseFileLifecycleTransition(
+            transition_id="case-files-2026-09:b",
+            disposition="needs_human",
+            reason="The reason this plan id was first recorded with.",
+            evidence=("owner/repo#2",),
+            recorded_at="2026-09-10T12:00:00+00:00",
+        ),
+    )
+    plan = _plan(
+        _reviewed_outcome(registry, "a", 1, "shipped"),
+        _reviewed_outcome(registry, "b", 2, "active"),
+    )
+
+    with pytest.raises(
+        CaseFileLifecycleReconciliationRefused, match="changed payload"
+    ):
+        reconciler.run(plan, configured_repository="owner/repo", apply_writes=True)
+
+    assert guarded == []
+    assert repository.comments == []
+    assert repository.closed == []
+    assert registry.read(signature="a").lifecycle == ()  # type: ignore[union-attr]
+
+
+def test_preflight_resumes_an_interrupted_retirement_of_the_same_intent() -> None:
+    """An in-flight terminal write of this plan's own intent is a resume.
+
+    Its entry has no review revision to compare — a pending external effect
+    means the settled facts are not yet knowable — so preflight must recognise
+    the resume before it reaches the staleness rule, exactly as the registries
+    do inside their reserving compare-and-swap.
+    """
+    reconciler, registry, repository = _reconciler(("a", 1))
+    plan = _plan(_reviewed_outcome(registry, "a", 1, "shipped"))
+    registry.reserve_retirement(
+        signature="a",
+        transition=plan.outcomes[0].transition(
+            plan_id=plan.plan_id, recorded_at=plan.recorded_at
+        ),
+        comment="<!-- retirement -->",
+        issue_number=1,
+    )
+
+    result = reconciler.run(
+        plan, configured_repository="owner/repo", apply_writes=False
+    )
+
+    assert result.dry_run and result.terminal == 1
+    assert repository.comments == [] and repository.closed == []
+
+
+def test_a_shared_registry_read_failure_is_a_bounded_refusal() -> None:
+    """A live shared read fails for ordinary operational reasons.
+
+    ``list_entries`` is a GitHub-ref read: transport, authentication, a CAS
+    conflict, or a malformed registry all raise ``PatternRegistryError``, and
+    validation performs that read AFTER composition, so the bootstrap read
+    succeeding proves nothing. Untyped it escaped the supported CLI as a
+    traceback instead of the nonzero, explained stop the command promises
+    (#7248 review F3).
+    """
+    repository = _Repository()
+    reconciler = CaseFileLifecycleReconciler(
+        registry=cast(Any, _UnreadableRegistry()),
+        repository_host=cast(Any, repository),
+        require_mutation_authority=lambda _issue: None,
+    )
+
+    with pytest.raises(
+        CaseFileLifecycleReconciliationRefused,
+        match="shared pattern authority could not be read",
+    ):
+        reconciler.run(
+            _plan(_outcome("a", 1, "active")),
+            configured_repository="owner/repo",
+            apply_writes=True,
+        )
+
+    assert repository.comments == [] and repository.closed == []
+
+
+def _retire(registry, signature: str, issue: int) -> None:
+    """Drive one terminal transition to completion through the registry owner."""
+    reserved = registry.reserve_retirement(
+        signature=signature,
+        transition=CaseFileLifecycleTransition(
+            transition_id=f"already-terminal:{signature}",
+            disposition="invalid",
+            reason="Retired before this plan was applied.",
+            evidence=(f"owner/repo#{issue}",),
+            recorded_at="2026-09-09T13:00:00+00:00",
+        ),
+        comment="<!-- retirement -->",
+        issue_number=issue,
+    )
+    registry.confirm_retirement_comment(
+        signature=signature, reservation_id=reserved.entry.reservation_id
+    )
+    registry.finalize_retirement(
+        signature=signature, reservation_id=reserved.entry.reservation_id
+    )
+
+
+class _UnreadableRegistry:
+    """Shared authority whose live ref read fails the way GitHub's can."""
+
+    def list_entries(self) -> tuple[Any, ...]:
+        raise PatternRegistryError("registry ref could not be read: 503")

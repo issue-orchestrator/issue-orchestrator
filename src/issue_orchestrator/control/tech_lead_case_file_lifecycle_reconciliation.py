@@ -12,12 +12,42 @@ from ..domain.tech_lead_findings import (
     CaseFileDisposition,
     CaseFileLifecycleTransition,
 )
-from ..ports.pattern_registry import PatternRegistryError, require_reviewed_revision
+from ..ports.pattern_registry import (
+    admit_lifecycle_transition,
+    PatternRegistryError,
+    require_canonical_case_file,
+    require_reviewed_revision,
+)
 from .tech_lead_case_file_lifecycle import PatternCaseFileLifecycleOwner
 
 if TYPE_CHECKING:
     from ..ports import RepositoryHost
     from ..ports.pattern_registry import PatternCaseFileRegistry, PatternRegistryEntry
+
+
+class CaseFileLifecycleReconciliationRefused(ValueError):
+    """THE single refusal this command can end on without applying anything.
+
+    Everything that can stop a reviewed plan before its first write is the same
+    operational answer to the operator — the plan does not match the registry it
+    claims to reconcile, or the registry could not be read at all — so it is one
+    type rather than a family the entrypoint must keep enumerating. The owner
+    converts every internal cause into this: a plan bound to another repository,
+    incomplete registry coverage, a case file registered to a different issue,
+    an inadmissible transition, a stale reviewed revision, and a shared-authority
+    read failure.
+
+    That last one is why the boundary has to be typed at all. ``list_entries``
+    is a live GitHub-ref read, so transport, authentication, CAS-store, and
+    malformed-registry failures are ordinary operational outcomes of running
+    this command — and validation reads the registry AFTER composition, so a
+    successful bootstrap read proves nothing about the read that matters. Left
+    untyped they escaped the supported CLI as a traceback instead of the bounded
+    nonzero stop the command promises (#7248 review F3).
+
+    Subclasses ``ValueError`` so the entrypoint's pre-composition guard, which
+    already refuses malformed plans the same way, keeps catching it.
+    """
 
 
 @dataclass(frozen=True)
@@ -104,9 +134,11 @@ def require_plan_repository(
     Both checks call this, so neither can drift into a different comparison.
     """
     if configured_repository is None:
-        raise ValueError("the configured repository could not be resolved")
+        raise CaseFileLifecycleReconciliationRefused(
+            "the configured repository could not be resolved"
+        )
     if plan.repository.casefold() != configured_repository.casefold():
-        raise ValueError(
+        raise CaseFileLifecycleReconciliationRefused(
             f"plan targets {plan.repository!r}, but this repository is"
             f" {configured_repository!r}"
         )
@@ -161,37 +193,84 @@ class CaseFileLifecycleReconciler:
         configured_repository: str | None,
     ) -> None:
         require_plan_repository(plan, configured_repository)
-        entries = {entry.signature: entry for entry in self._registry.list_entries()}
+        entries = {entry.signature: entry for entry in self._snapshot()}
         planned = {outcome.signature: outcome for outcome in plan.outcomes}
         missing = sorted(set(entries) - set(planned))
         unknown = sorted(set(planned) - set(entries))
         if missing or unknown:
-            raise ValueError(
+            raise CaseFileLifecycleReconciliationRefused(
                 "lifecycle plan must cover the complete shared registry snapshot;"
                 f" missing={missing}, unknown={unknown}"
             )
         for signature, outcome in planned.items():
-            entry = entries[signature]
-            if entry.issue_number != outcome.issue_number:
-                raise ValueError(
-                    f"plan maps {signature!r} to #{outcome.issue_number}, but the"
-                    f" registry maps it to #{entry.issue_number}"
-                )
-            transition = outcome.transition(
-                plan_id=plan.plan_id, recorded_at=plan.recorded_at
-            )
-            if self._is_replay(entry, transition):
-                continue
-            # The same rule the registries enforce inside their reserving
-            # compare-and-swap. Running it here too is not a second policy: it
-            # is what lets a DRY RUN report a stale plan, and what stops an
-            # apply from landing outcome #1 before discovering outcome #40 was
-            # reviewed against facts that have since moved. A plan is a single
-            # reviewed decision set, so it is validated as one.
             try:
-                require_reviewed_revision(entry, outcome.expected_revision)
+                self._require_admissible(plan, entries[signature], outcome)
             except PatternRegistryError as exc:
-                raise ValueError(str(exc)) from exc
+                # Every rule preflight consults is the registries' own, and
+                # they speak PatternRegistryError. One conversion here keeps
+                # those rules shared, instead of forcing reconciliation-local
+                # copies that raise the type this command wants (#7248 F2).
+                raise CaseFileLifecycleReconciliationRefused(str(exc)) from exc
+
+    def _snapshot(self) -> tuple["PatternRegistryEntry", ...]:
+        """Read the registry this plan claims to reconcile, or refuse bounded.
+
+        A live shared read fails for ordinary operational reasons — transport,
+        authentication, a CAS-store conflict, a malformed registry — and the
+        composition's own read succeeding earlier proves nothing about this one.
+        Translating it here is what keeps every stop this command can make a
+        nonzero, explained refusal rather than a traceback (#7248 review F3).
+        """
+        try:
+            return self._registry.list_entries()
+        except PatternRegistryError as exc:
+            raise CaseFileLifecycleReconciliationRefused(
+                f"shared pattern authority could not be read: {exc}"
+            ) from exc
+
+    def _require_admissible(
+        self,
+        plan: CaseFileLifecycleReconciliationPlan,
+        entry: "PatternRegistryEntry",
+        outcome: CaseFileLifecycleOutcome,
+    ) -> None:
+        """Ask THE owning rules whether this one outcome may be written at all.
+
+        Preflight exists so a plan is validated as one decision set: a reviewed
+        plan must not land outcome #1 and then discover outcome #40 was never
+        admissible. That only holds if preflight asks the same question the
+        write path asks. It previously asked a narrower one — a private copy of
+        the successful-replay half of :func:`admit_lifecycle_transition` — so a
+        signature already terminal under a DIFFERENT transition, or a
+        ``transition_id`` reused with a changed payload, passed preflight
+        whenever its ``expected_revision`` still matched, and the registry only
+        refused it mid-apply, after earlier rows had already commented on and
+        closed their case files (#7248 review F2/A2).
+
+        So every rule here is the shared owner, called in write order:
+        :func:`require_canonical_case_file` for the issue mapping,
+        :func:`admit_lifecycle_transition` for admission and idempotent replay,
+        and :func:`require_reviewed_revision` for staleness. The one rule that
+        is genuinely local to reconciliation is the pending-retirement resume:
+        an in-flight terminal write of the SAME reviewed intent is this plan's
+        own interrupted apply being repeated, which the registry resumes rather
+        than re-admits, and whose entry has no review revision to compare.
+        """
+        require_canonical_case_file(entry, outcome.issue_number)
+        transition = outcome.transition(
+            plan_id=plan.plan_id, recorded_at=plan.recorded_at
+        )
+        pending = entry.pending_retirement
+        if pending is not None and pending.transition.same_intent(transition):
+            return
+        if admit_lifecycle_transition(entry, transition):
+            return
+        # The same rule the registries enforce inside their reserving
+        # compare-and-swap. Running it here too is not a second policy: it
+        # is what lets a DRY RUN report a stale plan, and what stops an
+        # apply from landing outcome #1 before discovering outcome #40 was
+        # reviewed against facts that have since moved.
+        require_reviewed_revision(entry, outcome.expected_revision)
 
     def _apply(
         self, plan: CaseFileLifecycleReconciliationPlan
@@ -238,15 +317,6 @@ class CaseFileLifecycleReconciler:
             repository_host=self._repository_host,
             before_write=lambda: self._require_mutation_authority(issue_number),
         )
-
-    @staticmethod
-    def _is_replay(
-        entry: "PatternRegistryEntry", transition: CaseFileLifecycleTransition
-    ) -> bool:
-        if any(item.same_intent(transition) for item in entry.lifecycle):
-            return True
-        pending = entry.pending_retirement
-        return pending is not None and pending.transition.same_intent(transition)
 
     @staticmethod
     def _counts(

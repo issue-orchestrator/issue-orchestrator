@@ -47,7 +47,20 @@ close an issue whose evidence went nowhere.
 
 A lifecycle plan contains `repository`, `recorded_at`, and `outcomes`. It must
 name every signature and exact issue mapping in the shared registry snapshot.
-The dry run refuses a partial, stale, or wrong-repository plan before any write.
+The dry run refuses a partial, stale, or wrong-repository plan, and refuses one
+whose transitions are not admissible at all — a signature already terminal under
+a different transition, or a transition identity reused with a changed payload —
+before any write. The whole plan is admitted before any of it is applied, so a
+bad row at position 40 stops the command instead of stopping it after 39 case
+files have already been commented on and closed.
+
+`--apply` selects the composition, not merely what it does afterwards. Without
+it the command holds read-only shared authority: it does not open, create, or
+migrate the local SQLite authority store, does not publish a rolling-upgrade
+seed, and cannot mirror shared rows over richer local evidence or discard a
+pending create intent while reading. Every stop it can make — including a shared
+authority read that fails for transport, authentication, or registry reasons —
+is a nonzero exit with an explanation, never a traceback.
 Each outcome is one of `active`, `needs_human`, `shipped`, `superseded`,
 `invalid`, or `declined`. Terminal outcomes post an auditable explanation and
 evidence to the case file before closing it; nonterminal outcomes remain open
@@ -150,7 +163,9 @@ are themselves part of the revision.
 That splits into two cases, and a plan must be generated from the right one:
 
 - **Already-shared registry** (an engine has run against this repo): the dry run
-  reports it, the local mirror agrees with it, and either is a valid source.
+  reports it and is the source to use. The dry run reads shared authority
+  directly and never opens the local SQLite replica, so a local read is a
+  separate source that disagrees whenever this client has not synchronized.
 - **Not yet seeded**: the dry run cannot preview it at all, because it refuses
   to write and therefore refuses to seed — it reports every planned signature as
   `unknown`. Generate the revisions from the seeded projection the first apply
