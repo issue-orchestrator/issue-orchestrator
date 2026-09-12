@@ -45,7 +45,8 @@ CREATE TABLE IF NOT EXISTS tech_lead_patterns (
     fix_class TEXT NOT NULL DEFAULT '',
     area TEXT NOT NULL DEFAULT '',
     diagnosis TEXT NOT NULL DEFAULT '',
-    disposition TEXT NOT NULL DEFAULT 'active'
+    disposition TEXT NOT NULL DEFAULT 'active',
+    retirement_pending INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS tech_lead_pattern_observations (
     signature TEXT NOT NULL,
@@ -122,6 +123,9 @@ _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # default is the disposition an entry with no lifecycle already reports, so
     # every existing row keeps exactly the meaning it had.
     ("tech_lead_patterns", "disposition", "TEXT NOT NULL DEFAULT 'active'"),
+    # #7248 a terminal retirement admitted but not yet finalized. The default
+    # means "none in flight", which is what every existing row means.
+    ("tech_lead_patterns", "retirement_pending", "INTEGER NOT NULL DEFAULT 0"),
     # #6957 later-evidence high-water mark on the promotion ledger.
     (
         "tech_lead_promoted_findings",

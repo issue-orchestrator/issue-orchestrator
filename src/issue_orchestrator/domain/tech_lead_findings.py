@@ -453,6 +453,28 @@ def _deduped_labels(labels: Sequence[str]) -> tuple[str, ...]:
 _AREA_LABEL_PREFIX = "area:"
 
 
+def case_file_blocks_promotion(
+    disposition: str, *, retirement_pending: bool
+) -> bool:
+    """THE rule for whether a case file's state excludes its signature, once.
+
+    A signature leaves the automatic promotion lane the moment its retirement is
+    DURABLY ADMITTED, not when that retirement finishes. The two are separated
+    by a comment, a remote close, and a final compare-and-swap, and a process
+    that stops anywhere in between leaves shared authority holding a terminal
+    intent that a restart or a second client must honour. Keying only off the
+    settled lifecycle meant a cold client rebuilt the signature as ``active``
+    and could file exactly the work the reviewed retirement exists to suppress
+    (#7248 round 8 review F11/A5).
+
+    Both holders of this state call it: :class:`PatternRegistryEntry`, which has
+    the live registry row, and :class:`PatternEvidence`, which is its durable
+    local projection. One rule, so the shared lifecycle owner and the local
+    promotion owner cannot disagree about the same signature.
+    """
+    return disposition in TERMINAL_CASE_FILE_DISPOSITIONS or retirement_pending
+
+
 @dataclass(frozen=True)
 class PatternEvidence:
     """Accrued evidence for ONE pattern signature (the promotion input).
@@ -482,6 +504,11 @@ class PatternEvidence:
     # ledger, and a terminal signature must never be promotable again, however
     # the process that retired it exited (#7248 round 7 review F9/A4).
     disposition: CaseFileDisposition = CASE_FILE_ACTIVE
+    # Whether a terminal retirement is durably admitted but not yet finalized.
+    # Kept as its own FACT rather than folded into ``disposition``, so the
+    # stored disposition keeps meaning exactly "settled lifecycle" and the
+    # promotion decision stays derived rather than encoded (#7248 round 8 F11).
+    retirement_pending: bool = False
 
     @property
     def is_code_fix(self) -> bool:
@@ -492,6 +519,13 @@ class PatternEvidence:
     def is_terminal(self) -> bool:
         """True iff this signature's case file reached a terminal disposition."""
         return self.disposition in TERMINAL_CASE_FILE_DISPOSITIONS
+
+    @property
+    def blocks_promotion(self) -> bool:
+        """Whether this signature has left the automatic promotion lane."""
+        return case_file_blocks_promotion(
+            self.disposition, retirement_pending=self.retirement_pending
+        )
 
     @property
     def classification(self) -> CaseFileClassification:

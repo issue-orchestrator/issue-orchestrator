@@ -11,6 +11,7 @@ from typing import Protocol
 
 from ..domain.tech_lead_findings import (
     CASE_FILE_ACTIVE,
+    case_file_blocks_promotion,
     CaseFileClassification,
     CaseFileDisposition,
     CaseFileLifecycleTransition,
@@ -127,6 +128,23 @@ class PatternRegistryEntry:
     @property
     def disposition(self) -> CaseFileDisposition:
         return self.lifecycle[-1].disposition if self.lifecycle else CASE_FILE_ACTIVE
+
+    @property
+    def retirement_pending(self) -> bool:
+        """Whether a terminal retirement is admitted here but not finalized.
+
+        Any pending retirement is a terminal intent:
+        :class:`PendingPatternRetirement` refuses a non-terminal disposition at
+        construction, so the presence of one IS the fact.
+        """
+        return self.pending_retirement is not None
+
+    @property
+    def blocks_promotion(self) -> bool:
+        """Whether this signature has left the automatic promotion lane."""
+        return case_file_blocks_promotion(
+            self.disposition, retirement_pending=self.retirement_pending
+        )
 
     def review_revision(self) -> str:
         """Fingerprint the settled facts an operator reviewed for this entry.

@@ -28,36 +28,50 @@ def _evidence_from_row(row: sqlite3.Row) -> PatternEvidence:
         area=str(row["area"]),
         diagnosis=str(row["diagnosis"]),
         disposition=cast(CaseFileDisposition, str(row["disposition"])),
+        retirement_pending=bool(row["retirement_pending"]),
     )
 
 
-def _settled_disposition(
-    tx: sqlite3.Connection, signature: str, disposition: str
-) -> str:
-    """The disposition to store, refusing to un-retire a terminal signature.
+def _still_blocking(
+    tx: sqlite3.Connection, signature: str, disposition: str, retirement_pending: bool
+) -> tuple[str, bool]:
+    """The lifecycle state to store, refusing to un-block a blocked signature.
 
-    Terminal is ABSORBING in every registry: ``admit_lifecycle_transition``
-    rejects any further transition on a signature that already reached one, so
-    nothing can legitimately move a row back. This projection enforces the same
-    thing, which matters because the projection has paths the registries do not
-    — a rolling-upgrade seed publishes local rows to shared authority WITHOUT
-    their lifecycle, and the mirror that follows would otherwise write shared's
-    ``active`` back over a locally retired row and make it promotable again
-    (#7248 round 7 review F9).
+    A row that has left the promotion lane never re-enters it. That is the
+    registries' own rule for the settled half — ``admit_lifecycle_transition``
+    rejects any further transition once a signature is terminal — and it must
+    hold for the in-flight half too, because the projection has paths the
+    registries do not. A rolling-upgrade seed publishes local rows to shared
+    authority WITHOUT their lifecycle or their pending retirement, so the mirror
+    that follows reports a clean ``active`` row; writing that back would return
+    a retired, or mid-retirement, signature to the promotion lane (#7248 rounds
+    7 and 8, F9/F11).
     """
     row = tx.execute(
-        "SELECT disposition FROM tech_lead_patterns WHERE signature = ?",
+        "SELECT disposition, retirement_pending FROM tech_lead_patterns"
+        " WHERE signature = ?",
         (signature,),
     ).fetchone()
-    if row is not None and str(row["disposition"]) in TERMINAL_CASE_FILE_DISPOSITIONS:
-        return str(row["disposition"])
-    return disposition
+    if row is None:
+        return disposition, retirement_pending
+    stored = str(row["disposition"])
+    stored_pending = bool(row["retirement_pending"])
+    if stored in TERMINAL_CASE_FILE_DISPOSITIONS:
+        # Terminal outranks everything, including a stale in-flight flag.
+        return stored, False
+    if disposition in TERMINAL_CASE_FILE_DISPOSITIONS:
+        return disposition, False
+    return disposition, retirement_pending or stored_pending
 
 
-def set_disposition(
-    tx: sqlite3.Connection, *, signature: str, disposition: str
+def set_lifecycle(
+    tx: sqlite3.Connection,
+    *,
+    signature: str,
+    disposition: str,
+    retirement_pending: bool,
 ) -> None:
-    """Project one signature's settled lifecycle disposition."""
+    """Project one signature's lifecycle state: settled AND in-flight."""
     if disposition not in VALID_CASE_FILE_DISPOSITIONS:
         raise ValueError(f"unknown case-file disposition {disposition!r}")
     row = tx.execute(
@@ -68,9 +82,13 @@ def set_disposition(
         raise UnknownTechLeadPatternError(
             f"pattern signature {signature!r} has no local case-file row"
         )
+    settled, pending = _still_blocking(
+        tx, signature, disposition, retirement_pending
+    )
     tx.execute(
-        "UPDATE tech_lead_patterns SET disposition = ? WHERE signature = ?",
-        (_settled_disposition(tx, signature, disposition), signature),
+        "UPDATE tech_lead_patterns SET disposition = ?, retirement_pending = ?"
+        " WHERE signature = ?",
+        (settled, int(pending), signature),
     )
 
 
@@ -105,7 +123,7 @@ def record(
     tx.execute(
         "INSERT INTO tech_lead_patterns (signature, issue_number,"
         " recorded_at, observation_count, fix_class, area, diagnosis,"
-        " disposition) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        " disposition, retirement_pending) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             signature,
             issue_number,
@@ -115,6 +133,7 @@ def record(
             area,
             diagnosis,
             CASE_FILE_ACTIVE,
+            0,
         ),
     )
     tx.execute(
@@ -215,6 +234,7 @@ def mirror(
     area: str,
     diagnosis: str,
     disposition: str,
+    retirement_pending: bool,
 ) -> None:
     """Replace one local cache row from shared authority."""
     if issue_number <= 0 or not observation_ids:
@@ -232,11 +252,12 @@ def mirror(
         )
     tx.execute(
         "INSERT INTO tech_lead_patterns (signature, issue_number, recorded_at,"
-        " observation_count, fix_class, area, diagnosis, disposition)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+        " observation_count, fix_class, area, diagnosis, disposition,"
+        " retirement_pending) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
         " ON CONFLICT(signature) DO UPDATE SET observation_count=excluded.observation_count,"
         " fix_class=excluded.fix_class, area=excluded.area, diagnosis=excluded.diagnosis,"
-        " disposition=excluded.disposition",
+        " disposition=excluded.disposition,"
+        " retirement_pending=excluded.retirement_pending",
         (
             signature,
             issue_number,
@@ -245,7 +266,9 @@ def mirror(
             fix_class,
             area,
             diagnosis,
-            _settled_disposition(tx, signature, disposition),
+            *_as_columns(
+                _still_blocking(tx, signature, disposition, retirement_pending)
+            ),
         ),
     )
     tx.execute(
@@ -257,6 +280,11 @@ def mirror(
         " (signature, observation_id, recorded_at) VALUES (?, ?, ?)",
         ((signature, observation_id, now) for observation_id in unique_ids),
     )
+
+
+def _as_columns(state: tuple[str, bool]) -> tuple[str, int]:
+    disposition, pending = state
+    return disposition, int(pending)
 
 
 def lookup(conn: sqlite3.Connection, *, signature: str) -> int | None:
@@ -272,7 +300,8 @@ def load_evidence(
 ) -> PatternEvidence | None:
     row = conn.execute(
         "SELECT signature, issue_number, observation_count, fix_class, area,"
-        " diagnosis, disposition FROM tech_lead_patterns WHERE signature = ?",
+        " diagnosis, disposition, retirement_pending FROM tech_lead_patterns"
+        " WHERE signature = ?",
         (signature,),
     ).fetchone()
     return _evidence_from_row(row) if row is not None else None
@@ -288,6 +317,7 @@ def list_patterns(conn: sqlite3.Connection) -> tuple[tuple[str, int], ...]:
 def list_evidence(conn: sqlite3.Connection) -> tuple[PatternEvidence, ...]:
     rows = conn.execute(
         "SELECT signature, issue_number, observation_count, fix_class, area,"
-        " diagnosis, disposition FROM tech_lead_patterns ORDER BY signature",
+        " diagnosis, disposition, retirement_pending FROM tech_lead_patterns"
+        " ORDER BY signature",
     ).fetchall()
     return tuple(_evidence_from_row(row) for row in rows)

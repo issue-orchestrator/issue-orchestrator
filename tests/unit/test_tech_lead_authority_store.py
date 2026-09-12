@@ -690,6 +690,7 @@ def test_mirror_pattern_replaces_the_exact_local_projection(
         area="control",
         diagnosis="shared diagnosis",
         disposition="active",
+        retirement_pending=False,
     )
 
     [evidence] = store.list_pattern_evidence()
@@ -724,6 +725,7 @@ def test_mirror_pattern_rejects_a_conflicting_canonical_issue(
             area="",
             diagnosis="",
             disposition="active",
+            retirement_pending=False,
         )
 
 
@@ -1536,13 +1538,28 @@ def test_a_recorded_pattern_starts_active_and_can_settle_terminal(
     )
 
     [fresh] = store.list_pattern_evidence()
-    assert fresh.disposition == "active" and not fresh.is_terminal
+    assert fresh.disposition == "active"
+    assert not fresh.is_terminal and not fresh.blocks_promotion
 
-    store.record_pattern_disposition(signature="s", disposition="shipped")
+    # A retirement is DURABLY ADMITTED long before it settles, and blocks from
+    # that moment: the comment, the remote close, and the final compare-and-swap
+    # all happen afterwards (#7248 round 8 review F11).
+    store.record_pattern_lifecycle(
+        signature="s", disposition="active", retirement_pending=True
+    )
+
+    [reserved] = store.list_pattern_evidence()
+    assert not reserved.is_terminal
+    assert reserved.retirement_pending and reserved.blocks_promotion
+
+    store.record_pattern_lifecycle(
+        signature="s", disposition="shipped", retirement_pending=False
+    )
 
     [settled] = store.list_pattern_evidence()
     assert settled.disposition == "shipped" and settled.is_terminal
-    assert store.load_pattern_evidence(signature="s").is_terminal  # type: ignore[union-attr]
+    assert not settled.retirement_pending and settled.blocks_promotion
+    assert store.load_pattern_evidence(signature="s").blocks_promotion  # type: ignore[union-attr]
 
 
 @pytest.mark.parametrize("make_store", OP_STORES)
@@ -1560,9 +1577,13 @@ def test_nothing_moves_a_terminal_signature_back_to_active(
     store.record_pattern(
         signature="s", issue_number=1, observation_id="first", fix_class="code"
     )
-    store.record_pattern_disposition(signature="s", disposition="shipped")
+    store.record_pattern_lifecycle(
+        signature="s", disposition="shipped", retirement_pending=False
+    )
 
-    store.record_pattern_disposition(signature="s", disposition="active")
+    store.record_pattern_lifecycle(
+        signature="s", disposition="active", retirement_pending=False
+    )
     store.mirror_pattern(
         signature="s",
         issue_number=1,
@@ -1571,6 +1592,7 @@ def test_nothing_moves_a_terminal_signature_back_to_active(
         area="",
         diagnosis="",
         disposition="active",
+        retirement_pending=False,
     )
 
     [evidence] = store.list_pattern_evidence()
@@ -1580,12 +1602,62 @@ def test_nothing_moves_a_terminal_signature_back_to_active(
 
 
 @pytest.mark.parametrize("make_store", OP_STORES)
+def test_nothing_clears_an_admitted_retirement_short_of_settling_it(
+    tmp_path: Path, make_store
+) -> None:
+    """The in-flight half is absorbing for the same reason the settled half is.
+
+    A seed publishes local rows WITHOUT their pending retirement, so the mirror
+    that follows reports a clean row. Writing that back mid-retirement would
+    return the signature to the promotion lane during exactly the window this
+    fact exists to cover (#7248 round 8 review F11).
+    """
+    store = make_store(tmp_path)
+    store.record_pattern(
+        signature="s", issue_number=1, observation_id="first", fix_class="code"
+    )
+    store.record_pattern_lifecycle(
+        signature="s", disposition="active", retirement_pending=True
+    )
+
+    store.record_pattern_lifecycle(
+        signature="s", disposition="active", retirement_pending=False
+    )
+    store.mirror_pattern(
+        signature="s",
+        issue_number=1,
+        observation_ids=("first",),
+        fix_class="code",
+        area="",
+        diagnosis="",
+        disposition="active",
+        retirement_pending=False,
+    )
+
+    [evidence] = store.list_pattern_evidence()
+    assert evidence.retirement_pending and evidence.blocks_promotion
+
+    # Settling it is the one transition that clears the flag, and it keeps the
+    # signature blocked through the stronger fact.
+    store.record_pattern_lifecycle(
+        signature="s", disposition="invalid", retirement_pending=False
+    )
+
+    [settled] = store.list_pattern_evidence()
+    assert not settled.retirement_pending and settled.blocks_promotion
+
+
+@pytest.mark.parametrize("make_store", OP_STORES)
 def test_a_disposition_without_a_case_file_is_a_caller_bug(
     tmp_path: Path, make_store
 ) -> None:
     store = make_store(tmp_path)
 
     with pytest.raises(UnknownTechLeadPatternError):
-        store.record_pattern_disposition(signature="absent", disposition="shipped")
+        store.record_pattern_lifecycle(
+            signature="absent", disposition="shipped", retirement_pending=False
+        )
     with pytest.raises(ValueError):
-        store.record_pattern_disposition(signature="absent", disposition="bogus")
+        store.record_pattern_lifecycle(
+            signature="absent", disposition="bogus", retirement_pending=False
+        )

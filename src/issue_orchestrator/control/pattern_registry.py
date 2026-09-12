@@ -183,34 +183,53 @@ class MirroredPatternCaseFileRegistry(PatternCaseFileRegistry):
         issue_number: int,
         expected_revision: str | None = None,
     ) -> PatternReservation:
-        return self._shared.reserve_retirement(
+        # Every retirement-path result is mirrored, because the fact promotion
+        # eligibility needs is admitted HERE, at the reserving compare-and-swap,
+        # not three steps later at finalization. A process that stops between
+        # them — or a second client — must still see the signature blocked
+        # (#7248 round 8 review F11/A5).
+        outcome = self._shared.reserve_retirement(
             signature=signature,
             transition=transition,
             comment=comment,
             issue_number=issue_number,
             expected_revision=expected_revision,
         )
+        return self._mirrored(outcome)
 
     def take_over_retirement(
         self, *, signature: str, stale_reservation_id: str
     ) -> PatternReservation:
-        return self._shared.take_over_retirement(
-            signature=signature, stale_reservation_id=stale_reservation_id
+        return self._mirrored(
+            self._shared.take_over_retirement(
+                signature=signature, stale_reservation_id=stale_reservation_id
+            )
         )
 
     def begin_retirement_publication(
         self, *, signature: str, reservation_id: str
     ) -> PatternReservation:
-        return self._shared.begin_retirement_publication(
-            signature=signature, reservation_id=reservation_id
+        return self._mirrored(
+            self._shared.begin_retirement_publication(
+                signature=signature, reservation_id=reservation_id
+            )
         )
 
     def confirm_retirement_comment(
         self, *, signature: str, reservation_id: str
     ) -> PatternRegistryEntry:
-        return self._shared.confirm_retirement_comment(
+        entry = self._shared.confirm_retirement_comment(
             signature=signature, reservation_id=reservation_id
         )
+        if entry.committed:
+            self._mirror(entry)
+        return entry
+
+    def _mirrored(self, outcome: PatternReservation) -> PatternReservation:
+        """Project a reservation outcome's entry, whatever state it reports."""
+        if outcome.entry.committed:
+            self._mirror(outcome.entry)
+        return outcome
 
     def finalize_retirement(
         self, *, signature: str, reservation_id: str
@@ -272,12 +291,15 @@ class MirroredPatternCaseFileRegistry(PatternCaseFileRegistry):
     def _mirror(self, entry: PatternRegistryEntry) -> None:
         """Project every committed shared fact, including no pending create.
 
-        ``disposition`` rides along because the local ledger is what decides
+        The lifecycle state rides along because the local ledger is what decides
         promotion eligibility, and shared authority is what owns the lifecycle.
         Without it, restarting or resynchronizing left a terminal, code-fix
         signature looking exactly like an unpromoted one and the next promotion
         tick re-filed work the reconciliation had just retired (#7248 round 7
-        review F9/A4).
+        review F9/A4). BOTH halves travel: an admitted-but-unfinalized
+        retirement blocks promotion exactly as a settled one does, so a cold
+        client rebuilding its replica mid-retirement honours it too (round 8
+        F11/A5).
         """
         assert entry.issue_number is not None
         self._local.mirror_pattern(
@@ -288,6 +310,7 @@ class MirroredPatternCaseFileRegistry(PatternCaseFileRegistry):
             area=entry.classification.area,
             diagnosis=entry.classification.diagnosis,
             disposition=entry.disposition,
+            retirement_pending=entry.retirement_pending,
         )
         self._local.discard_pending_case_file(signature=entry.signature)
 
@@ -629,7 +652,7 @@ class LocalPatternCaseFileRegistry(PatternCaseFileRegistry):
             )
         require_reviewed_revision(current, expected_revision)
         self._lifecycle[signature] = (*current.lifecycle, transition)
-        self._project_disposition(signature)
+        self._project_lifecycle(signature)
         return self._require_committed(signature)
 
     def reserve_retirement(
@@ -668,6 +691,7 @@ class LocalPatternCaseFileRegistry(PatternCaseFileRegistry):
             desired,
             None,
         )
+        self._project_lifecycle(signature)
         return PatternReservation(
             PatternReservationState.ACQUIRED, self._require_committed(signature)
         )
@@ -731,7 +755,7 @@ class LocalPatternCaseFileRegistry(PatternCaseFileRegistry):
         current = self._require_committed(signature)
         self._lifecycle[signature] = (*current.lifecycle, existing[1].transition)
         del self._pending_retirements[signature]
-        self._project_disposition(signature)
+        self._project_lifecycle(signature)
         return self._require_committed(signature)
 
     def read(self, *, signature: str) -> PatternRegistryEntry | None:
@@ -773,18 +797,21 @@ class LocalPatternCaseFileRegistry(PatternCaseFileRegistry):
             pending_observation=observation,
         )
 
-    def _project_disposition(self, signature: str) -> None:
-        """Persist the settled disposition this in-memory lifecycle now implies.
+    def _project_lifecycle(self, signature: str) -> None:
+        """Persist the lifecycle state this in-memory registry now holds.
 
-        ``self._lifecycle`` lives for one process. Promotion eligibility is
-        decided from the durable ledger, so a terminal transition that existed
-        only here was forgotten at restart and its signature became promotable
-        again (#7248 round 7 review F9/A4).
+        ``self._lifecycle`` and ``self._pending_retirements`` live for one
+        process. Promotion eligibility is decided from the durable ledger, so a
+        terminal transition — or a terminal retirement admitted but not yet
+        finalized — that existed only here was forgotten at restart and its
+        signature became promotable again (#7248 rounds 7 and 8, F9/F11).
         """
         entry = self.read(signature=signature)
         assert entry is not None
-        self._local.record_pattern_disposition(
-            signature=signature, disposition=entry.disposition
+        self._local.record_pattern_lifecycle(
+            signature=signature,
+            disposition=entry.disposition,
+            retirement_pending=entry.retirement_pending,
         )
 
     def _require_committed(self, signature: str) -> PatternRegistryEntry:
@@ -817,6 +844,7 @@ class LocalPatternCaseFileRegistry(PatternCaseFileRegistry):
                     area=entry.classification.area,
                     diagnosis=entry.classification.diagnosis,
                     disposition=entry.disposition,
+                    retirement_pending=entry.retirement_pending,
                 )
 
     def _reserved(self, pending: PendingCaseFile) -> PatternRegistryEntry:

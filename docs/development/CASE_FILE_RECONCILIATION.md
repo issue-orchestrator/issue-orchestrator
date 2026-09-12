@@ -76,13 +76,17 @@ with their reviewed state recorded in the shared registry. A retry resumes the
 same stable transition even when its wall clock has advanced.
 
 Retiring a case file also removes its signature from the finding-promotion
-lane. The terminal disposition is projected durably onto the local pattern
-ledger promotion eligibility already reads, so it survives a restart and a
-resynchronize with shared authority, and later evidence keeps accruing on the
-case file without reviving it. Without that, applying this backlog would close
-42 case files and let the next promotion tick re-file work for the code-fix
-signatures among them, which have evidence above the threshold and no promotion
-row.
+lane, **from the moment the retirement is admitted** rather than when it
+finishes. Those are not the same instant: a reservation is followed by a
+comment, a remote close, and a final compare-and-swap, and a process that stops
+in between leaves shared authority holding a durable terminal intent. The
+registry's own decision — settled terminal, or terminal retirement in flight —
+is projected durably onto the local pattern ledger promotion eligibility already
+reads, so it survives a restart, a resynchronize, and a cold second client, and
+later evidence keeps accruing on the case file without reviving it. Without
+that, applying this backlog would close 42 case files and let the next promotion
+tick re-file work for the code-fix signatures among them, which have evidence
+above the threshold and no promotion row.
 
 Because a nonterminal outcome *asserts* the case file stays open, its write is
 granted only against an issue GitHub still reports as open, read fresh at the

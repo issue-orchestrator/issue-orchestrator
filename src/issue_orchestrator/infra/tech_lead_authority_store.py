@@ -398,6 +398,7 @@ class SqliteTechLeadAuthorityStore:
         area: str,
         diagnosis: str,
         disposition: str,
+        retirement_pending: bool,
     ) -> None:
         """Replace one SQLite cache row from shared pattern authority."""
         with self._transaction() as tx:
@@ -410,13 +411,19 @@ class SqliteTechLeadAuthorityStore:
                 area=area,
                 diagnosis=diagnosis,
                 disposition=disposition,
+                retirement_pending=retirement_pending,
             )
 
-    def record_pattern_disposition(self, *, signature: str, disposition: str) -> None:
-        """Persist one signature's settled lifecycle disposition."""
+    def record_pattern_lifecycle(
+        self, *, signature: str, disposition: str, retirement_pending: bool
+    ) -> None:
+        """Persist one signature's settled and in-flight lifecycle state."""
         with self._transaction() as tx:
-            patterns.set_disposition(
-                tx, signature=signature, disposition=disposition
+            patterns.set_lifecycle(
+                tx,
+                signature=signature,
+                disposition=disposition,
+                retirement_pending=retirement_pending,
             )
 
     def lookup_pattern(self, *, signature: str) -> int | None:
