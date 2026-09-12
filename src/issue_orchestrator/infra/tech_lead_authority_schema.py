@@ -44,7 +44,8 @@ CREATE TABLE IF NOT EXISTS tech_lead_patterns (
     observation_count INTEGER NOT NULL DEFAULT 1,
     fix_class TEXT NOT NULL DEFAULT '',
     area TEXT NOT NULL DEFAULT '',
-    diagnosis TEXT NOT NULL DEFAULT ''
+    diagnosis TEXT NOT NULL DEFAULT '',
+    disposition TEXT NOT NULL DEFAULT 'active'
 );
 CREATE TABLE IF NOT EXISTS tech_lead_pattern_observations (
     signature TEXT NOT NULL,
@@ -116,6 +117,11 @@ _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("tech_lead_patterns", "fix_class", "TEXT NOT NULL DEFAULT ''"),
     ("tech_lead_patterns", "area", "TEXT NOT NULL DEFAULT ''"),
     ("tech_lead_patterns", "diagnosis", "TEXT NOT NULL DEFAULT ''"),
+    # #7248 the settled lifecycle disposition, so promotion eligibility can be
+    # decided from a durable fact rather than in-memory registry state. The
+    # default is the disposition an entry with no lifecycle already reports, so
+    # every existing row keeps exactly the meaning it had.
+    ("tech_lead_patterns", "disposition", "TEXT NOT NULL DEFAULT 'active'"),
     # #6957 later-evidence high-water mark on the promotion ledger.
     (
         "tech_lead_promoted_findings",

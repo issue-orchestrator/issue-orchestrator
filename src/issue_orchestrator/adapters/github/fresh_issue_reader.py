@@ -130,15 +130,24 @@ class GitHubFreshIssueReader(FreshIssueReader, FreshIssueSnapshotReader):
             raise FreshIssueReadError(
                 f"issue #{issue_number} payload is missing state or labels"
             )
+        names = []
+        for label in labels:
+            name = _label_name(label)
+            if not isinstance(name, str):
+                # DROPPING an undecodable label would silently report it as
+                # ABSENT, and the fact most likely to be dropped is the one that
+                # matters: the operator pause label. An expectation that forbids
+                # it would then be satisfied by a payload this adapter could not
+                # actually read, authorizing the very mutation the pause exists
+                # to stop. Unknown is not an observation (#7248 round 7 F10).
+                raise FreshIssueReadError(
+                    f"issue #{issue_number} returned a label this adapter"
+                    f" cannot decode: {label!r}"
+                )
+            names.append(name)
         try:
             return FreshIssueSnapshot(
-                number=issue_number,
-                labels=tuple(
-                    name
-                    for label in labels
-                    if isinstance(name := _label_name(label), str)
-                ),
-                state=state,
+                number=issue_number, labels=tuple(names), state=state
             )
         except ValueError as exc:
             raise FreshIssueReadError(

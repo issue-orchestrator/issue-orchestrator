@@ -476,11 +476,22 @@ class PatternEvidence:
     # routed promotion carries the actionable mechanism instead of only pointing
     # back to the case file. Merged by :func:`reconcile_pattern_diagnosis`.
     diagnosis: str = ""
+    # The signature's settled lifecycle disposition, projected from whichever
+    # registry owns it. Durable, so it survives synchronization and restart —
+    # which is the whole point: promotion eligibility is decided from this
+    # ledger, and a terminal signature must never be promotable again, however
+    # the process that retired it exited (#7248 round 7 review F9/A4).
+    disposition: CaseFileDisposition = CASE_FILE_ACTIVE
 
     @property
     def is_code_fix(self) -> bool:
         """True iff the tech lead classified this as fixable by code."""
         return self.fix_class == FINDING_FIX_CLASS_CODE
+
+    @property
+    def is_terminal(self) -> bool:
+        """True iff this signature's case file reached a terminal disposition."""
+        return self.disposition in TERMINAL_CASE_FILE_DISPOSITIONS
 
     @property
     def classification(self) -> CaseFileClassification:

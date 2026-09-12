@@ -5,7 +5,15 @@ from __future__ import annotations
 import sqlite3
 from datetime import datetime, timezone
 
-from ..domain.tech_lead_findings import CaseFileClassification, PatternEvidence
+from ..domain.tech_lead_findings import (
+    CASE_FILE_ACTIVE,
+    TERMINAL_CASE_FILE_DISPOSITIONS,
+    VALID_CASE_FILE_DISPOSITIONS,
+    CaseFileClassification,
+    CaseFileDisposition,
+    PatternEvidence,
+)
+from typing import cast
 from ..ports.tech_lead_authority import (
     TechLeadPatternConflictError,
     UnknownTechLeadPatternError,
@@ -19,6 +27,50 @@ def _evidence_from_row(row: sqlite3.Row) -> PatternEvidence:
         fix_class=str(row["fix_class"]),
         area=str(row["area"]),
         diagnosis=str(row["diagnosis"]),
+        disposition=cast(CaseFileDisposition, str(row["disposition"])),
+    )
+
+
+def _settled_disposition(
+    tx: sqlite3.Connection, signature: str, disposition: str
+) -> str:
+    """The disposition to store, refusing to un-retire a terminal signature.
+
+    Terminal is ABSORBING in every registry: ``admit_lifecycle_transition``
+    rejects any further transition on a signature that already reached one, so
+    nothing can legitimately move a row back. This projection enforces the same
+    thing, which matters because the projection has paths the registries do not
+    — a rolling-upgrade seed publishes local rows to shared authority WITHOUT
+    their lifecycle, and the mirror that follows would otherwise write shared's
+    ``active`` back over a locally retired row and make it promotable again
+    (#7248 round 7 review F9).
+    """
+    row = tx.execute(
+        "SELECT disposition FROM tech_lead_patterns WHERE signature = ?",
+        (signature,),
+    ).fetchone()
+    if row is not None and str(row["disposition"]) in TERMINAL_CASE_FILE_DISPOSITIONS:
+        return str(row["disposition"])
+    return disposition
+
+
+def set_disposition(
+    tx: sqlite3.Connection, *, signature: str, disposition: str
+) -> None:
+    """Project one signature's settled lifecycle disposition."""
+    if disposition not in VALID_CASE_FILE_DISPOSITIONS:
+        raise ValueError(f"unknown case-file disposition {disposition!r}")
+    row = tx.execute(
+        "SELECT signature FROM tech_lead_patterns WHERE signature = ?",
+        (signature,),
+    ).fetchone()
+    if row is None:
+        raise UnknownTechLeadPatternError(
+            f"pattern signature {signature!r} has no local case-file row"
+        )
+    tx.execute(
+        "UPDATE tech_lead_patterns SET disposition = ? WHERE signature = ?",
+        (_settled_disposition(tx, signature, disposition), signature),
     )
 
 
@@ -52,9 +104,18 @@ def record(
     now = datetime.now(timezone.utc).isoformat()
     tx.execute(
         "INSERT INTO tech_lead_patterns (signature, issue_number,"
-        " recorded_at, observation_count, fix_class, area, diagnosis)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (signature, issue_number, now, 1, fix_class, area, diagnosis),
+        " recorded_at, observation_count, fix_class, area, diagnosis,"
+        " disposition) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            signature,
+            issue_number,
+            now,
+            1,
+            fix_class,
+            area,
+            diagnosis,
+            CASE_FILE_ACTIVE,
+        ),
     )
     tx.execute(
         "INSERT INTO tech_lead_pattern_observations (signature,"
@@ -153,6 +214,7 @@ def mirror(
     fix_class: str,
     area: str,
     diagnosis: str,
+    disposition: str,
 ) -> None:
     """Replace one local cache row from shared authority."""
     if issue_number <= 0 or not observation_ids:
@@ -170,10 +232,21 @@ def mirror(
         )
     tx.execute(
         "INSERT INTO tech_lead_patterns (signature, issue_number, recorded_at,"
-        " observation_count, fix_class, area, diagnosis) VALUES (?, ?, ?, ?, ?, ?, ?)"
+        " observation_count, fix_class, area, diagnosis, disposition)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
         " ON CONFLICT(signature) DO UPDATE SET observation_count=excluded.observation_count,"
-        " fix_class=excluded.fix_class, area=excluded.area, diagnosis=excluded.diagnosis",
-        (signature, issue_number, now, len(unique_ids), fix_class, area, diagnosis),
+        " fix_class=excluded.fix_class, area=excluded.area, diagnosis=excluded.diagnosis,"
+        " disposition=excluded.disposition",
+        (
+            signature,
+            issue_number,
+            now,
+            len(unique_ids),
+            fix_class,
+            area,
+            diagnosis,
+            _settled_disposition(tx, signature, disposition),
+        ),
     )
     tx.execute(
         "DELETE FROM tech_lead_pattern_observations WHERE signature = ?",
@@ -199,7 +272,7 @@ def load_evidence(
 ) -> PatternEvidence | None:
     row = conn.execute(
         "SELECT signature, issue_number, observation_count, fix_class, area,"
-        " diagnosis FROM tech_lead_patterns WHERE signature = ?",
+        " diagnosis, disposition FROM tech_lead_patterns WHERE signature = ?",
         (signature,),
     ).fetchone()
     return _evidence_from_row(row) if row is not None else None
@@ -215,6 +288,6 @@ def list_patterns(conn: sqlite3.Connection) -> tuple[tuple[str, int], ...]:
 def list_evidence(conn: sqlite3.Connection) -> tuple[PatternEvidence, ...]:
     rows = conn.execute(
         "SELECT signature, issue_number, observation_count, fix_class, area,"
-        " diagnosis FROM tech_lead_patterns ORDER BY signature",
+        " diagnosis, disposition FROM tech_lead_patterns ORDER BY signature",
     ).fetchall()
     return tuple(_evidence_from_row(row) for row in rows)

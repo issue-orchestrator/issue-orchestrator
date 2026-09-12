@@ -75,6 +75,15 @@ evidence to the case file before closing it; nonterminal outcomes remain open
 with their reviewed state recorded in the shared registry. A retry resumes the
 same stable transition even when its wall clock has advanced.
 
+Retiring a case file also removes its signature from the finding-promotion
+lane. The terminal disposition is projected durably onto the local pattern
+ledger promotion eligibility already reads, so it survives a restart and a
+resynchronize with shared authority, and later evidence keeps accruing on the
+case file without reviving it. Without that, applying this backlog would close
+42 case files and let the next promotion tick re-file work for the code-fix
+signatures among them, which have evidence above the threshold and no promotion
+row.
+
 Because a nonterminal outcome *asserts* the case file stays open, its write is
 granted only against an issue GitHub still reports as open, read fresh at the
 moment of the write. A human closing a case file between review and apply

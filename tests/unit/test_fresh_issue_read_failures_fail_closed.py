@@ -165,3 +165,127 @@ class TestTheApplierFailsClosedOnTheRealAdapter:
         )
 
         assert result.success
+
+
+class TestTheSnapshotReadNeverFabricatesAFact:
+    """The same contract, for the read that also carries the issue's state.
+
+    ``read_issue_snapshot`` answers the question "may this nonterminal
+    reconciliation outcome be written?", and the facts it returns are the pause
+    label and whether the case file is still open. Every way that read can be
+    incomplete must therefore be UNKNOWN, never a default — the first version
+    filtered out any label it could not decode, which silently reported an
+    undecodable ``io:needs-reconcile`` as absent and would have authorized a
+    mutation straight through an operator pause (#7248 round 7 review F10).
+    """
+
+    def _payload(self, **overrides):
+        payload = {
+            "state": "open",
+            "labels": [{"name": "io:needs-reconcile"}, {"name": "bug"}],
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_a_valid_payload_yields_labels_and_state_from_an_uncached_read(self):
+        client = Mock()
+        client.get_issue.return_value = self._payload()
+
+        snapshot = _reader(client).read_issue_snapshot(CASE_FILE)
+
+        assert snapshot.number == CASE_FILE
+        assert snapshot.state == "open"
+        assert snapshot.labels == ("io:needs-reconcile", "bug")
+        client.get_issue.assert_called_once_with(CASE_FILE, use_cache=False)
+
+    def test_a_closed_issue_reports_closed(self):
+        client = Mock()
+        client.get_issue.return_value = self._payload(state="closed", labels=[])
+
+        assert _reader(client).read_issue_snapshot(CASE_FILE).state == "closed"
+
+    def test_a_github_error_raises_instead_of_returning_a_snapshot(self):
+        client = Mock()
+        client.get_issue.side_effect = GitHubHttpError("429 rate limited")
+
+        with pytest.raises(FreshIssueReadError):
+            _reader(client).read_issue_snapshot(CASE_FILE)
+
+    def test_an_unexpected_error_raises_instead_of_returning_a_snapshot(self):
+        client = Mock()
+        client.get_issue.side_effect = RuntimeError("socket closed")
+
+        with pytest.raises(FreshIssueReadError):
+            _reader(client).read_issue_snapshot(CASE_FILE)
+
+    @pytest.mark.parametrize(
+        "payload",
+        (
+            None,
+            "not an issue",
+            {"labels": []},
+            {"state": "open"},
+            {"state": 7, "labels": []},
+            {"state": "open", "labels": "bug"},
+            {"state": "reopened", "labels": []},
+        ),
+        ids=(
+            "absent",
+            "not-an-object",
+            "missing-state",
+            "missing-labels",
+            "non-string-state",
+            "non-list-labels",
+            "unknown-state",
+        ),
+    )
+    def test_an_unreadable_payload_is_unknown(self, payload):
+        client = Mock()
+        client.get_issue.return_value = payload
+
+        with pytest.raises(FreshIssueReadError):
+            _reader(client).read_issue_snapshot(CASE_FILE)
+
+    @pytest.mark.parametrize(
+        "label",
+        ({"colour": "red"}, {"name": None}, {"name": 7}, 12, None),
+        ids=("no-name", "null-name", "numeric-name", "bare-number", "null"),
+    )
+    def test_a_label_this_adapter_cannot_decode_is_unknown(self, label):
+        """Dropping it would report that label as ABSENT."""
+        client = Mock()
+        client.get_issue.return_value = self._payload(
+            labels=[{"name": "bug"}, label]
+        )
+
+        with pytest.raises(FreshIssueReadError, match="cannot decode"):
+            _reader(client).read_issue_snapshot(CASE_FILE)
+
+    def test_a_malformed_label_cannot_authorize_a_guarded_transition(self):
+        """The guard-level consequence, through the real gate and authority.
+
+        The undecodable label here IS the pause label. Filtering it out made the
+        payload look like a clean issue and granted the classification.
+        """
+        from issue_orchestrator.control.mutation_gate import ReconciliationGate
+        from issue_orchestrator.control.tech_lead_case_file_lifecycle_reconciliation import (
+            GatedCaseFileMutationAuthority,
+        )
+
+        client = Mock()
+        client.get_issue.return_value = {
+            "state": "open",
+            "labels": [{"colour": "red"}],  # the pause label, undecodable
+        }
+        reader = _reader(client)
+        authority = GatedCaseFileMutationAuthority(
+            gate=ReconciliationGate(
+                fresh_issue_reader=reader,
+                reconcile=True,
+                fresh_issue_snapshot_reader=reader,
+            ),
+            pause_label="io:needs-reconcile",
+        )
+
+        with pytest.raises(ReconciliationRequired):
+            authority.require_classification(CASE_FILE)

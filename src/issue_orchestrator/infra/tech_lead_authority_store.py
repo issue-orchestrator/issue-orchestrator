@@ -397,6 +397,7 @@ class SqliteTechLeadAuthorityStore:
         fix_class: str,
         area: str,
         diagnosis: str,
+        disposition: str,
     ) -> None:
         """Replace one SQLite cache row from shared pattern authority."""
         with self._transaction() as tx:
@@ -408,6 +409,14 @@ class SqliteTechLeadAuthorityStore:
                 fix_class=fix_class,
                 area=area,
                 diagnosis=diagnosis,
+                disposition=disposition,
+            )
+
+    def record_pattern_disposition(self, *, signature: str, disposition: str) -> None:
+        """Persist one signature's settled lifecycle disposition."""
+        with self._transaction() as tx:
+            patterns.set_disposition(
+                tx, signature=signature, disposition=disposition
             )
 
     def lookup_pattern(self, *, signature: str) -> int | None:
