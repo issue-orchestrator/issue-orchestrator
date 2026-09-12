@@ -435,7 +435,7 @@ override LANE_VERDICT_OVERRIDDEN = $(strip $(foreach v,$(LANE_VERDICT_VARIABLES)
 
 # Two-pass typecheck: strict for core (domain/ports/control), standard for rest
 # --warnings ensures 0 warnings required (exit code 1 if warnings reported)
-typecheck:
+typecheck: sync-deps
 ifeq ($(LANE_EXECUTOR),condor)
 	$(call TIMED_RUN,typecheck,\
 		$(LANE_RUN) --backend condor --work-key typecheck \
@@ -452,7 +452,7 @@ endif
 LINT_IMPORTS ?= .venv/bin/lint-imports
 RUFF ?= .venv/bin/ruff
 
-lint-arch: semgrep-venv
+lint-arch: sync-deps semgrep-venv
 	$(call TIMED_RUN,lint-arch,\
 		$(LINT_IMPORTS) && \
 		$(PYTHON) tools/check_arch_guardrails.py src && \
@@ -460,16 +460,16 @@ lint-arch: semgrep-venv
 		scripts/check_agents_md.sh && \
 		$(PYTHON) scripts/check_docs_md.py)
 
-quality-guardrails: semgrep-venv
+quality-guardrails: sync-deps semgrep-venv
 	$(call TIMED_RUN,quality-guardrails,\
 		$(PYTHON) tools/quality_guardrails.py --fail-on-new)
 
-quality-guardrails-stale: semgrep-venv
+quality-guardrails-stale: sync-deps semgrep-venv
 	$(call TIMED_RUN,quality-guardrails-stale,\
 		$(PYTHON) tools/quality_guardrails.py --check-stale)
 
 # Ruff guardrails - blocks on violations (C901 complexity, PLR0912 branches, SLF001 private access)
-lint-complexity:
+lint-complexity: sync-deps
 	$(call TIMED_RUN,lint-complexity,\
 		echo "Checking code complexity (C901) and branch count (PLR0912)..." && \
 		$(RUFF) check src packages/agent_runner/src --output-format=concise)
@@ -614,10 +614,10 @@ else
 		$(PYTEST) $(SIMULATED_AGENT_FILES) -x -q --tb=short -n $(SIMULATED_PARALLEL) --dist=loadgroup $(PYTEST_TIMINGS))
 endif
 
-test-unit-cov:
+test-unit-cov: sync-deps
 	$(PYTEST) tests/unit packages/agent_runner/tests --cov=src/issue_orchestrator --cov=packages/agent_runner/src --cov-report=term-missing -x -q --tb=short $(PYTEST_TIMINGS)
 
-test-unit-cov-html:
+test-unit-cov-html: sync-deps
 	$(PYTEST) tests/unit packages/agent_runner/tests --cov=src/issue_orchestrator --cov=packages/agent_runner/src --cov-report=html -x -q --tb=short $(PYTEST_TIMINGS)
 	@echo "Coverage report: open htmlcov/index.html"
 
@@ -720,37 +720,37 @@ endif
 # E2E tests stop on first failure by default. Use NOFAST=1 to run all tests.
 # Usage: make test-e2e        (stops on first failure)
 #        make test-e2e NOFAST=1  (runs all tests even if some fail)
-test-e2e:
+test-e2e: sync-deps
 ifdef NOFAST
 	$(PYTEST) tests/e2e -v -s --tb=short $(PYTEST_TIMINGS)
 else
 	$(PYTEST) tests/e2e -v -s --tb=short -x $(PYTEST_TIMINGS)
 endif
 
-test-e2e-heavy:
+test-e2e-heavy: sync-deps
 	$(PYTEST) tests/integration tests/e2e -m heavy_e2e -v -s --tb=short -x $(PYTEST_TIMINGS)
 
-test-e2e-onboarding-live:
+test-e2e-onboarding-live: sync-deps
 	E2E_AGENT_GUIDED_ONBOARDING=1 $(PYTEST) tests/e2e/test_agent_guided_onboarding.py -v -s --tb=short -x $(PYTEST_TIMINGS)
 
 # Real Claude tests - layered for incremental debugging
 # test-real-claude-dev: dev agent only (faster, good for basic sanity)
 # test-real-claude-review: dev + review agent (full happy path)
 
-test-real-claude-dev:
+test-real-claude-dev: sync-deps
 	@echo "Testing agent-done invocation from Claude..."
 	$(PYTEST) tests/integration/test_claude_execution.py::TestAgentDoneInvocation -v -s --tb=short -x $(PYTEST_TIMINGS)
 	@echo "Testing real Claude execution in tmux mode..."
 	E2E_DRY_RUN_PUSH=false $(PYTEST) tests/e2e/test_terminal_adapter.py::TestTerminalAdapterExecution -v -s --tb=short -x $(PYTEST_TIMINGS)
 	@echo "✓ Dev agent tests passed!"
 
-test-real-claude-review:
+test-real-claude-review: sync-deps
 	@echo "Testing full pipeline: dev agent -> review agent..."
 	@echo "Note: This test creates REAL PRs (not dry-run)"
 	E2E_DRY_RUN_PUSH=false $(PYTEST) tests/e2e/test_review_agent.py::TestReviewAgentExecution -v -s --tb=short -x $(PYTEST_TIMINGS)
 	@echo "✓ Review agent tests passed!"
 
-test-real-gh-labels:
+test-real-gh-labels: sync-deps
 	@echo "Testing label write verification against real GitHub..."
 	E2E_DRY_RUN_PUSH=false $(PYTEST) tests/e2e/test_label_write_verification.py::TestLabelWriteVerification -v -s --tb=short -x $(PYTEST_TIMINGS)
 	@echo "✓ Label write verification passed!"
@@ -769,7 +769,7 @@ test-real-gh-plus-e2e-subprocess:
 
 # Run a single e2e test by name. Usage: make test-e2e-one TEST=test_code_review_produces_review_comment
 # E2E tests stop on first failure by default
-test-e2e-one:
+test-e2e-one: sync-deps
 ifdef NOFAST
 	$(PYTEST) tests/e2e -v -s --tb=short -k "$(TEST)" $(PYTEST_TIMINGS)
 else
@@ -779,7 +779,7 @@ endif
 # Run e2e tests with REAL PR creation on GitHub (no dry run)
 # WARNING: This creates actual PRs and branches on the target repo!
 # Use TEST= to run a specific test, e.g.: make test-e2e-live TEST=test_code_review
-test-e2e-live:
+test-e2e-live: sync-deps
 	@echo "⚠️  Running e2e tests with REAL PR creation (no dry run)!"
 	@echo "   This will create actual PRs and branches on GitHub."
 	@echo ""
@@ -789,15 +789,15 @@ else
 	E2E_DRY_RUN_PUSH= $(PYTEST) tests/e2e -v -s --tb=short -x $(PYTEST_TIMINGS)
 endif
 
-test:
+test: sync-deps
 	$(PYTEST) tests/ -x -q --tb=short $(PYTEST_TIMINGS)
 
 # Playwright browser smoke tests for Flow-first web UI
-test-web:
+test-web: sync-deps
 	$(call TIMED_RUN,test-web,\
 		$(PYTEST) tests/e2e_web -v --tb=short $(PYTEST_TIMINGS))
 
-test-web-headed:
+test-web-headed: sync-deps
 	$(PYTEST) tests/e2e_web -v --tb=short --headed $(PYTEST_TIMINGS)
 
 # VS Code extension tests (local only). Skipped in GitHub Actions.
@@ -826,7 +826,7 @@ validate-quick: typecheck test-unit
 # Standard validation - runs through Python wrapper for output capture
 # Output is saved to ISSUE_ORCHESTRATOR_VALIDATION_OUTPUT_DIR or .issue-orchestrator/diagnostics/
 # On failure, prints path to output file so agents can find failure details
-validate:
+validate: sync-deps
 	@$(PYTHON) -m issue_orchestrator.entrypoints.cli_tools.validate_runner --command "$(GMAKE) validate-raw"
 
 # Required PR validation - cache-aware wrapper around the publish gate.
@@ -903,7 +903,7 @@ _validate-core-tests-impl: test-unit test-simulated-core test-integration-core-l
 lane-preflight:
 	$(call TIMED_RUN,lane-preflight,$(LANE_PREFLIGHT) --backend $(LANE_EXECUTOR))
 
-_validate-pr-impl:
+_validate-pr-impl: sync-deps
 # Gate-entry host sanity check (#7142). Stray load from an earlier run is
 # invisible to the gate it poisons: on 2026-08-29 twenty orphaned burners cost
 # seven flaked gates across four branches and a day of misattribution before
@@ -970,26 +970,26 @@ _validate-full-impl:
 	@$(GMAKE) test-agent-live
 	@$(GMAKE) -j$(VALIDATE_E2E_JOBS) --output-sync=target test-e2e
 
-verify-hooks-all:
+verify-hooks-all: sync-deps
 	@.venv/bin/issue-orchestrator setup-hooks --config .issue-orchestrator/config/maintenance/hooks-validate.yaml
 
 # Demo - show orchestrator features with mock data
-demo:
+demo: sync-deps
 	.venv/bin/issue-orchestrator demo
 
 # Issue management
 PYTHON ?= .venv/bin/python
 
-issues-validate:
+issues-validate: sync-deps
 	$(PYTHON) scripts/issues.py validate $(ARGS)
 
-issues-fix:
+issues-fix: sync-deps
 	$(PYTHON) scripts/issues.py fix --apply $(ARGS)
 
-issues-fix-dry-run:
+issues-fix-dry-run: sync-deps
 	$(PYTHON) scripts/issues.py fix $(ARGS)
 
-issues-create:
+issues-create: sync-deps
 	$(PYTHON) scripts/issues.py create $(ARGS)
 
 # Unconditional prerequisite for pattern-rule lanes (they cannot be .PHONY).
@@ -1002,8 +1002,8 @@ test-agent-live: sync-deps
 		-m "(live_agent or live_codex or live_deepseek) and not requires_infra" -x -q --tb=short \
 		-p scripts.agent_test_report
 
-agent-test-status:
+agent-test-status: sync-deps
 	@$(PYTHON) -m issue_orchestrator.entrypoints.cli_tools.budgeted_validation status
 
-agent-test-check:
+agent-test-check: sync-deps
 	@$(PYTHON) -m issue_orchestrator.entrypoints.cli_tools.budgeted_validation check

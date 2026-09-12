@@ -332,3 +332,192 @@ def test_every_live_marker_is_excluded_from_the_gate_lanes(target: str):
             f"{target} does not exclude {marker}; a gate run would make real "
             "model calls (and, for a metered provider, spend real money)"
         )
+
+
+# --- venv-consuming targets must sync the venv they consume -----------------
+#
+# 2026-09-11: `typecheck` was the only target in the validate chain with no
+# `sync-deps` prerequisite. Every day-to-day run hid that, because a developer
+# worktree always has a .venv already. The completion-intake validator does
+# not: it clones the agent worktree with `git clone --no-hardlinks
+# --no-checkout` into a fresh workspace, and .venv is gitignored, so it is
+# never cloned. `make validate-quick` (typecheck first) then died in 64ms with
+# `.venv/bin/pyright: No such file or directory`, exit 127 -- a suite that
+# never ran, reported to the agent as "your changes broke validation". The
+# tests below are not an audit of one target; they pin the invariant so the
+# next venv-consuming target cannot reintroduce the gap.
+
+_VENV_BUILDERS = frozenset(
+    {
+        # These targets CREATE .venv. Depending on the sync that needs it
+        # would be circular.
+        "venv",
+        "venv-fast",
+        "venv-pip",
+        "worktree-setup",
+    }
+)
+
+_MAKE_TARGET_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_%.-]*)\s*:(?!=)(.*)$")
+_MAKE_VAR_RE = re.compile(
+    r"^\s*(?:override\s+|export\s+)?[A-Za-z_][A-Za-z0-9_]*\s*[:+?]?="
+)
+_MAKE_COND_RE = re.compile(r"^\s*(?:ifeq|ifneq|ifdef|ifndef|else|endif)\b")
+
+
+def _makefile_lines() -> list[str]:
+    return (REPO_ROOT / "Makefile").read_text().split("\n")
+
+
+def _venv_binary_variables(lines: list[str]) -> frozenset[str]:
+    """Variables the Makefile itself defines as a `.venv/bin/...` binary.
+
+    Derived from the Makefile rather than hardcoded, so a newly introduced
+    `FOO ?= .venv/bin/foo` is covered by construction.
+    """
+    pattern = re.compile(
+        r"^\s*(?:override\s+|export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*[:+?]?=\s*\.venv/bin/"
+    )
+    return frozenset(
+        match.group(1) for line in lines if (match := pattern.match(line))
+    )
+
+
+def _recipe_region(lines: list[str], target_index: int) -> str:
+    """Recipe body of the target declared at ``target_index``.
+
+    Recipe lines are TAB-indented, but make also allows column-0 comments and
+    conditional directives inside a recipe region (``_validate-pr-impl`` has
+    both), so those continue the region rather than ending it.
+    """
+    body: list[str] = []
+    index = target_index + 1
+    while index < len(lines):
+        line = lines[index]
+        if line.startswith("\t"):
+            body.append(line)
+            index += 1
+            continue
+        if _MAKE_COND_RE.match(line) or line.lstrip().startswith("#"):
+            index += 1
+            continue
+        if line.strip() == "":
+            lookahead = index
+            while lookahead < len(lines) and lines[lookahead].strip() == "":
+                lookahead += 1
+            if lookahead < len(lines) and lines[lookahead].startswith("\t"):
+                index = lookahead
+                continue
+            break
+        break
+    return "\n".join(body)
+
+
+def _makefile_rules() -> dict[str, dict[str, object]]:
+    """Map target name -> {"prereqs": [...], "recipe": str, "line": int}."""
+    lines = _makefile_lines()
+    rules: dict[str, dict[str, object]] = {}
+    for index, line in enumerate(lines):
+        if line.startswith("\t") or _MAKE_VAR_RE.match(line):
+            continue
+        match = _MAKE_TARGET_RE.match(line)
+        if match is None or match.group(1).startswith("."):
+            continue
+        name = match.group(1)
+        existing = rules.get(name)
+        prereqs = match.group(2).split()
+        recipe = _recipe_region(lines, index)
+        if existing is not None:
+            # A target may be declared more than once (target-specific
+            # variable lines). Merge rather than let the last one win.
+            existing["prereqs"] = list(existing["prereqs"]) + prereqs  # type: ignore[arg-type]
+            if recipe:
+                existing["recipe"] = f"{existing['recipe']}\n{recipe}"
+            continue
+        rules[name] = {"prereqs": prereqs, "recipe": recipe, "line": index + 1}
+    return rules
+
+
+def _prereq_closure(rules: dict[str, dict[str, object]], target: str) -> set[str]:
+    seen: set[str] = set()
+    stack = [target]
+    while stack:
+        current = stack.pop()
+        for prereq in rules.get(current, {}).get("prereqs", []):  # type: ignore[union-attr]
+            if prereq in seen:
+                continue
+            seen.add(prereq)
+            stack.append(prereq)
+    return seen
+
+
+def _venv_consuming_targets() -> dict[str, dict[str, object]]:
+    lines = _makefile_lines()
+    variables = _venv_binary_variables(lines)
+    assert variables, "expected the Makefile to define .venv/bin binaries"
+    reference = re.compile(
+        r"\.venv/bin/|\$\((?:" + "|".join(sorted(variables)) + r")\)"
+    )
+    rules = _makefile_rules()
+    return {
+        name: rule
+        for name, rule in rules.items()
+        if reference.search(str(rule["recipe"]))
+    }
+
+
+def test_venv_binary_variables_are_discovered_from_the_makefile():
+    # Guards the guard: if these variables are renamed away, the invariant
+    # test below would silently inspect nothing.
+    variables = _venv_binary_variables(_makefile_lines())
+
+    assert {"PYRIGHT", "PYTEST", "PYTHON", "RUFF", "LINT_IMPORTS"} <= variables
+
+
+def test_every_venv_consuming_target_depends_on_sync_deps():
+    rules = _makefile_rules()
+
+    offenders = sorted(
+        (str(rule["line"]), name)
+        for name, rule in _venv_consuming_targets().items()
+        if name not in _VENV_BUILDERS
+        and "sync-deps" not in _prereq_closure(rules, name)
+    )
+
+    assert offenders == [], (
+        "These targets run a .venv/bin binary but never ensure the venv "
+        "exists. In a fresh clone (the completion-intake validator clones "
+        "the worktree, and .venv is gitignored) they exit 127 before running "
+        "anything, which is reported as a validation failure caused by the "
+        f"branch: {offenders}"
+    )
+
+
+def test_validate_quick_typechecks_only_after_syncing_dependencies():
+    # The exact failure: validate-quick runs typecheck first, so if typecheck
+    # does not sync, the whole gate dies before a single test is collected.
+    lines = _dry_run("validate-quick", LANE_EXECUTOR="direct")
+
+    pyright_index = _find_line(lines, ".venv/bin/pyright")
+    sync_indexes = _matching_indexes(lines, "DEPS_MARKER") or _matching_indexes(
+        lines, "deps-synced"
+    )
+
+    assert sync_indexes, (
+        "validate-quick never consults the dependency-sync marker:\n"
+        + "\n".join(lines)
+    )
+    assert min(sync_indexes) < pyright_index, (
+        "pyright runs before dependencies are synced:\n" + "\n".join(lines)
+    )
+
+
+def test_venv_builders_do_not_depend_on_the_sync_that_needs_them():
+    rules = _makefile_rules()
+
+    for builder in _VENV_BUILDERS:
+        assert builder in rules, f"{builder} is no longer a Makefile target"
+        assert "sync-deps" not in _prereq_closure(rules, builder), (
+            f"{builder} creates .venv; depending on sync-deps makes the "
+            "bootstrap circular"
+        )

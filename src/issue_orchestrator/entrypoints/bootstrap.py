@@ -540,7 +540,6 @@ def build_orchestrator(
     # Create manifest downloader for tech_lead sessions
     manifest_downloader = TechLeadDownloader(
         repository_host=github,
-        command_runner=command_runner,
     ) if github else None
 
     # Create cache-bypassing reader
@@ -762,6 +761,7 @@ def build_orchestrator(
         goal_pilot_store=goal_pilot_store,
         attempt_store=attempt_store,
         tech_lead_authority=tech_lead_authority,
+        pattern_registry=tech_lead.pattern_registry,
         tech_lead_run_activity=tech_lead.run_activity,
         promotion_target=tech_lead.promotion_target,
         open_issue_corpus=tech_lead.open_issue_corpus,
@@ -1005,7 +1005,6 @@ def build_orchestrator_for_testing(
     from unittest.mock import MagicMock
     manifest_downloader = TechLeadDownloader(
         repository_host=github,
-        command_runner=command_runner,
     )
 
     fresh_issue_reader = TestingFreshIssueReader(github)
@@ -1209,6 +1208,7 @@ def build_orchestrator_for_testing(
         goal_pilot_store=goal_pilot_store,
         attempt_store=attempt_store,
         tech_lead_authority=tech_lead_authority_for_testing,
+        pattern_registry=tech_lead.pattern_registry,
         tech_lead_run_activity=tech_lead.run_activity,
         promotion_target=tech_lead.promotion_target,
         open_issue_corpus=tech_lead.open_issue_corpus,

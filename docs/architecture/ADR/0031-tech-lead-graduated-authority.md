@@ -171,6 +171,28 @@ Semantics:
   accumulated cross-job evidence. The `mode="pattern"` trace event still fires.
   Under `propose`, `flag_pattern` stays a shadow *would-have-done* record and
   opens no case file.
+- **Shared pattern identity (amended by #6789).** The canonical mapping and
+  observation identities live in a versioned compare-and-swap ledger at
+  `refs/issue-orchestrator/registry/tech-lead-patterns`. The ref points to a
+  commit whose message contains the complete bounded registry; non-force
+  fast-forward updates make concurrent decisions atomic. A lease-backed
+  creation reservation carries the original issue marker, observation
+  identity, and classification across both crash windows. Before the external
+  write, the exact token atomically enters a durable `publishing` state. That
+  state does not expire: GitHub creation has no idempotency key or fencing
+  token, so elapsed time cannot prove an unresolved request will never land.
+  Another client finalizes it only after an authoritative marker lookup proves
+  the issue exists; while the result is absent or unknown it preserves the
+  operation and cannot reissue the write. Only a reservation that never entered
+  `publishing` may be taken over after its lease expires. Evidence comments use
+  the same rule: shared authority reserves the observation and classification,
+  durably starts publication, recovers its exact comment receipt, and only then
+  finalizes the evidence count. A peer cannot publish while that operation is
+  held or has an ambiguous external outcome.
+  `triage_authority.sqlite` is a local replica used by planning. Startup merges
+  trusted rows from a rolling upgrade into the shared ledger, then rebuilds
+  the local replica from the shared record. Editable issue titles, bodies, and
+  comments are never the signature authority or the evidence count.
 - **Duplicate observations accrue to the ledger (amended by #6989).** A
   `create_issue` proposal carrying `duplicate_of` has exactly one non-filing
   route in the dedup gate (#6878): commenting on the candidate, which requires
@@ -370,8 +392,9 @@ hand is a decline.
 
 `min_evidence` counts DISTINCT observations. Each `flag_pattern` observation
 carries a stable identity — its source run, session, and decision action — and
-the durable ledger records it create-once, so replaying a partially applied
-decision after a crash can repeat an evidence comment but can never advance the
+the durable ledger records it create-once. Once comment publication starts, a
+replay must observe and finalize that exact receipt; it cannot issue a second
+comment merely because a lease deadline passed, and it can never advance the
 count twice.
 
 Both cross-system creations — a case file, and a promotion filing — record a

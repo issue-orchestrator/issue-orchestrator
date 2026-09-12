@@ -1020,6 +1020,10 @@ class GitHubAdapter:
             logger.error("Failed to get PR %s: %s", pr_number, e)
             raise
 
+    def get_pr_diff(self, pr_number: int) -> str:
+        """Return complete review input; transport failures remain failures."""
+        return self._client.get_pr_diff(pr_number)
+
     def read_pr_status_check_rollup(
         self, pr_number: int, *, skip_primary_source: bool = False
     ) -> StatusCheckRollupRead:

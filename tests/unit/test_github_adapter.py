@@ -594,6 +594,14 @@ class TestLabelOperations:
 class TestPROperations:
     """Test PR-related operations."""
 
+    def test_get_pr_diff_delegates_to_client(self, adapter, mock_http_client):
+        """Complete diff reads use the authenticated HTTP client."""
+        mock_http_client.get_pr_diff.return_value = "diff --git a/a b/a"
+
+        assert adapter.get_pr_diff(42) == "diff --git a/a b/a"
+
+        mock_http_client.get_pr_diff.assert_called_once_with(42)
+
     def test_get_pr_success(self, adapter, mock_http_client):
         """get_pr is REST-only and does NOT fetch the rollup. Hot
         lifecycle paths must not pay the extra GraphQL round-trip."""

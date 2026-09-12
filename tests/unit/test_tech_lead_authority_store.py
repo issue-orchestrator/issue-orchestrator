@@ -666,6 +666,64 @@ def test_observation_identities_survive_reopen(tmp_path: Path) -> None:
     assert evidence.observation_count == 2
 
 
+@pytest.mark.parametrize("make_store", OP_STORES)
+def test_mirror_pattern_replaces_the_exact_local_projection(
+    tmp_path: Path, make_store
+) -> None:
+    """A client cache must reconstruct the shared identity and evidence exactly."""
+    store = make_store(tmp_path)
+    store.record_pattern(
+        signature="s",
+        issue_number=1,
+        observation_id="obsolete",
+        fix_class="code",
+        area="old",
+        diagnosis="old diagnosis",
+    )
+
+    store.mirror_pattern(
+        signature="s",
+        issue_number=1,
+        observation_ids=("remote-2", "remote-1", "remote-2"),
+        fix_class="human",
+        area="control",
+        diagnosis="shared diagnosis",
+    )
+
+    [evidence] = store.list_pattern_evidence()
+    assert evidence.observation_count == 2
+    assert (evidence.fix_class, evidence.area, evidence.diagnosis) == (
+        "human",
+        "control",
+        "shared diagnosis",
+    )
+    assert store.list_pattern_observation_ids(signature="s") == (
+        "remote-1",
+        "remote-2",
+    )
+    assert not store.has_pattern_observation(
+        signature="s", observation_id="obsolete"
+    )
+
+
+@pytest.mark.parametrize("make_store", OP_STORES)
+def test_mirror_pattern_rejects_a_conflicting_canonical_issue(
+    tmp_path: Path, make_store
+) -> None:
+    store = make_store(tmp_path)
+    store.record_pattern(signature="s", issue_number=1, observation_id="first")
+
+    with pytest.raises(TechLeadPatternConflictError):
+        store.mirror_pattern(
+            signature="s",
+            issue_number=2,
+            observation_ids=("first",),
+            fix_class="",
+            area="",
+            diagnosis="",
+        )
+
+
 def test_legacy_pattern_rows_keep_their_count_and_accept_new_observations(
     tmp_path: Path,
 ) -> None:
@@ -1024,6 +1082,8 @@ def test_pattern_methods_satisfy_the_port() -> None:
         "list_patterns",
         "note_pattern_observation",
         "has_pattern_observation",
+        "list_pattern_observation_ids",
+        "mirror_pattern",
     ):
         assert callable(getattr(SqliteTechLeadAuthorityStore, method))
         assert callable(getattr(InMemoryTechLeadAuthorityStore, method))

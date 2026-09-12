@@ -6,6 +6,7 @@ the durable ledger, and loop closure.
 """
 
 from unittest.mock import MagicMock, Mock
+import hashlib
 
 import pytest
 
@@ -30,7 +31,14 @@ from issue_orchestrator.control.tech_lead_finding_promotion import (
     select_promotion_updates,
     select_promotable_findings,
 )
+from issue_orchestrator.control.claim_gate import ClaimLostError
+from issue_orchestrator.control.pattern_registry import LocalPatternCaseFileRegistry
+from issue_orchestrator.control.reconciliation import (
+    ExternalSnapshot,
+    ReconciliationRequired,
+)
 from issue_orchestrator.domain.tech_lead_findings import (
+    CASE_FILE_ACTIVE,
     PROMOTION_STATE_DECLINED,
     PROMOTION_STATE_SHIPPED,
     PatternEvidence,
@@ -48,12 +56,57 @@ from issue_orchestrator.ports.promotion_target import (
     InMemoryPromotionTargetHost,
     PromotedIssueOutcome,
 )
+from issue_orchestrator.ports.comment_receipt import IssueCommentReceipt
+from issue_orchestrator.ports.pattern_registry import PatternRetirementPhase
 from issue_orchestrator.ports.tech_lead_authority import (
     InMemoryTechLeadAuthorityStore,
     TechLeadPromotionConflictError,
 )
 
 UPSTREAM = "issue-orchestrator/issue-orchestrator"
+
+
+def _settlement_ports(authority, *, signature: str, case_file: int):
+    if authority.load_pattern_evidence(signature=signature) is None:
+        authority.record_pattern(
+            signature=signature,
+            issue_number=case_file,
+            observation_id="settlement:test:A1",
+        )
+    repository = Mock()
+    published: list[str] = []
+
+    def add_comment(_number, body):
+        published.append(body)
+        return "https://example.test/comments/1"
+
+    def receipt(_number, *, body):
+        if body not in published:
+            return None
+        return IssueCommentReceipt(
+            comment_id="1",
+            url="https://example.test/comments/1",
+            author_key="app:test",
+            body_sha256=hashlib.sha256(body.encode()).hexdigest(),
+        )
+
+    repository.add_comment.side_effect = add_comment
+    repository.find_issue_comment_receipt.side_effect = receipt
+    return repository, LocalPatternCaseFileRegistry(authority)
+
+
+def _claim_lost() -> ClaimLostError:
+    return ClaimLostError(65, "settle tech_lead promotion")
+
+
+def _reconciliation_required() -> ReconciliationRequired:
+    return ReconciliationRequired(
+        entity_type="issue",
+        entity_id=65,
+        expected=ExternalSnapshot.for_issue(65, {"tech-lead-observation"}),
+        actual=ExternalSnapshot.for_issue(65, set()),
+        reason="the case file lost its observation label",
+    )
 
 
 def _route(**entries) -> dict[str, PromotionRouteTarget]:
@@ -1039,8 +1092,15 @@ class TestAreaUpgradedWhileFilingWasInFlight:
         [action] = plan_promotion_settlements(settled)
         assert isinstance(action, SettleTechLeadPromotionAction)
         assert action.area == "db"
+        repository, registry = _settlement_ports(
+            authority, signature=action.signature, case_file=action.case_file_issue_number
+        )
         assert apply_settle_tech_lead_promotion(
-            action, repository_host=Mock(), authority=authority
+            action,
+            repository_host=repository,
+            authority=authority,
+            pattern_registry=registry,
+            now_iso="2026-09-10T12:00:00+00:00",
         ).success
 
         [fix] = authority.list_recent_shipped_fixes(limit=5)
@@ -1485,9 +1545,15 @@ class TestSettlement:
         facts = classify_promotion_outcomes(authority.list_promotions(), target=target)
         [action] = plan_promotion_settlements(facts)
         assert isinstance(action, SettleTechLeadPromotionAction)
-        repository_host = Mock()
+        repository_host, registry = _settlement_ports(
+            authority, signature=action.signature, case_file=action.case_file_issue_number
+        )
         result = apply_settle_tech_lead_promotion(
-            action, repository_host=repository_host, authority=authority
+            action,
+            repository_host=repository_host,
+            authority=authority,
+            pattern_registry=registry,
+            now_iso="2026-09-10T12:00:00+00:00",
         )
         return result, repository_host, authority
 
@@ -1507,11 +1573,11 @@ class TestSettlement:
             PROMOTION_STATE_SHIPPED
         )
 
-    def test_declined_leaves_the_case_file_open_and_blocks_refiling(self):
+    def test_declined_closes_the_case_file_and_blocks_refiling(self):
         result, repository_host, authority = self._settle(shipped=False)
 
         assert result.success
-        repository_host.update_issue_state.assert_not_called()
+        repository_host.update_issue_state.assert_called_once_with(65, "closed")
         assert authority.load_promotion(signature="anchor-close").state == (
             PROMOTION_STATE_DECLINED
         )
@@ -1525,6 +1591,259 @@ class TestSettlement:
             == ()
         )
 
+    def test_a_registry_naming_another_case_file_blocks_every_settlement_write(self):
+        """Ledger/registry drift must stop before ANY of the three write surfaces.
+
+        The command is guarded against ``case_file_issue_number``; the registry
+        names the canonical case file independently. If they disagree, settling
+        anyway would comment on and close one issue while recording the OTHER as
+        settled in durable memory. Registry, GitHub, and authority must all be
+        untouched instead (#7247 review F2).
+        """
+        authority = InMemoryTechLeadAuthorityStore()
+        authority.record_promotion(promotion=_promotion("anchor-close"))
+        action = SettleTechLeadPromotionAction(
+            signature="anchor-close",
+            case_file_issue_number=65,
+            target_repo=UPSTREAM,
+            target_issue_number=500,
+            shipped=True,
+            merged_pr_url="https://github.com/x/y/pull/6956",
+        )
+        # The registry's canonical case file is #66, not the authorized #65.
+        repository, registry = _settlement_ports(
+            authority, signature=action.signature, case_file=66
+        )
+
+        result = apply_settle_tech_lead_promotion(
+            action,
+            repository_host=repository,
+            authority=authority,
+            pattern_registry=registry,
+            now_iso="2026-09-10T12:00:00+00:00",
+        )
+
+        assert not result.success
+        assert "refusing to mutate" in result.error
+        # 1. GitHub: neither issue was commented on or closed.
+        repository.add_comment.assert_not_called()
+        repository.update_issue_state.assert_not_called()
+        # 2. Registry: no lifecycle transition, no reservation in flight.
+        entry = registry.read(signature="anchor-close")
+        assert entry is not None
+        assert entry.issue_number == 66
+        assert entry.lifecycle == ()
+        assert entry.pending_retirement is None
+        # 3. Authority: no shipped-fix row, promotion still in flight.
+        assert authority.list_recent_shipped_fixes(limit=5) == ()
+        assert authority.load_promotion(signature="anchor-close").state != (
+            PROMOTION_STATE_SHIPPED
+        )
+
+    def test_declined_closure_keeps_the_case_file_taking_later_evidence(self):
+        """Closing a declined case file is a GITHUB state, not a ledger state.
+
+        #7240 names "deliberately declined" as a retirement rule, so settlement
+        now closes that case file instead of leaving it open. The property the
+        old open-on-decline behavior protected — later evidence keeps accruing
+        and never mints a replacement case file — has to survive the migration,
+        and it does, because the durable ledger, not the open-issue scan, is what
+        routes an observation to its case file (#7247 review F3).
+        """
+        from issue_orchestrator.control.actions import AppendPatternObservationAction
+        from issue_orchestrator.control.reconciliation import (
+            build_expected_for_mutation,
+        )
+        from issue_orchestrator.control.tech_lead_case_files import (
+            CaseFileIntake,
+            PatternCaseFilePlanner,
+            build_pattern_ledger,
+        )
+        from issue_orchestrator.domain.tech_lead_artifacts import (
+            ProposedTechLeadAction,
+        )
+
+        result, repository_host, authority = self._settle(shipped=False)
+        assert result.success
+        repository_host.update_issue_state.assert_called_once_with(65, "closed")
+
+        # The durable row survives closure, canonical issue and all.
+        ledger = build_pattern_ledger(authority.list_pattern_evidence())
+        assert ledger["anchor-close"].case_file_issue_number == 65
+
+        actions: list = []
+        PatternCaseFilePlanner(
+            config=_config(),
+            actions=actions,
+            anchor_issue_number=99,
+            pattern_ledger=ledger,
+            findings={},
+            source_run_id="run-later",
+            source_session_name="issue-99",
+            observed_at="2026-09-12T00:00:00+00:00",
+            expected=build_expected_for_mutation(),
+        ).plan(
+            CaseFileIntake.sighting(
+                ProposedTechLeadAction(
+                    id="A7",
+                    action_type="flag_pattern",
+                    body="It happened again after the decline.",
+                    pattern_signature="anchor-close",
+                    area=None,
+                    finding_ids=(),
+                )
+            )
+        )
+
+        [append] = actions
+        assert isinstance(append, AppendPatternObservationAction)
+        assert append.issue_number == 65
+        assert append.pattern_signature == "anchor-close"
+
+    def test_declined_closure_removes_the_case_file_from_board_facts(self):
+        """The board effect of the migration, driven through the REAL scan.
+
+        Every Tech Lead surface projects the fact gatherer's open-issue scan
+        (``discover_open_tech_lead_anchor_issues``), so the close settlement
+        performs is what takes a retired case file off the board. Asserting that
+        against a hand-built list would prove nothing, so one board runs through
+        the real discovery twice: open, it is surfaced as a case file; closed by
+        this settlement's own ``update_issue_state`` calls, it is gone, while its
+        disposition stays durably readable (#7240 clutter reduction; #7247
+        review F3).
+        """
+        from issue_orchestrator.control.health_review_trigger import (
+            discover_open_tech_lead_anchor_issues,
+        )
+        from issue_orchestrator.control.tech_lead_case_files import (
+            split_tech_lead_case_file_issues,
+        )
+        from issue_orchestrator.domain.models import Issue
+        from issue_orchestrator.domain.tech_lead_session import (
+            TECH_LEAD_OBSERVATION_LABEL,
+        )
+
+        config = _config()
+        board = [
+            Issue(
+                number=99,
+                title="Tech lead batch anchor",
+                labels=[config.tech_lead_review_agent],
+            ),
+            Issue(
+                number=65,
+                title="[tech-lead] anchor-close",
+                labels=[config.tech_lead_review_agent, TECH_LEAD_OBSERVATION_LABEL],
+            ),
+        ]
+
+        class Board(MagicMock):
+            """The anchor scan as GitHub answers it: open issues only."""
+
+            def list_issues(self, *, state, **_kwargs):
+                return [issue for issue in board if state in ("all", issue.state)]
+
+        host = Board()
+
+        # Control: the fixture IS visible on the board while it is open.
+        _, before = split_tech_lead_case_file_issues(
+            discover_open_tech_lead_anchor_issues(host, config)
+        )
+        assert [summary.issue_number for summary in before] == [65]
+
+        result, repository_host, authority = self._settle(shipped=False)
+        assert result.success
+        for number, state in (
+            call.args for call in repository_host.update_issue_state.call_args_list
+        ):
+            for issue in board:
+                if issue.number == number:
+                    issue.state = state
+        assert [issue.state for issue in board] == ["open", "closed"]
+
+        remaining, case_files = split_tech_lead_case_file_issues(
+            discover_open_tech_lead_anchor_issues(host, config)
+        )
+
+        assert case_files == ()
+        assert [issue.number for issue in remaining] == [99]
+        # Declined is still terminal for refiling, and still durably recorded.
+        assert authority.load_promotion(signature="anchor-close").state == (
+            PROMOTION_STATE_DECLINED
+        )
+
+    @pytest.mark.parametrize(
+        "lost_authority",
+        (_claim_lost(), _reconciliation_required()),
+        ids=("claim-lost", "reconciliation-required"),
+    )
+    def test_losing_authority_mid_settlement_aborts_the_tick(self, lost_authority):
+        """Authority loss must ABORT the tick, not fail one action.
+
+        ``ActionApplier.apply`` re-raises ``ReconciliationRequired`` and
+        ``ClaimLostError`` on purpose: the plan or the claim this settlement was
+        authorized under is gone, so the orchestrator has to reconcile. Returning
+        ``ActionResult.fail`` instead would let ``apply_all`` keep applying the
+        REST of the same stale plan after authority was lost — which is exactly
+        what every other ``before_write`` boundary re-raises to prevent (#7247
+        review F5).
+
+        The loss is staged AFTER one successful check, so this also proves the
+        abort is immediate: the write that check authorized stands, and nothing
+        after it — the publication fence, the comment, the close, the shipped-fix
+        row, the ledger state — happens at all.
+        """
+        authority = InMemoryTechLeadAuthorityStore()
+        authority.record_promotion(promotion=_promotion("anchor-close"))
+        action = SettleTechLeadPromotionAction(
+            signature="anchor-close",
+            case_file_issue_number=65,
+            target_repo=UPSTREAM,
+            target_issue_number=500,
+            shipped=True,
+            merged_pr_url="https://github.com/x/y/pull/6956",
+        )
+        repository, registry = _settlement_ports(
+            authority, signature=action.signature, case_file=65
+        )
+        checks = 0
+
+        def before_write() -> None:
+            nonlocal checks
+            checks += 1
+            if checks > 1:
+                raise lost_authority
+
+        with pytest.raises(type(lost_authority)) as caught:
+            apply_settle_tech_lead_promotion(
+                action,
+                repository_host=repository,
+                authority=authority,
+                pattern_registry=registry,
+                before_write=before_write,
+                now_iso="2026-09-10T12:00:00+00:00",
+            )
+
+        assert caught.value is lost_authority
+        assert checks == 2
+        # 1. GitHub: the case file was neither commented on nor closed.
+        repository.add_comment.assert_not_called()
+        repository.update_issue_state.assert_not_called()
+        # 2. Registry: the reservation the FIRST check authorized stands, and no
+        #    write after it — publication fence or terminal commit — happened.
+        entry = registry.read(signature="anchor-close")
+        assert entry is not None
+        assert entry.lifecycle == ()
+        assert entry.disposition == CASE_FILE_ACTIVE
+        assert entry.pending_retirement is not None
+        assert entry.pending_retirement.phase is PatternRetirementPhase.COMMENT
+        assert entry.publication_started_at is None
+        # 3. Authority: no shipped-fix row, promotion still in flight.
+        assert authority.list_recent_shipped_fixes(limit=5) == ()
+        assert authority.load_promotion(signature="anchor-close").state != (
+            PROMOTION_STATE_SHIPPED
+        )
+
     def test_shipped_settlement_requires_the_merged_pr_evidence(self):
         with pytest.raises(ValueError, match="merged"):
             SettleTechLeadPromotionAction(
@@ -1534,6 +1853,50 @@ class TestSettlement:
                 target_issue_number=500,
                 shipped=True,
             )
+
+    def test_later_clock_retry_finishes_local_settlement(self):
+        class FailsFirstSettlement(InMemoryTechLeadAuthorityStore):
+            attempts = 0
+
+            def settle_promotion(self, **kwargs):
+                self.attempts += 1
+                if self.attempts == 1:
+                    raise RuntimeError("crash after remote retirement")
+                return super().settle_promotion(**kwargs)
+
+        authority = FailsFirstSettlement()
+        authority.record_promotion(promotion=_promotion("anchor-close"))
+        action = SettleTechLeadPromotionAction(
+            signature="anchor-close",
+            case_file_issue_number=65,
+            target_repo=UPSTREAM,
+            target_issue_number=500,
+            shipped=False,
+        )
+        repository, registry = _settlement_ports(
+            authority, signature=action.signature, case_file=65
+        )
+
+        first = apply_settle_tech_lead_promotion(
+            action,
+            repository_host=repository,
+            authority=authority,
+            pattern_registry=registry,
+            now_iso="2026-09-10T12:00:00+00:00",
+        )
+        retry = apply_settle_tech_lead_promotion(
+            action,
+            repository_host=repository,
+            authority=authority,
+            pattern_registry=registry,
+            now_iso="2026-09-11T12:00:00+00:00",
+        )
+
+        assert not first.success
+        assert retry.success
+        assert authority.attempts == 2
+        assert repository.update_issue_state.call_count == 1
+        assert repository.add_comment.call_count == 1
 
 
 # ---------------------------------------------------------------------------
