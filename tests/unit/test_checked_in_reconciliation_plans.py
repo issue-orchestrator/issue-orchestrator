@@ -32,6 +32,7 @@ documented in the runbook instead of being faked here.
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -53,9 +54,20 @@ PLAN_PATHS = sorted(PLAN_DIR.glob("tech-lead-case-lifecycle-*.yaml"))
 # The two forms these plans use to name a numbered GitHub item.
 _NUMBERED_ITEM = re.compile(r"#\d+|/(?:pull|issues)/\d+")
 
+# fc1ac91c2e8f201b9ee469ab1cdffb622a58b926, "Fetch Tech Lead PR diffs and
+# coordinate pattern case files (#7238)". A fixed historical instant, written
+# down rather than read from ambient git history for the reason F6 established:
+# a depth-1 CI checkout cannot see it, and a guard that silently answers "no
+# history" is worse than no guard.
+TRANSPORT_FIX_MERGED_AT = datetime(2026, 9, 11, 16, 3, 9, tzinfo=timezone.utc)
+
+
+def _document(path: Path) -> dict:
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
+
 
 def _outcomes(path: Path) -> list[dict]:
-    return yaml.safe_load(path.read_text(encoding="utf-8"))["outcomes"]
+    return _document(path)["outcomes"]
 
 
 def _is_retained(outcome: dict) -> bool:
@@ -146,6 +158,36 @@ def test_the_merged_transport_fix_stays_retired() -> None:
     assert (
         "https://github.com/issue-orchestrator/issue-orchestrator/pull/7238"
         in outcome["evidence"]
+    )
+
+
+def test_the_plan_recording_the_merged_fix_is_dated_after_it_merged() -> None:
+    """A reviewed transition may not be dated before the fact it records.
+
+    ``recorded_at`` is not plan prose. It rides into
+    :class:`CaseFileLifecycleTransition`, which is one reviewed, durable change
+    to a case file, and lands in the registry as part of that transition's
+    audit record. The round 3 correction moved this outcome to ``shipped`` on
+    the strength of a merge from 2026-09-11T16:03:09Z while leaving the
+    plan-wide timestamp at 2026-09-10T23:15:00Z, so applying it would have
+    written durable authority claiming the fix shipped seventeen hours before
+    the commit it cites existed (#7248 round 5 review F7).
+
+    Correcting the timestamp before publication is safe rather than a second
+    decision: Porchpin's shared registry has never been seeded, so no
+    transition is recorded to contradict — and even where one were,
+    ``CaseFileLifecycleTransition.same_intent`` deliberately excludes
+    ``recorded_at``, so a replay still resolves to the first reservation.
+    """
+    plan = PLAN_DIR / "tech-lead-case-lifecycle-porchpin-2026-09.yaml"
+    recorded_at = datetime.fromisoformat(_document(plan)["recorded_at"])
+
+    assert recorded_at >= TRANSPORT_FIX_MERGED_AT, (
+        f"{plan.name} records its outcomes at {recorded_at.isoformat()}, before"
+        f" PR #7238 merged at {TRANSPORT_FIX_MERGED_AT.isoformat()}. It retires"
+        f" a case file on the strength of that merge, so the transition it"
+        f" writes would be dated before the fact it records; re-review the"
+        f" decision set and advance recorded_at to the re-review time."
     )
 
 

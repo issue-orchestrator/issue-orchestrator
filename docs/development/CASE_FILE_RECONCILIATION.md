@@ -288,7 +288,21 @@ Two halves, split by what can actually be known where:
 Both plans were reconfirmed on 2026-09-11 against their repositories'
 `.issue-orchestrator/state/tech_lead_authority.sqlite`, each under the
 projection named in its own header — issue-orchestrator against the shared
-projection (13/13) and Porchpin against the seeded projection (53/53).
+projection (13/13) and Porchpin against the seeded projection (53/53). The
+Porchpin decision set was then re-reviewed on 2026-09-12, after PR #7238
+merged, and its plan-wide `recorded_at` advanced past that merge.
+
+That last part is the rule, not a detail of one edit: **when a re-review
+changes an outcome on the strength of something that has since happened,
+advance the plan's `recorded_at` to the re-review time.** `recorded_at` is not
+plan prose — it rides into the `CaseFileLifecycleTransition` the apply writes,
+so leaving it behind makes durable authority claim a decision predates the fact
+it records. Correcting it before publication is safe rather than a second
+decision: the transition identity is `plan_id:signature` and
+`same_intent` deliberately excludes `recorded_at`, so an already-applied plan
+still replays to its first reservation. Registry revisions are unaffected
+either way — a review revision fingerprints the registry's settled facts, not
+the plan's decision about them.
 
 One ambiguity is carried deliberately rather than resolved: two
 issue-orchestrator rows (`review-exchange-coder-no-completion` #6913 and

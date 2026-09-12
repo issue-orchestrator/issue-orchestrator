@@ -6,9 +6,15 @@
 # registry has not been seeded yet, so a dry run cannot preview it.
 # Reconfirmed 2026-09-11 against Porchpin's
 # .issue-orchestrator/state/tech_lead_authority.sqlite: 53/53 match.
+# Re-reviewed 2026-09-12 after PR #7238 merged (fc1ac91, 2026-09-11T16:03:09Z):
+# tech-lead-batch-manifest-diff-fetch-blocked-by-gh-guard moved active ->
+# shipped, and recorded_at advanced past that merge so the durable transition
+# this plan writes cannot claim a fix shipped before the merge existed. The
+# registry revisions are unaffected: a review revision fingerprints the
+# REGISTRY's settled facts, not the plan's decision about them.
 plan_id: 7240-porchpin-case-files-2026-09
 repository: porchpin/porchpin
-recorded_at: '2026-09-10T23:15:00+00:00'
+recorded_at: '2026-09-12T01:40:00+00:00'
 outcomes:
 - signature: a5-config-lock-rework-misroute
   issue: 39
