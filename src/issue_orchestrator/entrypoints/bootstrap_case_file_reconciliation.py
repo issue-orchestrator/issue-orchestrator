@@ -62,19 +62,32 @@ def _build_lifecycle_preview(
     )
     from .bootstrap_tech_lead import create_pattern_registry_preview
 
-    def _refuse(issue: int) -> None:
-        # Unreachable while the reconciler only applies when asked to, and
-        # wired anyway: the preview's guarantee must not rest on that caller
-        # staying correct. The registry refuses the write on its own, and this
-        # refuses the authority to attempt one.
-        raise CaseFileLifecycleReconciliationRefused(
-            f"a lifecycle dry run may not mutate #{issue}; re-run with --apply"
-        )
+    class _RefusingAuthority:
+        """Grants nothing, for either kind of write.
+
+        Unreachable while the reconciler only applies when asked to, and wired
+        anyway: the preview's guarantee must not rest on that caller staying
+        correct. The registry refuses the write on its own, and this refuses the
+        authority to attempt one.
+        """
+
+        def require_retirement(self, issue_number: int) -> None:
+            self._refuse(issue_number)
+
+        def require_classification(self, issue_number: int) -> None:
+            self._refuse(issue_number)
+
+        @staticmethod
+        def _refuse(issue_number: int) -> None:
+            raise CaseFileLifecycleReconciliationRefused(
+                f"a lifecycle dry run may not mutate #{issue_number};"
+                " re-run with --apply"
+            )
 
     return CaseFileLifecycleReconciler(
         registry=create_pattern_registry_preview(config, repository_host),
         repository_host=repository_host,
-        require_mutation_authority=_refuse,
+        mutation_authority=_RefusingAuthority(),
     )
 
 
@@ -84,7 +97,9 @@ def _build_lifecycle_applier(
     """Write-capable lifecycle authority behind the reconciliation gate."""
     from ..control.label_manager import LabelManager
     from ..control.mutation_gate import ReconciliationGate
-    from ..control.reconciliation import ExpectedState
+    from ..control.tech_lead_case_file_lifecycle_reconciliation import (
+        GatedCaseFileMutationAuthority,
+    )
     from ..execution.providers import create_fresh_issue_reader
     from .bootstrap_tech_lead import (
         create_pattern_registry,
@@ -98,14 +113,21 @@ def _build_lifecycle_applier(
         create_tech_lead_authority_store(config),
         shared_required=True,
     )
-    labels = LabelManager(config)
-    gate = ReconciliationGate(
-        fresh_issue_reader=create_fresh_issue_reader(config.repo, config),
-        reconcile=True,
-    )
-    expected = ExpectedState.with_labels(forbidden={labels.needs_reconcile})
+    # ONE reader, wired as both ports. A nonterminal outcome's authority
+    # constrains the issue's own state, and the gate refuses an expectation it
+    # has no snapshot reader for rather than narrowing it to labels — so
+    # omitting this argument would fail every classification closed instead of
+    # quietly downgrading it (#7248 round 6 review F8/A3).
+    fresh = create_fresh_issue_reader(config.repo, config)
     return CaseFileLifecycleReconciler(
         registry=registry,
         repository_host=repository_host,
-        require_mutation_authority=lambda issue: gate.require_state(expected, issue),
+        mutation_authority=GatedCaseFileMutationAuthority(
+            gate=ReconciliationGate(
+                fresh_issue_reader=fresh,
+                reconcile=True,
+                fresh_issue_snapshot_reader=fresh,
+            ),
+            pause_label=LabelManager(config).needs_reconcile,
+        ),
     )

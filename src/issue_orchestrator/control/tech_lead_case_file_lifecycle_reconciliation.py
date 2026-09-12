@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable, Mapping, cast
+from typing import TYPE_CHECKING, Any, Mapping, Protocol, cast
 
 from ..domain.tech_lead_findings import (
     TERMINAL_CASE_FILE_DISPOSITIONS,
@@ -19,6 +19,8 @@ from ..ports.pattern_registry import (
     require_resumable_retirement,
     require_reviewed_revision,
 )
+from .mutation_gate import ReconciliationGate
+from .reconciliation import ExpectedState
 from .tech_lead_case_file_lifecycle import (
     PatternCaseFileLifecycleOwner,
     retirement_comment,
@@ -160,6 +162,64 @@ def require_plan_repository(
         )
 
 
+class CaseFileMutationAuthority(Protocol):
+    """Permission to perform ONE reviewed outcome's external effects.
+
+    Two methods rather than one taking a flag, because the two kinds of write
+    need different facts to be true and the reconciler must not be able to ask
+    for the weaker one by accident. Both are asked immediately before the write,
+    against state read fresh from GitHub.
+    """
+
+    def require_retirement(self, issue_number: int) -> None:
+        """Authority to comment on and then close this case file."""
+        ...
+
+    def require_classification(self, issue_number: int) -> None:
+        """Authority to record a NONTERMINAL disposition on this case file.
+
+        Stricter than retirement by exactly one fact: the case file must still
+        be OPEN. ``active`` and ``needs_human`` mean "this class is not resolved
+        and its case file stays open", so recording one against an issue a human
+        closed after the plan was reviewed would leave durable authority
+        asserting something the board contradicts. A closed issue still has
+        perfectly readable labels, so the pause-label check alone cannot see it
+        (#7248 round 6 review F8/A3).
+        """
+        ...
+
+
+@dataclass(frozen=True)
+class GatedCaseFileMutationAuthority(CaseFileMutationAuthority):
+    """THE mapping from outcome kind to the state its write requires.
+
+    Owning it here, once, is what keeps the rule out of the reconciler's apply
+    loop and out of the composition root: the reconciler asks for authority to
+    do a KIND of thing, and this decides what must be true for that kind. Both
+    expectations go through the same :class:`ReconciliationGate`, so both
+    inherit its unknown-fails-closed contract — including for the issue state,
+    which the gate refuses to assume when it has no reader for it.
+    """
+
+    gate: ReconciliationGate
+    pause_label: str
+
+    def require_retirement(self, issue_number: int) -> None:
+        self.gate.require_state(
+            ExpectedState(forbidden_labels=frozenset({self.pause_label})),
+            issue_number,
+        )
+
+    def require_classification(self, issue_number: int) -> None:
+        self.gate.require_state(
+            ExpectedState(
+                forbidden_labels=frozenset({self.pause_label}),
+                required_issue_state="open",
+            ),
+            issue_number,
+        )
+
+
 class CaseFileLifecycleReconciler:
     """Validate full registry coverage, then apply each outcome through its owner."""
 
@@ -168,11 +228,11 @@ class CaseFileLifecycleReconciler:
         *,
         registry: "PatternCaseFileRegistry",
         repository_host: "RepositoryHost",
-        require_mutation_authority: Callable[[int], None],
+        mutation_authority: CaseFileMutationAuthority,
     ) -> None:
         self._registry = registry
         self._repository_host = repository_host
-        self._require_mutation_authority = require_mutation_authority
+        self._mutation_authority = mutation_authority
 
     def run(
         self,
@@ -309,9 +369,10 @@ class CaseFileLifecycleReconciler:
             transition = outcome.transition(
                 plan_id=plan.plan_id, recorded_at=plan.recorded_at
             )
-            owner = self._owner_for(outcome.issue_number)
+            terminal = outcome.disposition in TERMINAL_CASE_FILE_DISPOSITIONS
+            owner = self._owner_for(outcome.issue_number, terminal=terminal)
             try:
-                if outcome.disposition in TERMINAL_CASE_FILE_DISPOSITIONS:
+                if terminal:
                     owner.retire(
                         signature=outcome.signature,
                         transition=transition,
@@ -330,8 +391,10 @@ class CaseFileLifecycleReconciler:
                 break
         return applied, tuple(failures)
 
-    def _owner_for(self, issue_number: int) -> PatternCaseFileLifecycleOwner:
-        """Bind ONE lifecycle owner to the issue it is authorized to mutate.
+    def _owner_for(
+        self, issue_number: int, *, terminal: bool
+    ) -> PatternCaseFileLifecycleOwner:
+        """Bind ONE lifecycle owner to the issue and the authority it needs.
 
         The owner's ``before_write`` hook takes no arguments on purpose — it is
         the last gate before an external effect, and it must not be able to
@@ -339,11 +402,21 @@ class CaseFileLifecycleReconciler:
         subject here, once per outcome, is what makes that impossible: there is
         no owner in this module that can write to an issue whose mutation
         authority was not required first.
+
+        ``terminal`` binds the KIND of authority for the same reason. A
+        nonterminal classification needs a stricter grant than a retirement, and
+        choosing it here — beside the branch that chooses the write — is what
+        stops the two from drifting apart.
         """
+        require = (
+            self._mutation_authority.require_retirement
+            if terminal
+            else self._mutation_authority.require_classification
+        )
         return PatternCaseFileLifecycleOwner(
             registry=self._registry,
             repository_host=self._repository_host,
-            before_write=lambda: self._require_mutation_authority(issue_number),
+            before_write=lambda: require(issue_number),
         )
 
     @staticmethod

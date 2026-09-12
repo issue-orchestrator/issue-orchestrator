@@ -75,13 +75,25 @@ evidence to the case file before closing it; nonterminal outcomes remain open
 with their reviewed state recorded in the shared registry. A retry resumes the
 same stable transition even when its wall clock has advanced.
 
+Because a nonterminal outcome *asserts* the case file stays open, its write is
+granted only against an issue GitHub still reports as open, read fresh at the
+moment of the write. A human closing a case file between review and apply
+therefore halts that outcome instead of leaving durable authority saying
+`active` about a closed issue — the pause label alone cannot catch this, since
+a closed issue has perfectly readable labels. Terminal outcomes do not carry
+that requirement: closing is idempotent, and requiring `open` would stop the
+command from finishing its own interrupted retirement.
+
 ### Properties you can rely on
 
 - **Bounded.** It touches exactly the issue numbers written in the plan file. It
   discovers nothing, searches nothing, and closes nothing it was not told about
   by name. A cluster's `tracker` is never closed. Every mutation it plans is
   fail-closed on the pause label: an issue carrying `io:needs-reconcile` halts
-  the run instead of being written to.
+  the run instead of being written to, and a nonterminal outcome additionally
+  requires its case file to still be open. Both facts come from one fresh,
+  uncached read; a read that fails is unknown, which fails closed exactly like
+  a violation.
 - **Idempotent, with one named exception.** The case file is create-once by
   signature (ledger row + remote marker recovery) and each observation is
   create-once at an identity derived from `plan_id` + the entry's id, so a

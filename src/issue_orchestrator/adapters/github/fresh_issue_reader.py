@@ -4,7 +4,12 @@ import logging
 
 from ...infra import gh_audit
 from ...infra.config import Config
-from ...ports.fresh_issue_reader import FreshIssueReadError, FreshIssueReader
+from ...ports.fresh_issue_reader import (
+    FreshIssueReadError,
+    FreshIssueReader,
+    FreshIssueSnapshot,
+    FreshIssueSnapshotReader,
+)
 from .errors import GitHubHttpError
 from .http_client import GitHubHttpClient, GitHubHttpConfig, build_github_auth
 from .repo import get_repo_from_git, GitRepoError
@@ -12,8 +17,8 @@ from .repo import get_repo_from_git, GitRepoError
 logger = logging.getLogger(__name__)
 
 
-class GitHubFreshIssueReader(FreshIssueReader):
-    """FreshIssueReader implementation for GitHub."""
+class GitHubFreshIssueReader(FreshIssueReader, FreshIssueSnapshotReader):
+    """Fresh GitHub issue reads: labels alone, or labels plus state."""
 
     def __init__(
         self,
@@ -85,3 +90,64 @@ class GitHubFreshIssueReader(FreshIssueReader):
             raise FreshIssueReadError(
                 f"could not read fresh labels for issue #{issue_number}: {exc}"
             ) from exc
+
+    def read_issue_snapshot(self, issue_number: int) -> FreshIssueSnapshot:
+        """Labels and open/closed state from ONE uncached issue read.
+
+        The whole issue payload carries both, so a caller that needs the state
+        pays one request rather than two, and cannot end up reconciling labels
+        from one instant against a state from another.
+        """
+        try:
+            with gh_audit.context(
+                reason=gh_audit.AuditReason.GH_READ,
+                issue_key=str(issue_number),
+                scope=gh_audit.AuditScope.UNKNOWN,
+            ):
+                payload = self._client.get_issue(issue_number, use_cache=False)
+        except GitHubHttpError as exc:
+            logger.error(
+                "Failed to read fresh issue %s: %s", issue_number, exc
+            )
+            raise FreshIssueReadError(
+                f"could not read fresh state for issue #{issue_number}: {exc}"
+            ) from exc
+        except Exception as exc:
+            logger.error(
+                "Unexpected error reading fresh issue %s: %s", issue_number, exc
+            )
+            raise FreshIssueReadError(
+                f"could not read fresh state for issue #{issue_number}: {exc}"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise FreshIssueReadError(
+                f"issue #{issue_number} did not return an issue payload"
+            )
+        state = payload.get("state")
+        labels = payload.get("labels")
+        if not isinstance(state, str) or not isinstance(labels, list):
+            # A payload this adapter cannot read is UNKNOWN, never a default.
+            raise FreshIssueReadError(
+                f"issue #{issue_number} payload is missing state or labels"
+            )
+        try:
+            return FreshIssueSnapshot(
+                number=issue_number,
+                labels=tuple(
+                    name
+                    for label in labels
+                    if isinstance(name := _label_name(label), str)
+                ),
+                state=state,
+            )
+        except ValueError as exc:
+            raise FreshIssueReadError(
+                f"issue #{issue_number} reported an unusable state: {exc}"
+            ) from exc
+
+
+def _label_name(label: object) -> object:
+    """GitHub returns labels as objects; some fixtures use bare strings."""
+    if isinstance(label, dict):
+        return label.get("name")
+    return label

@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from ..ports.promotion_target import PromotionTargetHost
     from ..ports.pattern_registry import PatternCaseFileRegistry
     from ..ports.repository_setup import RepositorySetupGitHubVerification
-    from ..ports.fresh_issue_reader import FreshIssueReader
+    from ..adapters.github.fresh_issue_reader import GitHubFreshIssueReader
 
 
 # =============================================================================
@@ -55,8 +55,15 @@ def create_repository_host(
     return GitHubAdapter(repo=repo, config=config)
 
 
-def create_fresh_issue_reader(repo: str, config: "Config") -> "FreshIssueReader":
-    """Create the uncached issue-label reader used by mutation gates."""
+def create_fresh_issue_reader(repo: str, config: "Config") -> "GitHubFreshIssueReader":
+    """Create the uncached issue reader used by mutation gates.
+
+    Returns the concrete adapter rather than the narrow ``FreshIssueReader``
+    port because it satisfies ``FreshIssueSnapshotReader`` too, and a caller
+    whose gate must verify issue state needs the type system to say so. One
+    object serves both ports, so such a gate costs one adapter and one HTTP
+    client, not two (#7248 round 6 review A3).
+    """
     from ..adapters.github.fresh_issue_reader import GitHubFreshIssueReader
 
     return GitHubFreshIssueReader(repo=repo, config=config)

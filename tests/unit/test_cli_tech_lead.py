@@ -690,3 +690,81 @@ def test_lifecycle_command_composes_read_only_authority_without_apply(
 
     assert selected == [False, True]
     capsys.readouterr()
+
+
+def test_the_apply_composition_wires_a_snapshot_reader_for_classifications(
+    tmp_path: Path, monkeypatch
+):
+    """The guarded command must not fall back to a labels-only check.
+
+    A nonterminal outcome's authority constrains the issue's own state, and the
+    gate refuses an expectation it has no snapshot reader for. So the wiring is
+    load-bearing in both directions: with it, an open case file records and a
+    closed one is refused; without it, every classification would fail closed.
+    This drives the real bootstrap rather than a hand-built gate, because the
+    defect F8 describes is a COMPOSITION gap (#7248 round 6 review F8/A3).
+    """
+    from issue_orchestrator.entrypoints import bootstrap_case_file_reconciliation
+    from issue_orchestrator.execution import providers
+    from issue_orchestrator.ports.fresh_issue_reader import FreshIssueSnapshot
+
+    class _FreshIssue:
+        def __init__(self) -> None:
+            self.state = "closed"
+            self.snapshot_reads: list[int] = []
+
+        def read_issue_labels(self, issue_number: int) -> list[str]:
+            return []
+
+        def read_issue_snapshot(self, issue_number: int) -> FreshIssueSnapshot:
+            self.snapshot_reads.append(issue_number)
+            return FreshIssueSnapshot(
+                number=issue_number, labels=(), state=self.state
+            )
+
+    client = FakeGitHubRefClient()
+    revision = _seed_shared_case_file(client)
+    fresh = _FreshIssue()
+    monkeypatch.setattr(
+        providers,
+        "create_repository_host",
+        lambda repo, config: GitHubAdapter(repo=repo, http_client=cast(Any, client)),
+    )
+    monkeypatch.setattr(
+        providers, "create_fresh_issue_reader", lambda repo, config: fresh
+    )
+    plan = CaseFileLifecycleReconciliationPlan.from_mapping(
+        {
+            "plan_id": "apply-plan",
+            "repository": "owner/repo",
+            "recorded_at": "2026-09-12T01:40:00+00:00",
+            "outcomes": [
+                {
+                    "signature": "narrow",
+                    "issue": 1,
+                    "disposition": "active",
+                    "expected_revision": revision,
+                    "reason": "Still unresolved.",
+                    "evidence": ["owner/repo#1"],
+                }
+            ],
+        }
+    )
+
+    reconciler = bootstrap_case_file_reconciliation.build_case_file_lifecycle_reconciler(
+        _lifecycle_config(tmp_path), apply_writes=True
+    )
+    refused = reconciler.run(
+        plan, configured_repository="owner/repo", apply_writes=True
+    )
+
+    assert fresh.snapshot_reads == [1], "the classification never consulted the state"
+    assert refused.applied == 0
+    assert "issue state mismatch" in refused.failures[0]
+
+    fresh.state = "open"
+    accepted = reconciler.run(
+        plan, configured_repository="owner/repo", apply_writes=True
+    )
+
+    assert accepted.ok and accepted.applied == 1

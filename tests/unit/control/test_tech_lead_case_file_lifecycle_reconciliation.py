@@ -9,17 +9,22 @@ import pytest
 
 from issue_orchestrator.control.pattern_registry import LocalPatternCaseFileRegistry
 from issue_orchestrator.control.mutation_gate import ReconciliationGate
-from issue_orchestrator.control.reconciliation import ExpectedState
 from issue_orchestrator.control.tech_lead_case_file_lifecycle_reconciliation import (
     CaseFileLifecycleReconciler,
     CaseFileLifecycleReconciliationPlan,
     CaseFileLifecycleReconciliationRefused,
+    GatedCaseFileMutationAuthority,
 )
 from issue_orchestrator.control.tech_lead_case_file_lifecycle import (
     retirement_comment,
 )
 from issue_orchestrator.domain.tech_lead_findings import CaseFileLifecycleTransition
+from issue_orchestrator.control.reconciliation import ReconciliationRequired
 from issue_orchestrator.ports.comment_receipt import IssueCommentReceipt
+from issue_orchestrator.ports.fresh_issue_reader import (
+    FreshIssueReadError,
+    FreshIssueSnapshot,
+)
 from issue_orchestrator.ports.pattern_registry import PatternRegistryError
 from issue_orchestrator.ports.tech_lead_authority import (
     InMemoryTechLeadAuthorityStore,
@@ -80,9 +85,25 @@ class _Repository:
         self.closed.append(issue)
 
 
+class _Authority:
+    """Records the KIND of authority each write asked for."""
+
+    def __init__(self, on_require=lambda _issue: None) -> None:
+        self.calls: list[tuple[str, int]] = []
+        self._on_require = on_require
+
+    def require_retirement(self, issue_number: int) -> None:
+        self.calls.append(("retirement", issue_number))
+        self._on_require(issue_number)
+
+    def require_classification(self, issue_number: int) -> None:
+        self.calls.append(("classification", issue_number))
+        self._on_require(issue_number)
+
+
 def _reconciler(
     *rows: tuple[str, int],
-    require_mutation_authority=lambda _issue: None,
+    mutation_authority=None,
 ):
     authority = InMemoryTechLeadAuthorityStore()
     for signature, issue in rows:
@@ -97,7 +118,7 @@ def _reconciler(
         CaseFileLifecycleReconciler(
             registry=registry,
             repository_host=cast(Any, repository),
-            require_mutation_authority=require_mutation_authority,
+            mutation_authority=mutation_authority or _Authority(),
         ),
         registry,
         repository,
@@ -240,7 +261,7 @@ def test_mutation_guard_and_atomic_revision_check_precede_external_writes() -> N
         )
 
     reconciler, registry, repository = _reconciler(
-        ("a", 1), require_mutation_authority=race
+        ("a", 1), mutation_authority=_Authority(on_require=race)
     )
     registry_holder.append(registry)
     plan = _plan(_reviewed_outcome(registry, "a", 1, "shipped"))
@@ -260,10 +281,11 @@ def test_reconciliation_hold_fails_closed_before_retirement_writes() -> None:
             return ["io:needs-reconcile"]
 
     gate = ReconciliationGate(fresh_issue_reader=_FreshLabels(), reconcile=True)
-    expected = ExpectedState.with_labels(forbidden={"io:needs-reconcile"})
     reconciler, registry, repository = _reconciler(
         ("a", 1),
-        require_mutation_authority=lambda issue: gate.require_state(expected, issue),
+        mutation_authority=GatedCaseFileMutationAuthority(
+            gate=gate, pause_label="io:needs-reconcile"
+        ),
     )
     plan = _plan(_reviewed_outcome(registry, "a", 1, "shipped"))
 
@@ -288,9 +310,9 @@ def test_preflight_refuses_a_plan_whose_later_row_is_inadmissible() -> None:
     decision set, so an inadmissible row anywhere in it must stop the command
     before its first write (#7248 review F2/A2).
     """
-    guarded: list[int] = []
+    guarded = _Authority()
     reconciler, registry, repository = _reconciler(
-        ("a", 1), ("b", 2), require_mutation_authority=guarded.append
+        ("a", 1), ("b", 2), mutation_authority=guarded
     )
     # Retire "b" under a different transition BEFORE the plan is reviewed, so
     # its expected_revision matches the terminal state exactly. The staleness
@@ -305,7 +327,7 @@ def test_preflight_refuses_a_plan_whose_later_row_is_inadmissible() -> None:
     with pytest.raises(CaseFileLifecycleReconciliationRefused, match="terminal"):
         reconciler.run(plan, configured_repository="owner/repo", apply_writes=True)
 
-    assert guarded == []
+    assert guarded.calls == []
     assert repository.comments == []
     assert repository.closed == []
     assert registry.read(signature="a").lifecycle == ()  # type: ignore[union-attr]
@@ -320,9 +342,9 @@ def test_preflight_refuses_a_transition_identity_reused_with_a_new_payload() -> 
     identity is derived from the plan id and signature, this is what a plan
     re-authored under its old id looks like (#7248 review F2).
     """
-    guarded: list[int] = []
+    guarded = _Authority()
     reconciler, registry, repository = _reconciler(
-        ("a", 1), ("b", 2), require_mutation_authority=guarded.append
+        ("a", 1), ("b", 2), mutation_authority=guarded
     )
     registry.record_lifecycle(
         signature="b",
@@ -344,7 +366,7 @@ def test_preflight_refuses_a_transition_identity_reused_with_a_new_payload() -> 
     ):
         reconciler.run(plan, configured_repository="owner/repo", apply_writes=True)
 
-    assert guarded == []
+    assert guarded.calls == []
     assert repository.comments == []
     assert repository.closed == []
     assert registry.read(signature="a").lifecycle == ()  # type: ignore[union-attr]
@@ -399,9 +421,9 @@ def test_preflight_refuses_a_pending_retirement_whose_comment_changed() -> None:
     and the rejection landed mid-apply, after the earlier row had already been
     commented on and closed (#7248 round 2 review F2/A2).
     """
-    guarded: list[int] = []
+    guarded = _Authority()
     reconciler, registry, repository = _reconciler(
-        ("a", 1), ("b", 2), require_mutation_authority=guarded.append
+        ("a", 1), ("b", 2), mutation_authority=guarded
     )
     plan = _plan(
         _reviewed_outcome(registry, "a", 1, "shipped"),
@@ -421,7 +443,7 @@ def test_preflight_refuses_a_pending_retirement_whose_comment_changed() -> None:
     ):
         reconciler.run(plan, configured_repository="owner/repo", apply_writes=True)
 
-    assert guarded == []
+    assert guarded.calls == []
     assert repository.comments == []
     assert repository.closed == []
     assert registry.read(signature="a").lifecycle == ()  # type: ignore[union-attr]
@@ -441,7 +463,7 @@ def test_a_shared_registry_read_failure_is_a_bounded_refusal() -> None:
     reconciler = CaseFileLifecycleReconciler(
         registry=cast(Any, _UnreadableRegistry()),
         repository_host=cast(Any, repository),
-        require_mutation_authority=lambda _issue: None,
+        mutation_authority=_Authority(),
     )
 
     with pytest.raises(
@@ -484,3 +506,154 @@ class _UnreadableRegistry:
 
     def list_entries(self) -> tuple[Any, ...]:
         raise PatternRegistryError("registry ref could not be read: 503")
+
+
+# --- nonterminal outcomes require a live case file (#7248 round 6 F8/A3) ----
+
+
+class _FreshIssue:
+    """A fresh reader over one issue's real labels and state."""
+
+    def __init__(self, state: str = "open", *, fails: bool = False) -> None:
+        self.state = state
+        self.fails = fails
+        self.reads: list[int] = []
+
+    def read_issue_labels(self, issue_number: int) -> list[str]:
+        self.reads.append(issue_number)
+        if self.fails:
+            raise FreshIssueReadError("transport failed")
+        return []
+
+    def read_issue_snapshot(self, issue_number: int) -> FreshIssueSnapshot:
+        self.reads.append(issue_number)
+        if self.fails:
+            raise FreshIssueReadError("transport failed")
+        return FreshIssueSnapshot(number=issue_number, labels=(), state=self.state)
+
+
+def _gated(reader: _FreshIssue) -> GatedCaseFileMutationAuthority:
+    return GatedCaseFileMutationAuthority(
+        gate=ReconciliationGate(
+            fresh_issue_reader=cast(Any, reader),
+            reconcile=True,
+            fresh_issue_snapshot_reader=cast(Any, reader),
+        ),
+        pause_label="io:needs-reconcile",
+    )
+
+
+def test_a_closed_case_file_refuses_a_nonterminal_classification() -> None:
+    """``active`` means the case file stays OPEN, so it must still be open.
+
+    The guard used to check only that the pause label was absent, and a closed
+    issue has perfectly readable labels — so a human closing a case file after
+    the plan was reviewed sailed through it, and durable authority was left
+    saying ``active`` about an issue the board shows closed (#7248 round 6
+    review F8).
+    """
+    reader = _FreshIssue(state="closed")
+    reconciler, registry, repository = _reconciler(
+        ("a", 1), mutation_authority=_gated(reader)
+    )
+    plan = _plan(_reviewed_outcome(registry, "a", 1, "active"))
+
+    result = reconciler.run(plan, configured_repository="owner/repo", apply_writes=True)
+
+    assert result.applied == 0
+    assert result.failures and "issue state mismatch" in result.failures[0]
+    assert registry.read(signature="a").lifecycle == ()  # type: ignore[union-attr]
+    assert repository.comments == [] and repository.closed == []
+
+
+def test_an_unreadable_case_file_refuses_a_nonterminal_classification() -> None:
+    """Unknown is not open. A failed read fails closed, like every other one."""
+    reader = _FreshIssue(fails=True)
+    reconciler, registry, repository = _reconciler(
+        ("a", 1), mutation_authority=_gated(reader)
+    )
+    plan = _plan(_reviewed_outcome(registry, "a", 1, "needs_human"))
+
+    result = reconciler.run(plan, configured_repository="owner/repo", apply_writes=True)
+
+    assert result.applied == 0
+    assert result.failures
+    assert registry.read(signature="a").lifecycle == ()  # type: ignore[union-attr]
+    assert repository.comments == [] and repository.closed == []
+
+
+def test_an_open_case_file_accepts_a_nonterminal_classification() -> None:
+    """The guard is a guard, not a block: an open case file still records."""
+    reader = _FreshIssue(state="open")
+    reconciler, registry, repository = _reconciler(
+        ("a", 1), mutation_authority=_gated(reader)
+    )
+    plan = _plan(_reviewed_outcome(registry, "a", 1, "needs_human"))
+
+    result = reconciler.run(plan, configured_repository="owner/repo", apply_writes=True)
+
+    assert result.ok and result.applied == 1
+    assert registry.read(signature="a").disposition == "needs_human"  # type: ignore[union-attr]
+    assert reader.reads == [1]
+    assert repository.comments == [] and repository.closed == []
+
+
+def test_a_gate_with_no_snapshot_reader_refuses_rather_than_narrowing() -> None:
+    """An expectation the gate cannot verify is unknown, not satisfied.
+
+    This is the composition failure mode the wiring must never reach: a gate
+    holding only a labels reader can still answer the pause-label half of a
+    classification expectation. Answering it would be worse than useless, so
+    the gate refuses the whole expectation instead (#7248 round 6 review A3).
+    """
+    reader = _FreshIssue(state="open")
+    authority = GatedCaseFileMutationAuthority(
+        gate=ReconciliationGate(
+            fresh_issue_reader=cast(Any, reader), reconcile=True
+        ),
+        pause_label="io:needs-reconcile",
+    )
+
+    authority.require_retirement(1)  # labels-only expectation: still verifiable
+
+    with pytest.raises(ReconciliationRequired):
+        authority.require_classification(1)
+
+
+def test_a_terminal_outcome_does_not_require_the_case_file_to_be_open() -> None:
+    """Retirement closes the issue; an already-closed one is idempotent.
+
+    The stricter grant belongs to classifications alone. Requiring ``open`` for
+    a retirement would make the command unable to finish its own interrupted
+    work — the close lands, the registry commit does not, and the retry finds a
+    closed issue.
+    """
+    reader = _FreshIssue(state="closed")
+    reconciler, registry, repository = _reconciler(
+        ("a", 1), mutation_authority=_gated(reader)
+    )
+    plan = _plan(_reviewed_outcome(registry, "a", 1, "shipped"))
+
+    result = reconciler.run(plan, configured_repository="owner/repo", apply_writes=True)
+
+    assert result.ok and result.applied == 1
+    assert repository.closed == [1]
+    assert registry.read(signature="a").disposition == "shipped"  # type: ignore[union-attr]
+
+
+def test_each_outcome_asks_for_the_authority_its_own_write_needs() -> None:
+    """The kind of grant follows the kind of write, per outcome."""
+    authority = _Authority()
+    reconciler, registry, _repository = _reconciler(
+        ("a", 1), ("b", 2), mutation_authority=authority
+    )
+    plan = _plan(
+        _reviewed_outcome(registry, "a", 1, "needs_human"),
+        _reviewed_outcome(registry, "b", 2, "superseded"),
+    )
+
+    reconciler.run(plan, configured_repository="owner/repo", apply_writes=True)
+
+    assert ("classification", 1) in authority.calls
+    assert ("retirement", 2) in authority.calls
+    assert not any(kind == "classification" for kind, issue in authority.calls if issue == 2)
