@@ -89,6 +89,7 @@ from .tech_lead_promotion_appliers import (
     apply_settle_tech_lead_promotion as apply_settle_tech_lead_promotion,
 )
 
+
 if TYPE_CHECKING:
     from ..domain.models import TechLeadFacts
     from ..infra.config import Config
@@ -384,7 +385,7 @@ def plan_finding_promotions(
     promotable: Sequence[PromotableFinding],
 ) -> list[Action]:
     """Turn eligible findings into typed filing actions (read-free planning)."""
-    source_repo = config.repo or ""
+    source_repo = config.repo or ""  # cache/display value, not work identity; identity uses require_repo (#7255)
     gated = config.tech_lead.findings.gated
     actions: list[Action] = []
     for finding in promotable:
@@ -518,7 +519,7 @@ def plan_promotion_updates(
 ) -> list[Action]:
     """Turn unreported evidence facts into typed target-comment actions."""
     actions: list[Action] = []
-    source_repo = config.repo or ""
+    source_repo = config.repo or ""  # cache/display value, not work identity; identity uses require_repo (#7255)
     for update in updates:
         promotion = update.promotion
         actions.append(

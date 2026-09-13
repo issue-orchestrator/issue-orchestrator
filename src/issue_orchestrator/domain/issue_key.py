@@ -73,10 +73,31 @@ class GitHubIssueKey:
     repo: str
     external_id: str  # M1-011
 
+    def __post_init__(self) -> None:
+        # Normalize here, not in `scope()`: a padded slug would otherwise
+        # compare equal via `SessionKey.__eq__` (which uses `scope()`) but
+        # unequal as a `GitHubIssueKey`, i.e. two identities for one repository.
+        object.__setattr__(self, "repo", self.repo.strip())
+
     def stable_id(self) -> StableIssueId:
         return StableIssueId(self.external_id)
 
     def scope(self) -> str:
+        """The repository this work belongs to.
+
+        Refuses an empty repo. `scope()` is the durable half of every work
+        identity -- it becomes `issue_runs.issue_scope` and then
+        `ValidatedWorkKey.repo_slug` -- and returning "" here is what let #7255
+        record an unscoped run that could never be terminalized. The only
+        validator used to be `ValidatedWorkKey`, at teardown, far too late to do
+        anything about it. `stable_id()` needs no repo and is left alone.
+        """
+        if not self.repo.strip():
+            raise ValueError(
+                f"issue {self.external_id} has no repository scope; a repo-less "
+                "key has no durable identity (build it with "
+                "infra.repo_scope.require_repo(config))"
+            )
         return self.repo
 
     def __str__(self) -> str:

@@ -27,6 +27,6 @@ class QueueCacheStore(Protocol):
         self,
         issues: Sequence["Issue"],
         watermark: str | None,
-        repo: str = "",
+        repo: str,
     ) -> None: ...
     def clear(self) -> None: ...

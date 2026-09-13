@@ -118,6 +118,11 @@ class SessionKey:
         """Human-readable representation including scope."""
         return f"{self.task.value}:{self.issue}"
 
+    # NOTE: `__hash__`/`__eq__` call `issue.scope()`, which refuses an empty
+    # repository (#7255). A key built without one therefore RAISES on a dict
+    # lookup or comparison instead of missing or returning False. Every storage
+    # boundary refuses such a key on the way in and out, so one cannot reach
+    # here in production; a fake IssueKey in a test can.
     def __hash__(self) -> int:
         """Hash based on task and issue identity."""
         return hash((self.task, self.issue.stable_id(), self.issue.scope()))

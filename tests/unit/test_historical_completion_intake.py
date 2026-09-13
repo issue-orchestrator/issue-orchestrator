@@ -63,7 +63,7 @@ def historical(tmp_path: Path):
     )
     head = git.head_sha(repo)
     state = repo / ".issue-orchestrator" / "state"
-    ledger = SqliteIssueRunLedger(state / "issue_run_ledger.sqlite")
+    ledger = SqliteIssueRunLedger(state / "issue_run_ledger.sqlite", repo_slug="test-owner/test-repo")
     output = FileSystemSessionOutput()
     wc = GitWorkingCopy(git=git)
     allocator = IssueRunAllocationService(output, ledger, wc, configuration=Config(repo="test/repo"))

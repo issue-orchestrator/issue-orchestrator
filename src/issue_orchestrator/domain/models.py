@@ -760,6 +760,11 @@ class Issue:
 
         Uses external ID from title prefix (e.g., [M1-011]) if present,
         otherwise falls back to the issue number as a string.
+
+        A repo-less issue still has a usable ``stable_id()`` -- plenty of callers
+        want only that -- so the repo requirement is enforced by
+        ``GitHubIssueKey.scope()``, which is the half that actually needs it and
+        the exact call whose empty return poisoned the run ledger in #7255.
         """
         parsed = parse_external_id(self.title)
         external_id = parsed.external_id or str(self.number)
@@ -2203,6 +2208,46 @@ class OrchestratorState:
         """
 
         self.discovered_failures.extend([failure])
+
+    def release_issue(
+        self, issue_number: int, *, keep_terminals: frozenset[str] = frozenset()
+    ) -> None:
+        """Drop every queue/discovery record for a terminated issue (owner method).
+
+        Sibling of :meth:`drop_active_session`, and here for the same reason:
+        callers used to reassign nine shared collections from an HTTP handler,
+        which is both a bypass of this owner and how the prune came to delete
+        the record of a terminal that was still running.
+
+        ``keep_terminals`` retains the active-session rows for terminals a
+        teardown could NOT stop. Deleting those would tell the operator "may
+        still be running" while removing the only record tracking it (#7255).
+        """
+        self.active_sessions[:] = [
+            session for session in self.active_sessions
+            if session.issue.number != issue_number
+            or session.terminal_id in keep_terminals
+        ]
+        self.pending_reviews[:] = [r for r in self.pending_reviews if r.issue_number != issue_number]
+        self.pending_reworks[:] = [r for r in self.pending_reworks if r.resolve_issue_number() != issue_number]
+        self.pending_tech_lead_reviews[:] = [r for r in self.pending_tech_lead_reviews if r.issue_number != issue_number]
+        self.pending_validation_retries[:] = [r for r in self.pending_validation_retries if r.issue_number != issue_number]
+        self.discovered_reviews[:] = [r for r in self.discovered_reviews if r.issue_number != issue_number]
+        self.discovered_reworks[:] = [r for r in self.discovered_reworks if r.issue_number != issue_number]
+        self.discovered_failures[:] = [r for r in self.discovered_failures if r.issue_number != issue_number]
+        self.immediate_cleanups[:] = [c for c in self.immediate_cleanups if c.issue_number != issue_number]
+
+    def record_operator_termination(
+        self, issue_number: int, entry: "SessionHistoryEntry"
+    ) -> None:
+        """Record an operator termination in history and hold it for this cycle.
+
+        Sibling of :meth:`release_issue`, for the same reason it exists: these
+        were the last two shared-state collections an HTTP handler still wrote
+        to directly, which is the `CLAUDE.md` shared-state rule.
+        """
+        self.session_history.append(entry)
+        self.failed_this_cycle.add(issue_number)
 
     def drop_active_session(self, terminal_id: str) -> bool:
         """Reconcile a terminated session out of ``active_sessions`` (owner method).

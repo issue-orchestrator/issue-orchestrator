@@ -1006,7 +1006,7 @@ def build_test_orchestrator_deps(
     from issue_orchestrator.execution.issue_run_ledger import SqliteIssueRunLedger
     from issue_orchestrator.infra.repo_identity import state_dir
 
-    issue_run_ledger = SqliteIssueRunLedger(state_dir(config.repo_root) / "issue_run_ledger.sqlite")
+    issue_run_ledger = SqliteIssueRunLedger(state_dir(config.repo_root) / "issue_run_ledger.sqlite", repo_slug="test-owner/test-repo")
     from issue_orchestrator.control.issue_run_allocator import IssueRunAllocationService
     evidence_working_copy = working_copy if intake_working_copy is None else intake_working_copy
     issue_run_allocator = IssueRunAllocationService(session_output, issue_run_ledger, evidence_working_copy, configuration=config)

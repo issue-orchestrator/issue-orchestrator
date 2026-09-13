@@ -66,7 +66,7 @@ def custody(tmp_path):
     worktree = tmp_path / "worktree"
     git.run(repo, ["worktree", "add", "-b", "feature", str(worktree)])
     state = tmp_path / "owner-state"
-    ledger = SqliteIssueRunLedger(state / "runs.sqlite")
+    ledger = SqliteIssueRunLedger(state / "runs.sqlite", repo_slug="test-owner/test-repo")
     wc = GitWorkingCopy(git=git)
     allocator = IssueRunAllocationService(FileSystemSessionOutput(), ledger, wc, configuration=Config(repo="owner/repo"))
     run = allocator.allocate(IssueRunAllocation(worktree, "coding-1", 42,
@@ -476,7 +476,7 @@ def retained_receipt_pair(custody):
 
 
 def independent_ranked_store(custody, database_name, backend_type=SqliteValidatedWorkStore):
-    ledger = SqliteIssueRunLedger(custody.state / "runs.sqlite")
+    ledger = SqliteIssueRunLedger(custody.state / "runs.sqlite", repo_slug="test-owner/test-repo")
     ancestry = GitValidatedWorkAncestry(
         repository=custody.repo, repo_slug="owner/repo", git=custody.wc,
     )

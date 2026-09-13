@@ -33,6 +33,7 @@ if TYPE_CHECKING:
     from .label_manager import LabelManager
 
 from ..infra.config import Config
+from ..infra.repo_scope import require_repo
 from ..infra.logging_config import issue_log, log_context
 from ..events import EventName
 from ..domain.models import (
@@ -1454,7 +1455,7 @@ class SessionLauncher:
             title=(fresh_issue.title if fresh_issue else retry.issue_title),
             labels=labels,
             state=(fresh_issue.state if fresh_issue else "open"),
-            repo=self.config.repo or "",
+            repo=require_repo(self.config),
             milestone=(fresh_issue.milestone if fresh_issue else None),
             body=(fresh_issue.body if fresh_issue else None),
             milestone_number=(fresh_issue.milestone_number if fresh_issue else None),
@@ -1806,6 +1807,7 @@ class SessionLauncher:
                 number=review.issue_number,
                 title=f"Review PR #{review.pr_number}",
                 labels=[agent_label],
+                repo=require_repo(self.config),
             )
 
             # Create session with domain identity (REVIEW task type)
@@ -2088,6 +2090,7 @@ class SessionLauncher:
                 number=review.issue_number,
                 title=issue_title,
                 labels=list(dict.fromkeys([*review.issue_labels, review.agent_label, agent_label, review.trigger_label])),
+                repo=require_repo(self.config),
             )
             session = Session(
                 key=session_key,

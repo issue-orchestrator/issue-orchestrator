@@ -460,6 +460,11 @@ def _status_for_event(event_name: str, data: dict[str, Any] | None = None) -> st
         return spec.status
     # Fallback for un-catalogued non-e2e events.
     failure_events = {
+        # The ONLY user-visible signal for the one degradation this system
+        # deliberately allows (`capture_or_report`). Projecting it as completed
+        # made it indistinguishable from `validated_work.disposition_observed`
+        # in the timeline -- silent degradation by rendering (#7255).
+        "validated_work.capture_failed",
         "session.failed",
         "session.timeout",
         "session.blocked",

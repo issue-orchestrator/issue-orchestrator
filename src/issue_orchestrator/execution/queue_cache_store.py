@@ -73,6 +73,10 @@ class QueueCacheStore:
 
     def load_issues(self, repo: str) -> list[GitHubIssue]:
         """Load all cached issues, reconstructing GitHubIssue objects."""
+        # Refuse before any side effect: these issues' `.key` becomes
+        # `issue_runs.issue_scope` once one is launched (#7255).
+        if not repo.strip():
+            raise ValueError("queue cache cannot rebuild issues without a repository")
         conn = self._get_connection()
         rows = conn.execute(
             "SELECT number, title, labels, state, body, milestone, "
@@ -250,7 +254,7 @@ class QueueCacheStore:
         self,
         issues: Sequence["Issue"],
         watermark: str | None,
-        repo: str = "",
+        repo: str,
     ) -> None:
         """Replace all cached issues and update watermark in a single transaction.
 

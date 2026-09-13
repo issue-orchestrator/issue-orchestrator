@@ -15,6 +15,12 @@ from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from ..control.label_manager import LabelManager
+from .operator_termination import (
+    TerminationDeferred,
+    TerminationIncomplete,
+    TerminationRefused,
+    terminate_issue_and_hold as _terminate_issue_and_hold,
+)
 from ..control.queue_cache import QueueCache
 from ..control.shutdown_manager import shutdown_manager
 from ..execution.client_host import ClientHost
@@ -85,125 +91,12 @@ WebOperatorDependency = Annotated[
 ]
 
 
+
 def _label_manager_for_api(orchestrator: Any) -> LabelManager:
     deps_lm = getattr(getattr(orchestrator, "deps", None), "label_manager", None)
     if isinstance(deps_lm, LabelManager):
         return deps_lm
     return LabelManager(orchestrator.config)
-
-
-def _terminate_issue_and_hold(orchestrator: Any, issue_number: int, sessions: list[Any]) -> dict[str, Any]:
-    """Terminate running sessions and apply a hold guard to prevent auto-requeue."""
-    from ..domain.models import SessionHistoryEntry
-
-    state = orchestrator.state
-    repo = orchestrator.repository_host
-    lm = _label_manager_for_api(orchestrator)
-
-    killed_sessions: list[str] = []
-    pr_numbers = sorted(
-        {
-            int(s.pr_number)
-            for s in sessions
-            if getattr(s, "pr_number", None) is not None
-        }
-    )
-
-    errors = _terminate_sessions(orchestrator=orchestrator, sessions=sessions, killed_sessions=killed_sessions)
-    orchestrator.cancel_review_exchange_for_issue(issue_number, reason="operator-terminated")
-    _prune_issue_runtime_state(state=state, issue_number=issue_number)
-    _append_operator_termination_history(
-        state=state,
-        issue_number=issue_number,
-        primary_session=sessions[0],
-        session_entry_cls=SessionHistoryEntry,
-        now=datetime.now(),
-    )
-    state.failed_this_cycle.add(issue_number)
-
-    # Label policy:
-    # - issue: add blocked-failed guard, remove in-progress/pr-pending
-    # - linked PR(s): add blocked-failed and remove needs-rework (scanner trigger)
-    label_ops: list[LabelOperation] = [
-        LabelOperation("add", issue_number, lm.blocked_failed),
-        LabelOperation("remove", issue_number, lm.in_progress),
-        LabelOperation("remove", issue_number, lm.pr_pending),
-    ]
-    for pr_number in pr_numbers:
-        label_ops.extend(
-            [
-                LabelOperation("add", pr_number, lm.blocked_failed),
-                LabelOperation("remove", pr_number, lm.needs_rework),
-            ]
-        )
-    apply_label_operations(
-        repo,
-        label_ops,
-        logger=logger,
-        log_prefix="[terminate]",
-    )
-
-    return {
-        "killed_sessions": killed_sessions,
-        "errors": errors,
-        "hold_label": lm.blocked_failed,
-    }
-
-
-def _terminate_sessions(*, orchestrator: Any, sessions: list[Any], killed_sessions: list[str]) -> list[str]:
-    errors: list[str] = []
-    for session in sessions:
-        try:
-            orchestrator.kill_session(session.terminal_id)
-            killed_sessions.append(session.terminal_id)
-        except Exception as exc:
-            errors.append(f"{session.terminal_id}: {exc}")
-    return errors
-
-
-def _prune_issue_runtime_state(*, state: Any, issue_number: int) -> None:
-    state.active_sessions[:] = [s for s in state.active_sessions if s.issue.number != issue_number]
-    state.pending_reviews = [r for r in state.pending_reviews if r.issue_number != issue_number]
-    state.pending_reworks = [r for r in state.pending_reworks if r.resolve_issue_number() != issue_number]
-    state.pending_tech_lead_reviews = [r for r in state.pending_tech_lead_reviews if r.issue_number != issue_number]
-    state.pending_validation_retries = [r for r in state.pending_validation_retries if r.issue_number != issue_number]
-    state.discovered_reviews = [r for r in state.discovered_reviews if r.issue_number != issue_number]
-    state.discovered_reworks = [r for r in state.discovered_reworks if r.issue_number != issue_number]
-    state.discovered_failures = [r for r in state.discovered_failures if r.issue_number != issue_number]
-    state.immediate_cleanups = [c for c in state.immediate_cleanups if c.issue_number != issue_number]
-
-
-def _resolve_agent_label(primary_session: Any) -> str:
-    agent_label = primary_session.agent_label
-    if agent_label:
-        return str(agent_label)
-    for label in primary_session.issue.labels:
-        if label.startswith("agent:"):
-            return label
-    return "agent:unknown"
-
-
-def _append_operator_termination_history(
-    *,
-    state: Any,
-    issue_number: int,
-    primary_session: Any,
-    session_entry_cls: Any,
-    now: Any,
-) -> None:
-    state.session_history.append(
-        session_entry_cls(
-            issue_number=issue_number,
-            title=primary_session.issue.title,
-            agent_type=_resolve_agent_label(primary_session),
-            status="blocked",
-            runtime_minutes=primary_session.runtime_minutes,
-            status_reason="Terminated by operator",
-            worktree_path=primary_session.worktree_path,
-            completed_at=now,
-            issue_labels=tuple(primary_session.issue.labels),
-        )
-    )
 
 
 def _queue_related_pr_numbers(state: Any, issue_number: int) -> list[int]:
@@ -258,7 +151,7 @@ def _hold_queued_issue(orchestrator: Any, issue_number: int) -> dict[str, Any]:
         state,
         orchestrator.deps.queue_cache_store,
     ).remove_issue_and_save(issue_number)
-    _prune_issue_runtime_state(state=state, issue_number=issue_number)
+    state.release_issue(issue_number)
     state.session_history.append(
         SessionHistoryEntry(
             issue_number=issue_number,
@@ -294,10 +187,52 @@ async def kill_session(
     if not sessions:
         return JSONResponse({"error": f"Session #{issue_number} not found"}, status_code=404)
 
-    terminated = _terminate_issue_and_hold(orchestrator, issue_number, sessions)
-    if not terminated["killed_sessions"]:
+    try:
+        terminated = _terminate_issue_and_hold(orchestrator, issue_number, sessions, lm=_label_manager_for_api(orchestrator))
+    except TerminationRefused as refusal:
         return JSONResponse(
-            {"error": "Failed to terminate session(s)", "details": terminated["errors"]},
+            {
+                "error": "Terminate refused: validated-work custody could not be "
+                         "established, so nothing was terminated",
+                "details": [str(refusal)],
+            },
+            status_code=409,
+        )
+    except TerminationDeferred as deferred:
+        return JSONResponse(
+            {
+                "error": "Terminate deferred: this issue must reconcile first; "
+                         "retry after the next tick. Nothing was terminated",
+                "details": [str(deferred)],
+            },
+            status_code=409,
+        )
+    except TerminationIncomplete as incomplete:
+        return JSONResponse(
+            {
+                "error": "Failed to terminate session(s): teardown faulted after "
+                         "custody was established; the issue may be partially "
+                         "terminated",
+                "details": [str(incomplete)],
+            },
+            status_code=500,
+        )
+    if not terminated.complete:
+        # A terminal that would not stop is still ALIVE. Reporting "terminated"
+        # here is what let a live reviewer agent be orphaned while the issue was
+        # labelled blocked-failed (#7255 review, SHOULD-FIX 1).
+        return JSONResponse(
+            {
+                "error": "Partially terminated: one or more terminals could not "
+                         "be stopped and may still be running",
+                "killed_sessions": list(terminated.killed_sessions),
+                "details": list(terminated.errors),
+            },
+            status_code=500,
+        )
+    if not terminated.settled_sessions:
+        return JSONResponse(
+            {"error": "Failed to terminate session(s)", "details": list(terminated.errors)},
             status_code=500,
         )
 
@@ -305,9 +240,10 @@ async def kill_session(
         "status": "terminated",
         "issue_number": issue_number,
         "title": sessions[0].issue.title,
-        "killed_sessions": terminated["killed_sessions"],
-        "hold_label": terminated["hold_label"],
-        "errors": terminated["errors"],
+        "killed_sessions": list(terminated.killed_sessions),
+        "settled_sessions": terminated.settled_sessions,
+        "hold_label": terminated.hold_label,
+        "errors": list(terminated.errors),
     })
 
 
@@ -538,12 +474,30 @@ async def bulk_kill(
         if not sessions:
             failed.append({"issue_number": num, "error": "Session not found"})
             continue
-        result = _terminate_issue_and_hold(orchestrator, num, sessions)
-        if result["killed_sessions"]:
+        try:
+            result = _terminate_issue_and_hold(orchestrator, num, sessions, lm=_label_manager_for_api(orchestrator))
+        except TerminationRefused as refusal:
+            failed.append(
+                {"issue_number": num, "error": "Terminate refused", "details": [str(refusal)]}
+            )
+            continue
+        except TerminationDeferred as deferred:
+            failed.append(
+                {"issue_number": num, "error": "Terminate deferred: reconciliation "
+                 "required, retry after the next tick", "details": [str(deferred)]}
+            )
+            continue
+        except TerminationIncomplete as incomplete:
+            failed.append(
+                {"issue_number": num, "error": "Failed to terminate",
+                 "details": [str(incomplete)]}
+            )
+            continue
+        if result.settled_sessions and result.complete:
             terminated.append(num)
         else:
             failed.append(
-                {"issue_number": num, "error": "Failed to terminate", "details": result["errors"]}
+                {"issue_number": num, "error": "Failed to terminate", "details": list(result.errors)}
             )
     return JSONResponse({"terminated": terminated, "failed": failed})
 

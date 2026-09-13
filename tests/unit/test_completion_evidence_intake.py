@@ -55,7 +55,7 @@ def completion() -> bytes:
 
 
 def setup(tmp_path: Path):
-    ledger = SqliteIssueRunLedger(tmp_path / "state" / "issue_run_ledger.sqlite")
+    ledger = SqliteIssueRunLedger(tmp_path / "state" / "issue_run_ledger.sqlite", repo_slug="test-owner/test-repo")
     record = run_record(tmp_path)
     record.run.worktree_path.mkdir()
     ledger.record_run(42, record)
@@ -135,14 +135,14 @@ def test_auth_key_conflict_and_closure(tmp_path):
 def test_restart_resumes_unprocessed_and_detects_corrupt_authority(tmp_path):
     ledger, run, capability, owner, _, _ = setup(tmp_path)
     receipt = owner.submit(capability, command())
-    restarted = SqliteIssueRunLedger(tmp_path / "state" / "issue_run_ledger.sqlite")
+    restarted = SqliteIssueRunLedger(tmp_path / "state" / "issue_run_ledger.sqlite", repo_slug="test-owner/test-repo")
     assert restarted.pending_receipts()[0].receipt == receipt
     entry = restarted.entries_for_run(run.identity)[0]
     entry.raw_path.write_bytes(b"replacement")
     with pytest.raises(CompletionIntakeError, match="hash"):
         restarted.entries_for_run(run.identity)
     with pytest.raises(CompletionIntakeError, match="hash"):
-        SqliteIssueRunLedger(tmp_path / "state" / "issue_run_ledger.sqlite")
+        SqliteIssueRunLedger(tmp_path / "state" / "issue_run_ledger.sqlite", repo_slug="test-owner/test-repo")
 
 
 def test_orphan_after_rename_is_repaired_without_losing_receipt(tmp_path):
@@ -156,7 +156,7 @@ def test_orphan_after_rename_is_repaired_without_losing_receipt(tmp_path):
         owner.submit(capability, command())
     with sqlite3.connect(db) as conn:
         conn.execute("DROP TRIGGER interrupt_entry")
-    restarted = SqliteIssueRunLedger(db)
+    restarted = SqliteIssueRunLedger(db, repo_slug="test-owner/test-repo")
     receipt = restarted.submit(capability, command()).receipt
     assert restarted.entries_for_run(run.identity)[0].receipt == receipt
     assert len(restarted.pending_receipts()) == 1
@@ -306,7 +306,7 @@ def test_background_restart_consumes_pending_receipt_without_filename_selection(
     receipt = ledger.submit(capability, command(completion())).receipt
     # Simulate a restart with no in-memory enqueue and an invalid canonical file.
     (run.worktree_path / "completion.json").write_bytes(b"wrong canonical")
-    restarted = SqliteIssueRunLedger(tmp_path / "state" / "issue_run_ledger.sqlite")
+    restarted = SqliteIssueRunLedger(tmp_path / "state" / "issue_run_ledger.sqlite", repo_slug="test-owner/test-repo")
     jobs = Mock(spec=BackgroundJobRunner)
     jobs.drain_completed.return_value = []
     callbacks = []
@@ -339,7 +339,7 @@ def test_processed_attestation_column_corruption_refuses_restart_and_terminal_dr
             "UPDATE completion_validation_attestations SET head_sha=?", ("b" * 40,)
         )
     with pytest.raises(CompletionIntakeError, match="fields differ"):
-        SqliteIssueRunLedger(db)
+        SqliteIssueRunLedger(db, repo_slug="test-owner/test-repo")
     with pytest.raises(CompletionIntakeError, match="fields differ"):
         owner.close_and_drain(42)
 
@@ -431,7 +431,7 @@ def test_interrupted_atomic_envelope_does_not_ack_and_exact_retry_preserves_byte
         (tmp_path / "state" / "completion-intake").glob(".staging-*/raw.json")
     )
     assert len(staged) == 1 and staged[0].read_bytes() == command().raw_bytes
-    restarted = SqliteIssueRunLedger(tmp_path / "state" / "issue_run_ledger.sqlite")
+    restarted = SqliteIssueRunLedger(tmp_path / "state" / "issue_run_ledger.sqlite", repo_slug="test-owner/test-repo")
     received = restarted.submit(capability, command())
     assert restarted.submit(capability, command()).receipt == received.receipt
     assert received.raw_path.read_bytes() == staged[0].read_bytes()
@@ -539,7 +539,7 @@ def test_retained_preparation_keeps_exact_role_and_bytes_after_worktree_removal(
     evidence = candidate_evidence(candidate, issue_number=42, head=candidate.validation.head_sha,
                                   branch_verified=True, captured_at="2026-09-07T00:00:00Z")
     shutil.rmtree(run.worktree_path)
-    reopened = SqliteIssueRunLedger(tmp_path / "state" / "issue_run_ledger.sqlite")
+    reopened = SqliteIssueRunLedger(tmp_path / "state" / "issue_run_ledger.sqlite", repo_slug="test-owner/test-repo")
     recovered = reopened.prepare_evidence(evidence)
     assert recovered == candidate
     assert recovered.role == ledger.role_for_receipt(receipt.entry_id)

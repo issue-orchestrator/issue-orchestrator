@@ -61,7 +61,7 @@ def role_boundary(
     tmp_path, mock_label_adapter, mock_pr_adapter, mock_git_adapter, receipt_output
 ):
     _, output = receipt_output
-    ledger = SqliteIssueRunLedger(tmp_path / "state" / "runs.sqlite")
+    ledger = SqliteIssueRunLedger(tmp_path / "state" / "runs.sqlite", repo_slug="test-owner/test-repo")
     config = Config(repo="example/repo")
     config.repo_root = tmp_path
     config.tech_lead_review_agent = "agent:tech-lead"
@@ -215,7 +215,7 @@ def test_restart_preserves_role_for_both_allocation_paths(
     ledger, allocator, owner, _, _, _, _ = role_boundary
     run = allocate(tmp_path, allocator, exchange=exchange)
     receipt = submit(owner, ledger, run)
-    reopened = SqliteIssueRunLedger(tmp_path / "state" / "runs.sqlite")
+    reopened = SqliteIssueRunLedger(tmp_path / "state" / "runs.sqlite", repo_slug="test-owner/test-repo")
     assert (
         reopened.role_for_receipt(receipt.entry_id)
         == owner.processing_context(receipt, run).role
@@ -316,7 +316,7 @@ def test_legacy_schema_upgrade_keeps_unknown_roles_and_original_facts(
         conn.execute("ALTER TABLE issue_runs DROP COLUMN agent_label")
         conn.execute("ALTER TABLE issue_runs DROP COLUMN completion_task")
         original = conn.execute("SELECT * FROM issue_runs").fetchall()
-    reopened = SqliteIssueRunLedger(db)
+    reopened = SqliteIssueRunLedger(db, repo_slug="test-owner/test-repo")
     with sqlite3.connect(db) as conn:
         assert [
             row[:-2] for row in conn.execute("SELECT * FROM issue_runs").fetchall()

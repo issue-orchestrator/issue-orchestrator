@@ -844,7 +844,7 @@ class StartupManager:
             return
 
         state.startup_message = "Restoring queue cache..."
-        cached_issues = store.load_issues(self.config.repo or "")
+        cached_issues = store.load_issues(self.config.repo or "")  # `load_issues` refuses a blank repo at its own boundary (#7255)
         cached_watermark = store.load_watermark()
         queue_cache = QueueCache(self.config, state, store)
 

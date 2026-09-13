@@ -701,6 +701,9 @@ def create_issue(number, title="Test Issue", labels=None, milestone=None):
         title=title,
         labels=labels,
         milestone=milestone,
+        # A launched issue carries a repo in production, and the run ledger now
+        # refuses an unscoped one (#7255).
+        repo="test-owner/test-repo",
     )
 
 
@@ -1365,6 +1368,46 @@ class TestHandleSessionCompletion:
         orchestrator.handle_session_completion(session, SessionStatus.COMPLETED)
 
         assert len(orchestrator.state.active_sessions) == 0
+
+    def test_handle_completion_still_terminalizes_when_capture_faults(
+        self,
+        sample_config,
+        mock_worktree_manager,
+    ):
+        """The loop itself (#7255).
+
+        Validated-work capture runs first in `handle_session_completion`, right
+        after the terminal transition is logged and before every effect that makes
+        the session terminal. When it raised, the session stayed in
+        `active_sessions`, so the next tick rediscovered it, "recovered" the same
+        completion record, logged the same `ACTIVE -> COMPLETED` transition and
+        raised again -- 218 times over two hours, never writing a label.
+
+        A capture fault must cost the artifacts, never the terminalization.
+        """
+        issue = create_issue(1)
+        session = create_session(issue)
+
+        orchestrator = create_test_orchestrator(sample_config, worktree_manager=mock_worktree_manager)
+        track_session(orchestrator, session)
+        preservation = orchestrator.deps.action_applier.runtime_lifecycle.validated_work
+
+        with patch.object(
+            type(preservation),
+            "dispose_at_termination",
+            side_effect=ValueError("repo_slug must be non-empty text"),
+        ):
+            orchestrator.handle_session_completion(session, SessionStatus.COMPLETED)
+
+        assert orchestrator.state.active_sessions == []
+        # Dropping the session is only half of it. The incident's headline
+        # symptom was "never wrote a label" - 223 terminal transitions and zero
+        # GitHub writes - so the completion must actually be APPLIED, not merely
+        # dropped. This is what separates "terminalized" from "forgotten".
+        assert orchestrator.deps.repository_host.remove_label.called, (
+            "completion actions must still be applied after a capture fault"
+        )
+        assert 1 in orchestrator.state.completed_today
 
     def test_handle_completion_calls_monitor_handler(
         self,

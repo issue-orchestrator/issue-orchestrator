@@ -637,7 +637,7 @@ def _build_launcher_bundle(
     if provider_readiness_probe is not None:
         launcher_kwargs["provider_readiness_probe"] = provider_readiness_probe
     if issue_run_ledger is None:
-        issue_run_ledger = SqliteIssueRunLedger(sample_config.repo_root / "state" / "runs.sqlite")
+        issue_run_ledger = SqliteIssueRunLedger(sample_config.repo_root / "state" / "runs.sqlite", repo_slug="test-owner/test-repo")
     launcher = make_session_launcher(
         issue_run_ledger=issue_run_ledger,
         config=sample_config,
@@ -3980,6 +3980,52 @@ class TestOrchestratorLaunchTechLeadSession:
         assert issue.number == 789
         assert "agent:web" in issue.labels
         assert call.kwargs["tech_lead_scope"].flavor is flavor
+
+    def test_launched_issue_carries_the_configured_repo(self, sample_config):
+        """The tech-lead route must mint an Issue with a real repository scope.
+
+        Regression for #7255. This path built `Issue(number, title, [agent])` with
+        no repo, so `Issue.key.scope()` was "" and the run ledger recorded
+        `issue_scope=''`. Nothing rejected it until teardown, where
+        `ValidatedWorkKey` refused the empty `repo_slug` and aborted the terminal
+        transition -- leaving the session to be "completed" again on every tick.
+        """
+        sample_config.tech_lead_review_agent = "agent:web"
+        sample_config.repo = "acme/widgets"
+        launcher = _stub_tech_lead_launcher(LaunchResult(session=None, success=False))
+
+        orchestrator_launch_tech_lead_session(
+            _make_queued_tech_lead(),
+            OrchestratorState(),
+            sample_config,
+            launcher,
+            MagicMock(),
+            _claims_store(),
+        )
+
+        issue = launcher.launch_issue_session.call_args.args[0]
+        assert issue.repo == "acme/widgets"
+        # The identity the run ledger persists, end to end.
+        assert issue.key.scope() == "acme/widgets"
+
+    def test_launch_refuses_when_no_repo_is_configured(self, sample_config):
+        """No repo means no durable identity, so the launch fails loudly here.
+
+        Failing at the launch costs one refused launch. Carrying "" onward cost
+        #7255 two hours of a session that could never terminalize.
+        """
+        sample_config.tech_lead_review_agent = "agent:web"
+        sample_config.repo = None
+
+        with pytest.raises(ValueError, match="config.repo is required"):
+            orchestrator_launch_tech_lead_session(
+                _make_queued_tech_lead(),
+                OrchestratorState(),
+                sample_config,
+                _stub_tech_lead_launcher(LaunchResult(session=None, success=False)),
+                MagicMock(),
+                _claims_store(),
+            )
 
     def test_successful_launch_removes_item_from_queue(self, sample_config, tmp_path):
         """Reviewer scenario: a launched item must not stay queued (#6768 r4)."""

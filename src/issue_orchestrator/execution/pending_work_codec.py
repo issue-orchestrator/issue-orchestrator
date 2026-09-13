@@ -97,9 +97,19 @@ def _encode_issue_key(key: IssueKey) -> dict[str, str]:
 def _decode_issue_key(payload: object) -> IssueKey:
     if not isinstance(payload, dict):
         raise PendingWorkClaimDecodeError("issue key payload must be an object")
-    return GitHubIssueKey(
-        repo=str(payload["scope"]), external_id=str(payload["stable_id"])
-    )
+    scope = str(payload["scope"])
+    # Same contract as the attempt sidecar (`domain/attempt.py`) and the run
+    # ledger: a stored key with no repository scope is refused on the way OUT,
+    # not carried into the domain. `GitHubIssueKey.scope()` raises, so an
+    # unscoped claim decoded here would instead fail wherever it was eventually
+    # read - `_encode_issue_key` on the next save, or
+    # `pending_work_successors` - far from the bad row (#7255).
+    if not scope.strip():
+        raise PendingWorkClaimDecodeError(
+            f"stored claim for issue {payload.get('stable_id')!r} has no "
+            "repository scope"
+        )
+    return GitHubIssueKey(repo=scope, external_id=str(payload["stable_id"]))
 
 
 def _encode_review(request: PendingWorkRequest) -> dict[str, Any]:

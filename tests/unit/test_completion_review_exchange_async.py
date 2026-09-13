@@ -451,7 +451,7 @@ def test_exchange_records_exact_assets_before_background_submission(tmp_path, re
     from issue_orchestrator.domain.issue_run_evidence import IssueRunEvidenceUnavailable
     from issue_orchestrator.execution.issue_run_ledger import SqliteIssueRunLedger
 
-    ledger = SqliteIssueRunLedger(tmp_path / "state" / "runs.sqlite")
+    ledger = SqliteIssueRunLedger(tmp_path / "state" / "runs.sqlite", repo_slug="test-owner/test-repo")
     failing_ledger = Mock()
     failing_ledger.record_run.side_effect = IssueRunEvidenceUnavailable("ledger unavailable")
     jobs = _FakeJobRunner()

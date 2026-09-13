@@ -15,6 +15,7 @@ from ..ports.issue_run_allocator import IssueRunAllocator
 from ..ports.issue_run_evidence import IssueRunLedger
 from ..ports.working_copy import WorkingCopy
 from ..infra.config import Config
+from ..infra.repo_scope import require_repo
 from .bootstrap_validated_work import ValidatedWorkAdmissionOwners
 
 
@@ -37,7 +38,10 @@ def build_issue_run_services(
     config: Config, session_output: SessionOutput, working_copy: WorkingCopy,
 ) -> tuple[SqliteIssueRunLedger, IssueRunAllocationService]:
     """Use one ledger for allocation and the injected evidence reader."""
-    ledger = SqliteIssueRunLedger(state_dir(config.repo_root) / "issue_run_ledger.sqlite")
+    ledger = SqliteIssueRunLedger(
+        state_dir(config.repo_root) / "issue_run_ledger.sqlite",
+        repo_slug=require_repo(config),
+    )
     return ledger, IssueRunAllocationService(session_output, ledger, working_copy, configuration=config)
 
 

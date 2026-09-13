@@ -128,7 +128,7 @@ def test_two_ranked_claim_stores_rerank_after_concurrent_first_admission(custody
 
     ranked = [RankedEvidenceAdmission(
         full_receipt_store(custody, ConcurrentStore),
-        SqliteIssueRunLedger(custody.state / "runs.sqlite"),
+        SqliteIssueRunLedger(custody.state / "runs.sqlite", repo_slug="test-owner/test-repo"),
     ) for _ in range(2)]
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(
