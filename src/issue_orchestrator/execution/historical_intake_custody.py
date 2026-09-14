@@ -1,6 +1,7 @@
 """Bounded historical custody and isolated checkout; no publication operation."""
 
 from dataclasses import asdict
+from collections.abc import Callable
 from hashlib import sha256
 from pathlib import Path
 from uuid import uuid4
@@ -97,9 +98,15 @@ class HistoricalIntakeCustody:
 
 
 class IsolatedCompletionValidationWorkspace:
-    def __init__(self, state_root: Path, git: Git) -> None:
+    def __init__(
+        self,
+        state_root: Path,
+        git: Git,
+        prepare: Callable[[Path], None],
+    ) -> None:
         self._root = state_root / "completion-validation-workspaces"
         self._git = git
+        self._prepare = prepare
 
     def checkout(self, run: "SessionRunAssets", head_sha: str, entry_id: str) -> Path:
         from ..domain.validated_work import require_sha
@@ -124,4 +131,10 @@ class IsolatedCompletionValidationWorkspace:
             ],
         )
         self._git.run(workspace, ["checkout", "--detach", head_sha])
+        try:
+            self._prepare(workspace)
+        except (OSError, RuntimeError) as exc:
+            raise CompletionIntakeError(
+                "historical validation workspace setup failed"
+            ) from exc
         return workspace

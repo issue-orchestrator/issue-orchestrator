@@ -72,7 +72,7 @@ def custody(tmp_path):
     run = allocator.allocate(IssueRunAllocation(worktree, "coding-1", 42,
         SessionKey(GitHubIssueKey("owner/repo", "42"), TaskKind.CODE), "agent:test", "test", terminal_id="issue-42"))
     validator = ConfiguredCompletionEvidenceValidator(wc, LocalCommandRunner(),
-        IsolatedCompletionValidationWorkspace(state, git), command="true", timeout_seconds=30)
+        IsolatedCompletionValidationWorkspace(state, git, lambda _path: None), command="true", timeout_seconds=30)
     intake = CompletionEvidenceIntakeService(ledger, validator, Mock(spec=HistoricalIntakeHandler), Mock(spec=BackgroundJobRunner))
     escrow = FilesystemValidatedWorkEscrow(state / "validated-work", repository=repo, repo_slug="owner/repo", git=wc)
     store = SqliteValidatedWorkStore(

@@ -2,12 +2,14 @@
 
 from dataclasses import replace
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
 from issue_orchestrator.control.claimed_recovery_preparation import ClaimedRecoveryPreparation
 from issue_orchestrator.control.recovery_record_operation import RecoveryRecordOperation
 from issue_orchestrator.control.review_exchange_lifecycle import OtherRuntimeActivity
+from issue_orchestrator.domain.completion_intake import CompletionIntakeError
 from issue_orchestrator.domain.models import OrchestratorState
 from issue_orchestrator.domain.recovery_attempt import RecoveryAttemptPending
 from issue_orchestrator.domain.recovery_completion import RecoveryCompleted
@@ -35,8 +37,7 @@ class Issues:
         return self.issue
 
 
-@pytest.fixture
-def operation(completion):
+def build_operation(completion, *, workspaces=None):
     rig = completion.rig
     for owner, method in [(rig.custody.pair, "has_active_pair"),
                           (rig.custody.jobs, "has_matching"), (rig.custody.retry, "has_active_retry")]:
@@ -44,12 +45,18 @@ def operation(completion):
     issues = Issues()
     preparation = ClaimedRecoveryPreparation(repo_slug="owner/repo", store=rig.store,
         effects=rig.effects, issues=issues, runtime=OtherRuntimeActivity(rig.custody.lifecycle.core),
-        gate=completion.gate, workspaces=completion.workspaces, preparation=rig.preparation,
+        gate=completion.gate, workspaces=workspaces or completion.workspaces,
+        preparation=rig.preparation,
         pause_label="io:needs-reconcile")
     owner = RecoveryRecordOperation(execution=rig.execution, store=rig.store, preparation=preparation,
         publication=rig.worker, completion=completion.owner)
     request = RecoveryRecordRequest(rig.authority.record_id, rig.authority.evidence_id, rig.authority)
     return SimpleNamespace(rig=rig, owner=owner, request=request, issues=issues)
+
+
+@pytest.fixture
+def operation(completion):
+    return build_operation(completion)
 
 
 def assert_retained_without_publication(op):
@@ -93,6 +100,17 @@ def test_other_runtime_activity_blocks_publication(operation, unverifiable):
     result = op.owner.run(op.request, OrchestratorState())
     assert isinstance(result, RecoveryAttemptPending)
     assert result.failure is ValidatedWorkFailure.RUNTIME_ACTIVE
+    assert_retained_without_publication(op)
+
+
+def test_workspace_setup_failure_becomes_retained_recovery_failure(completion):
+    workspaces = Mock(prepare=Mock(side_effect=CompletionIntakeError(
+        "publication workspace setup failed")))
+    op = build_operation(completion, workspaces=workspaces)
+    result = op.owner.run(op.request, OrchestratorState())
+    assert isinstance(result, RecoveryAttemptPending)
+    assert result.failure is ValidatedWorkFailure.WORKSPACE_INTEGRITY
+    assert "workspace setup failed" in result.message
     assert_retained_without_publication(op)
 
 
