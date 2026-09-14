@@ -26,6 +26,7 @@ from ..domain.pending_work import (
 from ..domain.tech_lead_session import TechLeadLaunchScope
 from ..events import EventName
 from ..infra.config import Config
+from ..infra.repo_scope import require_repo
 from ..ports import EventSink, Issue as IssueProtocol, make_trace_event
 from ..ports.pending_work_claim_store import PendingWorkClaimStore
 from ..ports.session_runner import DiscoveredSession
@@ -258,7 +259,10 @@ def orchestrator_launch_tech_lead_session(
         claim=PendingWorkClaim(PendingWorkKind.TECH_LEAD, tech_lead), claims=claims
     )
     result = session_launcher.launch_issue_session(
-        Issue(tech_lead.issue_number, tech_lead.title, [agent]),
+        # repo is REQUIRED, not decorative: it becomes `issue_scope` in the run
+        # ledger via `Issue.key.scope()`, and an empty one poisons the row so the
+        # session can never terminalize (#7255 -- 218 re-completions in 2h).
+        Issue(tech_lead.issue_number, tech_lead.title, [agent], repo=require_repo(config)),
         state.active_sessions,
         tech_lead_scope=tech_lead.launch_scope(),
         work_claim=work,

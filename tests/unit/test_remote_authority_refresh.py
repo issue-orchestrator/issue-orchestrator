@@ -103,7 +103,6 @@ def refresh_request(store) -> RemoteAuthorityRefreshRequest:
     ("state", "failure", "remote_status"),
     [
         (ValidatedWorkState.QUEUED, None, RemoteBaselineStatus.UNOBSERVED),
-        (ValidatedWorkState.PARKED, None, RemoteBaselineStatus.UNOBSERVED),
         (
             ValidatedWorkState.PARKED,
             ValidatedWorkFailure.REMOTE_UNREADABLE,
@@ -168,6 +167,31 @@ def test_exact_healthy_refresh_queues_and_preserves_capture_audit(tmp_path):
         "lineage restriction",
     )
     assert derived.restore(DispositionGate.from_evidence(row)).state is ValidatedWorkState.QUEUED
+
+
+def test_historical_refresh_preserves_explicit_approval_gate(tmp_path):
+    store = Rig(tmp_path / "work.sqlite").open()
+    admission = capture(
+        state=ValidatedWorkState.PARKED,
+        failure=None,
+        reason="historical intake requires explicit approval",
+        remote_status=RemoteBaselineStatus.UNOBSERVED,
+    )
+    store.admit(admission)
+    request = refresh_request(store)
+
+    outcome = operation(
+        store, Observer(ValidatedWorkRemoteFacts(None, ()))
+    ).run(request)
+
+    disposition = store.get(admission.evidence.record_id)
+    row, = store.retained_evidence(admission.evidence.identity.key.issue_number)
+    assert outcome.failure is None
+    assert disposition.state is ValidatedWorkState.PARKED
+    assert disposition.failure is None
+    assert row.authority.remote_baseline_status is RemoteBaselineStatus.OBSERVED
+    assert row.observation_revision == 1
+    assert store.drain_requests(after_record_id="", limit=10) == ()
 
 
 def test_failed_remote_read_keeps_same_retryable_snapshot(tmp_path):

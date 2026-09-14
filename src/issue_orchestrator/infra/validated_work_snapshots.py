@@ -85,7 +85,9 @@ class DispositionSnapshots:
                 "JOIN validated_work_evidence e ON e.record_id=r.record_id "
                 "WHERE r.record_id>? AND e.role='current' AND e.released_at='' "
                 "AND ((r.state='queued' AND r.lineage_role='head') OR r.state='publishing' "
-                "OR (r.state='parked' AND r.failure='remote_unreadable' AND r.lineage_role='head')) "
+                "OR (r.state='parked' AND r.failure IN ('', 'remote_unreadable') "
+                "AND r.lineage_role='head' "
+                "AND json_extract(e.observations, '$.remote_baseline_status')='unobserved')) "
                 "ORDER BY r.record_id LIMIT ?", (after_record_id, limit),
             ).fetchall()
             requests: list[ValidatedWorkDrainRequest] = []

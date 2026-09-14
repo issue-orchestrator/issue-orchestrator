@@ -89,21 +89,21 @@ class TestWatermark:
     """Watermark persistence."""
 
     def test_watermark_round_trip(self, store: QueueCacheStore) -> None:
-        store.save_snapshot([], "2025-06-01T12:00:00Z")
+        store.save_snapshot([], "2025-06-01T12:00:00Z", repo="owner/repo")
         assert store.load_watermark() == "2025-06-01T12:00:00Z"
 
     def test_watermark_none_on_empty(self, store: QueueCacheStore) -> None:
         assert store.load_watermark() is None
 
     def test_watermark_updated_on_second_save(self, store: QueueCacheStore) -> None:
-        store.save_snapshot([], "2025-01-01T00:00:00Z")
-        store.save_snapshot([], "2025-06-01T00:00:00Z")
+        store.save_snapshot([], "2025-01-01T00:00:00Z", repo="owner/repo")
+        store.save_snapshot([], "2025-06-01T00:00:00Z", repo="owner/repo")
         assert store.load_watermark() == "2025-06-01T00:00:00Z"
 
     def test_watermark_none_not_written(self, store: QueueCacheStore) -> None:
         """When watermark is None, don't overwrite an existing watermark."""
-        store.save_snapshot([], "2025-01-01T00:00:00Z")
-        store.save_snapshot([], None)
+        store.save_snapshot([], "2025-01-01T00:00:00Z", repo="owner/repo")
+        store.save_snapshot([], None, repo="owner/repo")
         # No upsert for None, so original watermark stays
         assert store.load_watermark() == "2025-01-01T00:00:00Z"
 
@@ -271,7 +271,7 @@ class TestReplaceSemantics:
 
     def test_replace_with_empty(self, store: QueueCacheStore) -> None:
         store.save_snapshot([_issue(1)], "w1", repo="owner/repo")
-        store.save_snapshot([], "w2")
+        store.save_snapshot([], "w2", repo="owner/repo")
         assert store.load_issues("owner/repo") == []
 
 

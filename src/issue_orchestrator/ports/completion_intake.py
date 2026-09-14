@@ -138,5 +138,5 @@ class CompletionIntakeRuntime(CompletionSubmissionHandler, Protocol):
 
 class CompletionValidationWorkspace(Protocol):
     def checkout(self, run: SessionRunAssets, head_sha: str, entry_id: str) -> Path:
-        """Copy the exact local commit to owner storage outside agent worktrees."""
+        """Return an exact, isolated checkout prepared for configured validation."""
         ...

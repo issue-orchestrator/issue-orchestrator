@@ -45,14 +45,14 @@ def intake(tmp_path: Path, validation_command: str):
         ],
     )
     state = tmp_path / "receipt-owner"
-    ledger = SqliteIssueRunLedger(state / "issue_run_ledger.sqlite")
+    ledger = SqliteIssueRunLedger(state / "issue_run_ledger.sqlite", repo_slug="test-owner/test-repo")
     ledger.record_run(42, record)
     owner = CompletionEvidenceIntakeService(
         ledger,
         ConfiguredCompletionEvidenceValidator(
             GitWorkingCopy(git),
             LocalCommandRunner(),
-            IsolatedCompletionValidationWorkspace(state, git),
+            IsolatedCompletionValidationWorkspace(state, git, lambda _path: None),
             command=validation_command,
             timeout_seconds=30,
         ),
@@ -94,7 +94,8 @@ def test_owned_validation_output_does_not_dirty_isolated_checkout(tmp_path, exit
         git.run(workspace, ["rev-parse", "HEAD"]).stdout.strip() == attestation.head_sha
     )
     restarted = SqliteIssueRunLedger(
-        tmp_path / "receipt-owner" / "issue_run_ledger.sqlite"
+        tmp_path / "receipt-owner" / "issue_run_ledger.sqlite",
+        repo_slug="test-owner/test-repo",
     )
     assert restarted.validation_for_receipt(receipt.entry_id) == attestation
     assert restarted.pending_receipts() == ()
@@ -138,7 +139,7 @@ def test_real_oversized_validator_output_fails_inspectably_then_corrects_and_reo
     assert failed is not None and not failed.passed
     descriptor = json.loads((failed.result_path.parent / f"{stream}.log").read_bytes())
     assert b"".join((failed.result_path.parent / part["path"]).read_bytes() for part in descriptor["parts"]) == b"\0" * size
-    reopened = SqliteIssueRunLedger(tmp_path / "receipt-owner" / "issue_run_ledger.sqlite")
+    reopened = SqliteIssueRunLedger(tmp_path / "receipt-owner" / "issue_run_ledger.sqlite", repo_slug="test-owner/test-repo")
     assert reopened.validation_for_receipt(receipt.entry_id) == failed
     # Correct the selected source, retaining the configured command unchanged.
     worktree = entry.run.worktree_path
@@ -151,4 +152,4 @@ def test_real_oversized_validator_output_fails_inspectably_then_corrects_and_reo
     passed = reopened.validation_for_receipt(corrected.entry_id)
     assert passed is not None and passed.passed and passed.head_sha != failed.head_sha
     assert reopened.validation_for_receipt(receipt.entry_id) == failed
-    assert SqliteIssueRunLedger(tmp_path / "receipt-owner" / "issue_run_ledger.sqlite").pending_receipts() == ()
+    assert SqliteIssueRunLedger(tmp_path / "receipt-owner" / "issue_run_ledger.sqlite", repo_slug="test-owner/test-repo").pending_receipts() == ()

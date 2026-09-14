@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from ..infra.config import Config
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
 
+from ..infra.repo_scope import require_repo
 from ..domain.issue_key import GitHubIssueKey
 from ..domain.session_key import SessionKey, TaskKind
 from ..domain.models import Issue, RETROSPECTIVE_REVIEW_TERMINAL_PREFIX, Session
@@ -255,6 +256,13 @@ class SessionRestorer:
         branch_name = self._get_branch_name(worktree_path)
 
         # Fetch single issue details to get agent type
+        # The repo guard runs BEFORE any Issue is minted: a repo-less Issue has no
+        # durable identity, and constructing one first is how an empty scope used to
+        # reach the run ledger (#7255).
+        if not self.config.repo:
+            logger.warning("No repo configured for session %s - skipping", session_name)
+            return None
+
         issue_obj = self.repository_host.get_issue(issue_number)
         agent_config = None
 
@@ -267,6 +275,7 @@ class SessionRestorer:
                 number=issue_number,
                 title=tab_name.replace("#", "").strip(),
                 labels=[],
+                repo=require_repo(self.config),
             )
 
         if not agent_config:
@@ -279,12 +288,8 @@ class SessionRestorer:
             )
             return None
 
-        if not self.config.repo:
-            logger.warning("No repo configured for session %s - skipping", session_name)
-            return None
-
         # Create session with domain identity
-        issue_key = GitHubIssueKey(repo=self.config.repo, external_id=str(issue_number))
+        issue_key = GitHubIssueKey(repo=require_repo(self.config), external_id=str(issue_number))
         task_kind = _restored_task_kind(session_name, is_review)
         session_key = SessionKey(issue=issue_key, task=task_kind)
         # Use the agent type from issue labels, or the first available agent as fallback

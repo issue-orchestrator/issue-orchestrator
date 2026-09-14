@@ -901,7 +901,7 @@ def _dashboard_lifecycle_summary(
 
 
 def _expected_rendered_runs(detail_payload: dict[str, Any]) -> list[dict[str, Any]]:
-    runs = detail_payload["runs"]
+    runs = detail_payload["attempts"]
     assert isinstance(runs, list) and runs, "issue detail payload should include runs"
     return [runs[-1]]
 
@@ -943,7 +943,10 @@ def _assert_issue_detail_dom_matches_payload(
     expected_dom_cycle_count = sum(len(run["cycles"]) for run in expected_runs)
     assert expected_dom_cycle_count == expected_cycle_count
 
-    expect(journey.locator(".journey-run")).to_have_count(len(expected_runs))
+    expect(journey.locator(".journey-attempt")).to_have_count(len(expected_runs))
+    # Rename regression guard (#6335): the pre-rename ``journey-run`` class
+    # must be gone from the DOM — only ``journey-attempt`` survives.
+    expect(journey.locator(".journey-run")).to_have_count(0)
     expect(journey.locator(".journey-cycle")).to_have_count(expected_dom_cycle_count)
 
     rendered_narratives = [
@@ -966,8 +969,8 @@ def _assert_issue_detail_dom_matches_payload(
     assert rendered_phase_labels == _expected_rendered_phase_labels(detail_payload)
 
     run = expected_runs[0]
-    run_header = journey.locator(".journey-run > .journey-cycle-header").first
-    expect(run_header).to_contain_text(f"Run {run['run_number']}")
+    run_header = journey.locator(".journey-attempt > .journey-cycle-header").first
+    expect(run_header).to_contain_text(f"Attempt {run['attempt_number']}")
     # PR #6333: ``outcome`` is now a typed ``OutcomeBadge {label, tone}``.
     # The header displays the label; the tone drives the CSS class.
     expect(run_header).to_contain_text(run["outcome"]["label"])
@@ -994,7 +997,7 @@ def _assert_issue_drawer_counts_match_payload(
     journey = page.locator("#issueDetailJourney")
     expected_runs = _expected_rendered_runs(detail_payload)
     expected_cycles = sum(len(run["cycles"]) for run in expected_runs)
-    expect(journey.locator(".journey-run")).to_have_count(len(expected_runs), timeout=15_000)
+    expect(journey.locator(".journey-attempt")).to_have_count(len(expected_runs), timeout=15_000)
     expect(journey.locator(".journey-cycle")).to_have_count(expected_cycles, timeout=15_000)
     expect(journey.locator(".timeline-empty")).to_have_count(0, timeout=15_000)
 
@@ -1039,7 +1042,7 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
        false positives from cross-row contamination.
     4. Clicking the run-level ``#5723`` issue timeline control causes
        the issue-detail drawer to render journey content
-       (``.journey-run`` and ``.journey-cycle``) with realistic coding
+       (``.journey-attempt`` and ``.journey-cycle``) with realistic coding
        and review milestones — not just an optimistic title that shows
        before the fetch completes.
     5. The session recording action for the staged coding event opens
@@ -1352,14 +1355,14 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
 
     # Wait for the journey to actually render. The endpoint returns
     # events structured as runs/cycles, so on success #issueDetailJourney
-    # contains at least one .journey-run. No .timeline-empty placeholder
+    # contains at least one .journey-attempt. No .timeline-empty placeholder
     # should be present.
     journey = page.locator("#issueDetailJourney")
-    expect(journey.locator(".journey-run").first).to_be_visible(timeout=5000)
+    expect(journey.locator(".journey-attempt").first).to_be_visible(timeout=5000)
     expect(journey.locator(".journey-cycle").first).to_be_visible(timeout=5000)
     _expect_all_parseable_time_texts(
         page,
-        journey.locator(".journey-run > .journey-cycle-header .journey-cycle-time"),
+        journey.locator(".journey-attempt > .journey-cycle-header .journey-cycle-time"),
         "issue-detail run timestamp",
     )
     _expect_all_parseable_time_texts(
@@ -1470,7 +1473,7 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
     )
     _dom_click_hit_tested(story_btn, "issue detail story view")
     expect(story_btn).to_have_attribute("aria-pressed", "true")
-    expect(journey.locator(".journey-run").first).to_be_visible(timeout=5000)
+    expect(journey.locator(".journey-attempt").first).to_be_visible(timeout=5000)
 
     # --- Session Recording click-through ---
     # The fixture stager wired one agent.coding_started event for
@@ -2188,7 +2191,7 @@ def test_run_modal_canonical_viewer_shows_failures_passes_and_linked_issue_plugi
         "  window.fetch = (url) => {"
         "    window.__inlineAttemptsCalls.push(String(url));"
         "    return Promise.resolve({ ok: true, status: 200, "
-        "      json: () => Promise.resolve({ runs: [] }), "
+        "      json: () => Promise.resolve({ attempts: [] }), "
         "    });"
         "  };"
         "}"

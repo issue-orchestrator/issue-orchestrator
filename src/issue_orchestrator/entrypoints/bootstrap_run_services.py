@@ -15,6 +15,7 @@ from ..ports.issue_run_allocator import IssueRunAllocator
 from ..ports.issue_run_evidence import IssueRunLedger
 from ..ports.working_copy import WorkingCopy
 from ..infra.config import Config
+from ..infra.repo_scope import require_repo
 from .bootstrap_validated_work import ValidatedWorkAdmissionOwners
 
 
@@ -37,7 +38,10 @@ def build_issue_run_services(
     config: Config, session_output: SessionOutput, working_copy: WorkingCopy,
 ) -> tuple[SqliteIssueRunLedger, IssueRunAllocationService]:
     """Use one ledger for allocation and the injected evidence reader."""
-    ledger = SqliteIssueRunLedger(state_dir(config.repo_root) / "issue_run_ledger.sqlite")
+    ledger = SqliteIssueRunLedger(
+        state_dir(config.repo_root) / "issue_run_ledger.sqlite",
+        repo_slug=require_repo(config),
+    )
     return ledger, IssueRunAllocationService(session_output, ledger, working_copy, configuration=config)
 
 
@@ -57,6 +61,7 @@ def build_completion_intake(
         ConfiguredCompletionEvidenceValidator,
     )
     from ..control.historical_completion_intake import HistoricalCompletionIntake
+    from ..control.worktree_context import prepare_worktree_environment
     from ..execution.historical_intake_custody import (
         HistoricalIntakeCustody,
         IsolatedCompletionValidationWorkspace,
@@ -66,7 +71,15 @@ def build_completion_intake(
     validator = ConfiguredCompletionEvidenceValidator(
         working_copy,
         command_runner,
-        IsolatedCompletionValidationWorkspace(root, git),
+        IsolatedCompletionValidationWorkspace(
+            root,
+            git,
+            lambda worktree: prepare_worktree_environment(
+                config=config,
+                command_runner=command_runner,
+                worktree_path=worktree,
+            ),
+        ),
         command=config.validation.quick.cmd,
         timeout_seconds=config.validation.quick.timeout_seconds,
     )

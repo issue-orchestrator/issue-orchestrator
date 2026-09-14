@@ -168,7 +168,11 @@ class TestOrchestratorWiring:
             number=456,
             title="Test Feature",
             labels=["agent:test"],  # Must match config's agent key
-            state="open"
+            state="open",
+            # A launched issue carries its repo in production. Omitting it here
+            # reproduced #7255 exactly: config.repo was set, the Issue's was not,
+            # and the run ledger recorded an unscoped run.
+            repo=config.repo,
         )
 
         # launch_session only takes issue - gets agent_config internally

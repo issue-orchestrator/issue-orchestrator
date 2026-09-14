@@ -446,7 +446,7 @@ def _finalize_issue_detail_payload(
     if run_diagnostic:
         _apply_issue_detail_run_diagnostic(payload, run_diagnostic)
     if is_timeline_trace_enabled():
-        runs = payload.get("runs")
+        runs = payload.get("attempts")
         run_count = len(runs) if isinstance(runs, list) else 0
         cycle_count = (
             sum(

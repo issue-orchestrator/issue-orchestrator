@@ -222,7 +222,7 @@ class TestDebugSessionEndpoint:
         mock_orch.deps.runner.create_session.return_value = True
         session_output = FileSystemSessionOutput()
         mock_orch.deps.session_output = session_output
-        ledger = SqliteIssueRunLedger(tmp_path / "state" / "runs.sqlite")
+        ledger = SqliteIssueRunLedger(tmp_path / "state" / "runs.sqlite", repo_slug="test-owner/test-repo")
         if registration_fails:
             ledger = MagicMock(record_run=MagicMock(side_effect=IssueRunEvidenceUnavailable("disk full")))
         mock_orch.deps.issue_run_allocator = IssueRunAllocationService(session_output, ledger, branch_working_copy(), configuration=Config(repo="example/repo"))

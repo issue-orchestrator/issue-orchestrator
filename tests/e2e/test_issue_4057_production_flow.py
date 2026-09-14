@@ -319,8 +319,8 @@ async def _fetch_issue_detail(web_port: int, issue_number: int) -> dict[str, obj
 
 
 def _steps_from_issue_detail(payload: dict[str, object]) -> list[dict[str, object]]:
-    runs = payload.get("runs")
-    assert isinstance(runs, list) and runs, "Expected issue-detail runs"
+    runs = payload.get("attempts")
+    assert isinstance(runs, list) and runs, "Expected issue-detail attempts"
     latest = runs[-1]
     assert isinstance(latest, dict), "Expected latest run dict"
     cycles = latest.get("cycles")

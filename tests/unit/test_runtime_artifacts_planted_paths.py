@@ -143,6 +143,9 @@ def test_cleanup_safe_untracked_paths_cover_completed_session_artifacts() -> Non
         ".issue-orchestrator/persistent-pairs/issue-1/coder/terminal.jsonl"
     )
     assert is_cleanup_safe_untracked_path("web/node_modules/.cache/state.json")
+    assert is_cleanup_safe_untracked_path("src/pkg/__pycache__/module.pyc")
+    assert is_cleanup_safe_untracked_path(".venv-semgrep/bin/semgrep")
+    assert is_cleanup_safe_untracked_path("packages/vscode/dist/extension.js")
 
 
 def test_cleanup_safe_untracked_paths_are_path_boundary_safe() -> None:

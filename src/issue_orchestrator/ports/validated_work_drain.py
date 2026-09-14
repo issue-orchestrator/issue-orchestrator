@@ -19,8 +19,9 @@ class ValidatedWorkDrainQueue(Protocol):
 
         Selection grants no authority: the execution owner must re-read and
         compare current evidence/state before claiming and before any effect.
-        Only PARKED remote-read failures may be selected for refresh; no parked
-        record is implicitly promoted by selection.
+        PARKED remote-read failures and approval-required records with an
+        unobserved baseline may be selected for refresh. Refreshing authority
+        never implicitly promotes an approval-required record.
         """
         ...
 

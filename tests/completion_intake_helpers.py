@@ -67,7 +67,7 @@ class CompletionIntakeFixture:
 
 
 def make_completion_intake_fixture(root: Path) -> CompletionIntakeFixture:
-    ledger = SqliteIssueRunLedger(root / "state" / "issue_run_ledger.sqlite")
+    ledger = SqliteIssueRunLedger(root / "state" / "issue_run_ledger.sqlite", repo_slug="test-owner/test-repo")
     working_copy = Mock(spec=WorkingCopy)
     working_copy.get_head_sha.return_value = "a" * 40
     working_copy.has_uncommitted_changes.return_value = False

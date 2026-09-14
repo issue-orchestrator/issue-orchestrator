@@ -40,6 +40,7 @@ from ..infra.logging_config import get_repo_log_path
 from ..infra.repo_identity import state_dir
 from ..infra.validation_timings import resolve_git_common_dir
 
+
 if TYPE_CHECKING:
     from ..infra.config import Config
     from ..ports import RepositoryHost
@@ -473,7 +474,7 @@ def _build_locations(config: "Config") -> tuple[EvidenceLocation, ...]:
     state_dir_path = state_dir(config.repo_root)
     log_path = get_repo_log_path(config.repo_root)
     repo_root = Path(config.repo_root)
-    repo_slug = config.repo or ""
+    repo_slug = config.repo or ""  # display value only; work identity uses require_repo (#7255)
     roots = [
         EvidenceLocation(
             path=str(state_dir_path),
@@ -684,7 +685,7 @@ def build_evidence_map(
     """
     return EvidenceMap(
         focus_issue_number=focus_issue_number,
-        repo=config.repo or "",
+        repo=config.repo or "",  # cache/display value, not work identity; identity uses require_repo (#7255)
         default_branch=_resolve_default_branch(config, repository_host),
         locations=_build_locations(config),
         run_dirs=_resolve_run_dirs(config, focus_issue_number, artifact_hints),

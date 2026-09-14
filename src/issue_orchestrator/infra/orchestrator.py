@@ -100,7 +100,7 @@ from ..control.session_routing import (
 )
 from ..control.cleanup_manager import CleanupManager
 from ..control.worker_budget import worker_slot_free
-from ..control.review_exchange_lifecycle import IssueRuntimeTermination, ReviewExchangeCancellation
+from ..control.review_exchange_lifecycle import IssueRuntimeTermination, IssueTerminationOutcome, ReviewExchangeCancellation
 from ..control.completion_handler import (
     CompletionHandler,
     launch_review_by_number as _ch_launch_review_by_number,
@@ -283,6 +283,10 @@ class Orchestrator:
         """Terminate all issue-scoped runtime owners at a lifecycle boundary."""
         return self.deps.runtime_lifecycle.terminate(issue_number, reason)
 
+    def terminate_every_session_for_issue(self, issue_number: int, *, reason: str) -> IssueTerminationOutcome:
+        """Every terminal this issue owns; raises with nothing torn down if custody fails (#7255)."""
+        return self.deps.runtime_lifecycle.terminate_every_session(issue_number, reason)
+
     def issue_session_generation_stale_reason(self, target: "TechLeadSessionGeneration") -> str | None:
         """Read current applicability without stopping or re-approving any work."""
         return self.deps.runtime_lifecycle.generation_stale_reason(target,
@@ -419,6 +423,15 @@ class Orchestrator:
         return self.deps.runtime_lifecycle.preserve(issue_number, reason)
 
     def _kill_session(self, name: str) -> None:
+        """Stop a terminal, preserving its work first.
+
+        The capture here stays STRICT, unlike `preserve_completed_terminal` on
+        the completion path. This kills a session that is still RUNNING -- a
+        lost claim, an operator stop -- so unproven custody means the work may
+        still be live and unpreserved, and killing anyway is how it gets lost.
+        The completion path can be best-effort precisely because its agent has
+        already finished and its branch is already validated (#7255).
+        """
         for session in tuple(self.state.active_sessions):
             if session.terminal_id == name:
                 self.deps.runtime_lifecycle.preserve_terminal(session.issue.number, name, "terminal-stop", run=session.run_assets)

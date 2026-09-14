@@ -18,6 +18,20 @@ export interface AgentIdentityPayload {
   role: "coder" | "reviewer" | "rework" | "validator" | "e2e_runner" | "orchestrator";
 }
 
+export interface AttemptPayload {
+  attempt_key: string;
+  attempt_label: string;
+  attempt_number: number;
+  cycles: IssueCyclePayload[];
+  expanded: boolean;
+  outcome: OutcomeBadgePayload;
+  reset_from_scratch: boolean;
+  run_id: string | null;
+  session_run_ids: string[];
+  time_label: string;
+  timestamp: string;
+}
+
 export interface BlockedCodingAttemptPayload {
   agent: AgentIdentityPayload;
   blocked_at: string;
@@ -248,6 +262,8 @@ export interface E2ERunDetailPayload {
   actions: IssueDetailActionPayload[];
   artifact_diagnostic: E2EArtifactDiagnosticPayload;
   artifacts: TestRunArtifactPayload[];
+  attempt_count: number;
+  attempts: AttemptPayload[];
   blocked_detail: IssueDetailBlockedDetailPayload | null;
   cycles: E2ETimelineCyclePayload[];
   e2e_run_id?: number | null;
@@ -264,8 +280,6 @@ export interface E2ERunDetailPayload {
   results_by_category: E2ERunResultCategoriesPayload;
   results_summary: E2ERunResultsSummaryPayload;
   run: E2ERunExecutionPayload;
-  run_count: number;
-  runs: JourneyRunPayload[];
   status_explanation: string;
   summary: IssueDetailSummaryPayload;
   timeline_steps: Record<string, any>[];
@@ -552,6 +566,8 @@ export interface IssueDetailBlockedDetailPayload {
 
 export interface IssueDetailPayload {
   actions: IssueDetailActionPayload[];
+  attempt_count: number;
+  attempts: AttemptPayload[];
   blocked_detail: IssueDetailBlockedDetailPayload | null;
   cycles: Record<string, any>[];
   e2e_run_id?: number | null;
@@ -563,8 +579,6 @@ export interface IssueDetailPayload {
   previous_runs: Record<string, any>[];
   previous_runs_count: number;
   raw_events_count: number;
-  run_count: number;
-  runs: JourneyRunPayload[];
   stack_dependency?: StackDependencyGateViewPayload | null;
   status_explanation: string;
   summary: IssueDetailSummaryPayload;
@@ -663,20 +677,6 @@ export interface JourneyPhaseGroupPayload {
   key: "coding" | "review" | "rework" | "orchestrator";
   label: string;
   steps: JourneyStepPayload[];
-}
-
-export interface JourneyRunPayload {
-  cycles: IssueCyclePayload[];
-  expanded: boolean;
-  outcome: OutcomeBadgePayload;
-  reset_from_scratch: boolean;
-  run_id: string | null;
-  run_key: string;
-  run_label: string;
-  run_number: number;
-  session_run_ids: string[];
-  time_label: string;
-  timestamp: string;
 }
 
 export interface JourneyStepPayload {

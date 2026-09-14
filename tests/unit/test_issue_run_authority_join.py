@@ -34,7 +34,7 @@ def test_prepared_role_is_frozen_at_allocation_not_current_settings(custody, tec
     assert candidate.run.session_key.task is TaskKind.CODE
     assert candidate.run.branch_name == "feature"
     assert candidate.run.terminal_binding == RunTerminalBinding("visible-worker")
-    reopened = SqliteIssueRunLedger(custody.state / "runs.sqlite")
+    reopened = SqliteIssueRunLedger(custody.state / "runs.sqlite", repo_slug="test-owner/test-repo")
     assert reopened.role_for_receipt(receipt.entry_id) == expected
     assert reopened.prepare_candidate(receipt.entry_id, reopened.recorded_run(run)) == candidate
 
@@ -50,12 +50,12 @@ def test_schema_join_preserves_known_fields_without_inventing_missing_ones(custo
     with sqlite3.connect(path) as conn:
         for column in columns:
             conn.execute(f"ALTER TABLE issue_runs DROP COLUMN {column}")
-    reopened = SqliteIssueRunLedger(path)
+    reopened = SqliteIssueRunLedger(path, repo_slug="test-owner/test-repo")
     assert reopened.recorded_run(custody.run) == replace(original, **dict.fromkeys(columns))
     # Migrated physical column ordering must not change fresh insert bindings.
     next_record = replace(original, run=FileSystemSessionOutput().start_run(custody.worktree, "fresh"))
     reopened.record_run(42, next_record)
-    assert SqliteIssueRunLedger(path).recorded_run(next_record.run) == next_record
+    assert SqliteIssueRunLedger(path, repo_slug="test-owner/test-repo").recorded_run(next_record.run) == next_record
 
 
 @pytest.mark.parametrize("change", [

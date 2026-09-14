@@ -21,13 +21,37 @@ class IssueRunRow:
     @classmethod
     def from_record(cls, issue_number: int, record: IssueRunRecord) -> "IssueRunRow":
         run = record.run
+        # The storage boundary refuses an empty scope rather than persisting it.
+        # `issue_scope TEXT NOT NULL` is satisfied by "", so the column alone never
+        # caught this: the poisoned row outlived the launch and only failed at
+        # teardown, where recovery is impossible (#7255).
+        try:
+            scope = record.session_key.issue.scope()
+        except ValueError as exc:
+            # `GitHubIssueKey.scope()` raises ValueError, and this codec is built
+            # OUTSIDE `record_run`'s try while `WorktreeContext.create` catches
+            # only IssueRunEvidenceUnavailable -- so an unwrapped ValueError
+            # escapes unhandled AFTER the worktree and branch exist.
+            raise IssueRunEvidenceUnavailable(
+                f"run {run.run_id} for issue #{issue_number} has no repository "
+                f"scope and cannot be terminalized: {exc}"
+            ) from exc
+        if not scope.strip():
+            # IssueRunEvidenceUnavailable, not ValueError: `record_run` builds
+            # this codec OUTSIDE its try, and `WorktreeContext.create` catches
+            # only this type. A bare ValueError here escapes unhandled AFTER the
+            # worktree and branch have been created.
+            raise IssueRunEvidenceUnavailable(
+                f"run {run.run_id} for issue #{issue_number} has an empty issue "
+                "scope; a run with no repository scope cannot be terminalized"
+            )
         return cls(
             {
                 "session_name": run.session_name,
                 "run_id": run.run_id,
                 "started_at": run.started_at,
                 "issue_number": issue_number,
-                "issue_scope": record.session_key.issue.scope(),
+                "issue_scope": scope,
                 "issue_key": record.session_key.issue.stable_id(),
                 "task": record.session_key.task.value,
                 "assets_json": json.dumps(
@@ -94,6 +118,20 @@ class IssueRunRow:
             raise ValueError("Run ledger key and assets disagree")
         if os.path.normpath(str(assets.run_dir)) != row["run_dir"]:
             raise ValueError("Run ledger root and assets disagree")
+        # Refuse a row written before the write guard existed, at the same
+        # boundary. Without this an unscoped row decodes into a GitHubIssueKey
+        # whose `scope()` now raises, and it would raise from wherever the record
+        # eventually travelled - `SessionKey.__hash__`, `SessionKey.__eq__`,
+        # `manual_completion_preparation` - instead of here. `recorded_runs`
+        # already turns this into the typed `IssueRunEvidenceUnavailable` its
+        # callers handle.
+        if not str(row["issue_scope"]).strip():
+            # Typed for BOTH read paths: `recorded_runs` and the unwrapped
+            # `recorded_run` both contract on IssueRunEvidenceUnavailable.
+            raise IssueRunEvidenceUnavailable(
+                f"run {row['run_id']} for issue #{row['issue_number']} was "
+                "recorded with no repository scope and cannot be terminalized"
+            )
         return IssueRunRecord(
             session_key=SessionKey(
                 GitHubIssueKey(repo=row["issue_scope"], external_id=row["issue_key"]),

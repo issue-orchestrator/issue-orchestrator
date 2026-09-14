@@ -740,7 +740,7 @@ class DependencyEvaluator:
 
     def _resolve_external_id(self, external_id: str) -> "_ExternalIdResult":
         """Resolve external ID to issue number."""
-        if self.issue_resolver is None or self.repo is None:
+        if self.issue_resolver is None or not self.repo or not self.repo.strip():
             logger.warning("External ID dependency %s cannot be resolved - no resolver configured", external_id)
             return self._ExternalIdResult(error=True, dependency=Dependency(issue_number=None, external_id=external_id, state=DependencyState.UNKNOWN, error="No resolver configured for external ID references"))
 

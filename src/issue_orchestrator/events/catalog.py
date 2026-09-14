@@ -332,6 +332,7 @@ class EventName(str, Enum):
     ISSUE_PAUSED_RECONCILE = "issue.paused_reconcile"  # Issue paused due to drift
     VALIDATED_WORK_DISPOSITION_OBSERVED = "validated_work.disposition_observed"
     VALIDATED_WORK_ABANDONED = "validated_work.abandoned"
+    VALIDATED_WORK_CAPTURE_FAILED = "validated_work.capture_failed"  # Teardown capture faulted; transition continued
     HISTORY_RECONCILED = "history.reconciled"
 
     # =========================================================================

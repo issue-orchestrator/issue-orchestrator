@@ -155,7 +155,7 @@ def _single_action(actions: object, **criteria: object) -> dict[str, object]:
 
 def _latest_run(payload: dict[str, object]) -> dict[str, object]:
     """Return the latest run from issue-detail payload."""
-    runs = payload.get("runs")
+    runs = payload.get("attempts")
     assert isinstance(runs, list) and runs, "expected at least one run"
     latest = runs[-1]
     assert isinstance(latest, dict), "run payload must be an object"
@@ -263,7 +263,7 @@ def test_issue_detail_reads_from_sqlite_store(sample_config, mock_repository_hos
         issue_detail_response = client.get(f"/api/issue-detail/{issue_number}")
         assert issue_detail_response.status_code == 200
         issue_detail_payload = issue_detail_response.json()
-        assert issue_detail_payload["run_count"] == 1
+        assert issue_detail_payload["attempt_count"] == 1
         assert issue_detail_payload["timeline_steps"], "Expected timeline steps from persisted DB events"
         assert issue_detail_payload.get("summary", {}).get("timeline_diagnostic") is None
         latest_run = _latest_run(issue_detail_payload)
@@ -735,7 +735,7 @@ def test_issue_detail_4057_like_projection_stays_semantically_correct(sample_con
         assert response.status_code == 200
         payload = response.json()
 
-        assert payload["run_count"] == 1
+        assert payload["attempt_count"] == 1
         run = _latest_run(payload)
         assert run["session_run_ids"] == [code_run_id, review_run_id]
         assert run["outcome"]["label"] == "Approved"
@@ -917,8 +917,8 @@ def test_issue_detail_latest_run_stays_single_after_pr_pending_removed_and_reque
         assert response.status_code == 200
         payload = response.json()
 
-        assert payload["run_count"] == 1
-        only_run = payload["runs"][0]
+        assert payload["attempt_count"] == 1
+        only_run = payload["attempts"][0]
         latest_run = _latest_run(payload)
         assert only_run is latest_run
 
@@ -1710,7 +1710,7 @@ def test_latest_run_without_review_events_is_not_projected_as_approved_or_comple
         response = client.get(f"/api/issue-detail/{issue_number}")
         assert response.status_code == 200
         payload = response.json()
-        assert int(payload.get("run_count") or 0) >= 2
+        assert int(payload.get("attempt_count") or 0) >= 2
         latest_run = _latest_run(payload)
         latest_outcome = str(((latest_run.get("outcome") or {}) if isinstance(latest_run.get("outcome"), dict) else {}).get("label") or latest_run.get("outcome") or "").lower()
         assert "approved" not in latest_outcome
