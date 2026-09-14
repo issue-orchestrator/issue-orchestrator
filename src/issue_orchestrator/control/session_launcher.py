@@ -2230,8 +2230,7 @@ class SessionLauncher:
         return dict(self._provider_credentials.session_env(provider)) or None
 
     def _spawn(
-        self, name: str, command: str, worktree: Path, title: str,
-        agent_config: "AgentConfig",
+        self, name: str, command: str, worktree: Path, title: str, agent_config: "AgentConfig",
     ) -> bool:
         """Start one agent session, always with its provider credentials.
 
@@ -2242,9 +2241,7 @@ class SessionLauncher:
         empty mapping distinguishes "this provider supplies its own login" from
         "the key resolved to nothing".
         """
-        secret_env = dict(
-            self._provider_credentials.session_env(agent_config.provider)
-        )
+        secret_env = dict(self._provider_credentials.session_env(agent_config.provider))
         return self._create_session(name, command, worktree, title, secret_env or None)
 
     def _check_provider_ready(
