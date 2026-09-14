@@ -751,13 +751,10 @@ class Planner:
         was consulted and updated, before planning began (#6999 A3). Every
         queue asks it the same way, so eligibility cannot drift between them.
         """
-        policy = self.provider_policy
-        if policy is None:
-            return None
-        # The lane, not the provider: the tick's sample is keyed by lane so an
-        # exhausted Fable or Spark meter parks only the agents drawing on it.
-        lane = policy.lane_key_for_agent_label(agent_label)
-        if lane and snapshot.provider_launch.blocks(lane):
+        # Both lane identity and circuit state come from the same pre-planning
+        # sample. Planning never calls the readiness probe.
+        lane = snapshot.provider_launch.lane_for_agent_label(agent_label)
+        if self.provider_policy is not None and snapshot.provider_launch.blocks(lane):
             return lane
         return None
 

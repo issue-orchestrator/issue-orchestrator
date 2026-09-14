@@ -14,6 +14,7 @@ from issue_orchestrator.domain.registered_completion import CompletionProcessing
 from tests.run_allocation_helpers import make_session_launcher
 
 from issue_orchestrator.domain.models import DiscoveredReview
+from issue_orchestrator.domain.provider_lane import BillingMode, ProviderLane
 
 import json
 import os
@@ -6125,7 +6126,7 @@ class TestProcessActiveSessions:
             SessionDecision(
                 status=SessionStatus.BLOCKED,
                 provider_quota_failure=ProviderQuotaFailureDecision(
-                    provider="codex",
+                    lane=ProviderLane("codex", billing=BillingMode.METERED),
                     error_summary="usage_limit_exceeded",
                     observed_at=quota_at,
                 ),
@@ -6156,7 +6157,7 @@ class TestProcessActiveSessions:
             now=transient_at,
         )
         provider_resilience.record_quota_failure.assert_called_once_with(
-            "codex",
+            ProviderLane("codex", billing=BillingMode.METERED),
             error_summary="usage_limit_exceeded",
             now=quota_at,
         )

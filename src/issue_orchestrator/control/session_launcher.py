@@ -767,7 +767,7 @@ class SessionLauncher:
             return freshness.failure
 
         # Provider circuit breaker check
-        if result := self._check_provider_ready(agent_config.provider, issue.number, agent_config.model):
+        if result := self._check_provider_ready(agent_config, issue.number):
             return result
 
         log_transition("issue", issue.number, "AVAILABLE", "LAUNCHING", "no conflicts")
@@ -1190,7 +1190,7 @@ class SessionLauncher:
             return LaunchResult.required_input_unavailable(
                 prepared_coder_prompt.reason
             )
-        if result := self._check_provider_ready(agent_config.provider, issue.number, agent_config.model):
+        if result := self._check_provider_ready(agent_config, issue.number):
             return result
         return issue, agent_config, agent_label, prepared_coder_prompt
 
@@ -1579,7 +1579,7 @@ class SessionLauncher:
         if not agent_config:
             return LaunchResult(None, False, f"No agent config for {agent_label}")
 
-        if result := self._check_provider_ready(agent_config.provider, review.issue_number, agent_config.model):
+        if result := self._check_provider_ready(agent_config, review.issue_number):
             return result
 
         session_name = f"review-{review.pr_number}"
@@ -1887,7 +1887,7 @@ class SessionLauncher:
         if not agent_config:
             return LaunchResult(None, False, f"No agent config for {agent_label}")
 
-        if result := self._check_provider_ready(agent_config.provider, review.issue_number, agent_config.model):
+        if result := self._check_provider_ready(agent_config, review.issue_number):
             return result
 
         session_name = SessionRef.for_retrospective_review(review.issue_number).name
@@ -2218,7 +2218,7 @@ class SessionLauncher:
     def _get_provider_command_wrapper(self) -> ProviderCommandWrapper:
         if self._provider_command_wrapper is None:
             self._provider_command_wrapper = ProviderCommandWrapper(
-                self.config.provider_resilience.short_retry
+                self.config.provider_resilience.short_retry, self._provider_gate.lane_for_agent if self._provider_gate else None,
             )
         return self._provider_command_wrapper
 
@@ -2245,16 +2245,16 @@ class SessionLauncher:
         return self._create_session(name, command, worktree, title, secret_env or None)
 
     def _check_provider_ready(
-        self, provider: str | None, issue_number: int, model: str | None = None
+        self, agent_config: "AgentConfig", issue_number: int
     ) -> Optional["LaunchResult"]:
         """Ask the launch gate whether this agent's quota lane can work now.
 
-        ``model`` selects the lane: two agents on one provider draw on different
-        meters when one runs a separately-metered model.
+        The provider and model travel as one configured value so this boundary
+        cannot accidentally gate a provider against another agent's model.
         """
         if self._provider_gate is None:
             return None
-        return self._provider_gate.check(provider, issue_number, model)
+        return self._provider_gate.check(agent_config, issue_number)
 
     def _trigger_issue_session_state_transitions(
         self,

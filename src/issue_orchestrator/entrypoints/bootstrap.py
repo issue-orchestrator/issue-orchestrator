@@ -575,7 +575,7 @@ def build_orchestrator(
     tech_lead = create_tech_lead_composition(
         config, github, events, queue_cache_store=queue_cache_store,
         provider_resilience=provider_resilience,
-        budgeted_validation_reports=budgeted_reports,
+        budgeted_validation_reports=budgeted_reports, provider_readiness_probe=provider_readiness_probe,
     )
     tech_lead_authority = tech_lead.authority
     tech_lead_board_publisher = tech_lead.board_publisher
@@ -1025,7 +1025,7 @@ def build_orchestrator_for_testing(
             reconcile=False,  # Disable for testing by default
         )
 
-    tech_lead = create_tech_lead_composition(config, github, events, fact_gatherer)
+    tech_lead = create_tech_lead_composition(config, github, events, fact_gatherer, provider_readiness_probe=provider_readiness_probe)
     tech_lead_authority_for_testing = tech_lead.authority
     tech_lead_board_publisher_for_testing = tech_lead.board_publisher
     fact_gatherer = tech_lead.fact_gatherer

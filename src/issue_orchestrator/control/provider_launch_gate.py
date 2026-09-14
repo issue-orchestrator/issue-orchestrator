@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import TYPE_CHECKING, Callable, Optional
 
 from ..events import EventName
 from ..infra.logging_config import issue_log
@@ -37,6 +37,10 @@ from ..ports.event_sink import make_trace_event
 from .actions import Action
 from .provider_availability import ProviderAvailabilityPolicy
 from .session_launch_types import LaunchDisposition, LaunchResult
+
+if TYPE_CHECKING:
+    from ..domain.models import AgentConfig
+    from ..domain.provider_lane import ProviderLane
 
 logger = logging.getLogger(__name__)
 
@@ -51,14 +55,14 @@ class ProviderLaunchGate:
 
     def check(
         self,
-        provider: str | None,
+        agent: "AgentConfig",
         issue_number: int,
-        model: str | None = None,
     ) -> Optional[LaunchResult]:
         """Return a parking :class:`LaunchResult`, or ``None`` to proceed."""
+        provider = agent.provider
         if not provider:
             return None
-        outcome = self.policy.assess_launch(provider, model=model)
+        outcome = self.policy.assess_launch(agent)
         if not outcome.blocked_by_readiness:
             # Healthy credentials still do not override a transient outage.
             return self._park_for_open_circuit(outcome.lane_key, issue_number)
@@ -116,6 +120,10 @@ class ProviderLaunchGate:
             f"Provider unavailable: {lane}",
             disposition=LaunchDisposition.PROVIDER_DEFERRED,
         )
+
+    def lane_for_agent(self, agent: "AgentConfig") -> "ProviderLane":
+        """Return the exact sampled lane identity used by this launch gate."""
+        return self.policy.lane_for_agent(agent)
 
 
 __all__ = ["ProviderLaunchGate"]

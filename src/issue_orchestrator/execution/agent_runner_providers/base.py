@@ -221,6 +221,11 @@ class CLIProvider(ABC):
         del secrets  # most providers need nothing injected
         return {}
 
+    @property
+    def session_secret_env_names(self) -> tuple[str, ...]:
+        """Injected env names that sandboxed agent commands must not inherit."""
+        return ()
+
     def read_entitlement(self, output: str, exit_code: int | None) -> ProviderEntitlement:
         """Interpret this CLI's auth output into a billing observation.
 

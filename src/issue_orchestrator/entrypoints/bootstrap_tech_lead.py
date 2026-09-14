@@ -20,6 +20,10 @@ from typing import TYPE_CHECKING, Callable
 
 from ..infra.logging_config import get_repo_log_path, read_log_tail
 from ..ports.budgeted_validation import BudgetedValidationReports, DisabledBudgetedValidationReports
+from ..ports.provider_readiness import (
+    NO_PROVIDER_READINESS_PROBE,
+    ProviderReadinessProbe,
+)
 
 if TYPE_CHECKING:
     from ..control.board_snapshot_builder import BoardSnapshotBuilder
@@ -227,7 +231,9 @@ def create_tech_lead_board_publisher(
 
 
 def _make_provider_circuit_reader(
-    config: "Config", provider_resilience: "ProviderResilienceManager"
+    config: "Config",
+    provider_resilience: "ProviderResilienceManager",
+    provider_readiness_probe: ProviderReadinessProbe,
 ) -> "Callable[[Issue], bool]":
     """Predicate: is this issue's provider circuit still open? (#6824 F2).
 
@@ -239,13 +245,17 @@ def _make_provider_circuit_reader(
     from ..control.provider_availability import ProviderAvailabilityPolicy
 
     policy = ProviderAvailabilityPolicy(
-        config, provider_resilience, LabelManager(config)
+        config,
+        provider_resilience,
+        LabelManager(config),
+        readiness_probe=provider_readiness_probe,
     )
 
     def is_open(issue: "Issue") -> bool:
-        # A circuit-ownership question, not a launch decision: the sweep must
-        # not take a credential sample or move circuit state (#6999 F1).
-        return policy.circuit_is_open(policy.lane_key_for_issue(issue))
+        # A circuit-ownership question, not a launch decision: candidate lane
+        # derivation reads the adapter's static meter map and never samples
+        # credentials or moves circuit state (#6999 F1, #7253).
+        return policy.circuit_is_open_for_issue(issue)
 
     return is_open
 
@@ -260,6 +270,7 @@ def create_tech_lead_fact_gatherer(
     provider_resilience: "ProviderResilienceManager | None" = None,
     promotion_target: "PromotionTargetHost | None" = None,
     budgeted_validation_reports: BudgetedValidationReports = DisabledBudgetedValidationReports(),
+    provider_readiness_probe: ProviderReadinessProbe = NO_PROVIDER_READINESS_PROBE,
 ) -> "FactGatherer | None":
     """Wire the read-only tech_lead ledgers and projections as one unit.
 
@@ -286,7 +297,9 @@ def create_tech_lead_fact_gatherer(
         # Always wired; a no-op that touches nothing while the flag is off.
         e2e_slot_reader=make_e2e_slot_reader(config),
         provider_circuit_open=(
-            _make_provider_circuit_reader(config, provider_resilience)
+            _make_provider_circuit_reader(
+                config, provider_resilience, provider_readiness_probe
+            )
             if provider_resilience is not None
             else None
         ),
@@ -301,6 +314,7 @@ def create_tech_lead_composition(
     queue_cache_store: "QueueCacheStore | None" = None,
     provider_resilience: "ProviderResilienceManager | None" = None,
     budgeted_validation_reports: BudgetedValidationReports = DisabledBudgetedValidationReports(),
+    provider_readiness_probe: ProviderReadinessProbe = NO_PROVIDER_READINESS_PROBE,
 ) -> TechLeadComposition:
     """Build the tech_lead store and ensure both projections share one publisher."""
     authority = create_tech_lead_authority_store(config)
@@ -330,6 +344,7 @@ def create_tech_lead_composition(
             provider_resilience,
             promotion_target,
             budgeted_validation_reports,
+            provider_readiness_probe,
         )
     return TechLeadComposition(
         authority=authority,

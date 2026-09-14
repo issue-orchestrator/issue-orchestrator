@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from enum import Enum
 
 from ..events import EventName
+from ..domain.provider_lane import ProviderLane
 from ..ports import EventSink,  make_trace_event
 from ..ports.provider_resilience import (
     ProviderCircuitState,
@@ -141,9 +142,11 @@ class ProviderResilienceManager:
     @staticmethod
     def _is_open_state(state: ProviderCircuitState | None, now: datetime) -> bool:
         """Whether *any* cause still holds this circuit open at ``now``."""
-        if state is None or state.open_until is None:
+        if state is None:
             return False
-        return state.open_until > now
+        if state.metered_quota_is_open:
+            return True
+        return state.open_until is not None and state.open_until > now
 
     def snapshot(self, now: datetime | None = None) -> list[ProviderCircuitStatus]:
         """Return the interpreted status of every tracked provider circuit.
@@ -174,10 +177,10 @@ class ProviderResilienceManager:
             return None
         return self._interpret(state, now or _now())
 
-    @staticmethod
-    def _interpret(state: ProviderCircuitState, now: datetime) -> ProviderCircuitStatus:
+    @classmethod
+    def _interpret(cls, state: ProviderCircuitState, now: datetime) -> ProviderCircuitStatus:
         open_until = state.open_until
-        is_open = open_until is not None and open_until > now
+        is_open = cls._is_open_state(state, now)
         cooldown_remaining = (
             max(0, int((open_until - now).total_seconds()))
             if is_open and open_until is not None
@@ -241,6 +244,7 @@ class ProviderResilienceManager:
                 state.consecutive_quota_failures if state else 0
             ),
             quota_observed_at=state.quota_observed_at if state else None,
+            quota_heals_on_timer=state.quota_heals_on_timer if state else False,
         )
         self.store.save_reduction(reduction.evidence, new_state)
 
@@ -346,6 +350,7 @@ class ProviderResilienceManager:
                 state.consecutive_quota_failures if state else 0
             ),
             quota_observed_at=state.quota_observed_at if state else None,
+            quota_heals_on_timer=state.quota_heals_on_timer if state else False,
         )
         self.store.save(new_state)
 
@@ -375,12 +380,12 @@ class ProviderResilienceManager:
 
     def record_quota_failure(
         self,
-        provider: str | None,
+        lane: ProviderLane,
         *,
         error_summary: str,
         now: datetime | None = None,
     ) -> ProviderCircuitState | None:
-        """Record an exhausted balance or usage allowance for ``provider``.
+        """Record exhausted capacity for one independently billed ``lane``.
 
         Trips on the **first** observation, unlike the auth ladder. An auth
         verdict comes from one cached probe sample that gates every launch in a
@@ -390,20 +395,13 @@ class ProviderResilienceManager:
         deliberately burning a second session to learn what the first already
         proved (#7096).
 
-        Shares :attr:`auth_cooldown_seconds`. Both causes are outages only a
-        person can end, and that window exists to keep the fleet off the
-        transient ladder; the property that matters is "long", and a second
-        knob would carry no information the first does not.
-
-        Recovery is proved either by a later successful provider call through
-        :meth:`record_success` or by the elapsed deadline through
-        :meth:`close_expired`. A successful call is direct evidence that the
-        account can do work again; unlike a credential-only READY probe, it is
-        therefore allowed to retire this dimension early.
+        Prepaid capacity receives a deadline because its subscription meter
+        refills on a clock. Metered capacity receives no deadline: waiting does
+        not add money to an exhausted account, so only a later successful call
+        may retire it. Billing is supplied with the observed lane and persisted
+        with the circuit so this distinction survives restarts.
         """
-        if not provider:
-            return None
-
+        provider = lane.key
         now = now or _now()
         state = self.store.get(provider)
         reduction = self._reduce_evidence(
@@ -415,8 +413,12 @@ class ProviderResilienceManager:
         if not reduction.accepted:
             return state
         consecutive_quota = (state.consecutive_quota_failures + 1) if state else 1
-        quota_open_until = now + timedelta(
-            seconds=self.config.circuit_breaker.auth_cooldown_seconds
+        quota_open_until = (
+            now + timedelta(
+                seconds=self.config.circuit_breaker.auth_cooldown_seconds
+            )
+            if lane.heals_on_timer
+            else None
         )
         was_open = self._is_open_state(state, now)
 
@@ -433,6 +435,7 @@ class ProviderResilienceManager:
             quota_open_until=quota_open_until,
             consecutive_quota_failures=consecutive_quota,
             quota_observed_at=now,
+            quota_heals_on_timer=lane.heals_on_timer,
         )
         self.store.save_reduction(reduction.evidence, new_state)
 
@@ -450,7 +453,9 @@ class ProviderResilienceManager:
                 EventName.PROVIDER_OUTAGE_ENTERED,
                 {
                     "provider": provider,
-                    "open_until": quota_open_until.isoformat(),
+                    "open_until": (
+                        quota_open_until.isoformat() if quota_open_until else None
+                    ),
                     "consecutive_outages": new_state.consecutive_outages,
                     "error_summary": error_summary,
                 },
@@ -504,6 +509,7 @@ class ProviderResilienceManager:
             quota_open_until=state.quota_open_until,
             consecutive_quota_failures=state.consecutive_quota_failures,
             quota_observed_at=state.quota_observed_at,
+            quota_heals_on_timer=state.quota_heals_on_timer,
         )
         self.store.save(updated)
 
@@ -573,6 +579,9 @@ class ProviderResilienceManager:
             ),
             quota_observed_at=(
                 state.quota_observed_at if preserve_quota else None
+            ),
+            quota_heals_on_timer=(
+                state.quota_heals_on_timer if preserve_quota else False
             ),
         )
 
@@ -650,50 +659,71 @@ class ProviderResilienceManager:
         return updated
 
     def close_expired(self, now: datetime | None = None) -> list[ProviderCircuitState]:
-        """Retire circuits whose causes have *all* elapsed.
+        """Retire each timer-backed cause whose deadline has elapsed.
 
-        The aggregate deadline is the latest of the per-cause ones, so a
-        provider whose transient cooldown ran out while a much longer auth
-        window is still running is skipped here entirely: no half-retirement,
-        and no ``outage_exited`` claimed while the provider still refuses calls.
+        Metered quota has no deadline and is deliberately preserved. An exit
+        event is emitted only when clearing expired causes releases the
+        aggregate circuit; a still-active sibling cause remains silent.
         """
         now = now or _now()
         closed: list[ProviderCircuitState] = []
         for state in self.store.list_all():
-            if state.open_until is None or state.open_until > now:
+            transient_expired = (
+                state.transient_open_until is not None
+                and state.transient_open_until <= now
+            )
+            auth_expired = (
+                state.auth_open_until is not None and state.auth_open_until <= now
+            )
+            quota_expired = (
+                state.quota_heals_on_timer
+                and state.quota_open_until is not None
+                and state.quota_open_until <= now
+            )
+            if not (transient_expired or auth_expired or quota_expired):
                 continue
             updated = ProviderCircuitState(
                 provider=state.provider,
-                transient_open_until=None,
-                transient_observed_at=None,
-                auth_open_until=None,
+                transient_open_until=(
+                    None if transient_expired else state.transient_open_until
+                ),
+                transient_observed_at=(
+                    None if transient_expired else state.transient_observed_at
+                ),
+                auth_open_until=None if auth_expired else state.auth_open_until,
                 consecutive_outages=state.consecutive_outages,
                 last_error_summary=state.last_error_summary,
                 updated_at=now,
                 consecutive_auth_failures=state.consecutive_auth_failures,
                 last_auth_sample_id=state.last_auth_sample_id,
-                # Quota has no probe-driven recovery, so this elapsed deadline
-                # is the guaranteed way back when no later success arrives.
-                # Retiring the counter with the deadline means the next
-                # exhaustion starts fresh rather than using a stale count.
-                quota_open_until=None,
-                consecutive_quota_failures=0,
-                quota_observed_at=None,
+                quota_open_until=(
+                    None if quota_expired else state.quota_open_until
+                ),
+                consecutive_quota_failures=(
+                    0 if quota_expired else state.consecutive_quota_failures
+                ),
+                quota_observed_at=(
+                    None if quota_expired else state.quota_observed_at
+                ),
+                quota_heals_on_timer=(
+                    False if quota_expired else state.quota_heals_on_timer
+                ),
             )
             self.store.save(updated)
             closed.append(updated)
-            self.events.publish(make_trace_event(
-                EventName.PROVIDER_OUTAGE_EXITED,
-                {
-                    "provider": state.provider,
-                    "at": now.isoformat(),
-                },
-            ))
-            self.events.publish(make_trace_event(
-                EventName.PROVIDER_RETRY_ATTEMPTED,
-                {
-                    "provider": state.provider,
-                    "at": now.isoformat(),
-                },
-            ))
+            if not self._is_open_state(updated, now):
+                self.events.publish(make_trace_event(
+                    EventName.PROVIDER_OUTAGE_EXITED,
+                    {
+                        "provider": state.provider,
+                        "at": now.isoformat(),
+                    },
+                ))
+                self.events.publish(make_trace_event(
+                    EventName.PROVIDER_RETRY_ATTEMPTED,
+                    {
+                        "provider": state.provider,
+                        "at": now.isoformat(),
+                    },
+                ))
         return closed

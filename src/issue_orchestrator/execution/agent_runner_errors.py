@@ -46,17 +46,15 @@ _RATE_LIMIT_TOKENS = (
     "429",
     "quota",
     "throttle",
-    # Claude Code subscription banners. These are genuine rate limits — the
-    # rolling five-hour and weekly windows reopen on a clock — but neither
-    # phrase contains any token above, so both classified as ``None`` and the
-    # session simply looked idle until its wall clock fired.
-    "session limit",
-    "weekly limit",
 )
 
-# An exhausted balance or usage allowance. Distinct from a rate limit because
-# no amount of waiting restores it; distinct from AUTH because the credential
-# is valid. Codex's primary quota banner is "You've hit your usage limit …
+# An exhausted balance or usage allowance. Distinct from an ordinary rate
+# limit because the provider has reported that a capacity meter is empty, not
+# merely that requests should back off; distinct from AUTH because the
+# credential is valid. Whether the meter refills on a clock is carried by the
+# billing-aware ProviderLane: prepaid subscription windows receive a deadline,
+# while metered balances wait for successful-call evidence. Codex's primary
+# quota banner is "You've hit your usage limit …
 # purchase more credits", and its typed variants are
 # ``usage_limit_exceeded`` / ``workspace_member_credits_depleted``. None of
 # them contain "rate limit", "429", "quota", or "throttle", so every one of
@@ -87,6 +85,11 @@ _QUOTA_TOKENS = (
     "out of credits",
     "spend limit reached",
     "reached your spending limit",
+    # Claude Code subscription meters. They refill on a clock, but still need
+    # the quota circuit (with a prepaid lane) rather than the ordinary retry
+    # ladder: retrying an empty weekly meter merely burns whole sessions.
+    "hit your session limit",
+    "hit your weekly limit",
 )
 
 # HTTP-flavoured tokens (one-shot API failures) *and* the interactive TUI

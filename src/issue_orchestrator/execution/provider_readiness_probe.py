@@ -105,6 +105,18 @@ class CLIProviderReadinessProbe:
             "auth-failure signature not confirmed by the provider credential probe",
         )
 
+    def classify_session_output(
+        self, provider: str, output: str
+    ) -> ProviderErrorType | None:
+        """Classify live output without exposing adapter text rules to control."""
+        if not provider or not output:
+            return None
+        try:
+            adapter = self._resolve_provider(provider)
+        except ValueError:
+            return None
+        return adapter.classify_output(output)
+
     def lane_for(self, provider: str, model: str | None = None) -> ProviderLane:
         """Resolve the independently-metered lane this invocation draws from.
 
@@ -112,8 +124,9 @@ class CLIProviderReadinessProbe:
         cache directly. Billing is what decides whether sub-meters exist at all,
         so resolving a lane from a cold cache would report undetermined billing,
         collapse every model onto the provider's single lane, and silently undo
-        the separation this exists to create — on the planning path, which is
-        where most lane resolution happens.
+        the separation this exists to create. Planning consumes the sampled
+        lane map instead; this live resolution path is reserved for launch and
+        session-result handling.
 
         The call is TTL-cached, so the first resolution in a tick probes once
         and every later one is free. It records nothing: the circuit
@@ -128,6 +141,26 @@ class CLIProviderReadinessProbe:
             # of an exception on a path that is only choosing a circuit row.
             return ProviderLane(provider=provider, billing=BillingMode.METERED)
         return adapter.lane_for(model, self.check_launch_readiness(provider).entitlement)
+
+    def candidate_lanes(
+        self, provider: str, model: str | None = None
+    ) -> tuple[ProviderLane, ...]:
+        """Resolve every possible circuit key without probing account state."""
+        try:
+            adapter = self._resolve_provider(provider)
+        except ValueError:
+            return (ProviderLane(provider=provider, billing=BillingMode.METERED),)
+        lanes = [ProviderLane(provider=adapter.name, billing=BillingMode.METERED)]
+        meter = adapter.meter_for_model(model)
+        if meter is not None:
+            lanes.append(
+                ProviderLane(
+                    provider=adapter.name,
+                    meter=meter,
+                    billing=BillingMode.PREPAID,
+                )
+            )
+        return tuple(lanes)
 
     def _cached(self, provider: str) -> ProviderReadiness | None:
         entry = self._cache.get(provider)

@@ -17,13 +17,15 @@ class ProviderErrorType(str, Enum):
 
     @property
     def requires_human_intervention(self) -> bool:
-        """Whether waiting can never clear this failure.
+        """Whether a session must not retry this failure in process.
 
-        The distinction the retry ladder and the circuit both turn on. A
-        transient outage and a rate limit heal on a timer; an expired
-        credential and an exhausted balance heal only when a person acts.
+        The distinction the retry ladder turns on. A transient outage and an
+        ordinary rate limit can heal during a short retry; an expired
+        credential or an exhausted capacity meter cannot. The circuit later
+        applies the lane's billing fact: prepaid quota receives a refill
+        deadline, while metered quota requires external recovery evidence.
         Call sites that mean "a human must fix this" branch on this predicate
-        rather than on ``is AUTH``, so adding a second human-fixable cause
+        rather than on ``is AUTH``, so adding a second non-retryable cause
         does not silently reinstate the retry-until-the-wall-clock behaviour
         that AUTH was given its own window to prevent (#6999).
         """
@@ -77,6 +79,21 @@ class ProviderCircuitState:
     # applied out of attempt order, so recovery evidence must be newer than the
     # exhaustion fact it retires.
     quota_observed_at: datetime | None = None
+    # Whether the exhausted allowance returns merely because its deadline
+    # elapsed. Subscription meters refill on a clock; a pay-as-you-go balance
+    # does not. False is the fail-safe default for rows written before billing
+    # was observed: keeping free capacity parked is cheaper than spending money
+    # the operator did not authorize.
+    quota_heals_on_timer: bool = False
+
+    @property
+    def metered_quota_is_open(self) -> bool:
+        """Whether a metered exhaustion fact still requires human recovery."""
+        return (
+            not self.quota_heals_on_timer
+            and self.quota_observed_at is not None
+            and self.consecutive_quota_failures > 0
+        )
 
     @property
     def open_until(self) -> datetime | None:
@@ -131,6 +148,13 @@ class ProviderCircuitStatus:
     consecutive_outages: int
     last_error_summary: str | None
     updated_at: datetime
+
+    @property
+    def timed_retry_seconds(self) -> int | None:
+        """Cooldown remaining only when this open circuit has a deadline."""
+        if not self.is_open or self.open_until is None:
+            return None
+        return self.cooldown_remaining_seconds
 
 
 class ProviderCircuitStatusReader(Protocol):

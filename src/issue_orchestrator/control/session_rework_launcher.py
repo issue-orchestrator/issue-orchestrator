@@ -133,7 +133,7 @@ class SessionEnvBuilder(Protocol):
 
 class ProviderReadinessChecker(Protocol):
     def __call__(
-        self, provider: str | None, issue_number: int, model: str | None = None
+        self, agent_config: AgentConfig, issue_number: int
     ) -> LaunchResult | None: ...
 
 
@@ -274,9 +274,7 @@ def _rework_launch_identity(
     )
     if isinstance(prepared_coder_prompt, CoderPromptAddendumUnavailable):
         return LaunchResult.required_input_unavailable(prepared_coder_prompt.reason)
-    if result := deps.check_provider_ready(
-        agent_config.provider, issue_number, agent_config.model
-    ):
+    if result := deps.check_provider_ready(agent_config, issue_number):
         return result
     return agent_config, issue_number, prepared_coder_prompt
 

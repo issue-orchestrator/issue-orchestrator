@@ -114,7 +114,8 @@ class ProviderImpactAssessment:
     recovering_providers: tuple[str, ...] = ()
     healthy_providers: tuple[str, ...] = ()
     # Soonest instant an *open* circuit next allows a retry, and how far away
-    # that is. Both ``None`` when nothing is open (nothing to wait for).
+    # that is. Both ``None`` when nothing is open or any open cause has no
+    # timer-backed recovery.
     next_retry_at: str | None = None
     cooldown_remaining_seconds: int | None = None
 
@@ -143,7 +144,9 @@ class ProviderImpactAssessment:
                 recovering.append(provider)
         next_retry_at: str | None = None
         cooldown: int | None = None
-        if open_statuses:
+        if open_statuses and all(
+            status.open_until is not None for status in open_statuses
+        ):
             soonest = min(open_statuses, key=lambda s: s.cooldown_remaining_seconds)
             next_retry_at = (
                 soonest.open_until.isoformat() if soonest.open_until is not None else None

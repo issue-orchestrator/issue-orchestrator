@@ -59,6 +59,9 @@ from issue_orchestrator.domain.tech_lead_session import (
 )
 from issue_orchestrator.control.provider_impact import ProviderImpactTransition
 from issue_orchestrator.control.provider_resilience import ProviderResilienceManager
+from issue_orchestrator.control.provider_launch_readiness import (
+    ProviderLaunchReadiness,
+)
 from issue_orchestrator.control.workflows import (
     RetrospectiveReviewWorkflow,
     ReviewWorkflow,
@@ -232,6 +235,14 @@ class TestProviderResilienceLabels:
             pending_reviews=[pending_review],
             pending_reworks=[pending_rework],
             pending_tech_lead=[pending_tech_lead],
+            provider_launch=ProviderLaunchReadiness(
+                outcomes={},
+                lanes_by_agent_label={
+                    "agent:reviewer": "review-provider",
+                    "agent:fixer": "rework-provider",
+                    "agent:tech-lead": "tech-lead-provider",
+                },
+            ),
         )
 
         plan = planner.plan(snapshot)

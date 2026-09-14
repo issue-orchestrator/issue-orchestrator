@@ -78,7 +78,7 @@ def _provider_policy(
 
 
 
-def _blocked_launch(*providers: str) -> ProviderLaunchReadiness:
+def _blocked_launch(agent_lanes: dict[str, str]) -> ProviderLaunchReadiness:
     """The tick's sampled fact with these providers ineligible (#6999 A3).
 
     Planning reads this fact; it no longer probes or touches the circuit
@@ -91,8 +91,9 @@ def _blocked_launch(*providers: str) -> ProviderLaunchReadiness:
                 readiness=ProviderReadiness.ready(provider),
                 circuit_open=True,
             )
-            for provider in providers
-        }
+            for provider in agent_lanes.values()
+        },
+        lanes_by_agent_label=agent_lanes,
     )
 
 def _planner() -> Planner:
@@ -262,7 +263,7 @@ def test_provider_skipped_review_does_not_steal_the_tech_lead_slot(caplog) -> No
     snapshot = make_snapshot(
         pending_reviews=[review],
         pending_tech_lead=[_health_review()],
-        provider_launch=_blocked_launch("prov-review"),
+        provider_launch=_blocked_launch({"agent:reviewer": "prov-review"}),
     )  # review issue 10 absent from snapshot.issues
     with caplog.at_level(logging.INFO, logger=PLANNER_LOGGER):
         plan = planner.plan(snapshot)
@@ -388,7 +389,7 @@ def test_provider_open_tech_lead_no_launch_and_no_launching_event() -> None:
     plan = planner.plan(
         make_snapshot(
             pending_tech_lead=[_health_review()],
-            provider_launch=_blocked_launch("prov-tl"),
+            provider_launch=_blocked_launch({"agent:tech-lead": "prov-tl"}),
         )
     )
     assert not any(

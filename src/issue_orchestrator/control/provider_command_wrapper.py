@@ -4,9 +4,10 @@ import shlex
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping, Protocol
+from typing import Callable, Mapping, Protocol
 
 from ..domain.models import AgentConfig
+from ..domain.provider_lane import ProviderLane
 from ..ports.session_log import detect_ai_system_from_command
 
 
@@ -24,6 +25,7 @@ class ProviderCommandWrapper:
     """Apply provider retry wrapping when an invocation is one-shot."""
 
     retry_config: ShortRetryConfig
+    lane_for_agent: Callable[[AgentConfig], ProviderLane] | None = None
 
     def runs_interactively(
         self,
@@ -60,7 +62,16 @@ class ProviderCommandWrapper:
         ):
             return base_command
 
-        provider = agent_config.provider or detect_ai_system_from_command(base_command)
+        lane = (
+            self.lane_for_agent(agent_config)
+            if self.lane_for_agent and agent_config.provider
+            else None
+        )
+        provider = (
+            lane.key
+            if lane is not None
+            else agent_config.provider or detect_ai_system_from_command(base_command)
+        )
         cmd = [
             sys.executable,
             "-m",
@@ -84,4 +95,6 @@ class ProviderCommandWrapper:
             cmd.append("--no-jitter")
         if provider:
             cmd.extend(["--provider", provider])
+        if lane is not None and lane.heals_on_timer:
+            cmd.append("--quota-heals-on-timer")
         return shlex.join(cmd)

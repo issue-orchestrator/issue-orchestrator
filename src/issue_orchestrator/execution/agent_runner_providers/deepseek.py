@@ -77,6 +77,11 @@ class DeepSeekProvider(ClaudeCodeProvider):
     def required_secret_names(self) -> tuple[str, ...]:
         return (self.API_KEY_NAME,)
 
+    @property
+    def session_secret_env_names(self) -> tuple[str, ...]:
+        """The translated key name visible to Claude, but never to its Bash tool."""
+        return ("ANTHROPIC_API_KEY",)
+
     def session_env(self, *, secrets: "Mapping[str, str]") -> dict[str, str]:
         """Point the CLI at DeepSeek and hand it the credential.
 

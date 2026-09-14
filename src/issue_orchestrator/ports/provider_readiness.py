@@ -1,9 +1,9 @@
-"""Typed provider-readiness / auth-failure boundary (#6999).
+"""Typed provider-readiness and live-failure boundary (#6999, #7253).
 
-One concept — "is this provider authenticated, and is this output an auth
-failure" — with exactly one owner. Provider *execution* adapters do all the raw
-interpretation (running the CLI's auth probe, reading its TUI banner); control
-consumes only the typed :class:`ProviderReadiness` value defined here.
+Provider *execution* adapters own all raw interpretation: running the CLI's
+auth probe, deriving billing/lane identity, and classifying its TUI output.
+Control consumes only typed readiness, lane, and error values defined at this
+boundary; it never carries a second provider-banner table.
 
 Why this exists: on 2026-08-04 an expired Claude Code login produced four
 back-to-back 90-minute zero-work sessions. Every layer that could have caught it
@@ -13,7 +13,7 @@ have grown a *third* independent "is this an auth failure" site in the session
 watcher. This port is the single typed outcome all three consumers share:
 
 * the launch gate (park instead of spawning a doomed session),
-* the live-session observer (fail in minutes with a non-timeout outcome),
+* the live-session observer (fail auth/quota in minutes with a typed outcome),
 * :class:`~issue_orchestrator.control.provider_resilience.ProviderResilienceManager`
   (still the sole circuit-state owner; it consumes typed AUTH outcomes).
 """
@@ -195,10 +195,10 @@ class ProviderReadiness:
 
 
 class ProviderReadinessProbe(Protocol):
-    """The one surface control asks about provider credentials.
+    """The one surface control asks about provider readiness and output.
 
-    Both methods return the same typed value so callers never branch on raw
-    provider output. ``diagnose_session_output`` exists as its own method
+    Callers never branch on raw provider text. ``diagnose_session_output``
+    exists as its own method
     (rather than a bare "classify this string") because the authoritative
     answer for a live session is *probe confirmation*: an auth-looking banner
     is only a trigger, and the adapter decides whether to confirm it.
@@ -214,6 +214,12 @@ class ProviderReadinessProbe(Protocol):
         """Answer "is this live session's output a provider auth failure?"."""
         ...
 
+    def classify_session_output(
+        self, provider: str, output: str
+    ) -> "ProviderErrorType | None":
+        """Classify live output at the provider-adapter boundary."""
+        ...
+
     def lane_for(self, provider: str, model: str | None = None) -> ProviderLane:
         """Answer "which independently-metered lane does this draw from?".
 
@@ -222,6 +228,17 @@ class ProviderReadinessProbe(Protocol):
         map of separately-metered models, and the billing mode its credential
         sample observed. A separate port would need the same two dependencies
         and the same wiring — a second name for one responsibility.
+        """
+        ...
+
+    def candidate_lanes(
+        self, provider: str, model: str | None = None
+    ) -> tuple[ProviderLane, ...]:
+        """Return every lane this target can occupy under any billing mode.
+
+        Circuit-ownership readers use this without probing credentials. Their
+        safe direction is the reverse of launch selection: while billing is
+        unavailable, any matching open lane must retain ownership of the issue.
         """
         ...
 
@@ -253,6 +270,12 @@ class StaticProviderReadinessProbe:
         del output  # a static probe interprets no output
         return self._readiness(provider)
 
+    def classify_session_output(
+        self, provider: str, output: str
+    ) -> "ProviderErrorType | None":
+        del provider, output  # a static probe interprets no provider output
+        return None
+
     def lane_for(self, provider: str, model: str | None = None) -> ProviderLane:
         """Report the provider's undivided lane.
 
@@ -264,6 +287,12 @@ class StaticProviderReadinessProbe:
         """
         del model  # no adapter to ask about sub-meters
         return ProviderLane(provider=provider, billing=BillingMode.METERED)
+
+    def candidate_lanes(
+        self, provider: str, model: str | None = None
+    ) -> tuple[ProviderLane, ...]:
+        """A static probe knows only the provider's undivided lane."""
+        return (self.lane_for(provider, model),)
 
     def _readiness(self, provider: str) -> ProviderReadiness:
         return ProviderReadiness(

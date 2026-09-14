@@ -28,7 +28,8 @@ CREATE TABLE IF NOT EXISTS provider_circuit (
     last_auth_sample_id TEXT NOT NULL DEFAULT '',
     quota_open_until TEXT,
     consecutive_quota_failures INTEGER NOT NULL DEFAULT 0,
-    quota_observed_at TEXT
+    quota_observed_at TEXT,
+    quota_heals_on_timer INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS provider_evidence (
@@ -44,7 +45,7 @@ SELECT provider, transient_open_until, transient_observed_at,
        consecutive_outages, last_error_summary,
        updated_at, consecutive_auth_failures, auth_open_until,
        last_auth_sample_id, quota_open_until, consecutive_quota_failures,
-       quota_observed_at
+       quota_observed_at, quota_heals_on_timer
 FROM provider_circuit WHERE provider = ?
 """
 
@@ -53,7 +54,7 @@ SELECT provider, transient_open_until, transient_observed_at,
        consecutive_outages, last_error_summary,
        updated_at, consecutive_auth_failures, auth_open_until,
        last_auth_sample_id, quota_open_until, consecutive_quota_failures,
-       quota_observed_at
+       quota_observed_at, quota_heals_on_timer
 FROM provider_circuit
 """
 
@@ -124,6 +125,11 @@ def _migration_statements(columns: set[str]) -> list[str]:
     if "quota_observed_at" not in columns:
         migrations.append(
             "ALTER TABLE provider_circuit ADD COLUMN quota_observed_at TEXT"
+        )
+    if "quota_heals_on_timer" not in columns:
+        migrations.append(
+            "ALTER TABLE provider_circuit "
+            "ADD COLUMN quota_heals_on_timer INTEGER NOT NULL DEFAULT 0"
         )
     return migrations
 
@@ -229,6 +235,7 @@ class SQLiteProviderCircuitStore:
             quota_open_until=_parse_dt(row["quota_open_until"]),
             consecutive_quota_failures=int(row["consecutive_quota_failures"] or 0),
             quota_observed_at=_parse_dt(row["quota_observed_at"]),
+            quota_heals_on_timer=bool(row["quota_heals_on_timer"]),
         )
 
     def get(self, provider: str) -> ProviderCircuitState | None:
@@ -252,8 +259,9 @@ class SQLiteProviderCircuitStore:
                 consecutive_outages,
                 last_error_summary, updated_at, consecutive_auth_failures,
                 auth_open_until, last_auth_sample_id, quota_open_until,
-                consecutive_quota_failures, quota_observed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                consecutive_quota_failures, quota_observed_at,
+                quota_heals_on_timer
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(provider) DO UPDATE SET
                 transient_open_until=excluded.transient_open_until,
                 transient_observed_at=excluded.transient_observed_at,
@@ -265,7 +273,8 @@ class SQLiteProviderCircuitStore:
                 last_auth_sample_id=excluded.last_auth_sample_id,
                 quota_open_until=excluded.quota_open_until,
                 consecutive_quota_failures=excluded.consecutive_quota_failures,
-                quota_observed_at=excluded.quota_observed_at
+                quota_observed_at=excluded.quota_observed_at,
+                quota_heals_on_timer=excluded.quota_heals_on_timer
             """,
             (
                 state.provider,
@@ -290,6 +299,7 @@ class SQLiteProviderCircuitStore:
                 state.quota_observed_at.isoformat()
                 if state.quota_observed_at
                 else None,
+                int(state.quota_heals_on_timer),
             ),
         )
 

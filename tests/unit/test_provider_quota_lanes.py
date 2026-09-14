@@ -11,11 +11,13 @@ at the circuit boundary rather than the shape of the key.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
 from issue_orchestrator.domain.provider_lane import BillingMode, ProviderLane
+from issue_orchestrator.domain.sandbox_scope import SandboxScope
 from issue_orchestrator.execution.agent_runner_providers import (
     ClaudeCodeProvider,
     CodexProvider,
@@ -270,7 +272,9 @@ class TestExhaustingOneLaneLeavesTheOthersOpen:
 
         for _ in range(10):
             circuit.record_quota_failure(
-                "claude-code:fable", error_summary="fable weekly limit", now=now
+                ProviderLane("claude-code", "fable", BillingMode.PREPAID),
+                error_summary="fable weekly limit",
+                now=now,
             )
 
         assert circuit.is_open("claude-code:fable", now) is True
@@ -281,7 +285,9 @@ class TestExhaustingOneLaneLeavesTheOthersOpen:
 
         for _ in range(10):
             circuit.record_quota_failure(
-                "codex:spark", error_summary="spark weekly limit", now=now
+                ProviderLane("codex", "spark", BillingMode.PREPAID),
+                error_summary="spark weekly limit",
+                now=now,
             )
 
         assert circuit.is_open("codex:spark", now) is True
@@ -293,7 +299,9 @@ class TestExhaustingOneLaneLeavesTheOthersOpen:
 
         for _ in range(10):
             circuit.record_quota_failure(
-                "deepseek", error_summary="insufficient balance", now=now
+                ProviderLane("deepseek", billing=BillingMode.METERED),
+                error_summary="insufficient balance",
+                now=now,
             )
 
         assert circuit.is_open("deepseek", now) is True
@@ -307,7 +315,9 @@ class TestExhaustingOneLaneLeavesTheOthersOpen:
 
         for _ in range(10):
             circuit.record_quota_failure(
-                "codex", error_summary="weekly limit", now=now
+                ProviderLane("codex", billing=BillingMode.PREPAID),
+                error_summary="weekly limit",
+                now=now,
             )
 
         assert circuit.is_open("codex", now) is True
@@ -315,17 +325,29 @@ class TestExhaustingOneLaneLeavesTheOthersOpen:
 
 
 class TestBillingModeDescribesHowExhaustionHeals:
-    def test_prepaid_capacity_returns_without_a_human(self):
+    def test_prepaid_capacity_returns_without_a_human(self, circuit):
         """A weekly subscription meter refills on its own."""
-        assert BillingMode.PREPAID.heals_on_timer is True
-        assert (
-            ProviderLane("codex", "spark", BillingMode.PREPAID).heals_on_timer is True
+        observed_at = datetime.now(timezone.utc)
+        lane = ProviderLane("codex", "spark", BillingMode.PREPAID)
+        circuit.record_quota_failure(
+            lane, error_summary="weekly limit", now=observed_at
         )
 
-    def test_a_metered_balance_only_a_person_can_restore(self):
+        circuit.close_expired(now=observed_at + timedelta(days=1))
+
+        assert circuit.is_open(lane.key, observed_at + timedelta(days=1)) is False
+
+    def test_a_metered_balance_only_a_person_can_restore(self, circuit):
         """No window returns anything; someone has to top the balance up."""
-        assert BillingMode.METERED.heals_on_timer is False
-        assert ProviderLane("deepseek", None, BillingMode.METERED).heals_on_timer is False
+        observed_at = datetime.now(timezone.utc)
+        lane = ProviderLane("deepseek", billing=BillingMode.METERED)
+        circuit.record_quota_failure(
+            lane, error_summary="insufficient balance", now=observed_at
+        )
+
+        circuit.close_expired(now=observed_at + timedelta(days=365))
+
+        assert circuit.is_open(lane.key, observed_at + timedelta(days=365)) is True
 
 
 class TestLaneRejectsNonsense:
@@ -359,6 +381,33 @@ class TestProviderCredentialsStayOutOfArgv:
         assert env["ANTHROPIC_API_KEY"] == secret
         assert env["ANTHROPIC_BASE_URL"] == DeepSeekProvider.BASE_URL
         assert not any(secret in str(arg) for arg in argv)
+
+    def test_sandboxed_bash_does_not_inherit_the_deepseek_key(self, monkeypatch):
+        """Claude itself gets the key, while its agent-controlled Bash does not."""
+        root = Path("/wt/deepseek")
+        scope = SandboxScope(
+            working_directory=root,
+            read_roots=(root,),
+            write_roots=(root,),
+            egress="model-only",
+            deny_env=("GITHUB_TOKEN",),
+            deny_read_files=("~/.ssh",),
+        )
+
+        provider = DeepSeekProvider()
+        applied: list[SandboxScope] = []
+        monkeypatch.setattr(
+            provider,
+            "apply_scope",
+            lambda resolved: applied.append(resolved) or [],
+        )
+
+        provider.build_command(
+            "do the work", "deepseek-v4-pro", sandbox_scope=scope
+        )
+
+        assert len(applied) == 1
+        assert "ANTHROPIC_API_KEY" in applied[0].deny_env
 
     def test_the_real_context_window_is_declared(self):
         """Claude Code assumes 200k for slugs it does not recognise.
@@ -512,13 +561,38 @@ class TestThePolicyChoosesTheLaneNotTheProvider:
 
         assert policy.lane_key_for_agent_label("agent:backend") == "claude-code"
 
+    def test_the_stuck_sweep_reads_the_blocked_sub_meter(self, tmp_path, circuit):
+        """Recovery ownership must not collapse Fable back to Claude's main lane."""
+        from unittest.mock import MagicMock
+
+        from issue_orchestrator.entrypoints.bootstrap_tech_lead import (
+            _make_provider_circuit_reader,
+        )
+
+        config = _lane_config(tmp_path, provider="claude-code", model="fable")
+        circuit.record_quota_failure(
+            ProviderLane("claude-code", "fable", BillingMode.PREPAID),
+            error_summary="fable weekly limit",
+        )
+        runner = _Runner({"claude": SUBSCRIPTION_CLAUDE})
+        reader = _make_provider_circuit_reader(
+            config,
+            circuit,
+            _installed_probe(runner),
+        )
+
+        issue = MagicMock()
+        issue.agent_type = "agent:backend"
+        assert reader(issue) is True
+        assert runner.calls == []
+
     def test_assess_launch_reports_the_lane_it_gated_on(self, tmp_path, circuit):
         config = _lane_config(
             tmp_path, provider="codex", model="gpt-5.3-codex-spark"
         )
         policy = _policy(config, circuit, _Runner({"codex": CHATGPT_CODEX}))
 
-        outcome = policy.assess_launch("codex", model="gpt-5.3-codex-spark")
+        outcome = policy.assess_launch(config.agents["agent:backend"])
 
         assert outcome.provider == "codex"
         assert outcome.lane_key == "codex:spark"
@@ -530,15 +604,24 @@ class TestThePolicyChoosesTheLaneNotTheProvider:
         now = datetime.now(timezone.utc)
         for _ in range(10):
             circuit.record_quota_failure(
-                "codex:spark", error_summary="spark weekly limit", now=now
+                ProviderLane("codex", "spark", BillingMode.PREPAID),
+                error_summary="spark weekly limit",
+                now=now,
             )
         config = _lane_config(tmp_path, provider="codex", model="gpt-6-astra")
         policy = _policy(config, circuit, _Runner({"codex": CHATGPT_CODEX}))
 
+        from issue_orchestrator.infra.config import AgentConfig
+
         blocked = policy.assess_launch(
-            "codex", model="gpt-5.3-codex-spark", now=now
+            AgentConfig(
+                prompt_path=tmp_path / "prompt.md",
+                provider="codex",
+                model="gpt-5.3-codex-spark",
+            ),
+            now=now,
         )
-        usable = policy.assess_launch("codex", model="gpt-6-astra", now=now)
+        usable = policy.assess_launch(config.agents["agent:backend"], now=now)
 
         assert blocked.circuit_open is True
         assert usable.circuit_open is False
@@ -562,6 +645,10 @@ class TestThePolicyChoosesTheLaneNotTheProvider:
         sample = ProviderLaunchReadinessSampler(config=config, policy=policy).sample()
 
         assert set(sample.outcomes) == {"codex", "codex:spark"}
+        assert sample.lanes_by_agent_label == {
+            "agent:backend": "codex",
+            "agent:fast": "codex:spark",
+        }
 
 
 def test_every_launch_path_passes_provider_credentials():

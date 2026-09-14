@@ -25,6 +25,11 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run provider command with resilience hooks")
     parser.add_argument("--command", required=True, help="Provider command to execute")
     parser.add_argument("--provider", default=None, help="Provider name (optional)")
+    parser.add_argument(
+        "--quota-heals-on-timer",
+        action="store_true",
+        help="The provider lane is prepaid and refills on a clock",
+    )
     parser.add_argument("--timeout-seconds", type=int, default=60 * 45)
     parser.add_argument("--max-attempts", type=int, default=4)
     parser.add_argument("--initial-backoff-seconds", type=int, default=5)
@@ -98,6 +103,7 @@ def main(argv: list[str] | None = None) -> int:
         timed_out=result.timed_out,
         last_error_summary=_summarize_error(result.stderr),
         last_attempt_at=now_iso(),
+        quota_heals_on_timer=args.quota_heals_on_timer,
     )
     write_provider_status(run_dir, status)
 

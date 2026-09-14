@@ -114,13 +114,17 @@ def _format_duration(seconds: int) -> str:
     return f"{hours}h {mins}m" if mins else f"{hours}h"
 
 
+def _format_optional_duration(seconds: int | None) -> str | None:
+    return _format_duration(seconds) if seconds is not None else None
+
+
 def _entry(status: ProviderCircuitStatus) -> ProviderCircuitEntryView:
     return ProviderCircuitEntryView(
         provider=status.provider,
         is_open=status.is_open,
         status_label="Unavailable" if status.is_open else "Recovering",
-        cooldown_remaining_label=(
-            _format_duration(status.cooldown_remaining_seconds) if status.is_open else None
+        cooldown_remaining_label=_format_optional_duration(
+            status.timed_retry_seconds
         ),
         next_retry_at=status.open_until.isoformat() if status.is_open and status.open_until else None,
         consecutive_outages=status.consecutive_outages,
@@ -132,7 +136,14 @@ def _summary_text(open_entries: Sequence[ProviderCircuitEntryView]) -> str:
     if not open_entries:
         return ""
     names = ", ".join(e.provider for e in open_entries)
-    soonest = _soonest_retry_label(open_entries)
+    # If any open circuit has no deadline, the aggregate has no automatic
+    # retry to advertise. Showing another lane's timer would imply that waiting
+    # releases the fleet even though the metered outage still needs a person.
+    soonest = (
+        None
+        if any(entry.next_retry_at is None for entry in open_entries)
+        else _soonest_retry_label(open_entries)
+    )
     retry = f" — next retry in {soonest}" if soonest else ""
     if len(open_entries) == 1:
         return f"Provider outage: {names} unavailable{retry}."

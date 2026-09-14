@@ -6,6 +6,7 @@ Previously in ``_vendor/agent_runner/providers/claude.py``.
 """
 
 import json
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from issue_orchestrator.domain.provider_lane import BillingMode
@@ -108,7 +109,15 @@ class ClaudeCodeProvider(CLIProvider):
         if sandbox_scope is not None:
             # Bounded OS sandbox: dontAsk + inline --settings. Replaces the
             # default bypassPermissions (yolo) permission-mode flag.
-            cmd.extend(self.apply_scope(sandbox_scope))
+            scoped = replace(
+                sandbox_scope,
+                deny_env=tuple(
+                    dict.fromkeys(
+                        (*sandbox_scope.deny_env, *self.session_secret_env_names)
+                    )
+                ),
+            )
+            cmd.extend(self.apply_scope(scoped))
         else:
             # Permission mode (default to bypassPermissions for automation)
             permission_mode = kwargs.get("permission_mode", "bypassPermissions")

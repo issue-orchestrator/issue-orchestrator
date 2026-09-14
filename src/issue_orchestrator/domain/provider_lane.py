@@ -65,6 +65,11 @@ class BillingMode(str, Enum):
         """
         return self is BillingMode.PREPAID
 
+    @classmethod
+    def from_timer_recovery(cls, heals_on_timer: bool) -> "BillingMode":
+        """Rehydrate billing from its persisted quota-recovery policy."""
+        return cls.PREPAID if heals_on_timer else cls.METERED
+
 
 @dataclass(frozen=True)
 class ProviderLane:
@@ -121,3 +126,15 @@ class ProviderLane:
 
     def __str__(self) -> str:
         return self.key
+
+    @classmethod
+    def from_key(
+        cls, key: str, *, billing: BillingMode = BillingMode.METERED
+    ) -> "ProviderLane":
+        """Rehydrate a persisted lane key with its separately observed billing."""
+        provider, separator, meter = key.partition(":")
+        return cls(
+            provider=provider,
+            meter=meter if separator else None,
+            billing=billing,
+        )

@@ -5,6 +5,7 @@ from datetime import datetime, timezone, timedelta
 import pytest
 
 from issue_orchestrator.control.provider_resilience import ProviderResilienceManager
+from issue_orchestrator.domain.provider_lane import BillingMode, ProviderLane
 from issue_orchestrator.execution.provider_circuit_store import (
     SQLiteProviderCircuitStore,
 )
@@ -30,7 +31,9 @@ def _record_failure(
             "codex", error_summary="503", now=observed_at
         )
     return manager.record_quota_failure(
-        "codex", error_summary="out of credits", now=observed_at
+        ProviderLane("codex", billing=BillingMode.PREPAID),
+        error_summary="out of credits",
+        now=observed_at,
     )
 
 
@@ -219,7 +222,7 @@ def test_success_watermark_survives_restart_without_a_circuit_row(tmp_path):
         ProviderResilienceConfig(), store=restarted_store, events=NullEventSink()
     )
     stale = restarted.record_quota_failure(
-        "codex",
+        ProviderLane("codex", billing=BillingMode.PREPAID),
         error_summary="out of credits",
         now=success_at - timedelta(minutes=5),
     )
