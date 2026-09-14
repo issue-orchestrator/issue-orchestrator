@@ -327,7 +327,7 @@
 }
 
 /* Journey cycles — native disclosure rows shared with the E2E hierarchy. */
-.journey-run,
+.journey-attempt,
 .journey-cycle { margin-bottom: 2px; position: relative; }
 .journey-cycle-header {
     display: flex;

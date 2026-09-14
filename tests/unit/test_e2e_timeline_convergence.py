@@ -2487,7 +2487,7 @@ class TestControlIssueDetailEndpoint:
         payload = response.json()
         assert payload["issue_number"] == 42
         assert "events" in payload
-        assert "runs" in payload  # Same shape as dashboard issue detail
+        assert "attempts" in payload  # Same shape as dashboard issue detail
 
     def test_falls_back_to_e2e_worktree_timeline(self, tmp_path):
         """When base repo has no events, control endpoint reads from E2E worktree."""

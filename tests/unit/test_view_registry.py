@@ -421,7 +421,7 @@ class TestViewModelViewFiltering:
             cycles=[],
             view="user",
         )
-        runs = result["runs"]
+        runs = result["attempts"]
         assert len(runs) >= 1
         last_run = runs[-1]
         cycles = last_run["cycles"]

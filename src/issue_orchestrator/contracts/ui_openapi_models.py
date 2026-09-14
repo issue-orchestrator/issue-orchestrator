@@ -32,6 +32,20 @@ class AgentIdentityPayload(BaseModel):
     name: str
     role: Literal['coder', 'reviewer', 'rework', 'validator', 'e2e_runner', 'orchestrator']
 
+class AttemptPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    attempt_key: str
+    attempt_label: str
+    attempt_number: int
+    cycles: list[IssueCyclePayload]
+    expanded: bool = Field(..., strict=True)
+    outcome: OutcomeBadgePayload
+    reset_from_scratch: bool = Field(..., strict=True)
+    run_id: str | None
+    session_run_ids: list[str]
+    time_label: str
+    timestamp: str
+
 class BlockedCodingAttemptPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     agent: AgentIdentityPayload
@@ -283,6 +297,8 @@ class E2ERunDetailPayload(BaseModel):
     actions: list[IssueDetailActionPayload]
     artifact_diagnostic: E2EArtifactDiagnosticPayload
     artifacts: list[TestRunArtifactPayload]
+    attempt_count: int
+    attempts: list[AttemptPayload]
     blocked_detail: IssueDetailBlockedDetailPayload | None
     cycles: list[E2ETimelineCyclePayload]
     e2e_run_id: int | None = None
@@ -299,8 +315,6 @@ class E2ERunDetailPayload(BaseModel):
     results_by_category: E2ERunResultCategoriesPayload
     results_summary: E2ERunResultsSummaryPayload
     run: E2ERunExecutionPayload
-    run_count: int
-    runs: list[JourneyRunPayload]
     status_explanation: str
     summary: IssueDetailSummaryPayload
     timeline_steps: list[dict[str, Any]]
@@ -635,6 +649,8 @@ class IssueDetailBlockedDetailPayload(BaseModel):
 class IssueDetailPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     actions: list[IssueDetailActionPayload]
+    attempt_count: int
+    attempts: list[AttemptPayload]
     blocked_detail: IssueDetailBlockedDetailPayload | None
     cycles: list[dict[str, Any]]
     e2e_run_id: int | None = None
@@ -646,8 +662,6 @@ class IssueDetailPayload(BaseModel):
     previous_runs: list[dict[str, Any]]
     previous_runs_count: int
     raw_events_count: int
-    run_count: int
-    runs: list[JourneyRunPayload]
     stack_dependency: StackDependencyGateViewPayload | None = None
     status_explanation: str
     summary: IssueDetailSummaryPayload
@@ -745,20 +759,6 @@ class JourneyPhaseGroupPayload(BaseModel):
     key: Literal['coding', 'review', 'rework', 'orchestrator']
     label: str
     steps: list[JourneyStepPayload]
-
-class JourneyRunPayload(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    cycles: list[IssueCyclePayload]
-    expanded: bool = Field(..., strict=True)
-    outcome: OutcomeBadgePayload
-    reset_from_scratch: bool = Field(..., strict=True)
-    run_id: str | None
-    run_key: str
-    run_label: str
-    run_number: int
-    session_run_ids: list[str]
-    time_label: str
-    timestamp: str
 
 class JourneyStepPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")

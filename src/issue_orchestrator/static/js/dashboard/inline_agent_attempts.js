@@ -61,15 +61,15 @@
     }
 
     function _renderAttempts(detail, issueNumber) {
-        const runs = Array.isArray(detail && detail.runs) ? detail.runs : [];
-        if (runs.length === 0) {
+        const attempts = Array.isArray(detail && detail.attempts) ? detail.attempts : [];
+        if (attempts.length === 0) {
             return '<div class="agent-context-empty">No agent attempts recorded for this issue.</div>';
         }
         if (typeof renderIssueLifecycleTimeline !== 'function') {
             return '<div class="agent-context-error">Issue lifecycle renderer is unavailable.</div>';
         }
-        // Render newest-first.  Each ``run`` becomes an Attempt.
-        const reversed = [...runs].reverse();
+        // Render newest-first.  Each ``attempt`` becomes an Attempt row.
+        const reversed = [...attempts].reverse();
         return renderIssueLifecycleTimeline(reversed, {
             baseId: `agent-context-issue-${issueNumber}`,
             issueNumber,

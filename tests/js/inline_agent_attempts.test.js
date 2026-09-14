@@ -189,10 +189,10 @@ function _ob(label, tone) {
 
 test('loader: lazy-fetches /api/issue-detail on first call and populates body', async () => {
     const payload = {
-        runs: [
+        attempts: [
             {
                 outcome: _ob('blocked', 'failed'),
-                run_number: 1,
+                attempt_number: 1,
                 cycles: [
                     { cycle_number: 1, outcome: _ob('failed', 'failed'), validation: { state: 'failed' } },
                     { cycle_number: 2, outcome: _ob('failed', 'failed'), cycle_label: 'Cycle 2 (rework)', validation: { state: 'failed' } },
@@ -219,9 +219,9 @@ test('loader: lazy-fetches /api/issue-detail on first call and populates body', 
 
 test('loader: shared lifecycle renderer preserves step action menus and validation expansion hosts', async () => {
     const payload = {
-        runs: [{
+        attempts: [{
             outcome: _ob('failed', 'failed'),
-            run_number: 1,
+            attempt_number: 1,
             cycles: [{
                 cycle_number: 1,
                 outcome: _ob('failed', 'failed'),
@@ -266,7 +266,7 @@ test('loader: shared lifecycle renderer preserves step action menus and validati
 });
 
 test('loader: cache shared across calls for the same issue', async () => {
-    const payload = { runs: [{ outcome: _ob('completed', 'passed'), run_number: 1, cycles: [] }] };
+    const payload = { attempts: [{ outcome: _ob('completed', 'passed'), attempt_number: 1, cycles: [] }] };
     const { ctx, calls } = _ctxWithFetch(payload);
     const body1 = _fakeBody();
     const body2 = _fakeBody();
@@ -312,8 +312,8 @@ test('loader: invalid issue number is a defensive no-op', () => {
 // neutral fallback for unknown / malformed shapes.
 async function _renderedToneFor(outcomeBadge) {
     const payload = {
-        runs: [
-            { outcome: outcomeBadge, run_number: 1, cycles: [] },
+        attempts: [
+            { outcome: outcomeBadge, attempt_number: 1, cycles: [] },
         ],
     };
     const { ctx } = _ctxWithFetch(payload);
@@ -394,7 +394,7 @@ test('dispatcher: runLifecycleCommandFromToggle reads typed JSON, dispatches to 
             return Promise.resolve({
                 ok: true,
                 status: 200,
-                json: () => Promise.resolve({ runs: [] }),
+                json: () => Promise.resolve({ attempts: [] }),
             });
         },
     });
@@ -444,7 +444,7 @@ test('dispatcher: round-trip — render → extract Command → toggle → fetch
     const ctx = _loadInlinePlusDispatcher({
         fetch: (url) => {
             calls.fetch.push(url);
-            return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ runs: [] }) });
+            return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ attempts: [] }) });
         },
     });
     const html = ctx.renderInlineAgentAttemptsExpander(8888);

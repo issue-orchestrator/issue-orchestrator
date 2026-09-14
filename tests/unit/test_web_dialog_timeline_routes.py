@@ -714,12 +714,12 @@ class TestApiTimelineEndpoint:
             ]
         )
 
-        runs = payload["runs"]
+        runs = payload["attempts"]
         journey_cycles = [cycle for run in runs for cycle in run["cycles"]]
         assert len(journey_cycles) == 2
         lifecycles = [cycle["lifecycle"] for cycle in journey_cycles]
         assert lifecycles[1] > lifecycles[0]
-        assert payload["run_count"] == 2
+        assert payload["attempt_count"] == 2
 
     def test_issue_detail_review_continuation_stays_in_same_lifecycle(self):
         """Signal path: completion followed by review remains one lifecycle/run."""
@@ -775,12 +775,12 @@ class TestApiTimelineEndpoint:
             ]
         )
 
-        runs = payload["runs"]
+        runs = payload["attempts"]
         journey_cycles = [cycle for run in runs for cycle in run["cycles"]]
         assert len(journey_cycles) == 2
         assert [cycle["iteration"] for cycle in journey_cycles] == [1, 2]
         assert {cycle["lifecycle"] for cycle in journey_cycles} == {1}
-        assert payload["run_count"] == 1
+        assert payload["attempt_count"] == 1
 
     def test_issue_detail_manual_unblock_without_event_starts_new_lifecycle(self):
         """Manual label removal (no issue.unblocked event) still creates a new run lifecycle."""
@@ -824,12 +824,12 @@ class TestApiTimelineEndpoint:
             ]
         )
 
-        runs = payload["runs"]
+        runs = payload["attempts"]
         journey_cycles = [cycle for run in runs for cycle in run["cycles"]]
         assert len(journey_cycles) == 2
         lifecycles = [cycle["lifecycle"] for cycle in journey_cycles]
         assert lifecycles[1] > lifecycles[0]
-        assert payload["run_count"] == 2
+        assert payload["attempt_count"] == 2
 
     def test_issue_detail_signal_events_split_from_legacy_lifecycle(self):
         """Legacy timeline followed by signal-era events should split runs."""
@@ -868,12 +868,12 @@ class TestApiTimelineEndpoint:
             ]
         )
 
-        runs = payload["runs"]
+        runs = payload["attempts"]
         journey_cycles = [cycle for run in runs for cycle in run["cycles"]]
         assert len(journey_cycles) == 2
         lifecycles = [cycle["lifecycle"] for cycle in journey_cycles]
         assert lifecycles[1] > lifecycles[0]
-        assert payload["run_count"] == 2
+        assert payload["attempt_count"] == 2
 
     def test_issue_detail_includes_cycle_run_id_for_latest_run_filtering(self):
         """Journey cycles should carry run_id + cycle_in_run for latest-run rendering."""
@@ -918,7 +918,7 @@ class TestApiTimelineEndpoint:
             ]
         )
 
-        runs = payload["runs"]
+        runs = payload["attempts"]
         journey_cycles = [cycle for run in runs for cycle in run["cycles"]]
         assert len(journey_cycles) == 2
         assert [cycle["run_id"] for cycle in journey_cycles] == ["run-1", "run-2"]
@@ -953,7 +953,7 @@ class TestApiTimelineEndpoint:
             ]
         )
 
-        runs = payload["runs"]
+        runs = payload["attempts"]
         journey_cycles = [cycle for run in runs for cycle in run["cycles"]]
         assert len(journey_cycles) == 1
         step_events = [step["event"] for step in journey_cycles[0]["steps"]]
@@ -988,7 +988,7 @@ class TestApiTimelineEndpoint:
             ]
         )
 
-        runs = payload["runs"]
+        runs = payload["attempts"]
         journey_cycles = [cycle for run in runs for cycle in run["cycles"]]
         assert len(journey_cycles) == 1
         step_events = [step["event"] for step in journey_cycles[0]["steps"]]
@@ -1990,7 +1990,7 @@ class TestApiTimelineEndpoint:
             ]
         )
 
-        assert payload["run_count"] == 1
+        assert payload["attempt_count"] == 1
         latest_run = _latest_run(payload)
         review_events = [
             step["event"]
