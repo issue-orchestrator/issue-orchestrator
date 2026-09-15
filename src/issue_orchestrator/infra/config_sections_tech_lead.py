@@ -91,6 +91,9 @@ def parse_tech_lead_config(data: dict) -> TechLeadConfig:
         priority=data.get("priority"),
         max_concurrent=max_concurrent,
         max_expedited=int(data.get("max_expedited", 3)),
+        write_health_stale_after_hours=float(
+            data.get("write_health_stale_after_hours", 48.0)
+        ),
         authority=TechLeadAuthorityConfig.from_mapping(data.get("authority", {}) or {}),
         dedup=TechLeadDedupConfig.from_mapping(data.get("dedup", {}) or {}),
         health_review=TechLeadHealthReviewConfig.from_mapping(

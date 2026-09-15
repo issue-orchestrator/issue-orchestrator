@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Callable
 
 from ..domain.tech_lead_session import (
     PROPOSED_TECH_LEAD_LABEL,
+    TechLeadCreationKind,
     is_proposed_tech_lead_gate,
 )
 from ..events import EventName
@@ -29,6 +30,7 @@ from .reconciliation import ReconciliationRequired
 from .tech_lead_issue_labels import required_label_provisioning_error
 from .tech_lead_proposal_creation import TechLeadProposalCreation
 from .tech_lead_case_file_owner import CaseFileState, PatternCaseFileOwner
+from .tech_lead_decision_receipt import record_decision_applied
 from .tech_lead_issue_policy import resolve_tech_lead_milestone_number
 
 if TYPE_CHECKING:
@@ -237,6 +239,13 @@ def apply_create_tech_lead_issue(
             {
                 "issue_number": issue_number,
                 "pr_count": action.pr_count,
+                # Anchor authoring or a session's decision — the one thing
+                # ``trigger`` cannot be asked, because it is prose. Ten of the
+                # 15 health-review-flavoured creations in the live store are
+                # interval anchors and five are real decisions, so a consumer
+                # counting "did a tech-lead decision reach GitHub" must read
+                # this and never the reason text (#7080).
+                "creation_kind": action.origin.kind.value,
                 # Why this anchor exists, and what it consumed. A storm
                 # escalation collapses N individual investigations into one
                 # review; without these the only trace of that decision is log
@@ -249,6 +258,24 @@ def apply_create_tech_lead_issue(
             },
         )
     )
+    if (
+        action.origin.kind is TechLeadCreationKind.DERIVED_FROM_ANCHOR
+        and not isinstance(action, CreateTechLeadProposalIssueAction)
+        and PROPOSED_TECH_LEAD_LABEL not in action.labels
+    ):
+        # A create_issue a session DECIDED and that is live on arrival IS an
+        # executed decision. A GATED proposal is not: it is created and then sits
+        # inert until an operator removes its label, which is exactly the state
+        # #7080 is about, so reporting it as executed would have the alarm say
+        # "writing" for a subsystem whose decisions are piling up unapproved
+        # (#7262 review F2).
+        record_decision_applied(
+            events,
+            anchor_issue_number=action.origin.anchor_issue_number,
+            action="create_issue",
+            created_issue_number=issue_number,
+            flavor=action.flavor.value,
+        )
     _apply_expedite_lane(action, issue_number=issue_number, expedite_lane=expedite_lane)
     finalization_error = _finalize_ledger_backed_creation(
         action,

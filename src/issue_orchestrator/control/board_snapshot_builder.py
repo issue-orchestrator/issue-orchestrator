@@ -35,11 +35,13 @@ from ..domain.board_snapshot import (
     BoardQueueEntry,
     BoardSessionInfo,
     BoardShippedFix,
+    BoardTechLeadWriteHealth,
     BoardSnapshot,
     BoardTimelineExtract,
     SessionActivityFacts,
     project_idle_minutes,
 )
+from ..domain.tech_lead_write_health import unavailable
 from ..domain.models import (
     DiscoveredFailure,
     OrchestratorState,
@@ -61,6 +63,11 @@ MAX_LIST_ENTRIES = 100
 MAX_TIMELINE_ISSUES = 10
 MAX_LINE_CHARS = 500
 
+#: Reported as the window when the reader failed before it could consult the
+#: configured one. Zero is not a real window -- the assessment rejects it -- so
+#: it reads as "unknown" rather than as a threshold anyone set.
+UNKNOWN_WRITE_HEALTH_WINDOW_HOURS = 0.0
+
 
 class BoardSnapshotBuilder:
     """Assembles a BoardSnapshot from OrchestratorState and injected readers.
@@ -76,6 +83,7 @@ class BoardSnapshotBuilder:
         case_file_reader: Callable[[], Sequence[TechLeadCaseFileSummary]],
         shipped_fix_reader: Callable[[int], Sequence[TechLeadShippedFixSummary]],
         e2e_health_reader: Callable[[datetime], BoardE2EHealth | None],
+        tech_lead_write_health_reader: Callable[[datetime], BoardTechLeadWriteHealth],
         session_activity_reader: Callable[[Session], SessionActivityFacts | None],
         clock: Callable[[], datetime],
     ) -> None:
@@ -93,6 +101,12 @@ class BoardSnapshotBuilder:
                 deterministic. Best-effort: a reader that returns ``None`` or
                 raises yields ``None`` here — the E2E block is an ENHANCEMENT
                 (like the evidence map), never a required snapshot fact.
+            tech_lead_write_health_reader: ``(now) -> write health``. Answers
+                "has a tech-lead decision reached GitHub lately, while runs kept
+                being requested?" (#7080). Unlike ``e2e_health_reader`` it never
+                yields ``None``: a failure becomes an explicit ``unavailable``
+                verdict, because an erased alarm is indistinguishable from a
+                healthy board.
             session_activity_reader: ``(session) -> hung-evidence facts | None``.
                 Reaches the filesystem/git to read a session's last-activity
                 mtime + commits-ahead so the builder itself stays free of that
@@ -107,6 +121,7 @@ class BoardSnapshotBuilder:
         self._case_file_reader = case_file_reader
         self._shipped_fix_reader = shipped_fix_reader
         self._e2e_health_reader = e2e_health_reader
+        self._tech_lead_write_health_reader = tech_lead_write_health_reader
         self._session_activity_reader = session_activity_reader
         self._clock = clock
 
@@ -220,6 +235,7 @@ class BoardSnapshotBuilder:
                 ]
             ],
             e2e_health=self._read_e2e_health(now),
+            tech_lead_write_health=self._read_tech_lead_write_health(now),
         )
 
     def _read_e2e_health(self, now: datetime) -> BoardE2EHealth | None:
@@ -235,6 +251,32 @@ class BoardSnapshotBuilder:
         except Exception as exc:
             logger.warning("[board] e2e health reader failed (non-fatal): %s", exc)
             return None
+
+    def _read_tech_lead_write_health(self, now: datetime) -> BoardTechLeadWriteHealth:
+        """Tech-lead write health, degraded loudly rather than erased.
+
+        Unlike ``e2e_health`` this signal is never dropped to ``None`` on
+        failure. It is the alarm that tells a health review its own subsystem
+        has stopped writing, and a reader cannot tell an absent field from a
+        healthy board -- so a locked or corrupt timeline would have removed the
+        alarm with nothing but a log line to show for it (#7262 review F5).
+
+        The snapshot is still never failed: it is a required input to every
+        tech-lead launch, so taking it down would turn "the tech lead stopped
+        writing" into "no tech lead can launch".
+        """
+        try:
+            return self._tech_lead_write_health_reader(now)
+        except Exception as exc:
+            logger.warning(
+                "[board] tech-lead write health reader failed (non-fatal): %s", exc
+            )
+            return BoardTechLeadWriteHealth.project(
+                unavailable(
+                    UNKNOWN_WRITE_HEALTH_WINDOW_HOURS,
+                    f"the tech-lead write-health reader failed: {exc}",
+                )
+            )
 
     def _session_info(self, session: Session, now: datetime) -> BoardSessionInfo:
         """Project one active session onto the board.

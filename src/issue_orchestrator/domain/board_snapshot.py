@@ -24,11 +24,20 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import Any, NotRequired, TypedDict
+
+from .tech_lead_write_health import TechLeadWriteHealth
 
 logger = logging.getLogger(__name__)
 
-BOARD_SNAPSHOT_SCHEMA_VERSION = 6
+BOARD_SNAPSHOT_SCHEMA_VERSION = 7
+
+#: Versions this reader accepts. A tech-lead run writes its board snapshot at
+#: LAUNCH and reads it back at COMPLETION, and a health review survives a
+#: restart -- so an upgrade landing mid-run must still be able to read what that
+#: run wrote, or the run's completion is rejected as malformed and its whole
+#: review is lost with zero decision effects (#7262 review F6).
+READABLE_BOARD_SNAPSHOT_SCHEMA_VERSIONS: frozenset[int] = frozenset({6, 7})
 
 # --- Hung-session evidence projection ---------------------------------------
 # The health review must judge a session HUNG from EVIDENCE (idle with no
@@ -199,6 +208,18 @@ class BoardE2EHealthDict(TypedDict):
     chronic_failures: list[BoardE2EChronicFailureDict]
 
 
+class BoardTechLeadWriteHealthDict(TypedDict):
+    """Serialized form of BoardTechLeadWriteHealth."""
+
+    verdict: str
+    is_alarm: bool
+    reason: str
+    stale_after_hours: float
+    run_requested_age_hours: float | None
+    decision_proposed_age_hours: float | None
+    decision_executed_age_hours: float | None
+
+
 class BoardSnapshotDict(TypedDict):
     """Serialized form of BoardSnapshot."""
 
@@ -216,6 +237,8 @@ class BoardSnapshotDict(TypedDict):
     timeline: list[BoardTimelineExtractDict]
     log_tail: list[str]
     e2e_health: BoardE2EHealthDict | None
+    # NotRequired: a schema-6 snapshot legitimately lacks it (#7262 review F6).
+    tech_lead_write_health: NotRequired[BoardTechLeadWriteHealthDict | None]
 
 
 @dataclass(frozen=True)
@@ -464,6 +487,64 @@ class BoardE2EChronicFailure:
 
 
 @dataclass(frozen=True)
+class BoardTechLeadWriteHealth:
+    """Is the tech lead still writing, projected onto the board (#7080).
+
+    A pure projection of :class:`..tech_lead_write_health.TechLeadWriteHealth`.
+    It lives on the snapshot because the snapshot IS a health review's
+    assignment: the subsystem went ten days without a decision reaching GitHub
+    while runs continued at full rate, and every one of those runs read a board
+    snapshot that said nothing about it.
+
+    ``is_alarm`` is stored rather than recomputed from ``verdict`` so a reader
+    that does not know the vocabulary still knows whether to act.
+    """
+
+    verdict: str
+    is_alarm: bool
+    reason: str
+    stale_after_hours: float
+    run_requested_age_hours: float | None = None
+    decision_proposed_age_hours: float | None = None
+    decision_executed_age_hours: float | None = None
+
+    @classmethod
+    def project(cls, health: "TechLeadWriteHealth") -> "BoardTechLeadWriteHealth":
+        return cls(
+            verdict=health.verdict.value,
+            is_alarm=health.is_alarm,
+            reason=health.reason,
+            stale_after_hours=health.stale_after_hours,
+            run_requested_age_hours=health.run_requested_age_hours,
+            decision_proposed_age_hours=health.decision_proposed_age_hours,
+            decision_executed_age_hours=health.decision_executed_age_hours,
+        )
+
+    def to_dict(self) -> BoardTechLeadWriteHealthDict:
+        return {
+            "verdict": self.verdict,
+            "is_alarm": self.is_alarm,
+            "reason": self.reason,
+            "stale_after_hours": self.stale_after_hours,
+            "run_requested_age_hours": self.run_requested_age_hours,
+            "decision_proposed_age_hours": self.decision_proposed_age_hours,
+            "decision_executed_age_hours": self.decision_executed_age_hours,
+        }
+
+    @classmethod
+    def from_dict(
+        cls, data: BoardTechLeadWriteHealthDict
+    ) -> "BoardTechLeadWriteHealth":
+        return cls(
+            verdict=data["verdict"],
+            is_alarm=data["is_alarm"],
+            reason=data["reason"],
+            stale_after_hours=data["stale_after_hours"],
+            run_requested_age_hours=data["run_requested_age_hours"],
+            decision_proposed_age_hours=data["decision_proposed_age_hours"],
+            decision_executed_age_hours=data["decision_executed_age_hours"],
+        )
+@dataclass(frozen=True)
 class BoardE2EHealth:
     """Aggregate E2E suite health, projected onto the board snapshot.
 
@@ -701,6 +782,7 @@ class BoardSnapshot:
     # results db or the best-effort projection could not be built — an
     # ENHANCEMENT, never a required fact, so its absence never fails a snapshot.
     e2e_health: BoardE2EHealth | None = None
+    tech_lead_write_health: "BoardTechLeadWriteHealth | None" = None
 
     def problem_issue_numbers(self) -> frozenset[int]:
         """The health review's OWNED problem cohort — its act-level remit.
@@ -812,6 +894,11 @@ class BoardSnapshot:
             "e2e_health": (
                 self.e2e_health.to_dict() if self.e2e_health is not None else None
             ),
+            "tech_lead_write_health": (
+                self.tech_lead_write_health.to_dict()
+                if self.tech_lead_write_health is not None
+                else None
+            ),
         }
 
     @classmethod
@@ -823,10 +910,11 @@ class BoardSnapshot:
             KeyError: if any required key is missing.
         """
         schema_version = data["schema_version"]
-        if schema_version != BOARD_SNAPSHOT_SCHEMA_VERSION:
+        if schema_version not in READABLE_BOARD_SNAPSHOT_SCHEMA_VERSIONS:
             raise ValueError(
                 f"Unsupported board snapshot schema_version {schema_version!r}; "
-                f"this reader supports schema_version {BOARD_SNAPSHOT_SCHEMA_VERSION}"
+                f"this reader supports schema_version "
+                f"{sorted(READABLE_BOARD_SNAPSHOT_SCHEMA_VERSIONS)}"
             )
         return cls(
             schema_version=schema_version,
@@ -915,6 +1003,13 @@ class BoardSnapshot:
                 for t in data["timeline"]
             ],
             log_tail=list(data["log_tail"]),
+            # Absent in a schema-6 snapshot, which is read rather than
+            # rejected so a run launched before the upgrade can still complete.
+            tech_lead_write_health=(
+                BoardTechLeadWriteHealth.from_dict(stored)
+                if (stored := data.get("tech_lead_write_health")) is not None
+                else None
+            ),
             e2e_health=(
                 BoardE2EHealth.from_dict(data["e2e_health"])
                 if data["e2e_health"] is not None

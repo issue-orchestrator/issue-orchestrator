@@ -1375,6 +1375,7 @@ def build_test_orchestrator_deps(
             case_file_reader=lambda: (),
             shipped_fix_reader=lambda limit: (),
             e2e_health_reader=lambda now: None,
+            tech_lead_write_health_reader=lambda now: None,
             session_activity_reader=lambda session: None,
             clock=datetime.now,
         ),

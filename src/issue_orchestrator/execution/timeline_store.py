@@ -10,6 +10,7 @@ import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Mapping, Sequence
 from typing import Iterable, Iterator
 
 from .timeline_artifact_expectations import RUN_SCOPED_TIMELINE_EVENTS, event_requires_run_dir
@@ -54,6 +55,13 @@ CREATE INDEX IF NOT EXISTS idx_timeline_issue_source_event
 
 CREATE INDEX IF NOT EXISTS idx_timeline_instance_id
     ON timeline_events(instance_id);
+
+-- Serves "when did this KIND of event last happen anywhere" (#7080). Created
+-- through the same IF NOT EXISTS script every open runs, deliberately WITHOUT a
+-- schema-version bump: a bump drops and rebuilds timeline_events, and the
+-- history this index exists to interrogate is the thing that would be lost.
+CREATE INDEX IF NOT EXISTS idx_timeline_event_timestamp
+    ON timeline_events(event, timestamp DESC);
 """
 
 _SQLITE_SCHEMA_VERSION = 4
@@ -289,6 +297,44 @@ class SqliteTimelineStore(TimelineStore):
             deleted = tx.execute("SELECT changes()").fetchone()[0]
         logger.info("[TIMELINE] delete db=%s issue=%s deleted=%s", self._db_path, issue_number, deleted)
         return int(deleted)
+
+    def event_time_bounds(
+        self, event_names: Sequence[str]
+    ) -> Mapping[str, tuple[str, str]]:
+        """``(earliest, newest)`` ``timestamp`` per name, across every issue.
+
+        Names with no recorded row are omitted (see the port docstring). The
+        comparison is lexicographic over the stored ISO strings, which is exact
+        because ``DefaultTimelineWriter`` normalises every timestamp to UTC
+        before it is written -- one offset, so string order is time order.
+
+        Note that the trace table TRIMS old rows, so the earliest bound can only
+        move FORWARD. A caller measuring elapsed silence from it therefore
+        under-reports rather than raising a false alarm (#7262 review F7).
+        """
+        names = tuple(dict.fromkeys(event_names))
+        if not names:
+            return {}
+        bounds: dict[str, tuple[str, str]] = {}
+        with self._connection_lock:
+            conn = self._get_connection()
+            for name in names:
+                # One parameterised aggregate per name rather than a built
+                # ``IN (...)`` clause: the query text stays constant, so no
+                # caller-supplied value ever reaches SQL as text, and
+                # idx_timeline_event_timestamp serves both bounds from the
+                # index without a table scan.
+                row = conn.execute(
+                    """
+                    SELECT MIN(timestamp) AS earliest, MAX(timestamp) AS newest
+                    FROM timeline_events
+                    WHERE event = ?
+                    """,
+                    (name,),
+                ).fetchone()
+                if row is not None and row["newest"] is not None:
+                    bounds[name] = (str(row["earliest"]), str(row["newest"]))
+        return bounds
 
     def _trim_if_needed(self, conn: sqlite3.Connection, issue_number: int) -> None:
         max_records = self._config.max_records
