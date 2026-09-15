@@ -208,6 +208,24 @@ A revision taken from the wrong side of that migration is refused as stale. That
 is the correct outcome, but it costs a review cycle to rediscover, so record
 which case a plan was generated under alongside its `plan_id`.
 
+Do not check this by hand. `scripts/check_lifecycle_plan_revisions.py` computes
+the seeded projection with the production seed code and compares it to a plan:
+
+```bash
+python scripts/check_lifecycle_plan_revisions.py \
+    --plan repo-specific/reconciliation/<plan>.yaml \
+    --repo-root <checkout whose state dir holds the trusted ledger>
+```
+
+It reports coverage gaps, issue-number disagreements and moved revisions, and
+exits non-zero on any of them. This exists because the not-yet-seeded case is
+precisely the one the dry run cannot preview, and the first #7240 plan for
+issue-orchestrator shipped two revisions taken from the un-padded local read —
+the two rows its own header had warned about.
+
+Run it IMMEDIATELY before the apply. The projection moves whenever the engine
+records another observation, so a check from yesterday proves nothing.
+
 ## Running it
 
 1. Stop the engine. The command holds the repo lock for its whole lifecycle
