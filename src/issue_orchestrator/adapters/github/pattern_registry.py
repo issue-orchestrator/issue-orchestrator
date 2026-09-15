@@ -32,6 +32,7 @@ from ...ports.pattern_registry import (
     PatternReservationState,
     require_canonical_case_file,
     require_resumable_retirement,
+    require_reviewed_population,
     require_reviewed_revision,
 )
 from .ref_store import GitRefCasStore, GitRefSnapshot
@@ -355,11 +356,19 @@ class GitHubRefPatternRegistry(PatternCaseFileRegistry):
         signature: str,
         transition: CaseFileLifecycleTransition,
         expected_revision: str | None = None,
+        expected_signatures: frozenset[str] | None = None,
     ) -> PatternRegistryEntry:
         if transition.terminal:
             raise ValueError("terminal lifecycle changes require retirement")
         for _ in range(MAX_CAS_ATTEMPTS):
             snapshot, entries = self._load()
+            # Whole-population admission, inside the SAME compare-and-swap as the
+            # write it guards. A controller that checks plan coverage once and
+            # then writes entry by entry is racing: a signature added in between
+            # leaves every planned entry's own revision untouched, so the whole
+            # plan still lands and reports success while that signature was never
+            # reviewed (#7248 review F1).
+            require_reviewed_population(entries, expected_signatures)
             current = self._committed(entries, signature)
             if admit_lifecycle_transition(current, transition):
                 return current
@@ -387,12 +396,14 @@ class GitHubRefPatternRegistry(PatternCaseFileRegistry):
         comment: str,
         issue_number: int,
         expected_revision: str | None = None,
+        expected_signatures: frozenset[str] | None = None,
     ) -> PatternReservation:
         if not transition.terminal:
             raise ValueError("retirement requires a terminal disposition")
         desired = PendingPatternRetirement(transition=transition, comment=comment)
         for _ in range(MAX_CAS_ATTEMPTS):
             snapshot, entries = self._load()
+            require_reviewed_population(entries, expected_signatures)
             current = self._committed(entries, signature)
             require_canonical_case_file(current, issue_number)
             if admit_lifecycle_transition(current, transition):

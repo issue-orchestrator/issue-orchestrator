@@ -33,6 +33,7 @@ from issue_orchestrator.domain.tech_lead_findings import (
 )
 from issue_orchestrator.domain.tech_lead_session import TechLeadCreationOrigin
 from issue_orchestrator.ports.pattern_registry import (
+    PatternRegistryEntry,
     PatternRegistryError,
     PatternReservationState,
 )
@@ -537,6 +538,22 @@ def _retirement(transition_id: str) -> CaseFileLifecycleTransition:
     )
 
 
+def _committed_entry(
+    *, signature: str, issue_number: int, observation_id: str
+) -> PatternRegistryEntry:
+    """A committed row as another client's seed would present it."""
+    return PatternRegistryEntry(
+        signature=signature,
+        reservation_id="seeded",
+        claimant_id="engine-b",
+        expires_at="2026-09-10T00:00:00+00:00",
+        pending=None,
+        issue_number=issue_number,
+        observation_ids=(observation_id,),
+        classification=CaseFileClassification(),
+    )
+
+
 def _shared_registry_with_case_file() -> GitHubRefPatternRegistry:
     registry = GitHubRefPatternRegistry(
         cast(Any, FakeGitHubRefClient()),
@@ -820,3 +837,114 @@ def test_one_reviewed_revision_admits_exactly_one_concurrent_transition() -> Non
     final = registry.read(signature="stuck-retry")
     assert final is not None
     assert len([t for t in final.lifecycle if t.transition_id.startswith("race:")]) == 1
+
+
+@pytest.mark.parametrize(
+    "build", (_shared_registry_with_case_file, _local_registry_with_case_file)
+)
+def test_no_registry_admits_a_plan_that_no_longer_covers_it(build) -> None:
+    """Whole-plan admission happens INSIDE the write, in BOTH registries (#7248 F1).
+
+    A reconciliation plan must classify the complete registry snapshot, and an
+    operator reviewed it against exactly the signatures that snapshot held.
+    Checking coverage once in the controller and then writing entry by entry was
+    a check-then-write race: a signature created after preflight leaves every
+    PLANNED entry's own revision untouched, so all of them still write and the
+    command reports success while the new signature was never reviewed by anyone.
+
+    The reviewed population therefore travels with each write and is re-admitted
+    inside the same compare-and-swap as the revision.
+    """
+    registry = build()
+    reviewed_population = frozenset({"stuck-retry"})
+
+    # A concurrent client files a case file for a class nobody reviewed.
+    registry.seed_committed(
+        (
+            _committed_entry(
+                signature="unreviewed-class",
+                issue_number=82,
+                observation_id="run:b:B1",
+            ),
+        )
+    )
+
+    with pytest.raises(PatternRegistryError, match="no longer covers"):
+        registry.reserve_retirement(
+            signature="stuck-retry",
+            transition=_retirement("plan:covered"),
+            comment="<!-- retirement -->",
+            issue_number=81,
+            expected_signatures=reviewed_population,
+        )
+    with pytest.raises(PatternRegistryError, match="no longer covers"):
+        registry.record_lifecycle(
+            signature="stuck-retry",
+            transition=_classification("plan:covered-classify"),
+            expected_signatures=reviewed_population,
+        )
+
+    # The refusal names what changed, so the operator can re-review it.
+    with pytest.raises(PatternRegistryError, match="unreviewed-class"):
+        registry.record_lifecycle(
+            signature="stuck-retry",
+            transition=_classification("plan:covered-classify"),
+            expected_signatures=reviewed_population,
+        )
+
+
+@pytest.mark.parametrize(
+    "build", (_shared_registry_with_case_file, _local_registry_with_case_file)
+)
+def test_a_plans_own_writes_never_invalidate_its_own_admission(build) -> None:
+    """The check must bind foreign changes only (#7248 F1).
+
+    No write in this registry adds or removes a signature -- lifecycle
+    transitions and retirements only replace an entry -- so a plan applying its
+    own outcomes one after another must keep being admitted. A population check
+    that tripped on the plan's own progress would make every multi-outcome plan
+    unappliable.
+    """
+    registry = build()
+    registry.seed_committed(
+        (
+            _committed_entry(
+                signature="second-class", issue_number=82, observation_id="run:b:B1"
+            ),
+        )
+    )
+    population = frozenset({"stuck-retry", "second-class"})
+
+    registry.record_lifecycle(
+        signature="stuck-retry",
+        transition=_classification("plan:one"),
+        expected_signatures=population,
+    )
+    second = registry.record_lifecycle(
+        signature="second-class",
+        transition=_classification("plan:two"),
+        expected_signatures=population,
+    )
+
+    assert second.lifecycle[-1].transition_id == "plan:two"
+
+
+@pytest.mark.parametrize(
+    "build", (_shared_registry_with_case_file, _local_registry_with_case_file)
+)
+def test_a_caller_with_no_reviewed_plan_is_unaffected(build) -> None:
+    """Ordinary promotion settlement carries no plan and must not be gated."""
+    registry = build()
+    registry.seed_committed(
+        (
+            _committed_entry(
+                signature="second-class", issue_number=82, observation_id="run:b:B1"
+            ),
+        )
+    )
+
+    entry = registry.record_lifecycle(
+        signature="stuck-retry", transition=_classification("no-plan")
+    )
+
+    assert entry.lifecycle[-1].transition_id == "no-plan"

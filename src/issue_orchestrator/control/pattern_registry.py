@@ -32,6 +32,7 @@ from ..ports.pattern_registry import (
     PatternReservation,
     PatternReservationState,
     require_canonical_case_file,
+    require_reviewed_population,
     require_resumable_retirement,
     require_reviewed_revision,
 )
@@ -173,11 +174,13 @@ class MirroredPatternCaseFileRegistry(PatternCaseFileRegistry):
         signature: str,
         transition: CaseFileLifecycleTransition,
         expected_revision: str | None = None,
+        expected_signatures: frozenset[str] | None = None,
     ) -> PatternRegistryEntry:
         entry = self._shared.record_lifecycle(
             signature=signature,
             transition=transition,
             expected_revision=expected_revision,
+            expected_signatures=expected_signatures,
         )
         self._mirror(entry)
         return entry
@@ -190,6 +193,7 @@ class MirroredPatternCaseFileRegistry(PatternCaseFileRegistry):
         comment: str,
         issue_number: int,
         expected_revision: str | None = None,
+        expected_signatures: frozenset[str] | None = None,
     ) -> PatternReservation:
         # Every retirement-path result is mirrored, because the fact promotion
         # eligibility needs is admitted HERE, at the reserving compare-and-swap,
@@ -201,6 +205,7 @@ class MirroredPatternCaseFileRegistry(PatternCaseFileRegistry):
             transition=transition,
             comment=comment,
             issue_number=issue_number,
+            expected_signatures=expected_signatures,
             expected_revision=expected_revision,
         )
         return self._mirrored(outcome)
@@ -542,10 +547,12 @@ class LocalPatternCaseFileRegistry(PatternCaseFileRegistry):
         signature: str,
         transition: CaseFileLifecycleTransition,
         expected_revision: str | None = None,
+        expected_signatures: frozenset[str] | None = None,
     ) -> PatternRegistryEntry:
         with self._write_lock:
             if transition.terminal:
                 raise ValueError("terminal lifecycle changes require retirement")
+            require_reviewed_population(self._committed_entries(), expected_signatures)
             current = self._require_committed(signature)
             if admit_lifecycle_transition(current, transition):
                 return current
@@ -566,10 +573,12 @@ class LocalPatternCaseFileRegistry(PatternCaseFileRegistry):
         comment: str,
         issue_number: int,
         expected_revision: str | None = None,
+        expected_signatures: frozenset[str] | None = None,
     ) -> PatternReservation:
         with self._write_lock:
             if not transition.terminal:
                 raise ValueError("retirement requires a terminal disposition")
+            require_reviewed_population(self._committed_entries(), expected_signatures)
             desired = PendingPatternRetirement(transition=transition, comment=comment)
             current = self._require_committed(signature)
             require_canonical_case_file(current, issue_number)
@@ -744,6 +753,10 @@ class LocalPatternCaseFileRegistry(PatternCaseFileRegistry):
                 for evidence in self._local.list_pattern_evidence()
                 if (entry := self.read(signature=evidence.signature)) is not None
             )
+
+    def _committed_entries(self) -> dict[str, PatternRegistryEntry]:
+        """The committed population, for the whole-plan admission check."""
+        return {entry.signature: entry for entry in self.list_entries()}
 
     def seed_committed(self, entries: tuple[PatternRegistryEntry, ...]) -> None:
         with self._write_lock:

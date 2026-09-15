@@ -365,6 +365,14 @@ class CaseFileLifecycleReconciler:
     ) -> tuple[int, tuple[str, ...]]:
         applied = 0
         failures: list[str] = []
+        # The population the plan was REVIEWED against, carried into every write
+        # so each compare-and-swap re-admits the whole decision set rather than
+        # just its own row. Preflight alone was check-then-write: a signature
+        # created after it left every planned entry's revision untouched, so the
+        # plan landed in full and reported success while that signature was never
+        # reviewed (#7248 review F1). No write here adds or removes a signature,
+        # so the plan's own progress can never invalidate its own admission.
+        expected_signatures = frozenset(outcome.signature for outcome in plan.outcomes)
         for outcome in plan.outcomes:
             transition = outcome.transition(
                 plan_id=plan.plan_id, recorded_at=plan.recorded_at
@@ -378,12 +386,14 @@ class CaseFileLifecycleReconciler:
                         transition=transition,
                         issue_number=outcome.issue_number,
                         expected_revision=outcome.expected_revision,
+                        expected_signatures=expected_signatures,
                     )
                 else:
                     owner.classify(
                         signature=outcome.signature,
                         transition=transition,
                         expected_revision=outcome.expected_revision,
+                        expected_signatures=expected_signatures,
                     )
                 applied += 1
             except Exception as exc:

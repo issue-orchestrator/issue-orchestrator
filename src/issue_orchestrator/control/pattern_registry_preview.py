@@ -112,6 +112,7 @@ class ReadOnlyPatternCaseFileRegistry(PatternCaseFileRegistry):
         signature: str,
         transition: CaseFileLifecycleTransition,
         expected_revision: str | None = None,
+        expected_signatures: frozenset[str] | None = None,
     ) -> PatternRegistryEntry:
         self._refuse("record_lifecycle")
 
@@ -123,6 +124,7 @@ class ReadOnlyPatternCaseFileRegistry(PatternCaseFileRegistry):
         comment: str,
         issue_number: int,
         expected_revision: str | None = None,
+        expected_signatures: frozenset[str] | None = None,
     ) -> PatternReservation:
         self._refuse("reserve_retirement")
 

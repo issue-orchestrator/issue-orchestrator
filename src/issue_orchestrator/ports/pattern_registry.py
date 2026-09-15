@@ -7,6 +7,7 @@ import json
 from dataclasses import asdict
 from dataclasses import dataclass
 from enum import Enum
+from collections.abc import Mapping
 from typing import Protocol
 
 from ..domain.tech_lead_findings import (
@@ -312,6 +313,45 @@ def require_resumable_retirement(
     return pending
 
 
+def require_reviewed_population(
+    entries: "Mapping[str, PatternRegistryEntry] | None",
+    expected_signatures: "frozenset[str] | None",
+) -> None:
+    """Refuse a write whose reviewed plan no longer covers the registry.
+
+    A reconciliation plan is admitted as ONE decision set: it must classify the
+    complete registry snapshot, and an operator reviewed it against exactly the
+    signatures that snapshot held. Checking that once in a controller and then
+    writing entry by entry is a check-then-write race -- a signature added in
+    between leaves every planned entry's own revision untouched, so all of them
+    still write, the command reports success, and the new signature was never
+    reviewed by anyone.
+
+    This is the whole-population half of :func:`require_reviewed_revision`, and
+    it belongs INSIDE each compare-and-swap for the same reason that one does.
+    It is sufficient on its own because no write in this registry adds or removes
+    a signature: lifecycle transitions and retirements only ever replace an
+    entry. A plan's own writes therefore cannot invalidate its own admission,
+    while any foreign creation or import does -- which is exactly the line the
+    reviewed plan draws.
+
+    ``None`` means the caller is not acting under a reviewed plan and the check
+    does not apply.
+    """
+    if expected_signatures is None:
+        return
+    present = frozenset(entries or {})
+    if present == expected_signatures:
+        return
+    added = sorted(present - expected_signatures)
+    removed = sorted(expected_signatures - present)
+    raise PatternRegistryError(
+        "the reviewed plan no longer covers the pattern registry"
+        f" (added={added}, removed={removed}); re-review the plan against the"
+        " current registry before applying it"
+    )
+
+
 def require_reviewed_revision(
     entry: PatternRegistryEntry, expected_revision: str | None
 ) -> None:
@@ -411,6 +451,7 @@ class PatternCaseFileRegistry(Protocol):
         signature: str,
         transition: CaseFileLifecycleTransition,
         expected_revision: str | None = None,
+        expected_signatures: frozenset[str] | None = None,
     ) -> PatternRegistryEntry:
         """Record an active/needs-human classification without GitHub mutation.
 
@@ -429,6 +470,7 @@ class PatternCaseFileRegistry(Protocol):
         comment: str,
         issue_number: int,
         expected_revision: str | None = None,
+        expected_signatures: frozenset[str] | None = None,
     ) -> PatternReservation:
         """Reserve one exact terminal transition against its canonical case file.
 
