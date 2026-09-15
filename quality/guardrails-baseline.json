@@ -2528,18 +2528,18 @@
       "rule_id": "ruff_noqa_suppressions",
       "value": 1
     },
-    "ruff_noqa_suppressions:src/issue_orchestrator/ports/timeline_store.py:ba0c74ed7b69:line-41": {
-      "detail": "line 41: # noqa: ARG002",
+    "ruff_noqa_suppressions:src/issue_orchestrator/ports/timeline_store.py:ba0c74ed7b69:line-57": {
+      "detail": "line 57: # noqa: ARG002",
       "kind": "ruff_noqa_suppression",
-      "metric_id": "src/issue_orchestrator/ports/timeline_store.py:ba0c74ed7b69:line-41",
+      "metric_id": "src/issue_orchestrator/ports/timeline_store.py:ba0c74ed7b69:line-57",
       "path": "src/issue_orchestrator/ports/timeline_store.py",
       "rule_id": "ruff_noqa_suppressions",
       "value": 1
     },
-    "ruff_noqa_suppressions:src/issue_orchestrator/ports/timeline_store.py:ba0c74ed7b69:line-44": {
-      "detail": "line 44: # noqa: ARG002",
+    "ruff_noqa_suppressions:src/issue_orchestrator/ports/timeline_store.py:ba0c74ed7b69:line-60": {
+      "detail": "line 60: # noqa: ARG002",
       "kind": "ruff_noqa_suppression",
-      "metric_id": "src/issue_orchestrator/ports/timeline_store.py:ba0c74ed7b69:line-44",
+      "metric_id": "src/issue_orchestrator/ports/timeline_store.py:ba0c74ed7b69:line-60",
       "path": "src/issue_orchestrator/ports/timeline_store.py",
       "rule_id": "ruff_noqa_suppressions",
       "value": 1

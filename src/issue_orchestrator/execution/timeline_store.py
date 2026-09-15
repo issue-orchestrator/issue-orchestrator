@@ -10,6 +10,7 @@ import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Mapping, Sequence
 from typing import Iterable, Iterator
 
 from .timeline_artifact_expectations import RUN_SCOPED_TIMELINE_EVENTS, event_requires_run_dir
@@ -54,6 +55,13 @@ CREATE INDEX IF NOT EXISTS idx_timeline_issue_source_event
 
 CREATE INDEX IF NOT EXISTS idx_timeline_instance_id
     ON timeline_events(instance_id);
+
+-- Serves "when did this KIND of event last happen anywhere" (#7080). Created
+-- through the same IF NOT EXISTS script every open runs, deliberately WITHOUT a
+-- schema-version bump: a bump drops and rebuilds timeline_events, and the
+-- history this index exists to interrogate is the thing that would be lost.
+CREATE INDEX IF NOT EXISTS idx_timeline_event_timestamp
+    ON timeline_events(event, timestamp DESC);
 """
 
 _SQLITE_SCHEMA_VERSION = 4
@@ -289,6 +297,42 @@ class SqliteTimelineStore(TimelineStore):
             deleted = tx.execute("SELECT changes()").fetchone()[0]
         logger.info("[TIMELINE] delete db=%s issue=%s deleted=%s", self._db_path, issue_number, deleted)
         return int(deleted)
+
+    def latest_event_timestamps(
+        self, event_names: Sequence[str]
+    ) -> Mapping[str, str]:
+        """Newest ``timestamp`` per requested event name, across every issue.
+
+        Names with no recorded row are omitted (see the port docstring). The
+        comparison is lexicographic over the stored ISO strings, which is exact
+        because ``DefaultTimelineWriter`` normalises every timestamp to UTC
+        before it is written -- one offset, so string order is time order.
+        """
+        names = tuple(dict.fromkeys(event_names))
+        if not names:
+            return {}
+        newest: dict[str, str] = {}
+        with self._connection_lock:
+            conn = self._get_connection()
+            for name in names:
+                # One parameterised index seek per name rather than a built
+                # ``IN (...)`` clause: the query text stays constant, so no
+                # caller-supplied value ever reaches SQL as text, and
+                # idx_timeline_event_timestamp makes each lookup a single
+                # descending seek.
+                row = conn.execute(
+                    """
+                    SELECT timestamp
+                    FROM timeline_events
+                    WHERE event = ?
+                    ORDER BY timestamp DESC
+                    LIMIT 1
+                    """,
+                    (name,),
+                ).fetchone()
+                if row is not None and row["timestamp"] is not None:
+                    newest[name] = str(row["timestamp"])
+        return newest
 
     def _trim_if_needed(self, conn: sqlite3.Connection, issue_number: int) -> None:
         max_records = self._config.max_records

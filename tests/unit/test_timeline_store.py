@@ -1366,3 +1366,102 @@ def test_sqlite_timeline_store_instance_id_filters_correctly(tmp_path: Path) -> 
     ).fetchall()
     conn.close()
     assert [r["event_id"] for r in rows] == ["a1", "a2"]
+
+
+class TestLatestEventTimestamps:
+    """Cross-issue event recency (#7080).
+
+    "Has a tech-lead decision reached GitHub lately?" is a question about the
+    whole store, and no per-issue read can answer it -- which is why the
+    subsystem's ten-day silence was invisible.
+    """
+
+    @staticmethod
+    def _store(tmp_path: Path) -> SqliteTimelineStore:
+        store = SqliteTimelineStore(tmp_path / "timeline.sqlite")
+        store.initialize()
+        return store
+
+    def test_newest_timestamp_is_found_across_different_issues(
+        self, tmp_path: Path
+    ) -> None:
+        store = self._store(tmp_path)
+        store.append(
+            11,
+            TimelineRecord(
+                event_id="a",
+                timestamp="2026-08-07T13:33:00+00:00",
+                event="tech_lead.action_proposed",
+                data={},
+            ),
+        )
+        store.append(
+            22,
+            TimelineRecord(
+                event_id="b",
+                timestamp="2026-08-17T07:32:00+00:00",
+                event="tech_lead.action_proposed",
+                data={},
+            ),
+        )
+
+        newest = store.latest_event_timestamps(["tech_lead.action_proposed"])
+
+        assert newest == {"tech_lead.action_proposed": "2026-08-17T07:32:00+00:00"}
+
+    def test_an_event_with_no_rows_is_omitted_not_defaulted(
+        self, tmp_path: Path
+    ) -> None:
+        # "never happened" must not come back looking like a timestamp -- the
+        # caller has to decide what never means.
+        store = self._store(tmp_path)
+        store.append(
+            11,
+            TimelineRecord(
+                event_id="a",
+                timestamp="2026-08-07T13:33:00+00:00",
+                event="tech_lead.action_proposed",
+                data={},
+            ),
+        )
+
+        newest = store.latest_event_timestamps(
+            ["tech_lead.action_proposed", "tech_lead.action_executed"]
+        )
+
+        assert "tech_lead.action_executed" not in newest
+
+    def test_unrelated_events_are_not_reported(self, tmp_path: Path) -> None:
+        store = self._store(tmp_path)
+        store.append(
+            11,
+            TimelineRecord(
+                event_id="a",
+                timestamp="2026-08-07T13:33:00+00:00",
+                event="issue.labels_changed",
+                data={},
+            ),
+        )
+
+        assert store.latest_event_timestamps(["tech_lead.action_proposed"]) == {}
+
+    def test_no_requested_names_reads_nothing(self, tmp_path: Path) -> None:
+        assert self._store(tmp_path).latest_event_timestamps([]) == {}
+
+    def test_duplicate_names_are_tolerated(self, tmp_path: Path) -> None:
+        store = self._store(tmp_path)
+        store.append(
+            11,
+            TimelineRecord(
+                event_id="a",
+                timestamp="2026-08-07T13:33:00+00:00",
+                event="tech_lead.run_requested",
+                data={},
+            ),
+        )
+
+        newest = store.latest_event_timestamps(
+            ["tech_lead.run_requested", "tech_lead.run_requested"]
+        )
+
+        assert newest == {"tech_lead.run_requested": "2026-08-07T13:33:00+00:00"}

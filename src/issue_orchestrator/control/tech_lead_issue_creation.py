@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Callable
 
 from ..domain.tech_lead_session import (
     PROPOSED_TECH_LEAD_LABEL,
+    TechLeadCreationKind,
     is_proposed_tech_lead_gate,
 )
 from ..events import EventName
@@ -237,6 +238,13 @@ def apply_create_tech_lead_issue(
             {
                 "issue_number": issue_number,
                 "pr_count": action.pr_count,
+                # Anchor authoring or a session's decision — the one thing
+                # ``trigger`` cannot be asked, because it is prose. Ten of the
+                # 15 health-review-flavoured creations in the live store are
+                # interval anchors and five are real decisions, so a consumer
+                # counting "did a tech-lead decision reach GitHub" must read
+                # this and never the reason text (#7080).
+                "creation_kind": action.origin.kind.value,
                 # Why this anchor exists, and what it consumed. A storm
                 # escalation collapses N individual investigations into one
                 # review; without these the only trace of that decision is log
@@ -249,6 +257,25 @@ def apply_create_tech_lead_issue(
             },
         )
     )
+    if action.origin.kind is TechLeadCreationKind.DERIVED_FROM_ANCHOR:
+        # A create_issue decided by a session working an anchor IS an executed
+        # decision action, and until now nothing said so: the only emitters of
+        # TECH_LEAD_ACTION_EXECUTED were the act-level executors, all of which
+        # default to ``propose`` and therefore wait for an approval that may
+        # never come. The result was a store holding ZERO action_executed rows
+        # while the tech lead was filing follow-ups daily, which is what made
+        # "has any decision landed?" unanswerable for ten days (#7080).
+        events.publish(
+            make_trace_event(
+                EventName.TECH_LEAD_ACTION_EXECUTED,
+                {
+                    "issue_number": action.origin.anchor_issue_number,
+                    "action": "create_issue",
+                    "created_issue_number": issue_number,
+                    "flavor": action.flavor.value,
+                },
+            )
+        )
     _apply_expedite_lane(action, issue_number=issue_number, expedite_lane=expedite_lane)
     finalization_error = _finalize_ledger_backed_creation(
         action,

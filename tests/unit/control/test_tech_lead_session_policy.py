@@ -17,7 +17,7 @@ from issue_orchestrator.control.tech_lead_session_policy import (
     read_tech_lead_assignment,
     shape_requested_actions_for_tech_lead,
 )
-from issue_orchestrator.domain.models import RequestedAction
+from issue_orchestrator.domain.models import CompletionOutcome, RequestedAction
 from issue_orchestrator.domain.tech_lead_session import (
     TECH_LEAD_ASSIGNMENT_FILENAME,
     TechLeadAssignment,
@@ -45,14 +45,20 @@ class TestIsTechLeadSession:
 
 
 class TestShapeRequestedActionsForTechLead:
-    def test_drops_only_post_comment(self) -> None:
+    """The work report is dropped; the decision is not (#7080)."""
+
+    def test_completed_audit_drops_its_work_report_comment(self) -> None:
         requested = (
             RequestedAction.PUSH_BRANCH,
             RequestedAction.CREATE_PR,
             RequestedAction.POST_COMMENT,
         )
 
-        shaped = shape_requested_actions_for_tech_lead(requested, has_publishable_changes=True)
+        shaped = shape_requested_actions_for_tech_lead(
+            requested,
+            outcome=CompletionOutcome.COMPLETED,
+            has_publishable_changes=True,
+        )
 
         assert shaped == (RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR)
 
@@ -64,7 +70,11 @@ class TestShapeRequestedActionsForTechLead:
             RequestedAction.POST_COMMENT,
         )
 
-        shaped = shape_requested_actions_for_tech_lead(requested, has_publishable_changes=True)
+        shaped = shape_requested_actions_for_tech_lead(
+            requested,
+            outcome=CompletionOutcome.COMPLETED,
+            has_publishable_changes=True,
+        )
 
         assert shaped == (
             RequestedAction.PUSH_BRANCH,
@@ -74,14 +84,55 @@ class TestShapeRequestedActionsForTechLead:
     def test_no_post_comment_is_identity(self) -> None:
         requested = (RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR)
 
-        assert shape_requested_actions_for_tech_lead(requested, has_publishable_changes=True) == requested
+        assert (
+            shape_requested_actions_for_tech_lead(
+                requested,
+                outcome=CompletionOutcome.COMPLETED,
+                has_publishable_changes=True,
+            )
+            == requested
+        )
 
     def test_clean_audit_drops_publication_but_keeps_other_intent(self) -> None:
         assert shape_requested_actions_for_tech_lead(
             (RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR,
              RequestedAction.POST_COMMENT, RequestedAction.ADD_BLOCKED_LABEL),
+            outcome=CompletionOutcome.COMPLETED,
             has_publishable_changes=False,
         ) == (RequestedAction.ADD_BLOCKED_LABEL,)
+
+    @pytest.mark.parametrize(
+        ("outcome", "label_action"),
+        [
+            (CompletionOutcome.NEEDS_HUMAN, RequestedAction.ADD_NEEDS_HUMAN_LABEL),
+            (CompletionOutcome.BLOCKED, RequestedAction.ADD_BLOCKED_LABEL),
+        ],
+    )
+    def test_escalation_keeps_the_comment_that_explains_its_label(
+        self, outcome: CompletionOutcome, label_action: RequestedAction
+    ) -> None:
+        # The label without the comment is the #7080 write-death: the issue is
+        # marked but the question or blocker never reaches a person.
+        shaped = shape_requested_actions_for_tech_lead(
+            (RequestedAction.PUSH_BRANCH, label_action, RequestedAction.POST_COMMENT),
+            outcome=outcome,
+            has_publishable_changes=False,
+        )
+
+        assert shaped == (label_action, RequestedAction.POST_COMMENT)
+
+    @pytest.mark.parametrize(
+        "outcome",
+        [CompletionOutcome.REVIEW_APPROVED, CompletionOutcome.REVIEW_CHANGES_REQUESTED],
+    )
+    def test_non_escalation_outcomes_still_drop_the_comment(
+        self, outcome: CompletionOutcome
+    ) -> None:
+        assert shape_requested_actions_for_tech_lead(
+            (RequestedAction.POST_COMMENT, RequestedAction.ADD_CODE_REVIEWED_LABEL),
+            outcome=outcome,
+            has_publishable_changes=True,
+        ) == (RequestedAction.ADD_CODE_REVIEWED_LABEL,)
 
 
 class TestIsBenignTechLeadNoCommits:

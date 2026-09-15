@@ -24,6 +24,8 @@ from issue_orchestrator.domain.board_snapshot import (
     COMMITS_AHEAD_UNKNOWN,
     IDLE_MINUTES_UNKNOWN,
     BoardE2EHealth,
+    BoardSnapshot,
+    BoardTechLeadWriteHealth,
     SessionActivityFacts,
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey
@@ -107,6 +109,10 @@ def _make_builder(
     case_files: tuple[TechLeadCaseFileSummary, ...] = (),
     shipped_fixes: tuple[TechLeadShippedFixSummary, ...] = (),
     e2e_health_reader: Callable[[datetime], BoardE2EHealth | None] | None = None,
+    tech_lead_write_health_reader: (
+        Callable[[datetime], BoardTechLeadWriteHealth | None] | None
+    ) = None,
+    clock: Callable[[], datetime] | None = None,
     session_activity_reader: (
         Callable[[Session], SessionActivityFacts | None] | None
     ) = None,
@@ -117,8 +123,11 @@ def _make_builder(
         case_file_reader=lambda: case_files,
         shipped_fix_reader=lambda limit: shipped_fixes[:limit],
         e2e_health_reader=e2e_health_reader or (lambda now: None),
+        tech_lead_write_health_reader=(
+            tech_lead_write_health_reader or (lambda now: None)
+        ),
         session_activity_reader=session_activity_reader or (lambda session: None),
-        clock=lambda: FIXED_NOW,
+        clock=clock or (lambda: FIXED_NOW),
     )
 
 
@@ -266,6 +275,7 @@ class TestPatternCaseFiles:
             case_file_reader=lambda: (),
             shipped_fix_reader=lambda _limit: fixes,
             e2e_health_reader=lambda now: None,
+            tech_lead_write_health_reader=lambda now: None,
             session_activity_reader=lambda session: None,
             clock=lambda: FIXED_NOW,
         )
@@ -922,3 +932,68 @@ class TestStateBoardSnapshotProvider:
         ungranted = provider.snapshot(None)
         assert [f.issue_number for f in ungranted.recent_failures] == [41, 42, 43]
         assert ungranted.problem_issue_numbers() == frozenset()
+
+
+class TestTechLeadWriteHealth:
+    """The board carries whether the tech lead's own writes are landing (#7080)."""
+
+    @staticmethod
+    def _health(verdict: str, *, is_alarm: bool) -> BoardTechLeadWriteHealth:
+        return BoardTechLeadWriteHealth(
+            verdict=verdict,
+            is_alarm=is_alarm,
+            reason="reason",
+            stale_after_hours=48.0,
+            run_requested_age_hours=0.02,
+            decision_proposed_age_hours=233.98,
+            decision_executed_age_hours=None,
+        )
+
+    def test_the_verdict_reaches_the_snapshot(self) -> None:
+        health = self._health("silent", is_alarm=True)
+
+        snapshot = _make_builder(
+            tech_lead_write_health_reader=lambda now: health
+        ).build(OrchestratorState())
+
+        assert snapshot.tech_lead_write_health == health
+
+    def test_the_reader_is_called_with_the_builders_clock(self) -> None:
+        seen: list[datetime] = []
+        clock = datetime(2026, 8, 17, 7, 32, 0)
+
+        _make_builder(
+            clock=lambda: clock,
+            tech_lead_write_health_reader=lambda now: seen.append(now) or None,
+        ).build(OrchestratorState())
+
+        assert seen == [clock]
+
+    def test_a_failing_reader_never_takes_the_snapshot_down(self) -> None:
+        # A signal about a silent subsystem must not become "no tech lead can
+        # launch": the snapshot is a required launch input.
+        def boom(_now: datetime) -> BoardTechLeadWriteHealth | None:
+            raise RuntimeError("timeline store unavailable")
+
+        snapshot = _make_builder(tech_lead_write_health_reader=boom).build(
+            OrchestratorState()
+        )
+
+        assert snapshot.tech_lead_write_health is None
+
+    def test_it_survives_the_snapshot_round_trip(self) -> None:
+        health = self._health("proposing_only", is_alarm=True)
+
+        snapshot = _make_builder(
+            tech_lead_write_health_reader=lambda now: health
+        ).build(OrchestratorState())
+        restored = BoardSnapshot.from_dict(snapshot.to_dict())
+
+        assert restored.tech_lead_write_health == health
+
+    def test_a_snapshot_without_the_signal_round_trips_as_none(self) -> None:
+        snapshot = _make_builder(
+            tech_lead_write_health_reader=lambda now: None
+        ).build(OrchestratorState())
+
+        assert BoardSnapshot.from_dict(snapshot.to_dict()).tech_lead_write_health is None

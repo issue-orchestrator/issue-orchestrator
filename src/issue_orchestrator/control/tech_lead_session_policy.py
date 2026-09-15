@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from collections.abc import Callable
 
-from ..domain.models import CompletionRecord, RequestedAction
+from ..domain.models import CompletionOutcome, CompletionRecord, RequestedAction
 from ..domain.session_key import TaskKind
 from ..domain.tech_lead_manifest import TechLeadManifest
 from ..domain.board_snapshot import BOARD_SNAPSHOT_FILENAME, BoardSnapshot
@@ -160,19 +160,47 @@ def failure_investigation_scratch_identity(
     )
 
 
+#: Outcomes whose comment IS the tech lead's decision, not a work report.
+#: ``coding-done blocked`` renders "## Blocked — Reason / Attempted" and
+#: ``needs_human`` renders "## Needs Human Input — Question / Context /
+#: Options", both written to be read by a person on the issue. Stripping them
+#: leaves the label with nothing to explain it.
+_TECH_LEAD_ESCALATION_OUTCOMES = frozenset(
+    {CompletionOutcome.BLOCKED, CompletionOutcome.NEEDS_HUMAN}
+)
+
+
 def shape_requested_actions_for_tech_lead(
     requested: tuple[RequestedAction, ...],
     *,
+    outcome: CompletionOutcome,
     has_publishable_changes: bool,
 ) -> tuple[RequestedAction, ...]:
-    """Drop POST_COMMENT from a tech_lead completion's requested actions.
+    """Shape a tech_lead completion's requested actions to its outcome.
 
-    Tech Lead prompts promise the orchestrator posts no comments; the generic
-    "## Implementation" template would land on the tracking issue otherwise.
+    Tech Lead prompts promise the orchestrator posts no *work report*: a
+    completed audit's generic "## Implementation / ## Problems Encountered"
+    template would land on the tracking issue as if the tech lead had
+    implemented something. That is the comment this rule exists to drop.
+
+    It used to drop EVERY comment, which is a different rule than the one the
+    docstring claimed, and it made the tech lead write-dead where it matters
+    most: an escalation's comment is the decision. A ``needs_human`` completion
+    renders the question the run exists to ask, and the orchestrator was
+    applying its ``needs-human`` label while discarding the question — leaving a
+    labelled issue whose reason lives only in a run directory (#7080; measured
+    on #7255: four label writes, zero comment writes, across every tech-lead
+    completion in the window).
+
+    So the exclusion is now keyed on the OUTCOME. Escalations keep their
+    comment; a completed audit does not get a work report.
+
     Publication intent is resolved before review exchange preparation. A clean
-    audit has no code review or publication work; real changes retain both.
+    audit has no publication work; real changes retain it.
     """
-    excluded = {RequestedAction.POST_COMMENT}
+    excluded: set[RequestedAction] = set()
+    if outcome not in _TECH_LEAD_ESCALATION_OUTCOMES:
+        excluded.add(RequestedAction.POST_COMMENT)
     if not has_publishable_changes:
         excluded.update({RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR})
     return tuple(action for action in requested if action not in excluded)
@@ -203,7 +231,9 @@ def resolve_tech_lead_completion_actions(
             return ProcessingResult(success=False, message=error, errors=[error])
         has_changes = bool(diff.diff_text)
     record.requested_actions = list(shape_requested_actions_for_tech_lead(
-        tuple(record.requested_actions), has_publishable_changes=has_changes
+        tuple(record.requested_actions),
+        outcome=record.outcome,
+        has_publishable_changes=has_changes,
     ))
     return None
 

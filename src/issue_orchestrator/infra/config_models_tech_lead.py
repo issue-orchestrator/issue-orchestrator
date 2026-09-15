@@ -639,6 +639,14 @@ class TechLeadConfig:
     # Finding-promotion lane: pattern case file -> gated runnable issue (#6957)
     findings: TechLeadFindingsConfig = field(default_factory=TechLeadFindingsConfig)
 
+    # How long the tech lead may keep launching runs without a single decision
+    # reaching GitHub before the board snapshot calls it out (#7080). The real
+    # incident ran TEN DAYS undetected, so the default is deliberately far
+    # shorter than a "surely someone would notice" interval: two days is longer
+    # than any healthy gap between a run and its first applied decision, and
+    # short enough that the next silence is seen in hours rather than weeks.
+    write_health_stale_after_hours: float = 48.0
+
     def to_event_dict(self, *, enabled: Optional[bool] = None) -> dict:
         """Serialized ``tech_lead`` section for config event payloads."""
         return {
@@ -668,6 +676,7 @@ class TechLeadConfig:
                 "max_recovery_attempts": self.stuck_sweep.max_recovery_attempts,
             },
             "findings": self.findings.to_event_dict(),
+            "write_health_stale_after_hours": self.write_health_stale_after_hours,
         }
 
     def startup_errors(self) -> list[str]:
@@ -685,6 +694,11 @@ class TechLeadConfig:
                 "tech_lead.max_expedited must be between 0 and "
                 f"{TECH_LEAD_MAX_EXPEDITED_LIMIT} (0 disables the expedite lane), "
                 f"got {self.max_expedited}"
+            )
+        if self.write_health_stale_after_hours <= 0:
+            errors.append(
+                "tech_lead.write_health_stale_after_hours must be > 0 hours, got "
+                f"{self.write_health_stale_after_hours}"
             )
         errors.extend(self.dedup.startup_errors())
         errors.extend(self.findings.startup_errors())

@@ -7,7 +7,10 @@ import pytest
 from unittest.mock import MagicMock, Mock, patch
 from pathlib import Path
 
-from issue_orchestrator.domain.tech_lead_session import TechLeadCreationOrigin
+from issue_orchestrator.domain.tech_lead_session import (
+    TechLeadCreationKind,
+    TechLeadCreationOrigin,
+)
 from issue_orchestrator.control.action_applier import ActionApplier
 from issue_orchestrator.control.claim_gate import ClaimGate, ClaimLostError
 from issue_orchestrator.control.actions import (
@@ -1485,8 +1488,75 @@ class TestCreateTechLeadIssueAction:
         assert created.data == {
             "issue_number": 100,
             "pr_count": 0,
+            "creation_kind": TechLeadCreationKind.AUTHORS_ANCHOR.value,
             "trigger": trigger,
             "storm_problem_count": 3,
+            "flavor": TechLeadSessionFlavor.HEALTH_REVIEW.value,
+        }
+
+    def test_anchor_authoring_is_not_reported_as_an_executed_decision(
+        self, applier, mock_repository_host, mock_events
+    ):
+        """Minting a health-review anchor is bookkeeping, not a decision (#7080).
+
+        Ten of the health-review-flavoured ``issue_created`` rows in the live
+        store are interval anchors. Counting them as decisions is precisely how
+        a ten-day write-death stayed invisible, so anchor authoring must emit no
+        ``action_executed``.
+        """
+        mock_repository_host.create_issue.return_value = {"number": 100}
+        action = CreateTechLeadIssueAction(
+            title="Repository health review",
+            body="Walk the floor",
+            labels=(HEALTH_REVIEW_MARKER_LABEL,),
+            reason="health review interval elapsed",
+            flavor=TechLeadSessionFlavor.HEALTH_REVIEW,
+            origin=TechLeadCreationOrigin.authors_anchor(),
+        )
+
+        assert applier.apply(action).success
+
+        assert not [
+            call.args[0]
+            for call in mock_events.publish.call_args_list
+            if call.args[0].name == EventName.TECH_LEAD_ACTION_EXECUTED.value
+        ]
+
+    def test_a_decided_follow_up_is_reported_as_an_executed_decision(
+        self, applier, mock_repository_host, mock_events
+    ):
+        """A create_issue a session DECIDED is a decision reaching GitHub (#7080).
+
+        Before this the only emitters of ``action_executed`` were the act-level
+        executors, every one of which defaults to ``propose`` and waits for an
+        approval that may never arrive -- so the store held ZERO such rows while
+        the tech lead filed follow-ups daily, and "has any decision landed?" had
+        no answer.
+        """
+        from issue_orchestrator.control.reconciliation import ExpectedState
+
+        mock_repository_host.create_issue.return_value = {"number": 100}
+        action = CreateTechLeadIssueAction(
+            title="Follow-up the review decided on",
+            body="Body",
+            labels=("agent:backend",),
+            reason="tech_lead decision action A3: create follow-up issue",
+            flavor=TechLeadSessionFlavor.HEALTH_REVIEW,
+            origin=TechLeadCreationOrigin.derived_from_anchor(7255),
+            expected=ExpectedState.with_labels(required={"agent:tech-lead"}),
+        )
+
+        assert applier.apply(action).success
+
+        [executed] = [
+            call.args[0]
+            for call in mock_events.publish.call_args_list
+            if call.args[0].name == EventName.TECH_LEAD_ACTION_EXECUTED.value
+        ]
+        assert executed.data == {
+            "issue_number": 7255,
+            "action": "create_issue",
+            "created_issue_number": 100,
             "flavor": TechLeadSessionFlavor.HEALTH_REVIEW.value,
         }
 

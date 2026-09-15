@@ -16,6 +16,7 @@ import os
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Callable
 
 from ..infra.logging_config import get_repo_log_path, read_log_tail
@@ -35,7 +36,11 @@ if TYPE_CHECKING:
     from ..control.tech_lead_run_activity import TechLeadRunActivity
     from ..ports import Issue
     from ..control.tech_lead_board import TechLeadBoardPublisher
-    from ..domain.board_snapshot import BoardE2EHealth, SessionActivityFacts
+    from ..domain.board_snapshot import (
+        BoardE2EHealth,
+        BoardTechLeadWriteHealth,
+        SessionActivityFacts,
+    )
     from ..domain.models import Session
     from ..infra.config import Config
     from ..infra.orchestrator import Orchestrator
@@ -425,6 +430,9 @@ def create_board_snapshot_builder(
             board_publisher.shipped_fixes if board_publisher else lambda _limit: ()
         ),
         e2e_health_reader=_make_e2e_health_reader(config),
+        tech_lead_write_health_reader=_make_tech_lead_write_health_reader(
+            config, timeline_store
+        ),
         session_activity_reader=_make_session_activity_reader(working_copy),
         clock=datetime.now,
     )
@@ -531,6 +539,74 @@ def _make_e2e_health_reader(
         except (OSError, sqlite3.Error, ValueError) as exc:
             logger.warning("[board] e2e health projection unavailable: %s", exc)
             return None
+
+    return _read
+
+
+def _make_tech_lead_write_health_reader(
+    config: "Config",
+    timeline_store: "TimelineStore",
+) -> Callable[[datetime], "BoardTechLeadWriteHealth | None"]:
+    """Write-health feed for the board snapshot (#7080).
+
+    Reads the newest durable timestamp of each tech-lead lifecycle event from
+    the engine's own timeline store — the same store #7080's evidence was
+    reconstructed from by hand — and classifies them against the configured
+    window.
+
+    Best-effort: a store that cannot answer yields ``None``. It is deliberately
+    NOT gated on ``tech_lead_enabled``: an engine whose tech lead was switched
+    off has no runs to be silent about, and the assessment already reports that
+    as ``idle`` from the facts rather than from configuration.
+    """
+    from ..domain.board_snapshot import BoardTechLeadWriteHealth
+    from ..domain.tech_lead_write_health import (
+        DECISION_EXECUTED_EVENTS,
+        DECISION_PROPOSED_EVENTS,
+        RUN_REQUESTED_EVENTS,
+        WRITE_HEALTH_EVENTS,
+        TechLeadWriteActivity,
+        assess_tech_lead_write_health,
+    )
+
+    def _newest(
+        timestamps: "Mapping[str, str]", names: tuple[str, ...]
+    ) -> datetime | None:
+        moments: list[datetime] = []
+        for name in names:
+            raw = timestamps.get(name)
+            if not raw:
+                continue
+            try:
+                moments.append(datetime.fromisoformat(raw))
+            except ValueError:
+                logger.warning(
+                    "[board] unparseable %s timestamp %r; ignoring", name, raw
+                )
+        return max(moments) if moments else None
+
+    def _read(now: datetime) -> "BoardTechLeadWriteHealth | None":
+        try:
+            timestamps = timeline_store.latest_event_timestamps(WRITE_HEALTH_EVENTS)
+        except (OSError, sqlite3.Error, ValueError) as exc:
+            logger.warning("[board] tech-lead write health unavailable: %s", exc)
+            return None
+        activity = TechLeadWriteActivity(
+            last_run_requested_at=_newest(timestamps, RUN_REQUESTED_EVENTS),
+            last_decision_proposed_at=_newest(timestamps, DECISION_PROPOSED_EVENTS),
+            last_decision_executed_at=_newest(timestamps, DECISION_EXECUTED_EVENTS),
+        )
+        # Recorded timestamps are UTC-aware; the builder's clock is naive local
+        # time. Compare in one frame rather than letting a subtraction raise.
+        reference = now if now.tzinfo is not None else now.astimezone()
+        health = assess_tech_lead_write_health(
+            activity,
+            now=reference,
+            stale_after_hours=config.tech_lead.write_health_stale_after_hours,
+        )
+        if health.is_alarm:
+            logger.warning("[tech_lead] write health %s: %s", health.verdict.value, health.reason)
+        return BoardTechLeadWriteHealth.project(health)
 
     return _read
 

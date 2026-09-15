@@ -1634,6 +1634,35 @@ class ReviewSettings(BaseModel):
             "yaml_path": "tech_lead.max_expedited",
         },
     )
+    tech_lead_write_health_stale_after_hours: float = Field(
+        48.0,
+        title="Tech Lead Write-Health Window",
+        description=(
+            "Hours the tech lead may keep launching runs with no decision "
+            "reaching GitHub before the board snapshot raises the alarm"
+        ),
+        gt=0,
+        json_schema_extra={
+            "doc_examples": ["24", "48", "168"],
+            "doc_notes": (
+                "The tech lead can read and think without writing: in one "
+                "measured window it requested 20 runs over ten days and applied "
+                "no decision at all, and nothing detected it. Every board "
+                "snapshot now carries a tech_lead_write_health verdict computed "
+                "over this window - 'writing' when a decision reached GitHub "
+                "inside it, 'idle' when no run was even requested, "
+                "'proposing_only' when runs keep deciding but nothing is applied "
+                "(look at the approval gate, not the runs), and 'silent' when "
+                "runs continue and produce nothing. Because health reviews read "
+                "the snapshot, a shorter window is seen sooner; it must be "
+                "longer than the normal gap between a run and its first applied "
+                "decision or the alarm is noise."
+            ),
+            "section": _TECH_LEAD_SECTION,
+            "config_attr": "tech_lead.write_health_stale_after_hours",
+            "yaml_path": "tech_lead.write_health_stale_after_hours",
+        },
+    )
 
     @field_validator(
         "tech_lead_authority_post_comment",

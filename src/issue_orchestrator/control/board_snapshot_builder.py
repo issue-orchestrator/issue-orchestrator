@@ -35,6 +35,7 @@ from ..domain.board_snapshot import (
     BoardQueueEntry,
     BoardSessionInfo,
     BoardShippedFix,
+    BoardTechLeadWriteHealth,
     BoardSnapshot,
     BoardTimelineExtract,
     SessionActivityFacts,
@@ -76,6 +77,9 @@ class BoardSnapshotBuilder:
         case_file_reader: Callable[[], Sequence[TechLeadCaseFileSummary]],
         shipped_fix_reader: Callable[[int], Sequence[TechLeadShippedFixSummary]],
         e2e_health_reader: Callable[[datetime], BoardE2EHealth | None],
+        tech_lead_write_health_reader: Callable[
+            [datetime], BoardTechLeadWriteHealth | None
+        ],
         session_activity_reader: Callable[[Session], SessionActivityFacts | None],
         clock: Callable[[], datetime],
     ) -> None:
@@ -93,6 +97,10 @@ class BoardSnapshotBuilder:
                 deterministic. Best-effort: a reader that returns ``None`` or
                 raises yields ``None`` here — the E2E block is an ENHANCEMENT
                 (like the evidence map), never a required snapshot fact.
+            tech_lead_write_health_reader: ``(now) -> write health | None``.
+                Answers "has a tech-lead decision reached GitHub lately, while
+                runs kept being requested?" (#7080). Best-effort like
+                ``e2e_health_reader``: the snapshot is never failed by it.
             session_activity_reader: ``(session) -> hung-evidence facts | None``.
                 Reaches the filesystem/git to read a session's last-activity
                 mtime + commits-ahead so the builder itself stays free of that
@@ -107,6 +115,7 @@ class BoardSnapshotBuilder:
         self._case_file_reader = case_file_reader
         self._shipped_fix_reader = shipped_fix_reader
         self._e2e_health_reader = e2e_health_reader
+        self._tech_lead_write_health_reader = tech_lead_write_health_reader
         self._session_activity_reader = session_activity_reader
         self._clock = clock
 
@@ -220,6 +229,7 @@ class BoardSnapshotBuilder:
                 ]
             ],
             e2e_health=self._read_e2e_health(now),
+            tech_lead_write_health=self._read_tech_lead_write_health(now),
         )
 
     def _read_e2e_health(self, now: datetime) -> BoardE2EHealth | None:
@@ -234,6 +244,23 @@ class BoardSnapshotBuilder:
             return self._e2e_health_reader(now)
         except Exception as exc:
             logger.warning("[board] e2e health reader failed (non-fatal): %s", exc)
+            return None
+
+    def _read_tech_lead_write_health(
+        self, now: datetime
+    ) -> BoardTechLeadWriteHealth | None:
+        """Best-effort tech-lead write health; never breaks the snapshot.
+
+        Same contract as ``_read_e2e_health``. A signal about a subsystem being
+        silent must not be able to take the snapshot down with it -- that would
+        turn "the tech lead stopped writing" into "no tech lead can launch".
+        """
+        try:
+            return self._tech_lead_write_health_reader(now)
+        except Exception as exc:
+            logger.warning(
+                "[board] tech-lead write health reader failed (non-fatal): %s", exc
+            )
             return None
 
     def _session_info(self, session: Session, now: datetime) -> BoardSessionInfo:

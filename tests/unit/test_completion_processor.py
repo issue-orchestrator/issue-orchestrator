@@ -2841,6 +2841,124 @@ class TestTechLeadCompletionEffects:
         self._plant_valid_pair(run_assets.run_dir)
         return run_assets
 
+    @staticmethod
+    def _escalation_record(
+        outcome: CompletionOutcome,
+        label_action: RequestedAction,
+        comment_body: str,
+        **fields: str,
+    ) -> CompletionRecord:
+        return make_record(
+            outcome=outcome,
+            requested_actions=[label_action, RequestedAction.POST_COMMENT],
+            summary="Escalating",
+            comment_body=comment_body,
+            **fields,
+        )
+
+    def test_needs_human_question_reaches_github(
+        self,
+        tmp_path,
+        mock_label_adapter,
+        mock_pr_adapter,
+        mock_git_adapter,
+        event_bus,
+        worktree_with_completion,
+    ):
+        """The escalation's question is posted, not just its label (#7080).
+
+        Shaping used to strip POST_COMMENT from EVERY tech-lead completion, so a
+        needs_human run applied ``needs-human`` and silently discarded the
+        question it exists to ask -- four label writes and zero comment writes
+        across the measured #7255 window. This is the end-to-end assertion that
+        a completed tech-lead run's decision reaches GitHub.
+        """
+        processor = self._make_processor(
+            tmp_path, mock_label_adapter, mock_pr_adapter, mock_git_adapter, event_bus
+        )
+        question = (
+            "## Needs Human Input\n\n**Question:** Two reset_retry proposals have"
+            " been open since 2026-08-07. Approve or decline?"
+        )
+        record = self._escalation_record(
+            CompletionOutcome.NEEDS_HUMAN,
+            RequestedAction.ADD_NEEDS_HUMAN_LABEL,
+            question,
+            question="Approve or decline the open reset_retry proposals?",
+        )
+        worktree = worktree_with_completion(record)
+
+        self._process(processor, worktree, agent_label="agent:tech-lead")
+
+        posted = [
+            call_args.args[1]
+            for call_args in mock_pr_adapter.add_comment.call_args_list
+        ]
+        assert question in posted, (
+            "the escalation's question never reached GitHub; the label alone"
+            " leaves nobody able to answer it"
+        )
+
+    def test_blocked_reason_reaches_github(
+        self,
+        tmp_path,
+        mock_label_adapter,
+        mock_pr_adapter,
+        mock_git_adapter,
+        event_bus,
+        worktree_with_completion,
+    ):
+        processor = self._make_processor(
+            tmp_path, mock_label_adapter, mock_pr_adapter, mock_git_adapter, event_bus
+        )
+        reason = "## Blocked\n\n**Reason:** shared pattern authority unreachable"
+        record = self._escalation_record(
+            CompletionOutcome.BLOCKED,
+            RequestedAction.ADD_BLOCKED_LABEL,
+            reason,
+            blocked_reason="shared pattern authority unreachable",
+            attempted="retried the registry ref read three times",
+        )
+        worktree = worktree_with_completion(record)
+
+        self._process(processor, worktree, agent_label="agent:tech-lead")
+
+        posted = [
+            call_args.args[1]
+            for call_args in mock_pr_adapter.add_comment.call_args_list
+        ]
+        assert reason in posted
+
+    def test_a_non_tech_lead_escalation_is_unaffected(
+        self,
+        tmp_path,
+        mock_label_adapter,
+        mock_pr_adapter,
+        mock_git_adapter,
+        event_bus,
+        worktree_with_completion,
+    ):
+        """Shaping is tech-lead-only; an ordinary agent's escalation is untouched."""
+        processor = self._make_processor(
+            tmp_path, mock_label_adapter, mock_pr_adapter, mock_git_adapter, event_bus
+        )
+        question = "## Needs Human Input\n\n**Question:** which base branch?"
+        record = self._escalation_record(
+            CompletionOutcome.NEEDS_HUMAN,
+            RequestedAction.ADD_NEEDS_HUMAN_LABEL,
+            question,
+            question="which base branch?",
+        )
+        worktree = worktree_with_completion(record)
+
+        self._process(processor, worktree, agent_label="agent:coder")
+
+        posted = [
+            call_args.args[1]
+            for call_args in mock_pr_adapter.add_comment.call_args_list
+        ]
+        assert question in posted
+
     def test_clean_tech_lead_audit_completes_without_publish_failure(
         self,
         tmp_path,

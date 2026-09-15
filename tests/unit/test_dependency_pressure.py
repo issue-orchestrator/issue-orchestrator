@@ -119,6 +119,7 @@ def test_outside_scope_summary_reaches_health_board_and_clears_when_root_enters_
     builder = BoardSnapshotBuilder(timeline_reader=lambda number, limit: (),
         log_tail_provider=lambda count: [], case_file_reader=lambda: (),
         shipped_fix_reader=lambda limit: (), e2e_health_reader=lambda now: None,
+        tech_lead_write_health_reader=lambda now: None,
         session_activity_reader=lambda session: None,
         clock=lambda: datetime(2026, 9, 6, tzinfo=timezone.utc))
     state = OrchestratorState()
