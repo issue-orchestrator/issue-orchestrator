@@ -745,18 +745,17 @@ class Planner:
     def _provider_blocking_launch(
         self, snapshot: OrchestratorSnapshot, agent_label: str | None
     ) -> str | None:
-        """The provider this queue item must not launch against, if any.
+        """The quota lane this queue item must not launch against, if any.
 
         A pure read of the tick's sampled fact: the probe ran, and the circuit
         was consulted and updated, before planning began (#6999 A3). Every
         queue asks it the same way, so eligibility cannot drift between them.
         """
-        policy = self.provider_policy
-        if policy is None:
-            return None
-        provider = policy.provider_for_agent_label(agent_label)
-        if provider and snapshot.provider_launch.blocks(provider):
-            return provider
+        # Both lane identity and circuit state come from the same pre-planning
+        # sample. Planning never calls the readiness probe.
+        lane = snapshot.provider_launch.lane_for_agent_label(agent_label)
+        if self.provider_policy is not None and snapshot.provider_launch.blocks(lane):
+            return lane
         return None
 
     def _record_provider_skip(

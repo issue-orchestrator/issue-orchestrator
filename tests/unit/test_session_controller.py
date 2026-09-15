@@ -41,9 +41,11 @@ from issue_orchestrator.infra.provider_resilience import (
     write_provider_status,
 )
 from issue_orchestrator.observation.observation import (
+    ProviderQuotaObservation,
     SessionObservation,
     SessionObservationResult,
 )
+from issue_orchestrator.domain.provider_lane import BillingMode, ProviderLane
 from issue_orchestrator.domain.models import (
     SessionStatus,
     CompletionRecord,
@@ -566,6 +568,44 @@ class TestSessionControllerTerminated:
         assert decision.provider_quota_failure.observed_at == datetime.fromisoformat(
             attempted_at
         )
+
+    def test_live_quota_observation_preserves_lane_and_billing(
+        self, tmp_path: Path
+    ) -> None:
+        processor = MockCompletionProcessor()
+        processor.completion_record = None
+        controller = SessionController(
+            completion_processor=processor,
+            events=NullEventSink(),
+            session_output=FileSystemSessionOutput(),
+            working_copy=StubWorkingCopy(),
+        )
+        worktree = tmp_path / "worktree"
+        run_assets = make_session_run_assets(
+            worktree, "issue-123", controller.session_output
+        )
+        observed_at = datetime.fromisoformat("2026-08-26T00:20:00+00:00")
+        lane = ProviderLane("deepseek", billing=BillingMode.METERED)
+
+        decision = controller.decide_outcome(
+            SessionObservationResult.provider_quota_exhausted(
+                ProviderQuotaObservation(
+                    lane=lane,
+                    error_summary="Provider quota exhausted",
+                    observed_at=observed_at,
+                )
+            ),
+            worktree,
+            123,
+            "Test Issue",
+            "issue-123",
+            session_run_assets=run_assets,
+        )
+
+        assert decision.status is SessionStatus.BLOCKED
+        assert decision.provider_quota_failure is not None
+        assert decision.provider_quota_failure.lane == lane
+        assert decision.provider_quota_failure.observed_at == observed_at
 
     def test_terminated_without_completion_record_is_failed(self, tmp_path: Path):
         """Session that exits without completion.json = FAILED."""

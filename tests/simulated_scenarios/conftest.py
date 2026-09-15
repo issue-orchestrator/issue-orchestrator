@@ -131,6 +131,7 @@ class ScriptSessionRunner:
         working_dir: str,
         title: str | None,
         session_name: str,
+        secret_env: dict[str, str] | None = None,
     ) -> bool:
         python_bin_dir = str(Path(sys.executable).parent)
 
@@ -219,6 +220,7 @@ class FastScriptSessionRunner:
         working_dir: str,
         title: str | None,
         session_name: str,
+        secret_env: dict[str, str] | None = None,
     ) -> bool:
         python_bin_dir = str(Path(sys.executable).parent)
 

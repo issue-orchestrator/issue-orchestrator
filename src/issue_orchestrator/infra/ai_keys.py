@@ -34,6 +34,21 @@ _BUILTIN_AI_PROVIDERS: dict[str, ProviderKeyInfo] = {
         "url": "https://platform.openai.com/api-keys",
         "provider_aliases": ("openai", "oai"),
     },
+    "DEEPSEEK_API_KEY": {
+        "name": "DeepSeek",
+        "setup_cmd": None,
+        # DeepSeek is pay-as-you-go against a topped-up balance, with no
+        # subscription tier. The balance is therefore also the spend cap: fund
+        # it to the amount you are willing to lose, because issue-orchestrator
+        # does not meter spend and an unattended overnight run will not stop
+        # itself until the balance does.
+        "setup_help": (
+            "Get your key at: https://platform.deepseek.com/api_keys "
+            "(pay-as-you-go — your topped-up balance is your spend cap)"
+        ),
+        "url": "https://platform.deepseek.com/api_keys",
+        "provider_aliases": ("deepseek",),
+    },
     "GOOGLE_API_KEY": {
         "name": "Gemini (Google)",
         "setup_cmd": None,

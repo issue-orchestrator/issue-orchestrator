@@ -20,6 +20,7 @@ import pytest
 
 from issue_orchestrator.control.in_flight_work import SettlementOutcome
 from issue_orchestrator.control.provider_resilience import ProviderResilienceManager
+from issue_orchestrator.domain.provider_lane import BillingMode, ProviderLane
 from issue_orchestrator.execution.agent_runner_errors import (
     classify_provider_error,
     classify_provider_output,
@@ -66,9 +67,9 @@ CODEX_REFRESH_FAILURES = (
     "signed in to another account. Please log out and sign in again.",
 )
 
-# Claude subscription windows. These *do* reopen on a clock, so they are rate
-# limits — but neither phrase contained a rate-limit token either, so both
-# also classified as ``None``.
+# Claude subscription windows. They reopen on a clock, but they still report
+# that a distinct capacity meter is empty. Billing on ProviderLane is what
+# gives these quota facts a deadline instead of requiring a balance refill.
 CLAUDE_WINDOW_LIMITS = (
     "You've hit your session limit",
     "You've hit your weekly limit",
@@ -93,11 +94,9 @@ class TestQuotaClassification:
         assert classify_provider_output(output) is ProviderErrorType.AUTH
 
     @pytest.mark.parametrize("output", CLAUDE_WINDOW_LIMITS)
-    def test_subscription_windows_are_rate_limits_not_quota(
-        self, output: str
-    ) -> None:
-        """A window that reopens on a clock is not an exhausted balance."""
-        assert classify_provider_output(output) is ProviderErrorType.RATE_LIMIT
+    def test_subscription_windows_are_prepaid_quota(self, output: str) -> None:
+        """Distinctive meter exhaustion reaches the billing-aware circuit."""
+        assert classify_provider_output(output) is ProviderErrorType.QUOTA
 
     def test_ordinary_rate_limits_are_unchanged(self) -> None:
         """The quota table is additive: it must not capture existing verdicts."""
@@ -124,6 +123,8 @@ AGENT_PROSE_ABOUT_QUOTA = (
     # "usage limit" would otherwise have matched.
     "Usage limit: 1,000",
     "Usage limits span all sessions and reset daily.",
+    "The weekly limit should open only the Fable lane.",
+    "A session limit is prepaid capacity, not ordinary backoff.",
 )
 
 
@@ -271,7 +272,8 @@ class TestQuotaCircuit:
         manager = _manager(events)
 
         state = manager.record_quota_failure(
-            "codex", error_summary="usage_limit_exceeded"
+            ProviderLane("codex", billing=BillingMode.PREPAID),
+            error_summary="usage_limit_exceeded",
         )
 
         assert state is not None
@@ -282,7 +284,10 @@ class TestQuotaCircuit:
 
     def test_the_aggregate_circuit_is_open(self) -> None:
         manager = _manager(RecordingEvents())
-        manager.record_quota_failure("codex", error_summary="out of credits")
+        manager.record_quota_failure(
+            ProviderLane("codex", billing=BillingMode.PREPAID),
+            error_summary="out of credits",
+        )
 
         statuses = {s.provider: s for s in manager.snapshot()}
         assert statuses["codex"].is_open
@@ -294,7 +299,7 @@ class TestQuotaCircuit:
         quota_at = datetime(2026, 8, 26, 0, 10, tzinfo=timezone.utc)
         success_at = quota_at + timedelta(seconds=1)
         manager.record_quota_failure(
-            "codex",
+            ProviderLane("codex", billing=BillingMode.PREPAID),
             error_summary="out of credits",
             now=quota_at,
         )
@@ -315,7 +320,7 @@ class TestQuotaCircuit:
         manager = _manager(events)
         quota_at = datetime(2026, 8, 26, 0, 10, tzinfo=timezone.utc)
         manager.record_quota_failure(
-            "codex",
+            ProviderLane("codex", billing=BillingMode.PREPAID),
             error_summary="out of credits",
             now=quota_at,
         )
@@ -350,7 +355,7 @@ class TestQuotaCircuit:
         quota_at = older_success_at + timedelta(seconds=1)
         applied_at = quota_at + timedelta(minutes=2)
         manager.record_quota_failure(
-            "codex",
+            ProviderLane("codex", billing=BillingMode.PREPAID),
             error_summary="out of credits",
             now=quota_at,
         )
@@ -376,7 +381,7 @@ class TestQuotaCircuit:
         newer_success_at = quota_at + timedelta(seconds=1)
         applied_at = newer_success_at + timedelta(minutes=2)
         manager.record_quota_failure(
-            "codex",
+            ProviderLane("codex", billing=BillingMode.PREPAID),
             error_summary="out of credits",
             now=quota_at,
         )
@@ -398,7 +403,10 @@ class TestQuotaCircuit:
         allowed to release an exhausted account.
         """
         manager = _manager(RecordingEvents())
-        manager.record_quota_failure("codex", error_summary="out of credits")
+        manager.record_quota_failure(
+            ProviderLane("codex", billing=BillingMode.PREPAID),
+            error_summary="out of credits",
+        )
         manager.record_auth_failure("codex", error_summary="not logged in", sample_id="s1")
 
         manager.clear_auth_failures("codex")
@@ -411,7 +419,10 @@ class TestQuotaCircuit:
 
     def test_a_transient_outage_does_not_disturb_the_quota_dimension(self) -> None:
         manager = _manager(RecordingEvents())
-        manager.record_quota_failure("codex", error_summary="out of credits")
+        manager.record_quota_failure(
+            ProviderLane("codex", billing=BillingMode.PREPAID),
+            error_summary="out of credits",
+        )
 
         manager.record_transient_failure("codex", error_summary="503")
 
@@ -427,7 +438,10 @@ class TestQuotaCircuit:
         count from a budget cycle that has already been paid for.
         """
         manager = _manager(RecordingEvents(), auth_cooldown=1)
-        manager.record_quota_failure("codex", error_summary="out of credits")
+        manager.record_quota_failure(
+            ProviderLane("codex", billing=BillingMode.PREPAID),
+            error_summary="out of credits",
+        )
 
         closed = manager.close_expired(now=datetime.now(timezone.utc) + timedelta(hours=2))
 

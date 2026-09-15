@@ -19,6 +19,7 @@ from typing import Iterable
 from typing import TYPE_CHECKING
 
 from ..ports.issue import Issue
+from ..domain.provider_lane import ProviderLane
 from ..ports.provider_readiness import (
     NO_PROVIDER_READINESS_PROBE,
     ProviderReadiness,
@@ -35,6 +36,7 @@ from .provider_resilience import ProviderResilienceManager
 from .reconciliation import build_expected_for_mutation
 
 if TYPE_CHECKING:
+    from ..domain.models import AgentConfig
     from .label_manager import LabelManager
     from .planner_types import OrchestratorSnapshot, PlanContext, SkippedItem
 
@@ -58,6 +60,16 @@ class ProviderLaunchOutcome:
     provider: str
     readiness: ProviderReadiness
     circuit_open: bool
+    #: The independently-metered lane this launch would draw from, as the
+    #: circuit keys it. Equal to ``provider`` unless the agent's model bills
+    #: against a separate meter (Fable, Codex-Spark), so every pre-lane
+    #: configuration keeps its exact circuit row.
+    lane: str = ""
+
+    @property
+    def lane_key(self) -> str:
+        """The circuit key for this launch, falling back to the provider."""
+        return self.lane or self.provider
 
     @property
     def may_launch(self) -> bool:
@@ -82,6 +94,7 @@ class ProviderLaunchOutcome:
             provider="",
             readiness=ProviderReadiness.unknown("", "no provider configured"),
             circuit_open=False,
+            lane="",
         )
 
 
@@ -110,34 +123,67 @@ class ProviderAvailabilityPolicy:
     def provider_for_issue(self, issue: Issue) -> str | None:
         return self.provider_for_agent_label(issue.agent_type)
 
-    def providers_for_snapshot(self, snapshot: OrchestratorSnapshot) -> dict[int, set[str]]:
-        providers_by_issue: dict[int, set[str]] = {}
+    def model_for_agent_label(self, agent_label: str | None) -> str | None:
+        if not agent_label:
+            return None
+        agent_config = self.config.agents.get(agent_label)
+        return agent_config.model if agent_config else None
+
+    def lane_key_for_agent_label(self, agent_label: str | None) -> str | None:
+        """The circuit key for an agent, which is its lane and not its provider.
+
+        Returns ``None`` for an agent that names no provider, matching
+        :meth:`provider_for_agent_label`, so callers gate on the same emptiness
+        check they already had.
+        """
+        provider = self.provider_for_agent_label(agent_label)
+        if not provider:
+            return None
+        return self.readiness_probe.lane_for(
+            provider, self.model_for_agent_label(agent_label)
+        ).key
+
+    def lane_key_for_issue(self, issue: Issue) -> str | None:
+        return self.lane_key_for_agent_label(issue.agent_type)
+
+    def lanes_for_snapshot(self, snapshot: OrchestratorSnapshot) -> dict[int, set[str]]:
+        """Map each issue to the quota lanes its work would draw from.
+
+        Lane identity comes only from the snapshot's pre-planning sample. That
+        keeps this planner-owned path free of credential subprocesses and makes
+        the observe-before-plan ordering explicit in the input contract. Lanes
+        rather than providers are used because that is what the circuit records
+        and what :meth:`assess` reads.
+        """
+        lanes_by_issue: dict[int, set[str]] = {}
 
         for issue in snapshot.issues:
-            provider = self.provider_for_issue(issue)
-            if provider:
-                providers_by_issue.setdefault(issue.number, set()).add(provider)
+            lane = snapshot.provider_launch.lane_for_agent_label(issue.agent_type)
+            if lane:
+                lanes_by_issue.setdefault(issue.number, set()).add(lane)
 
         for review in snapshot.pending_reviews:
             reviewer_label = self.config.get_reviewer_for_agent(review.agent_label) if review.agent_label else self.config.code_review_agent
-            provider = self.provider_for_agent_label(reviewer_label)
-            if provider:
-                providers_by_issue.setdefault(review.issue_number, set()).add(provider)
+            lane = snapshot.provider_launch.lane_for_agent_label(reviewer_label)
+            if lane:
+                lanes_by_issue.setdefault(review.issue_number, set()).add(lane)
 
         for rework in snapshot.pending_reworks:
             issue_num = rework.resolve_issue_number()
             if issue_num is None:
                 continue
-            provider = self.provider_for_agent_label(rework.agent_type)
-            if provider:
-                providers_by_issue.setdefault(issue_num, set()).add(provider)
+            lane = snapshot.provider_launch.lane_for_agent_label(rework.agent_type)
+            if lane:
+                lanes_by_issue.setdefault(issue_num, set()).add(lane)
 
-        tech_lead_provider = self.provider_for_agent_label(self.config.tech_lead_review_agent)
-        if self.config.tech_lead_enabled and tech_lead_provider:
+        tech_lead_lane = snapshot.provider_launch.lane_for_agent_label(
+            self.config.tech_lead_review_agent
+        )
+        if self.config.tech_lead_enabled and tech_lead_lane:
             for tech_lead in snapshot.pending_tech_lead:
-                providers_by_issue.setdefault(tech_lead.issue_number, set()).add(tech_lead_provider)
+                lanes_by_issue.setdefault(tech_lead.issue_number, set()).add(tech_lead_lane)
 
-        return providers_by_issue
+        return lanes_by_issue
 
     def circuit_is_open(self, provider: str | None) -> bool:
         """Raw circuit read — "does the resilience owner still hold this?".
@@ -158,6 +204,28 @@ class ProviderAvailabilityPolicy:
             return False
         return self.provider_resilience.is_open(provider)
 
+    def circuit_is_open_for_issue(self, issue: Issue) -> bool:
+        """Whether any billing-compatible lane still owns ``issue``.
+
+        This ownership read deliberately does not choose one billing mode. A
+        launch can default unknown billing to metered, but a recovery sweep
+        must not release an issue merely because the credential probe is now
+        unavailable. The readiness boundary supplies the provider's static
+        meter map without spawning a subprocess, and any matching open lane
+        conservatively retains ownership.
+        """
+        if not issue.agent_type:
+            return False
+        agent = self.config.agents.get(issue.agent_type)
+        if agent is None or not agent.provider:
+            return False
+        return any(
+            self.circuit_is_open(lane.key)
+            for lane in self.readiness_probe.candidate_lanes(
+                agent.provider, agent.model
+            )
+        )
+
     # ------------------------------------------------------------------
     # Bounded provider launch assessment (#6999 A1)
     #
@@ -171,9 +239,12 @@ class ProviderAvailabilityPolicy:
     # ------------------------------------------------------------------
 
     def assess_launch(
-        self, provider: str | None, *, now: datetime | None = None
+        self,
+        agent: "AgentConfig",
+        *,
+        now: datetime | None = None,
     ) -> ProviderLaunchOutcome:
-        """Take one readiness sample, feed the circuit, and read the result.
+        """Assess one configured agent, feed the circuit, and read the result.
 
         Order matters and is the whole fix: the probe runs *before* the circuit
         is consulted. While an auth circuit is open no session runs, so a gate
@@ -182,30 +253,46 @@ class ProviderAvailabilityPolicy:
         sample is recorded, so this one outcome reflects the sample it was
         derived from.
 
-        Both directions are reported to
+        Provider and model arrive on the same ``AgentConfig`` used to build the
+        eventual command, so callers cannot accidentally gate one provider
+        against a model copied from another agent. Both directions are reported to
         :class:`~.provider_resilience.ProviderResilienceManager` here rather
         than at the call sites, so the circuit is the only thing that decides
         how many failures are tolerated, how long launches stay paused, and when
         an outage is over. Control receives only the typed outcome — never a
         banner or exit code.
         """
+        provider = agent.provider
         if not provider:
             return ProviderLaunchOutcome.no_provider()
         readiness = self.readiness_probe.check_launch_readiness(provider)
+        # The lane is resolved from the same cached sample the readiness came
+        # from, so the key this records under and the key it then reads are
+        # necessarily the same one. Recording a Spark failure against `codex`
+        # while the gate consults `codex:spark` would leave the lane permanently
+        # unprotected — worse than the conflation lanes exist to fix.
+        lane = self.lane_for_agent(agent).key
         if readiness.human_fixable:
             self.provider_resilience.record_auth_failure(
-                provider,
+                lane,
                 error_summary=readiness.detail or "provider is not authenticated",
                 sample_id=readiness.sample_id,
                 now=now,
             )
         elif readiness.authenticated:
-            self.provider_resilience.clear_auth_failures(provider, now=now)
+            self.provider_resilience.clear_auth_failures(lane, now=now)
         return ProviderLaunchOutcome(
             provider=provider,
             readiness=readiness,
-            circuit_open=self.provider_resilience.is_open(provider, now),
+            circuit_open=self.provider_resilience.is_open(lane, now),
+            lane=lane,
         )
+
+    def lane_for_agent(self, agent: "AgentConfig") -> ProviderLane:
+        """Resolve the lane and billing observed for this configured launch."""
+        if not agent.provider:
+            raise ValueError("cannot resolve a provider lane for an agent without a provider")
+        return self.readiness_probe.lane_for(agent.provider, agent.model)
 
     def should_add_blocked_label(self, issue_labels: Iterable[str], planned_labels: set[str]) -> bool:
         label = self.blocked_label()
@@ -352,12 +439,12 @@ class ProviderAvailabilityPolicy:
         actions: list[Action] = []
         label = self.blocked_label()
         assessed_at = now or _now()
-        providers_by_issue = self.providers_for_snapshot(snapshot)
+        lanes_by_issue = self.lanes_for_snapshot(snapshot)
         for issue in snapshot.issues:
-            providers = providers_by_issue.get(issue.number, set())
-            if not providers:
+            lanes = lanes_by_issue.get(issue.number, set())
+            if not lanes:
                 continue
-            assessment = self.assess(providers, now=assessed_at)
+            assessment = self.assess(lanes, now=assessed_at)
             issue_labels = plan_context.issue_labels(issue.number)
             planned_labels = plan_context.planned_adds(issue.number)
             issue_key = issue.key.stable_id()

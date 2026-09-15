@@ -17,6 +17,7 @@ from ..control.provider_availability import ProviderAvailabilityPolicy
 from ..control.provider_launch_readiness import ProviderLaunchReadinessSampler
 from ..control.provider_resilience import ProviderResilienceManager
 from ..execution import SQLiteProviderCircuitStore
+from ..execution.provider_credentials_adapter import KeyringProviderCredentials
 from ..execution.provider_readiness_probe import CLIProviderReadinessProbe
 from ..infra.config import Config
 from ..ports import EventSink
@@ -66,6 +67,15 @@ def build_provider_readiness_probe(
     return CLIProviderReadinessProbe(command_runner)
 
 
+def build_provider_credentials() -> KeyringProviderCredentials:
+    """Resolve the secrets each provider declares it needs, from the keyring.
+
+    Only the names a provider *asks for* are read, so a Codex session never
+    receives the operator's DeepSeek key merely because it is stored.
+    """
+    return KeyringProviderCredentials()
+
+
 def build_provider_launch_sampler(
     config: Config,
     provider_resilience: ProviderResilienceManager | None,
@@ -94,6 +104,7 @@ def build_provider_launch_sampler(
 __all__ = [
     "build_provider_circuit_store",
     "build_provider_launch_sampler",
+    "build_provider_credentials",
     "build_provider_readiness_probe",
     "build_provider_resilience",
 ]

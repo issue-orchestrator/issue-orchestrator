@@ -47,7 +47,12 @@ from issue_orchestrator.control.session_controller import SessionController
 from issue_orchestrator.control.tech_lead_reaction import (
     record_completed_session_problem,
 )
-from issue_orchestrator.domain.models import DiscoveredFailure, Issue, SessionStatus
+from issue_orchestrator.domain.models import (
+    AgentConfig,
+    DiscoveredFailure,
+    Issue,
+    SessionStatus,
+)
 from issue_orchestrator.domain.pending_work import PendingWorkKind
 from issue_orchestrator.ports.pending_work_claim_store import (
     ClaimState,
@@ -74,6 +79,7 @@ from issue_orchestrator.observation.observation import (
 )
 from issue_orchestrator.ports import InMemoryProviderCircuitStore
 from issue_orchestrator.ports.command_runner import CommandResult, OutputNewlines
+from issue_orchestrator.domain.provider_lane import BillingMode, ProviderLane
 from issue_orchestrator.ports.provider_readiness import (
     NO_PROVIDER_READINESS_PROBE,
     ProviderReadiness,
@@ -208,6 +214,7 @@ class StubReadinessProbe:
     readiness: ProviderReadiness
     launch_calls: list[str] = field(default_factory=list)
     diagnose_calls: list[str] = field(default_factory=list)
+    classified_error: ProviderErrorType | None = None
 
     def check_launch_readiness(self, provider: str) -> ProviderReadiness:
         self.launch_calls.append(provider)
@@ -216,6 +223,27 @@ class StubReadinessProbe:
     def diagnose_session_output(self, provider: str, output: str) -> ProviderReadiness:
         self.diagnose_calls.append(provider)
         return self.readiness
+
+    def classify_session_output(
+        self, provider: str, output: str
+    ) -> ProviderErrorType | None:
+        del provider, output
+        if self.classified_error is not None:
+            return self.classified_error
+        return ProviderErrorType.AUTH if self.readiness.human_fixable else None
+
+    def lane_for(self, provider: str, model: str | None = None) -> ProviderLane:
+        """Report the provider's single lane; these stubs declare no sub-meters."""
+        del model
+        return ProviderLane(
+            provider=provider,
+            billing=self.readiness.entitlement.effective_billing,
+        )
+
+    def candidate_lanes(
+        self, provider: str, model: str | None = None
+    ) -> tuple[ProviderLane, ...]:
+        return (self.lane_for(provider, model),)
 
 
 class RecordingEvents:
@@ -365,7 +393,7 @@ class TestClaudeExpiredLoginPreflight:
             config=_config(), provider_resilience=manager, readiness_probe=probe
         )
 
-        outcome = policy.assess_launch("claude-code")
+        outcome = policy.assess_launch(_agent())
 
         assert not outcome.may_launch
         assert outcome.blocked_by_readiness
@@ -384,7 +412,7 @@ class TestClaudeExpiredLoginPreflight:
             readiness_probe=StubReadinessProbe(ProviderReadiness.ready("claude-code")),
         )
 
-        assert policy.assess_launch("claude-code").may_launch
+        assert policy.assess_launch(_agent()).may_launch
         assert not manager.is_open("claude-code")
         assert events.names() == []
 
@@ -404,7 +432,7 @@ class TestClaudeExpiredLoginPreflight:
                 ProviderReadiness.auth_expired("claude-code", "not logged in")
             ),
         )
-        outage.assess_launch("claude-code")
+        outage.assess_launch(_agent())
         assert manager.is_open("claude-code")
 
         recovered = ProviderAvailabilityPolicy(
@@ -412,7 +440,7 @@ class TestClaudeExpiredLoginPreflight:
             provider_resilience=manager,
             readiness_probe=StubReadinessProbe(ProviderReadiness.ready("claude-code")),
         )
-        assert recovered.assess_launch("claude-code").may_launch
+        assert recovered.assess_launch(_agent()).may_launch
 
         assert not manager.is_open("claude-code")
 
@@ -436,11 +464,11 @@ class TestClaudeExpiredLoginPreflight:
 
         parked = gate_for(
             ProviderReadiness.auth_expired("claude-code", "not logged in")
-        ).check("claude-code", 123)
+        ).check(_agent(), 123)
         assert parked is not None and not parked.success
 
         proceeded = gate_for(ProviderReadiness.ready("claude-code")).check(
-            "claude-code", 123
+            _agent(), 123
         )
         assert proceeded is None
 
@@ -484,7 +512,7 @@ class TestClaudeExpiredLoginPreflight:
             config=_config(), provider_resilience=_manager(RecordingEvents())
         )
 
-        outcome = policy.assess_launch("claude-code")
+        outcome = policy.assess_launch(_agent())
 
         assert outcome.readiness.state is ProviderReadinessState.UNKNOWN
         assert not outcome.readiness.authenticated
@@ -495,6 +523,17 @@ def _config():
     from issue_orchestrator.infra.config import Config
 
     return Config(repo="test/repo", repo_root=Path("/tmp/does-not-matter"))
+
+
+def _agent(
+    provider: str = "claude-code", model: str = "sonnet"
+) -> AgentConfig:
+    """One configured launch target; provider/model cannot drift at the gate."""
+    return AgentConfig(
+        prompt_path=Path("/tmp/does-not-matter.md"),
+        provider=provider,
+        model=model,
+    )
 
 
 class _LauncherHarness:
@@ -576,7 +615,11 @@ class _LauncherHarness:
             # Injected rather than patched so a test can observe what the world
             # looked like at the exact moment the terminal was spawned.
             create_session_fn=create_session
-            or (lambda name, cmd, wd, title: self.created.append(name) or True),
+            or (
+                lambda name, cmd, wd, title, secret_env=None: (
+                    self.created.append(name) or True
+                )
+            ),
             get_issue_machine=lambda issue: IssueStateMachine(issue),
             get_session_machine=lambda name, n, timeout: SessionStateMachine(
                 name, n, timeout_minutes=timeout
@@ -1265,7 +1308,9 @@ class TestLiveSessionObservation:
             provider_readiness_probe=probe,
         )
 
-    def _session_with_log(self, make_session, text: str):
+    def _session_with_log(
+        self, make_session, text: str, *, provider: str = "claude-code"
+    ):
         """A live session whose terminal recording already holds ``text``."""
         from issue_orchestrator.infra.config import AgentConfig
         from issue_orchestrator.infra.terminal_recording import (
@@ -1274,7 +1319,7 @@ class TestLiveSessionObservation:
 
         session = make_session()
         session.agent_config = AgentConfig(
-            prompt_path=session.agent_config.prompt_path, provider="claude-code"
+            prompt_path=session.agent_config.prompt_path, provider=provider
         )
         recording = session.run_assets.run_dir / TERMINAL_RECORDING_FILENAME
         recording.parent.mkdir(parents=True, exist_ok=True)
@@ -1311,6 +1356,28 @@ class TestLiveSessionObservation:
         result = observer.observe_session(session)
 
         assert result.observation is SessionObservation.RUNNING
+
+    def test_quota_banner_reports_the_metered_lane_immediately(
+        self, sample_config, make_session
+    ) -> None:
+        probe = StubReadinessProbe(
+            ProviderReadiness.ready("deepseek"),
+            classified_error=ProviderErrorType.QUOTA,
+        )
+        observer = self._observer(sample_config, probe)
+        session = self._session_with_log(
+            make_session,
+            "Your workspace is out of credits.",
+            provider="deepseek",
+        )
+
+        result = observer.observe_session(session)
+
+        assert result.observation is SessionObservation.PROVIDER_QUOTA_EXHAUSTED
+        assert result.provider_quota is not None
+        assert result.provider_quota.lane == ProviderLane(
+            "deepseek", billing=BillingMode.METERED
+        )
 
     def test_default_observer_never_reports_an_auth_failure(
         self, sample_config, make_session
@@ -1416,6 +1483,22 @@ class _RecordingProbe:
     def diagnose_session_output(self, provider: str, output: str) -> ProviderReadiness:
         del output
         return self._sample()
+
+    def classify_session_output(
+        self, provider: str, output: str
+    ) -> ProviderErrorType | None:
+        del provider
+        return classify_provider_output(output)
+
+    def lane_for(self, provider: str, model: str | None = None) -> ProviderLane:
+        """Report the provider's single lane; these stubs declare no sub-meters."""
+        del model
+        return ProviderLane(provider=provider, billing=BillingMode.METERED)
+
+    def candidate_lanes(
+        self, provider: str, model: str | None = None
+    ) -> tuple[ProviderLane, ...]:
+        return (self.lane_for(provider, model),)
 
 
 def _recovery_config(tmp_path: Path):
@@ -1670,6 +1753,10 @@ def test_planning_never_probes_or_writes_the_circuit(tmp_path: Path) -> None:
     provider sitting behind that probe.
     """
     from issue_orchestrator.control.planner import Planner
+    from issue_orchestrator.control.provider_availability import ProviderLaunchOutcome
+    from issue_orchestrator.control.provider_launch_readiness import (
+        ProviderLaunchReadiness,
+    )
     from issue_orchestrator.control.scheduler import Scheduler
 
     config = _recovery_config(tmp_path)
@@ -1677,6 +1764,26 @@ def test_planning_never_probes_or_writes_the_circuit(tmp_path: Path) -> None:
     manager = _manager(events)
     probe = _RecordingProbe(ProviderReadiness.auth_expired(PROVIDER, "not logged in"))
     snapshot, workflows = _queue_snapshot("coding")
+    policy = ProviderAvailabilityPolicy(config, manager, readiness_probe=probe)
+    snapshot = replace(
+        snapshot,
+        provider_launch=ProviderLaunchReadiness(
+            outcomes={
+                PROVIDER: ProviderLaunchOutcome(
+                    provider=PROVIDER,
+                    readiness=ProviderReadiness.ready(PROVIDER),
+                    circuit_open=False,
+                    lane=PROVIDER,
+                )
+            },
+            lanes_by_agent_label={
+                agent_label: PROVIDER for agent_label in config.agents
+            },
+        ),
+    )
+    probe.launch_calls.clear()
+    circuit_before_plan = manager.snapshot()
+    events.published.clear()
     planner = Planner(
         config=config,
         scheduler=Scheduler(config),
@@ -1685,14 +1792,12 @@ def test_planning_never_probes_or_writes_the_circuit(tmp_path: Path) -> None:
     )
     # Hand planning a policy that CAN probe, so a regression that reintroduces
     # sampling inside the planner is observable rather than silently inert.
-    planner.provider_policy = ProviderAvailabilityPolicy(
-        config, manager, readiness_probe=probe
-    )
+    planner.provider_policy = policy
 
     plan = planner.plan(snapshot)
 
     assert probe.launch_calls == []
-    assert manager.snapshot() == []
+    assert manager.snapshot() == circuit_before_plan
     assert events.names() == []
     assert "issue" in _planned_launch_kinds(plan.actions)
 
@@ -1768,7 +1873,7 @@ class TestOneSampleCountsOnce:
         )
 
         for _ in range(5):
-            policy.assess_launch("claude-code")
+            policy.assess_launch(_agent())
 
         assert len(runner.commands) == 1  # one physical probe...
         state = manager.get_state("claude-code")
@@ -1788,8 +1893,8 @@ class TestOneSampleCountsOnce:
         )
 
         for _ in range(3):
-            policy.assess_launch("claude-code")
-            policy.assess_launch("claude-code")  # same sample, must not count
+            policy.assess_launch(_agent())
+            policy.assess_launch(_agent())  # same sample, must not count
             clock.advance(61.0)  # the cached sample expires => a NEW observation
 
         assert len(runner.commands) == 3
@@ -1829,14 +1934,14 @@ class TestOneSampleCountsOnce:
 
         # First process: one physical sample, deduplicated within itself.
         first = policy_over(store)
-        first.assess_launch("claude-code")
-        first.assess_launch("claude-code")
+        first.assess_launch(_agent())
+        first.assess_launch(_agent())
         assert store.get("claude-code").consecutive_auth_failures == 1
 
         # Second process, same database: a genuinely new sample.
         second = policy_over(SQLiteProviderCircuitStore(tmp_path / "circuit.sqlite"))
-        second.assess_launch("claude-code")
-        second.assess_launch("claude-code")
+        second.assess_launch(_agent())
+        second.assess_launch(_agent())
 
         state = store.get("claude-code")
         assert state is not None
@@ -1853,7 +1958,7 @@ class TestOneSampleCountsOnce:
         policy = ProviderAvailabilityPolicy(
             config=_config(), provider_resilience=manager, readiness_probe=probe
         )
-        policy.assess_launch("claude-code")
+        policy.assess_launch(_agent())
 
         diagnosis = probe.diagnose_session_output("claude-code", EXPIRED_LOGIN_BANNER)
         auth_failure = ProviderAuthOutcome.from_readiness(diagnosis)
@@ -2161,7 +2266,7 @@ class TestIndependentOutageCauses:
             readiness_probe=StubReadinessProbe(ProviderReadiness.ready("claude-code")),
         )
 
-        outcome = policy.assess_launch("claude-code")
+        outcome = policy.assess_launch(_agent())
 
         assert not outcome.blocked_by_readiness  # credentials are fine...
         assert outcome.circuit_open  # ...but the service outage still holds
@@ -2607,7 +2712,7 @@ class TestLiveAuthEventIsToldOnce:
             apply_actions=lambda actions, context: True,
         )
 
-        gate.check("claude-code", 123)
+        gate.check(_agent(), 123)
 
         names = events.names()
         assert names.count(EventName.SESSION_LAUNCH_BLOCKED_PROVIDER.value) == 1
@@ -3479,7 +3584,7 @@ def test_the_launch_gate_reports_a_provider_deferral(tmp_path: Path) -> None:
         apply_actions=lambda actions, context: True,
     )
 
-    result = gate.check("claude-code", 123)
+    result = gate.check(_agent(), 123)
 
     assert result is not None
     assert not result.success
@@ -4005,6 +4110,22 @@ class _BannerConfirmingProbe:
             return ProviderReadiness.unknown(provider, "no confirmed auth failure")
         return ProviderReadiness.auth_expired(provider, "not logged in")
 
+    def classify_session_output(
+        self, provider: str, output: str
+    ) -> ProviderErrorType | None:
+        del provider
+        return classify_provider_output(output)
+
+    def lane_for(self, provider: str, model: str | None = None) -> ProviderLane:
+        """Report the provider's single lane; these stubs declare no sub-meters."""
+        del model
+        return ProviderLane(provider=provider, billing=BillingMode.METERED)
+
+    def candidate_lanes(
+        self, provider: str, model: str | None = None
+    ) -> tuple[ProviderLane, ...]:
+        return (self.lane_for(provider, model),)
+
 
 class TestAnAuthBannerPastTheHeadOfTheLog:
     """A credential can expire long after the session started working.
@@ -4118,7 +4239,7 @@ class TestAnAuthBannerPastTheHeadOfTheLog:
         session, every tick. Two 8 KiB edges plus a separator is the ceiling.
         """
         from issue_orchestrator.observation.observer import (
-            PROVIDER_AUTH_CHECK_MAX_BYTES,
+            PROVIDER_FAILURE_CHECK_MAX_BYTES,
         )
 
         probe = _BannerConfirmingProbe()
@@ -4132,7 +4253,8 @@ class TestAnAuthBannerPastTheHeadOfTheLog:
 
         assert probe.seen
         assert (
-            len(probe.seen[0].encode("utf-8")) <= 2 * PROVIDER_AUTH_CHECK_MAX_BYTES + 1
+            len(probe.seen[0].encode("utf-8"))
+            <= 2 * PROVIDER_FAILURE_CHECK_MAX_BYTES + 1
         )
 
     def test_an_unconfirmed_late_banner_leaves_the_session_running(
@@ -6628,7 +6750,7 @@ def test_the_claim_is_already_durable_when_the_terminal_spawns(
     at_spawn: list[tuple[str, ...]] = []
     harness = _ready_harness(
         tmp_path,
-        create_session=lambda name, cmd, wd, title: (
+        create_session=lambda name, cmd, wd, title, secret_env=None: (
             at_spawn.append(
                 tuple(
                     u.claim.kind.value for u in harness.claims.list_unresolved_claims()
@@ -6682,7 +6804,8 @@ def test_a_launch_that_never_spawns_hands_the_work_back(queue, tmp_path: Path) -
     row would leave nothing durable behind at all.
     """
     harness = _ready_harness(
-        tmp_path, create_session=lambda name, cmd, wd, title: False
+        tmp_path,
+        create_session=lambda name, cmd, wd, title, secret_env=None: False,
     )
     state = _pending_state(queue)
 
@@ -6716,7 +6839,7 @@ def test_a_launch_that_never_spawns_hands_the_work_back(queue, tmp_path: Path) -
 
 
 def _failing_spawn_harness(tmp_path: Path):
-    return _ready_harness(tmp_path, create_session=lambda name, cmd, wd, title: False)
+    return _ready_harness(tmp_path, create_session=lambda name, cmd, wd, title, secret_env=None: False)
 
 
 def test_a_permanently_dropped_request_is_not_resurrected_by_a_restart(

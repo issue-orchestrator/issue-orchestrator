@@ -28,6 +28,8 @@ from issue_orchestrator.control.action_applier import ActionApplier
 from issue_orchestrator.control.actions import ActionType
 from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.control.provider_availability import ProviderAvailabilityPolicy
+from issue_orchestrator.control.provider_availability import ProviderLaunchOutcome
+from issue_orchestrator.control.provider_launch_readiness import ProviderLaunchReadiness
 from issue_orchestrator.control.provider_impact import (
     ProviderImpactTransition,
     ProviderReleaseKind,
@@ -41,6 +43,7 @@ from issue_orchestrator.infra.config import Config
 from issue_orchestrator.ports import InMemoryProviderCircuitStore
 from issue_orchestrator.ports.event_sink import TraceEvent
 from issue_orchestrator.ports.timeline_store import TimelineRecord
+from issue_orchestrator.ports.provider_readiness import ProviderReadiness
 from issue_orchestrator.timeline import build_issue_timeline
 from tests.unit.test_planner import make_snapshot
 
@@ -132,7 +135,30 @@ def _policy(config: Config, manager: ProviderResilienceManager) -> ProviderAvail
 
 
 def _snapshot(issue: Issue):
-    return make_snapshot(issues=[issue])
+    return make_snapshot(
+        issues=[issue],
+        provider_launch=_sampled_launch(_config()),
+    )
+
+
+def _sampled_launch(config: Config) -> ProviderLaunchReadiness:
+    """A planning fact that maps each configured agent to its sampled lane."""
+    lanes = {
+        label: agent.provider
+        for label, agent in config.agents.items()
+        if agent.provider
+    }
+    return ProviderLaunchReadiness(
+        outcomes={
+            lane: ProviderLaunchOutcome(
+                provider=lane,
+                readiness=ProviderReadiness.ready(lane),
+                circuit_open=False,
+            )
+            for lane in lanes.values()
+        },
+        lanes_by_agent_label=lanes,
+    )
 
 
 def _applier(labels: _LabelSetStub, events: _TimelineEventSink) -> ActionApplier:
@@ -267,7 +293,7 @@ def test_provider_outage_lifecycle_survives_in_issue_history():
 def test_blocked_record_names_only_the_open_provider():
     """F4 case 1: two relevant providers, exactly one circuit open.
 
-    ``providers_for_snapshot`` deliberately aggregates the coding agent's
+    ``lanes_for_snapshot`` deliberately aggregates the coding agent's
     provider AND the reviewer's. The blocked record must name only the circuit
     that is actually open — calling a healthy provider "unavailable" would make
     the operator-facing audit trail wrong.
@@ -290,10 +316,14 @@ def test_blocked_record_names_only_the_open_provider():
         _issue_number=ISSUE,
         agent_label=None,
     )
-    snapshot = make_snapshot(issues=[issue], pending_reviews=[review])
+    snapshot = make_snapshot(
+        issues=[issue],
+        pending_reviews=[review],
+        provider_launch=_sampled_launch(config),
+    )
 
     # Both providers really are in scope for this issue...
-    assert policy.providers_for_snapshot(snapshot)[ISSUE] == {PROVIDER, REVIEW_PROVIDER}
+    assert policy.lanes_for_snapshot(snapshot)[ISSUE] == {PROVIDER, REVIEW_PROVIDER}
     # ...but only one circuit is open.
     assessment = policy.assess({PROVIDER, REVIEW_PROVIDER}, now=NOW)
     assert assessment.open_providers == (PROVIDER,)

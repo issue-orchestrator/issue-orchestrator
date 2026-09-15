@@ -12,7 +12,7 @@ Components that act are named Adapters.
 
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -33,8 +33,13 @@ from ..ports.provider_readiness import (
     NO_PROVIDER_READINESS_PROBE,
     ProviderReadinessProbe,
 )
+from ..ports.provider_resilience import ProviderErrorType
 from ..ports.session_output import SessionOutput
-from .observation import SessionObservation, SessionObservationResult
+from .observation import (
+    ProviderQuotaObservation,
+    SessionObservation,
+    SessionObservationResult,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +68,7 @@ logger = logging.getLogger(__name__)
 # visible later would fall outside it and let the session burn to its full
 # timeout (F4). The expensive part (the credential probe) only runs when the
 # signature matches and is itself cached by the probe.
-PROVIDER_AUTH_CHECK_MAX_BYTES = 8192
+PROVIDER_FAILURE_CHECK_MAX_BYTES = 8192
 
 
 class SessionObserver:
@@ -481,9 +486,11 @@ class SessionObserver:
         # into the failure-investigation path looking for a substance problem
         # that does not exist (#6999 F4). Deciding it first is what makes the
         # ordering independent of *when* the session was first observed.
-        auth_result = self._check_provider_auth(session, runtime, session_exists=exists)
-        if auth_result is not None:
-            return auth_result
+        provider_failure = self._check_provider_failure(
+            session, runtime, session_exists=exists
+        )
+        if provider_failure is not None:
+            return provider_failure
 
         if timeout_exceeded:
             return SessionObservationResult.timed_out(
@@ -508,14 +515,14 @@ class SessionObserver:
 
         return SessionObservationResult.terminated(runtime_minutes=runtime)
 
-    def _check_provider_auth(
+    def _check_provider_failure(
         self,
         session: Session,
         runtime: Optional[float],
         *,
         session_exists: bool,
     ) -> SessionObservationResult | None:
-        """Observe whether this session's provider is authenticated.
+        """Observe typed auth or quota failure facts in live provider output.
 
         Fact-gathering only: the observer hands the session's early output to
         the typed provider-readiness boundary and reports back whatever verdict
@@ -546,10 +553,37 @@ class SessionObserver:
         )
         if not log_path or not log_path.exists():
             return None
-        window = self._read_auth_scan_window(
-            log_path, PROVIDER_AUTH_CHECK_MAX_BYTES
+        window = self._read_provider_failure_scan_window(
+            log_path, PROVIDER_FAILURE_CHECK_MAX_BYTES
         )
         if not window:
+            return None
+
+        error_type = self._provider_readiness_probe.classify_session_output(
+            provider, window
+        )
+        if error_type is ProviderErrorType.QUOTA:
+            lane = self._provider_readiness_probe.lane_for(
+                provider, session.agent_config.model
+            )
+            logger.error(
+                issue_log(
+                    session.issue.number,
+                    "PROVIDER_QUOTA_EXHAUSTED: session=%s lane=%s",
+                ),
+                session.terminal_id,
+                lane.key,
+            )
+            return SessionObservationResult.provider_quota_exhausted(
+                ProviderQuotaObservation(
+                    lane=lane,
+                    error_summary="Provider quota exhausted",
+                    observed_at=datetime.now(timezone.utc),
+                ),
+                runtime_minutes=runtime,
+                session_exists=session_exists,
+            )
+        if error_type is not ProviderErrorType.AUTH:
             return None
 
         readiness = self._provider_readiness_probe.diagnose_session_output(
@@ -579,7 +613,7 @@ class SessionObserver:
         )
 
     @staticmethod
-    def _read_auth_scan_window(log_path, edge_bytes: int) -> str:
+    def _read_provider_failure_scan_window(log_path, edge_bytes: int) -> str:
         """Read the first and last ``edge_bytes`` of a session log.
 
         Two bounded reads rather than one: the head carries a launch-time

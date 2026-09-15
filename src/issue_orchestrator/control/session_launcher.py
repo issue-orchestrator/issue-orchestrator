@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Optional, Callable, Mapping, Sequence
 if TYPE_CHECKING:
     from ..ports.agent_callback_endpoint import AgentCallbackEndpoint
     from ..ports.board_snapshot_provider import BoardSnapshotProvider
+    from ..ports.session_launcher_factory import CreateSessionFn
     from ..domain.state_machines.issue_machine import IssueStateMachine
     from ..domain.state_machines.session_machine import SessionStateMachine
     from ..domain.state_machines.review_machine import ReviewStateMachine
@@ -71,6 +72,7 @@ from ..ports import (
     WorkingCopy,
     CommandRunner,
 )
+from ..ports.provider_credentials import NO_PROVIDER_CREDENTIALS, ProviderCredentials
 from ..ports.provider_readiness import (
     NO_PROVIDER_READINESS_PROBE,
     ProviderReadinessProbe,
@@ -169,7 +171,7 @@ class SessionLauncher:
         manifest_downloader: ManifestDownloader,
         tech_lead_authority: "TechLeadAuthorityStore",
         session_exists_fn: Callable[[str], bool],
-        create_session_fn: Callable[[str, str, Path, str | None], bool],
+        create_session_fn: "CreateSessionFn",
         get_issue_machine: Callable[["IssueProtocol"], Optional["IssueStateMachine"]],
         get_session_machine: Callable[[str, int, int], Optional["SessionStateMachine"]],
         get_review_machine: Callable[[int, int], Optional["ReviewStateMachine"]],
@@ -195,6 +197,7 @@ class SessionLauncher:
         # provider adapter names that fact instead of silently claiming the
         # provider is authenticated.
         provider_readiness_probe: ProviderReadinessProbe = NO_PROVIDER_READINESS_PROBE,
+        provider_credentials: ProviderCredentials = NO_PROVIDER_CREDENTIALS,
         # Every OTHER durable cause of the shared needs-human label (#6999 F4).
         needs_human_block: SharedNeedsHumanBlock = NO_OTHER_NEEDS_HUMAN_CAUSES,
         coder_prompt_addendum: CoderPromptAddendumProvider = NO_CODER_PROMPT_ADDENDUM,
@@ -226,6 +229,7 @@ class SessionLauncher:
         self._claim_manager = claim_manager
         self._provider_resilience = provider_resilience
         self._coder_prompt_addendum = coder_prompt_addendum
+        self._provider_credentials = provider_credentials
         self._provider_gate = (
             ProviderLaunchGate(
                 policy=ProviderAvailabilityPolicy(
@@ -764,7 +768,7 @@ class SessionLauncher:
             return freshness.failure
 
         # Provider circuit breaker check
-        if result := self._check_provider_ready(agent_config.provider, issue.number):
+        if result := self._check_provider_ready(agent_config, issue.number):
             return result
 
         log_transition("issue", issue.number, "AVAILABLE", "LAUNCHING", "no conflicts")
@@ -1066,7 +1070,7 @@ class SessionLauncher:
 
             # Create terminal session
             step_start = time.time()
-            session_created = self._create_session(session_name, command, worktree_path, issue.title)
+            session_created = self._spawn(session_name, command, worktree_path, issue.title, agent_config)
             logger.info(
                 "[launch] Issue session create result: issue=%s session=%s created=%s",
                 issue.number,
@@ -1187,7 +1191,7 @@ class SessionLauncher:
             return LaunchResult.required_input_unavailable(
                 prepared_coder_prompt.reason
             )
-        if result := self._check_provider_ready(agent_config.provider, issue.number):
+        if result := self._check_provider_ready(agent_config, issue.number):
             return result
         return issue, agent_config, agent_label, prepared_coder_prompt
 
@@ -1372,7 +1376,7 @@ class SessionLauncher:
                 command,
             )
 
-            session_created = self._create_session(session_name, command, worktree_path, issue.title)
+            session_created = self._spawn(session_name, command, worktree_path, issue.title, agent_config)
             if not session_created:
                 log_transition("issue", issue.number, "LAUNCHING", "FAILED", "session creation failed")
                 self._apply_actions([
@@ -1576,7 +1580,7 @@ class SessionLauncher:
         if not agent_config:
             return LaunchResult(None, False, f"No agent config for {agent_label}")
 
-        if result := self._check_provider_ready(agent_config.provider, review.issue_number):
+        if result := self._check_provider_ready(agent_config, review.issue_number):
             return result
 
         session_name = f"review-{review.pr_number}"
@@ -1770,7 +1774,7 @@ class SessionLauncher:
             )
 
             # Create session
-            session_created = self._create_session(session_name, command, worktree_path, f"Review PR #{review.pr_number}")
+            session_created = self._spawn(session_name, command, worktree_path, f"Review PR #{review.pr_number}", agent_config)
             logger.info(
                 "[launch] Review session create result: issue=%s pr=%s session=%s created=%s",
                 review.issue_number,
@@ -1885,7 +1889,7 @@ class SessionLauncher:
         if not agent_config:
             return LaunchResult(None, False, f"No agent config for {agent_label}")
 
-        if result := self._check_provider_ready(agent_config.provider, review.issue_number):
+        if result := self._check_provider_ready(agent_config, review.issue_number):
             return result
 
         session_name = SessionRef.for_retrospective_review(review.issue_number).name
@@ -2068,7 +2072,7 @@ class SessionLauncher:
                 command,
             )
 
-            session_created = self._create_session(session_name, command, worktree_path, issue_title)
+            session_created = self._spawn(session_name, command, worktree_path, issue_title, agent_config)
             logger.info(
                 "[launch] Retrospective review create result: issue=%s session=%s created=%s",
                 review.issue_number,
@@ -2164,6 +2168,7 @@ class SessionLauncher:
             wrap_provider_command=self._wrap_provider_command,
             build_session_env=self._build_session_env,
             check_provider_ready=self._check_provider_ready,
+            session_secret_env=self._rework_secret_env,
             resolve_stack_decision=self._dependency_gate.stack_base_decision_for_issue,
             coder_prompt_addendum=self._coder_prompt_addendum,
             scoped_rework=ScopedReworkLaunch(self._tech_lead_authority, self.repository_host, self._apply_actions),
@@ -2216,15 +2221,40 @@ class SessionLauncher:
     def _get_provider_command_wrapper(self) -> ProviderCommandWrapper:
         if self._provider_command_wrapper is None:
             self._provider_command_wrapper = ProviderCommandWrapper(
-                self.config.provider_resilience.short_retry
+                self.config.provider_resilience.short_retry, self._provider_gate.lane_for_agent if self._provider_gate else None,
             )
         return self._provider_command_wrapper
 
-    def _check_provider_ready(self, provider: str | None, issue_number: int) -> Optional["LaunchResult"]:
-        """Ask the provider launch gate whether this provider can do work now."""
+    def _rework_secret_env(self, provider: str | None) -> dict[str, str] | None:
+        """The same credential resolution, for the launch path that owns its own spawn."""
+        return dict(self._provider_credentials.session_env(provider)) or None
+
+    def _spawn(
+        self, name: str, command: str, worktree: Path, title: str, agent_config: "AgentConfig",
+    ) -> bool:
+        """Start one agent session, always with its provider credentials.
+
+        The single place a session is spawned from this class. Credentials are
+        resolved here rather than at each launch path so a new path cannot
+        launch a key-authenticated provider unauthenticated — the failure looks
+        like a bad key rather than a missing wire-up. ``None`` rather than an
+        empty mapping distinguishes "this provider supplies its own login" from
+        "the key resolved to nothing".
+        """
+        secret_env = dict(self._provider_credentials.session_env(agent_config.provider))
+        return self._create_session(name, command, worktree, title, secret_env or None)
+
+    def _check_provider_ready(
+        self, agent_config: "AgentConfig", issue_number: int
+    ) -> Optional["LaunchResult"]:
+        """Ask the launch gate whether this agent's quota lane can work now.
+
+        The provider and model travel as one configured value so this boundary
+        cannot accidentally gate a provider against another agent's model.
+        """
         if self._provider_gate is None:
             return None
-        return self._provider_gate.check(provider, issue_number)
+        return self._provider_gate.check(agent_config, issue_number)
 
     def _trigger_issue_session_state_transitions(
         self,

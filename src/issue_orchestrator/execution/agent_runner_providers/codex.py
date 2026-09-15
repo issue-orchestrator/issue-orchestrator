@@ -9,7 +9,11 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from issue_orchestrator.ports.provider_readiness import ProviderReadiness
+from issue_orchestrator.domain.provider_lane import BillingMode
+from issue_orchestrator.ports.provider_readiness import (
+    ProviderEntitlement,
+    ProviderReadiness,
+)
 from issue_orchestrator.ports.provider_resilience import ProviderErrorType
 from issue_orchestrator.infra.hooks.codex_session import (
     build_codex_session_hook_argv,
@@ -95,6 +99,38 @@ class CodexProvider(CLIProvider):
     # no tokens spent — so it is affordable on every launch (#6999).
     AUTH_STATUS_ARGV = ("login", "status")
     _LOGGED_IN_MARKER = "logged in using"
+    #: ``codex login status`` names the credential kind right after this
+    #: marker. A ChatGPT sign-in draws on plan quota; an API key bills per
+    #: token.
+    _PREPAID_AUTH_MARKER = "chatgpt"
+    _METERED_AUTH_MARKERS = ("api key", "api-key", "apikey")
+
+    # gpt-5.3-codex-spark is served on separate hardware with its own weekly
+    # meter, tracked independently by `codex /status`. Without this the circuit
+    # breaker reads an exhausted Spark meter as "codex is down" and stops the
+    # main-pool agents too.
+    QUOTA_METERS: dict[str, str] = {"gpt-5.3-codex-spark": "spark"}
+
+    def read_entitlement(
+        self, output: str, exit_code: int | None
+    ) -> ProviderEntitlement:
+        """Read how this Codex account pays, from the login probe already run.
+
+        ``codex login status`` prints "Logged in using ChatGPT" or names an API
+        key. That one line is the prepaid-vs-metered discriminator, and before
+        #7253 it was only substring-matched for "logged in".
+        """
+        del exit_code  # the credential kind is in the text, not the status code
+        lowered = output.lower()
+        if any(marker in lowered for marker in self._METERED_AUTH_MARKERS):
+            return ProviderEntitlement(
+                billing=BillingMode.METERED, auth_method="api key"
+            )
+        if self._PREPAID_AUTH_MARKER in lowered:
+            return ProviderEntitlement(
+                billing=BillingMode.PREPAID, auth_method="chatgpt"
+            )
+        return ProviderEntitlement()
 
     def check_readiness(self, runner: "CommandRunner") -> ProviderReadiness:
         """Probe Codex's local credential state without spawning a TUI."""
@@ -111,6 +147,10 @@ class CodexProvider(CLIProvider):
                 f"`{self.executable} login status` timed out after "
                 f"{self.AUTH_PROBE_TIMEOUT_SECONDS}s",
             )
+        # Billing comes from the same probe execution as the login verdict, and
+        # is attached to every outcome: an expired credential still identifies
+        # the account kind, which is what decides whether the lane self-heals.
+        entitlement = self.read_entitlement(output, exit_code)
         # Auth classification first: "not logged in" also contains the
         # logged-in marker's substring, so a positive match must never win.
         if self.classify_output(output) is ProviderErrorType.AUTH:
@@ -118,14 +158,18 @@ class CodexProvider(CLIProvider):
                 self.name,
                 f"{self.executable} login status reports not logged in — "
                 "run `codex login`",
+                entitlement,
             )
         if exit_code == 0 and self._LOGGED_IN_MARKER in output.lower():
             return ProviderReadiness.ready(
-                self.name, f"{self.executable} login status: logged in"
+                self.name,
+                f"{self.executable} login status: logged in",
+                entitlement,
             )
         return ProviderReadiness.unknown(
             self.name,
             f"`{self.executable} login status` gave no verdict (exit={exit_code})",
+            entitlement,
         )
 
     def runs_interactively(self, **kwargs: object) -> bool:

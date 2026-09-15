@@ -173,6 +173,27 @@ def test_projection_hides_banner_when_only_recovering():
     assert [e.provider for e in view.entries] == ["gemini"]
 
 
+def test_projection_does_not_claim_retry_now_for_human_recovery():
+    state = ProviderCircuitState(
+        provider="deepseek",
+        consecutive_outages=0,
+        last_error_summary="insufficient balance",
+        updated_at=NOW,
+        consecutive_quota_failures=1,
+        quota_observed_at=NOW,
+        quota_heals_on_timer=False,
+    )
+    manager = _manager(state)
+
+    view = build_provider_circuit_status(manager.snapshot(NOW))
+
+    assert view.any_open is True
+    assert "next retry" not in view.summary_text
+    assert view.entries[0].status_label == "Unavailable"
+    assert view.entries[0].cooldown_remaining_label is None
+    assert view.entries[0].next_retry_at is None
+
+
 def test_projection_empty_status_is_hidden():
     view = ProviderCircuitStatusView.empty()
     assert view.any_open is False

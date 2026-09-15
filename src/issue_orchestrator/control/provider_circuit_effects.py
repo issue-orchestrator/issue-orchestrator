@@ -58,7 +58,7 @@ def record_provider_resilience_effects(
     if decision.provider_quota_failure:
         quota_failure = decision.provider_quota_failure
         provider_resilience.record_quota_failure(
-            quota_failure.provider,
+            quota_failure.lane,
             error_summary=quota_failure.error_summary,
             now=quota_failure.observed_at,
         )

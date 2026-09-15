@@ -27,6 +27,7 @@ class ProviderStatus:
     timed_out: bool
     last_error_summary: str | None
     last_attempt_at: str
+    quota_heals_on_timer: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -38,6 +39,7 @@ class ProviderStatus:
             "timed_out": self.timed_out,
             "last_error_summary": self.last_error_summary,
             "last_attempt_at": self.last_attempt_at,
+            "quota_heals_on_timer": self.quota_heals_on_timer,
         }
 
     @classmethod
@@ -66,6 +68,7 @@ class ProviderStatus:
             timed_out=bool(data.get("timed_out", False)),
             last_error_summary=data.get("last_error_summary"),
             last_attempt_at=last_attempt_at,
+            quota_heals_on_timer=bool(data.get("quota_heals_on_timer", False)),
         )
 
 

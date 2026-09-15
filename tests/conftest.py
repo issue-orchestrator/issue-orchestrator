@@ -676,6 +676,7 @@ class MockTerminalPlugin:
         working_dir: str,
         title: str | None,
         session_name: str,  # Required - caller must provide explicit name
+        secret_env: dict[str, str] | None = None,
     ) -> bool:
         """Track session creation."""
         self.create_session_calls.append({
@@ -745,6 +746,7 @@ class MockPluginManager:
         working_dir: str,
         title: str | None,
         session_name: str,  # Required - caller must provide explicit name
+        secret_env: dict[str, str] | None = None,
     ) -> bool:
         return self._plugin.create_session(
             session_id=session_id,
@@ -819,6 +821,7 @@ class MockSessionRunner:
         working_dir: str,
         title: str | None,
         session_name: str,  # Required - caller must provide explicit name
+        secret_env: dict[str, str] | None = None,
     ) -> bool:
         return self._plugin.create_session(
             session_id=session_id,
@@ -1164,11 +1167,18 @@ def build_test_orchestrator_deps(
     # Orchestrator binds its actual lease lookup when constructed.
     _action_applier.lease_id_lookup = lambda _issue_number: None
 
+    from issue_orchestrator.ports.provider_credentials import (
+        NO_PROVIDER_CREDENTIALS,
+    )
     from issue_orchestrator.ports.provider_readiness import (
         NO_PROVIDER_READINESS_PROBE,
     )
 
     readiness_probe = provider_readiness_probe or NO_PROVIDER_READINESS_PROBE
+    # A test composition resolves no provider secrets: reaching into the
+    # operator's real keyring from a unit test would be both a surprise and a
+    # source of machine-dependent results.
+    credentials = NO_PROVIDER_CREDENTIALS
 
     from issue_orchestrator.control.pattern_registry import LocalPatternCaseFileRegistry
 
@@ -1313,6 +1323,7 @@ def build_test_orchestrator_deps(
             label_manager=label_manager,
             agent_callback_endpoint=agent_callback_endpoint,
             provider_readiness_probe=readiness_probe,
+            provider_credentials=credentials,
             needs_human_block=needs_human_block,
         ),
         # Same shape again for the completion handler (#6999 A4).

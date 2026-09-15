@@ -147,6 +147,65 @@ agents:
 
 ---
 
+## Providers and Quota Lanes
+
+`provider` selects which agent CLI runs the session. Built-in providers are
+`claude-code`, `codex`, and `deepseek`.
+
+### DeepSeek
+
+DeepSeek ships no coding CLI of its own. The `deepseek` provider runs the
+**Claude Code CLI** against DeepSeek's Anthropic-compatible endpoint, so it needs
+`claude` on `PATH` and an API key — but it is a distinct provider, not a model
+option, because its rate limits, credentials, and billing are independent of
+Anthropic's.
+
+```yaml
+agents:
+  "agent:backend":
+    prompt: ".issue-orchestrator/prompts/backend.md"
+    provider: "deepseek"
+    ai_system: "claude-code"   # the session writes Claude Code's session log
+    model: "deepseek-v4-pro"   # or deepseek-flash
+    provider_args:
+      permission_mode: "bypassPermissions"
+```
+
+Store the key in your system keyring — never in a config file:
+
+```bash
+issue-orchestrator keys set deepseek     # prompts without echoing
+issue-orchestrator keys list             # shows a masked value and its source
+```
+
+The orchestrator reads only the secrets a provider declares it needs and injects
+them into the session's **process environment**. They are never placed on the
+command line, because `ps` is readable by every local user.
+
+> **Spend.** DeepSeek is pay-as-you-go with no subscription tier, and
+> issue-orchestrator does not meter spend. An unattended run will not stop
+> itself until the balance does. Fund the balance to the amount you are willing
+> to lose: that balance is your spend cap, enforced by the vendor.
+
+### Quota lanes
+
+A provider is not always one pool of capacity. On subscription plans, Claude
+meters Fable separately from Opus/Sonnet/Haiku, and Codex meters
+`gpt-5.3-codex-spark` separately from its main models. The circuit breaker keys
+on the *lane* — `claude-code`, `claude-code:fable`, `codex`, `codex:spark`,
+`deepseek` — so exhausting one meter does not park agents drawing on another.
+
+Lanes are derived automatically from the provider, the model, and how your
+account authenticates; there is nothing to configure. Billing mode is read from
+the provider's own auth probe, because it is a property of *your account* rather
+than of the CLI: the same provider is prepaid under a subscription login and
+pay-as-you-go under an API key. Under API-key billing there are no per-model
+meters — just one pool of currency — so every model collapses onto a single
+lane. When the mode cannot be determined it is treated as metered, since
+under-using prepaid capacity is cheaper than unexpectedly spending money.
+
+---
+
 ## Environment Variable Substitution
 
 Any string value in config can reference environment variables using `${VAR}` syntax:

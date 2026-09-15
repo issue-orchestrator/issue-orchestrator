@@ -79,6 +79,7 @@ from .invalid_completion_record import report_invalid_completion_record
 from .review_exchange_contracts import ReviewExchangeCanceller
 from .session_decision import (
     ProviderAuthOutcome,
+    ProviderQuotaFailureDecision,
     SessionDecision,
     provider_failure_from_status,
     provider_quota_failure_from_status,
@@ -293,10 +294,11 @@ class SessionController:
             # exists: completion.json is the agent's reported intent, and a
             # session that finished its work must never have that work discarded
             # because the credential expired afterwards.
-            if observation.observation == SessionObservation.PROVIDER_AUTH_FAILED:
-                return self._provider_auth_failed_decision(
-                    observation, issue_number, session_name
-                )
+            provider_failure_decision = self._live_provider_failure_decision(
+                observation, issue_number, session_name
+            )
+            if provider_failure_decision is not None:
+                return provider_failure_decision
             decision = self._handle_absent_completion_record(
                 observation=observation,
                 worktree_path=worktree_path,
@@ -452,6 +454,43 @@ class SessionController:
             outcome.event_payload(issue_number, session_name),
         )
         return outcome.as_decision()
+
+    def _live_provider_failure_decision(
+        self,
+        observation: SessionObservationResult,
+        issue_number: int,
+        session_name: str,
+    ) -> SessionDecision | None:
+        """Map a terminal live-provider fact before generic absence handling."""
+        if observation.observation is SessionObservation.PROVIDER_AUTH_FAILED:
+            return self._provider_auth_failed_decision(
+                observation, issue_number, session_name
+            )
+        if observation.observation is SessionObservation.PROVIDER_QUOTA_EXHAUSTED:
+            return self._provider_quota_exhausted_decision(observation)
+        return None
+
+    @staticmethod
+    def _provider_quota_exhausted_decision(
+        observation: SessionObservationResult,
+    ) -> SessionDecision:
+        """Turn typed live quota evidence into the circuit owner's command."""
+        quota = observation.provider_quota
+        if quota is None:
+            raise ValueError(
+                "PROVIDER_QUOTA_EXHAUSTED observation is missing quota evidence"
+            )
+        return SessionDecision(
+            status=SessionStatus.BLOCKED,
+            reason="Provider quota exhausted",
+            blocked_reason=quota.error_summary,
+            provider_error_type=ProviderErrorType.QUOTA,
+            provider_quota_failure=ProviderQuotaFailureDecision(
+                lane=quota.lane,
+                error_summary=quota.error_summary,
+                observed_at=quota.observed_at,
+            ),
+        )
 
     def _handle_absent_completion_record(
         self,

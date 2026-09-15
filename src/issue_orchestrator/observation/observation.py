@@ -12,10 +12,12 @@ Controllers make decisions based on observations + completion records.
 """
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
 from typing import Optional
 
 from ..ports.provider_readiness import ProviderReadiness
+from ..domain.provider_lane import ProviderLane
 
 
 class SessionObservation(Enum):
@@ -40,6 +42,20 @@ class SessionObservation(Enum):
     # as a timeout is what misdirected four failure investigations toward issue
     # substance on 2026-08-04 (#6999).
     PROVIDER_AUTH_FAILED = "provider_auth_failed"
+
+    # The provider reported that this session's independently billed lane has
+    # no usable capacity. Interactive providers do not use provider_runner, so
+    # this live observation is their typed path into the circuit owner.
+    PROVIDER_QUOTA_EXHAUSTED = "provider_quota_exhausted"
+
+
+@dataclass(frozen=True)
+class ProviderQuotaObservation:
+    """Observed quota exhaustion, including its lane and chronology."""
+
+    lane: ProviderLane
+    error_summary: str
+    observed_at: datetime
 
 
 @dataclass(frozen=True)
@@ -69,6 +85,7 @@ class SessionObservationResult:
     # Why the provider could not do work, when that is the observation. Typed
     # so control never re-reads a banner: the provider adapter already decided.
     provider_readiness: Optional[ProviderReadiness] = None
+    provider_quota: Optional[ProviderQuotaObservation] = None
 
     def __post_init__(self) -> None:
         """Enforce the cross-field invariant on the type, not on one factory.
@@ -80,13 +97,19 @@ class SessionObservationResult:
         here means no construction path can bypass it — a convenience
         classmethod is not a boundary (#6999 F9).
         """
-        if self.observation is not SessionObservation.PROVIDER_AUTH_FAILED:
-            return
-        readiness = self.provider_readiness
-        if readiness is None or not readiness.human_fixable or not readiness.provider:
+        if self.observation is SessionObservation.PROVIDER_AUTH_FAILED:
+            readiness = self.provider_readiness
+            if readiness is None or not readiness.human_fixable or not readiness.provider:
+                raise ValueError(
+                    "a PROVIDER_AUTH_FAILED observation requires a named, "
+                    f"auth-expired ProviderReadiness; got {readiness!r}"
+                )
+        if (
+            self.observation is SessionObservation.PROVIDER_QUOTA_EXHAUSTED
+            and self.provider_quota is None
+        ):
             raise ValueError(
-                "a PROVIDER_AUTH_FAILED observation requires a named, "
-                f"auth-expired ProviderReadiness; got {readiness!r}"
+                "a PROVIDER_QUOTA_EXHAUSTED observation requires typed quota evidence"
             )
 
     @property
@@ -100,6 +123,7 @@ class SessionObservationResult:
             SessionObservation.TERMINATED,
             SessionObservation.TIMED_OUT,
             SessionObservation.PROVIDER_AUTH_FAILED,
+            SessionObservation.PROVIDER_QUOTA_EXHAUSTED,
         )
 
     @classmethod
@@ -153,4 +177,19 @@ class SessionObservationResult:
             session_exists=session_exists,
             runtime_minutes=runtime_minutes,
             provider_readiness=readiness,
+        )
+
+    @classmethod
+    def provider_quota_exhausted(
+        cls,
+        quota: ProviderQuotaObservation,
+        runtime_minutes: Optional[float] = None,
+        session_exists: bool = True,
+    ) -> "SessionObservationResult":
+        """Create an observation for an exhausted provider quota lane."""
+        return cls(
+            observation=SessionObservation.PROVIDER_QUOTA_EXHAUSTED,
+            session_exists=session_exists,
+            runtime_minutes=runtime_minutes,
+            provider_quota=quota,
         )

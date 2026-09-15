@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..domain.models import SessionStatus
+from ..domain.provider_lane import BillingMode, ProviderLane
 from ..ports.provider_readiness import ProviderReadiness
 from ..ports.provider_resilience import ProviderErrorType
 
@@ -73,9 +74,14 @@ class ProviderQuotaFailureDecision:
     there is no shared sample to de-duplicate against.
     """
 
-    provider: str
+    lane: ProviderLane
     error_summary: str
     observed_at: datetime
+
+    @property
+    def provider(self) -> str:
+        """Compatibility name for the circuit key carried by this verdict."""
+        return self.lane.key
 
 
 @dataclass(frozen=True)
@@ -218,7 +224,10 @@ def provider_quota_failure_from_status(
             f"got {status!r}"
         )
     return ProviderQuotaFailureDecision(
-        provider=status.provider,
+        lane=ProviderLane.from_key(
+            status.provider,
+            billing=BillingMode.from_timer_recovery(status.quota_heals_on_timer),
+        ),
         error_summary=status.last_error_summary or "Provider quota exhausted",
         observed_at=_provider_observed_at(status),
     )

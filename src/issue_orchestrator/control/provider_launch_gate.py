@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import TYPE_CHECKING, Callable, Optional
 
 from ..events import EventName
 from ..infra.logging_config import issue_log
@@ -37,6 +37,10 @@ from ..ports.event_sink import make_trace_event
 from .actions import Action
 from .provider_availability import ProviderAvailabilityPolicy
 from .session_launch_types import LaunchDisposition, LaunchResult
+
+if TYPE_CHECKING:
+    from ..domain.models import AgentConfig
+    from ..domain.provider_lane import ProviderLane
 
 logger = logging.getLogger(__name__)
 
@@ -49,19 +53,24 @@ class ProviderLaunchGate:
     events: EventSink
     apply_actions: Callable[[list[Action], str], bool]
 
-    def check(self, provider: str | None, issue_number: int) -> Optional[LaunchResult]:
+    def check(
+        self,
+        agent: "AgentConfig",
+        issue_number: int,
+    ) -> Optional[LaunchResult]:
         """Return a parking :class:`LaunchResult`, or ``None`` to proceed."""
+        provider = agent.provider
         if not provider:
             return None
-        outcome = self.policy.assess_launch(provider)
+        outcome = self.policy.assess_launch(agent)
         if not outcome.blocked_by_readiness:
             # Healthy credentials still do not override a transient outage.
-            return self._park_for_open_circuit(provider, issue_number)
+            return self._park_for_open_circuit(outcome.lane_key, issue_number)
         readiness = outcome.readiness
         # The assessment may have just tripped the circuit (it feeds typed AUTH
         # outcomes to the circuit owner), so ask for the blocked transition —
         # that is what parks the issue with its durable record.
-        parked = self._park_for_open_circuit(provider, issue_number)
+        parked = self._park_for_open_circuit(outcome.lane_key, issue_number)
         self.events.publish(make_trace_event(
             EventName.SESSION_LAUNCH_BLOCKED_PROVIDER,
             {
@@ -89,12 +98,16 @@ class ProviderLaunchGate:
         )
 
     def _park_for_open_circuit(
-        self, provider: str, issue_number: int
+        self, lane: str, issue_number: int
     ) -> Optional[LaunchResult]:
         # One point-in-time assessment drives both the launch gate and the
         # provider-impact command (blocked label + durable record), so the two
         # can never describe different instants (#5980 F4/A2).
-        assessment = self.policy.assess((provider,))
+        #
+        # Assessed by lane, matching what `assess_launch` just recorded against:
+        # assessing the bare provider here would read a circuit row that the
+        # Spark or Fable failure never touched.
+        assessment = self.policy.assess((lane,))
         if not assessment.blocked:
             return None
         self.apply_actions(
@@ -104,9 +117,13 @@ class ProviderLaunchGate:
         return LaunchResult(
             None,
             False,
-            f"Provider unavailable: {provider}",
+            f"Provider unavailable: {lane}",
             disposition=LaunchDisposition.PROVIDER_DEFERRED,
         )
+
+    def lane_for_agent(self, agent: "AgentConfig") -> "ProviderLane":
+        """Return the exact sampled lane identity used by this launch gate."""
+        return self.policy.lane_for_agent(agent)
 
 
 __all__ = ["ProviderLaunchGate"]

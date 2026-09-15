@@ -55,6 +55,9 @@ class TestPluggySessionRunner:
             working_dir="/tmp/worktree",
             title="Fix the bug",
             session_name="issue-42",
+            # Forwarded even when absent, so a provider that needs credentials
+            # cannot have them silently dropped at this hop (#7253).
+            secret_env=None,
         )
         assert "Creating session via terminal hook" in caplog.text
         assert "id=42" in caplog.text

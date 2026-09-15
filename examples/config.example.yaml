@@ -56,6 +56,13 @@ agents:
     #   reasoning_effort: "xhigh"     # Codex
     #   effort: "xhigh"               # Claude Code
     #   permission_mode: "bypassPermissions"  # Claude Code
+    #
+    # provider: "deepseek"            # DeepSeek models via the Claude Code CLI.
+    #   Needs `claude` on PATH and a key in the system keyring:
+    #     issue-orchestrator keys set deepseek
+    #   Use ai_system: "claude-code" (it writes Claude Code's session log) and
+    #   model: "deepseek-v4-pro" or "deepseek-flash".
+    #   Pay-as-you-go: your topped-up balance is the only spend cap.
     # command: "claude --model {model} '{initial_prompt}'"
     # initial_prompt: "Work on issue #{issue_number}: {issue_title}"
     # sandbox: false                  # Opt in (default OFF) to the
