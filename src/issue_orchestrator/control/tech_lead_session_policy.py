@@ -20,7 +20,6 @@ session's name distinguishes them. This module is the single owner for:
 
 import logging
 import json
-import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING
 from collections.abc import Callable
@@ -29,6 +28,11 @@ from ..domain.models import CompletionOutcome, CompletionRecord, RequestedAction
 from ..domain.tech_lead_escalation import render_tech_lead_escalation_comment
 from ..domain.session_key import TaskKind
 from ..domain.tech_lead_manifest import TechLeadManifest
+from ..domain.tech_lead_scratch_identity import (
+    new_scratch_token,
+    scratch_branch_name,
+    scratch_worktree_name,
+)
 from ..domain.board_snapshot import BOARD_SNAPSHOT_FILENAME, BoardSnapshot
 from ..domain.tech_lead_session import (
     HEALTH_REVIEW_MARKER_LABEL,
@@ -154,10 +158,10 @@ def failure_investigation_scratch_identity(
         or tech_lead_scope.flavor is not TechLeadSessionFlavor.FAILURE_INVESTIGATION
     ):
         return None
-    token = uuid.uuid4().hex[:12]
+    token = new_scratch_token()
     return ScratchWorktreeIdentity(
-        worktree_name=f"{config.repo_root.name}-tech-lead-{issue.number}-{token}",
-        branch_name=f"tech-lead-investigation-{issue.number}-{token}",
+        worktree_name=scratch_worktree_name(config.repo_root.name, issue.number, token),
+        branch_name=scratch_branch_name(issue.number, token),
     )
 
 

@@ -403,6 +403,11 @@ class BoardSnapshotBuilder:
         session or a recent failure, deduplicated in that order and capped at
         ``MAX_TIMELINE_ISSUES``. Each extract holds at most ``limit`` records
         mirrored as plain dicts of the TimelineRecord fields.
+
+        Records are built through :meth:`BoardTimelineExtract.from_records`, which
+        labels each one with the session that produced it (#6969) -- an issue's
+        stream also holds records written by tech-lead investigations that merely
+        read it as evidence, and those must not be read as its own work.
         """
         candidates: list[int] = []
         if focus_issue is not None:
@@ -411,9 +416,9 @@ class BoardSnapshotBuilder:
         candidates.extend(failure.issue_number for failure in failures)
         selected = list(dict.fromkeys(candidates))[:MAX_TIMELINE_ISSUES]
         return [
-            BoardTimelineExtract(
-                issue_number=issue_number,
-                records=[
+            BoardTimelineExtract.from_records(
+                issue_number,
+                [
                     {
                         "event_id": record.event_id,
                         "timestamp": record.timestamp,

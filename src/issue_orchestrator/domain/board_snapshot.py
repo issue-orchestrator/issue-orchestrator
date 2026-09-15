@@ -20,24 +20,29 @@ be silently reinterpreted.
 
 import json
 import logging
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, NotRequired, TypedDict
 
 from .tech_lead_write_health import TechLeadWriteHealth
+from .timeline_actor import TIMELINE_ACTOR_FIELD, read_timeline_actor
 
 logger = logging.getLogger(__name__)
 
-BOARD_SNAPSHOT_SCHEMA_VERSION = 7
+BOARD_SNAPSHOT_SCHEMA_VERSION = 8
 
 #: Versions this reader accepts. A tech-lead run writes its board snapshot at
 #: LAUNCH and reads it back at COMPLETION, and a health review survives a
 #: restart -- so an upgrade landing mid-run must still be able to read what that
 #: run wrote, or the run's completion is rejected as malformed and its whole
-#: review is lost with zero decision effects (#7262 review F6).
-READABLE_BOARD_SNAPSHOT_SCHEMA_VERSIONS: frozenset[int] = frozenset({6, 7})
+#: review is lost with zero decision effects (#7262 review F6, #6969).
+#:
+#: 6 predates both the write-health signal and the timeline actor; 7 carries the
+#: write-health signal only. Both upgrade LOSSLESSLY, because every field this
+#: reader adds is derived from records the older snapshot already holds.
+READABLE_BOARD_SNAPSHOT_SCHEMA_VERSIONS: frozenset[int] = frozenset({6, 7, 8})
 
 # --- Hung-session evidence projection ---------------------------------------
 # The health review must judge a session HUNG from EVIDENCE (idle with no
@@ -146,10 +151,18 @@ class BoardFailureDict(TypedDict):
 
 
 class BoardTimelineExtractDict(TypedDict):
-    """Serialized form of BoardTimelineExtract."""
+    """Serialized form of BoardTimelineExtract.
+
+    ``actor_counts`` is ``NotRequired`` because a snapshot written under schema 6
+    legitimately lacks it: a run persists its snapshot at launch and reads it
+    back at completion, so an upgrade landing mid-run must still be able to read
+    what that run wrote. The reader derives the labels and the tally from the
+    records the older snapshot already carries.
+    """
 
     issue_number: int
     records: list[dict[str, Any]]
+    actor_counts: NotRequired[dict[str, int]]
 
 
 class BoardCaseFileDict(TypedDict):
@@ -352,11 +365,50 @@ class BoardTimelineExtract:
 
     Each record is a plain dict mirroring the fields of
     ``ports.timeline_store.TimelineRecord`` that matter to a board reader:
-    ``event_id``, ``timestamp``, ``event``, ``data``.
+    ``event_id``, ``timestamp``, ``event``, ``data`` -- plus ``timeline_actor``,
+    which says WHICH SESSION produced it (#6969).
+
+    An issue's timeline is keyed by issue number, but a tech-lead failure
+    investigation runs under its focus issue's number while doing something
+    else entirely. Its ``review.approved`` approves the investigation branch and
+    its "Pushed branch to remote" pushes the investigation branch. A reader that
+    attributes those to the issue's implementation reaches a false conclusion --
+    the 2026-08-03 health review did exactly that for issue #6410 and the error
+    was copied into recovery guidance that would have merged never-approved
+    branches.
+
+    ``actor_counts`` puts that fact at the top of the extract so a reader cannot
+    reach the records without seeing that some of them are not this issue's own
+    work. Build extracts through :meth:`from_records` so the classification and
+    the counts can never disagree.
     """
 
     issue_number: int
     records: list[dict[str, Any]]
+    actor_counts: dict[str, int] = field(default_factory=dict)
+
+    @classmethod
+    def from_records(
+        cls, issue_number: int, records: Sequence[Mapping[str, Any]]
+    ) -> "BoardTimelineExtract":
+        """Classify each record's producing session and tally the result.
+
+        Classification goes through the reader-tolerant entry point on purpose.
+        This extract feeds the board snapshot, which is a REQUIRED input to every
+        tech-lead launch: a single row carrying an actor value a newer writer
+        introduced must label itself unattributable, not abort the snapshot and
+        strand the queued tech-lead work.
+        """
+        labelled: list[dict[str, Any]] = []
+        counts: dict[str, int] = {}
+        for record in records:
+            data = record.get("data")
+            actor = read_timeline_actor(
+                data if isinstance(data, Mapping) else {}, issue_number=issue_number
+            )
+            labelled.append({**dict(record), TIMELINE_ACTOR_FIELD: actor.value})
+            counts[actor.value] = counts.get(actor.value, 0) + 1
+        return cls(issue_number=issue_number, records=labelled, actor_counts=counts)
 
 
 @dataclass
@@ -887,6 +939,7 @@ class BoardSnapshot:
                 {
                     "issue_number": t.issue_number,
                     "records": [dict(record) for record in t.records],
+                    "actor_counts": dict(t.actor_counts),
                 }
                 for t in self.timeline
             ],
@@ -905,8 +958,18 @@ class BoardSnapshot:
     def from_dict(cls, data: BoardSnapshotDict) -> "BoardSnapshot":
         """Load from dict. Fails fast on schema drift or missing keys.
 
+        Schema 6 is read as well as 7. A tech-lead run's board snapshot is
+        written to its run directory at LAUNCH and read back at COMPLETION, and a
+        health review survives an orchestrator restart -- so an upgrade that
+        landed mid-run would otherwise reject the run's own persisted snapshot
+        and fail its completion with zero actions taken, losing the whole review.
+        The only difference is the timeline extract's ``timeline_actor`` label
+        and its ``actor_counts`` tally, and both are DERIVED from the records the
+        schema-6 snapshot already carries, so the upgrade is lossless rather than
+        a compatibility shim carrying a second meaning (#6969).
+
         Raises:
-            ValueError: if ``schema_version`` is not the supported version.
+            ValueError: if ``schema_version`` is not a supported version.
             KeyError: if any required key is missing.
         """
         schema_version = data["schema_version"]
@@ -996,9 +1059,17 @@ class BoardSnapshot:
                 for item in data["recent_shipped_fixes"]
             ],
             timeline=[
+                # Rebuilt through the classifier when the stored snapshot predates
+                # it, so a schema-6 extract comes back fully labelled instead of
+                # silently label-free.
                 BoardTimelineExtract(
                     issue_number=t["issue_number"],
                     records=[dict(record) for record in t["records"]],
+                    actor_counts=dict(t["actor_counts"]),
+                )
+                if "actor_counts" in t
+                else BoardTimelineExtract.from_records(
+                    t["issue_number"], [dict(record) for record in t["records"]]
                 )
                 for t in data["timeline"]
             ],

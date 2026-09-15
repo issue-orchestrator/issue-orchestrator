@@ -1475,3 +1475,76 @@ class TestEventTimeBounds:
                 "2026-08-07T13:33:00+00:00",
             )
         }
+
+
+class TestTimelineWriterStampsTheActor:
+    """Every record gets its producing session settled at the writer (#6969).
+
+    The writer is the one place every timeline record passes through. Asking each
+    producer to remember the discriminator is what left the gap: the review,
+    validation, exchange and processing producers hand-roll their own payloads,
+    and none of them carried it, so a tech-lead investigation's approval and
+    branch push were recorded as the implementation's.
+    """
+
+    INVESTIGATION_RUN_DIR = (
+        "/Users/dev/issue-orchestrator-tech-lead-6410-df24fde45b3b"
+        "/.issue-orchestrator/sessions/20260728-023837Z__review-exchange-6410"
+    )
+    IMPLEMENTATION_RUN_DIR = (
+        "/Users/dev/issue-orchestrator-6410"
+        "/.issue-orchestrator/sessions/20260727-214653Z__coding-1"
+    )
+
+    @staticmethod
+    def _written(data: dict[str, object]) -> TimelineRecord:
+        store = RecordingTimelineStore()
+        DefaultTimelineWriter(store).record(
+            TraceEvent(
+                EventName.REVIEW_APPROVED,
+                {"issue_number": 6410, **data},
+            )
+        )
+        assert store.records
+        return store.records[0]
+
+    def test_an_unstamped_investigation_record_is_classified_at_write_time(
+        self,
+    ) -> None:
+        record = self._written({"run_dir": self.INVESTIGATION_RUN_DIR})
+
+        assert record.data["timeline_actor"] == "tech-lead-investigation"
+
+    def test_an_unstamped_implementation_record_is_classified_at_write_time(
+        self,
+    ) -> None:
+        record = self._written({"run_dir": self.IMPLEMENTATION_RUN_DIR})
+
+        assert record.data["timeline_actor"] == "issue-session"
+
+    def test_a_retried_investigation_is_recognised_by_its_branch(self) -> None:
+        # The run directory is an ordinary one; only the investigation branch
+        # says what this session is.
+        record = self._written(
+            {
+                "run_dir": self.IMPLEMENTATION_RUN_DIR,
+                "branch_name": "tech-lead-investigation-6410-df24fde45b3b",
+            }
+        )
+
+        assert record.data["timeline_actor"] == "tech-lead-investigation"
+
+    def test_a_producers_own_declaration_wins(self) -> None:
+        record = self._written(
+            {
+                "timeline_actor": "tech-lead-investigation",
+                "run_dir": self.IMPLEMENTATION_RUN_DIR,
+            }
+        )
+
+        assert record.data["timeline_actor"] == "tech-lead-investigation"
+
+    def test_a_record_with_no_durable_identity_is_unattributable(self) -> None:
+        record = self._written({"session_name": "issue-6410"})
+
+        assert record.data["timeline_actor"] == "unknown"
