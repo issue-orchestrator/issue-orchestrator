@@ -178,18 +178,25 @@ class PatternCaseFileLifecycleOwner:
                     " observable; preserving publication state"
                 )
         else:
-            self._before_write()
-            started = self._registry.begin_retirement_publication(
-                signature=entry.signature, reservation_id=entry.reservation_id
-            )
-            if started.state is not PatternReservationState.ACQUIRED:
-                raise PatternRegistryError(
-                    f"pattern {entry.signature!r} retirement reservation changed"
-                    " before publication"
+            # The publication marker is recorded by ``mark_attempt``, INSIDE
+            # ``ensure_comment_published`` and immediately before the only call
+            # that can reach GitHub. Recording it here instead — before the
+            # receipt pre-check and before the mutation guard — is what made a
+            # transient refusal permanent: nothing was posted, the entry was
+            # left PUBLISHING, and every retry then required a receipt that
+            # could never exist (#7248 review F6).
+            def mark_attempt() -> None:
+                nonlocal entry
+                started = self._registry.begin_retirement_publication(
+                    signature=entry.signature, reservation_id=entry.reservation_id
                 )
-            entry = self._subject(started.entry, issue_number)
-            pending = entry.pending_retirement
-            assert pending is not None
+                if started.state is not PatternReservationState.ACQUIRED:
+                    raise PatternRegistryError(
+                        f"pattern {entry.signature!r} retirement reservation changed"
+                        " before publication"
+                    )
+                entry = self._subject(started.entry, issue_number)
+
             ensure_comment_published(
                 issue_number,
                 pending.comment,
@@ -198,6 +205,7 @@ class PatternCaseFileLifecycleOwner:
                 ),
                 post_comment=self._repository.add_comment,
                 before_write=self._before_write,
+                mark_attempt=mark_attempt,
             )
         self._before_write()
         return self._registry.confirm_retirement_comment(

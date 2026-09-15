@@ -9,6 +9,10 @@ from ..control.tech_lead_case_file_lifecycle_reconciliation import (
 from ..execution.case_file_reconciliation_adapter import CaseFileReconciliationAdapter
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from ..control.action_results import ActionResult
+    from ..control.actions import Action
     from ..infra.config import Config
     from ..infra.orchestrator import Orchestrator
     from ..ports import RepositoryHost
@@ -23,6 +27,49 @@ def build_case_file_reconciliation_host(
         list_pattern_evidence=deps.services.tech_lead_authority.list_pattern_evidence,
         get_issue_state=deps.repository_host.get_issue_state,
         apply_all=deps.action_applier.apply_all,
+    )
+
+
+def build_case_file_reconciliation_preview_host(
+    config: "Config",
+) -> CaseFileReconciliationHost:
+    """Read-only evidence-plan host for a dry run (#7248 review F4).
+
+    The evidence branch used to build the whole orchestrator regardless of
+    ``--apply`` and then pass ``apply_writes=False`` to the runner. By then the
+    composition had already constructed and migrated the local SQLite authority
+    store and, where shared pattern authority is configured, seeded and mirrored
+    it to the durable GitHub ref. A command that promises to write nothing had
+    therefore already written, and the test that covered it injected an
+    already-built host, so it proved only that the applier was not called.
+
+    This is the same split the lifecycle branch makes: a DIFFERENT composition
+    for the preview rather than the write-capable one with its writes
+    suppressed. It builds no orchestrator, initializes no schema, and its
+    ``apply`` refuses rather than trusting the runner to stay correct.
+    """
+    from ..execution.providers import create_repository_host
+    from ..infra.tech_lead_authority_store import SqliteTechLeadAuthorityStore
+
+    if config.repo is None:
+        raise ValueError("the configured repository could not be resolved")
+    repository_host = create_repository_host(config.repo, config)
+    # Deliberately NOT initialize()d: a dry run reads the ledger a previous run
+    # left, and must not create or migrate one. A missing store fails the read
+    # loudly, which is the correct answer to "reconcile a ledger that is not
+    # there".
+    store = SqliteTechLeadAuthorityStore.for_repo(config.repo_root)
+
+    def _refuse(actions: "Sequence[Action]") -> "Sequence[ActionResult]":
+        raise RuntimeError(
+            f"an evidence-plan dry run may not apply {len(actions)} action(s);"
+            " re-run with --apply"
+        )
+
+    return CaseFileReconciliationAdapter(
+        list_pattern_evidence=store.list_pattern_evidence,
+        get_issue_state=repository_host.get_issue_state,
+        apply_all=_refuse,
     )
 
 

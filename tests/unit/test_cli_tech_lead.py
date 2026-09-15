@@ -768,3 +768,94 @@ def test_the_apply_composition_wires_a_snapshot_reader_for_classifications(
     )
 
     assert accepted.ok and accepted.applied == 1
+
+
+def test_an_evidence_dry_run_never_builds_the_orchestrator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    """A dry run writes nothing, and that is enforced by COMPOSITION (#7248 F4).
+
+    The evidence branch used to build the whole orchestrator whatever ``--apply``
+    said, and only then pass ``apply_writes=False`` to the runner. By then the
+    composition had constructed and migrated the local SQLite authority store
+    and, where shared pattern authority is configured, seeded and mirrored it to
+    the durable GitHub ref -- a command that promises to write nothing had
+    already written. The prior coverage injected an already-built host, so it
+    proved only that the applier was not called: it was vacuous for exactly the
+    writes that happen during bootstrap.
+
+    The invariant is therefore about which composition runs, not about what the
+    runner does afterwards.
+    """
+    from issue_orchestrator.entrypoints import cli_tech_lead
+
+    path = tmp_path / "plan.yaml"
+    path.write_text(VALID_PLAN, encoding="utf-8")
+    built: list[str] = []
+    applier = _RecordingApplier()
+
+    config = _config()
+    # Its OWN repo root: the command holds the whole-lifecycle repo lock, and a
+    # default Config() would make every such test contend for the real one.
+    config.repo_root = tmp_path
+    monkeypatch.setattr(cli_tech_lead, "load_config", lambda args: config)
+    monkeypatch.setattr(
+        cli_tech_lead,
+        "_build_orchestrator",
+        lambda config: built.append("orchestrator"),
+    )
+    monkeypatch.setattr(
+        "issue_orchestrator.entrypoints.bootstrap_case_file_reconciliation"
+        ".build_case_file_reconciliation_preview_host",
+        lambda config: (
+            built.append("preview") or _host(applier=applier, states={101: "open"})
+        ),
+    )
+
+    code = cli_tech_lead.cmd_reconcile_case_files(
+        argparse.Namespace(plan=str(path), apply=False)
+    )
+
+    assert code == 0
+    assert built == ["preview"], (
+        "a dry run must select the read-only composition; building the"
+        " orchestrator writes before the flag is ever consulted"
+    )
+    assert applier.calls == 0
+    assert "Dry run" in capsys.readouterr().out
+
+
+def test_an_evidence_apply_still_builds_the_orchestrator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other side of the same boundary: --apply keeps the write path."""
+    from issue_orchestrator.entrypoints import cli_tech_lead
+
+    path = tmp_path / "plan.yaml"
+    path.write_text(VALID_PLAN, encoding="utf-8")
+    built: list[str] = []
+    applier = _RecordingApplier()
+    config = _config()
+    config.repo_root = tmp_path
+    orchestrator = SimpleNamespace(config=config)
+
+    monkeypatch.setattr(cli_tech_lead, "load_config", lambda args: config)
+    monkeypatch.setattr(
+        cli_tech_lead,
+        "_build_orchestrator",
+        lambda config: (built.append("orchestrator") or orchestrator),
+    )
+    monkeypatch.setattr(cli_tech_lead, "_release", lambda orch: None)
+    monkeypatch.setattr(
+        "issue_orchestrator.entrypoints.bootstrap_case_file_reconciliation"
+        ".build_case_file_reconciliation_host",
+        lambda orch: _host(rows=(_row(),), applier=applier, states={101: "open"}),
+    )
+
+    code = cli_tech_lead.cmd_reconcile_case_files(
+        argparse.Namespace(plan=str(path), apply=True)
+    )
+
+    assert code == 0
+    assert built == ["orchestrator"]
+    assert applier.calls > 0

@@ -759,3 +759,64 @@ def test_every_registry_replays_an_applied_outcome_after_its_revision_moves(
     entry = registry.read(signature="stuck-retry")
     assert entry is not None
     assert [item.transition_id for item in entry.lifecycle] == ["plan:only"]
+
+
+def test_one_reviewed_revision_admits_exactly_one_concurrent_transition() -> None:
+    """The revision check and the write it guards are ONE operation (#7248 F5).
+
+    "Single-process" is not "single-thread". The local registry read the
+    committed entry, checked the expected revision against it, then mutated --
+    and nothing held those three steps together. Two threads presenting the same
+    reviewed revision could both pass the check and both write, so one
+    transition was silently lost and two different decisions were accepted
+    against one revision. The prior test for this invariant mutated
+    sequentially, which the racy implementation passed.
+
+    The barrier below makes both threads arrive inside the window at the same
+    time; the invariant is that exactly one survives.
+    """
+    import threading
+
+    registry = _local_registry_with_case_file()
+    reviewed = registry.read(signature="stuck-retry")
+    assert reviewed is not None
+    revision = reviewed.review_revision()
+
+    start = threading.Barrier(2)
+    outcomes: list[object] = []
+    lock = threading.Lock()
+
+    def attempt(transition_id: str) -> None:
+        start.wait(timeout=5)
+        try:
+            registry.record_lifecycle(
+                signature="stuck-retry",
+                transition=_classification(transition_id),
+                expected_revision=revision,
+            )
+            result: object = "admitted"
+        except PatternRegistryError as exc:
+            result = exc
+        with lock:
+            outcomes.append(result)
+
+    threads = [
+        threading.Thread(target=attempt, args=(f"race:{index}",)) for index in range(2)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+        assert not thread.is_alive()
+
+    admitted = [outcome for outcome in outcomes if outcome == "admitted"]
+    rejected = [outcome for outcome in outcomes if isinstance(outcome, PatternRegistryError)]
+    assert len(admitted) == 1, f"expected exactly one admission, got {outcomes}"
+    assert len(rejected) == 1
+    assert "changed since lifecycle review" in str(rejected[0])
+
+    # And the surviving transition is the only one recorded: the loser's write
+    # must not have landed at all.
+    final = registry.read(signature="stuck-retry")
+    assert final is not None
+    assert len([t for t in final.lifecycle if t.transition_id.startswith("race:")]) == 1

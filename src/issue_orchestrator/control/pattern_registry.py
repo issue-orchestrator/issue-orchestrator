@@ -9,6 +9,7 @@ lives apart, in :mod:`.pattern_registry_preview`.
 from __future__ import annotations
 
 import hashlib
+import threading
 import uuid
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -323,7 +324,23 @@ class MirroredPatternCaseFileRegistry(PatternCaseFileRegistry):
 
 
 class LocalPatternCaseFileRegistry(PatternCaseFileRegistry):
-    """Single-process implementation used by explicit offline/test composition."""
+    """Single-process implementation used by explicit offline/test composition.
+
+    "Single-process" is not "single-thread". Every admitting method here reads
+    the committed entry, checks an expected revision against it, and only then
+    mutates -- three steps that the GitHub registry performs inside one
+    compare-and-swap but that had nothing holding them together here. Two
+    threads presenting the SAME reviewed revision could both pass
+    :func:`require_reviewed_revision` and both write, so one transition was lost
+    or two different decisions were accepted against one revision -- the exact
+    guarantee the revision exists to give (#7248 review F5).
+
+    ``_write_lock`` is that boundary. It is re-entrant because the admitting
+    methods call each other's helpers (``_require_committed``,
+    ``_project_lifecycle``), and it is held across the durable projection as
+    well as the in-memory mutation so a reader can never observe a half-applied
+    transition.
+    """
 
     def __init__(
         self,
@@ -333,6 +350,7 @@ class LocalPatternCaseFileRegistry(PatternCaseFileRegistry):
     ) -> None:
         self._local = local
         self._before_write = before_write
+        self._write_lock = threading.RLock()
         self._pending_observations: dict[
             str, tuple[str, PendingPatternObservation]
         ] = {}
@@ -342,76 +360,80 @@ class LocalPatternCaseFileRegistry(PatternCaseFileRegistry):
         ] = {}
 
     def reserve(self, pending: PendingCaseFile) -> PatternReservation:
-        committed = self.read(signature=pending.signature)
-        if committed is not None and committed.committed:
-            if (
-                self._local.load_pending_case_file(signature=pending.signature)
-                is not None
-            ):
-                self._before_write()
-                self._local.discard_pending_case_file(signature=pending.signature)
-            return PatternReservation(PatternReservationState.COMMITTED, committed)
-        existing = self._local.load_pending_case_file(signature=pending.signature)
-        if existing is not None:
+        with self._write_lock:
+            committed = self.read(signature=pending.signature)
+            if committed is not None and committed.committed:
+                if (
+                    self._local.load_pending_case_file(signature=pending.signature)
+                    is not None
+                ):
+                    self._before_write()
+                    self._local.discard_pending_case_file(signature=pending.signature)
+                return PatternReservation(PatternReservationState.COMMITTED, committed)
+            existing = self._local.load_pending_case_file(signature=pending.signature)
+            if existing is not None:
+                return PatternReservation(
+                    PatternReservationState.RECOVERABLE, self._reserved(existing)
+                )
+            self._local.record_pending_case_file(pending=pending)
             return PatternReservation(
-                PatternReservationState.RECOVERABLE, self._reserved(existing)
+                PatternReservationState.ACQUIRED, self._reserved(pending)
             )
-        self._local.record_pending_case_file(pending=pending)
-        return PatternReservation(
-            PatternReservationState.ACQUIRED, self._reserved(pending)
-        )
 
     def take_over(
         self, *, stale_reservation_id: str, pending: PendingCaseFile
     ) -> PatternReservation:
-        existing = self._local.load_pending_case_file(signature=pending.signature)
-        if (
-            existing is not None
-            and self._reservation_id(existing) != stale_reservation_id
-        ):
+        with self._write_lock:
+            existing = self._local.load_pending_case_file(signature=pending.signature)
+            if (
+                existing is not None
+                and self._reservation_id(existing) != stale_reservation_id
+            ):
+                return PatternReservation(
+                    PatternReservationState.HELD, self._reserved(existing)
+                )
+            self._local.discard_pending_case_file(signature=pending.signature)
+            self._local.record_pending_case_file(pending=pending)
             return PatternReservation(
-                PatternReservationState.HELD, self._reserved(existing)
+                PatternReservationState.ACQUIRED, self._reserved(pending)
             )
-        self._local.discard_pending_case_file(signature=pending.signature)
-        self._local.record_pending_case_file(pending=pending)
-        return PatternReservation(
-            PatternReservationState.ACQUIRED, self._reserved(pending)
-        )
 
     def finalize(
         self, *, signature: str, reservation_id: str, issue_number: int
     ) -> PatternRegistryEntry:
-        pending = self._local.load_pending_case_file(signature=signature)
-        if pending is None or self._reservation_id(pending) != reservation_id:
-            current = self.read(signature=signature)
-            if current is not None and current.issue_number == issue_number:
-                return current
-            raise PatternRegistryError(f"pattern {signature!r} reservation changed")
-        self._local.record_pattern(
-            signature=signature,
-            issue_number=issue_number,
-            observation_id=pending.body_observation_id,
-            fix_class=pending.fix_class,
-            area=pending.area,
-            diagnosis=pending.diagnosis,
-        )
-        self._before_write()
-        self._local.discard_pending_case_file(signature=signature)
-        entry = self.read(signature=signature)
-        assert entry is not None
-        return entry
+        with self._write_lock:
+            pending = self._local.load_pending_case_file(signature=signature)
+            if pending is None or self._reservation_id(pending) != reservation_id:
+                current = self.read(signature=signature)
+                if current is not None and current.issue_number == issue_number:
+                    return current
+                raise PatternRegistryError(f"pattern {signature!r} reservation changed")
+            self._local.record_pattern(
+                signature=signature,
+                issue_number=issue_number,
+                observation_id=pending.body_observation_id,
+                fix_class=pending.fix_class,
+                area=pending.area,
+                diagnosis=pending.diagnosis,
+            )
+            self._before_write()
+            self._local.discard_pending_case_file(signature=signature)
+            entry = self.read(signature=signature)
+            assert entry is not None
+            return entry
 
     def begin_creation_publication(
         self, *, signature: str, reservation_id: str
     ) -> PatternReservation:
-        current = self.read(signature=signature)
-        if current is None:
-            raise PatternRegistryError(f"pattern {signature!r} has no reservation")
-        if current.committed:
-            return PatternReservation(PatternReservationState.COMMITTED, current)
-        if current.reservation_id != reservation_id:
-            return PatternReservation(PatternReservationState.HELD, current)
-        return PatternReservation(PatternReservationState.ACQUIRED, current)
+        with self._write_lock:
+            current = self.read(signature=signature)
+            if current is None:
+                raise PatternRegistryError(f"pattern {signature!r} has no reservation")
+            if current.committed:
+                return PatternReservation(PatternReservationState.COMMITTED, current)
+            if current.reservation_id != reservation_id:
+                return PatternReservation(PatternReservationState.HELD, current)
+            return PatternReservation(PatternReservationState.ACQUIRED, current)
 
     def reserve_observation(
         self,
@@ -421,94 +443,98 @@ class LocalPatternCaseFileRegistry(PatternCaseFileRegistry):
         classification: CaseFileClassification,
         issue_number: int,
     ) -> PatternReservation:
-        current = self.read(signature=signature)
-        if current is None or not current.committed:
-            raise PatternRegistryError(
-                f"pattern {signature!r} has no committed case file"
-            )
-        require_canonical_case_file(current, issue_number)
-        current.classification.merged_with(classification, signature=signature)
-        if observation.observation_id in current.observation_ids:
-            return PatternReservation(PatternReservationState.COMMITTED, current)
-        if signature in self._pending_retirements:
-            return PatternReservation(PatternReservationState.HELD, current)
-        existing = self._pending_observations.get(signature)
-        if existing is None:
-            existing = (
-                uuid.uuid4().hex,
-                PendingPatternObservation(
-                    observation=observation, classification=classification
+        with self._write_lock:
+            current = self.read(signature=signature)
+            if current is None or not current.committed:
+                raise PatternRegistryError(
+                    f"pattern {signature!r} has no committed case file"
+                )
+            require_canonical_case_file(current, issue_number)
+            current.classification.merged_with(classification, signature=signature)
+            if observation.observation_id in current.observation_ids:
+                return PatternReservation(PatternReservationState.COMMITTED, current)
+            if signature in self._pending_retirements:
+                return PatternReservation(PatternReservationState.HELD, current)
+            existing = self._pending_observations.get(signature)
+            if existing is None:
+                existing = (
+                    uuid.uuid4().hex,
+                    PendingPatternObservation(
+                        observation=observation, classification=classification
+                    ),
+                )
+                self._pending_observations[signature] = existing
+                state = PatternReservationState.ACQUIRED
+            else:
+                state = PatternReservationState.RECOVERABLE
+            reservation_id, pending = existing
+            return PatternReservation(
+                state,
+                replace(
+                    current,
+                    reservation_id=reservation_id,
+                    pending_observation=pending,
                 ),
             )
-            self._pending_observations[signature] = existing
-            state = PatternReservationState.ACQUIRED
-        else:
-            state = PatternReservationState.RECOVERABLE
-        reservation_id, pending = existing
-        return PatternReservation(
-            state,
-            replace(
-                current,
-                reservation_id=reservation_id,
-                pending_observation=pending,
-            ),
-        )
 
     def take_over_observation(
         self, *, signature: str, stale_reservation_id: str
     ) -> PatternReservation:
-        existing = self._pending_observations.get(signature)
-        if existing is None:
+        with self._write_lock:
+            existing = self._pending_observations.get(signature)
+            if existing is None:
+                current = self.read(signature=signature)
+                if current is None:
+                    raise PatternRegistryError(
+                        f"pattern {signature!r} has no committed case file"
+                    )
+                return PatternReservation(PatternReservationState.COMMITTED, current)
+            reservation_id, pending = existing
+            if reservation_id != stale_reservation_id:
+                current = self.read(signature=signature)
+                assert current is not None
+                return PatternReservation(PatternReservationState.HELD, current)
+            replacement = (uuid.uuid4().hex, pending)
+            self._pending_observations[signature] = replacement
+            current = self.read(signature=signature)
+            assert current is not None
+            return PatternReservation(PatternReservationState.ACQUIRED, current)
+
+    def begin_observation_publication(
+        self, *, signature: str, reservation_id: str
+    ) -> PatternReservation:
+        with self._write_lock:
             current = self.read(signature=signature)
             if current is None:
                 raise PatternRegistryError(
                     f"pattern {signature!r} has no committed case file"
                 )
-            return PatternReservation(PatternReservationState.COMMITTED, current)
-        reservation_id, pending = existing
-        if reservation_id != stale_reservation_id:
-            current = self.read(signature=signature)
-            assert current is not None
-            return PatternReservation(PatternReservationState.HELD, current)
-        replacement = (uuid.uuid4().hex, pending)
-        self._pending_observations[signature] = replacement
-        current = self.read(signature=signature)
-        assert current is not None
-        return PatternReservation(PatternReservationState.ACQUIRED, current)
-
-    def begin_observation_publication(
-        self, *, signature: str, reservation_id: str
-    ) -> PatternReservation:
-        current = self.read(signature=signature)
-        if current is None:
-            raise PatternRegistryError(
-                f"pattern {signature!r} has no committed case file"
-            )
-        pending = self._pending_observations.get(signature)
-        if pending is None:
-            return PatternReservation(PatternReservationState.COMMITTED, current)
-        if pending[0] != reservation_id:
-            return PatternReservation(PatternReservationState.HELD, current)
-        return PatternReservation(PatternReservationState.ACQUIRED, current)
+            pending = self._pending_observations.get(signature)
+            if pending is None:
+                return PatternReservation(PatternReservationState.COMMITTED, current)
+            if pending[0] != reservation_id:
+                return PatternReservation(PatternReservationState.HELD, current)
+            return PatternReservation(PatternReservationState.ACQUIRED, current)
 
     def finalize_observation(self, *, signature: str, reservation_id: str) -> bool:
-        existing = self._pending_observations.get(signature)
-        if existing is None:
-            return False
-        current_id, pending = existing
-        if current_id != reservation_id:
-            raise PatternRegistryError(
-                f"pattern {signature!r} evidence reservation changed"
+        with self._write_lock:
+            existing = self._pending_observations.get(signature)
+            if existing is None:
+                return False
+            current_id, pending = existing
+            if current_id != reservation_id:
+                raise PatternRegistryError(
+                    f"pattern {signature!r} evidence reservation changed"
+                )
+            recorded = self._local.note_pattern_observation(
+                signature=signature,
+                observation_id=pending.observation.observation_id,
+                fix_class=pending.classification.fix_class,
+                area=pending.classification.area,
+                diagnosis=pending.classification.diagnosis,
             )
-        recorded = self._local.note_pattern_observation(
-            signature=signature,
-            observation_id=pending.observation.observation_id,
-            fix_class=pending.classification.fix_class,
-            area=pending.classification.area,
-            diagnosis=pending.classification.diagnosis,
-        )
-        del self._pending_observations[signature]
-        return recorded
+            del self._pending_observations[signature]
+            return recorded
 
     def record_lifecycle(
         self,
@@ -517,19 +543,20 @@ class LocalPatternCaseFileRegistry(PatternCaseFileRegistry):
         transition: CaseFileLifecycleTransition,
         expected_revision: str | None = None,
     ) -> PatternRegistryEntry:
-        if transition.terminal:
-            raise ValueError("terminal lifecycle changes require retirement")
-        current = self._require_committed(signature)
-        if admit_lifecycle_transition(current, transition):
-            return current
-        if current.pending_observation or current.pending_retirement:
-            raise PatternRegistryError(
-                f"pattern {signature!r} has another lifecycle effect in flight"
-            )
-        require_reviewed_revision(current, expected_revision)
-        self._lifecycle[signature] = (*current.lifecycle, transition)
-        self._project_lifecycle(signature)
-        return self._require_committed(signature)
+        with self._write_lock:
+            if transition.terminal:
+                raise ValueError("terminal lifecycle changes require retirement")
+            current = self._require_committed(signature)
+            if admit_lifecycle_transition(current, transition):
+                return current
+            if current.pending_observation or current.pending_retirement:
+                raise PatternRegistryError(
+                    f"pattern {signature!r} has another lifecycle effect in flight"
+                )
+            require_reviewed_revision(current, expected_revision)
+            self._lifecycle[signature] = (*current.lifecycle, transition)
+            self._project_lifecycle(signature)
+            return self._require_committed(signature)
 
     def reserve_retirement(
         self,
@@ -540,138 +567,144 @@ class LocalPatternCaseFileRegistry(PatternCaseFileRegistry):
         issue_number: int,
         expected_revision: str | None = None,
     ) -> PatternReservation:
-        if not transition.terminal:
-            raise ValueError("retirement requires a terminal disposition")
-        desired = PendingPatternRetirement(transition=transition, comment=comment)
-        current = self._require_committed(signature)
-        require_canonical_case_file(current, issue_number)
-        if admit_lifecycle_transition(current, transition):
-            return PatternReservation(PatternReservationState.COMMITTED, current)
-        existing = self._pending_retirements.get(signature)
-        if existing is not None:
-            _reservation_id, _pending, started = existing
-            pending = require_resumable_retirement(current, desired)
-            state = (
-                PatternReservationState.RECOVERABLE
-                if pending.phase is PatternRetirementPhase.CLOSE
-                else PatternReservationState.PUBLISHING
-                if started is not None
-                else PatternReservationState.RECOVERABLE
+        with self._write_lock:
+            if not transition.terminal:
+                raise ValueError("retirement requires a terminal disposition")
+            desired = PendingPatternRetirement(transition=transition, comment=comment)
+            current = self._require_committed(signature)
+            require_canonical_case_file(current, issue_number)
+            if admit_lifecycle_transition(current, transition):
+                return PatternReservation(PatternReservationState.COMMITTED, current)
+            existing = self._pending_retirements.get(signature)
+            if existing is not None:
+                _reservation_id, _pending, started = existing
+                pending = require_resumable_retirement(current, desired)
+                state = (
+                    PatternReservationState.RECOVERABLE
+                    if pending.phase is PatternRetirementPhase.CLOSE
+                    else PatternReservationState.PUBLISHING
+                    if started is not None
+                    else PatternReservationState.RECOVERABLE
+                )
+                return PatternReservation(state, self._require_committed(signature))
+            if signature in self._pending_observations:
+                return PatternReservation(PatternReservationState.HELD, current)
+            require_reviewed_revision(current, expected_revision)
+            self._pending_retirements[signature] = (
+                uuid.uuid4().hex,
+                desired,
+                None,
             )
-            return PatternReservation(state, self._require_committed(signature))
-        if signature in self._pending_observations:
-            return PatternReservation(PatternReservationState.HELD, current)
-        require_reviewed_revision(current, expected_revision)
-        self._pending_retirements[signature] = (
-            uuid.uuid4().hex,
-            desired,
-            None,
-        )
-        self._project_lifecycle(signature)
-        return PatternReservation(
-            PatternReservationState.ACQUIRED, self._require_committed(signature)
-        )
+            self._project_lifecycle(signature)
+            return PatternReservation(
+                PatternReservationState.ACQUIRED, self._require_committed(signature)
+            )
 
     def take_over_retirement(
         self, *, signature: str, stale_reservation_id: str
     ) -> PatternReservation:
-        current = self._require_committed(signature)
-        existing = self._pending_retirements.get(signature)
-        if existing is None:
-            return PatternReservation(PatternReservationState.COMMITTED, current)
-        if existing[0] != stale_reservation_id:
-            return PatternReservation(PatternReservationState.HELD, current)
-        return PatternReservation(PatternReservationState.ACQUIRED, current)
+        with self._write_lock:
+            current = self._require_committed(signature)
+            existing = self._pending_retirements.get(signature)
+            if existing is None:
+                return PatternReservation(PatternReservationState.COMMITTED, current)
+            if existing[0] != stale_reservation_id:
+                return PatternReservation(PatternReservationState.HELD, current)
+            return PatternReservation(PatternReservationState.ACQUIRED, current)
 
     def begin_retirement_publication(
         self, *, signature: str, reservation_id: str
     ) -> PatternReservation:
-        current = self._require_committed(signature)
-        existing = self._pending_retirements.get(signature)
-        if existing is None:
-            return PatternReservation(PatternReservationState.COMMITTED, current)
-        if existing[0] != reservation_id:
-            return PatternReservation(PatternReservationState.HELD, current)
-        if existing[1].phase is PatternRetirementPhase.CLOSE:
-            return PatternReservation(PatternReservationState.RECOVERABLE, current)
-        if existing[2] is not None:
-            return PatternReservation(PatternReservationState.PUBLISHING, current)
-        self._pending_retirements[signature] = (existing[0], existing[1], "started")
-        return PatternReservation(
-            PatternReservationState.ACQUIRED, self._require_committed(signature)
-        )
+        with self._write_lock:
+            current = self._require_committed(signature)
+            existing = self._pending_retirements.get(signature)
+            if existing is None:
+                return PatternReservation(PatternReservationState.COMMITTED, current)
+            if existing[0] != reservation_id:
+                return PatternReservation(PatternReservationState.HELD, current)
+            if existing[1].phase is PatternRetirementPhase.CLOSE:
+                return PatternReservation(PatternReservationState.RECOVERABLE, current)
+            if existing[2] is not None:
+                return PatternReservation(PatternReservationState.PUBLISHING, current)
+            self._pending_retirements[signature] = (existing[0], existing[1], "started")
+            return PatternReservation(
+                PatternReservationState.ACQUIRED, self._require_committed(signature)
+            )
 
     def confirm_retirement_comment(
         self, *, signature: str, reservation_id: str
     ) -> PatternRegistryEntry:
-        existing = self._pending_retirements.get(signature)
-        if existing is None:
+        with self._write_lock:
+            existing = self._pending_retirements.get(signature)
+            if existing is None:
+                return self._require_committed(signature)
+            if existing[0] != reservation_id:
+                raise PatternRegistryError(f"pattern {signature!r} retirement changed")
+            self._pending_retirements[signature] = (
+                existing[0],
+                replace(existing[1], phase=PatternRetirementPhase.CLOSE),
+                None,
+            )
             return self._require_committed(signature)
-        if existing[0] != reservation_id:
-            raise PatternRegistryError(f"pattern {signature!r} retirement changed")
-        self._pending_retirements[signature] = (
-            existing[0],
-            replace(existing[1], phase=PatternRetirementPhase.CLOSE),
-            None,
-        )
-        return self._require_committed(signature)
 
     def finalize_retirement(
         self, *, signature: str, reservation_id: str
     ) -> PatternRegistryEntry:
-        existing = self._pending_retirements.get(signature)
-        if existing is None:
+        with self._write_lock:
+            existing = self._pending_retirements.get(signature)
+            if existing is None:
+                return self._require_committed(signature)
+            if existing[0] != reservation_id:
+                raise PatternRegistryError(f"pattern {signature!r} retirement changed")
+            if existing[1].phase is not PatternRetirementPhase.CLOSE:
+                raise PatternRegistryError(
+                    f"pattern {signature!r} retirement comment is not confirmed"
+                )
+            current = self._require_committed(signature)
+            self._lifecycle[signature] = (*current.lifecycle, existing[1].transition)
+            del self._pending_retirements[signature]
+            self._project_lifecycle(signature)
             return self._require_committed(signature)
-        if existing[0] != reservation_id:
-            raise PatternRegistryError(f"pattern {signature!r} retirement changed")
-        if existing[1].phase is not PatternRetirementPhase.CLOSE:
-            raise PatternRegistryError(
-                f"pattern {signature!r} retirement comment is not confirmed"
-            )
-        current = self._require_committed(signature)
-        self._lifecycle[signature] = (*current.lifecycle, existing[1].transition)
-        del self._pending_retirements[signature]
-        self._project_lifecycle(signature)
-        return self._require_committed(signature)
 
     def read(self, *, signature: str) -> PatternRegistryEntry | None:
-        evidence = self._local.load_pattern_evidence(signature=signature)
-        if evidence is None:
-            pending = self._local.load_pending_case_file(signature=signature)
-            return self._reserved(pending) if pending is not None else None
-        observations = self._local.list_pattern_observation_ids(signature=signature)
-        if not observations:
-            raise PatternRegistryError(
-                f"local pattern {signature!r} has no observation identities"
+        with self._write_lock:
+            evidence = self._local.load_pattern_evidence(signature=signature)
+            if evidence is None:
+                pending = self._local.load_pending_case_file(signature=signature)
+                return self._reserved(pending) if pending is not None else None
+            observations = self._local.list_pattern_observation_ids(signature=signature)
+            if not observations:
+                raise PatternRegistryError(
+                    f"local pattern {signature!r} has no observation identities"
+                )
+            entry = PatternRegistryEntry(
+                signature=signature,
+                reservation_id=f"local:{hashlib.sha256(signature.encode()).hexdigest()[:16]}",
+                claimant_id="single-instance",
+                expires_at=datetime(1970, 1, 1, tzinfo=timezone.utc).isoformat(),
+                pending=None,
+                issue_number=evidence.case_file_issue_number,
+                observation_ids=observations,
+                classification=evidence.classification,
+                lifecycle=self._lifecycle.get(signature, ()),
             )
-        entry = PatternRegistryEntry(
-            signature=signature,
-            reservation_id=f"local:{hashlib.sha256(signature.encode()).hexdigest()[:16]}",
-            claimant_id="single-instance",
-            expires_at=datetime(1970, 1, 1, tzinfo=timezone.utc).isoformat(),
-            pending=None,
-            issue_number=evidence.case_file_issue_number,
-            observation_ids=observations,
-            classification=evidence.classification,
-            lifecycle=self._lifecycle.get(signature, ()),
-        )
-        retirement = self._pending_retirements.get(signature)
-        if retirement is not None:
+            retirement = self._pending_retirements.get(signature)
+            if retirement is not None:
+                return replace(
+                    entry,
+                    reservation_id=retirement[0],
+                    pending_retirement=retirement[1],
+                    publication_started_at=retirement[2],
+                )
+            pending = self._pending_observations.get(signature)
+            if pending is None:
+                return entry
+            reservation_id, observation = pending
             return replace(
                 entry,
-                reservation_id=retirement[0],
-                pending_retirement=retirement[1],
-                publication_started_at=retirement[2],
+                reservation_id=reservation_id,
+                pending_observation=observation,
             )
-        pending = self._pending_observations.get(signature)
-        if pending is None:
-            return entry
-        reservation_id, observation = pending
-        return replace(
-            entry,
-            reservation_id=reservation_id,
-            pending_observation=observation,
-        )
 
     def _project_lifecycle(self, signature: str) -> None:
         """Persist the lifecycle state this in-memory registry now holds.
@@ -682,58 +715,64 @@ class LocalPatternCaseFileRegistry(PatternCaseFileRegistry):
         finalized — that existed only here was forgotten at restart and its
         signature became promotable again (#7248 rounds 7 and 8, F9/F11).
         """
-        entry = self.read(signature=signature)
-        assert entry is not None
-        self._local.record_pattern_lifecycle(
-            signature=signature,
-            disposition=entry.disposition,
-            retirement_pending=entry.retirement_pending,
-        )
+        with self._write_lock:
+            entry = self.read(signature=signature)
+            assert entry is not None
+            self._local.record_pattern_lifecycle(
+                signature=signature,
+                disposition=entry.disposition,
+                retirement_pending=entry.retirement_pending,
+            )
 
     def _require_committed(self, signature: str) -> PatternRegistryEntry:
-        current = self.read(signature=signature)
-        if current is None or not current.committed:
-            raise PatternRegistryError(f"pattern {signature!r} has no committed case file")
-        return current
+        with self._write_lock:
+            current = self.read(signature=signature)
+            if current is None or not current.committed:
+                raise PatternRegistryError(f"pattern {signature!r} has no committed case file")
+            return current
 
     def has_observation(self, *, signature: str, observation_id: str) -> bool:
-        return self._local.has_pattern_observation(
-            signature=signature, observation_id=observation_id
-        )
+        with self._write_lock:
+            return self._local.has_pattern_observation(
+                signature=signature, observation_id=observation_id
+            )
 
     def list_entries(self) -> tuple[PatternRegistryEntry, ...]:
-        return tuple(
-            entry
-            for evidence in self._local.list_pattern_evidence()
-            if (entry := self.read(signature=evidence.signature)) is not None
-        )
+        with self._write_lock:
+            return tuple(
+                entry
+                for evidence in self._local.list_pattern_evidence()
+                if (entry := self.read(signature=evidence.signature)) is not None
+            )
 
     def seed_committed(self, entries: tuple[PatternRegistryEntry, ...]) -> None:
-        for entry in entries:
-            if entry.committed:
-                assert entry.issue_number is not None
-                self._local.mirror_pattern(
-                    signature=entry.signature,
-                    issue_number=entry.issue_number,
-                    observation_ids=entry.observation_ids,
-                    fix_class=entry.classification.fix_class,
-                    area=entry.classification.area,
-                    diagnosis=entry.classification.diagnosis,
-                    disposition=entry.disposition,
-                    retirement_pending=entry.retirement_pending,
-                )
+        with self._write_lock:
+            for entry in entries:
+                if entry.committed:
+                    assert entry.issue_number is not None
+                    self._local.mirror_pattern(
+                        signature=entry.signature,
+                        issue_number=entry.issue_number,
+                        observation_ids=entry.observation_ids,
+                        fix_class=entry.classification.fix_class,
+                        area=entry.classification.area,
+                        diagnosis=entry.classification.diagnosis,
+                        disposition=entry.disposition,
+                        retirement_pending=entry.retirement_pending,
+                    )
 
     def _reserved(self, pending: PendingCaseFile) -> PatternRegistryEntry:
-        return PatternRegistryEntry(
-            signature=pending.signature,
-            reservation_id=self._reservation_id(pending),
-            claimant_id="single-instance",
-            expires_at=datetime(1970, 1, 1, tzinfo=timezone.utc).isoformat(),
-            pending=pending,
-            issue_number=None,
-            observation_ids=(),
-            classification=CaseFileClassification(),
-        )
+        with self._write_lock:
+            return PatternRegistryEntry(
+                signature=pending.signature,
+                reservation_id=self._reservation_id(pending),
+                claimant_id="single-instance",
+                expires_at=datetime(1970, 1, 1, tzinfo=timezone.utc).isoformat(),
+                pending=pending,
+                issue_number=None,
+                observation_ids=(),
+                classification=CaseFileClassification(),
+            )
 
     @staticmethod
     def _reservation_id(pending: PendingCaseFile) -> str:

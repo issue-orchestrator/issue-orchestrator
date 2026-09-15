@@ -201,6 +201,7 @@ def cmd_reconcile_case_files(args: argparse.Namespace) -> int:
     from .bootstrap_case_file_reconciliation import (
         build_case_file_lifecycle_reconciler,
         build_case_file_reconciliation_host,
+        build_case_file_reconciliation_preview_host,
     )
     from ..control.tech_lead_case_file_lifecycle_reconciliation import (
         CaseFileLifecycleReconciliationPlan,
@@ -244,13 +245,27 @@ def cmd_reconcile_case_files(args: argparse.Namespace) -> int:
                     configured_repository=config.repo,
                     apply_writes=bool(args.apply),
                 )
+            if not args.apply:
+                # Same split the lifecycle branch makes: a dry run gets its OWN
+                # read-only composition. Building the orchestrator here and then
+                # passing apply_writes=False had already constructed and
+                # migrated the local authority store and, with shared pattern
+                # authority configured, seeded and mirrored it to the durable
+                # GitHub ref -- before the runner ever saw the flag (#7248
+                # review F4).
+                return run_case_file_reconciliation(
+                    plan,
+                    build_case_file_reconciliation_preview_host(config),
+                    config=config,
+                    apply_writes=False,
+                )
             orchestrator = _build_orchestrator(config)
             try:
                 return run_case_file_reconciliation(
                     plan,
                     build_case_file_reconciliation_host(orchestrator),
                     config=orchestrator.config,
-                    apply_writes=bool(args.apply),
+                    apply_writes=True,
                 )
             finally:
                 _release(orchestrator)

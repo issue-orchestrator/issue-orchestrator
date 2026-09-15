@@ -7,6 +7,7 @@ canonical signature mapping with one ref and one commit read.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -38,6 +39,18 @@ from .pattern_registry_codec import format_entries, parse_entries
 
 if TYPE_CHECKING:
     from .http_client import GitHubHttpClient
+
+
+logger = logging.getLogger(__name__)
+
+
+def _has_effect_in_flight(entry: PatternRegistryEntry) -> bool:
+    """True while a reservation is riding on this entry's exact revision."""
+    return (
+        entry.pending_retirement is not None
+        or entry.pending_observation is not None
+        or entry.pending is not None
+    )
 
 
 PATTERN_REGISTRY_REF_PREFIX = "refs/issue-orchestrator/registry"
@@ -434,7 +447,19 @@ class GitHubRefPatternRegistry(PatternCaseFileRegistry):
                 return PatternReservation(PatternReservationState.RECOVERABLE, current)
             if current.publication_started_at is not None:
                 return PatternReservation(PatternReservationState.PUBLISHING, current)
-            if current.reservation_id != stale_reservation_id or not self._expired(current):
+            if current.reservation_id != stale_reservation_id:
+                return PatternReservation(PatternReservationState.HELD, current)
+            if current.claimant_id == self._claimant_id:
+                # Re-entering our OWN live reservation is a resume, not a
+                # takeover: there is nothing to steal and no lease to wait out.
+                # Requiring expiry here deadlocked the caller that had just been
+                # refused by its mutation guard mid-retirement -- it held a valid
+                # unexpired reservation and could neither use it nor take it
+                # over. The local registry already resumed on a matching
+                # reservation id, so this also removes a rule that was enforced
+                # differently by registry (#7248 review F6).
+                return PatternReservation(PatternReservationState.ACQUIRED, current)
+            if not self._expired(current):
                 return PatternReservation(PatternReservationState.HELD, current)
             entry = replace(
                 current,
@@ -528,6 +553,20 @@ class GitHubRefPatternRegistry(PatternCaseFileRegistry):
         Existing shared rows win identity.  A different canonical issue is a
         hard conflict; matching rows merge evidence and classification so two
         clients upgrading concurrently cannot discard either local history.
+
+        An entry with an EFFECT IN FLIGHT is left alone. A reserved retirement
+        carries a decision an operator reviewed against that entry's exact
+        revision, and merging observations or classification underneath it moves
+        the revision while the reserved decision still rides on the old one --
+        after which retirement recovery accepts the existing pending retirement
+        before it ever reaches the revision check, and the stale decision
+        comments on and closes the issue against evidence that has since changed
+        (#7248 review F2).
+
+        Skipping is not discarding: the rows stay in local authority and the
+        next ``synchronize`` merges them once the effect settles, which is
+        seconds to minutes. Raising instead would fail every composition that
+        happens to race a retirement, including engine startup.
         """
         seeds = entries
         for _ in range(MAX_CAS_ATTEMPTS):
@@ -540,6 +579,14 @@ class GitHubRefPatternRegistry(PatternCaseFileRegistry):
                 if current is None:
                     current_entries[seed.signature] = seed
                     changed = True
+                    continue
+                if _has_effect_in_flight(current):
+                    logger.info(
+                        "[pattern-registry] deferring seed merge for %r: an effect"
+                        " is in flight; the reviewed revision must not move"
+                        " underneath it",
+                        seed.signature,
+                    )
                     continue
                 if current.issue_number != seed.issue_number:
                     raise PatternRegistryError(
