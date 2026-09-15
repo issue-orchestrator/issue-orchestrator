@@ -41,6 +41,7 @@ from ..domain.models import (
     DiscoveredReview,
     session_history_status_from_session_status,
 )
+from ..domain.session_event_identity import SessionEventIdentity
 from ..domain.session_key import TaskKind
 from ..ports import (
     EventSink,
@@ -642,16 +643,10 @@ class CompletionHandler:
         if session.key.task in {TaskKind.REVIEW, TaskKind.RETROSPECTIVE_REVIEW}:
             return
 
-        agent = session.agent_label
-        task = session.key.task.value if session.key else None
-        rework_cycle = session.rework_cycle
+        identity = SessionEventIdentity.of(session)
 
         payload: dict[str, Any] = {
-            "issue_number": session.issue.number,
-            "session_id": session.terminal_id,
-            "agent": agent,
-            "task": task,
-            "rework_cycle": rework_cycle,
+            **identity.as_event_fields(),
             "pr_url": pr_url,
             "runtime_minutes": session.runtime_minutes,
         }
@@ -674,12 +669,9 @@ class CompletionHandler:
                 make_trace_event(
                     EventName.ISSUE_PR_CREATED,
                     {
-                        "issue_number": session.issue.number,
+                        **identity.as_event_fields(),
                         "pr_url": pr_url,
                         "pr_number": pr_number,
-                        "agent": agent,
-                        "task": task,
-                        "rework_cycle": rework_cycle,
                     },
                 )
             )
@@ -694,11 +686,7 @@ class CompletionHandler:
             detail=detail,
         )
         payload: dict[str, Any] = {
-            "issue_number": session.issue.number,
-            "session_id": session.terminal_id,
-            "agent": session.agent_label,
-            "task": session.key.task.value if session.key else None,
-            "rework_cycle": session.rework_cycle,
+            **SessionEventIdentity.of(session).as_event_fields(),
             "error": reason,
             "runtime_minutes": session.runtime_minutes,
             "timeout_minutes": session.agent_config.timeout_minutes if session.agent_config else None,
@@ -713,10 +701,7 @@ class CompletionHandler:
     ) -> None:
         """Emit ISSUE_BLOCKED event."""
         payload: dict[str, Any] = {
-            "issue_number": session.issue.number,
-            "agent": session.agent_label,
-            "task": session.key.task.value if session.key else None,
-            "rework_cycle": session.rework_cycle,
+            **SessionEventIdentity.of(session).as_event_fields(),
             "reason": blocked_reason or "Agent marked issue as blocked",
         }
         for key in ("attempted", "blocked_by"):
@@ -729,10 +714,7 @@ class CompletionHandler:
     ) -> None:
         """Emit ISSUE_NEEDS_HUMAN event."""
         payload: dict[str, Any] = {
-            "issue_number": session.issue.number,
-            "agent": session.agent_label,
-            "task": session.key.task.value if session.key else None,
-            "rework_cycle": session.rework_cycle,
+            **SessionEventIdentity.of(session).as_event_fields(),
             "reason": blocked_reason or "Agent requested human input",
         }
         if detail.get("question"):

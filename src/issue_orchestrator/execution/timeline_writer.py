@@ -11,6 +11,7 @@ from typing import Any
 from uuid import uuid4
 
 from ..domain.logical_event_semantics import enrich_logical_semantics
+from ..domain.timeline_actor import TIMELINE_ACTOR_FIELD, classify_timeline_actor
 from ..events.catalog import EVENT_SCHEMA_VERSION
 from ..events.fan_out_pipeline import produce_external_records
 from ..infra.timeline_trace import is_timeline_trace_enabled
@@ -63,6 +64,23 @@ class DefaultTimelineWriter(TimelineWriter):
         )
         safe_data["schema"] = EVENT_SCHEMA_VERSION
         safe_data["timeline_schema_version"] = TIMELINE_SCHEMA_VERSION
+        # WHICH SESSION produced this record, decided once, here (#6969).
+        #
+        # Every timeline record passes through this method, which is why the
+        # answer is settled here rather than at each producer. Asking producers
+        # to remember is what left the gap in the first place: a tech-lead
+        # failure investigation runs under its FOCUS issue's number, and the
+        # review, validation, exchange and processing producers each hand-rolled
+        # their own payload without the discriminator, so an investigation's
+        # approval and branch push were recorded as the implementation's.
+        #
+        # A producer that knows better still wins -- ``classify_timeline_actor``
+        # reads an explicit stamp first -- and a producer that says nothing gets
+        # the answer derived from the durable run/worktree/branch identity its
+        # payload already carries.
+        safe_data[TIMELINE_ACTOR_FIELD] = classify_timeline_actor(
+            safe_data, issue_number=issue_number
+        ).value
         safe_data["event_intent"] = semantics.event_intent
         safe_data["review_oriented"] = semantics.review_oriented
         safe_data["logical_run"] = semantics.logical_run

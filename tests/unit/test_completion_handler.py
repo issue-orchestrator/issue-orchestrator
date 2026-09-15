@@ -42,6 +42,12 @@ from issue_orchestrator.control.actions import (
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.board_snapshot import BoardTimelineExtract
+from issue_orchestrator.domain.tech_lead_scratch_identity import (
+    new_scratch_token,
+    scratch_branch_name,
+    scratch_worktree_name,
+)
 from issue_orchestrator.domain.session_run import SessionRunAssets
 from issue_orchestrator.domain.state_machines.issue_machine import (
     IssueStateMachine,
@@ -3664,3 +3670,136 @@ class TestTechLeadAuthorityRetention:
          processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
 
         assert self._load_authority(config, session) is not None
+
+
+class TestTimelineActorOnEmittedEvents:
+    """Session-keyed events declare which session produced them (#6969).
+
+    A tech-lead failure investigation completes under its FOCUS issue's number.
+    Without an actor on the event, its completion is written to the focus issue's
+    timeline as if the implementation had completed — which is how the #6410
+    investigation's approval and push came to be read as the implementation's.
+    """
+
+    @staticmethod
+    def _investigation_session(
+        issue: Issue, agent_config: AgentConfig, tmp_path: Path
+    ) -> Session:
+        token = new_scratch_token()
+        worktree = tmp_path / scratch_worktree_name(
+            "issue-orchestrator", issue.number, token
+        )
+        worktree.mkdir(parents=True, exist_ok=True)
+        return Session(
+            key=SessionKey(issue=FakeIssueKey(str(issue.number)), task=TaskKind.CODE),
+            issue=issue,
+            agent_config=agent_config,
+            terminal_id=f"issue-{issue.number}",
+            worktree_path=worktree,
+            branch_name=scratch_branch_name(issue.number, token),
+            run_assets=make_session_run_assets(
+                worktree, session_name=f"issue-{issue.number}"
+            ),
+            agent_label="agent:tech-lead",
+            scratch_worktree=True,
+        )
+
+    @pytest.mark.parametrize(
+        ("status", "event_name"),
+        [
+            (SessionStatus.FAILED, EventName.SESSION_FAILED),
+            (SessionStatus.BLOCKED, EventName.ISSUE_BLOCKED),
+            (SessionStatus.NEEDS_HUMAN, EventName.ISSUE_NEEDS_HUMAN),
+        ],
+    )
+    def test_investigation_events_are_not_labelled_as_the_issues_own_work(
+        self,
+        config: Config,
+        agent_config: AgentConfig,
+        tmp_path: Path,
+        status: SessionStatus,
+        event_name: EventName,
+    ) -> None:
+        events = InMemoryEventSink()
+        issue = make_issue(number=6410)
+        session = self._investigation_session(issue, agent_config, tmp_path)
+        handler = make_handler(config, events=events)
+
+        handler.process_completion(
+            session,
+            status,
+            processing_policy=CompletionProcessingPolicy.for_unprocessed_session(
+                session.issue.agent_type, handler.config.tech_lead_review_agent
+            ),
+        )
+
+        event = events.last_event(str(event_name))
+        assert event is not None
+        assert event.data["issue_number"] == 6410
+        assert event.data["timeline_actor"] == "tech-lead-investigation"
+
+    @pytest.mark.parametrize(
+        ("status", "event_name"),
+        [
+            (SessionStatus.FAILED, EventName.SESSION_FAILED),
+            (SessionStatus.BLOCKED, EventName.ISSUE_BLOCKED),
+            (SessionStatus.NEEDS_HUMAN, EventName.ISSUE_NEEDS_HUMAN),
+        ],
+    )
+    def test_ordinary_session_events_are_labelled_as_the_issues_own_work(
+        self,
+        config: Config,
+        agent_config: AgentConfig,
+        tmp_worktree: Path,
+        status: SessionStatus,
+        event_name: EventName,
+    ) -> None:
+        events = InMemoryEventSink()
+        issue = make_issue()
+        session = create_test_session(issue, agent_config, tmp_worktree)
+        handler = make_handler(config, events=events)
+
+        handler.process_completion(
+            session,
+            status,
+            processing_policy=CompletionProcessingPolicy.for_unprocessed_session(
+                session.issue.agent_type, handler.config.tech_lead_review_agent
+            ),
+        )
+
+        event = events.last_event(str(event_name))
+        assert event is not None
+        assert event.data["timeline_actor"] == "issue-session"
+
+    def test_a_board_extract_classifies_the_emitted_event(
+        self, config: Config, agent_config: AgentConfig, tmp_path: Path
+    ) -> None:
+        """The producer's stamp survives to the consumer that misread it."""
+        events = InMemoryEventSink()
+        issue = make_issue(number=6410)
+        session = self._investigation_session(issue, agent_config, tmp_path)
+        handler = make_handler(config, events=events)
+
+        handler.process_completion(
+            session,
+            SessionStatus.FAILED,
+            processing_policy=CompletionProcessingPolicy.for_unprocessed_session(
+                session.issue.agent_type, handler.config.tech_lead_review_agent
+            ),
+        )
+        event = events.last_event(str(EventName.SESSION_FAILED))
+        assert event is not None
+
+        extract = BoardTimelineExtract.from_records(
+            6410,
+            [
+                {
+                    "event_id": "evt-1",
+                    "timestamp": "2026-07-28T03:10:56+00:00",
+                    "event": str(EventName.SESSION_FAILED),
+                    "data": dict(event.data),
+                }
+            ],
+        )
+
+        assert extract.actor_counts == {"tech-lead-investigation": 1}

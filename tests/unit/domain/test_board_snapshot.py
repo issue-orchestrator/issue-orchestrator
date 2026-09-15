@@ -7,6 +7,7 @@ consumer) and assert the reader rejects payloads it does not understand.
 """
 
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -288,3 +289,72 @@ class TestBoardSnapshotFailFast:
 
         with pytest.raises(ValueError, match="999"):
             BoardSnapshot.read(path)
+
+
+class TestSchemaSixSnapshotsStillLoad:
+    """A run must be able to read the snapshot IT wrote (#6969 review F4).
+
+    A tech-lead run's board snapshot is written to its run directory at LAUNCH
+    and read back at COMPLETION, and a health review survives an orchestrator
+    restart. An upgrade landing mid-run would otherwise reject the run's own
+    persisted snapshot as malformed and fail its completion with zero actions
+    taken, losing the entire review.
+    """
+
+    INVESTIGATION_RUN_DIR = (
+        "/Users/dev/issue-orchestrator-tech-lead-6410-df24fde45b3b"
+        "/.issue-orchestrator/sessions/r"
+    )
+
+    @classmethod
+    def _schema_six(cls) -> dict[str, Any]:
+        return {
+            "schema_version": 6,
+            "generated_at": "2026-08-03T00:00:00+00:00",
+            "orchestrator_paused": False,
+            "sessions": [],
+            "queues": [],
+            "blocked_issues": [],
+            "recent_failures": [],
+            "problem_cohort": [],
+            "case_files": [],
+            "area_signals": [],
+            "recent_shipped_fixes": [],
+            "timeline": [
+                {
+                    "issue_number": 6410,
+                    "records": [
+                        {
+                            "event_id": "evt-1",
+                            "timestamp": "2026-07-28T03:10:51+00:00",
+                            "event": "review.approved",
+                            "data": {"run_dir": cls.INVESTIGATION_RUN_DIR},
+                        }
+                    ],
+                }
+            ],
+            "log_tail": [],
+            "e2e_health": None,
+        }
+
+    def test_a_schema_six_snapshot_is_readable(self) -> None:
+        snapshot = BoardSnapshot.from_dict(cast(Any, self._schema_six()))
+
+        assert snapshot.schema_version == 6
+        assert snapshot.timeline[0].issue_number == 6410
+
+    def test_its_timeline_labels_are_derived_rather_than_left_blank(self) -> None:
+        # The upgrade is lossless: both the label and the tally are computed
+        # from records the schema-6 snapshot already carries.
+        snapshot = BoardSnapshot.from_dict(cast(Any, self._schema_six()))
+        extract = snapshot.timeline[0]
+
+        assert extract.records[0]["timeline_actor"] == "tech-lead-investigation"
+        assert extract.actor_counts == {"tech-lead-investigation": 1}
+
+    def test_a_genuinely_unsupported_version_is_still_rejected(self) -> None:
+        stale = self._schema_six()
+        stale["schema_version"] = 3
+
+        with pytest.raises(ValueError, match="Unsupported board snapshot"):
+            BoardSnapshot.from_dict(cast(Any, stale))
