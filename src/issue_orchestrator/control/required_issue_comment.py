@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Callable
 from .actions import AddCommentAction, ActionResult
 from ..domain.tech_lead_comment import TechLeadCommentIntent
+from .tech_lead_decision_receipt import record_decision_applied
 
 if TYPE_CHECKING:
     from ..domain.tech_lead_session import StoredTechLeadOp
@@ -142,7 +143,8 @@ def validate_proposal_reuse(action: ReuseTechLeadProposalAction, *,
 
 def apply_required_issue_comment(action: RequiredIssueCommentAction, *,
         host: RepositoryHost, guard: Callable[[], None],
-        post_comment: Callable[[int, str], str]) -> ActionResult:
+        post_comment: Callable[[int, str], str],
+        events: EventSink | None = None) -> ActionResult:
     """Verify receipts around the guarded, applier-owned publication capability."""
     try:
         guard()
@@ -154,10 +156,34 @@ def apply_required_issue_comment(action: RequiredIssueCommentAction, *,
         guard()
         if receipt is None:
             raise ValueError("required explanation has no verified publication receipt")
+        note_tech_lead_comment_applied(action, events)
         return ActionResult.ok(action, comment_id=receipt.comment_id,
             body_sha256=receipt.body_sha256, author_key=receipt.author_key)
     except Exception as exc:
         return ActionResult.fail(action, str(exc))
+
+
+def note_tech_lead_comment_applied(
+    action: AddCommentAction, events: "EventSink | None"
+) -> None:
+    """Record a tech-lead decision comment that actually reached GitHub (#7080).
+
+    An execute-authority ``post_comment`` IS a decision landing, and nothing said
+    so -- only the act-level executors emitted a receipt, and they are all
+    ``propose``-gated. A healthy comment-only batch or health review therefore
+    read as write-dead (#7262 review F3). The typed decision actions are the
+    discriminator: an ordinary comment is not a tech-lead decision.
+    """
+    if events is None:
+        return
+    if not isinstance(action, (TechLeadDecisionCommentAction, RequiredTechLeadDiagnosisAction)):
+        return
+    record_decision_applied(
+        events,
+        anchor_issue_number=action.number,
+        action="post_comment",
+        tech_lead_action_id=action.intent.action_id,
+    )
 
 
 def apply_issue_comment(action: AddCommentAction, *, host: RepositoryHost,
@@ -186,11 +212,14 @@ def apply_issue_comment(action: AddCommentAction, *, host: RepositoryHost,
                 recovery=recovery,
             )
     if isinstance(action, RequiredIssueCommentAction):
-        return apply_required_issue_comment(action, host=host, guard=guard, post_comment=post_comment)
+        return apply_required_issue_comment(
+            action, host=host, guard=guard, post_comment=post_comment, events=events
+        )
     # Ordinary comments preserve their reconciliation exception contract.
     guard()
     try:
         url = post_comment(action.number, action.comment)
+        note_tech_lead_comment_applied(action, events)
         if action.is_pr:
             from ..ports import make_trace_event
             from ..events import EventName

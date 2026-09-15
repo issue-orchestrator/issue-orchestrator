@@ -298,41 +298,43 @@ class SqliteTimelineStore(TimelineStore):
         logger.info("[TIMELINE] delete db=%s issue=%s deleted=%s", self._db_path, issue_number, deleted)
         return int(deleted)
 
-    def latest_event_timestamps(
+    def event_time_bounds(
         self, event_names: Sequence[str]
-    ) -> Mapping[str, str]:
-        """Newest ``timestamp`` per requested event name, across every issue.
+    ) -> Mapping[str, tuple[str, str]]:
+        """``(earliest, newest)`` ``timestamp`` per name, across every issue.
 
         Names with no recorded row are omitted (see the port docstring). The
         comparison is lexicographic over the stored ISO strings, which is exact
         because ``DefaultTimelineWriter`` normalises every timestamp to UTC
         before it is written -- one offset, so string order is time order.
+
+        Note that the trace table TRIMS old rows, so the earliest bound can only
+        move FORWARD. A caller measuring elapsed silence from it therefore
+        under-reports rather than raising a false alarm (#7262 review F7).
         """
         names = tuple(dict.fromkeys(event_names))
         if not names:
             return {}
-        newest: dict[str, str] = {}
+        bounds: dict[str, tuple[str, str]] = {}
         with self._connection_lock:
             conn = self._get_connection()
             for name in names:
-                # One parameterised index seek per name rather than a built
+                # One parameterised aggregate per name rather than a built
                 # ``IN (...)`` clause: the query text stays constant, so no
                 # caller-supplied value ever reaches SQL as text, and
-                # idx_timeline_event_timestamp makes each lookup a single
-                # descending seek.
+                # idx_timeline_event_timestamp serves both bounds from the
+                # index without a table scan.
                 row = conn.execute(
                     """
-                    SELECT timestamp
+                    SELECT MIN(timestamp) AS earliest, MAX(timestamp) AS newest
                     FROM timeline_events
                     WHERE event = ?
-                    ORDER BY timestamp DESC
-                    LIMIT 1
                     """,
                     (name,),
                 ).fetchone()
-                if row is not None and row["timestamp"] is not None:
-                    newest[name] = str(row["timestamp"])
-        return newest
+                if row is not None and row["newest"] is not None:
+                    bounds[name] = (str(row["earliest"]), str(row["newest"]))
+        return bounds
 
     def _trim_if_needed(self, conn: sqlite3.Connection, issue_number: int) -> None:
         max_records = self._config.max_records

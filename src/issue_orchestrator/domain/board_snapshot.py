@@ -24,13 +24,20 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import Any, NotRequired, TypedDict
 
 from .tech_lead_write_health import TechLeadWriteHealth
 
 logger = logging.getLogger(__name__)
 
 BOARD_SNAPSHOT_SCHEMA_VERSION = 7
+
+#: Versions this reader accepts. A tech-lead run writes its board snapshot at
+#: LAUNCH and reads it back at COMPLETION, and a health review survives a
+#: restart -- so an upgrade landing mid-run must still be able to read what that
+#: run wrote, or the run's completion is rejected as malformed and its whole
+#: review is lost with zero decision effects (#7262 review F6).
+READABLE_BOARD_SNAPSHOT_SCHEMA_VERSIONS: frozenset[int] = frozenset({6, 7})
 
 # --- Hung-session evidence projection ---------------------------------------
 # The health review must judge a session HUNG from EVIDENCE (idle with no
@@ -230,7 +237,8 @@ class BoardSnapshotDict(TypedDict):
     timeline: list[BoardTimelineExtractDict]
     log_tail: list[str]
     e2e_health: BoardE2EHealthDict | None
-    tech_lead_write_health: BoardTechLeadWriteHealthDict | None
+    # NotRequired: a schema-6 snapshot legitimately lacks it (#7262 review F6).
+    tech_lead_write_health: NotRequired[BoardTechLeadWriteHealthDict | None]
 
 
 @dataclass(frozen=True)
@@ -902,10 +910,11 @@ class BoardSnapshot:
             KeyError: if any required key is missing.
         """
         schema_version = data["schema_version"]
-        if schema_version != BOARD_SNAPSHOT_SCHEMA_VERSION:
+        if schema_version not in READABLE_BOARD_SNAPSHOT_SCHEMA_VERSIONS:
             raise ValueError(
                 f"Unsupported board snapshot schema_version {schema_version!r}; "
-                f"this reader supports schema_version {BOARD_SNAPSHOT_SCHEMA_VERSION}"
+                f"this reader supports schema_version "
+                f"{sorted(READABLE_BOARD_SNAPSHOT_SCHEMA_VERSIONS)}"
             )
         return cls(
             schema_version=schema_version,
@@ -994,9 +1003,11 @@ class BoardSnapshot:
                 for t in data["timeline"]
             ],
             log_tail=list(data["log_tail"]),
+            # Absent in a schema-6 snapshot, which is read rather than
+            # rejected so a run launched before the upgrade can still complete.
             tech_lead_write_health=(
-                BoardTechLeadWriteHealth.from_dict(data["tech_lead_write_health"])
-                if data["tech_lead_write_health"] is not None
+                BoardTechLeadWriteHealth.from_dict(stored)
+                if (stored := data.get("tech_lead_write_health")) is not None
                 else None
             ),
             e2e_health=(

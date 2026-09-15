@@ -546,18 +546,19 @@ def _make_e2e_health_reader(
 def _make_tech_lead_write_health_reader(
     config: "Config",
     timeline_store: "TimelineStore",
-) -> Callable[[datetime], "BoardTechLeadWriteHealth | None"]:
+) -> Callable[[datetime], "BoardTechLeadWriteHealth"]:
     """Write-health feed for the board snapshot (#7080).
 
-    Reads the newest durable timestamp of each tech-lead lifecycle event from
-    the engine's own timeline store — the same store #7080's evidence was
-    reconstructed from by hand — and classifies them against the configured
+    Reads the durable time bounds of each tech-lead lifecycle event from the
+    engine's own timeline store -- the same store #7080's evidence was
+    reconstructed from by hand -- and classifies them against the configured
     window.
 
-    Best-effort: a store that cannot answer yields ``None``. It is deliberately
-    NOT gated on ``tech_lead_enabled``: an engine whose tech lead was switched
-    off has no runs to be silent about, and the assessment already reports that
-    as ``idle`` from the facts rather than from configuration.
+    It NEVER returns ``None``. A read failure yields an explicit ``unavailable``
+    verdict that is itself an alarm: a health signal that quietly disappears when
+    its evidence cannot be read is the exact failure mode this exists to stop,
+    and it would have been indistinguishable from a healthy board (#7262 review
+    F5).
     """
     from ..domain.board_snapshot import BoardTechLeadWriteHealth
     from ..domain.tech_lead_write_health import (
@@ -567,34 +568,55 @@ def _make_tech_lead_write_health_reader(
         WRITE_HEALTH_EVENTS,
         TechLeadWriteActivity,
         assess_tech_lead_write_health,
+        unavailable,
     )
 
+    def _moment(raw: str | None, name: str) -> datetime | None:
+        if not raw:
+            return None
+        try:
+            return datetime.fromisoformat(raw)
+        except ValueError:
+            logger.warning("[board] unparseable %s timestamp %r; ignoring", name, raw)
+            return None
+
     def _newest(
-        timestamps: "Mapping[str, str]", names: tuple[str, ...]
+        bounds: "Mapping[str, tuple[str, str]]", names: tuple[str, ...]
     ) -> datetime | None:
-        moments: list[datetime] = []
-        for name in names:
-            raw = timestamps.get(name)
-            if not raw:
-                continue
-            try:
-                moments.append(datetime.fromisoformat(raw))
-            except ValueError:
-                logger.warning(
-                    "[board] unparseable %s timestamp %r; ignoring", name, raw
-                )
+        moments = [
+            moment
+            for name in names
+            if (moment := _moment(bounds.get(name, (None, None))[1], name)) is not None
+        ]
         return max(moments) if moments else None
 
-    def _read(now: datetime) -> "BoardTechLeadWriteHealth | None":
+    def _earliest(
+        bounds: "Mapping[str, tuple[str, str]]", names: tuple[str, ...]
+    ) -> datetime | None:
+        moments = [
+            moment
+            for name in names
+            if (moment := _moment(bounds.get(name, (None, None))[0], name)) is not None
+        ]
+        return min(moments) if moments else None
+
+    def _read(now: datetime) -> "BoardTechLeadWriteHealth":
+        window = config.tech_lead.write_health_stale_after_hours
         try:
-            timestamps = timeline_store.latest_event_timestamps(WRITE_HEALTH_EVENTS)
-        except (OSError, sqlite3.Error, ValueError) as exc:
+            bounds = timeline_store.event_time_bounds(WRITE_HEALTH_EVENTS)
+        # Broad on purpose: this closure is the only place that knows the
+        # configured window, so anything it fails to absorb reaches the
+        # builder's backstop, which can only report the window as unknown.
+        except Exception as exc:
             logger.warning("[board] tech-lead write health unavailable: %s", exc)
-            return None
+            return BoardTechLeadWriteHealth.project(
+                unavailable(window, f"the tech-lead event history could not be read: {exc}")
+            )
         activity = TechLeadWriteActivity(
-            last_run_requested_at=_newest(timestamps, RUN_REQUESTED_EVENTS),
-            last_decision_proposed_at=_newest(timestamps, DECISION_PROPOSED_EVENTS),
-            last_decision_executed_at=_newest(timestamps, DECISION_EXECUTED_EVENTS),
+            first_run_requested_at=_earliest(bounds, RUN_REQUESTED_EVENTS),
+            last_run_requested_at=_newest(bounds, RUN_REQUESTED_EVENTS),
+            last_decision_proposed_at=_newest(bounds, DECISION_PROPOSED_EVENTS),
+            last_decision_executed_at=_newest(bounds, DECISION_EXECUTED_EVENTS),
         )
         # Recorded timestamps are UTC-aware; the builder's clock is naive local
         # time. Compare in one frame rather than letting a subtraction raise.
@@ -602,10 +624,13 @@ def _make_tech_lead_write_health_reader(
         health = assess_tech_lead_write_health(
             activity,
             now=reference,
-            stale_after_hours=config.tech_lead.write_health_stale_after_hours,
+            stale_after_hours=window,
+            tech_lead_enabled=config.tech_lead_enabled,
         )
         if health.is_alarm:
-            logger.warning("[tech_lead] write health %s: %s", health.verdict.value, health.reason)
+            logger.warning(
+                "[tech_lead] write health %s: %s", health.verdict.value, health.reason
+            )
         return BoardTechLeadWriteHealth.project(health)
 
     return _read

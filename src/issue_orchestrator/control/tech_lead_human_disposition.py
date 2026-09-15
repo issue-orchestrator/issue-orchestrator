@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, Callable
 from .action_base import Action
 from .action_results import ActionResult
 from .tech_lead_actions import EscalateTechLeadDispositionAction
+from .tech_lead_decision_receipt import record_decision_applied
 from .tech_lead_needs_human_reconcile import (
     TechLeadNeedsHumanLifecycle, discover_tech_lead_needs_human_issue_numbers,
 )
@@ -30,4 +31,15 @@ def apply_human_disposition(action: Action, *, host: "RepositoryHost | None",
         preserve_existing_human=True, comment=action.comment, context="tech-lead disposition",
         event_data={"issue_number": action.issue_number, "reason": action.reason}):
         return ActionResult.fail(action, "human disposition did not commit")
+    # An escalation that committed IS a tech-lead decision reaching GitHub.
+    # ``escalate_to_human`` is the non-configurable authority floor, so it is the
+    # ONE decision class that always executes -- and counting only create_issue
+    # made a run whose whole output was an escalation read as write-dead
+    # (#7262 review F3).
+    record_decision_applied(
+        events,
+        anchor_issue_number=action.issue_number,
+        action="escalate_to_human",
+        reason=action.reason,
+    )
     return ActionResult.ok(action, issue_number=action.issue_number)

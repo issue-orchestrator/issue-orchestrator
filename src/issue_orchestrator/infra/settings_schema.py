@@ -15,7 +15,15 @@ import functools
 from pathlib import Path
 from typing import Any, Literal, Optional, TYPE_CHECKING
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from typing import Annotated
+
+from pydantic import (
+    AllowInfNan,
+    BaseModel,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 from ..domain.tech_lead_findings import (
     FINDING_PROMOTION_GATED,
@@ -1634,7 +1642,9 @@ class ReviewSettings(BaseModel):
             "yaml_path": "tech_lead.max_expedited",
         },
     )
-    tech_lead_write_health_stale_after_hours: float = Field(
+    tech_lead_write_health_stale_after_hours: Annotated[
+        float, AllowInfNan(False)
+    ] = Field(
         48.0,
         title="Tech Lead Write-Health Window",
         description=(

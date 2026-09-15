@@ -51,6 +51,7 @@ from issue_orchestrator.domain.models import (
 )
 from issue_orchestrator.domain.tech_lead_session import (
     HEALTH_REVIEW_MARKER_LABEL,
+    PROPOSED_TECH_LEAD_LABEL,
     TechLeadSessionFlavor,
 )
 from issue_orchestrator.events import EventName
@@ -1512,6 +1513,39 @@ class TestCreateTechLeadIssueAction:
             reason="health review interval elapsed",
             flavor=TechLeadSessionFlavor.HEALTH_REVIEW,
             origin=TechLeadCreationOrigin.authors_anchor(),
+        )
+
+        assert applier.apply(action).success
+
+        assert not [
+            call.args[0]
+            for call in mock_events.publish.call_args_list
+            if call.args[0].name == EventName.TECH_LEAD_ACTION_EXECUTED.value
+        ]
+
+    def test_a_gated_proposal_is_not_reported_as_an_executed_decision(
+        self, applier, mock_repository_host, mock_events
+    ):
+        """A gated proposal is created, and is deliberately INERT (#7262 F2).
+
+        Under `propose` authority a follow-up is filed carrying
+        `proposed-tech-lead` and does nothing until an operator removes that
+        label. Counting it as executed would make the write-health alarm report
+        `writing` for precisely the state #7080 is about -- decisions piling up
+        unapproved -- so the one signal that would have caught it says the
+        opposite.
+        """
+        from issue_orchestrator.control.reconciliation import ExpectedState
+
+        mock_repository_host.create_issue.return_value = {"number": 100}
+        action = CreateTechLeadIssueAction(
+            title="Gated follow-up the review decided on",
+            body="Body",
+            labels=("agent:backend", PROPOSED_TECH_LEAD_LABEL),
+            reason="tech_lead decision action A4: create follow-up issue (gated)",
+            flavor=TechLeadSessionFlavor.HEALTH_REVIEW,
+            origin=TechLeadCreationOrigin.derived_from_anchor(7255),
+            expected=ExpectedState.with_labels(required={"agent:tech-lead"}),
         )
 
         assert applier.apply(action).success

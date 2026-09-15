@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING
 from collections.abc import Callable
 
 from ..domain.models import CompletionOutcome, CompletionRecord, RequestedAction
+from ..domain.tech_lead_escalation import render_tech_lead_escalation_comment
 from ..domain.session_key import TaskKind
 from ..domain.tech_lead_manifest import TechLeadManifest
 from ..domain.board_snapshot import BOARD_SNAPSHOT_FILENAME, BoardSnapshot
@@ -195,6 +196,16 @@ def shape_requested_actions_for_tech_lead(
     So the exclusion is now keyed on the OUTCOME. Escalations keep their
     comment; a completed audit does not get a work report.
 
+    The outcome alone is not enough to let the AGENT choose what gets posted,
+    though -- ``comment_body`` is agent-supplied and only bounded, so a
+    ``needs_human`` record carrying an ``## Implementation`` write-up would walk
+    straight through an outcome check. The orchestrator therefore RE-RENDERS the
+    escalation from the record's validated structured fields before this runs
+    (:func:`render_tech_lead_escalation_comment`), so what is posted is the
+    orchestrator's rendering of the agent's intent rather than the agent's prose
+    (#7262 review F9). That is the same Agent-Intent/Orchestrator-Authority split
+    the rest of the completion path uses.
+
     Publication intent is resolved before review exchange preparation. A clean
     audit has no publication work; real changes retain it.
     """
@@ -230,6 +241,9 @@ def resolve_tech_lead_completion_actions(
             )
             return ProcessingResult(success=False, message=error, errors=[error])
         has_changes = bool(diff.diff_text)
+    escalation = render_tech_lead_escalation_comment(record)
+    if escalation is not None:
+        record.comment_body = escalation
     record.requested_actions = list(shape_requested_actions_for_tech_lead(
         tuple(record.requested_actions),
         outcome=record.outcome,

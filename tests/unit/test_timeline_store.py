@@ -1368,8 +1368,8 @@ def test_sqlite_timeline_store_instance_id_filters_correctly(tmp_path: Path) -> 
     assert [r["event_id"] for r in rows] == ["a1", "a2"]
 
 
-class TestLatestEventTimestamps:
-    """Cross-issue event recency (#7080).
+class TestEventTimeBounds:
+    """Cross-issue event recency AND reach (#7080).
 
     "Has a tech-lead decision reached GitHub lately?" is a question about the
     whole store, and no per-issue read can answer it -- which is why the
@@ -1405,9 +1405,14 @@ class TestLatestEventTimestamps:
             ),
         )
 
-        newest = store.latest_event_timestamps(["tech_lead.action_proposed"])
+        newest = store.event_time_bounds(["tech_lead.action_proposed"])
 
-        assert newest == {"tech_lead.action_proposed": "2026-08-17T07:32:00+00:00"}
+        assert newest == {
+            "tech_lead.action_proposed": (
+                "2026-08-07T13:33:00+00:00",
+                "2026-08-17T07:32:00+00:00",
+            )
+        }
 
     def test_an_event_with_no_rows_is_omitted_not_defaulted(
         self, tmp_path: Path
@@ -1425,7 +1430,7 @@ class TestLatestEventTimestamps:
             ),
         )
 
-        newest = store.latest_event_timestamps(
+        newest = store.event_time_bounds(
             ["tech_lead.action_proposed", "tech_lead.action_executed"]
         )
 
@@ -1443,10 +1448,10 @@ class TestLatestEventTimestamps:
             ),
         )
 
-        assert store.latest_event_timestamps(["tech_lead.action_proposed"]) == {}
+        assert store.event_time_bounds(["tech_lead.action_proposed"]) == {}
 
     def test_no_requested_names_reads_nothing(self, tmp_path: Path) -> None:
-        assert self._store(tmp_path).latest_event_timestamps([]) == {}
+        assert self._store(tmp_path).event_time_bounds([]) == {}
 
     def test_duplicate_names_are_tolerated(self, tmp_path: Path) -> None:
         store = self._store(tmp_path)
@@ -1460,8 +1465,13 @@ class TestLatestEventTimestamps:
             ),
         )
 
-        newest = store.latest_event_timestamps(
+        newest = store.event_time_bounds(
             ["tech_lead.run_requested", "tech_lead.run_requested"]
         )
 
-        assert newest == {"tech_lead.run_requested": "2026-08-07T13:33:00+00:00"}
+        assert newest == {
+            "tech_lead.run_requested": (
+                "2026-08-07T13:33:00+00:00",
+                "2026-08-07T13:33:00+00:00",
+            )
+        }

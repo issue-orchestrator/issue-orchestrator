@@ -30,6 +30,7 @@ from .reconciliation import ReconciliationRequired
 from .tech_lead_issue_labels import required_label_provisioning_error
 from .tech_lead_proposal_creation import TechLeadProposalCreation
 from .tech_lead_case_file_owner import CaseFileState, PatternCaseFileOwner
+from .tech_lead_decision_receipt import record_decision_applied
 from .tech_lead_issue_policy import resolve_tech_lead_milestone_number
 
 if TYPE_CHECKING:
@@ -257,24 +258,23 @@ def apply_create_tech_lead_issue(
             },
         )
     )
-    if action.origin.kind is TechLeadCreationKind.DERIVED_FROM_ANCHOR:
-        # A create_issue decided by a session working an anchor IS an executed
-        # decision action, and until now nothing said so: the only emitters of
-        # TECH_LEAD_ACTION_EXECUTED were the act-level executors, all of which
-        # default to ``propose`` and therefore wait for an approval that may
-        # never come. The result was a store holding ZERO action_executed rows
-        # while the tech lead was filing follow-ups daily, which is what made
-        # "has any decision landed?" unanswerable for ten days (#7080).
-        events.publish(
-            make_trace_event(
-                EventName.TECH_LEAD_ACTION_EXECUTED,
-                {
-                    "issue_number": action.origin.anchor_issue_number,
-                    "action": "create_issue",
-                    "created_issue_number": issue_number,
-                    "flavor": action.flavor.value,
-                },
-            )
+    if (
+        action.origin.kind is TechLeadCreationKind.DERIVED_FROM_ANCHOR
+        and not isinstance(action, CreateTechLeadProposalIssueAction)
+        and PROPOSED_TECH_LEAD_LABEL not in action.labels
+    ):
+        # A create_issue a session DECIDED and that is live on arrival IS an
+        # executed decision. A GATED proposal is not: it is created and then sits
+        # inert until an operator removes its label, which is exactly the state
+        # #7080 is about, so reporting it as executed would have the alarm say
+        # "writing" for a subsystem whose decisions are piling up unapproved
+        # (#7262 review F2).
+        record_decision_applied(
+            events,
+            anchor_issue_number=action.origin.anchor_issue_number,
+            action="create_issue",
+            created_issue_number=issue_number,
+            flavor=action.flavor.value,
         )
     _apply_expedite_lane(action, issue_number=issue_number, expedite_lane=expedite_lane)
     finalization_error = _finalize_ledger_backed_creation(

@@ -102,6 +102,11 @@ def _record(event_id: str) -> TimelineRecord:
     )
 
 
+_UNKNOWN_WRITE_HEALTH = BoardTechLeadWriteHealth(
+    verdict="idle", is_alarm=False, reason="test default", stale_after_hours=48.0
+)
+
+
 def _make_builder(
     *,
     timeline_reader: FakeTimelineReader | None = None,
@@ -110,7 +115,7 @@ def _make_builder(
     shipped_fixes: tuple[TechLeadShippedFixSummary, ...] = (),
     e2e_health_reader: Callable[[datetime], BoardE2EHealth | None] | None = None,
     tech_lead_write_health_reader: (
-        Callable[[datetime], BoardTechLeadWriteHealth | None] | None
+        Callable[[datetime], BoardTechLeadWriteHealth] | None
     ) = None,
     clock: Callable[[], datetime] | None = None,
     session_activity_reader: (
@@ -124,7 +129,8 @@ def _make_builder(
         shipped_fix_reader=lambda limit: shipped_fixes[:limit],
         e2e_health_reader=e2e_health_reader or (lambda now: None),
         tech_lead_write_health_reader=(
-            tech_lead_write_health_reader or (lambda now: None)
+            tech_lead_write_health_reader
+            or (lambda now: _UNKNOWN_WRITE_HEALTH)
         ),
         session_activity_reader=session_activity_reader or (lambda session: None),
         clock=clock or (lambda: FIXED_NOW),
@@ -961,25 +967,38 @@ class TestTechLeadWriteHealth:
     def test_the_reader_is_called_with_the_builders_clock(self) -> None:
         seen: list[datetime] = []
         clock = datetime(2026, 8, 17, 7, 32, 0)
+        health = self._health("writing", is_alarm=False)
+
+        def reader(now: datetime) -> BoardTechLeadWriteHealth:
+            seen.append(now)
+            return health
 
         _make_builder(
-            clock=lambda: clock,
-            tech_lead_write_health_reader=lambda now: seen.append(now) or None,
+            clock=lambda: clock, tech_lead_write_health_reader=reader
         ).build(OrchestratorState())
 
         assert seen == [clock]
 
-    def test_a_failing_reader_never_takes_the_snapshot_down(self) -> None:
-        # A signal about a silent subsystem must not become "no tech lead can
-        # launch": the snapshot is a required launch input.
-        def boom(_now: datetime) -> BoardTechLeadWriteHealth | None:
+    def test_a_failing_reader_degrades_loudly_instead_of_erasing_the_signal(
+        self,
+    ) -> None:
+        # Two invariants at once. The snapshot must not fail — it is a required
+        # launch input, so taking it down turns "the tech lead stopped writing"
+        # into "no tech lead can launch". But the signal must not silently
+        # vanish either: an absent field is indistinguishable from a healthy
+        # board, which is the exact failure this alarm exists to stop (#7262 F5).
+        def boom(_now: datetime) -> BoardTechLeadWriteHealth:
             raise RuntimeError("timeline store unavailable")
 
         snapshot = _make_builder(tech_lead_write_health_reader=boom).build(
             OrchestratorState()
         )
 
-        assert snapshot.tech_lead_write_health is None
+        health = snapshot.tech_lead_write_health
+        assert health is not None
+        assert health.verdict == "unavailable"
+        assert health.is_alarm
+        assert "timeline store unavailable" in health.reason
 
     def test_it_survives_the_snapshot_round_trip(self) -> None:
         health = self._health("proposing_only", is_alarm=True)
@@ -991,9 +1010,19 @@ class TestTechLeadWriteHealth:
 
         assert restored.tech_lead_write_health == health
 
-    def test_a_snapshot_without_the_signal_round_trips_as_none(self) -> None:
-        snapshot = _make_builder(
-            tech_lead_write_health_reader=lambda now: None
-        ).build(OrchestratorState())
+    def test_a_schema_six_snapshot_without_the_signal_still_loads(self) -> None:
+        # A tech-lead run writes its snapshot at launch and reads it back at
+        # completion; an upgrade landing mid-run must not reject the run's own
+        # file and fail its completion with zero decision effects (#7262 F6).
+        stored = _make_builder(
+            tech_lead_write_health_reader=lambda now: self._health(
+                "writing", is_alarm=False
+            )
+        ).build(OrchestratorState()).to_dict()
+        stored["schema_version"] = 6
+        del stored["tech_lead_write_health"]
 
-        assert BoardSnapshot.from_dict(snapshot.to_dict()).tech_lead_write_health is None
+        restored = BoardSnapshot.from_dict(stored)
+
+        assert restored.schema_version == 6
+        assert restored.tech_lead_write_health is None

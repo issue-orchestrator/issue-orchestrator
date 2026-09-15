@@ -7,6 +7,7 @@ and finding-promotion blocks. Mirrors the parsing split that already exists
 so importers are unaffected.
 """
 
+import math
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -695,9 +696,17 @@ class TechLeadConfig:
                 f"{TECH_LEAD_MAX_EXPEDITED_LIMIT} (0 disables the expedite lane), "
                 f"got {self.max_expedited}"
             )
-        if self.write_health_stale_after_hours <= 0:
+        if (
+            not math.isfinite(self.write_health_stale_after_hours)
+            or self.write_health_stale_after_hours <= 0
+        ):
+            # NaN and inf both pass a naive `> 0` check and both silently
+            # disable the alarm: NaN makes every comparison False so a busy
+            # engine reads as idle, and inf makes any historical execution count
+            # as `writing` forever (#7262 review F8).
             errors.append(
-                "tech_lead.write_health_stale_after_hours must be > 0 hours, got "
+                "tech_lead.write_health_stale_after_hours must be a positive, "
+                "finite number of hours, got "
                 f"{self.write_health_stale_after_hours}"
             )
         errors.extend(self.dedup.startup_errors())

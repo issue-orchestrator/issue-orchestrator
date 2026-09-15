@@ -2846,7 +2846,7 @@ class TestTechLeadCompletionEffects:
         outcome: CompletionOutcome,
         label_action: RequestedAction,
         comment_body: str,
-        **fields: str,
+        **fields: object,
     ) -> CompletionRecord:
         return make_record(
             outcome=outcome,
@@ -2855,6 +2855,18 @@ class TestTechLeadCompletionEffects:
             comment_body=comment_body,
             **fields,
         )
+
+    @staticmethod
+    def _posted(mock_pr_adapter) -> list[tuple[int, str]]:
+        """Every (target, body) pair actually published.
+
+        The target matters as much as the body: an escalation posted to the
+        wrong issue is no better than one discarded.
+        """
+        return [
+            (call_args.args[0], call_args.args[1])
+            for call_args in mock_pr_adapter.add_comment.call_args_list
+        ]
 
     def test_needs_human_question_reaches_github(
         self,
@@ -2876,28 +2888,25 @@ class TestTechLeadCompletionEffects:
         processor = self._make_processor(
             tmp_path, mock_label_adapter, mock_pr_adapter, mock_git_adapter, event_bus
         )
-        question = (
-            "## Needs Human Input\n\n**Question:** Two reset_retry proposals have"
-            " been open since 2026-08-07. Approve or decline?"
-        )
         record = self._escalation_record(
             CompletionOutcome.NEEDS_HUMAN,
             RequestedAction.ADD_NEEDS_HUMAN_LABEL,
-            question,
+            "ignored: the orchestrator renders this itself",
             question="Approve or decline the open reset_retry proposals?",
+            context="Two have been open since 2026-08-07.",
         )
         worktree = worktree_with_completion(record)
 
         self._process(processor, worktree, agent_label="agent:tech-lead")
 
-        posted = [
-            call_args.args[1]
-            for call_args in mock_pr_adapter.add_comment.call_args_list
-        ]
-        assert question in posted, (
-            "the escalation's question never reached GitHub; the label alone"
-            " leaves nobody able to answer it"
-        )
+        assert self._posted(mock_pr_adapter) == [
+            (
+                123,
+                "## Needs Human Input\n\n**Question:** Approve or decline the"
+                " open reset_retry proposals?\n**Context:** Two have been open"
+                " since 2026-08-07.",
+            )
+        ], "the escalation never reached GitHub, or reached the wrong issue"
 
     def test_blocked_reason_reaches_github(
         self,
@@ -2911,11 +2920,10 @@ class TestTechLeadCompletionEffects:
         processor = self._make_processor(
             tmp_path, mock_label_adapter, mock_pr_adapter, mock_git_adapter, event_bus
         )
-        reason = "## Blocked\n\n**Reason:** shared pattern authority unreachable"
         record = self._escalation_record(
             CompletionOutcome.BLOCKED,
             RequestedAction.ADD_BLOCKED_LABEL,
-            reason,
+            "ignored",
             blocked_reason="shared pattern authority unreachable",
             attempted="retried the registry ref read three times",
         )
@@ -2923,11 +2931,49 @@ class TestTechLeadCompletionEffects:
 
         self._process(processor, worktree, agent_label="agent:tech-lead")
 
-        posted = [
-            call_args.args[1]
-            for call_args in mock_pr_adapter.add_comment.call_args_list
+        assert self._posted(mock_pr_adapter) == [
+            (
+                123,
+                "## Blocked\n\n**Reason:** shared pattern authority"
+                " unreachable\n**Attempted:** retried the registry ref read"
+                " three times",
+            )
         ]
-        assert reason in posted
+
+    def test_an_agents_work_report_cannot_ride_an_escalation_outcome(
+        self,
+        tmp_path,
+        mock_label_adapter,
+        mock_pr_adapter,
+        mock_git_adapter,
+        event_bus,
+        worktree_with_completion,
+    ):
+        """The outcome authorizes the POST; it does not authorize the BODY.
+
+        ``comment_body`` is agent-supplied and only bounded, so keying the rule
+        on outcome alone would let an ``## Implementation`` write-up be posted
+        under a ``needs_human`` outcome -- walking straight through the very rule
+        the shaping exists to enforce (#7262 review F9). The orchestrator renders
+        the escalation from the record's validated structured fields instead.
+        """
+        processor = self._make_processor(
+            tmp_path, mock_label_adapter, mock_pr_adapter, mock_git_adapter, event_bus
+        )
+        record = self._escalation_record(
+            CompletionOutcome.NEEDS_HUMAN,
+            RequestedAction.ADD_NEEDS_HUMAN_LABEL,
+            "## Implementation\n\nRewrote the scheduler.\n\n## Problems\n\nNone",
+            question="Which base branch?",
+        )
+        worktree = worktree_with_completion(record)
+
+        self._process(processor, worktree, agent_label="agent:tech-lead")
+
+        [(target, body)] = self._posted(mock_pr_adapter)
+        assert target == 123
+        assert "## Implementation" not in body
+        assert body == "## Needs Human Input\n\n**Question:** Which base branch?"
 
     def test_a_non_tech_lead_escalation_is_unaffected(
         self,
@@ -2953,11 +2999,7 @@ class TestTechLeadCompletionEffects:
 
         self._process(processor, worktree, agent_label="agent:coder")
 
-        posted = [
-            call_args.args[1]
-            for call_args in mock_pr_adapter.add_comment.call_args_list
-        ]
-        assert question in posted
+        assert self._posted(mock_pr_adapter) == [(123, question)]
 
     def test_clean_tech_lead_audit_completes_without_publish_failure(
         self,
