@@ -14,6 +14,9 @@ from issue_orchestrator.control.pattern_registry import (
     LocalPatternCaseFileRegistry,
     MirroredPatternCaseFileRegistry,
 )
+from issue_orchestrator.control.pattern_registry_preview import (
+    ReadOnlyPatternCaseFileRegistry,
+)
 from issue_orchestrator.control.tech_lead_case_file_owner import (
     AmbiguousPatternPublicationError,
     CaseFileState,
@@ -30,11 +33,15 @@ from issue_orchestrator.domain.tech_lead_findings import (
 )
 from issue_orchestrator.domain.tech_lead_session import TechLeadCreationOrigin
 from issue_orchestrator.ports.pattern_registry import (
+    PatternRegistryEntry,
     PatternRegistryError,
     PatternReservationState,
 )
 from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthorityStore
-from issue_orchestrator.entrypoints.bootstrap_tech_lead import create_pattern_registry
+from issue_orchestrator.entrypoints.bootstrap_tech_lead import (
+    create_pattern_registry,
+    create_pattern_registry_preview,
+)
 from issue_orchestrator.infra.config import Config
 
 from tests.unit.adapters.github.test_ref_claim_adapter import FakeGitHubRefClient
@@ -531,6 +538,22 @@ def _retirement(transition_id: str) -> CaseFileLifecycleTransition:
     )
 
 
+def _committed_entry(
+    *, signature: str, issue_number: int, observation_id: str
+) -> PatternRegistryEntry:
+    """A committed row as another client's seed would present it."""
+    return PatternRegistryEntry(
+        signature=signature,
+        reservation_id="seeded",
+        claimant_id="engine-b",
+        expires_at="2026-09-10T00:00:00+00:00",
+        pending=None,
+        issue_number=issue_number,
+        observation_ids=(observation_id,),
+        classification=CaseFileClassification(),
+    )
+
+
 def _shared_registry_with_case_file() -> GitHubRefPatternRegistry:
     registry = GitHubRefPatternRegistry(
         cast(Any, FakeGitHubRefClient()),
@@ -595,3 +618,333 @@ def test_no_registry_admits_a_second_terminal_transition(build) -> None:
     assert entry is not None
     assert entry.pending_retirement is None
     assert [item.transition_id for item in entry.lifecycle] == ["plan:first"]
+
+
+def test_lifecycle_preview_composition_is_read_only_by_construction(tmp_path) -> None:
+    """A preview holds a registry that CANNOT write, not one told not to.
+
+    The mirrored registry writes on paths that read like reads, so a boolean
+    that suppresses the seed leaves local migration and pending-intent discard
+    reachable through ``list_entries``/``read``. The preview composition
+    therefore returns a different object, and every write method on it refuses
+    rather than being merely unused (#7248 review F1/A1).
+    """
+    client = FakeGitHubRefClient()
+    host = GitHubAdapter(repo="owner/repo", http_client=cast(Any, client))
+    config = Config(repo_root=tmp_path)
+    config.tech_lead_enabled = False
+
+    registry = create_pattern_registry_preview(config, host)
+
+    assert isinstance(registry, ReadOnlyPatternCaseFileRegistry)
+    assert registry.list_entries() == ()
+    assert "refs/issue-orchestrator/registry/tech-lead-patterns" not in client.refs
+    with pytest.raises(PatternRegistryError, match="read-only pattern registry"):
+        registry.reserve(_pending("run:a:A1"))
+    with pytest.raises(PatternRegistryError, match="read-only pattern registry"):
+        registry.record_lifecycle(
+            signature="stuck-retry", transition=_classification("preview")
+        )
+    with pytest.raises(PatternRegistryError, match="read-only pattern registry"):
+        registry.reserve_retirement(
+            signature="stuck-retry",
+            transition=_retirement("preview"),
+            comment="<!-- retirement -->",
+            issue_number=81,
+        )
+    with pytest.raises(PatternRegistryError, match="read-only pattern registry"):
+        registry.seed_committed(())
+
+
+def test_explicit_lifecycle_command_refuses_a_non_shared_host(tmp_path) -> None:
+    config = Config(repo_root=tmp_path)
+
+    with pytest.raises(RuntimeError, match="requires shared GitHub authority"):
+        create_pattern_registry(
+            config,
+            None,
+            InMemoryTechLeadAuthorityStore(),
+            shared_required=True,
+        )
+    with pytest.raises(RuntimeError, match="requires shared GitHub authority"):
+        create_pattern_registry_preview(config, None)
+
+
+def _classification(transition_id: str) -> CaseFileLifecycleTransition:
+    return CaseFileLifecycleTransition(
+        transition_id=transition_id,
+        disposition="needs_human",
+        reason="New evidence arrived after the plan was reviewed.",
+        evidence=("owner/repo#99",),
+        recorded_at="2026-09-11T09:00:00+00:00",
+    )
+
+
+@pytest.mark.parametrize(
+    "build", (_shared_registry_with_case_file, _local_registry_with_case_file)
+)
+def test_no_registry_admits_a_plan_reviewed_against_changed_facts(build) -> None:
+    """A reviewed revision is enforced atomically, in BOTH registries.
+
+    A reconciliation plan is a decision about facts an operator read. The window
+    between reading them and writing is exactly where a concurrent observation
+    or classification lands, so the revision is checked INSIDE the write that
+    admits the transition, not before it — and it is checked the same way in the
+    single-process registry and in shared authority, because a rule that holds
+    in only one of them lets a stale plan comment on and close a case file
+    purely by virtue of which registry a deployment runs (#7248 review P2).
+    """
+    registry = build()
+    reviewed = registry.read(signature="stuck-retry")
+    assert reviewed is not None
+    stale = reviewed.review_revision()
+    registry.record_lifecycle(
+        signature="stuck-retry", transition=_classification("concurrent")
+    )
+
+    with pytest.raises(PatternRegistryError, match="changed since lifecycle review"):
+        registry.reserve_retirement(
+            signature="stuck-retry",
+            transition=_retirement("plan:stale"),
+            comment="<!-- retirement -->",
+            issue_number=81,
+            expected_revision=stale,
+        )
+    with pytest.raises(PatternRegistryError, match="changed since lifecycle review"):
+        registry.record_lifecycle(
+            signature="stuck-retry",
+            transition=_classification("plan:stale-classify"),
+            expected_revision=stale,
+        )
+
+    entry = registry.read(signature="stuck-retry")
+    assert entry is not None
+    assert entry.pending_retirement is None
+    assert [item.transition_id for item in entry.lifecycle] == ["concurrent"]
+
+    # The current revision is admitted by the very same call.
+    accepted = registry.reserve_retirement(
+        signature="stuck-retry",
+        transition=_retirement("plan:current"),
+        comment="<!-- retirement -->",
+        issue_number=81,
+        expected_revision=entry.review_revision(),
+    )
+    assert accepted.state is PatternReservationState.ACQUIRED
+
+
+@pytest.mark.parametrize(
+    "build", (_shared_registry_with_case_file, _local_registry_with_case_file)
+)
+def test_every_registry_replays_an_applied_outcome_after_its_revision_moves(
+    build,
+) -> None:
+    """Resuming an applied plan must not be refused by its own effect.
+
+    Recording the transition changes the entry, so the reviewed revision is
+    stale the instant the plan's own write lands. A resumed apply therefore has
+    to reach idempotent replay BEFORE the staleness rule, or every interrupted
+    reconciliation would be permanently unfinishable (#7248 review P2).
+    """
+    registry = build()
+    reviewed = registry.read(signature="stuck-retry")
+    assert reviewed is not None
+    revision = reviewed.review_revision()
+    first = registry.reserve_retirement(
+        signature="stuck-retry",
+        transition=_retirement("plan:only"),
+        comment="<!-- retirement -->",
+        issue_number=81,
+        expected_revision=revision,
+    )
+    registry.confirm_retirement_comment(
+        signature="stuck-retry", reservation_id=first.entry.reservation_id
+    )
+    registry.finalize_retirement(
+        signature="stuck-retry", reservation_id=first.entry.reservation_id
+    )
+
+    replay = registry.reserve_retirement(
+        signature="stuck-retry",
+        transition=_retirement("plan:only"),
+        comment="<!-- retirement -->",
+        issue_number=81,
+        expected_revision=revision,
+    )
+
+    assert replay.state is PatternReservationState.COMMITTED
+    entry = registry.read(signature="stuck-retry")
+    assert entry is not None
+    assert [item.transition_id for item in entry.lifecycle] == ["plan:only"]
+
+
+def test_one_reviewed_revision_admits_exactly_one_concurrent_transition() -> None:
+    """The revision check and the write it guards are ONE operation (#7248 F5).
+
+    "Single-process" is not "single-thread". The local registry read the
+    committed entry, checked the expected revision against it, then mutated --
+    and nothing held those three steps together. Two threads presenting the same
+    reviewed revision could both pass the check and both write, so one
+    transition was silently lost and two different decisions were accepted
+    against one revision. The prior test for this invariant mutated
+    sequentially, which the racy implementation passed.
+
+    The barrier below makes both threads arrive inside the window at the same
+    time; the invariant is that exactly one survives.
+    """
+    import threading
+
+    registry = _local_registry_with_case_file()
+    reviewed = registry.read(signature="stuck-retry")
+    assert reviewed is not None
+    revision = reviewed.review_revision()
+
+    start = threading.Barrier(2)
+    outcomes: list[object] = []
+    lock = threading.Lock()
+
+    def attempt(transition_id: str) -> None:
+        start.wait(timeout=5)
+        try:
+            registry.record_lifecycle(
+                signature="stuck-retry",
+                transition=_classification(transition_id),
+                expected_revision=revision,
+            )
+            result: object = "admitted"
+        except PatternRegistryError as exc:
+            result = exc
+        with lock:
+            outcomes.append(result)
+
+    threads = [
+        threading.Thread(target=attempt, args=(f"race:{index}",)) for index in range(2)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+        assert not thread.is_alive()
+
+    admitted = [outcome for outcome in outcomes if outcome == "admitted"]
+    rejected = [outcome for outcome in outcomes if isinstance(outcome, PatternRegistryError)]
+    assert len(admitted) == 1, f"expected exactly one admission, got {outcomes}"
+    assert len(rejected) == 1
+    assert "changed since lifecycle review" in str(rejected[0])
+
+    # And the surviving transition is the only one recorded: the loser's write
+    # must not have landed at all.
+    final = registry.read(signature="stuck-retry")
+    assert final is not None
+    assert len([t for t in final.lifecycle if t.transition_id.startswith("race:")]) == 1
+
+
+@pytest.mark.parametrize(
+    "build", (_shared_registry_with_case_file, _local_registry_with_case_file)
+)
+def test_no_registry_admits_a_plan_that_no_longer_covers_it(build) -> None:
+    """Whole-plan admission happens INSIDE the write, in BOTH registries (#7248 F1).
+
+    A reconciliation plan must classify the complete registry snapshot, and an
+    operator reviewed it against exactly the signatures that snapshot held.
+    Checking coverage once in the controller and then writing entry by entry was
+    a check-then-write race: a signature created after preflight leaves every
+    PLANNED entry's own revision untouched, so all of them still write and the
+    command reports success while the new signature was never reviewed by anyone.
+
+    The reviewed population therefore travels with each write and is re-admitted
+    inside the same compare-and-swap as the revision.
+    """
+    registry = build()
+    reviewed_population = frozenset({"stuck-retry"})
+
+    # A concurrent client files a case file for a class nobody reviewed.
+    registry.seed_committed(
+        (
+            _committed_entry(
+                signature="unreviewed-class",
+                issue_number=82,
+                observation_id="run:b:B1",
+            ),
+        )
+    )
+
+    with pytest.raises(PatternRegistryError, match="no longer covers"):
+        registry.reserve_retirement(
+            signature="stuck-retry",
+            transition=_retirement("plan:covered"),
+            comment="<!-- retirement -->",
+            issue_number=81,
+            expected_signatures=reviewed_population,
+        )
+    with pytest.raises(PatternRegistryError, match="no longer covers"):
+        registry.record_lifecycle(
+            signature="stuck-retry",
+            transition=_classification("plan:covered-classify"),
+            expected_signatures=reviewed_population,
+        )
+
+    # The refusal names what changed, so the operator can re-review it.
+    with pytest.raises(PatternRegistryError, match="unreviewed-class"):
+        registry.record_lifecycle(
+            signature="stuck-retry",
+            transition=_classification("plan:covered-classify"),
+            expected_signatures=reviewed_population,
+        )
+
+
+@pytest.mark.parametrize(
+    "build", (_shared_registry_with_case_file, _local_registry_with_case_file)
+)
+def test_a_plans_own_writes_never_invalidate_its_own_admission(build) -> None:
+    """The check must bind foreign changes only (#7248 F1).
+
+    No write in this registry adds or removes a signature -- lifecycle
+    transitions and retirements only replace an entry -- so a plan applying its
+    own outcomes one after another must keep being admitted. A population check
+    that tripped on the plan's own progress would make every multi-outcome plan
+    unappliable.
+    """
+    registry = build()
+    registry.seed_committed(
+        (
+            _committed_entry(
+                signature="second-class", issue_number=82, observation_id="run:b:B1"
+            ),
+        )
+    )
+    population = frozenset({"stuck-retry", "second-class"})
+
+    registry.record_lifecycle(
+        signature="stuck-retry",
+        transition=_classification("plan:one"),
+        expected_signatures=population,
+    )
+    second = registry.record_lifecycle(
+        signature="second-class",
+        transition=_classification("plan:two"),
+        expected_signatures=population,
+    )
+
+    assert second.lifecycle[-1].transition_id == "plan:two"
+
+
+@pytest.mark.parametrize(
+    "build", (_shared_registry_with_case_file, _local_registry_with_case_file)
+)
+def test_a_caller_with_no_reviewed_plan_is_unaffected(build) -> None:
+    """Ordinary promotion settlement carries no plan and must not be gated."""
+    registry = build()
+    registry.seed_committed(
+        (
+            _committed_entry(
+                signature="second-class", issue_number=82, observation_id="run:b:B1"
+            ),
+        )
+    )
+
+    entry = registry.record_lifecycle(
+        signature="stuck-retry", transition=_classification("no-plan")
+    )
+
+    assert entry.lifecycle[-1].transition_id == "no-plan"

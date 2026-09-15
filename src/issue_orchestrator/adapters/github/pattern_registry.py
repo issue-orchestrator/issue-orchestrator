@@ -7,6 +7,7 @@ canonical signature mapping with one ref and one commit read.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -30,12 +31,27 @@ from ...ports.pattern_registry import (
     PatternReservation,
     PatternReservationState,
     require_canonical_case_file,
+    require_resumable_retirement,
+    require_reviewed_population,
+    require_reviewed_revision,
 )
 from .ref_store import GitRefCasStore, GitRefSnapshot
 from .pattern_registry_codec import format_entries, parse_entries
 
 if TYPE_CHECKING:
     from .http_client import GitHubHttpClient
+
+
+logger = logging.getLogger(__name__)
+
+
+def _has_effect_in_flight(entry: PatternRegistryEntry) -> bool:
+    """True while a reservation is riding on this entry's exact revision."""
+    return (
+        entry.pending_retirement is not None
+        or entry.pending_observation is not None
+        or entry.pending is not None
+    )
 
 
 PATTERN_REGISTRY_REF_PREFIX = "refs/issue-orchestrator/registry"
@@ -335,12 +351,24 @@ class GitHubRefPatternRegistry(PatternCaseFileRegistry):
         return entry is not None and observation_id in entry.observation_ids
 
     def record_lifecycle(
-        self, *, signature: str, transition: CaseFileLifecycleTransition
+        self,
+        *,
+        signature: str,
+        transition: CaseFileLifecycleTransition,
+        expected_revision: str | None = None,
+        expected_signatures: frozenset[str] | None = None,
     ) -> PatternRegistryEntry:
         if transition.terminal:
             raise ValueError("terminal lifecycle changes require retirement")
         for _ in range(MAX_CAS_ATTEMPTS):
             snapshot, entries = self._load()
+            # Whole-population admission, inside the SAME compare-and-swap as the
+            # write it guards. A controller that checks plan coverage once and
+            # then writes entry by entry is racing: a signature added in between
+            # leaves every planned entry's own revision untouched, so the whole
+            # plan still lands and reports success while that signature was never
+            # reviewed (#7248 review F1).
+            require_reviewed_population(entries, expected_signatures)
             current = self._committed(entries, signature)
             if admit_lifecycle_transition(current, transition):
                 return current
@@ -348,6 +376,7 @@ class GitHubRefPatternRegistry(PatternCaseFileRegistry):
                 raise PatternRegistryError(
                     f"pattern {signature!r} has another lifecycle effect in flight"
                 )
+            require_reviewed_revision(current, expected_revision)
             if current.lifecycle and current.lifecycle[-1].terminal:
                 raise PatternRegistryError(
                     f"pattern {signature!r} is terminal; reopening requires an"
@@ -366,12 +395,15 @@ class GitHubRefPatternRegistry(PatternCaseFileRegistry):
         transition: CaseFileLifecycleTransition,
         comment: str,
         issue_number: int,
+        expected_revision: str | None = None,
+        expected_signatures: frozenset[str] | None = None,
     ) -> PatternReservation:
         if not transition.terminal:
             raise ValueError("retirement requires a terminal disposition")
         desired = PendingPatternRetirement(transition=transition, comment=comment)
         for _ in range(MAX_CAS_ATTEMPTS):
             snapshot, entries = self._load()
+            require_reviewed_population(entries, expected_signatures)
             current = self._committed(entries, signature)
             require_canonical_case_file(current, issue_number)
             if admit_lifecycle_transition(current, transition):
@@ -381,6 +413,7 @@ class GitHubRefPatternRegistry(PatternCaseFileRegistry):
                 return self._existing_retirement(current, desired)
             if current.pending_observation is not None:
                 return PatternReservation(PatternReservationState.HELD, current)
+            require_reviewed_revision(current, expected_revision)
             entry = replace(
                 current,
                 reservation_id=uuid.uuid4().hex,
@@ -400,16 +433,7 @@ class GitHubRefPatternRegistry(PatternCaseFileRegistry):
         current: PatternRegistryEntry,
         desired: PendingPatternRetirement,
     ) -> PatternReservation:
-        pending = current.pending_retirement
-        assert pending is not None
-        if not pending.transition.same_intent(desired.transition):
-            raise PatternRegistryError(
-                f"pattern {current.signature!r} has a different retirement in flight"
-            )
-        if pending.comment != desired.comment:
-            raise PatternRegistryError(
-                f"pattern {current.signature!r} retirement comment changed"
-            )
+        pending = require_resumable_retirement(current, desired)
         if pending.phase is PatternRetirementPhase.CLOSE:
             return PatternReservation(PatternReservationState.RECOVERABLE, current)
         if current.publication_started_at is not None:
@@ -434,7 +458,19 @@ class GitHubRefPatternRegistry(PatternCaseFileRegistry):
                 return PatternReservation(PatternReservationState.RECOVERABLE, current)
             if current.publication_started_at is not None:
                 return PatternReservation(PatternReservationState.PUBLISHING, current)
-            if current.reservation_id != stale_reservation_id or not self._expired(current):
+            if current.reservation_id != stale_reservation_id:
+                return PatternReservation(PatternReservationState.HELD, current)
+            if current.claimant_id == self._claimant_id:
+                # Re-entering our OWN live reservation is a resume, not a
+                # takeover: there is nothing to steal and no lease to wait out.
+                # Requiring expiry here deadlocked the caller that had just been
+                # refused by its mutation guard mid-retirement -- it held a valid
+                # unexpired reservation and could neither use it nor take it
+                # over. The local registry already resumed on a matching
+                # reservation id, so this also removes a rule that was enforced
+                # differently by registry (#7248 review F6).
+                return PatternReservation(PatternReservationState.ACQUIRED, current)
+            if not self._expired(current):
                 return PatternReservation(PatternReservationState.HELD, current)
             entry = replace(
                 current,
@@ -528,6 +564,20 @@ class GitHubRefPatternRegistry(PatternCaseFileRegistry):
         Existing shared rows win identity.  A different canonical issue is a
         hard conflict; matching rows merge evidence and classification so two
         clients upgrading concurrently cannot discard either local history.
+
+        An entry with an EFFECT IN FLIGHT is left alone. A reserved retirement
+        carries a decision an operator reviewed against that entry's exact
+        revision, and merging observations or classification underneath it moves
+        the revision while the reserved decision still rides on the old one --
+        after which retirement recovery accepts the existing pending retirement
+        before it ever reaches the revision check, and the stale decision
+        comments on and closes the issue against evidence that has since changed
+        (#7248 review F2).
+
+        Skipping is not discarding: the rows stay in local authority and the
+        next ``synchronize`` merges them once the effect settles, which is
+        seconds to minutes. Raising instead would fail every composition that
+        happens to race a retirement, including engine startup.
         """
         seeds = entries
         for _ in range(MAX_CAS_ATTEMPTS):
@@ -540,6 +590,14 @@ class GitHubRefPatternRegistry(PatternCaseFileRegistry):
                 if current is None:
                     current_entries[seed.signature] = seed
                     changed = True
+                    continue
+                if _has_effect_in_flight(current):
+                    logger.info(
+                        "[pattern-registry] deferring seed merge for %r: an effect"
+                        " is in flight; the reviewed revision must not move"
+                        " underneath it",
+                        seed.signature,
+                    )
                     continue
                 if current.issue_number != seed.issue_number:
                     raise PatternRegistryError(

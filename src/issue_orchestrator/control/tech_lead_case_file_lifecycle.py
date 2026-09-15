@@ -14,6 +14,7 @@ from ..ports.pattern_registry import (
     PatternReservationState,
     PatternRetirementPhase,
     require_canonical_case_file,
+    resolve_recorded_transition,
 )
 from .comment_publication import ensure_comment_published
 from .tech_lead_case_file_owner import AmbiguousPatternPublicationError
@@ -64,12 +65,20 @@ class PatternCaseFileLifecycleOwner:
         self._before_write = before_write
 
     def classify(
-        self, *, signature: str, transition: CaseFileLifecycleTransition
+        self,
+        *,
+        signature: str,
+        transition: CaseFileLifecycleTransition,
+        expected_revision: str | None = None,
+        expected_signatures: frozenset[str] | None = None,
     ) -> "PatternRegistryEntry":
         """Record a reviewed active/needs-human outcome without closing GitHub."""
         self._before_write()
         return self._registry.record_lifecycle(
-            signature=signature, transition=transition
+            signature=signature,
+            transition=transition,
+            expected_revision=expected_revision,
+            expected_signatures=expected_signatures,
         )
 
     def retire(
@@ -78,6 +87,8 @@ class PatternCaseFileLifecycleOwner:
         signature: str,
         transition: CaseFileLifecycleTransition,
         issue_number: int,
+        expected_revision: str | None = None,
+        expected_signatures: frozenset[str] | None = None,
     ) -> CaseFileRetirementOutcome:
         """Publish evidence, close idempotently, then commit terminal authority.
 
@@ -95,6 +106,8 @@ class PatternCaseFileLifecycleOwner:
             transition=transition,
             comment=comment,
             issue_number=issue_number,
+            expected_revision=expected_revision,
+            expected_signatures=expected_signatures,
         )
         if reservation.state is PatternReservationState.COMMITTED:
             return self._outcome(
@@ -169,18 +182,25 @@ class PatternCaseFileLifecycleOwner:
                     " observable; preserving publication state"
                 )
         else:
-            self._before_write()
-            started = self._registry.begin_retirement_publication(
-                signature=entry.signature, reservation_id=entry.reservation_id
-            )
-            if started.state is not PatternReservationState.ACQUIRED:
-                raise PatternRegistryError(
-                    f"pattern {entry.signature!r} retirement reservation changed"
-                    " before publication"
+            # The publication marker is recorded by ``mark_attempt``, INSIDE
+            # ``ensure_comment_published`` and immediately before the only call
+            # that can reach GitHub. Recording it here instead — before the
+            # receipt pre-check and before the mutation guard — is what made a
+            # transient refusal permanent: nothing was posted, the entry was
+            # left PUBLISHING, and every retry then required a receipt that
+            # could never exist (#7248 review F6).
+            def mark_attempt() -> None:
+                nonlocal entry
+                started = self._registry.begin_retirement_publication(
+                    signature=entry.signature, reservation_id=entry.reservation_id
                 )
-            entry = self._subject(started.entry, issue_number)
-            pending = entry.pending_retirement
-            assert pending is not None
+                if started.state is not PatternReservationState.ACQUIRED:
+                    raise PatternRegistryError(
+                        f"pattern {entry.signature!r} retirement reservation changed"
+                        " before publication"
+                    )
+                entry = self._subject(started.entry, issue_number)
+
             ensure_comment_published(
                 issue_number,
                 pending.comment,
@@ -189,6 +209,7 @@ class PatternCaseFileLifecycleOwner:
                 ),
                 post_comment=self._repository.add_comment,
                 before_write=self._before_write,
+                mark_attempt=mark_attempt,
             )
         self._before_write()
         return self._registry.confirm_retirement_comment(
@@ -248,16 +269,10 @@ class PatternCaseFileLifecycleOwner:
         entry: "PatternRegistryEntry", requested: CaseFileLifecycleTransition
     ) -> CaseFileLifecycleTransition:
         """The durable record of *requested*, matched on its stable identity."""
-        for recorded in entry.lifecycle:
-            if recorded.transition_id != requested.transition_id:
-                continue
-            if not recorded.same_intent(requested):
-                raise PatternRegistryError(
-                    f"lifecycle transition {requested.transition_id!r} changed"
-                    " payload"
-                )
-            return recorded
-        raise PatternRegistryError(
-            f"pattern {entry.signature!r} reports a completed retirement, but"
-            f" durable authority has no transition {requested.transition_id!r}"
-        )
+        recorded = resolve_recorded_transition(entry, requested)
+        if recorded is None:
+            raise PatternRegistryError(
+                f"pattern {entry.signature!r} reports a completed retirement, but"
+                f" durable authority has no transition {requested.transition_id!r}"
+            )
+        return recorded

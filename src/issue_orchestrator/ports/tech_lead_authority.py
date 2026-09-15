@@ -358,8 +358,33 @@ class TechLeadAuthorityStore(Protocol):
         fix_class: str,
         area: str,
         diagnosis: str,
+        disposition: str,
+        retirement_pending: bool,
     ) -> None:
-        """Replace one local cache row from the shared pattern authority."""
+        """Replace one local cache row from the shared pattern authority.
+
+        ``disposition`` is the settled lifecycle shared authority reports and
+        ``retirement_pending`` whether it holds a terminal retirement that has
+        not finalized yet. BOTH are projected because promotion eligibility is
+        decided from this local ledger, and a retirement is durably admitted
+        long before it settles — so a restart, a resynchronize, or a cold second
+        client must honour the in-flight intent too (#7248 rounds 7 and 8,
+        F9/F11). A row that already blocks promotion is never moved back: the
+        seed that precedes a mirror cannot carry either fact with it.
+        """
+        ...
+
+    def record_pattern_lifecycle(
+        self, *, signature: str, disposition: str, retirement_pending: bool
+    ) -> None:
+        """Project one signature's lifecycle state durably.
+
+        The single-process registry's counterpart to ``mirror_pattern``: it has
+        no shared authority to mirror FROM, so it writes these facts here
+        directly whenever its lifecycle state changes. Raises
+        :class:`UnknownTechLeadPatternError` for a signature with no local row —
+        a lifecycle state without a case file is a caller bug, not a new row.
+        """
         ...
 
     def lookup_pattern(self, *, signature: str) -> int | None:
@@ -736,8 +761,12 @@ class InMemoryTechLeadAuthorityStore:
         fix_class: str,
         area: str,
         diagnosis: str,
+        disposition: str,
+        retirement_pending: bool,
     ) -> None:
-        from ..domain.tech_lead_findings import PatternEvidence
+        from typing import cast
+
+        from ..domain.tech_lead_findings import CaseFileDisposition, PatternEvidence
 
         if issue_number <= 0 or not observation_ids:
             raise ValueError("a mirrored pattern requires an issue and observations")
@@ -747,6 +776,9 @@ class InMemoryTechLeadAuthorityStore:
                 f"pattern signature {signature!r} is already recorded for"
                 f" case-file issue #{existing}"
             )
+        settled, pending = self._still_blocking(
+            signature, disposition, retirement_pending
+        )
         self._patterns[signature] = issue_number
         self._observations[signature] = set(observation_ids)
         self._evidence[signature] = PatternEvidence(
@@ -756,7 +788,51 @@ class InMemoryTechLeadAuthorityStore:
             fix_class=fix_class,
             area=area,
             diagnosis=diagnosis,
+            disposition=cast(CaseFileDisposition, settled),
+            retirement_pending=pending,
         )
+
+    def record_pattern_lifecycle(
+        self, *, signature: str, disposition: str, retirement_pending: bool
+    ) -> None:
+        from dataclasses import replace
+        from typing import cast
+
+        from ..domain.tech_lead_findings import (
+            VALID_CASE_FILE_DISPOSITIONS,
+            CaseFileDisposition,
+        )
+
+        if disposition not in VALID_CASE_FILE_DISPOSITIONS:
+            raise ValueError(f"unknown case-file disposition {disposition!r}")
+        current = self._evidence.get(signature)
+        if current is None:
+            raise UnknownTechLeadPatternError(
+                f"pattern signature {signature!r} has no local case-file row"
+            )
+        settled, pending = self._still_blocking(
+            signature, disposition, retirement_pending
+        )
+        self._evidence[signature] = replace(
+            current,
+            disposition=cast(CaseFileDisposition, settled),
+            retirement_pending=pending,
+        )
+
+    def _still_blocking(
+        self, signature: str, disposition: str, retirement_pending: bool
+    ) -> tuple[str, bool]:
+        """A row that has left the promotion lane never re-enters it."""
+        from ..domain.tech_lead_findings import TERMINAL_CASE_FILE_DISPOSITIONS
+
+        current = self._evidence.get(signature)
+        if current is None:
+            return disposition, retirement_pending
+        if current.is_terminal:
+            return current.disposition, False
+        if disposition in TERMINAL_CASE_FILE_DISPOSITIONS:
+            return disposition, False
+        return disposition, retirement_pending or current.retirement_pending
 
     def lookup_pattern(self, *, signature: str) -> int | None:
         return self._patterns.get(signature)

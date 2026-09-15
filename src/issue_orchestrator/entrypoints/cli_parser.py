@@ -400,14 +400,19 @@ def _register_runtime_commands(subparsers, handlers: CLICommandHandlers) -> None
     reconcile_case_files_parser = subparsers.add_parser(
         "reconcile-case-files",
         help=(
-            "Fold an already-accumulated duplicate cluster onto its pattern"
-            " case file from a checked-in plan (dry-run by default)"
+            "Apply a checked-in reviewed plan: fold accumulated duplicates onto"
+            " a pattern case file, or reconcile case-file lifecycles"
+            " (dry-run by default)"
         ),
     )
     reconcile_case_files_parser.add_argument(
         "--plan",
         required=True,
-        help="Path to the reconciliation plan YAML naming each cluster",
+        help=(
+            "Path to the reviewed plan YAML — an evidence plan naming each"
+            " duplicate cluster, or a lifecycle plan naming every case file in"
+            " the registry snapshot and its reviewed disposition"
+        ),
     )
     reconcile_case_files_parser.add_argument(
         "--apply",
