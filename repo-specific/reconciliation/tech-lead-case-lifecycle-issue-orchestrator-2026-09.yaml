@@ -1,15 +1,28 @@
 # Reviewed Tech Lead case-file lifecycle plan for #7240.
 # Dry-run: issue-orchestrator reconcile-case-files --plan repo-specific/reconciliation/tech-lead-case-lifecycle-issue-orchestrator-2026-09.yaml
 # Apply only after reviewing every outcome: add --apply.
-# Revisions generated from the ALREADY-SHARED registry projection (this repo's
-# engine has published its rows), reconfirmed 2026-09-11 against
-# .issue-orchestrator/state/tech_lead_authority.sqlite: 13/13 match.
-# Two rows carry an observation_count one higher than their stored observation
-# identities (review-exchange-coder-no-completion #6913 and
-# stuck-sweep-ghost-failure-reinjection #6927). If those two are not yet in
-# shared authority, the apply seeds them with a padded synthetic identity and
-# their revision moves; the plan is then refused for exactly those two and must
-# be regenerated from the seeded projection. See the runbook.
+# Revisions generated from the SEEDED projection -- the entries the first apply
+# will publish -- reconfirmed 2026-09-15 with
+#   scripts/check_lifecycle_plan_revisions.py --plan <this file> \
+#       --repo-root <this checkout>
+# 13/13 match.
+#
+# The header previously claimed the ALREADY-SHARED projection, on the basis that
+# this repo's engine had published its rows. It had not:
+# `git ls-remote origin 'refs/issue-orchestrator/*'` shows three claim refs and
+# no registry ref, so the shared registry has never been created and a dry run
+# reports all 13 signatures as `unknown`.
+#
+# That mattered for exactly the two rows the previous header warned about.
+# review-exchange-coder-no-completion #6913 (observation_count 5, 4 stored
+# identities) and stuck-sweep-ghost-failure-reinjection #6927 (4, 3) are padded
+# on seeding with a synthetic `legacy:` identity that is itself part of the
+# revision, so their revisions moved and the compare-and-swap would have refused
+# them. Both are corrected here; the other 11 were unaffected because their
+# stored identities already equalled their observation_count.
+#
+# Re-run the checker IMMEDIATELY before applying: the projection moves whenever
+# the engine records another observation. See the runbook.
 plan_id: 7240-issue-orchestrator-case-files-2026-09
 repository: issue-orchestrator/issue-orchestrator
 recorded_at: '2026-09-10T23:15:00+00:00'
@@ -17,7 +30,7 @@ outcomes:
 - signature: review-exchange-coder-no-completion
   issue: 6913
   disposition: superseded
-  expected_revision: b4abb0b7d54e37c224495c152ac9889181794df7e106fbdb760bc22d9a339a80
+  expected_revision: 9e2be4794cfb67cb86de0472b39299890e945d64eb5e1de468dda62ba67359ff
   reason: Validated coder work now enters durable escrow and recovery instead of being destroyed when
     review cannot complete.
   evidence:
@@ -27,7 +40,7 @@ outcomes:
 - signature: stuck-sweep-ghost-failure-reinjection
   issue: 6927
   disposition: shipped
-  expected_revision: 8b6c49576da08bc976934a834a9a1e3f7d6da21b005247db1fdfceb4c667b597
+  expected_revision: 21b60697a65c90c54bf7dfa2eea4fbdcc303df1621c2d1147ccd9b1f567bb59d
   reason: Tech Lead investigations now require durable follow-through, preventing completed diagnoses
     from returning as unowned ghost failures.
   evidence:
