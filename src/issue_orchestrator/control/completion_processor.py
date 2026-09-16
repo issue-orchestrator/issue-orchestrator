@@ -559,6 +559,30 @@ class CompletionProcessor:
             )
         )
 
+    def _reviewed_branch_name(self, worktree: Path | None) -> str | None:
+        """The branch a review event is ABOUT, for attribution (#7263).
+
+        A tech-lead failure investigation normally runs in a disposable scratch
+        worktree, so its run directory alone says the record is not the issue's
+        own work. A validation RETRY of one relaunches in the focus issue's
+        ordinary worktree on the investigation branch — so the run directory
+        looks ordinary and the branch is the only durable signal left. Without it
+        the retry's `review.approved` is recorded as the implementation being
+        approved, which is the #6969 misdiagnosis returning by a different road.
+
+        Naming the branch a review approved is independently worth doing: it is
+        the exact fact the #6410 misreading turned on.
+
+        No defensive catch: ``WorkingCopy.get_current_branch`` already contracts
+        to return ``None`` on a detached HEAD or a read failure, so an adapter
+        that raises here is violating its port and should surface rather than be
+        silently absorbed into "no branch". A ``None`` simply records no branch
+        and the attribution degrades to what shipped without it.
+        """
+        if worktree is None:
+            return None
+        return self.git_adapter.get_current_branch(worktree)
+
     def _emit_review_started(
         self,
         *,
@@ -613,6 +637,7 @@ class CompletionProcessor:
         review_cache_summary_path: str | None = None,
         review_cache_validation_record_path: str | None = None,
         review_cache_head_sha: str | None = None,
+        worktree: Path | None = None,
     ) -> None:
         """Emit review terminal event from local exchange outcome.
 
@@ -633,6 +658,8 @@ class CompletionProcessor:
         }
         if run_dir is not None:
             payload["run_dir"] = str(run_dir)
+        if (reviewed_branch := self._reviewed_branch_name(worktree)) is not None:
+            payload["branch_name"] = reviewed_branch
         if artifacts:
             payload["artifacts"] = artifacts
         if cached:

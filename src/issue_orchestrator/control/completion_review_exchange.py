@@ -791,6 +791,7 @@ class CompletionReviewExchange:
                 reviewer_label=reviewer_label,
                 errors=errors,
                 actions_taken=actions_taken,
+                worktree=worktree,
             )
             return mode, outcome, halt, False
         if decision is ResumeDecision.REUSE_HALT:
@@ -805,6 +806,7 @@ class CompletionReviewExchange:
                 reviewer_label=reviewer_label,
                 errors=errors,
                 actions_taken=actions_taken,
+                worktree=worktree,
             )
             return mode, outcome, halt, False
         if decision is ResumeDecision.COUNT_NO_COMPLETION_AND_RETRY:
@@ -870,6 +872,7 @@ class CompletionReviewExchange:
         reviewer_label: str | None,
         errors: list[str],
         actions_taken: list[str],
+        worktree: Path | None = None,
     ) -> tuple[str, ReviewExchangeOutcome, bool]:
         review_run_dir = run_assets.run_dir
         cache_metadata = _cached_review_event_metadata(existing_outcome)
@@ -906,6 +909,7 @@ class CompletionReviewExchange:
                 cached=True,
                 artifacts=self._review_artifacts_from_outcome(existing_outcome),
                 **cache_metadata,
+                worktree=worktree,
             )
             return exchange_mode, existing_outcome, False
         _log_review_exchange_halt(
@@ -926,6 +930,7 @@ class CompletionReviewExchange:
             cached=True,
             artifacts=self._review_artifacts_from_outcome(existing_outcome),
             **cache_metadata,
+            worktree=worktree,
         )
         errors.append(_review_exchange_halt_error(existing_outcome))
         return exchange_mode, existing_outcome, True
@@ -978,6 +983,7 @@ class CompletionReviewExchange:
                 summary=f"Review exchange halted: {exchange_result.reason}",
                 run_dir=review_run_dir,
                 artifacts=self._review_artifacts_from_outcome(exchange_result),
+                worktree=worktree,
             )
             errors.append(_review_exchange_halt_error(exchange_result))
             return exchange_mode, exchange_result, True
@@ -1004,6 +1010,7 @@ class CompletionReviewExchange:
             summary=reviewer_summary,
             run_dir=review_run_dir,
             artifacts=self._review_artifacts_from_outcome(exchange_result),
+            worktree=worktree,
         )
         self.store_review_exchange_summary(
             review_run=review_run,

@@ -6201,3 +6201,109 @@ def test_manual_settlement_preserves_requested_effects_without_generic_publish(
     mock_pr_adapter.create_pr.assert_not_called()
     mock_label_adapter.add_label.assert_called_once_with(42, "feature")
     mock_label_adapter.remove_label.assert_called_once_with(123, "needs-rework")
+
+
+class TestReviewOutcomeNamesTheBranchItReviewed:
+    """A review event records WHICH branch it approved (#7263).
+
+    It used to carry only `run_dir`. That is enough to attribute a tech-lead
+    investigation while it runs in its disposable scratch worktree, but a
+    validation RETRY of one relaunches in the focus issue's ORDINARY worktree on
+    the investigation branch — leaving the branch as the only durable signal that
+    the approval is not the implementation's. Without it the retry's
+    `review.approved` was recorded as the implementation being approved, which is
+    the #6969 misdiagnosis returning by a different road.
+    """
+
+    def _processor(self, tmp_path: Path, mock_git_adapter) -> CompletionProcessor:
+        prompt = tmp_path / "p.md"
+        prompt.write_text("prompt")
+        config = Config(repo="test/repo")
+        config.config_path = _write_test_config(tmp_path)
+        config.agents = {"agent:coder": AgentConfig(prompt_path=prompt)}
+        return make_completion_processor(
+            agent_callback_endpoint=ready_callback_endpoint(),
+            label_adapter=Mock(),
+            pr_adapter=Mock(),
+            git_adapter=mock_git_adapter,
+            session_output=FileSystemSessionOutput(),
+            event_bus=EventBus(),
+            label_config={},
+            config=config,
+        )
+
+    def test_the_reviewed_branch_is_recorded(
+        self, tmp_path: Path, mock_git_adapter
+    ) -> None:
+        mock_git_adapter.get_current_branch.return_value = (
+            "tech-lead-investigation-6410-df24fde45b3b"
+        )
+        processor = self._processor(tmp_path, mock_git_adapter)
+        sink = InMemoryEventSink()
+        processor._trace_events = sink  # noqa: SLF001
+        processor._event_context = EventContext()  # noqa: SLF001
+
+        processor._emit_review_outcome(  # noqa: SLF001
+            issue_number=6410,
+            reviewer_label="agent:reviewer",
+            exchange_mode="via-local-loop",
+            approved=True,
+            rounds=2,
+            summary="approved",
+            run_dir=tmp_path / "run",
+            worktree=tmp_path / "worktree",
+        )
+
+        event = sink.last_event(str(EventName.REVIEW_APPROVED))
+        assert event is not None
+        assert event.data["branch_name"] == "tech-lead-investigation-6410-df24fde45b3b"
+
+    def test_a_worktree_with_no_readable_branch_records_none(
+        self, tmp_path: Path, mock_git_adapter
+    ) -> None:
+        # `WorkingCopy.get_current_branch` contracts to return None on a detached
+        # HEAD or a read failure, so that is the case to pin -- not a raise, which
+        # would be a port violation and should surface.
+        mock_git_adapter.get_current_branch.return_value = None
+        processor = self._processor(tmp_path, mock_git_adapter)
+        sink = InMemoryEventSink()
+        processor._trace_events = sink  # noqa: SLF001
+        processor._event_context = EventContext()  # noqa: SLF001
+
+        processor._emit_review_outcome(  # noqa: SLF001
+            issue_number=6410,
+            reviewer_label="agent:reviewer",
+            exchange_mode="via-local-loop",
+            approved=True,
+            rounds=1,
+            summary="approved",
+            run_dir=tmp_path / "run",
+            worktree=tmp_path / "gone",
+        )
+
+        event = sink.last_event(str(EventName.REVIEW_APPROVED))
+        assert event is not None
+        assert "branch_name" not in event.data
+
+    def test_no_worktree_records_no_branch(
+        self, tmp_path: Path, mock_git_adapter
+    ) -> None:
+        processor = self._processor(tmp_path, mock_git_adapter)
+        sink = InMemoryEventSink()
+        processor._trace_events = sink  # noqa: SLF001
+        processor._event_context = EventContext()  # noqa: SLF001
+
+        processor._emit_review_outcome(  # noqa: SLF001
+            issue_number=6410,
+            reviewer_label="agent:reviewer",
+            exchange_mode="via-local-loop",
+            approved=False,
+            rounds=1,
+            summary="halted",
+            run_dir=tmp_path / "run",
+        )
+
+        event = sink.last_event(str(EventName.REVIEW_CHANGES_REQUESTED))
+        assert event is not None
+        assert "branch_name" not in event.data
+        mock_git_adapter.get_current_branch.assert_not_called()
