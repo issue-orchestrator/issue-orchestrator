@@ -1243,28 +1243,20 @@ class TestInvestigationRetryReachesTheBoardCorrectlyLabelled:
             for record in extract.records
         ), "the investigation's approval and push were attributed to the issue"
 
-    def test_a_retry_event_that_names_no_branch_is_a_KNOWN_GAP(
+    def test_a_retrys_review_approval_is_attributed_to_the_investigation(
         self, tmp_path: Path
     ) -> None:
-        """The one attribution this PR does NOT close, pinned so it cannot drift.
+        """The gap #7261 left, now closed (#7263).
 
-        ``review.approved`` carries ``run_dir`` but no ``branch_name``
-        (``completion_processor._emit_review_outcome``). A validation-RETRIED
-        investigation relaunches in the focus issue's ordinary worktree, so such
-        an event has no durable signal that says "investigation" and is recorded
-        as the issue's own work.
-
-        Closing it needs one of two changes this PR deliberately does not carry:
-        restoring the retry's disposable worktree (``session_launcher.py`` is at
-        its line budget, and forcing a fresh checkout there would discard the
-        retry's own commits), or threading the reviewed branch through the
-        ``ReviewOutcomeEmitter`` protocol and its call sites. Tracked separately.
-
-        Every OTHER path is covered: a non-retried investigation's run directory
-        is under its scratch worktree, and every completion-handler event carries
-        the actor from the session itself.
+        ``review.approved`` used to carry ``run_dir`` but no ``branch_name``. A
+        validation-RETRIED investigation relaunches in the focus issue's ORDINARY
+        worktree, so its run directory looked ordinary and the event was recorded
+        as the implementation being approved -- the #6969 misdiagnosis returning
+        by a different road. The emitter now names the branch it reviewed, which
+        is the one durable signal left on that path.
         """
-        own_run_dir = str(
+        token = new_scratch_token()
+        retry_run_dir = str(
             tmp_path
             / f"issue-orchestrator-{self.ISSUE}"
             / ".issue-orchestrator"
@@ -1273,7 +1265,14 @@ class TestInvestigationRetryReachesTheBoardCorrectlyLabelled:
         )
         store = self._store(tmp_path)
 
-        self._publish(store, EventName.REVIEW_APPROVED, {"run_dir": own_run_dir})
+        self._publish(
+            store,
+            EventName.REVIEW_APPROVED,
+            {
+                "run_dir": retry_run_dir,
+                "branch_name": scratch_branch_name(self.ISSUE, token),
+            },
+        )
 
         builder = _make_builder(
             timeline_reader=lambda issue, limit: store.read(issue, limit=limit)
@@ -1282,7 +1281,7 @@ class TestInvestigationRetryReachesTheBoardCorrectlyLabelled:
             OrchestratorState(), focus_issue=self.ISSUE, failures=[], timeline_limit=10
         )
 
-        assert snapshot.timeline[0].actor_counts == {"issue-session": 1}
+        assert snapshot.timeline[0].actor_counts == {"tech-lead-investigation": 1}
 
     def test_the_implementations_own_records_stay_its_own(self, tmp_path: Path) -> None:
         own_run_dir = str(
