@@ -6,6 +6,11 @@ budget; these are pure text builders with no wizard-state dependencies.
 
 from __future__ import annotations
 
+from .tech_lead_board_prompt import (
+    TECH_LEAD_TIMELINE_ACTOR_SECTION,
+    TECH_LEAD_WRITE_HEALTH_SECTION,
+)
+
 
 def build_starter_prompt_text(agent_short: str) -> str:
     """Build the canonical work-agent prompt text."""
@@ -528,27 +533,9 @@ investigations: start from your focus issue, then use the snapshot for board
 context (what else was running, queued, or failing at the same time). Health
 reviews: the snapshot IS your assignment - review it end to end.
 
-**`tech_lead_write_health` is about you, and it outranks everything else on the
-board.** It compares how recently a tech-lead run was requested against how
-recently a tech-lead decision actually reached GitHub. When `is_alarm` is true,
-report it as a finding before anything else you found, and follow the verdict:
+{TECH_LEAD_WRITE_HEALTH_SECTION}
 
-- `proposing_only` - runs ARE deciding and nothing is being applied. Do NOT
-  re-diagnose the runs. Look at the approval gate (`tech_lead.authority.*`
-  entries set to `propose` create gated proposal issues that stay inert until an
-  operator removes the `proposed-tech-lead` label) and at the act-level
-  appliers. Count the outstanding gated proposals and name them.
-- `silent` - runs continue and are producing neither proposals nor applied
-  decisions. Something upstream of the decision is failing; the runs themselves
-  are where to look.
-- `idle` - no runs requested inside the window. Nothing to report.
-- `writing` - healthy.
-
-This signal exists because the subsystem once ran ten days requesting runs and
-applying not one decision, consuming agent capacity and manufacturing
-`blocked-failed` labels the whole time, and every health review in that window
-read a board snapshot that said nothing about it (#7080). A silent tech lead is
-worse than a disabled one; do not let this one pass unreported.
+{TECH_LEAD_TIMELINE_ACTOR_SECTION}
 
 Completing with no code changes is normal and succeeds - the orchestrator will
 not attempt PR-creation noise for a clean audit. If you did commit

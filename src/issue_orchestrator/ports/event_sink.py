@@ -105,6 +105,11 @@ class RunScopedEventPayload(RunIdentityEventPayload):
     # rather than produced by a fresh reviewer in this orchestrator run. The
     # timeline narrative enrichers branch on this flag.
     cached: NotRequired[bool]
+    # Which session produced this record (#6969). A tech-lead failure
+    # investigation runs under its FOCUS issue's number, so without this a
+    # reader cannot tell its investigation-branch approval or push from the
+    # issue's own implementation. See ``domain.timeline_actor``.
+    timeline_actor: NotRequired[str]
 
 
 class SessionStartedEventPayload(RunScopedEventPayload):

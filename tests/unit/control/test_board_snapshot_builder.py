@@ -28,6 +28,14 @@ from issue_orchestrator.domain.board_snapshot import (
     BoardTechLeadWriteHealth,
     SessionActivityFacts,
 )
+from issue_orchestrator.domain.tech_lead_scratch_identity import (
+    new_scratch_token,
+    scratch_branch_name,
+)
+from issue_orchestrator.events import EventName
+from issue_orchestrator.execution.timeline_store import SqliteTimelineStore
+from issue_orchestrator.execution.timeline_writer import DefaultTimelineWriter
+from issue_orchestrator.ports.event_sink import TraceEvent
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.tech_lead_session import (
     TechLeadCaseFileSummary,
@@ -529,9 +537,15 @@ class TestTimeline:
                 "timestamp": "2026-07-10T11:00:00+00:00",
                 "event": "session.started",
                 "data": {"agent": "agent:test"},
+                # A record with no durable run identity is not attributable to a
+                # session, so it is labelled unknown rather than assumed to be
+                # the issue's own work (#6969).
+                "timeline_actor": "unknown",
             },
         ]
+        assert focus_extract.actor_counts == {"unknown": 1}
         assert snapshot.timeline[2].records == []  # no records for issue 206
+        assert snapshot.timeline[2].actor_counts == {}
 
     def test_timeline_issues_capped(
         self, run_assets: SessionRunAssets, prompt_path: Path
@@ -1026,3 +1040,271 @@ class TestTechLeadWriteHealth:
 
         assert restored.schema_version == 6
         assert restored.tech_lead_write_health is None
+
+
+class TestTimelineActorLabelling:
+    """A tech-lead investigation's records must not read as the issue's own (#6969).
+
+    Reconstructed from the real #6410 timeline: the investigation ran under issue
+    #6410's number inside the scratch worktree
+    ``issue-orchestrator-tech-lead-6410-df24fde45b3b``, and the 2026-08-03 health
+    review read its ``review.approved`` from this very extract as the
+    implementation being review-approved.
+    """
+
+    INVESTIGATION_RUN_DIR = (
+        "/Users/brucegordon/dev/issue-orchestrator-tech-lead-6410-df24fde45b3b"
+        "/.issue-orchestrator/sessions/20260728-023837Z__review-exchange-6410"
+    )
+    IMPLEMENTATION_RUN_DIR = (
+        "/Users/brucegordon/dev/issue-orchestrator-6410"
+        "/.issue-orchestrator/sessions/20260727-214653Z__coding-1"
+    )
+
+    @staticmethod
+    def _record(event_id: str, event: str, data: dict[str, object]) -> TimelineRecord:
+        return TimelineRecord(
+            event_id=event_id,
+            timestamp="2026-07-28T03:10:51+00:00",
+            event=event,
+            data=data,
+        )
+
+    def _snapshot(self, records: list[TimelineRecord]):
+        builder = _make_builder(
+            timeline_reader=FakeTimelineReader({6410: records})
+        )
+        return builder.build(
+            OrchestratorState(), focus_issue=6410, failures=[], timeline_limit=10
+        )
+
+    def test_investigation_approval_is_labelled_as_a_foreign_session(self) -> None:
+        snapshot = self._snapshot(
+            [
+                self._record(
+                    "evt-approval",
+                    "review.approved",
+                    {"run_dir": self.INVESTIGATION_RUN_DIR},
+                )
+            ]
+        )
+
+        record = snapshot.timeline[0].records[0]
+        assert record["event"] == "review.approved"
+        assert record["timeline_actor"] == "tech-lead-investigation"
+
+    def test_implementation_record_keeps_its_own_label(self) -> None:
+        snapshot = self._snapshot(
+            [
+                self._record(
+                    "evt-coding",
+                    "agent.coding_started",
+                    {"run_dir": self.IMPLEMENTATION_RUN_DIR},
+                )
+            ]
+        )
+
+        assert snapshot.timeline[0].records[0]["timeline_actor"] == "issue-session"
+
+    def test_mixed_stream_is_counted_so_a_reader_cannot_skim_past_it(self) -> None:
+        snapshot = self._snapshot(
+            [
+                self._record(
+                    "evt-1", "review.approved", {"run_dir": self.INVESTIGATION_RUN_DIR}
+                ),
+                self._record(
+                    "evt-2",
+                    "session.processing_completed",
+                    {"run_dir": self.INVESTIGATION_RUN_DIR},
+                ),
+                self._record(
+                    "evt-3",
+                    "agent.coding_started",
+                    {"run_dir": self.IMPLEMENTATION_RUN_DIR},
+                ),
+                self._record(
+                    "evt-4", "agent.coding_completed", {"session_name": "issue-6410"}
+                ),
+            ]
+        )
+
+        assert snapshot.timeline[0].actor_counts == {
+            "tech-lead-investigation": 2,
+            "issue-session": 1,
+            "unknown": 1,
+        }
+
+    def test_stamped_records_are_trusted_over_path_derivation(self) -> None:
+        # Newly written records declare their actor at the source; the extract
+        # must use the declaration rather than re-deriving it.
+        snapshot = self._snapshot(
+            [
+                self._record(
+                    "evt-stamped",
+                    "session.started",
+                    {
+                        "timeline_actor": "tech-lead-investigation",
+                        "run_dir": self.IMPLEMENTATION_RUN_DIR,
+                    },
+                )
+            ]
+        )
+
+        assert (
+            snapshot.timeline[0].records[0]["timeline_actor"]
+            == "tech-lead-investigation"
+        )
+
+    def test_labelled_extract_survives_the_snapshot_round_trip(self) -> None:
+        snapshot = self._snapshot(
+            [
+                self._record(
+                    "evt-1", "review.approved", {"run_dir": self.INVESTIGATION_RUN_DIR}
+                )
+            ]
+        )
+
+        restored = BoardSnapshot.from_dict(snapshot.to_dict())
+
+        assert restored.timeline[0].actor_counts == {"tech-lead-investigation": 1}
+        assert (
+            restored.timeline[0].records[0]["timeline_actor"]
+            == "tech-lead-investigation"
+        )
+
+
+class TestInvestigationRetryReachesTheBoardCorrectlyLabelled:
+    """The whole chain, with no fakes between the producer and the reader.
+
+    A tech-lead failure investigation fails validation and is retried. Real
+    producers publish its review approval and its processing completion; the real
+    ``DefaultTimelineWriter`` enriches and writes them to a real
+    ``SqliteTimelineStore``; the real ``BoardSnapshotBuilder`` reads them back.
+
+    This is the path that produced the #6969 misdiagnosis end to end: the health
+    review read #6410's extract, saw an approval and "Pushed branch to remote",
+    and reported the IMPLEMENTATION as review-approved (#6969 review F1).
+    """
+
+    ISSUE = 6410
+
+    def _store(self, tmp_path: Path) -> SqliteTimelineStore:
+        store = SqliteTimelineStore(tmp_path / "timeline.sqlite")
+        store.initialize()
+        return store
+
+    def _publish(self, store: SqliteTimelineStore, name: EventName, data: dict) -> None:
+        DefaultTimelineWriter(store).record(
+            TraceEvent(name, {"issue_number": self.ISSUE, **data})
+        )
+
+    def test_the_retrys_approval_and_push_are_not_the_issues_own_work(
+        self, tmp_path: Path
+    ) -> None:
+        token = new_scratch_token()
+        branch = scratch_branch_name(self.ISSUE, token)
+        # The retry's run directory is an ORDINARY one; only the investigation
+        # branch says what this session is.
+        retry_run_dir = str(
+            tmp_path
+            / f"issue-orchestrator-{self.ISSUE}"
+            / ".issue-orchestrator"
+            / "sessions"
+            / "20260804-023729Z__coding-2"
+        )
+        store = self._store(tmp_path)
+
+        self._publish(
+            store,
+            EventName.REVIEW_APPROVED,
+            {"run_dir": retry_run_dir, "branch_name": branch},
+        )
+        self._publish(
+            store,
+            EventName.SESSION_PROCESSING_COMPLETED,
+            {
+                "run_dir": retry_run_dir,
+                "branch_name": branch,
+                "actions_taken": ["Review exchange passed (cached)", "Pushed branch to remote"],
+            },
+        )
+
+        builder = _make_builder(
+            timeline_reader=lambda issue, limit: store.read(issue, limit=limit)
+        )
+        snapshot = builder.build(
+            OrchestratorState(), focus_issue=self.ISSUE, failures=[], timeline_limit=10
+        )
+
+        extract = snapshot.timeline[0]
+        assert extract.actor_counts == {"tech-lead-investigation": 2}
+        assert all(
+            record["timeline_actor"] == "tech-lead-investigation"
+            for record in extract.records
+        ), "the investigation's approval and push were attributed to the issue"
+
+    def test_a_retry_event_that_names_no_branch_is_a_KNOWN_GAP(
+        self, tmp_path: Path
+    ) -> None:
+        """The one attribution this PR does NOT close, pinned so it cannot drift.
+
+        ``review.approved`` carries ``run_dir`` but no ``branch_name``
+        (``completion_processor._emit_review_outcome``). A validation-RETRIED
+        investigation relaunches in the focus issue's ordinary worktree, so such
+        an event has no durable signal that says "investigation" and is recorded
+        as the issue's own work.
+
+        Closing it needs one of two changes this PR deliberately does not carry:
+        restoring the retry's disposable worktree (``session_launcher.py`` is at
+        its line budget, and forcing a fresh checkout there would discard the
+        retry's own commits), or threading the reviewed branch through the
+        ``ReviewOutcomeEmitter`` protocol and its call sites. Tracked separately.
+
+        Every OTHER path is covered: a non-retried investigation's run directory
+        is under its scratch worktree, and every completion-handler event carries
+        the actor from the session itself.
+        """
+        own_run_dir = str(
+            tmp_path
+            / f"issue-orchestrator-{self.ISSUE}"
+            / ".issue-orchestrator"
+            / "sessions"
+            / "20260804-023729Z__coding-2"
+        )
+        store = self._store(tmp_path)
+
+        self._publish(store, EventName.REVIEW_APPROVED, {"run_dir": own_run_dir})
+
+        builder = _make_builder(
+            timeline_reader=lambda issue, limit: store.read(issue, limit=limit)
+        )
+        snapshot = builder.build(
+            OrchestratorState(), focus_issue=self.ISSUE, failures=[], timeline_limit=10
+        )
+
+        assert snapshot.timeline[0].actor_counts == {"issue-session": 1}
+
+    def test_the_implementations_own_records_stay_its_own(self, tmp_path: Path) -> None:
+        own_run_dir = str(
+            tmp_path
+            / f"issue-orchestrator-{self.ISSUE}"
+            / ".issue-orchestrator"
+            / "sessions"
+            / "20260727-214653Z__coding-1"
+        )
+        store = self._store(tmp_path)
+
+        self._publish(
+            store,
+            EventName.REVIEW_APPROVED,
+            {"run_dir": own_run_dir, "branch_name": f"{self.ISSUE}-fix-the-thing"},
+        )
+
+        builder = _make_builder(
+            timeline_reader=lambda issue, limit: store.read(issue, limit=limit)
+        )
+        snapshot = builder.build(
+            OrchestratorState(), focus_issue=self.ISSUE, failures=[], timeline_limit=10
+        )
+
+        assert snapshot.timeline[0].actor_counts == {"issue-session": 1}
