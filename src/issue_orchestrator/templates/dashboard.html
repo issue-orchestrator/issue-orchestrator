@@ -671,6 +671,13 @@
     <script src="/static/js/expanded_column_state.js"></script>
     <script src="/static/js/compact_card_state.js"></script>
     <script src="/static/js/ui_action_contract.js"></script>
+    {# Browser runtime validation for UI JSON payloads (issue #6337).
+       ui-contracts.validators.js is generated from docs/api/ui-openapi.json;
+       ui_contract_json.js is the shared fail-closed reader every JSON
+       boundary goes through.  Both must load before the dashboard chunks
+       that ingest JSON (lifecycle_commands.js, e2e_runs_list.js, …). #}
+    <script src="/static/js/ui-contracts.validators.js"></script>
+    <script src="/static/js/ui_contract_json.js"></script>
     <script src="/static/vendor/xterm/xterm.js"></script>
     <script src="/static/vendor/xterm/addon-fit.js"></script>
     {% for chunk in dashboard_js_chunks %}

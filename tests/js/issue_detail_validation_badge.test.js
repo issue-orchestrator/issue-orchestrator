@@ -20,6 +20,14 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
+// Real generated validators + fail-closed reader (issue #6337): the
+// modules under test validate their JSON payloads through this.
+const {
+    captureContractViolations,
+    resetContractViolationReporter,
+    uiContractJson,
+} = require('./ui_contract_test_support.js');
+
 function loadBadgeContext(overrides = {}) {
     const calls = [];
     const toasts = [];
@@ -47,6 +55,7 @@ function loadBadgeContext(overrides = {}) {
             calls.push(['open_review_transcript', issueNumber, runDir, opts || {}, target]),
         openPath: (p) => calls.push(['open_completion_record', String(p)]),
         showToast: (message, severity) => toasts.push([String(message), severity]),
+        uiContractJson,
     };
     const context = { ...baseStubs, ...overrides };
     vm.createContext(context);
@@ -169,14 +178,25 @@ test('badge passed/failed state renders even without a command payload (Phase B)
 test('badge dispatch covers every supported lifecycle command kind', () => {
     // Sanity check that the shared dispatcher routes each Command kind
     // it claims to handle.  Catches missing handler-table entries.
+    //
+    // Every payload here is a contract-valid ``TimelineCommandPayload``
+    // (issue #6337) — including the ``label`` each variant requires.
+    // ``open_review_transcript`` is deliberately absent: it is not a
+    // Command kind, only a legacy timeline ``action.type``.
     const { context, calls } = loadBadgeContext();
     const cases = [
         [
-            { kind: 'open_issue_timeline', issue_number: 7, scope_kind: 'e2e_run', e2e_run_id: 88 },
+            {
+                kind: 'open_issue_timeline', label: 'Timeline', issue_number: 7,
+                scope_kind: 'e2e_run', e2e_run_id: 88,
+            },
             ['open_issue_timeline', 7, { e2eRunId: 88 }],
         ],
         [
-            { kind: 'open_issue_timeline', issue_number: 7, scope_kind: 'dashboard' },
+            {
+                kind: 'open_issue_timeline', label: 'Timeline', issue_number: 7,
+                scope_kind: 'dashboard',
+            },
             ['open_issue_timeline', 7, {}],
         ],
         [
@@ -189,20 +209,11 @@ test('badge dispatch covers every supported lifecycle command kind', () => {
             }],
         ],
         [
-            {
-                kind: 'open_review_transcript', issue_number: 7, run_dir: '/r',
-                round_index: 1, transcript_role: 'reviewer',
-            },
-            ['open_review_transcript', 7, '/r', {
-                round_index: 1, transcript_role: 'reviewer',
-            }, 'toast'],
-        ],
-        [
-            { kind: 'open_validation_details', issue_number: 7, run_dir: '/r' },
+            { kind: 'open_validation_details', label: 'Validation', issue_number: 7, run_dir: '/r' },
             ['open_validation_details', 7, '/r', 'toast'],
         ],
         [
-            { kind: 'open_completion_record', path: '/cr.json' },
+            { kind: 'open_completion_record', label: 'Completion Record', path: '/cr.json' },
             ['open_completion_record', '/cr.json'],
         ],
     ];
@@ -215,11 +226,16 @@ test('badge dispatch covers every supported lifecycle command kind', () => {
     );
 });
 
-test('badge dispatch toasts a warning for an unknown command kind', () => {
+test('badge dispatch rejects an unknown command kind before any handler runs', () => {
+    // Pre-#6337 this fell through to the dispatcher's "Unsupported
+    // lifecycle command" warning.  A kind the contract does not define is
+    // now caught one layer earlier, as a payload violation.
     const { context, calls, toasts } = loadBadgeContext();
-    context.runLifecycleCommand({ kind: 'totally_unknown_kind', issue_number: 1 });
+    const violations = captureContractViolations();
+    context.runLifecycleCommand({ kind: 'totally_unknown_kind', label: 'Nope', issue_number: 1 });
     assert.deepEqual(calls, []);
-    assert.strictEqual(toasts.length, 1);
-    assert.match(toasts[0][0], /Unsupported lifecycle command: totally_unknown_kind/);
-    assert.strictEqual(toasts[0][1], 'warning');
+    assert.deepEqual(toasts, []);
+    assert.strictEqual(violations.length, 1);
+    assert.match(violations[0].errors.join(' '), /no contract variant matches string "totally_unknown_kind"/);
+    resetContractViolationReporter();
 });

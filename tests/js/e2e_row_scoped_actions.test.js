@@ -23,6 +23,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
+// Real generated validators + fail-closed reader (issue #6337): the
+// modules under test validate their JSON payloads through this.
+const { uiContractJson } = require('./ui_contract_test_support.js');
+
 const DASHBOARD_JS_DIR = path.join(
     __dirname,
     '../../src/issue_orchestrator/static/js/dashboard',
@@ -52,6 +56,7 @@ function _baseStubs() {
             .replace(/&/g, '&amp;').replace(/"/g, '&quot;'),
         _humanizeSnakeCase: (s) => String(s || ''),
         showToast: () => {},
+        uiContractJson,
         formatTimestamp: () => '',
         applyLifecycleDataset: () => {},
         renderTimeline: () => {},

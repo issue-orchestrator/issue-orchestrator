@@ -1,15 +1,22 @@
 import pytest
+from pydantic import ValidationError
 
+from issue_orchestrator.view_models.dialog_commands import (
+    DialogAction,
+    OpenPathCommand,
+    build_dialog_action_sections,
+)
 from issue_orchestrator.view_models.dialogs import (
-    _build_validation_failure_action_sections,
-    build_blocked_issues_dialog,
     build_config_dialog,
     build_debug_dialog,
     build_doctor_dialog,
     build_info_dialog,
-    build_phase_dialog,
     build_session_diagnostics_dialog,
     build_validation_failure_dialog,
+)
+from issue_orchestrator.view_models.issue_state_dialogs import (
+    build_blocked_issues_dialog,
+    build_phase_dialog,
 )
 
 
@@ -200,7 +207,10 @@ def test_build_session_diagnostics_dialog_actions():
     assert rows["Prompt Mode"] == "arg"
     assert rows["Validation Status"] == "failed"
     assert rows["Validation Reason"] == "Missing packages/vscode/node_modules"
-    assert dialog["analysis"]["headline"] == "Validation failed: Missing packages/vscode/node_modules"
+    assert (
+        dialog["analysis"]["headline"]
+        == "Validation failed: Missing packages/vscode/node_modules"
+    )
     assert dialog["follow_up_issues"] == [
         {
             "title": "Open follow-up for env-sensitive test isolation",
@@ -210,20 +220,33 @@ def test_build_session_diagnostics_dialog_actions():
         }
     ]
 
-    action_types = [action["type"] for action in dialog["actions"]]
-    assert "open_path" in action_types
-    assert "open_agent_log" in action_types
-    assert "copy_agent_log" in action_types
-    assert "view_claude_log" in action_types
-    assert "open_orchestrator_log" in action_types
-    agent_log_action = next(action for action in dialog["actions"] if action["type"] == "open_agent_log")
-    claude_action = next(action for action in dialog["actions"] if action["type"] == "view_claude_log")
-    orchestrator_action = next(action for action in dialog["actions"] if action["type"] == "open_orchestrator_log")
-    assert agent_log_action["run_dir"] == "/run/dir"
-    assert claude_action["run_dir"] == "/run/dir"
-    assert orchestrator_action["run_dir"] == "/run/dir"
+    # Issue #6327: each action carries a typed ``DialogActionCommand`` in
+    # ``action["command"]`` (not a loose ``action.type`` dict) plus its display
+    # ``group``.  The recording action reuses the canonical
+    # ``open_session_recording`` command rather than a bespoke ``open_agent_log``.
+    action_kinds = [action["command"]["kind"] for action in dialog["actions"]]
+    assert "open_path" in action_kinds
+    assert "open_session_recording" in action_kinds
+    assert "copy_session_recording" in action_kinds
+    assert "view_claude_log" in action_kinds
+    assert "open_orchestrator_log" in action_kinds
+    assert all(set(action) == {"command", "group"} for action in dialog["actions"])
 
-    paths = {action.get("path") for action in dialog["actions"] if "path" in action}
+    def _command(kind: str) -> dict:
+        return next(
+            a["command"] for a in dialog["actions"] if a["command"]["kind"] == kind
+        )
+
+    assert _command("open_session_recording")["run_dir"] == "/run/dir"
+    assert _command("open_session_recording")["error_surface"] == "inline"
+    assert _command("view_claude_log")["run_dir"] == "/run/dir"
+    assert _command("open_orchestrator_log")["run_dir"] == "/run/dir"
+
+    paths = {
+        action["command"]["path"]
+        for action in dialog["actions"]
+        if action["command"]["kind"] == "open_path"
+    }
     assert "/run/dir" in paths
     assert "/run/dir/session-identity.json" in paths
     assert "/logs/claude.log" in paths
@@ -309,13 +332,18 @@ def test_build_session_diagnostics_dialog_fallbacks_without_worktree():
     rows = _rows_to_map(dialog["rows"])
     assert rows["Session"] == "fallback-session"
     assert rows["Worktree"] == "-"
-    agent_log_action = next(action for action in dialog["actions"] if action["type"] == "open_agent_log")
-    orchestrator_action = next(action for action in dialog["actions"] if action["type"] == "open_orchestrator_log")
-    assert agent_log_action["run_dir"] == "/run/fallback"
-    assert orchestrator_action["run_dir"] == "/run/fallback"
-    assert all(action["type"] != "view_claude_log" for action in dialog["actions"])
+    commands = [action["command"] for action in dialog["actions"]]
+    agent_log_command = next(
+        c for c in commands if c["kind"] == "open_session_recording"
+    )
+    orchestrator_command = next(
+        c for c in commands if c["kind"] == "open_orchestrator_log"
+    )
+    assert agent_log_command["run_dir"] == "/run/fallback"
+    assert orchestrator_command["run_dir"] == "/run/fallback"
+    assert all(c["kind"] != "view_claude_log" for c in commands)
 
-    paths = {action.get("path") for action in dialog["actions"] if "path" in action}
+    paths = {c["path"] for c in commands if c["kind"] == "open_path"}
     assert "/run/fallback" in paths
     # No worktree means relative validation path cannot be resolved/opened.
     assert "validate.json" not in paths
@@ -334,7 +362,11 @@ def test_build_session_diagnostics_dialog_keeps_absolute_validation_path():
         },
     )
 
-    paths = {action.get("path") for action in dialog["actions"] if "path" in action}
+    paths = {
+        a["command"]["path"]
+        for a in dialog["actions"]
+        if a["command"]["kind"] == "open_path"
+    }
     assert "/wt/.issue-orchestrator/sessions/r1/validation-record.json" in paths
     assert "/wt//wt/.issue-orchestrator/sessions/r1/validation-record.json" not in paths
 
@@ -352,7 +384,11 @@ def test_build_session_diagnostics_dialog_keeps_absolute_validation_output_path(
         },
     )
 
-    paths = {action.get("path") for action in dialog["actions"] if "path" in action}
+    paths = {
+        a["command"]["path"]
+        for a in dialog["actions"]
+        if a["command"]["kind"] == "open_path"
+    }
     assert "/wt/.issue-orchestrator/sessions/r1/validation-output.log" in paths
 
 
@@ -395,30 +431,44 @@ def test_build_validation_failure_dialog_includes_failed_tests_and_artifacts():
         {"label": "Suite", "value": "publish_gate"},
         {"label": "Command", "value": "make validate"},
         {"label": "Exit Code", "value": "2"},
-        {"label": "Started", "value": "2026-03-22T04:53:14Z", "value_kind": "timestamp"},
+        {
+            "label": "Started",
+            "value": "2026-03-22T04:53:14Z",
+            "value_kind": "timestamp",
+        },
         {"label": "Ended", "value": "2026-03-22T04:53:58Z", "value_kind": "timestamp"},
         {"label": "Failing Tests", "value": "1"},
     ]
+    # Issue #6327: sections carry typed ``DialogActionCommand`` payloads under
+    # ``action["command"]``; ``group`` stays on the action wrapper as a display
+    # concern.  The recording button reuses the canonical
+    # ``open_session_recording`` command (with the dialog's inline error surface).
     assert dialog["action_sections"] == [
         {
             "title": "Validation Artifacts",
             "actions": [
                 {
-                    "type": "open_path",
-                    "label": "Open Validation Record",
-                    "path": "/wt/.issue-orchestrator/sessions/r1/validation-record.json",
+                    "command": {
+                        "kind": "open_path",
+                        "label": "Open Validation Record",
+                        "path": "/wt/.issue-orchestrator/sessions/r1/validation-record.json",
+                    },
                     "group": "validation_artifacts",
                 },
                 {
-                    "type": "open_path",
-                    "label": "Open Validation Output",
-                    "path": "/wt/.issue-orchestrator/sessions/r1/validation-stdout.log",
+                    "command": {
+                        "kind": "open_path",
+                        "label": "Open Validation Output",
+                        "path": "/wt/.issue-orchestrator/sessions/r1/validation-stdout.log",
+                    },
                     "group": "validation_artifacts",
                 },
                 {
-                    "type": "open_path",
-                    "label": "Open Validation Stderr",
-                    "path": "/wt/.issue-orchestrator/sessions/r1/validation-stderr.log",
+                    "command": {
+                        "kind": "open_path",
+                        "label": "Open Validation Stderr",
+                        "path": "/wt/.issue-orchestrator/sessions/r1/validation-stderr.log",
+                    },
                     "group": "validation_artifacts",
                 },
             ],
@@ -427,24 +477,34 @@ def test_build_validation_failure_dialog_includes_failed_tests_and_artifacts():
             "title": "Session Evidence",
             "actions": [
                 {
-                    "type": "open_agent_log",
-                    "label": "View Session Recording",
-                    "issue_number": 12,
-                    "run_dir": "/run/r1",
+                    "command": {
+                        "kind": "open_session_recording",
+                        "label": "View Session Recording",
+                        "issue_number": 12,
+                        "run_dir": "/run/r1",
+                        "session_role": None,
+                        "round_index": None,
+                        "error_surface": "inline",
+                    },
                     "group": "session_evidence",
                 },
                 {
-                    "type": "copy_agent_log",
-                    "label": "Copy Session Recording",
-                    "issue_number": 12,
-                    "run_dir": "/run/r1",
+                    "command": {
+                        "kind": "copy_session_recording",
+                        "label": "Copy Session Recording",
+                        "issue_number": 12,
+                        "run_dir": "/run/r1",
+                    },
                     "group": "session_evidence",
                 },
                 {
-                    "type": "open_orchestrator_log",
-                    "label": "Open Orchestrator Log",
-                    "issue_number": 12,
-                    "run_dir": "/run/r1",
+                    "command": {
+                        "kind": "open_orchestrator_log",
+                        "label": "Open Orchestrator Log",
+                        "issue_number": 12,
+                        "run_dir": "/run/r1",
+                        "error_surface": "inline",
+                    },
                     "group": "session_evidence",
                 },
             ],
@@ -453,22 +513,28 @@ def test_build_validation_failure_dialog_includes_failed_tests_and_artifacts():
             "title": "Diagnostics",
             "actions": [
                 {
-                    "type": "open_path",
-                    "label": "Open Session Dir",
-                    "path": "/run/r1",
+                    "command": {
+                        "kind": "open_path",
+                        "label": "Open Session Dir",
+                        "path": "/run/r1",
+                    },
                     "group": "diagnostics",
                 },
                 {
-                    "type": "open_path",
-                    "label": "Open Session Settings",
-                    "path": "/run/r1/session-identity.json",
+                    "command": {
+                        "kind": "open_path",
+                        "label": "Open Session Settings",
+                        "path": "/run/r1/session-identity.json",
+                    },
                     "group": "diagnostics",
                 },
                 {
-                    "type": "open_session_diagnostics",
-                    "label": "Full Diagnostics",
-                    "issue_number": 12,
-                    "run_dir": "/run/r1",
+                    "command": {
+                        "kind": "open_session_diagnostics",
+                        "label": "Full Diagnostics",
+                        "issue_number": 12,
+                        "run_dir": "/run/r1",
+                    },
                     "group": "diagnostics",
                 },
             ],
@@ -537,18 +603,40 @@ def test_build_validation_failure_dialog_keeps_missing_exit_code_visible() -> No
     assert {"label": "Exit Code", "value": "-"} in dialog["summary_rows"]
 
 
-def test_build_validation_failure_action_sections_rejects_unknown_group() -> None:
-    with pytest.raises(ValueError, match="Unknown validation failure action group"):
-        _build_validation_failure_action_sections(
-            [
-                {
-                    "type": "open_path",
-                    "label": "Open Validation Record",
-                    "path": "/tmp/validation-record.json",
-                    "group": "sesion_evidence",
-                }
-            ]
+def test_dialog_action_rejects_unknown_group() -> None:
+    # Issue #6327: the action group is a ``Literal`` on the typed ``DialogAction``
+    # model, so an out-of-range group is rejected at construction time rather
+    # than by an ad hoc runtime check inside the section builder.
+    with pytest.raises(ValidationError):
+        DialogAction(
+            command=OpenPathCommand(
+                label="Open Validation Record", path="/tmp/validation-record.json"
+            ),
+            group="sesion_evidence",  # type: ignore[arg-type]
         )
+
+
+def test_build_validation_failure_action_sections_groups_by_section() -> None:
+    # Well-typed actions bucket into their declared sections in canonical order.
+    actions = [
+        DialogAction(
+            command=OpenPathCommand(label="Record", path="/r"),
+            group="validation_artifacts",
+        ),
+        DialogAction(
+            command=OpenPathCommand(label="Dir", path="/d"), group="diagnostics"
+        ),
+    ]
+    sections = build_dialog_action_sections(actions)
+    assert [section["title"] for section in sections] == [
+        "Validation Artifacts",
+        "Diagnostics",
+    ]
+    assert sections[0]["actions"][0]["command"] == {
+        "kind": "open_path",
+        "label": "Record",
+        "path": "/r",
+    }
 
 
 def test_build_session_diagnostics_dialog_drops_malformed_analysis():
@@ -603,7 +691,9 @@ def test_build_phase_dialog_review_and_default():
         ]
     }
 
-    review_dialog = build_phase_dialog(phases_payload, issue_number=9, phase_key="review")
+    review_dialog = build_phase_dialog(
+        phases_payload, issue_number=9, phase_key="review"
+    )
     assert review_dialog["title"] == "Review 1"
     assert review_dialog["phase"]["name"] == "review-1"
 

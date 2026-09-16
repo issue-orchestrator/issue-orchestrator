@@ -22,8 +22,11 @@
 //
 //   D. Dispatcher round-trip: render → extract Command from
 //      ``data-lifecycle-command`` → dispatch via
-//      ``runLifecycleCommandFromToggle`` → assert
-//      ``/api/e2e-run-detail/{n}?view=user`` was fetched.
+//      ``runLifecycleCommandFromToggle`` → assert the run-detail
+//      owner (``_fetchE2ERunDetail``, in ``e2e_run_view.js``) was
+//      reached with the row's run id and view.  The URL and the
+//      ``E2ERunDetailPayload`` contract belong to that owner and are
+//      covered in ``e2e_run_detail_contract.test.js``.
 //
 //   E. Re-routed ``open_e2e_run``: the typed Command that used to
 //      open the modal now expands the matching row (and opens the
@@ -35,6 +38,14 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+
+// Real generated validators + fail-closed reader (issue #6337): the
+// modules under test validate their JSON payloads through this.
+const {
+    captureContractViolations,
+    resetContractViolationReporter,
+    uiContractJson,
+} = require('./ui_contract_test_support.js');
 
 const DASHBOARD_JS_DIR = path.join(
     __dirname,
@@ -65,6 +76,7 @@ function _baseStubs() {
             .replace(/&/g, '&amp;').replace(/"/g, '&quot;'),
         _humanizeSnakeCase: (s) => String(s || ''),
         showToast: () => {},
+        uiContractJson,
         formatTimestamp: (value) => `local:${value}`,
         // Canonical viewer helpers — the row loader calls into them.
         // Default to identity-shaped stubs; individual tests can
@@ -290,17 +302,23 @@ test('renderE2ERunRow: per-outcome counts render with the right tone color class
 
 // ── Layer D: render → extract → dispatch round-trip ────────────────
 
-function _attachFakeFetch(ctx) {
-    const calls = { fetch: [] };
-    ctx.fetch = (url) => {
-        calls.fetch.push(url);
+// Stubs the run-detail owner that lives in ``e2e_run_view.js``.
+//
+// Since issue #6337 the row loader does not fetch or parse anything
+// itself: it delegates to ``_fetchE2ERunDetail``, which owns the URL,
+// the ``E2ERunDetailPayload`` contract, and the throw-on-rejection
+// behaviour.  Those are covered where they live, in
+// ``e2e_run_detail_contract.test.js``.  What this file owns is the
+// dispatch chain: does toggling a row reach the owner, with the right
+// run id and view, exactly once?
+function _attachFakeRunDetailFetcher(ctx, impl = null) {
+    const calls = { runDetail: [] };
+    ctx._fetchE2ERunDetail = (runId, view) => {
+        calls.runDetail.push([runId, view]);
+        if (impl) return impl(runId, view);
         return Promise.resolve({
-            ok: true,
-            status: 200,
-            json: () => Promise.resolve({
-                run: { id: 88, started_at: '2026-05-12T10:00:00Z', status: 'passed', commit_sha: 'abc' },
-                results_summary: {},
-            }),
+            run: { id: 88, started_at: '2026-05-12T10:00:00Z', status: 'passed', commit_sha: 'abc' },
+            results_summary: {},
         });
     };
     return calls;
@@ -325,9 +343,9 @@ function _fakeRow(runId, payloadAttr, contentEl) {
     };
 }
 
-test('dispatcher round-trip: toggling a row calls loadE2ERunIntoRow and fetches /api/e2e-run-detail', async () => {
+test('dispatcher round-trip: toggling a row delegates to the run-detail owner', async () => {
     const ctx = _loadRunsListPlusDispatcher();
-    const calls = _attachFakeFetch(ctx);
+    const calls = _attachFakeRunDetailFetcher(ctx);
 
     // Render a row, then extract the typed Command from the
     // rendered HTML (the same path a real toggle would hit).
@@ -355,7 +373,7 @@ test('dispatcher round-trip: toggling a row calls loadE2ERunIntoRow and fetches 
     assert.strictEqual(detailsEl.dataset.loaded, '1', 'row must mark itself loaded');
     await new Promise((resolve) => setImmediate(resolve));
     await new Promise((resolve) => setImmediate(resolve));
-    assert.deepStrictEqual(calls.fetch, ['/api/e2e-run-detail/88?view=user']);
+    assert.deepStrictEqual(calls.runDetail, [[88, 'user']], 'toggle must reach the run-detail owner once');
 });
 
 test('dispatcher round-trip: loaded row binds shared timeline action delegate for plugin menus', async () => {
@@ -363,7 +381,7 @@ test('dispatcher round-trip: loaded row binds shared timeline action delegate fo
     const ctx = _loadRunsListPlusDispatcher({
         bindTimelineEventActions: (container) => boundContainers.push(container),
     });
-    _attachFakeFetch(ctx);
+    _attachFakeRunDetailFetcher(ctx);
     const html = ctx.renderE2ERunsList({ runs: [_row(88)] });
     const match = html.match(/data-lifecycle-command="([^"]+)"/);
     const cmdRaw = match[1].replace(/&quot;/g, '"').replace(/&amp;/g, '&');
@@ -380,7 +398,7 @@ test('dispatcher round-trip: loaded row binds shared timeline action delegate fo
 
 test('dispatcher round-trip: re-opening a loaded row is a no-op (predictable-collapse rule)', async () => {
     const ctx = _loadRunsListPlusDispatcher();
-    const calls = _attachFakeFetch(ctx);
+    const calls = _attachFakeRunDetailFetcher(ctx);
     const html = ctx.renderE2ERunsList({ runs: [_row(88)] });
     const match = html.match(/data-lifecycle-command="([^"]+)"/);
     const cmdRaw = match[1].replace(/&quot;/g, '"').replace(/&amp;/g, '&');
@@ -390,12 +408,12 @@ test('dispatcher round-trip: re-opening a loaded row is a no-op (predictable-col
     detailsEl.dataset.loaded = '1';
     ctx.runLifecycleCommandFromToggle(detailsEl);
     await new Promise((resolve) => setImmediate(resolve));
-    assert.deepStrictEqual(calls.fetch, [], 're-opening must NOT re-fetch (dataset.loaded === "1")');
+    assert.deepStrictEqual(calls.runDetail, [], 're-opening must NOT re-fetch (dataset.loaded === "1")');
 });
 
 test('dispatcher round-trip: closed <details> does not fire the loader', async () => {
     const ctx = _loadRunsListPlusDispatcher();
-    const calls = _attachFakeFetch(ctx);
+    const calls = _attachFakeRunDetailFetcher(ctx);
     const html = ctx.renderE2ERunsList({ runs: [_row(88)] });
     const match = html.match(/data-lifecycle-command="([^"]+)"/);
     const cmdRaw = match[1].replace(/&quot;/g, '"').replace(/&amp;/g, '&');
@@ -404,7 +422,7 @@ test('dispatcher round-trip: closed <details> does not fire the loader', async (
     detailsEl.open = false;
     ctx.runLifecycleCommandFromToggle(detailsEl);
     await new Promise((resolve) => setImmediate(resolve));
-    assert.deepStrictEqual(calls.fetch, []);
+    assert.deepStrictEqual(calls.runDetail, []);
 });
 
 // ── Layer E: re-routed open_e2e_run ───────────────────────────────
@@ -463,4 +481,97 @@ test('expandE2ERunRow: missing row toasts and returns false (no modal fallback)'
     assert.strictEqual(opened, false);
     assert.strictEqual(toasts.length, 1);
     assert.ok(toasts[0].msg.includes('Run #999'));
+});
+
+
+// ── Contract-validated JSON boundaries (issue #6337) ──────────────
+//
+// This module ingests the runs list from two boundaries — the inline
+// ``#recentE2ERunsData`` bootstrap the template renders, and the
+// ``/api/e2e-runs/recent`` refresh.  Both validate against
+// ``RecentE2ERunsPayload`` before rendering.
+//
+// The old code swallowed a malformed bootstrap into ``{runs: []}`` with
+// no diagnostic, so a server-side payload bug was indistinguishable from
+// "no runs yet".  These tests pin the replacement: render the empty
+// state, and say so.
+
+function _mountStubs(dataNodeText, extra = {}) {
+    const root = { innerHTML: '' };
+    const dataNode = { id: 'recentE2ERunsData', textContent: dataNodeText };
+    const stubs = _baseStubs();
+    stubs.document = {
+        ...stubs.document,
+        readyState: 'complete',
+        getElementById: (id) => {
+            if (id === 'e2eRunsListRoot') return root;
+            if (id === 'recentE2ERunsData') return dataNodeText === null ? null : dataNode;
+            return null;
+        },
+    };
+    return { stubs: { ...stubs, ...extra }, root };
+}
+
+function _loadWithMount(dataNodeText, extra = {}) {
+    const { stubs, root } = _mountStubs(dataNodeText, extra);
+    const ctx = _loadRunsListModule(stubs);
+    return { ctx, root };
+}
+
+test('inline bootstrap: a contract-valid payload renders the runs list', () => {
+    const violations = captureContractViolations();
+    const { root } = _loadWithMount('{"runs": []}');
+    assert.deepEqual(violations, [], 'a valid bootstrap must not report a violation');
+    assert.match(root.innerHTML, /e2e-runs-list/);
+    resetContractViolationReporter();
+});
+
+test('inline bootstrap: a contract-violating payload renders the empty state and reports once', () => {
+    const violations = captureContractViolations();
+    // ``runs`` must be an array of run summaries, not an object.
+    const { root } = _loadWithMount('{"runs": {"88": "nope"}}');
+    assert.strictEqual(violations.length, 1);
+    assert.strictEqual(violations[0].schemaName, 'RecentE2ERunsPayload');
+    assert.match(root.innerHTML, /No E2E run history/);
+    resetContractViolationReporter();
+});
+
+test('inline bootstrap: unparseable JSON renders the empty state, never a partial list', () => {
+    const violations = captureContractViolations();
+    const { root } = _loadWithMount('{"runs": [');
+    assert.strictEqual(violations.length, 1);
+    assert.match(violations[0].detail, /not valid JSON/);
+    assert.match(root.innerHTML, /No E2E run history/);
+    resetContractViolationReporter();
+});
+
+test('refresh fetch: a contract-valid response renders the runs list', async () => {
+    const { ctx, root } = _loadWithMount('{"runs": []}', {
+        fetch: async () => ({ ok: true, url: '/api/e2e-runs/recent', text: async () => '{"runs": []}' }),
+    });
+    const violations = captureContractViolations();
+    await ctx.refreshE2ERunsList();
+    assert.deepEqual(violations, []);
+    assert.match(root.innerHTML, /e2e-runs-list/);
+    resetContractViolationReporter();
+});
+
+test('refresh fetch: a contract-violating response rejects and does not render', async () => {
+    const { ctx, root } = _loadWithMount('{"runs": []}', {
+        fetch: async () => ({
+            ok: true,
+            url: '/api/e2e-runs/recent',
+            text: async () => '{"runs": [], "surprise": true}',
+        }),
+    });
+    const violations = captureContractViolations();
+    root.innerHTML = '<div class="sentinel"></div>';
+    await assert.rejects(
+        () => ctx.refreshE2ERunsList(),
+        /failed contract validation/,
+    );
+    assert.strictEqual(violations.length, 1);
+    assert.match(violations[0].errors.join(' '), /surprise: unexpected property/);
+    assert.match(root.innerHTML, /sentinel/, 'a rejected payload must not mutate the rendered list');
+    resetContractViolationReporter();
 });

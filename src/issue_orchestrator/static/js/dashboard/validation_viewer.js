@@ -898,12 +898,25 @@ function _loadCapturedOutputOnDemand(row) {
 
     fetch(url)
         .then(async (response) => {
-            const payload = await response.json().catch(() => ({}));
             if (!response.ok) {
-                const message = payload && (payload.error || payload.detail)
-                    ? String(payload.error || payload.detail)
-                    : `HTTP ${response.status}`;
-                throw new Error(message);
+                // Failure bodies have no schema; the shared reader owns
+                // that one sanctioned raw read.
+                throw new Error(await uiContractJson.errorMessage(response));
+            }
+            // Contract-validated (issue #6337).  The URL reaches this
+            // row via ``data-cvv-output-url``, but the response it
+            // returns is ``/api/e2e-run/{run_id}/test-output`` — the
+            // contract defines its 200 as ``E2ETestOutputPayload``.  The
+            // old ``.catch(() => ({}))`` turned a malformed body into an
+            // empty payload, which rendered as "no captured output" for
+            // what was really a payload bug.
+            const payload = await uiContractJson.fromResponse(
+                response,
+                'E2ETestOutputPayload',
+                '/api/e2e-run/{run_id}/test-output',
+            );
+            if (!payload) {
+                throw new Error('Captured output did not match the E2ETestOutputPayload contract.');
             }
             _applyCapturedOutputPayload(rows, payload);
         })

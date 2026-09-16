@@ -28,6 +28,14 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
+// Real generated validators + fail-closed reader (issue #6337): the
+// modules under test validate their JSON payloads through this.
+const {
+    captureContractViolations,
+    resetContractViolationReporter,
+    uiContractJson,
+} = require('./ui_contract_test_support.js');
+
 const DASHBOARD_JS_DIR = path.join(
     __dirname,
     '../../src/issue_orchestrator/static/js/dashboard',
@@ -50,6 +58,7 @@ function _baseStubs() {
             .replace(/&/g, '&amp;').replace(/"/g, '&quot;'),
         _humanizeSnakeCase: (s) => String(s || ''),
         showToast: () => {},
+        uiContractJson,
         renderTimelineEventActions: (actions) => {
             const items = (Array.isArray(actions) ? actions : [])
                 .map((action) => `<button class="timeline-action-btn" data-action="${JSON.stringify(action).replace(/"/g, '&quot;')}">${action.type}</button>`)
@@ -461,16 +470,21 @@ test('dispatcher: round-trip — render → extract Command → toggle → fetch
     assert.deepStrictEqual(calls.fetch, ['/api/issue-detail/8888?view=ops']);
 });
 
-test('dispatcher: unknown kind falls through to a warning toast (no crash)', () => {
+test('dispatcher: a kind outside the contract is rejected, and never fetches (no crash)', () => {
+    // Issue #6337: a kind the contract does not define is rejected as a
+    // payload violation before dispatch, so the lazy fetch this module
+    // owns can never fire on garbage wire data.
     const toasts = [];
+    const violations = captureContractViolations();
     const ctx = _loadInlinePlusDispatcher({
         fetch: () => Promise.reject(new Error('should not be reached')),
         showToast: (msg, severity) => toasts.push([msg, severity]),
     });
-    ctx.runLifecycleCommand({ kind: 'not_a_real_command' });
-    assert.strictEqual(toasts.length, 1);
-    assert.match(toasts[0][0], /Unsupported lifecycle command/);
-    assert.strictEqual(toasts[0][1], 'warning');
+    ctx.runLifecycleCommand({ kind: 'not_a_real_command', label: 'Nope' });
+    assert.deepEqual(toasts, []);
+    assert.strictEqual(violations.length, 1);
+    assert.match(violations[0].errors.join(' '), /no contract variant matches string "not_a_real_command"/);
+    resetContractViolationReporter();
 });
 
 // ── Layer D: agent-context plugin integration ────────────────────

@@ -22,6 +22,15 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
+// Real generated validators + fail-closed reader (issue #6337): the
+// captured-output loader validates ``/api/e2e-run/{run_id}/test-output``
+// against ``E2ETestOutputPayload`` before rendering.
+const {
+    captureContractViolations,
+    resetContractViolationReporter,
+    uiContractJson,
+} = require('./ui_contract_test_support.js');
+
 function loadViewer(overrides = {}) {
     // Stubs for the shared dashboard primitives the viewer calls into.
     // The viewer is intentionally self-contained: action-section
@@ -30,6 +39,7 @@ function loadViewer(overrides = {}) {
     // a global stub for it here.
     const baseStubs = {
         console,
+        uiContractJson,
         escapeHtml: (v) => String(v == null ? '' : v)
             .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
             .replace(/"/g, '&quot;').replace(/'/g, '&#39;'),
@@ -367,12 +377,19 @@ test('viewer: opening one available captured-output row fetches once and fills s
     const calls = [];
     ctx.fetch = (url) => {
         calls.push(url);
+        // A full E2ETestOutputPayload: the server serializes this
+        // endpoint through that response model, so ``nodeid`` and
+        // ``source_path`` are always present. The pre-#6337 stub
+        // omitted them, which no longer resembles a real response.
         return Promise.resolve({
             ok: true,
-            json: () => Promise.resolve({
+            status: 200,
+            text: () => Promise.resolve(JSON.stringify({
+                nodeid: 'a',
+                source_path: 'tests/e2e/test_a.py',
                 system_out: 'stdout line',
                 system_err: 'stderr line',
-            }),
+            })),
         });
     };
     const url = '/api/e2e-run/88/test-output?nodeid=a';
@@ -413,6 +430,49 @@ test('viewer: opening one available captured-output row fetches once and fills s
     assert.strictEqual(stderrRow._summary.textContent, '1 line');
     assert.match(stdoutRow._body.outerHTML, /stdout line/);
     assert.match(stderrRow._body.outerHTML, /stderr line/);
+});
+
+test('viewer: a contract-violating captured-output payload fails closed', async (t) => {
+    // The pre-#6337 ``.catch(() => ({}))`` turned a malformed body into
+    // an empty payload, so the row rendered as "no captured output" for
+    // what was really a payload bug. It must surface as an error state
+    // instead.
+    t.after(() => resetContractViolationReporter());
+    const violations = captureContractViolations();
+    const ctx = loadViewer();
+    ctx.fetch = () => Promise.resolve({
+        ok: true,
+        status: 200,
+        // ``source_path`` is required by the contract.
+        text: () => Promise.resolve(JSON.stringify({
+            nodeid: 'a',
+            system_out: 'stdout line',
+            system_err: 'stderr line',
+        })),
+    });
+    const summary = { textContent: '' };
+    const body = { outerHTML: '', classList: { contains: (n) => n === 'cvv-output-body' } };
+    const row = {
+        open: true,
+        dataset: {
+            cvvOutputUrl: '/api/e2e-run/88/test-output?nodeid=a',
+            cvvOutputChannel: 'stdout',
+            cvvOutputState: 'idle',
+        },
+        children: [body],
+        querySelector: () => summary,
+        parentElement: null,
+        _body: body,
+    };
+
+    ctx._loadCapturedOutputOnDemand(row);
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.strictEqual(row.dataset.cvvOutputState, 'error');
+    assert.doesNotMatch(row._body.outerHTML, /stdout line/, 'a rejected payload must not render');
+    assert.strictEqual(violations.length, 1, 'exactly one diagnostic per rejection');
+    assert.strictEqual(violations[0].schemaName, 'E2ETestOutputPayload');
 });
 
 test('viewer: errored case renders stderr expander COLLAPSED by default', () => {

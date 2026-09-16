@@ -730,13 +730,21 @@ def _synthetic_passed_run_payload(
                 "retry_outcome": None,
                 "duration_seconds": 450.0,
                 "longrepr": None,
+                "failure_summary": None,
                 "history": [],
                 "existing_issue": None,
+                "updated_at": "",
+                "flip_rate": 0.0,
                 "flip_rate_percent": 0,
+                "is_likely_flaky": False,
                 "category": "healthy",
                 "result_category": "passed",
                 "result_source": "junit_xml",
                 "is_quarantined": False,
+                "captured_output": {
+                    "stdout_available": False,
+                    "stderr_available": False,
+                },
             }
         ],
         "quarantined": [],
@@ -1823,19 +1831,29 @@ def test_run_drawer_results_render_generic_artifacts_without_linked_issue_lifecy
         "passed": [
             {
                 "nodeid": "tixmeup.e2e.smoke::package.build_image",
+                "case_id": "tixmeup.e2e.smoke::package.build_image",
+                "label": "package.build_image",
                 "display_name": "package.build_image",
                 "suite_name": "tixmeup.e2e.smoke",
                 "outcome": "passed",
                 "retry_outcome": None,
                 "duration_seconds": 450.0,
                 "longrepr": None,
+                "failure_summary": None,
                 "history": [],
                 "existing_issue": None,
+                "updated_at": "",
+                "flip_rate": 0.0,
                 "flip_rate_percent": 0,
+                "is_likely_flaky": False,
                 "category": "healthy",
                 "result_category": "passed",
                 "result_source": "junit_xml",
                 "is_quarantined": False,
+                "captured_output": {
+                    "stdout_available": False,
+                    "stderr_available": False,
+                },
             }
         ],
         "quarantined": [],
@@ -2048,6 +2066,10 @@ def test_run_modal_canonical_viewer_shows_failures_passes_and_linked_issue_plugi
         "is_quarantined": False,
         "result_source": "junit",
         "updated_at": "",
+        "captured_output": {
+            "stdout_available": False,
+            "stderr_available": False,
+        },
     }
     passed_test = {
         "nodeid": passed_nodeid,
@@ -2070,6 +2092,10 @@ def test_run_modal_canonical_viewer_shows_failures_passes_and_linked_issue_plugi
         "is_quarantined": False,
         "result_source": "junit",
         "updated_at": "",
+        "captured_output": {
+            "stdout_available": False,
+            "stderr_available": False,
+        },
     }
 
     synthetic = json.loads(json.dumps(real_payload))

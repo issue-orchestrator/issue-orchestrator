@@ -1,10 +1,12 @@
 """Shared mocks for web contract tests."""
 
 from pathlib import Path
+from typing import Any
 
 from issue_orchestrator.domain.models import AgentConfig, OrchestratorState
 from issue_orchestrator.events import EventHub
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.infra.session_failure_diagnosis import SessionFailureDiagnosis
 from issue_orchestrator.ports.provider_resilience import (
     NO_PROVIDER_CIRCUIT_STATUS,
     ProviderCircuitStatusReader,
@@ -95,17 +97,16 @@ class MockOrchestratorForWeb:
     def request_refresh(self, inflight_stable_ids: set[str] | None = None) -> None:
         _ = inflight_stable_ids
 
-    def get_failure_diagnosis(self, issue_number: int) -> dict[str, object]:
-        return {
-            "issue_number": issue_number,
-            "ai_system": "unknown",
-            "permission_mode": "default",
-            "worktree_path": None,
-            "log_path": None,
-            "log_exists": False,
-            "log_context": None,
-            "history_status": None,
-            "history_reason": None,
-            "warnings": [],
-            "suggestions": [],
-        }
+    def get_failure_diagnosis(self, issue_number: int) -> dict[str, Any]:
+        """Build the mock response through the production diagnosis model."""
+        return SessionFailureDiagnosis(
+            issue_number=issue_number,
+            ai_system="unknown",
+            permission_mode="default",
+            worktree_path=None,
+            log_path=None,
+            log_exists=False,
+            log_context=None,
+            history_status=None,
+            history_reason=None,
+        ).to_dict()

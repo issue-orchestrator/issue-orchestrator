@@ -3,6 +3,10 @@
 
 
 
+export type HealthStatus = "ok" | "warning" | "error" | "info";
+
+export type StartupStatus = "pending" | "running" | "complete";
+
 export type TimelineView = "user" | "ops" | "debug" | "raw";
 
 export type WorktreeAuditActivityEvidence = "known" | "unknown";
@@ -12,6 +16,16 @@ export type WorktreeAuditDisposition = "managed" | "cleanup_candidate" | "retain
 export type WorktreeAuditKind = "issue" | "reviewer" | "tech_lead_scratch" | "external";
 
 export type WorktreeAuditScope = "configured" | "repo-parent-fallback";
+
+export interface ActiveSessionSummaryPayload {
+  agent_type: string | null;
+  branch: string;
+  issue_number: number;
+  runtime_minutes: number;
+  status: "running" | "slow";
+  title: string;
+  worktree_path: string;
+}
 
 export interface AgentIdentityPayload {
   name: string;
@@ -45,7 +59,17 @@ export interface BlockedCodingAttemptPayload {
 }
 
 export interface BlockedIssuePayload {
-  [key: string]: any;
+  agent_type: string;
+  all_blocking_labels: string[];
+  blocking_label: string;
+  failure_reason: string | null;
+  has_completion: boolean;
+  issue_number: number;
+  issue_url: string;
+  needs_human: boolean;
+  run_dir: string | null;
+  title: string;
+  worktree_path: string | null;
 }
 
 export interface BlockedIssuesDialogPayload {
@@ -53,9 +77,21 @@ export interface BlockedIssuesDialogPayload {
   title: string;
 }
 
+export interface BlockedIssuesPayload {
+  blocked_issues: BlockedIssuePayload[];
+}
+
 export interface CapturedOutputAvailabilityPayload {
   stderr_available: boolean;
   stdout_available: boolean;
+}
+
+export interface ClientCapabilitiesPayload {
+  focus_session: boolean;
+  host_platform: string;
+  local_server_paths_only: boolean;
+  open_path: boolean;
+  reveal_worktree: boolean;
 }
 
 export interface CodingOutputsPayload {
@@ -104,6 +140,13 @@ export interface CompletionSubmissionPayload {
 export interface ConfigDialogPayload {
   config_text: string;
   title: string;
+}
+
+export interface CopySessionRecordingCommandPayload {
+  issue_number: number;
+  kind: "copy_session_recording";
+  label: string;
+  run_dir: string;
 }
 
 export interface CreateE2EUntriagedIssuesCommandPayload {
@@ -207,9 +250,53 @@ export interface DashboardViewModelPayload {
   startup_status: string;
 }
 
+export interface DebugAgentPayload {
+  command: string;
+  timeout: number;
+}
+
 export interface DebugDialogPayload {
   sections: DialogSectionPayload[];
   title: string;
+}
+
+export interface DebugFilteringPayload {
+  label: string | null;
+  milestone: string | null;
+  milestones: string[];
+}
+
+export interface DebugSnapshotPayload {
+  agents: Record<string, DebugAgentPayload>;
+  config_path: string;
+  paused: boolean;
+  priority_queue: number[];
+  repo_root: string;
+  startup_options: DebugStartupOptionsPayload;
+}
+
+export interface DebugStartupOptionsPayload {
+  filtering: DebugFilteringPayload;
+  max_sessions: number;
+  test_mode: boolean;
+  ui_mode: string;
+  web_port: number;
+}
+
+export interface DependencyProblemPayload {
+  issue_number: number;
+  issue_title: string;
+  issue_url: string;
+  summary: string;
+}
+
+export interface DependencyProblemsPayload {
+  problems: Record<string, DependencyProblemPayload>;
+}
+
+export interface DialogActionPayload {
+  command: DialogActionCommandPayload;
+  group: "validation_artifacts" | "session_evidence" | "diagnostics";
 }
 
 export interface DialogRowPayload {
@@ -233,6 +320,18 @@ export interface DoctorDialogPayload {
   checks: DoctorCheckPayload[];
   overall: string;
   title: string;
+}
+
+export interface DoctorReportCheckPayload {
+  detail: string;
+  expandable?: Record<string, any> | null;
+  name: string;
+  status: HealthStatus;
+}
+
+export interface DoctorReportPayload {
+  checks: DoctorReportCheckPayload[];
+  overall: HealthStatus;
 }
 
 export interface E2EArtifactDiagnosticPayload {
@@ -443,6 +542,21 @@ export interface E2ETimelinePhaseTocItemPayload {
   phase: string;
 }
 
+export interface ExcludedIssuePayload {
+  agent_type: string;
+  blocked_summary: string | null;
+  excluded_reason: string;
+  flow_stage: "not_eligible";
+  flow_steps: FlowStepPayload[];
+  issue_number: number;
+  issue_url: string;
+  title: string;
+}
+
+export interface ExcludedIssuesPayload {
+  excluded: ExcludedIssuePayload[];
+}
+
 export interface ExpandE2ERunCommandPayload {
   kind: "expand_e2e_run";
   label: string;
@@ -481,6 +595,11 @@ export interface FlowColumnPayload {
   session_scoped?: boolean;
   title: string;
   [key: string]: any;
+}
+
+export interface FlowStepPayload {
+  key: string;
+  label: string;
 }
 
 export interface GuardedRecoveryStopActionPayload {
@@ -759,6 +878,20 @@ export interface OpenIssueTimelineCommandPayload {
   scope_kind: "dashboard" | "e2e_run";
 }
 
+export interface OpenOrchestratorLogCommandPayload {
+  error_surface: "toast" | "inline";
+  issue_number: number;
+  kind: "open_orchestrator_log";
+  label: string;
+  run_dir?: string | null;
+}
+
+export interface OpenPathCommandPayload {
+  kind: "open_path";
+  label: string;
+  path: string;
+}
+
 export interface OpenReviewArtifactCommandPayload {
   artifact_path: string;
   artifact_type: "review_report" | "review_decision" | "tech_lead_report" | "tech_lead_decision";
@@ -776,7 +909,15 @@ export interface OpenReviewFeedbackCommandPayload {
   label: string;
 }
 
+export interface OpenSessionDiagnosticsCommandPayload {
+  issue_number: number;
+  kind: "open_session_diagnostics";
+  label: string;
+  run_dir?: string | null;
+}
+
 export interface OpenSessionRecordingCommandPayload {
+  error_surface?: "toast" | "inline" | null;
   issue_number: number;
   kind: "open_session_recording";
   label: string;
@@ -790,6 +931,45 @@ export interface OpenValidationDetailsCommandPayload {
   kind: "open_validation_details";
   label: string;
   run_dir: string;
+}
+
+export interface OrchestratorInfoPayload {
+  active_sessions: number;
+  client_capabilities: ClientCapabilitiesPayload;
+  commit_sha: string | null;
+  commit_short: string | null;
+  completed_today: number;
+  config_fingerprint: string;
+  config_name: string;
+  configuration_mode: string;
+  max_sessions: number;
+  repo: string | null;
+  repo_identity: RepoIdentityPayload;
+  repo_root: string | null;
+  startup_status: StartupStatus;
+  terminal_backend: string;
+  ui_mode: string;
+  version: string;
+}
+
+export interface OrchestratorStatusPayload {
+  active_sessions: ActiveSessionSummaryPayload[];
+  completed_today: number[];
+  e2e_role: string | null;
+  last_tick_time: number | number | null;
+  max_sessions: number;
+  pause_actor: string | null;
+  pause_detail: string | null;
+  pause_is_incident: boolean;
+  pause_reason: string | null;
+  paused: boolean;
+  paused_held_seconds: number;
+  paused_since: string | null;
+  pending_reviews: PendingReviewSummaryPayload[];
+  queue: number[];
+  shutdown_requested: boolean;
+  startup_status: StartupStatus;
+  tick_id: number | number | null;
 }
 
 export interface OutcomeBadgePayload {
@@ -812,6 +992,13 @@ export interface PassedE2ETestExecutionPayload {
   linked_issues: LinkedIssueLifecyclePayload[];
   nodeid: string;
   started_at: string;
+}
+
+export interface PendingReviewSummaryPayload {
+  branch_name: string;
+  issue_number: number;
+  pr_number: number;
+  pr_url: string;
 }
 
 export interface PhaseDialogPayload {
@@ -861,6 +1048,10 @@ export interface PublishFailedCodingAttemptPayload {
   session_recording: SessionRecordingEvidencePayload;
   started_at: string;
   validation: ValidationOutcomePayload;
+}
+
+export interface RawConfigPayload {
+  config: string;
 }
 
 export interface RecentE2ERunSummaryPayload {
@@ -953,6 +1144,15 @@ export interface RecoveryUnavailablePayload {
   repo_key: string;
   status: "database_absent" | "unreadable" | "unsupported_schema";
   unowned_records: UnownedRecoveryRecordPayload[];
+}
+
+export interface RepoIdentityPayload {
+  branch: string | null;
+  commit_sha: string | null;
+  dirty_fingerprint: string | null;
+  repo_root: string;
+  source_root: string | null;
+  working_tree_dirty: boolean;
 }
 
 export interface RepositorySetupCommandPayload {
@@ -1178,6 +1378,12 @@ export interface ReviewFailedPayload {
   started_at?: string | null;
 }
 
+export interface ReviewFeedbackEntryPayload {
+  content: string;
+  cycle: number;
+  path: string;
+}
+
 export interface ReviewNotReachedPayload {
   kind: "review_not_reached";
   reason: "coding_in_progress" | "coding_failed" | "publish_failed" | "validation_failed" | "not_required";
@@ -1244,15 +1450,6 @@ export interface RunningE2ETestExecutionPayload {
   started_at: string;
 }
 
-export interface SessionDiagnosticsActionPayload {
-  group?: "validation_artifacts" | "session_evidence" | "diagnostics" | null;
-  issue_number?: number | null;
-  label: string;
-  path?: string | null;
-  type: string;
-  [key: string]: any;
-}
-
 export interface SessionDiagnosticsAnalysisPayload {
   detail?: string | null;
   headline: string;
@@ -1260,7 +1457,7 @@ export interface SessionDiagnosticsAnalysisPayload {
 }
 
 export interface SessionDiagnosticsDialogPayload {
-  actions: SessionDiagnosticsActionPayload[];
+  actions: DialogActionPayload[];
   analysis?: SessionDiagnosticsAnalysisPayload | null;
   follow_up_issues?: SessionDiagnosticsFollowUpIssuePayload[];
   rows: DialogRowPayload[];
@@ -1273,6 +1470,24 @@ export interface SessionDiagnosticsFollowUpIssuePayload {
   reason: string;
   suggested_labels?: string[];
   title: string;
+}
+
+export interface SessionFailureDiagnosisPayload {
+  ai_system: string;
+  analysis_detail: string | null;
+  analysis_headline: string | null;
+  analysis_suggestions: string[];
+  history_reason: string | null;
+  history_status: string | null;
+  issue_number: number;
+  log_context: string | null;
+  log_exists: boolean;
+  log_path: string | null;
+  permission_mode: string;
+  review_feedback: ReviewFeedbackEntryPayload[];
+  suggestions: string[];
+  warnings: string[];
+  worktree_path: string | null;
 }
 
 export interface SessionRecordingAvailablePayload {
@@ -1334,6 +1549,17 @@ export interface StackDependencySuccessorPayload {
   issue_number: number;
   mode: string;
   ref: string;
+}
+
+export interface StaleIssuePayload {
+  consecutive_ticks: number;
+  issue_number: number;
+  persistent: boolean;
+  threshold: number;
+}
+
+export interface StaleIssuesPayload {
+  stale: Record<string, StaleIssuePayload>;
 }
 
 export interface StopOwnerAbsentOutcomePayload {
@@ -1511,7 +1737,7 @@ export interface ValidationFailedPayload {
 }
 
 export interface ValidationFailureActionSectionPayload {
-  actions: SessionDiagnosticsActionPayload[];
+  actions: DialogActionPayload[];
   title: string;
 }
 
@@ -1542,6 +1768,14 @@ export interface ValidationPassedPayload {
   details_command: OpenValidationDetailsCommandPayload;
   kind: "passed";
   record_path: string;
+}
+
+export interface ViewClaudeLogCommandPayload {
+  error_surface: "toast" | "inline";
+  issue_number: number;
+  kind: "view_claude_log";
+  label: string;
+  run_dir: string;
 }
 
 export interface ViewModelSnapshotPayload {
@@ -1579,11 +1813,15 @@ export type CodingAttemptPayload = RunningCodingAttemptPayload | CompletedCoding
 
 export type ControlCenterRecoveryRowsPayload = RecoveryAvailablePayload | RecoveryEmptyPayload | RecoveryUnavailablePayload;
 
+export type DialogActionCommandPayload = OpenPathCommandPayload | OpenSessionRecordingCommandPayload | CopySessionRecordingCommandPayload | ViewClaudeLogCommandPayload | OpenOrchestratorLogCommandPayload | OpenSessionDiagnosticsCommandPayload;
+
 export type E2EFailureEvidencePayload = E2EFailureDetailsAvailablePayload | E2EFailureDetailsMissingPayload;
 
 export type E2ETestExecutionPayload = PassedE2ETestExecutionPayload | FailedE2ETestExecutionPayload | RunningE2ETestExecutionPayload | MissingE2ETestEvidencePayload;
 
 export type HistoricalIntakeOutcomePayload = HistoricalIntakeParkedPayload | HistoricalIntakeRefusedPayload | HistoricalIntakeValidationFailedPayload;
+
+export type LifecycleCommandPayload = TimelineCommandPayload | DialogActionCommandPayload;
 
 export type LifecycleTimelineContainerPayload = DashboardTimelineContainerPayload | E2ESuiteTimelineContainerPayload;
 
