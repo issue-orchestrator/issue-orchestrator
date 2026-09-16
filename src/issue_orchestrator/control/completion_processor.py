@@ -559,7 +559,9 @@ class CompletionProcessor:
             )
         )
 
-    def _reviewed_branch_name(self, worktree: Path | None) -> str | None:
+    def _reviewed_branch_name(
+        self, worktree: Path | None, *, cached: bool = False
+    ) -> str | None:
         """The branch a review event is ABOUT, for attribution (#7263).
 
         A tech-lead failure investigation normally runs in a disposable scratch
@@ -573,13 +575,27 @@ class CompletionProcessor:
         Naming the branch a review approved is independently worth doing: it is
         the exact fact the #6410 misreading turned on.
 
+        A CACHED replay is deliberately excluded. It republishes a verdict an
+        EARLIER review reached, and the checkout has moved on since -- PR-collision
+        remediation renames the branch at ``_execute_create_pr_action`` -- so
+        sampling it now would name a branch that review never approved. Asserting
+        the wrong branch is worse than asserting none: a reader can corroborate an
+        absent fact, but a confident wrong one is what produced the #6410
+        misdiagnosis in the first place. A cached emission therefore falls back to
+        its ``run_dir``, which points at the ORIGINAL review-exchange session and
+        is the better evidence anyway.
+
+        Retaining the reviewed branch on the exchange summary — so a cached
+        replay can report it rather than omit it — is the complete fix and is
+        tracked separately (#7268).
+
         No defensive catch: ``WorkingCopy.get_current_branch`` already contracts
         to return ``None`` on a detached HEAD or a read failure, so an adapter
         that raises here is violating its port and should surface rather than be
         silently absorbed into "no branch". A ``None`` simply records no branch
         and the attribution degrades to what shipped without it.
         """
-        if worktree is None:
+        if worktree is None or cached:
             return None
         return self.git_adapter.get_current_branch(worktree)
 
@@ -594,6 +610,7 @@ class CompletionProcessor:
         review_cache_summary_path: str | None = None,
         review_cache_validation_record_path: str | None = None,
         review_cache_head_sha: str | None = None,
+        worktree: Path | None = None,
     ) -> None:
         """Emit trace event when local review exchange starts.
 
@@ -612,6 +629,10 @@ class CompletionProcessor:
             "run_id": str(self._event_context.run_id),
             "run_dir": str(run_dir),
         }
+        if (
+            reviewed_branch := self._reviewed_branch_name(worktree, cached=cached)
+        ) is not None:
+            payload["branch_name"] = reviewed_branch
         if cached:
             payload["cached"] = True
         if review_cache_summary_path:
@@ -658,7 +679,9 @@ class CompletionProcessor:
         }
         if run_dir is not None:
             payload["run_dir"] = str(run_dir)
-        if (reviewed_branch := self._reviewed_branch_name(worktree)) is not None:
+        if (
+            reviewed_branch := self._reviewed_branch_name(worktree, cached=cached)
+        ) is not None:
             payload["branch_name"] = reviewed_branch
         if artifacts:
             payload["artifacts"] = artifacts

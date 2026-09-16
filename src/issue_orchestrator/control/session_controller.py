@@ -1152,6 +1152,16 @@ class SessionController:
             "pr_url": result.pr_url,
         }
         payload["run_dir"] = str(run_dir)
+        # WHICH BRANCH this session's work landed on (#7263). This is the event
+        # whose `actions_taken` carries "Pushed branch to remote", and it is the
+        # one the 2026-08-03 health review read as the IMPLEMENTATION being
+        # published when the push had in fact been of a tech-lead investigation
+        # branch. A validation-retried investigation runs in the focus issue's
+        # ordinary worktree, so `run_dir` cannot tell them apart and the branch
+        # is the only durable signal left (#6969).
+        branch_name = self._working_copy.get_current_branch(worktree_path)
+        if branch_name is not None:
+            payload["branch_name"] = branch_name
         self._emit_event(EventName.SESSION_PROCESSING_COMPLETED, payload)
 
     def _map_outcome_to_status(self, record: "CompletionRecord") -> SessionStatus:

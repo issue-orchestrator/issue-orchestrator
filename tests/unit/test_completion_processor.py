@@ -1453,6 +1453,13 @@ class TestReviewExchangeExecution:
         assert review_approved is not None
         assert review_started.data.get("run_dir") == str(exchange_run.assets.run_dir)
         assert review_approved.data.get("run_dir") == str(exchange_run.assets.run_dir)
+        # Both events name the branch they reviewed (#7263). Asserted HERE, on
+        # the real exchange -> real emitter path, because that is what proves
+        # `CompletionReviewExchange` actually supplies the worktree: a test that
+        # calls the emitter directly stays green with the whole wiring removed.
+        reviewed_branch = mock_git_adapter.get_current_branch.return_value
+        assert review_started.data.get("branch_name") == reviewed_branch
+        assert review_approved.data.get("branch_name") == reviewed_branch
         review_events = [
             event for event in sink.events if str(event.name).startswith("review.")
         ]

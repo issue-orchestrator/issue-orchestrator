@@ -517,6 +517,7 @@ class CompletionReviewExchange:
             reviewer_label=reviewer_label,
             exchange_mode=exchange_mode,
             run_dir=review_run.assets.run_dir,
+            worktree=worktree,
         )
         submitted = self._submit_background_review_exchange(
             job_id=job_id,
@@ -883,6 +884,7 @@ class CompletionReviewExchange:
             run_dir=review_run_dir,
             cached=True,
             **cache_metadata,
+            worktree=worktree,
         )
         if existing_outcome.status == "ok":
             actions_taken.append("Review exchange passed (cached)")
