@@ -2136,6 +2136,10 @@ class TestLaunchValidationRetrySession:
             " discards unpushed work and mutates evidence (#6823)"
         )
         assert reuse.allow_remote_branch_delete is False
+        assert reuse.require_retained_branch is True, (
+            "a reuse that fails would delete the checkout AND its local branch,"
+            " and the branch was never pushed (#7263 review r1 F1)"
+        )
 
     def test_an_ordinary_retry_is_untouched_by_the_investigation_rule(
         self,
@@ -2168,24 +2172,56 @@ class TestLaunchValidationRetrySession:
         assert call["branch_name"] == "123-fix-checkout"
         assert call["reuse_options"].preserve_branch is False
 
-    def test_a_half_scratch_retry_record_is_refused_rather_than_guessed(
+    @pytest.mark.parametrize(
+        "worktree_suffix,branch_kind",
+        [
+            ("issue-worktree", "scratch"),
+            ("scratch", "issue-branch"),
+            ("scratch", "other-run"),
+            ("other-issue", "other-issue"),
+        ],
+        ids=[
+            "scratch branch, ordinary worktree",
+            "scratch worktree, ordinary branch",
+            "halves from two runs of one issue",
+            "another issue's investigation",
+        ],
+    )
+    def test_an_unusable_investigation_record_blocks_the_retry(
         self,
         launcher_bundle,
         mock_worktree_manager,
         caplog,
+        worktree_suffix,
+        branch_kind,
     ):
-        """A record naming a scratch branch but an ordinary worktree is corrupt.
+        """Refuse, never fall back (#7263 review r1 F2).
 
-        Resuming from the half that parsed would check the investigation branch
-        out inside the focus issue's own worktree -- the exact mutation #6823
-        forbids -- so it falls back to the ordinary derivation and says so.
+        Falling back to the ordinary derivation is WORSE than not retrying: the
+        launcher still holds the recorded investigation branch, so it would check
+        that branch out inside the focus issue's own worktree -- the exact
+        mutation #6823 exists to prevent. And it must be refused before any claim
+        or worktree work, so nothing is mutated on the way to the refusal.
         """
+        mine = new_scratch_token()
+        other_run = new_scratch_token()
+        worktree = {
+            "issue-worktree": "/tmp/worktree-123",
+            "scratch": f"/tmp/w/{scratch_worktree_name('io', 123, mine)}",
+            "other-issue": f"/tmp/w/{scratch_worktree_name('io', 999, mine)}",
+        }[worktree_suffix]
+        branch = {
+            "scratch": scratch_branch_name(123, mine),
+            "issue-branch": "123-fix-checkout",
+            "other-run": scratch_branch_name(123, other_run),
+            "other-issue": scratch_branch_name(999, mine),
+        }[branch_kind]
         retry = PendingValidationRetry(
             issue_number=123,
             issue_title="Fix checkout",
             agent_label="agent:web",
-            worktree_path="/tmp/worktree-123",
-            branch_name=scratch_branch_name(123, new_scratch_token()),
+            worktree_path=worktree,
+            branch_name=branch,
             original_prompt="Investigate issue #123",
             validation_error="boom",
             validation_error_file=None,
@@ -2200,9 +2236,79 @@ class TestLaunchValidationRetrySession:
                 active_sessions=[],
             )
 
+        assert result.success is False
+        assert "unusable investigation identity" in (result.reason or "")
+        assert mock_worktree_manager.create_calls == [], (
+            "the refused retry still touched a worktree"
+        )
+
+    def test_a_resumed_investigation_keeps_its_scope_and_disposability(
+        self,
+        launcher_bundle,
+    ):
+        """The session must still READ as an investigation (#7263 review r1 F3).
+
+        Completion cleanup, tech-lead termination and run admission all key off
+        the session, not the worktree name: without these the retry's disposable
+        checkout is never removed and a focused retry is admitted as a global
+        tech-lead run.
+        """
+        token = new_scratch_token()
+        retry = PendingValidationRetry(
+            issue_number=123,
+            issue_title="Fix checkout",
+            agent_label="agent:web",
+            worktree_path=f"/tmp/w/{scratch_worktree_name('io', 123, token)}",
+            branch_name=scratch_branch_name(123, token),
+            original_prompt="Investigate issue #123",
+            validation_error="boom",
+            validation_error_file=None,
+            retry_count=1,
+            source_task=TaskKind.CODE,
+            validation_cmd="make test",
+        )
+
+        result = launcher_bundle.launcher.launch_validation_retry_session(
+            retry,
+            active_sessions=[],
+        )
+
         assert result.success is True
-        assert mock_worktree_manager.create_calls[0]["worktree_name"] is None
-        assert "Inconsistent investigation scratch identity" in caplog.text
+        assert result.session is not None
+        assert result.session.scratch_worktree is True
+        assert result.session.tech_lead_scope is not None
+        assert (
+            result.session.tech_lead_scope.flavor
+            is TechLeadSessionFlavor.FAILURE_INVESTIGATION
+        )
+
+    def test_an_ordinary_retry_carries_no_investigation_scope(
+        self,
+        launcher_bundle,
+    ):
+        retry = PendingValidationRetry(
+            issue_number=123,
+            issue_title="Fix checkout",
+            agent_label="agent:web",
+            worktree_path="/tmp/worktree-123",
+            branch_name="123-fix-checkout",
+            original_prompt="Work on issue #123",
+            validation_error="boom",
+            validation_error_file=None,
+            retry_count=1,
+            source_task=TaskKind.CODE,
+            validation_cmd="make test",
+        )
+
+        result = launcher_bundle.launcher.launch_validation_retry_session(
+            retry,
+            active_sessions=[],
+        )
+
+        assert result.success is True
+        assert result.session is not None
+        assert result.session.scratch_worktree is False
+        assert result.session.tech_lead_scope is None
 
     def test_internal_review_instructions_reach_validation_retry_command(
         self,

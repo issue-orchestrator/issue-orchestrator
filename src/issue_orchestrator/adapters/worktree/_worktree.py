@@ -583,6 +583,48 @@ def _remove_existing_worktree_path(repo_root: Path, worktree_path: Path) -> None
         shutil.rmtree(worktree_path, ignore_errors=True)
 
 
+def _local_branch_exists(repo_root: Path, branch_name: str) -> bool:
+    """Whether ``branch_name`` is a ref this repository already holds."""
+    return (
+        _git_run(
+            repo_root, ["rev-parse", "--verify", branch_name], check=False
+        ).returncode
+        == 0
+    )
+
+
+def _delete_or_refuse(
+    policy: WorktreePolicy,
+    worktree_path: Path,
+    repo_root: Path,
+    *,
+    branch_name: str | None,
+    reason: str,
+    require_retained_branch: bool,
+) -> None:
+    """Delete an unusable worktree, unless its branch must survive (#7263).
+
+    ``policy.delete_worktree`` removes the checkout AND its local branch, and
+    the caller then recreates from the base -- correct for an ordinary issue
+    worktree, whose work is on the remote or is genuinely disposable, and
+    catastrophic for a checkout whose branch holds commits under
+    re-validation. A tech-lead investigation being retried is exactly that: its
+    branch is never pushed, so deleting it destroys the only copy.
+
+    With ``require_retained_branch`` the failure is raised instead. Acquisition
+    fails closed, the launcher blocks the relaunch with a diagnostic, and the
+    operator still has the branch.
+    """
+    if require_retained_branch:
+        raise WorktreeError(
+            f"refusing to delete worktree {worktree_path} for branch "
+            f"{branch_name or '(unknown)'}: {reason}. Its branch holds commits "
+            "under re-validation, so this acquisition fails rather than "
+            "recreating from the base branch."
+        )
+    policy.delete_worktree(worktree_path, repo_root)
+
+
 def _try_reuse_worktree(
     worktree_path: Path,
     branch_name: str,
@@ -593,6 +635,7 @@ def _try_reuse_worktree(
     allow_no_verify_dry_run_preflight: bool,
     base_branch: str | None,
     preserve_branch: bool = False,
+    require_retained_branch: bool = False,
 ) -> _WorktreeReuseResult:
     """Try to reuse an existing worktree, validating and preparing it.
 
@@ -612,7 +655,12 @@ def _try_reuse_worktree(
             issue_log(issue_number, "Worktree failed validation, deleting: %s"),
             validation.reason,
         )
-        policy.delete_worktree(worktree_path, repo_root)
+        _delete_or_refuse(
+            policy, worktree_path, repo_root,
+            branch_name=branch_name,
+            reason=f"validation_failed: {validation.reason}",
+            require_retained_branch=require_retained_branch,
+        )
         return _WorktreeReuseResult(
             success=False,
             recreated_reason=f"validation_failed: {validation.reason}",
@@ -641,7 +689,12 @@ def _try_reuse_worktree(
             issue_log(issue_number, "Failed to sync remote refs, deleting worktree: %s"),
             sync_result.reason,
         )
-        policy.delete_worktree(worktree_path, repo_root)
+        _delete_or_refuse(
+            policy, worktree_path, repo_root,
+            branch_name=branch_name,
+            reason=f"sync_failed: {sync_result.reason}",
+            require_retained_branch=require_retained_branch,
+        )
         return _WorktreeReuseResult(
             success=False,
             recreated_reason=f"sync_failed: {sync_result.reason}",
@@ -652,7 +705,12 @@ def _try_reuse_worktree(
             issue_log(issue_number, "Reset to base branch failed, deleting worktree: %s"),
             reset_info.reason or "unknown",
         )
-        policy.delete_worktree(worktree_path, repo_root)
+        _delete_or_refuse(
+            policy, worktree_path, repo_root,
+            branch_name=branch_name,
+            reason=f"reset_failed: {reset_info.reason or 'rebase failed'}",
+            require_retained_branch=require_retained_branch,
+        )
         return _WorktreeReuseResult(
             success=False,
             recreated_reason=f"reset_failed: {reset_info.reason or 'rebase failed'}",
@@ -670,7 +728,12 @@ def _try_reuse_worktree(
                 issue_log(issue_number, "Push preflight failed, deleting worktree: %s"),
                 reason,
             )
-            policy.delete_worktree(worktree_path, repo_root)
+            _delete_or_refuse(
+                policy, worktree_path, repo_root,
+                branch_name=branch_name,
+                reason=f"push_preflight_failed: {reason}",
+                require_retained_branch=require_retained_branch,
+            )
             return _WorktreeReuseResult(
                 success=False,
                 recreated_reason=f"push_preflight_failed: {reason}",
@@ -933,6 +996,16 @@ def create_worktree(
                 ctx.repo_root, ctx.branch_name, ctx.issue_number, ctx.reuse_options
             )
 
+        if ctx.reuse_options.require_retained_branch and not _local_branch_exists(
+            ctx.repo_root, final_branch
+        ):
+            # Creating it here would branch off the base with none of the
+            # commits this acquisition exists to carry, and report success.
+            raise WorktreeError(
+                f"branch {final_branch} does not exist in {ctx.repo_root}, so a "
+                "fresh worktree would hold none of the commits under "
+                "re-validation; refusing to create one"
+            )
         return _create_fresh_worktree(
             ctx.repo_root, ctx.worktree_path, final_branch, ctx.base_branch, ctx.seed_ref, ctx.issue_number,
             ctx.runtime_setup, recreated_reason,
@@ -1028,6 +1101,7 @@ def _try_reuse_by_branch(
         reuse_options.allow_no_verify_dry_run_preflight,
         base_branch,
         preserve_branch=reuse_options.preserve_branch,
+        require_retained_branch=reuse_options.require_retained_branch,
     )
 
     if not result.success:
@@ -1077,7 +1151,12 @@ def _try_reuse_by_path(
             issue_log(issue_number, "Worktree failed validation, deleting: %s"),
             validation.reason,
         )
-        policy.delete_worktree(worktree_path, repo_root)
+        _delete_or_refuse(
+            policy, worktree_path, repo_root,
+            branch_name=None,
+            reason=f"validation_failed: {validation.reason}",
+            require_retained_branch=reuse_options.require_retained_branch,
+        )
         return (None, f"validation_failed: {validation.reason}")
 
     # Get current branch
@@ -1088,7 +1167,12 @@ def _try_reuse_by_path(
     )
     if branch_result.returncode != 0:
         logger.warning(issue_log(issue_number, "Could not get branch, deleting worktree"))
-        policy.delete_worktree(worktree_path, repo_root)
+        _delete_or_refuse(
+            policy, worktree_path, repo_root,
+            branch_name=None,
+            reason="could not determine branch",
+            require_retained_branch=reuse_options.require_retained_branch,
+        )
         return (None, "validation_failed: could not determine branch")
 
     existing_branch = branch_result.stdout.strip()
@@ -1104,6 +1188,7 @@ def _try_reuse_by_path(
         reuse_options.allow_no_verify_dry_run_preflight,
         base_branch,
         preserve_branch=reuse_options.preserve_branch,
+        require_retained_branch=reuse_options.require_retained_branch,
     )
 
     if not result.success:

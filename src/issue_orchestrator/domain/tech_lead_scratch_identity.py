@@ -22,6 +22,7 @@ import logging
 import re
 import uuid
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import PurePath
 
 logger = logging.getLogger(__name__)
@@ -31,12 +32,12 @@ SCRATCH_TOKEN_LENGTH = 12
 
 #: ``<repo-root-name>-tech-lead-<focus issue>-<token>``
 _WORKTREE_NAME_RE = re.compile(
-    rf"^.+-tech-lead-(?P<issue>\d+)-[0-9a-f]{{{SCRATCH_TOKEN_LENGTH}}}$"
+    rf"^.+-tech-lead-(?P<issue>\d+)-(?P<token>[0-9a-f]{{{SCRATCH_TOKEN_LENGTH}}})$"
 )
 
 #: ``tech-lead-investigation-<focus issue>-<token>``
 _BRANCH_NAME_RE = re.compile(
-    rf"^tech-lead-investigation-(?P<issue>\d+)-[0-9a-f]{{{SCRATCH_TOKEN_LENGTH}}}$"
+    rf"^tech-lead-investigation-(?P<issue>\d+)-(?P<token>[0-9a-f]{{{SCRATCH_TOKEN_LENGTH}}})$"
 )
 
 
@@ -57,6 +58,34 @@ def scratch_branch_name(issue_number: int, token: str) -> str:
     ``extract_issue_number_from_branch`` never mistakes it for the focus branch.
     """
     return f"tech-lead-investigation-{issue_number}-{token}"
+
+
+@dataclass(frozen=True, slots=True)
+class ScratchNameParts:
+    """What one scratch name says: which focus issue, and which RUN of it."""
+
+    issue_number: int
+    token: str
+
+
+def parse_scratch_worktree_name(name: str) -> ScratchNameParts | None:
+    """Read a scratch worktree directory BASENAME, or ``None``."""
+    match = _WORKTREE_NAME_RE.match(name)
+    if match is None:
+        return None
+    return ScratchNameParts(
+        issue_number=int(match.group("issue")), token=match.group("token")
+    )
+
+
+def parse_scratch_branch_name(name: str) -> ScratchNameParts | None:
+    """Read an investigation BRANCH name, or ``None``."""
+    match = _BRANCH_NAME_RE.match(name)
+    if match is None:
+        return None
+    return ScratchNameParts(
+        issue_number=int(match.group("issue")), token=match.group("token")
+    )
 
 
 def scratch_worktree_focus_issue(path: str) -> int | None:
@@ -142,10 +171,34 @@ def new_scratch_identity(
     )
 
 
-def continuing_scratch_identity(
+class ScratchIdentityVerdict(Enum):
+    """What a recorded (worktree, branch) pair turned out to be."""
+
+    #: Neither half names an investigation: an ordinary issue session.
+    ORDINARY = "ordinary"
+    #: Both halves name the SAME run of the CLAIMED issue. Safe to resume.
+    RESUMABLE = "resumable"
+    #: One half names an investigation and the pair does not agree. Unsafe.
+    CORRUPT = "corrupt"
+
+
+@dataclass(frozen=True, slots=True)
+class ScratchIdentityReading:
+    """The verdict on a recorded pair, and the identity when there is one."""
+
+    verdict: ScratchIdentityVerdict
+    identity: ScratchWorktreeIdentity | None
+    detail: str
+
+    @property
+    def is_corrupt(self) -> bool:
+        return self.verdict is ScratchIdentityVerdict.CORRUPT
+
+
+def read_scratch_identity(
     worktree_path: str, branch_name: str, issue_number: int
-) -> ScratchWorktreeIdentity | None:
-    """The identity an already-launched investigation must be RESUMED into.
+) -> ScratchIdentityReading:
+    """Read a recorded (worktree, branch) pair as an investigation to RESUME.
 
     Read back, never re-minted (#7263). A validation retry of an investigation
     carries both halves durably; minting a fresh token instead would strand the
@@ -154,26 +207,65 @@ def continuing_scratch_identity(
     investigation back inside the evidence #6823 keeps it out of.
 
     ``worktree_path``'s OWN basename must be the scratch worktree, not merely
-    sit under one: a run directory nested inside it is not a worktree to reuse.
+    sit under one: a run directory nested inside it is not a checkout to reuse.
 
-    Returns ``None`` when this is not an investigation at all (the ordinary
-    case: every non-tech-lead retry), and also when only one half parses --
-    a record that names a scratch worktree with a non-scratch branch, or the
-    reverse, is corrupt, and guessing the missing half from the one that parsed
-    would resume the wrong checkout. That case is reported.
+    Three answers, not two, because "not an investigation" and "an investigation
+    I cannot safely resume" must not be handled the same way. Falling back to
+    the ordinary derivation on a CORRUPT pair is worse than refusing: the caller
+    still holds the recorded branch name, so it would check an investigation
+    branch out inside the focus issue's own worktree -- the exact mutation this
+    module exists to prevent.
+
+    A pair is ``RESUMABLE`` only when both halves parse, name the same focus
+    issue, name the ISSUE THIS RETRY IS FOR, and carry the same run TOKEN.
+    Matching issue numbers alone would accept halves from two different
+    investigations of one issue, and resuming that pair would check one run's
+    branch out in another run's directory.
     """
     worktree_name = PurePath(worktree_path).name if worktree_path else ""
-    from_worktree = scratch_worktree_focus_issue(worktree_name)
-    from_branch = scratch_branch_focus_issue(branch_name)
+    from_worktree = parse_scratch_worktree_name(worktree_name)
+    from_branch = parse_scratch_branch_name(branch_name)
+
     if from_worktree is None and from_branch is None:
-        return None
-    if from_worktree != from_branch or from_worktree != issue_number:
-        logger.warning(
-            "Inconsistent investigation scratch identity for issue %s; "
-            "resuming into the issue's own worktree instead: worktree=%r branch=%r",
+        return ScratchIdentityReading(
+            ScratchIdentityVerdict.ORDINARY, None, "not an investigation"
+        )
+    if from_worktree is None or from_branch is None:
+        return _corrupt(
             issue_number,
             worktree_name,
             branch_name,
+            "only one half names an investigation",
         )
-        return None
-    return ScratchWorktreeIdentity(worktree_name=worktree_name, branch_name=branch_name)
+    if from_worktree != from_branch:
+        return _corrupt(
+            issue_number,
+            worktree_name,
+            branch_name,
+            "the worktree and the branch are from different investigation runs",
+        )
+    if from_branch.issue_number != issue_number:
+        return _corrupt(
+            issue_number,
+            worktree_name,
+            branch_name,
+            f"it belongs to issue {from_branch.issue_number}",
+        )
+    return ScratchIdentityReading(
+        ScratchIdentityVerdict.RESUMABLE,
+        ScratchWorktreeIdentity(
+            worktree_name=worktree_name, branch_name=branch_name
+        ),
+        f"investigation run {from_branch.token}",
+    )
+
+
+def _corrupt(
+    issue_number: int, worktree_name: str, branch_name: str, why: str
+) -> ScratchIdentityReading:
+    detail = (
+        f"unusable investigation identity for issue {issue_number}: {why} "
+        f"(worktree={worktree_name!r} branch={branch_name!r})"
+    )
+    logger.warning("%s", detail)
+    return ScratchIdentityReading(ScratchIdentityVerdict.CORRUPT, None, detail)

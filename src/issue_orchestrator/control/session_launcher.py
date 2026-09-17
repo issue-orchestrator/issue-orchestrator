@@ -61,7 +61,8 @@ from ..infra.validation_state import DEFAULT_RETRY_TEMPLATE, _truncate_with_tail
 from ..domain.tech_lead_session import TechLeadLaunchScope
 from .tech_lead_session_policy import (
     failure_investigation_scratch_identity,
-    retried_investigation_scratch_identity,
+    resumed_investigation_scope,
+    retried_investigation_identity,
     is_tech_lead_session,
     prepare_tech_lead_session_data,
 )
@@ -284,6 +285,7 @@ class SessionLauncher:
         allow_remote_branch_delete: bool = True,
         force_fresh: bool = False,
         preserve_branch: bool = False,
+        require_retained_branch: bool = False,
     ) -> WorktreeReuseOptions:
         options = WorktreeReuseOptions(
             reuse_push_preflight=self.config.reuse_push_preflight,
@@ -291,6 +293,7 @@ class SessionLauncher:
             allow_no_verify_dry_run_preflight=self.config.allow_no_verify_dry_run_preflight,
             allow_remote_branch_delete=allow_remote_branch_delete,
             preserve_branch=preserve_branch,
+            require_retained_branch=require_retained_branch,
         )
         if force_fresh:
             options.disable_reuse = True
@@ -361,75 +364,54 @@ class SessionLauncher:
         """Recover or clear marker-owned escalation state from GitHub."""
         self._tech_lead_needs_human.reconcile(active_sessions, discover_markers=discover_markers)
 
-    def _interrupted_retry_guard_label(self, mode: str) -> str:
-        retry_cfg = self.config.retry.interrupted_sessions
-        if mode == "coding":
-            return retry_cfg.coding_guard_label
-        return retry_cfg.review_guard_label
-
-    def _clear_interrupted_retry_guard_label(self, *, issue_number: int, mode: str, context: str) -> None:
-        self._clear_guard_label(
-            issue_number=issue_number,
-            label=self._interrupted_retry_guard_label(mode),
-            reason=f"{mode} session relaunched - clearing interrupted retry guard",
-            context=context,
-        )
-
     def _clear_guard_label(
         self, *, issue_number: int, label: str, reason: str, context: str
     ) -> None:
-        """Best-effort removal of one relaunch guard label at a launch boundary.
-
-        One shape for all three guards. The two reset+retry clearers each used
-        to re-derive their label through a ``getattr``/``resolve``/literal
-        chain defending against a ``LabelManager`` lacking the property -- a
-        shape this same file already trusts unguarded where it READS the label
-        to make a decision. A fallback that cannot fire is a code path that can
-        only hide the bug it pretends to survive.
-        """
+        """Best-effort removal of one relaunch guard label at a launch boundary."""
         self._apply_actions([
             RemoveLabelAction(issue_number=issue_number, label=label, reason=reason),
         ], context=context)
-
-    def _clear_reset_retry_pending_label(self, *, issue_number: int, context: str) -> None:
-        self._clear_guard_label(
-            issue_number=issue_number,
-            label=self._lm.reset_retry_pending,
-            reason="session launched - clearing reset+retry pending guard",
-            context=context,
-        )
-
-    def _clear_reset_retry_scratch_pending_label(self, *, issue_number: int, context: str) -> None:
-        self._clear_guard_label(
-            issue_number=issue_number,
-            label=self._lm.reset_retry_scratch_pending,
-            reason="session launched - clearing reset+retry-from-scratch pending guard",
-            context=context,
-        )
 
     def _clear_launch_retry_guards(
         self, *, issue_number: int, mode: str, suffix: str
     ) -> None:
         """Clear every relaunch retry/reset guard label at a launch boundary.
 
-        Single owner for the guard-clear policy shared by all launch paths
-        (coding, validation-retry, review, retrospective-review), which each
-        otherwise repeated the same three calls. ``suffix`` distinguishes the
-        per-path audit context.
+        The single owner for the guard-clear policy shared by every launch path
+        -- coding, validation-retry, review, retrospective-review and rework --
+        each of which otherwise repeated the same three calls in the same order.
+        ``suffix`` distinguishes the per-path audit context.
+
+        The three guards had three near-identical clearers, and two of them
+        re-derived their label through a ``getattr``/``resolve``/literal chain
+        defending against a ``LabelManager`` lacking the property -- a shape
+        this same file already trusts unguarded where it READS the label to make
+        a decision. A fallback that cannot fire can only hide the bug it
+        pretends to survive, so they are gone.
         """
-        self._clear_interrupted_retry_guard_label(
-            issue_number=issue_number,
-            mode=mode,
-            context=f"launch_clear_interrupted_guard_{suffix}",
-        )
-        self._clear_reset_retry_pending_label(
-            issue_number=issue_number,
-            context=f"launch_clear_reset_retry_pending_{suffix}",
-        )
-        self._clear_reset_retry_scratch_pending_label(
-            issue_number=issue_number,
-            context=f"launch_clear_reset_retry_scratch_pending_{suffix}",
-        )
+        for label, reason, audit in (
+            (
+                self.config.retry.interrupted_sessions.guard_label(mode),
+                f"{mode} session relaunched - clearing interrupted retry guard",
+                "interrupted_guard",
+            ),
+            (
+                self._lm.reset_retry_pending,
+                "session launched - clearing reset+retry pending guard",
+                "reset_retry_pending",
+            ),
+            (
+                self._lm.reset_retry_scratch_pending,
+                "session launched - clearing reset+retry-from-scratch pending guard",
+                "reset_retry_scratch_pending",
+            ),
+        ):
+            self._clear_guard_label(
+                issue_number=issue_number,
+                label=label,
+                reason=reason,
+                context=f"launch_clear_{audit}_{suffix}",
+            )
 
     def _build_session_env(
         self,
@@ -1181,6 +1163,13 @@ class SessionLauncher:
             )
         if result := self._check_provider_ready(agent_config, issue.number):
             return result
+        # Before the claim and before any worktree mutation: a retry whose
+        # recorded investigation identity does not hold together must not be
+        # relaunched at all. Falling back to the ordinary derivation would carry
+        # the recorded investigation branch into the focus issue's own worktree
+        # (#6823), which is worse than not retrying (#7263).
+        if (reading := retried_investigation_identity(retry)).is_corrupt:
+            return LaunchResult(None, False, reading.detail)
         return issue, agent_config, agent_label, prepared_coder_prompt
 
     def launch_validation_retry_session(
@@ -1241,8 +1230,9 @@ class SessionLauncher:
         # A retried FAILURE INVESTIGATION continues in the disposable worktree it
         # was launched with, never the focus issue's own (#6823 / #7263). Reuse,
         # never force_fresh: the retry exists to re-validate commits that live on
-        # that branch, and a clean checkout would discard them.
-        investigation_scratch = retried_investigation_scratch_identity(retry)
+        # that branch, and a clean checkout would discard them. Admission has
+        # already refused anything but ORDINARY or RESUMABLE.
+        investigation_scratch = retried_investigation_identity(retry).identity
         ctx = WorktreeContext.create(
             command_runner=self._command_runner,
             worktree_manager=self._worktree_manager,
@@ -1262,8 +1252,11 @@ class SessionLauncher:
                 allow_remote_branch_delete=False,
                 # A resumed investigation's branch holds the commits this retry
                 # exists to re-validate, and is evidence besides: never rebase
-                # or hard-reset it onto the base (#6823).
+                # or hard-reset it onto the base (#6823), and never let a failed
+                # reuse delete the checkout -- that deletes the branch with it,
+                # and it was never pushed (#7263 review r1 F1).
                 preserve_branch=investigation_scratch is not None,
+                require_retained_branch=investigation_scratch is not None,
             ),
             phase_name=phase_name,
             stack_base_branch=stack_decision.base_branch,
@@ -1406,6 +1399,12 @@ class SessionLauncher:
                 lease_id=claim.lease_id,
                 lease_acquired_at=claim.lease_acquired_at,
                 lease_expires_at=claim.lease_expires_at,
+                # A resumed investigation is still an investigation: its worktree
+                # stays disposable and it keeps the focused grant its original
+                # launch carried, so completion cleanup, termination and run
+                # admission read the same session they read before the retry.
+                scratch_worktree=investigation_scratch is not None,
+                tech_lead_scope=resumed_investigation_scope(investigation_scratch),
             )
             log_transition(
                 "issue",
@@ -2161,9 +2160,7 @@ class SessionLauncher:
             apply_actions=self._apply_actions,
             worktree_reuse_options=self._worktree_reuse_options,
             session_identity_launch_metadata=self._session_identity_launch_metadata,
-            clear_interrupted_retry_guard_label=self._clear_interrupted_retry_guard_label,
-            clear_reset_retry_pending_label=self._clear_reset_retry_pending_label,
-            clear_reset_retry_scratch_pending_label=self._clear_reset_retry_scratch_pending_label,
+            clear_launch_retry_guards=self._clear_launch_retry_guards,
             persist_session_prompt=self._persist_session_prompt,
             wrap_provider_command=self._wrap_provider_command,
             build_session_env=self._build_session_env,

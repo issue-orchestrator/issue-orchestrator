@@ -2503,3 +2503,111 @@ class TestWorktreePreparationError:
         error.__cause__ = original
 
         assert error.__cause__ is original
+
+
+class TestRetainedBranchAcquisition:
+    """A checkout whose branch holds unpushed commits is never deleted (#7263).
+
+    `policy.delete_worktree` removes the checkout AND its local branch, and the
+    caller then recreates from the base. For an ordinary issue worktree that is
+    correct -- the work is on the remote or is genuinely disposable. For a
+    tech-lead investigation being re-validated it is the only copy of the
+    commits under test. Real Git here on purpose: the whole question is what
+    survives on disk.
+    """
+
+    def _repo_with_investigation_commit(self, tmp_path: Path) -> tuple[Path, Path, str]:
+        """A repo, a linked worktree on `branch`, and one commit only it holds."""
+        git = make_git_worktree(tmp_path, name="io-tech-lead-6410-abcdef123456",
+                                branch="tech-lead-investigation-6410-abcdef123456")
+        finding = git.worktree_path / "finding.md"
+        finding.write_text("the investigation's evidence\n")
+        subprocess.run(["git", "add", "finding.md"], cwd=git.worktree_path,
+                       check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "investigation finding"],
+                       cwd=git.worktree_path, check=True, capture_output=True)
+        return git.main_repo, git.worktree_path, "tech-lead-investigation-6410-abcdef123456"
+
+    def _head_subject(self, repo: Path, branch: str) -> str:
+        return subprocess.run(
+            ["git", "log", "-1", "--format=%s", branch],
+            cwd=repo, check=True, capture_output=True, text=True,
+        ).stdout.strip()
+
+    def test_a_failed_reuse_refuses_rather_than_deleting_the_branch(
+        self, tmp_path: Path
+    ) -> None:
+        repo, worktree, branch = self._repo_with_investigation_commit(tmp_path)
+        assert self._head_subject(repo, branch) == "investigation finding"
+
+        policy = MagicMock()
+        policy.validate_for_reuse.return_value = MagicMock(
+            can_reuse=False, reason="simulated unusable checkout"
+        )
+
+        with pytest.raises(WorktreeError, match="refusing to delete worktree"):
+            create_worktree(
+                repo_root=repo,
+                issue_number=6410,
+                issue_title="Investigation",
+                worktree_base=tmp_path,
+                branch_name=branch,
+                worktree_name=worktree.name,
+                reuse_options=WorktreeReuseOptions(require_retained_branch=True),
+                policy=policy,
+            )
+
+        policy.delete_worktree.assert_not_called()
+        assert self._head_subject(repo, branch) == "investigation finding", (
+            "the investigation's only copy of its commits was destroyed"
+        )
+
+    def test_the_same_failure_without_the_flag_still_recreates(
+        self, tmp_path: Path
+    ) -> None:
+        """The ordinary path is unchanged: this is opt-in, not a new default."""
+        repo, worktree, branch = self._repo_with_investigation_commit(tmp_path)
+        policy = MagicMock()
+        policy.validate_for_reuse.return_value = MagicMock(
+            can_reuse=False, reason="simulated unusable checkout"
+        )
+
+        try:
+            create_worktree(
+                repo_root=repo,
+                issue_number=6410,
+                issue_title="Investigation",
+                worktree_base=tmp_path,
+                branch_name=branch,
+                worktree_name=worktree.name,
+                reuse_options=WorktreeReuseOptions(),
+                policy=policy,
+            )
+        except WorktreeError:
+            pass  # the recreate may still fail on this fixture; the call is the point
+
+        assert policy.delete_worktree.called, (
+            "the ordinary path no longer recreates an unusable worktree"
+        )
+
+    def test_a_missing_branch_is_refused_instead_of_created_from_base(
+        self, tmp_path: Path
+    ) -> None:
+        """The other way to silently lose the commits: create the branch fresh.
+
+        `git worktree add <path> <branch>` for a branch that does not exist
+        branches off the base and reports success, so the retry would validate
+        an empty branch and never know.
+        """
+        git = make_git_worktree(tmp_path, name="wt-seed", branch="seed-branch")
+
+        with pytest.raises(WorktreeError, match="does not exist"):
+            create_worktree(
+                repo_root=git.main_repo,
+                issue_number=6410,
+                issue_title="Investigation",
+                worktree_base=tmp_path,
+                branch_name="tech-lead-investigation-6410-ffffffffffff",
+                worktree_name="io-tech-lead-6410-ffffffffffff",
+                reuse_options=WorktreeReuseOptions(require_retained_branch=True),
+            )

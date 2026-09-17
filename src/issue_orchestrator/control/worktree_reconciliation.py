@@ -10,6 +10,10 @@ from pathlib import Path
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
+from ..domain.tech_lead_scratch_identity import (
+    ScratchIdentityVerdict,
+    read_scratch_identity,
+)
 from ..ports.worktree_manager import RegisteredWorktree, WORKTREE_ID_MARKER
 
 if TYPE_CHECKING:
@@ -115,6 +119,11 @@ def _worktree_patterns(repo_root: Path) -> _WorktreePatterns:
     repo_name = re.escape(repo_root.name)
     return _WorktreePatterns(
         ordinary=re.compile(rf"^{repo_name}-(\d+)$"),
+        # Matched by the domain owner, not a fourth copy of the pattern: a
+        # regex here would silently stop classifying the moment the generator
+        # changed, which is the drift `tech_lead_scratch_identity` exists to
+        # prevent (#7263). Kept in this record only so the dispatch below can
+        # ask "does this look scratch-like at all?" in one place.
         scratch=re.compile(rf"^{repo_name}-tech-lead-(\d+)-([0-9a-f]{{12}})$"),
         reviewer=re.compile(
             rf"^(?:{repo_name}-\d+|{repo_name}-tech-lead-\d+-[0-9a-f]{{12}})"
@@ -151,15 +160,24 @@ def _disposable_entry(
     return WorktreeAuditEntry(path, kind, "cleanup_candidate", candidate_reason)
 
 
+def _focus_issue(match: "re.Match[str]") -> int:
+    """The focus issue the scratch-like directory name claims."""
+    return int(match.group(1))
+
+
 def _classify_scratch(
     path: Path,
     item: RegisteredWorktree,
     match: re.Match[str],
     activity: WorktreeActivityEvidence,
 ) -> WorktreeAuditEntry:
-    issue_number, token = match.groups()
-    expected_branch = f"tech-lead-investigation-{issue_number}-{token}"
-    if not _has_orchestrator_identity(path) or item.branch != expected_branch:
+    # The pair must hold together -- same focus issue, same run token -- and
+    # that rule has one owner. Reconstructing the branch from a literal here
+    # was a fourth copy of the shape (#7263 review r1 F4).
+    reading = read_scratch_identity(str(path), item.branch or "", _focus_issue(match))
+    if not _has_orchestrator_identity(path) or (
+        reading.verdict is not ScratchIdentityVerdict.RESUMABLE
+    ):
         return WorktreeAuditEntry(
             path,
             "external",

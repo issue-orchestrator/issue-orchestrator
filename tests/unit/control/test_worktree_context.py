@@ -328,7 +328,7 @@ class TestWorktreeContextCreate:
         """A scratch investigation OWNS its worktree name/branch and is a clean
         checkout off the base branch (#6823): the configured seed ref and any
         stack base are suppressed so it never seeds from the subject's branch."""
-        from issue_orchestrator.control.worktree_context import (
+        from issue_orchestrator.domain.tech_lead_scratch_identity import (
             ScratchWorktreeIdentity,
         )
 

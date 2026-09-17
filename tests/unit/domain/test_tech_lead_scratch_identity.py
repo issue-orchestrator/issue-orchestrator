@@ -16,13 +16,14 @@ import pytest
 
 from issue_orchestrator.domain.tech_lead_scratch_identity import (
     SCRATCH_TOKEN_LENGTH,
+    ScratchIdentityVerdict,
     ScratchWorktreeIdentity,
-    continuing_scratch_identity,
     is_scratch_branch_name,
     is_scratch_worktree_name,
     new_scratch_identity,
     new_scratch_token,
     path_is_under_scratch_worktree,
+    read_scratch_identity,
     scratch_branch_focus_issue,
     scratch_branch_name,
     scratch_worktree_focus_issue,
@@ -112,14 +113,36 @@ class TestFreshIdentity:
         assert scratch_branch_focus_issue(identity.branch_name) == 6410
         assert identity.worktree_name.endswith(identity.branch_name.rsplit("-", 1)[-1])
 
-    def test_two_runs_of_one_issue_never_collide(self) -> None:
-        first = new_scratch_identity("issue-orchestrator", 6410)
-        second = new_scratch_identity("issue-orchestrator", 6410)
+    def test_distinct_tokens_give_distinct_identities(self) -> None:
+        """Deterministic on purpose.
 
-        assert first != second
+        Asserting that two freshly minted identities differ is a probability
+        statement, not a property: two 48-bit tokens CAN collide, so the test
+        would be asserting odds. What the code actually promises is that a
+        different token yields a different worktree AND a different branch, and
+        that is what is checked -- the token supply is tested separately below.
+        """
+        first = ScratchWorktreeIdentity(
+            worktree_name=scratch_worktree_name("issue-orchestrator", 6410, "a" * 12),
+            branch_name=scratch_branch_name(6410, "a" * 12),
+        )
+        second = ScratchWorktreeIdentity(
+            worktree_name=scratch_worktree_name("issue-orchestrator", 6410, "b" * 12),
+            branch_name=scratch_branch_name(6410, "b" * 12),
+        )
+
+        assert first.worktree_name != second.worktree_name
+        assert first.branch_name != second.branch_name
+
+    def test_the_token_supply_is_the_declared_shape(self) -> None:
+        """What makes a collision unlikely, stated as the property it is."""
+        token = new_scratch_token()
+
+        assert len(token) == SCRATCH_TOKEN_LENGTH
+        assert all(character in "0123456789abcdef" for character in token)
 
 
-class TestContinuingIdentity:
+class TestReadingARecordedPair:
     """Resuming an investigation that is already on disk (#7263)."""
 
     def _launched(self, issue: int = 6410) -> ScratchWorktreeIdentity:
@@ -130,21 +153,23 @@ class TestContinuingIdentity:
         retry exists to re-validate on the old branch."""
         launched = self._launched()
 
-        resumed = continuing_scratch_identity(
+        reading = read_scratch_identity(
             f"/Users/dev/worktree/{launched.worktree_name}",
             launched.branch_name,
             6410,
         )
 
-        assert resumed == launched
+        assert reading.verdict is ScratchIdentityVerdict.RESUMABLE
+        assert reading.identity == launched
 
     def test_an_ordinary_retry_is_not_an_investigation(self) -> None:
-        assert (
-            continuing_scratch_identity(
-                "/Users/dev/issue-orchestrator-6410", "6410-fix-the-thing", 6410
-            )
-            is None
+        reading = read_scratch_identity(
+            "/Users/dev/issue-orchestrator-6410", "6410-fix-the-thing", 6410
         )
+
+        assert reading.verdict is ScratchIdentityVerdict.ORDINARY
+        assert reading.identity is None
+        assert reading.is_corrupt is False
 
     def test_a_run_directory_inside_the_scratch_worktree_is_not_one(self) -> None:
         """The path's OWN basename must be the worktree; a run dir nested inside
@@ -155,7 +180,7 @@ class TestContinuingIdentity:
             f"/Users/dev/{launched.worktree_name}/.issue-orchestrator/sessions/run-1"
         )
 
-        assert continuing_scratch_identity(run_dir, launched.branch_name, 6410) is None
+        assert read_scratch_identity(run_dir, launched.branch_name, 6410).is_corrupt
 
     @pytest.mark.parametrize(
         "worktree_path,branch",
@@ -165,22 +190,47 @@ class TestContinuingIdentity:
         ],
         ids=["scratch branch, ordinary worktree", "scratch worktree, ordinary branch"],
     )
-    def test_a_half_scratch_pair_is_refused(
+    def test_a_half_scratch_pair_is_corrupt(
         self, worktree_path: str, branch: str, caplog: pytest.LogCaptureFixture
     ) -> None:
         """Guessing the missing half would resume the wrong checkout: an
         investigation branch inside the focus issue's own worktree is the exact
-        mutation #6823 forbids."""
+        mutation #6823 forbids. CORRUPT, not ORDINARY -- the caller must refuse,
+        not fall back."""
         launched = self._launched()
         worktree_path = worktree_path.replace("SCRATCH_WORKTREE", launched.worktree_name)
         branch = branch.replace("SCRATCH_BRANCH", launched.branch_name)
 
         with caplog.at_level(logging.WARNING):
-            assert continuing_scratch_identity(worktree_path, branch, 6410) is None
+            reading = read_scratch_identity(worktree_path, branch, 6410)
 
-        assert "Inconsistent investigation scratch identity" in caplog.text
+        assert reading.verdict is ScratchIdentityVerdict.CORRUPT
+        assert reading.identity is None
+        assert "only one half names an investigation" in caplog.text
 
-    def test_another_issues_investigation_is_refused(self) -> None:
+    def test_halves_from_two_runs_of_one_issue_are_corrupt(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The case matching issue numbers alone would have accepted.
+
+        Both halves are well-formed and both name issue 6410, but they are from
+        DIFFERENT investigations -- resuming that pair checks one run's branch
+        out inside another run's directory. Only the run token separates them.
+        """
+        first = self._launched()
+        second = self._launched()
+
+        with caplog.at_level(logging.WARNING):
+            reading = read_scratch_identity(
+                f"/Users/dev/{first.worktree_name}", second.branch_name, 6410
+            )
+
+        assert reading.verdict is ScratchIdentityVerdict.CORRUPT
+        assert "different investigation runs" in caplog.text
+
+    def test_another_issues_investigation_is_corrupt(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
         """A retry queued for 6410 must never resume 6411's investigation.
 
         Both halves parse and agree with each other; only the retry's own issue
@@ -188,14 +238,20 @@ class TestContinuingIdentity:
         """
         launched = self._launched(6411)
 
-        assert (
-            continuing_scratch_identity(
+        with caplog.at_level(logging.WARNING):
+            reading = read_scratch_identity(
                 f"/Users/dev/{launched.worktree_name}", launched.branch_name, 6410
             )
-            is None
-        )
 
-    def test_an_empty_worktree_path_is_not_an_investigation(self) -> None:
+        assert reading.verdict is ScratchIdentityVerdict.CORRUPT
+        assert "belongs to issue 6411" in caplog.text
+
+    def test_an_empty_worktree_path_with_a_scratch_branch_is_corrupt(self) -> None:
         launched = self._launched()
 
-        assert continuing_scratch_identity("", launched.branch_name, 6410) is None
+        assert read_scratch_identity("", launched.branch_name, 6410).is_corrupt
+
+    def test_nothing_recorded_at_all_is_ordinary(self) -> None:
+        reading = read_scratch_identity("", "", 6410)
+
+        assert reading.verdict is ScratchIdentityVerdict.ORDINARY

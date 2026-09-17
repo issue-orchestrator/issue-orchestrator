@@ -156,6 +156,14 @@ class InterruptedSessionRetryConfig:
     coding_guard_label: str = "io:auto-retried-interrupted-coding"
     review_guard_label: str = "io:auto-retried-interrupted-review"
 
+    def guard_label(self, mode: str) -> str:
+        """The guard label for a relaunch of ``mode``.
+
+        Owned here, beside the two labels: a caller choosing between them had to
+        know both field names, which is the rummaging AGENTS.md names.
+        """
+        return self.coding_guard_label if mode == "coding" else self.review_guard_label
+
 
 @dataclass
 class ProviderShortRetryConfig:

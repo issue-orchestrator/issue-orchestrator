@@ -29,9 +29,10 @@ from ..domain.tech_lead_escalation import render_tech_lead_escalation_comment
 from ..domain.session_key import TaskKind
 from ..domain.tech_lead_manifest import TechLeadManifest
 from ..domain.tech_lead_scratch_identity import (
+    ScratchIdentityReading,
     ScratchWorktreeIdentity,
-    continuing_scratch_identity,
     new_scratch_identity,
+    read_scratch_identity,
 )
 from ..domain.board_snapshot import BOARD_SNAPSHOT_FILENAME, BoardSnapshot
 from ..domain.tech_lead_session import (
@@ -160,10 +161,10 @@ def failure_investigation_scratch_identity(
     return new_scratch_identity(config.repo_root.name, issue.number)
 
 
-def retried_investigation_scratch_identity(
+def retried_investigation_identity(
     retry: "PendingValidationRetry",
-) -> ScratchWorktreeIdentity | None:
-    """The scratch identity a validation RETRY must continue in (#6823 / #7263).
+) -> ScratchIdentityReading:
+    """What the queued retry's recorded worktree and branch are (#6823 / #7263).
 
     A failure investigation that fails validation is relaunched through
     ``SessionLauncher.launch_validation_retry_session``, and that path derived
@@ -172,12 +173,39 @@ def retried_investigation_scratch_identity(
     where an agent commit lands on the focus branch it was sent to READ.
 
     Nothing is recomputed: ``PendingValidationRetry`` already carries both halves
-    durably, and the rule for reading them back belongs to the module that owns
-    the shape, not to this launch policy.
+    durably, and the rule for reading them belongs to the module that owns their
+    shape, not to this launch policy. The three-way answer matters at the call
+    site: a CORRUPT pair must block the relaunch, not fall back to the ordinary
+    derivation, which would still carry the recorded investigation branch into
+    the focus issue's own worktree.
     """
-    return continuing_scratch_identity(
+    return read_scratch_identity(
         retry.worktree_path, retry.branch_name, retry.issue_number
     )
+
+
+def resumed_investigation_scope(
+    identity: "ScratchWorktreeIdentity | None",
+) -> TechLeadLaunchScope | None:
+    """The typed grant a RESUMED investigation carries (#7263 review r1 F3).
+
+    A validation retry relaunches the investigation, so the session it produces
+    must present the same scope the original launch did -- a focused failure
+    investigation of this issue, never the exclusive whole-board grant. Without
+    it the retry's session reads as an un-scoped tech-lead run: run admission
+    treats a focused retry as global, and completion and termination stop
+    recognising the worktree as disposable.
+
+    ``None`` for every ordinary retry, which is what those consumers already
+    expect of a coding session.
+    """
+    if identity is None:
+        return None
+    # No ``problem_issue_numbers``: an investigation derives its scope from its
+    # focus issue, and the type rejects a cohort for any flavor but a health
+    # review. This is the same value ``tech_lead_launch_scope`` builds for the
+    # original launch.
+    return TechLeadLaunchScope(flavor=TechLeadSessionFlavor.FAILURE_INVESTIGATION)
 
 
 #: Outcomes whose comment IS the tech lead's decision, not a work report.
