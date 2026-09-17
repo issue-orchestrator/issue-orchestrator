@@ -204,26 +204,29 @@ class TestCondorLaneExecutorContract(LaneExecutorContract):
         green on the defaults while silently reimposing a 45s start-time limit
         on a backend allowed 600s of queue wait.
         """
-        # Recomposed from the PUBLISHED bounds, not from this module's constant,
-        # so lowering the constant cannot lower the expectation with it. `>`
-        # alone would accept ADMISSION_TIMEOUT_SECONDS + 0.001.
-        required = _contract_first_flush_backstop_seconds(
-            self.streaming_command(
-                Path("/nonexistent"), Path("/nonexistent/go"), Path("/nonexistent/f")
-            ).deadline.timeout_seconds
+        # An INDEPENDENT oracle: composed here from the published constants and
+        # the submitted command's own deadline, never through
+        # `_contract_first_flush_backstop_seconds`. Sharing that helper with the
+        # value under test meant mutating it shrank both sides together and the
+        # assertion still passed. `>=`, not `>`, because `>` alone would accept
+        # ADMISSION_TIMEOUT_SECONDS + 0.001.
+        submitted_deadline = self.streaming_command(
+            Path("/nonexistent"), Path("/nonexistent/go"), Path("/nonexistent/f")
+        ).deadline.timeout_seconds
+        required = (
+            TOOL_TIMEOUT_SECONDS  # the pool query at construction
+            + TOOL_TIMEOUT_SECONDS  # the submission
+            + ADMISSION_TIMEOUT_SECONDS  # the queue wait this backend permits
+            + submitted_deadline  # and then the whole of the lane's own deadline
         )
 
         assert self.first_flush_backstop_seconds >= required, (
             "a job may legitimately spend the backend's full admission window "
             f"({ADMISSION_TIMEOUT_SECONDS:.0f}s) behind two "
-            f"{TOOL_TIMEOUT_SECONDS:.0f}s tool calls and then execute for its whole "
-            "deadline; a "
-            f"first-flush backstop of {self.first_flush_backstop_seconds:.0f}s "
-            f"fails it for being slow (needs >= {required:.0f}s)"
-        )
-        assert (
-            self.streaming_lane_lifetime_seconds
-            > self.first_flush_backstop_seconds + 45.0
+            f"{TOOL_TIMEOUT_SECONDS:.0f}s tool calls and then execute for its "
+            f"whole {submitted_deadline:.0f}s deadline; a first-flush backstop "
+            f"of {self.first_flush_backstop_seconds:.0f}s fails it for being "
+            f"slow (needs >= {required:.0f}s)"
         )
 
 

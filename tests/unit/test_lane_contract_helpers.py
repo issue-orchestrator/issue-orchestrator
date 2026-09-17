@@ -102,8 +102,10 @@ class TestStreamingVerdictTable:
     could be changed back to pass the stale timed observation and every test here
     would still have exercised the correct helper.
 
-    All sixteen combinations, because the observations are independent and
-    reading them in a fixed order is what produced wrong messages twice.
+    All TWELVE reachable combinations, because the observations are independent
+    and reading them in a fixed order produced wrong messages twice. The other
+    four -- announced in the window but not eventually -- cannot happen: the
+    sentinel is a file, so it does not un-appear.
     """
 
     def _verdict(
