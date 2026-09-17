@@ -155,17 +155,30 @@ _ESCAPE_SCRIPT = (
 #     allowed TOOL_TIMEOUT_SECONDS;
 #   * the queue wait the backend permits, ADMISSION_TIMEOUT_SECONDS;
 #   * and after the execute event, the lane's OWN deadline. Nothing else bounds
-#     transfer and interpreter startup, but the backend kills the lane when its
-#     deadline expires, so a lane that has not flushed by then is gone. How that
-#     is REPORTED depends on what was observed: with no sentinel and no marker
-#     it is the never-announced answer, not an early conclusion.
+#     transfer and interpreter startup, but the lane's deadline is the budget
+#     the contract GRANTS it, so a lane still silent at the end of that budget
+#     is one this test has no reason to keep waiting for.
+#
+# That budget is not the backend's maximum wall-clock lifetime. `_enforce_watchdogs`
+# tolerates the execution deadline PLUS observed suspension PLUS
+# `_SCHEDULER_SLACK_SECONDS`, and the scheduler's periodic removal may land
+# after the exact bound, so the lane is not necessarily gone at 285s. This
+# contract lane is never suspended, and the window's job is to decide when a
+# SILENT lane stops being plausible -- not to predict when a doomed one dies --
+# so the slack terms are deliberately outside it. A lane that outlives the
+# window is reported by what was observed, which for no sentinel and no marker
+# is the never-announced answer, not an early conclusion.
 #
 # No estimate is left in the BOUND (945s). The window adds the contract's named
 # 15s observation margin, so 960 + 45 of observation + 60 to conclude is 1065s,
 # which is why this class takes a 1200s timeout: a pytest timeout firing first
 # would replace the contract's diagnosis with one that names nothing.
 def _contract_first_flush_bound_seconds(lane_deadline_seconds: float) -> float:
-    """Everything the BACKEND may legitimately spend before the first flush.
+    """The command BUDGET a silent lane may plausibly still be inside.
+
+    Not the backend's maximum wall-clock lifetime: removal can land after the
+    deadline by observed suspension plus scheduler slack. This is the budget the
+    contract grants, which is what decides when silence stops being plausible.
 
     Taken from the SUBMITTED command's deadline, not from the interval constant
     it was composed out of: this backend starts that deadline when execution is

@@ -149,10 +149,14 @@ _SLEEPER_LIFETIME_SECONDS = 300.0
 #
 # Its clock starts AFTER the lane has printed and announced its flush, so it has
 # nothing to do with the first-flush window or the queue wait that window
-# absorbs. What it must outlive is what comes after the announcement: the
-# observation window and then the conclusion that follows the handshake. Spelled
-# as a literal because the lifetime scan reads literals; the arithmetic is
-# asserted by ``test_the_streaming_lane_outlives_every_window_that_observes_it``.
+# absorbs. And it is consulted ONLY while the handshake is absent: the script
+# tests it inside the wait loop, so once released it leaves without looking
+# again. So the one thing it must outlive is the OBSERVATION window, plus the
+# margin that decides when that window is noticed. What happens after the
+# handshake -- the lane concluding, the backend winding it down -- is bounded by
+# the SUBMITTED command deadline, not by this. Spelled as a literal because the
+# lifetime scan reads literals; the arithmetic is asserted by
+# ``test_the_streaming_lane_outlives_every_window_that_observes_it``.
 _STREAMING_LANE_LIFETIME_SECONDS = 120.0
 
 # A process tree that must be KILLED, never asked: both processes ignore
@@ -712,15 +716,19 @@ class LaneExecutorContract:
         which is the class of confusion #7264 was filed about.
 
         The script's clock starts AFTER it has printed and announced its flush
-        -- not when ``run()`` was asked, and not at its first instruction -- so
-        it has nothing to do with the queue wait or with startup: what it must
-        outlive is the observation window and the conclusion that follows it.
-        Conflating it with the wall-clock window made this guard demand a
-        lifetime long enough to cover a scheduler's whole admission allowance,
-        which the fixture-lifetime budget rightly refuses.
+        -- not when ``run()`` was asked, and not at its first instruction -- and
+        it is consulted only while the handshake is absent, because the script
+        tests it inside the wait loop. So the window it must outlive is the
+        OBSERVATION window and the margin that notices it; the conclusion that
+        follows the handshake is the SUBMITTED deadline's problem, asserted
+        separately below.
+
+        Both earlier versions of this guard were wrong in the same direction:
+        one demanded a lifetime covering a scheduler's whole admission
+        allowance, the other a conclusion this clock never governs.
         """
-        windows = (
-            _STREAM_OBSERVABLE_BACKSTOP_SECONDS + _LANE_CONCLUSION_BACKSTOP_SECONDS
+        watched = (
+            _STREAM_OBSERVABLE_BACKSTOP_SECONDS + _OBSERVATION_MARGIN_SECONDS
         )
 
         # The deadline of the command this backend will actually SUBMIT, not the
@@ -750,11 +758,11 @@ class LaneExecutorContract:
             f"{_STREAM_OBSERVABLE_BACKSTOP_SECONDS:.0f}s of observation plus "
             f"{_LANE_CONCLUSION_BACKSTOP_SECONDS:.0f}s to conclude"
         )
-        assert self.streaming_lane_lifetime_seconds > windows, (
+        assert self.streaming_lane_lifetime_seconds > watched, (
             "the streaming lane can expire while the test is still watching it: "
             f"lifetime={self.streaming_lane_lifetime_seconds:.0f}s vs "
             f"{_STREAM_OBSERVABLE_BACKSTOP_SECONDS:.0f}s of observation plus "
-            f"{_LANE_CONCLUSION_BACKSTOP_SECONDS:.0f}s to conclude"
+            f"{_OBSERVATION_MARGIN_SECONDS:.0f}s of margin"
         )
 
     def test_output_streams_before_the_lane_completes(
