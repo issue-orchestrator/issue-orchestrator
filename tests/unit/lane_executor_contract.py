@@ -61,6 +61,13 @@ _TREE_REAP_BACKSTOP_SECONDS = 60.0
 # the time it fires, so it can be short.
 _DEADLINE_UNDER_TEST_SECONDS = 5.0
 
+# How long a lane may take to reach its FIRST INSTRUCTION once it is executing:
+# file transfer, interpreter startup, imports. Distinct from the lane's deadline
+# even though both were once the same 120s number -- one is an interval inside
+# the lane's life, the other is the whole of it, and spending the whole deadline
+# on the interval leaves nothing for the windows that then observe the lane.
+LANE_FIRST_INSTRUCTION_SECONDS = 120.0
+
 # The streaming proof is TWO events, deliberately separated (#7264). The old
 # single window could only ever report "the backend buffers", which was the
 # less likely of the two things its expiry actually meant.
@@ -74,9 +81,16 @@ _DEADLINE_UNDER_TEST_SECONDS = 5.0
 # QUEUE WAIT LANDS HERE. A scheduling backend's admission is explicitly outside
 # the lane's deadline and may legitimately exceed it, so a queued job spends its
 # wait in THIS window, and such a backend must raise
-# ``LaneExecutorContract.first_flush_backstop_seconds`` (and the lane lifetime
-# with it). The default suits a backend that starts its lane when asked.
-_STREAM_FLUSH_BACKSTOP_SECONDS = 45.0
+# ``LaneExecutorContract.first_flush_backstop_seconds``. The SCRIPT's own
+# lifetime is a separate clock that starts after the announcement, so it does
+# not move with this one. The default suits a backend that starts its lane when
+# asked.
+#
+# Sized to the startup allowance this module declares, plus polling granularity
+# -- not a round number. A backend whose lane legitimately takes the whole of
+# LANE_FIRST_INSTRUCTION_SECONDS to reach its first instruction must not be
+# reported late for doing exactly what the contract permits (#7264 review r9).
+_STREAM_FLUSH_BACKSTOP_SECONDS = LANE_FIRST_INSTRUCTION_SECONDS + 15.0
 # Second: having been told the bytes were written, how long they may take to
 # become observable on the parent's streams while the lane is provably still
 # running. THIS expiry is the buffering diagnosis, and it is the only thing that
@@ -90,13 +104,6 @@ _STREAM_FLUSH_BACKSTOP_SECONDS = 45.0
 _STREAM_OBSERVABLE_BACKSTOP_SECONDS = 45.0
 # How long the lane may then take to conclude once the handshake releases it.
 _LANE_CONCLUSION_BACKSTOP_SECONDS = 60.0
-
-# How long a lane may take to reach its FIRST INSTRUCTION once it is executing:
-# file transfer, interpreter startup, imports. Distinct from the lane's deadline
-# even though both were once the same 120s number -- one is an interval inside
-# the lane's life, the other is the whole of it, and spending the whole deadline
-# on the interval leaves nothing for the windows that then observe the lane.
-LANE_FIRST_INSTRUCTION_SECONDS = 120.0
 
 # The deadline the STREAMING lane is submitted with. It is not the contract's
 # ordinary machinery allowance: this lane is deliberately held alive to be
@@ -675,12 +682,13 @@ class LaneExecutorContract:
         failure would name this fixture rather than the backend under test --
         which is the class of confusion #7264 was filed about.
 
-        The script's clock starts at its FIRST INSTRUCTION, not when ``run()``
-        was asked, so it has nothing to do with the queue wait: what it must
+        The script's clock starts AFTER it has printed and announced its flush
+        -- not when ``run()`` was asked, and not at its first instruction -- so
+        it has nothing to do with the queue wait or with startup: what it must
         outlive is the observation window and the conclusion that follows it.
-        Conflating the two made this guard demand a lifetime long enough to
-        cover a scheduler's whole admission allowance, which the fixture-lifetime
-        budget rightly refuses.
+        Conflating it with the wall-clock window made this guard demand a
+        lifetime long enough to cover a scheduler's whole admission allowance,
+        which the fixture-lifetime budget rightly refuses.
         """
         windows = (
             _STREAM_OBSERVABLE_BACKSTOP_SECONDS + _LANE_CONCLUSION_BACKSTOP_SECONDS
@@ -692,6 +700,15 @@ class LaneExecutorContract:
         submitted = self.streaming_command(
             Path("/nonexistent"), Path("/nonexistent/go"), Path("/nonexistent/f")
         ).deadline.timeout_seconds
+
+        # The window that decides "late" must cover the startup this module
+        # says is permissible, or a lane doing exactly what the contract allows
+        # is reported late. Nothing else related these two numbers (#7264 r9).
+        assert self.first_flush_backstop_seconds > LANE_FIRST_INSTRUCTION_SECONDS, (
+            f"a lane is allowed {LANE_FIRST_INSTRUCTION_SECONDS:.0f}s to reach "
+            "its first instruction, but this backend calls it late after "
+            f"{self.first_flush_backstop_seconds:.0f}s"
+        )
 
         assert submitted > (
             LANE_FIRST_INSTRUCTION_SECONDS

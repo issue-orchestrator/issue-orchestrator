@@ -11,7 +11,10 @@ from issue_orchestrator.adapters.direct_lane_executor import (
 from issue_orchestrator.ports.lane_executor import LaneExecutor
 from tests.unit.lane_executor_contract import LaneExecutorContract
 
-pytestmark = pytest.mark.timeout(180)
+# First flush (135s) + observation (45s) + conclusion (60s) = 240s of backstops,
+# and a timeout that fires first would replace the contract's own diagnosis with
+# one that names nothing -- the failure #7264 was filed about (#7264 r9).
+pytestmark = pytest.mark.timeout(300)
 
 
 class TestDirectLaneExecutorContract(LaneExecutorContract):

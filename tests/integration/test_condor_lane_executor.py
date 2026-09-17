@@ -185,7 +185,8 @@ _CONTRACT_FIRST_FLUSH_BACKSTOP_SECONDS = _contract_first_flush_backstop_seconds(
 
 
 class TestCondorLaneExecutorContract(LaneExecutorContract):
-    # The module's 600s allowance cannot hold 945 + 45 + 60 of backstops, and a
+    # The module's 600s allowance cannot hold 945 + 45 + 60 of backstops, so
+    # this class takes 1200s. A
     # pytest timeout firing first would replace the contract's own diagnosis
     # with one that names nothing (#7264). Class-scoped: only the inherited
     # contract needs it.
