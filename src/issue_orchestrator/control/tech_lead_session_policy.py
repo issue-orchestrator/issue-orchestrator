@@ -29,10 +29,8 @@ from ..domain.tech_lead_escalation import render_tech_lead_escalation_comment
 from ..domain.session_key import TaskKind
 from ..domain.tech_lead_manifest import TechLeadManifest
 from ..domain.tech_lead_scratch_identity import (
-    ScratchIdentityVerdict,
     ScratchWorktreeIdentity,
     new_scratch_identity,
-    read_scratch_identity,
 )
 from ..domain.board_snapshot import BOARD_SNAPSHOT_FILENAME, BoardSnapshot
 from ..domain.tech_lead_session import (
@@ -162,51 +160,14 @@ def failure_investigation_scratch_identity(
     return new_scratch_identity(config.repo_root.name, issue.number)
 
 
-def investigation_retry_refusal(retry: "PendingValidationRetry") -> str | None:
-    """Why a queued validation retry must NOT be relaunched, or ``None``.
-
-    A tech-lead failure investigation runs in a disposable worktree on a
-    throwaway branch (#6823) because it READS its focus issue's worktree and
-    branch as evidence and must never mutate them. The retry path derives its
-    worktree from the focus issue like any other coding retry, so relaunching an
-    investigation's retry puts it straight back inside that evidence, on the
-    recorded investigation branch, where an agent commit lands on the focus
-    branch.
-
-    Resuming it in its own worktree instead is the eventual answer and is #7273:
-    the resumed run needs the original run's launch authority and trusted
-    inputs, without which completion rejects it as ``missing_authority`` -- and a
-    session marked disposable to get its worktree back would then have that
-    rejection FORCE-DELETE the branch holding the commits under re-validation.
-    Until that lands, the safe answer is not to relaunch at all: escalate, and
-    leave the branch exactly where it is.
-
-    A pair that does not hold together is refused for a second reason -- there
-    is no single investigation to speak of -- and says which.
-    """
-    reading = read_scratch_identity(
-        retry.worktree_path, retry.branch_name, retry.issue_number
-    )
-    if reading.verdict is ScratchIdentityVerdict.CORRUPT:
-        return reading.detail
-    if reading.verdict is ScratchIdentityVerdict.RESUMABLE:
-        return (
-            "this is a tech-lead failure investigation on branch "
-            f"{retry.branch_name}, and a validation retry of one cannot be "
-            "relaunched without putting it back inside the focus issue's own "
-            "worktree (#6823). Resuming it in its own disposable worktree needs "
-            "the original run's launch authority and inputs, which is #7273."
-        )
-    return None
-
-
 def quarantine_retry_launch(
     retry: "PendingValidationRetry",
     detail: str,
     *,
+    lock_checkout: Callable[..., bool],
     escalate: Callable[..., bool],
 ) -> "LaunchResult":
-    """Refuse an unrunnable retry, tell a human, and let the queue drop it.
+    """Refuse an unrunnable retry, take custody of its branch, tell a human.
 
     Relaunching it is the one thing that must not happen: the launcher still
     holds the recorded investigation branch, so the ordinary derivation would
@@ -215,48 +176,78 @@ def quarantine_retry_launch(
 
     Refusing it forever is the other thing that must not happen. Validation
     retries deliberately RETAIN a permanent failure, so a poison record would be
-    planned every tick against capacity another issue could use. ``QUARANTINED``
-    leaves the queue unconditionally.
+    planned every tick against capacity another issue could use.
 
-    That is safe ONLY because a human was told, so the escalation's own answer
-    decides: when it fails, the record is RETAINED instead, because dropping the
-    only queued reference to a branch nobody has been told about is the one
-    outcome worse than a poison item (#7263 review r3 F4).
+    What makes dropping it safe is CUSTODY, not notification. Git's own lock on
+    the checkout survives a restart, is visible in ``git worktree list``, and is
+    already honoured by every cleanup path here -- including startup
+    reconciliation, which would otherwise classify an inactive scratch checkout
+    as disposable and remove it with its never-pushed branch. So the lock is the
+    precondition: taken, the record leaves the queue; refused, the record stays,
+    because a branch nothing is holding must keep its last reference.
+
+    The escalation is best-effort on top of that. A comment that fails to post
+    is bad, and is logged as an error, but it does not decide the fate of the
+    branch -- the lock already has (#7263 review r4).
     """
     from .session_launch_types import LaunchDisposition, LaunchResult
 
-    logger.error(
-        "[issue-%d] Quarantining validation retry: %s", retry.issue_number, detail
+    worktree = Path(retry.worktree_path)
+    reason = (
+        f"issue-orchestrator: validation retry of a tech-lead investigation "
+        f"refused and handed to a human (issue #{retry.issue_number}). "
+        "Unlock when resolved."
     )
-    escalated = escalate(
-        issue_number=retry.issue_number,
-        reason="validation retry has an unusable investigation identity",
-        comment=(
-            "## Needs Human Input — validation retry quarantined\n\n"
-            f"{detail}\n\n"
-            "The queued retry names a tech-lead investigation worktree and "
-            "branch that do not agree, so it cannot be resumed and must not be "
-            "relaunched into this issue's own worktree. It has been removed "
-            "from the retry queue; the branch itself is untouched."
-        ),
-        context="validation_retry_identity_quarantine",
-        event_data={
-            "issue_number": retry.issue_number,
-            "issue_title": retry.issue_title,
-            "reason": detail,
-        },
-    )
-    if not escalated:
+    custody = lock_checkout(worktree, reason=reason)
+    if not custody:
         logger.error(
-            "[issue-%d] Quarantine escalation failed; retaining the record so "
-            "its branch keeps a queued reference",
+            "[issue-%d] Could not take custody of %s; keeping its retry queued "
+            "rather than dropping the last reference to branch %s",
             retry.issue_number,
+            worktree,
+            retry.branch_name,
         )
         return LaunchResult(
             None,
             False,
-            f"{detail} (escalation failed; retained for the next tick)",
+            f"{detail} (could not lock {worktree}; retained)",
             disposition=LaunchDisposition.RETRYABLE_FAILURE,
+        )
+
+    logger.error(
+        "[issue-%d] Refusing validation retry and holding %s: %s",
+        retry.issue_number,
+        worktree,
+        detail,
+    )
+    notified = escalate(
+        issue_number=retry.issue_number,
+        reason="validation retry of a tech-lead investigation refused",
+        comment=(
+            "## Needs Human Input — validation retry refused\n\n"
+            f"{detail}\n\n"
+            f"- worktree: `{worktree}` (locked, so nothing will remove it)\n"
+            f"- branch: `{retry.branch_name}` (never pushed; its commits are "
+            "only here)\n\n"
+            "The retry has been removed from the queue. When you have finished "
+            "with the checkout, release it with "
+            f"`git worktree unlock {worktree}` and delete it if it is no longer "
+            "wanted."
+        ),
+        context="validation_retry_refused",
+        event_data={
+            "issue_number": retry.issue_number,
+            "issue_title": retry.issue_title,
+            "reason": detail,
+            "worktree_path": str(worktree),
+            "branch_name": retry.branch_name,
+        },
+    )
+    if not notified:
+        logger.error(
+            "[issue-%d] The handoff comment did not post; the checkout is "
+            "locked and the branch is safe, but nobody has been told",
+            retry.issue_number,
         )
     return LaunchResult(
         None, False, detail, disposition=LaunchDisposition.QUARANTINED

@@ -159,7 +159,7 @@ class TestReadingARecordedPair:
             6410,
         )
 
-        assert reading.verdict is ScratchIdentityVerdict.RESUMABLE
+        assert reading.verdict is ScratchIdentityVerdict.CONSISTENT
         assert reading.identity == launched
 
     def test_an_ordinary_retry_is_not_an_investigation(self) -> None:
@@ -214,15 +214,20 @@ class TestReadingARecordedPair:
         """The case matching issue numbers alone would have accepted.
 
         Both halves are well-formed and both name issue 6410, but they are from
-        DIFFERENT investigations -- resuming that pair checks one run's branch
-        out inside another run's directory. Only the run token separates them.
+        DIFFERENT investigations -- one run's branch inside another run's
+        directory. Only the run token separates them, so the tokens are spelled
+        out rather than minted: asserting that two random ones differ is a
+        probability statement, not a property.
         """
-        first = self._launched()
-        second = self._launched()
+        first = ScratchWorktreeIdentity(
+            worktree_name=scratch_worktree_name("issue-orchestrator", 6410, "a" * 12),
+            branch_name=scratch_branch_name(6410, "a" * 12),
+        )
+        second_branch = scratch_branch_name(6410, "b" * 12)
 
         with caplog.at_level(logging.WARNING):
             reading = read_scratch_identity(
-                f"/Users/dev/{first.worktree_name}", second.branch_name, 6410
+                f"/Users/dev/{first.worktree_name}", second_branch, 6410
             )
 
         assert reading.verdict is ScratchIdentityVerdict.CORRUPT

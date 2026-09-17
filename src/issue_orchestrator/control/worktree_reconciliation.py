@@ -180,7 +180,7 @@ def _classify_scratch(
         else None
     )
     if not _has_orchestrator_identity(path) or (
-        reading is None or reading.verdict is not ScratchIdentityVerdict.RESUMABLE
+        reading is None or reading.verdict is not ScratchIdentityVerdict.CONSISTENT
     ):
         return WorktreeAuditEntry(
             path,

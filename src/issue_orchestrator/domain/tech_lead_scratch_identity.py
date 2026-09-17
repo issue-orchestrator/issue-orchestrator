@@ -201,8 +201,11 @@ class ScratchIdentityVerdict(Enum):
 
     #: Neither half names an investigation: an ordinary issue session.
     ORDINARY = "ordinary"
-    #: Both halves name the SAME run of the CLAIMED issue. Safe to resume.
-    RESUMABLE = "resumable"
+    #: Both halves name the SAME run of the CLAIMED issue: the record is
+    #: structurally consistent. That is a statement about the NAMES only. It
+    #: does not mean the investigation can be safely resumed -- resuming one
+    #: needs its original run's launch authority and inputs, which is #7273.
+    CONSISTENT = "consistent"
     #: One half names an investigation and the pair does not agree. Unsafe.
     CORRUPT = "corrupt"
 
@@ -223,25 +226,24 @@ class ScratchIdentityReading:
 def read_scratch_identity(
     worktree_path: str, branch_name: str, issue_number: int
 ) -> ScratchIdentityReading:
-    """Read a recorded (worktree, branch) pair as an investigation to RESUME.
+    """Read a recorded (worktree, branch) pair as an investigation identity.
 
-    Read back, never re-minted (#7263). A validation retry of an investigation
-    carries both halves durably; minting a fresh token instead would strand the
-    commits the retry exists to re-validate on the old branch, and deriving the
-    worktree from the focus issue -- what the retry path did before -- puts the
-    investigation back inside the evidence #6823 keeps it out of.
+    Read back, never re-minted (#7263): the durable halves a queued retry
+    carries are what say WHICH investigation a record is about. Whether that
+    investigation can be relaunched is a separate question with a different
+    answer -- see ``CONSISTENT`` -- and this module does not answer it.
 
     ``worktree_path``'s OWN basename must be the scratch worktree, not merely
     sit under one: a run directory nested inside it is not a checkout to reuse.
 
     Three answers, not two, because "not an investigation" and "an investigation
-    I cannot safely resume" must not be handled the same way. Falling back to
-    the ordinary derivation on a CORRUPT pair is worse than refusing: the caller
-    still holds the recorded branch name, so it would check an investigation
-    branch out inside the focus issue's own worktree -- the exact mutation this
-    module exists to prevent.
+    whose record does not hold together" must not be handled the same way.
+    Falling back to the ordinary derivation on a CORRUPT pair is worse than
+    refusing: the caller still holds the recorded branch name, so it would check
+    an investigation branch out inside the focus issue's own worktree -- the
+    exact mutation this module exists to prevent.
 
-    A pair is ``RESUMABLE`` only when both halves parse, name the same focus
+    A pair is ``CONSISTENT`` only when both halves parse, name the same focus
     issue, name the ISSUE THIS RETRY IS FOR, and carry the same run TOKEN.
     Matching issue numbers alone would accept halves from two different
     investigations of one issue, and resuming that pair would check one run's
@@ -277,7 +279,7 @@ def read_scratch_identity(
             f"it belongs to issue {from_branch.issue_number}",
         )
     return ScratchIdentityReading(
-        ScratchIdentityVerdict.RESUMABLE,
+        ScratchIdentityVerdict.CONSISTENT,
         ScratchWorktreeIdentity(
             worktree_name=worktree_name, branch_name=branch_name
         ),
@@ -294,3 +296,43 @@ def _corrupt(
     )
     logger.warning("%s", detail)
     return ScratchIdentityReading(ScratchIdentityVerdict.CORRUPT, None, detail)
+
+
+def investigation_retry_refusal(worktree_path: str, branch_name: str, issue_number: int) -> str | None:
+    """Why a queued validation retry must NOT be relaunched, or ``None``.
+
+    A tech-lead failure investigation runs in a disposable worktree on a
+    throwaway branch (#6823) because it READS its focus issue's worktree and
+    branch as evidence and must never mutate them. The retry path derives its
+    worktree from the focus issue like any other coding retry, so relaunching an
+    investigation's retry puts it straight back inside that evidence, on the
+    recorded investigation branch, where an agent commit lands on the focus
+    branch.
+
+    Resuming it in its own worktree instead is the eventual answer and is #7273:
+    the resumed run needs the original run's launch authority and trusted
+    inputs, without which completion rejects it as ``missing_authority`` -- and a
+    session marked disposable to get its worktree back would then have that
+    rejection FORCE-DELETE the branch holding the commits under re-validation.
+    Until that lands, the safe answer is not to relaunch at all: escalate, and
+    leave the branch exactly where it is.
+
+    A pair that does not hold together is refused for a second reason -- there
+    is no single investigation to speak of -- and says which.
+    """
+    reading = read_scratch_identity(worktree_path, branch_name, issue_number)
+    if reading.verdict is ScratchIdentityVerdict.CORRUPT:
+        return reading.detail
+    if reading.verdict is ScratchIdentityVerdict.CONSISTENT:
+        # Its record is fine -- both halves agree. It simply cannot be
+        # relaunched yet, which is a different thing from being unusable, and
+        # the operator-facing message must not say otherwise.
+        return (
+            "this is a tech-lead failure investigation, and its record is "
+            "consistent; it just cannot be relaunched yet. A validation retry "
+            "of an investigation would be derived into the focus issue's own "
+            "worktree, mutating the evidence it was sent to read (#6823), and "
+            "resuming it in its own disposable worktree needs the original "
+            "run's launch authority and inputs, which is #7273."
+        )
+    return None

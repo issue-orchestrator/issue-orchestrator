@@ -309,6 +309,16 @@ class MockWorktreeManager:
         self.remove_force_calls: list[tuple[Path, bool]] = []
         self.checkout_only_removals: list[tuple[Path, bool]] = []
         self.checkout_and_branch_removals: list[tuple[Path, bool]] = []
+        self.locked: list[Path] = []
+        self.lock_reasons: list[str] = []
+        self.lock_succeeds = True
+
+    def lock_checkout(self, worktree_path: Path, *, reason: str) -> bool:
+        if not self.lock_succeeds:
+            return False
+        self.locked.append(Path(worktree_path))
+        self.lock_reasons.append(reason)
+        return True
 
     def create(
         self,
@@ -2087,6 +2097,9 @@ class TestLaunchValidationRetrySession:
 
         assert result.success is False
         assert "tech-lead failure investigation" in (result.reason or "")
+        assert "its record is consistent" in (result.reason or ""), (
+            "a consistent record was described to the operator as unusable"
+        )
         assert mock_worktree_manager.create_calls == [], (
             "the investigation was relaunched into the focus issue's own"
             " worktree, which is the evidence it must never mutate (#6823)"
@@ -2148,8 +2161,11 @@ class TestLaunchValidationRetrySession:
         branch_kind,
     ):
         """A pair that does not hold together is refused for its own reason."""
-        mine = new_scratch_token()
-        other_run = new_scratch_token()
+        # Spelled out, not minted: the case under test is "two DIFFERENT runs",
+        # and asserting that two random tokens differ is a probability
+        # statement rather than a property.
+        mine = "a" * 12
+        other_run = "b" * 12
         worktree = {
             "issue-worktree": "/tmp/worktree-123",
             "scratch": f"/tmp/w/{scratch_worktree_name('io', 123, mine)}",
@@ -2251,20 +2267,60 @@ class TestLaunchValidationRetrySession:
 
         assert result.disposition is LaunchDisposition.QUARANTINED
         assert len(escalations) == 1, "the record was dropped with nobody told"
-        assert "branch itself is untouched" in escalations[0]["comment"]
+        comment = escalations[0]["comment"]
+        assert "locked, so nothing will remove it" in comment
+        assert "git worktree unlock" in comment, (
+            "the operator is not told how to release the checkout"
+        )
+        assert retry.branch_name in comment
 
-    def test_a_failed_escalation_retains_the_record_instead_of_dropping_it(
+    def test_custody_is_taken_before_the_record_is_dropped(
         self,
         launcher_bundle,
+        mock_worktree_manager,
     ):
-        """The escalation's own answer decides (#7263 review r3 F4).
+        """Git's own lock, not the comment, is what preserves the branch.
 
-        Dropping the only queued reference to a branch nobody has been told
-        about is the one outcome worse than a poison item staying on the queue.
+        Startup reconciliation classifies an INACTIVE scratch checkout as
+        disposable and removes it with its never-pushed branch. A locked
+        checkout it retains -- so the lock is what makes "preserved" a fact.
         """
-        launcher_bundle.launcher.escalate_issue_needs_human = (  # noqa: SLF001
-            lambda **kwargs: False
+        token = "c" * 12
+        worktree = f"/tmp/w/{scratch_worktree_name('io', 123, token)}"
+        retry = PendingValidationRetry(
+            issue_number=123,
+            issue_title="Fix checkout",
+            agent_label="agent:web",
+            worktree_path=worktree,
+            branch_name=scratch_branch_name(123, token),
+            original_prompt="Investigate issue #123",
+            validation_error="boom",
+            validation_error_file=None,
+            retry_count=1,
+            source_task=TaskKind.CODE,
+            validation_cmd="make test",
         )
+
+        result = launcher_bundle.launcher.launch_validation_retry_session(
+            retry, active_sessions=[]
+        )
+
+        assert result.disposition is LaunchDisposition.QUARANTINED
+        assert mock_worktree_manager.locked == [Path(worktree)], (
+            "the record was dropped without taking custody of its checkout"
+        )
+
+    def test_a_record_whose_checkout_cannot_be_locked_is_kept(
+        self,
+        launcher_bundle,
+        mock_worktree_manager,
+    ):
+        """Custody is the precondition, not the notification (#7263 r4 F1/F2).
+
+        If nothing is holding the checkout, the queued record is its last
+        reference, and dropping it loses the branch at the next restart.
+        """
+        mock_worktree_manager.lock_succeeds = False
         token = new_scratch_token()
         retry = PendingValidationRetry(
             issue_number=123,
@@ -2285,9 +2341,9 @@ class TestLaunchValidationRetrySession:
         )
 
         assert result.disposition is LaunchDisposition.RETRYABLE_FAILURE, (
-            "the record was dropped although nobody was told about its branch"
+            "the record was dropped although nothing was holding its checkout"
         )
-        assert "escalation failed" in (result.reason or "")
+        assert "could not lock" in (result.reason or "")
 
     def test_internal_review_instructions_reach_validation_retry_command(
         self,
