@@ -1635,6 +1635,54 @@ class GitHubHttpClient:
             raise GitHubHttpError("GitHub create commit payload was not an object")
         return payload
 
+    def get_git_blob(self, sha: str) -> dict[str, Any]:
+        encoded = quote(sha, safe="")
+        payload = self._request_json(
+            "GET",
+            f"/repos/{self._config.repo}/git/blobs/{encoded}",
+            use_cache=False,
+            caller="get_git_blob",
+        )
+        if not isinstance(payload, dict):
+            raise GitHubHttpError("GitHub blob payload was not an object")
+        return payload
+
+    def create_git_blob(self, *, content: str) -> dict[str, Any]:
+        payload = self._request_json(
+            "POST",
+            f"/repos/{self._config.repo}/git/blobs",
+            json_body={"content": content, "encoding": "utf-8"},
+            use_cache=False,
+            caller="create_git_blob",
+        )
+        if not isinstance(payload, dict):
+            raise GitHubHttpError("GitHub create blob payload was not an object")
+        return payload
+
+    def create_git_tree(self, *, tree: list[dict[str, Any]]) -> dict[str, Any]:
+        payload = self._request_json(
+            "POST",
+            f"/repos/{self._config.repo}/git/trees",
+            json_body={"tree": tree},
+            use_cache=False,
+            caller="create_git_tree",
+        )
+        if not isinstance(payload, dict):
+            raise GitHubHttpError("GitHub create tree payload was not an object")
+        return payload
+
+    def get_git_tree(self, sha: str) -> dict[str, Any]:
+        encoded = quote(sha, safe="")
+        payload = self._request_json(
+            "GET",
+            f"/repos/{self._config.repo}/git/trees/{encoded}",
+            use_cache=False,
+            caller="get_git_tree",
+        )
+        if not isinstance(payload, dict):
+            raise GitHubHttpError("GitHub tree payload was not an object")
+        return payload
+
     def update_issue_state(self, issue_number: int, state: str) -> None:
         self._request_json(
             "PATCH",

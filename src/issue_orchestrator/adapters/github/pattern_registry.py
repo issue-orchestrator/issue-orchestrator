@@ -675,7 +675,7 @@ class GitHubRefPatternRegistry(PatternCaseFileRegistry):
                 scope=gh_audit.AuditScope.UNKNOWN,
             ):
                 snapshot = self._store.read(PATTERN_REGISTRY_REF_KEY)
-            return snapshot, parse_entries(snapshot.message) if snapshot else {}
+            return snapshot, parse_entries(snapshot.record) if snapshot else {}
         except PatternRegistryError:
             raise
         except Exception as exc:

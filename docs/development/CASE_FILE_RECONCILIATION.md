@@ -247,6 +247,34 @@ A run that reports `Reconciliation halted` did not match the board it expected �
 usually a paused (`io:needs-reconcile`) issue. Resolve that state and re-run;
 nothing partial is lost.
 
+### If the shared registry reads back as unreadable
+
+A run that halts with
+
+```
+shared pattern authority could not be read: shared pattern registry is
+unreadable: Unterminated string starting at: line 1 column 65478 (char 65477)
+```
+
+hit #7272: that repository's registry was written before the record moved into
+the commit's tree, and it has since grown past the 65 536 characters GitHub's
+Git Data API will return from a commit message. The object is intact — only the
+API read is lossy — so recover it from any clone that can fetch the ref:
+
+```bash
+# inspect: prints the entry count it can recover, changes nothing
+python scripts/republish_pattern_registry_record.py --repo-root ~/dev/<repo>
+
+# republish the record as the record.json blob every client now reads
+python scripts/republish_pattern_registry_record.py --repo-root ~/dev/<repo> --apply
+```
+
+The republished commit is a child of the one it replaces, so it is an ordinary
+fast-forward and cannot clobber a concurrent writer; the script reads the ref
+back from the remote afterwards and fails if it does not carry what it pushed.
+Records small enough to still read fine need nothing: their next write moves
+them on its own.
+
 ### Keeping future sightings on the case file you just registered
 
 Registering a signature does not by itself route future sightings to it. When
