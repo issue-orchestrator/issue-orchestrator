@@ -2045,61 +2045,17 @@ class TestLaunchValidationRetrySession:
         assert "Validation Retry" in command
         assert "dirty worktree" in command
 
-    def test_an_investigations_retry_is_refused_rather_than_relaunched(
+    def test_an_ordinary_retry_keeps_its_existing_derivation(
         self,
         launcher_bundle,
         mock_worktree_manager,
     ):
-        """#6823's rule, kept by NOT relaunching (#7263, review r3 F1).
+        """No behaviour changes here: this PR is identity ownership only.
 
-        A failure investigation runs in a disposable worktree precisely so it can
-        never mutate the focus issue's worktree and branch, which it reads as
-        evidence. The retry path derives its worktree from the focus issue, so
-        relaunching puts the investigation back inside that evidence on the
-        recorded investigation branch.
-
-        Resuming it in its own worktree is #7273: without the original run's
-        authority its completion is rejected, and a session marked disposable to
-        get that worktree back would then have the rejection FORCE-DELETE the
-        branch under re-validation. So it is refused, and the branch is left
-        exactly where it is.
+        The investigation half of #7263 needs a resumed run's authority (#7273)
+        and a way to hold its checkout for a human (#7274); neither exists, so
+        the launch paths are untouched and pinned as such.
         """
-        token = new_scratch_token()
-        retry = PendingValidationRetry(
-            issue_number=123,
-            issue_title="Fix checkout",
-            agent_label="agent:web",
-            worktree_path=f"/tmp/w/{scratch_worktree_name('io', 123, token)}",
-            branch_name=scratch_branch_name(123, token),
-            original_prompt="Investigate issue #123",
-            validation_error="boom",
-            validation_error_file=None,
-            retry_count=1,
-            source_task=TaskKind.CODE,
-            validation_cmd="make test",
-        )
-
-        result = launcher_bundle.launcher.launch_validation_retry_session(
-            retry,
-            active_sessions=[],
-        )
-
-        assert result.success is False
-        assert "tech-lead failure investigation" in (result.reason or "")
-        assert "its record is consistent" in (result.reason or ""), (
-            "a consistent record was described to the operator as unusable"
-        )
-        assert mock_worktree_manager.create_calls == [], (
-            "the investigation was relaunched into the focus issue's own"
-            " worktree, which is the evidence it must never mutate (#6823)"
-        )
-
-    def test_an_ordinary_retry_is_untouched_by_the_investigation_rule(
-        self,
-        launcher_bundle,
-        mock_worktree_manager,
-    ):
-        """The overwhelmingly common path keeps its existing derivation."""
         retry = PendingValidationRetry(
             issue_number=123,
             issue_title="Fix checkout",
@@ -2126,178 +2082,6 @@ class TestLaunchValidationRetrySession:
         assert result.session is not None
         assert result.session.scratch_worktree is False
         assert result.session.tech_lead_scope is None
-
-    @pytest.mark.parametrize(
-        "worktree_suffix,branch_kind",
-        [
-            ("issue-worktree", "scratch"),
-            ("scratch", "issue-branch"),
-            ("scratch", "other-run"),
-            ("other-issue", "other-issue"),
-        ],
-        ids=[
-            "scratch branch, ordinary worktree",
-            "scratch worktree, ordinary branch",
-            "halves from two runs of one issue",
-            "another issue's investigation",
-        ],
-    )
-    def test_an_unusable_investigation_record_blocks_the_retry(
-        self,
-        launcher_bundle,
-        mock_worktree_manager,
-        worktree_suffix,
-        branch_kind,
-    ):
-        """A pair that does not hold together is refused for its own reason."""
-        # Spelled out, not minted: the case under test is "two DIFFERENT runs",
-        # and asserting that two random tokens differ is a probability
-        # statement rather than a property.
-        mine = "a" * 12
-        other_run = "b" * 12
-        worktree = {
-            "issue-worktree": "/tmp/worktree-123",
-            "scratch": f"/tmp/w/{scratch_worktree_name('io', 123, mine)}",
-            "other-issue": f"/tmp/w/{scratch_worktree_name('io', 999, mine)}",
-        }[worktree_suffix]
-        branch = {
-            "scratch": scratch_branch_name(123, mine),
-            "issue-branch": "123-fix-checkout",
-            "other-run": scratch_branch_name(123, other_run),
-            "other-issue": scratch_branch_name(999, mine),
-        }[branch_kind]
-        retry = PendingValidationRetry(
-            issue_number=123,
-            issue_title="Fix checkout",
-            agent_label="agent:web",
-            worktree_path=worktree,
-            branch_name=branch,
-            original_prompt="Investigate issue #123",
-            validation_error="boom",
-            validation_error_file=None,
-            retry_count=1,
-            source_task=TaskKind.CODE,
-            validation_cmd="make test",
-        )
-
-        result = launcher_bundle.launcher.launch_validation_retry_session(
-            retry,
-            active_sessions=[],
-        )
-
-        assert result.success is False
-        assert "unusable investigation identity" in (result.reason or "")
-        assert mock_worktree_manager.create_calls == []
-        assert result.disposition is LaunchDisposition.QUARANTINED
-
-    def test_refusal_happens_before_the_provider_is_even_consulted(
-        self,
-        launcher_bundle,
-        mock_worktree_manager,
-    ):
-        """Nothing may label or park the issue on the way to a refusal.
-
-        The provider gate can apply a provider-blocked label, so a refusal that
-        ran after it would leave a trace of an attempt that must not have
-        happened. Proven by making the provider gate ASSERT if consulted.
-        """
-        def never(*args, **kwargs):
-            raise AssertionError("the provider gate ran before the refusal")
-
-        launcher_bundle.launcher._check_provider_ready = never  # noqa: SLF001
-        token = new_scratch_token()
-        retry = PendingValidationRetry(
-            issue_number=123,
-            issue_title="Fix checkout",
-            agent_label="agent:web",
-            worktree_path=f"/tmp/w/{scratch_worktree_name('io', 123, token)}",
-            branch_name=scratch_branch_name(123, token),
-            original_prompt="Investigate issue #123",
-            validation_error="boom",
-            validation_error_file=None,
-            retry_count=1,
-            source_task=TaskKind.CODE,
-            validation_cmd="make test",
-        )
-
-        result = launcher_bundle.launcher.launch_validation_retry_session(
-            retry, active_sessions=[]
-        )
-
-        assert result.success is False
-
-    def test_a_refused_retry_escalates_before_it_is_dropped(
-        self,
-        launcher_bundle,
-    ):
-        """Dropping the only queued reference is safe only if a human is told."""
-        escalations: list[dict] = []
-        launcher_bundle.launcher.escalate_issue_needs_human = (  # noqa: SLF001
-            lambda **kwargs: escalations.append(kwargs) or True
-        )
-        token = new_scratch_token()
-        retry = PendingValidationRetry(
-            issue_number=123,
-            issue_title="Fix checkout",
-            agent_label="agent:web",
-            worktree_path=f"/tmp/w/{scratch_worktree_name('io', 123, token)}",
-            branch_name=scratch_branch_name(123, token),
-            original_prompt="Investigate issue #123",
-            validation_error="boom",
-            validation_error_file=None,
-            retry_count=1,
-            source_task=TaskKind.CODE,
-            validation_cmd="make test",
-        )
-
-        result = launcher_bundle.launcher.launch_validation_retry_session(
-            retry, active_sessions=[]
-        )
-
-        assert result.disposition is LaunchDisposition.QUARANTINED
-        assert len(escalations) == 1, "the record was dropped with nobody told"
-        comment = escalations[0]["comment"]
-        assert retry.branch_name in comment
-        assert "never pushed" in comment
-        assert "Nothing here holds the checkout open" in comment, (
-            "the handoff promised a protection this refusal cannot give"
-        )
-
-    def test_a_handoff_that_fails_keeps_the_record(
-        self,
-        launcher_bundle,
-    ):
-        """The notification is the only thing protecting this work.
-
-        Dropping the last queued reference to a never-pushed branch that nobody
-        has been told about is the one outcome worse than a poison item.
-        """
-        launcher_bundle.launcher.escalate_issue_needs_human = (  # noqa: SLF001
-            lambda **kwargs: False
-        )
-        token = "c" * 12
-        retry = PendingValidationRetry(
-            issue_number=123,
-            issue_title="Fix checkout",
-            agent_label="agent:web",
-            worktree_path=f"/tmp/w/{scratch_worktree_name('io', 123, token)}",
-            branch_name=scratch_branch_name(123, token),
-            original_prompt="Investigate issue #123",
-            validation_error="boom",
-            validation_error_file=None,
-            retry_count=1,
-            source_task=TaskKind.CODE,
-            validation_cmd="make test",
-        )
-
-        result = launcher_bundle.launcher.launch_validation_retry_session(
-            retry, active_sessions=[]
-        )
-
-        assert result.disposition is LaunchDisposition.RETRYABLE_FAILURE, (
-            "the record was dropped although nobody was told about its branch"
-        )
-        assert "handoff failed" in (result.reason or "")
 
     def test_internal_review_instructions_reach_validation_retry_command(
         self,

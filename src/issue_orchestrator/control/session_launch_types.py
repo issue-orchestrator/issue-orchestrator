@@ -52,16 +52,6 @@ class LaunchDisposition(Enum):
     CLAIM_UNRECORDED = "claim_unrecorded"
     #: The launcher gave up. The queue drops the item.
     PERMANENT_FAILURE = "permanent_failure"
-    #: The request itself is unrunnable and will be unrunnable next tick too --
-    #: a durable record that does not hold together, not a launch that failed.
-    #: It leaves the queue UNCONDITIONALLY, unlike ``PERMANENT_FAILURE``, which
-    #: some queues deliberately retain: retaining work that can never run turns
-    #: a poison item into a starvation loop, planned every tick against a
-    #: capacity another issue could have used (#7263 review r2 F4). What makes
-    #: dropping it safe is the launcher's own precondition -- it returns this
-    #: only once the work has been handed to a human -- not anything this
-    #: disposition can enforce.
-    QUARANTINED = "quarantined"
 
 
 @dataclass

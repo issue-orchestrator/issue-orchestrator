@@ -60,8 +60,6 @@ if TYPE_CHECKING:
     from ..infra.config import Config
     from ..ports import ManifestDownloader, RepositoryHost
     from ..ports.issue import Issue
-    from ..domain.models import PendingValidationRetry
-    from .session_launch_types import LaunchResult
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
     from .worktree_context import WorktreeContext
 
@@ -158,80 +156,6 @@ def failure_investigation_scratch_identity(
     ):
         return None
     return new_scratch_identity(config.repo_root.name, issue.number)
-
-
-def quarantine_retry_launch(
-    retry: "PendingValidationRetry",
-    detail: str,
-    *,
-    escalate: Callable[..., bool],
-) -> "LaunchResult":
-    """Refuse an unrunnable retry, tell a human, and let the queue drop it.
-
-    Relaunching it is the one thing that must not happen: the launcher still
-    holds the recorded investigation branch, so the ordinary derivation would
-    check that branch out inside the focus issue's own worktree -- the exact
-    mutation #6823 exists to prevent.
-
-    Refusing it forever is the other thing that must not happen. Validation
-    retries deliberately RETAIN a permanent failure, so a poison record would be
-    planned every tick against capacity another issue could use. ``QUARANTINED``
-    leaves the queue unconditionally, and the escalation is what makes that
-    safe -- so a failed escalation RETAINS the record instead of dropping the
-    last thing pointing at that branch.
-
-    It deliberately does NOT claim the checkout is protected. It is exactly as
-    exposed as it already was: an investigation's scratch worktree is inactive
-    from the moment its session ends, whether or not a retry was queued, so
-    ordinary scratch cleanup and startup reconciliation treat it as they always
-    have. Saying otherwise would be a promise this refusal cannot keep, and
-    giving it real custody is a separate question with its own issue -- forced
-    removal falls back to ``shutil.rmtree``, so no git-level hold binds it.
-    """
-    from .session_launch_types import LaunchDisposition, LaunchResult
-
-    logger.error(
-        "[issue-%d] Refusing validation retry: %s", retry.issue_number, detail
-    )
-    notified = escalate(
-        issue_number=retry.issue_number,
-        reason="validation retry of a tech-lead investigation refused",
-        comment=(
-            "## Needs Human Input — validation retry refused\n\n"
-            f"{detail}\n\n"
-            f"- worktree: `{retry.worktree_path}`\n"
-            f"- branch: `{retry.branch_name}` — never pushed, so its commits "
-            "exist only in that checkout\n\n"
-            "The retry has been removed from the queue. Nothing here holds the "
-            "checkout open: a disposable investigation worktree is subject to "
-            "ordinary cleanup once its session ends, so salvage anything you "
-            "need from that branch promptly."
-        ),
-        context="validation_retry_refused",
-        event_data={
-            "issue_number": retry.issue_number,
-            "issue_title": retry.issue_title,
-            "reason": detail,
-            "worktree_path": retry.worktree_path,
-            "branch_name": retry.branch_name,
-        },
-    )
-    if not notified:
-        logger.error(
-            "[issue-%d] The handoff did not reach a human; keeping the retry "
-            "queued rather than dropping the last reference to branch %s",
-            retry.issue_number,
-            retry.branch_name,
-        )
-        return LaunchResult(
-            None,
-            False,
-            f"{detail} (handoff failed; retained)",
-            disposition=LaunchDisposition.RETRYABLE_FAILURE,
-        )
-    return LaunchResult(
-        None, False, detail, disposition=LaunchDisposition.QUARANTINED
-    )
 
 
 #: Outcomes whose comment IS the tech lead's decision, not a work report.

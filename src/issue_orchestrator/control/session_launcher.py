@@ -58,11 +58,9 @@ from ..ports.issue_run_allocator import IssueRunAllocator
 from .worktree import WorktreeSetupError
 from .worktree_context import WorktreeContext
 from ..infra.validation_state import DEFAULT_RETRY_TEMPLATE, _truncate_with_tail
-from ..domain.tech_lead_scratch_identity import investigation_retry_refusal
 from ..domain.tech_lead_session import TechLeadLaunchScope
 from .tech_lead_session_policy import (
     failure_investigation_scratch_identity,
-    quarantine_retry_launch,
     is_tech_lead_session,
     prepare_tech_lead_session_data,
 )
@@ -1140,17 +1138,6 @@ class SessionLauncher:
         preparation deliberately precedes the provider gate because that gate
         may park the issue with a shared label and durable record.
         """
-        # FIRST, before the precondition checks, the prompt prep and the
-        # provider gate -- each of which can label the issue or park it. An
-        # investigation's retry is not relaunchable at all yet, so nothing about
-        # it should leave a trace of having been attempted.
-        refusal = investigation_retry_refusal(
-            retry.worktree_path, retry.branch_name, retry.issue_number
-        )
-        if refusal is not None:
-            return quarantine_retry_launch(
-                retry, refusal, escalate=self.escalate_issue_needs_human
-            )
         resolved = self._resolve_validation_retry_issue(retry)
         if resolved is None:
             return LaunchResult(
