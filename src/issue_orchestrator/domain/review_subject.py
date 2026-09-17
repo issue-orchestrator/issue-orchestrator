@@ -92,16 +92,31 @@ class BranchSubject:
             return cls.unknown()
         return cls.named(facts.branch_name)
 
-    def or_else(self, fallback: "BranchSubject") -> "BranchSubject":
-        """This subject when it names a branch, otherwise ``fallback``.
+    @classmethod
+    def reviewed(
+        cls,
+        facts: RetainedBranchFacts | None,
+        reader: CurrentBranchReader | None,
+        worktree: Path | None,
+    ) -> "BranchSubject":
+        """The branch a REPLAYED review covered.
 
-        The cached-replay rule in one expression: replay the retained branch, and
-        only when the artifact predates retention fall back to sampling. A
-        pre-retention summary is the sole remaining case where a replay can name
-        a renamed branch, and losing the field entirely there was measured to be
-        worse than the rare inaccuracy (#7269 review F2).
+        The whole retained-versus-sampled rule, decided here rather than by the
+        caller: replay what the artifact recorded, and read the checkout only
+        when it recorded nothing. A pre-retention summary is the sole remaining
+        case where a replay can name a renamed branch, and losing the field
+        entirely there was measured to be worse than the rare inaccuracy
+        (#7269 review F2).
+
+        The checkout is read ONLY in that fallback. An owner that always reads
+        it and then discards the answer is not an owner of the decision, it is a
+        renderer of one the caller already made -- and it pays for a git call on
+        every cache hit (#7269 round 3, finding [2]).
         """
-        return self if self.branch_name is not None else fallback
+        retained = cls.retained(facts)
+        if retained.branch_name is not None:
+            return retained
+        return cls.sampled(reader, worktree)
 
     def as_event_fields(self) -> BranchEventFields:
         """Render as event-payload fields; empty when no branch is known.

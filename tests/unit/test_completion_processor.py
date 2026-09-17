@@ -6383,6 +6383,97 @@ class TestReviewOutcomeNamesTheBranchItReviewed:
             " replay has nothing to name but the mutable checkout (#7268)"
         )
 
+    def test_a_halted_exchange_retains_its_branch_too(
+        self,
+        tmp_path: Path,
+        mock_git_adapter,
+        mock_pr_adapter,
+        worktree_with_completion,
+    ) -> None:
+        """A halt is terminal and gets replayed, so it gets retention too.
+
+        Storing the summary only on the success path left a halted exchange with
+        no reviewed branch on disk, so its later cached replay named whatever the
+        checkout held by then (#7269 round 3, finding [1]). The background path
+        has always stored both outcomes; this is the inline path matching it.
+        """
+        mock_git_adapter.get_current_branch.return_value = "123-the-branch-reviewed"
+        sink = InMemoryEventSink()
+        processor = self._processor(
+            tmp_path, mock_git_adapter, mock_pr_adapter, sink
+        )
+        record = make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR],
+        )
+        worktree = worktree_with_completion(record)
+        processor._run_review_exchange_loop = MagicMock(  # noqa: SLF001
+            side_effect=lambda **kw: _review_exchange_outcome(
+                kw["exchange_run"],
+                status="error",
+                rounds=3,
+                reason="coder_protocol_error",
+                summary={},
+            )
+        )
+
+        result = processor.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
+            issue_title="Test Issue",
+            agent_label="agent:coder",
+        )
+
+        assert result.success is False
+        halted = sink.last_event(str(EventName.REVIEW_CHANGES_REQUESTED))
+        assert halted is not None
+        assert halted.data["branch_name"] == "123-the-branch-reviewed"
+
+        exchange_run = processor._run_review_exchange_loop.call_args.kwargs[  # noqa: SLF001
+            "exchange_run"
+        ]
+        stored = json.loads(
+            exchange_run.assets.summary_path.read_text(encoding="utf-8")
+        )
+        assert stored["branch_name"] == "123-the-branch-reviewed", (
+            "a halted exchange stored no reviewed branch, so its replay has"
+            " nothing to name but the mutable checkout"
+        )
+
+    def test_a_replay_of_a_halt_names_the_branch_reviewed(
+        self, tmp_path: Path, mock_git_adapter, mock_pr_adapter, monkeypatch
+    ) -> None:
+        """The halt side of the same rule, end to end."""
+        mock_git_adapter.get_head_sha.return_value = "same-sha"
+        mock_git_adapter.get_current_branch.return_value = "123-renamed-after-review"
+        monkeypatch.setattr(
+            "issue_orchestrator.infra.review_exchange_registry.supports_mcp_pair",
+            lambda *_args, **_kwargs: True,
+        )
+        sink = InMemoryEventSink()
+        processor = self._processor(
+            tmp_path, mock_git_adapter, mock_pr_adapter, sink
+        )
+        worktree, completion_path = self._cached_worktree(
+            tmp_path,
+            {
+                **self._CACHED_SUMMARY,
+                "status": "error",
+                "reason": "coder_protocol_error",
+                "completed_rounds": 3,
+                "branch_name": "123-the-branch-reviewed",
+            },
+        )
+
+        result = self._replay(processor, worktree, completion_path)
+
+        assert result.success is False
+        halted = sink.last_event(str(EventName.REVIEW_CHANGES_REQUESTED))
+        assert halted is not None
+        assert halted.data.get("cached") is True
+        assert halted.data["branch_name"] == "123-the-branch-reviewed"
+
     def test_a_replay_names_the_branch_reviewed_not_the_renamed_checkout(
         self, tmp_path: Path, mock_git_adapter, mock_pr_adapter, monkeypatch
     ) -> None:

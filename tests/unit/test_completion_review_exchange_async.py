@@ -193,6 +193,10 @@ class _FakeSessionOutput:
             review_run=review_run,
         )
 
+    def stored_summary(self) -> ReviewExchangeSummaryV1 | None:
+        """What the exchange actually persisted, for tests that assert on it."""
+        return None if self._summary is None else self._summary.summary
+
     def load_review_exchange_summary(
         self,
         worktree: Path,
@@ -363,6 +367,7 @@ def _build(
     *,
     require_validation: bool = False,
     issue_run_ledger=None,
+    branch_reader: Any | None = None,
 ) -> tuple[CompletionReviewExchange, _FakeSessionOutput]:
     from issue_orchestrator.control.background_job_supervisor import (
         BackgroundJobSupervisor,
@@ -397,6 +402,7 @@ def _build(
         emit_review_outcome=_on_outcome,
         review_exchange_runner=_FakeReviewExchangeRunner(),
         job_supervisor=BackgroundJobSupervisor(job_runner),
+        **({} if branch_reader is None else {"branch_reader": branch_reader}),
     )
     return review, session_output
 
@@ -1785,3 +1791,142 @@ def test_retry_does_not_reconsume_prior_run_timeout_cancellation(
     ]
 
 from tests.run_allocation_helpers import branch_working_copy
+
+
+class _MutableBranchReader:
+    """A checkout whose branch changes underneath a running exchange.
+
+    Which is not hypothetical: PR-collision remediation renames the branch at
+    ``_execute_create_pr_action``, between the review and the tick that replays
+    it.
+    """
+
+    def __init__(self, branch: str | None) -> None:
+        self.branch = branch
+        self.reads: list[Path] = []
+
+    def get_current_branch(self, worktree: Path) -> str | None:
+        self.reads.append(worktree)
+        return self.branch
+
+
+def _ok_outcome(**kwargs: Any) -> ReviewExchangeOutcome:
+    exchange_run = kwargs["exchange_run"]
+    return ReviewExchangeOutcome(
+        status="ok",
+        rounds=1,
+        reason="reviewer_ok",
+        run_assets=exchange_run.assets,
+        reviewer_response=ReviewExchangeResponse(
+            response_type="ok", getting_closer=True, response_text="Looks good."
+        ),
+        summary=_summary(
+            status="ok", reason="reviewer_ok", rounds=1, response_text="Looks good."
+        ),
+    )
+
+
+def test_the_background_job_retains_the_branch_the_exchange_started_on(
+    tmp_path: Path,
+) -> None:
+    """The PRODUCTION path — a background job, not the inline fallback.
+
+    The job closure captures the subject sampled when the exchange started, so
+    the summary it writes names that branch however long the job runs and
+    whatever the checkout does meanwhile. Nothing else pinned this: dropping
+    ``subject=`` from the background store left every other test green (#7269
+    round 3, finding [3]).
+    """
+    job_runner = _FakeJobRunner()
+    started: list[dict[str, Any]] = []
+    outcomes: list[dict[str, Any]] = []
+    reader = _MutableBranchReader("123-at-exchange-start")
+    review, session_output = _build(
+        tmp_path, job_runner, started, outcomes, branch_reader=reader
+    )
+
+    review.prepare_review_exchange(
+        requested_actions=(RequestedAction.CREATE_PR,),
+        worktree=tmp_path,
+        issue_number=230,
+        issue_title="Example",
+        session_name="coding-1",
+        run_id="coding-run-1",
+        agent_label="agent:backend",
+        record=_make_record(),
+        errors=[],
+        actions_taken=[],
+        run_review_exchange_loop=_ok_outcome,
+    )
+
+    # The checkout moves while the job runs, exactly as a PR-collision rename
+    # would.
+    reader.branch = "123-renamed-while-reviewing"
+    job_id, submitted_fn = job_runner.submitted[0]
+    submitted_fn()
+    job_runner.finish(job_id)
+
+    stored = session_output.stored_summary()
+    assert stored is not None
+    assert stored.branch_name == "123-at-exchange-start", (
+        "the background job stored the branch as of when it FINISHED, not the"
+        " one the review actually covered"
+    )
+
+
+def test_a_retained_replay_never_reads_the_checkout(tmp_path: Path) -> None:
+    """The owner decides retained-vs-sampled, so the fallback is not evaluated.
+
+    Checked on the real replay path, because the eager version produced the
+    right branch while still paying for a git read on every cache hit (#7269
+    round 3, finding [2]).
+    """
+    job_runner = _FakeJobRunner()
+    started: list[dict[str, Any]] = []
+    outcomes: list[dict[str, Any]] = []
+    reader = _MutableBranchReader("123-at-exchange-start")
+    review, _session_output = _build(
+        tmp_path, job_runner, started, outcomes, branch_reader=reader
+    )
+
+    review.prepare_review_exchange(
+        requested_actions=(RequestedAction.CREATE_PR,),
+        worktree=tmp_path,
+        issue_number=230,
+        issue_title="Example",
+        session_name="coding-1",
+        run_id="coding-run-1",
+        agent_label="agent:backend",
+        record=_make_record(),
+        errors=[],
+        actions_taken=[],
+        run_review_exchange_loop=_ok_outcome,
+    )
+    job_id, submitted_fn = job_runner.submitted[0]
+    submitted_fn()
+    job_runner.finish(job_id)
+
+    reader.branch = "123-renamed-while-reviewing"
+    reader.reads.clear()
+    actions_taken: list[str] = []
+    (_, _mode, outcome, completed, halt, deferred) = review.prepare_review_exchange(
+        requested_actions=(RequestedAction.CREATE_PR,),
+        worktree=tmp_path,
+        issue_number=230,
+        issue_title="Example",
+        session_name="coding-1",
+        run_id="coding-run-1",
+        agent_label="agent:backend",
+        record=_make_record(),
+        errors=[],
+        actions_taken=actions_taken,
+        run_review_exchange_loop=_ok_outcome,
+    )
+
+    assert completed is True and halt is False and deferred is False
+    assert outcome is not None and outcome.status == "ok"
+    assert reader.reads == [], (
+        f"a replay with a retained branch still read the checkout: {reader.reads}"
+    )
+    assert started[-1]["subject"].branch_name == "123-at-exchange-start"
+    assert outcomes[-1]["subject"].branch_name == "123-at-exchange-start"

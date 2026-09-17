@@ -60,11 +60,24 @@ class TestRetention:
         PR-collision remediation renames the branch after the review, so the
         checkout answers for now, not for the review being replayed.
         """
-        subject = BranchSubject.retained(_Retained("the-branch-reviewed")).or_else(
-            BranchSubject.sampled(_Checkout("renamed-since"), tmp_path)
+        subject = BranchSubject.reviewed(
+            _Retained("the-branch-reviewed"), _Checkout("renamed-since"), tmp_path
         )
 
         assert subject.branch_name == "the-branch-reviewed"
+
+    def test_a_retained_branch_never_reads_the_checkout(self, tmp_path: Path) -> None:
+        """The decision belongs to the owner, so the fallback stays UNEVALUATED.
+
+        An owner that reads the checkout and then discards the answer has not
+        decided anything -- the caller has -- and it pays for a git call on every
+        cache hit (#7269 round 3, finding [2]).
+        """
+        checkout = _Checkout("renamed-since")
+
+        BranchSubject.reviewed(_Retained("the-branch-reviewed"), checkout, tmp_path)
+
+        assert checkout.reads == []
 
     def test_sampling_fills_in_when_nothing_was_retained(self, tmp_path: Path) -> None:
         """Summaries written before retention existed still name a branch.
@@ -73,11 +86,12 @@ class TestRetention:
         post-rename inaccuracy: every cache hit WITHOUT a rename is the common
         case, and losing the branch there changes attribution (#7269 F2).
         """
-        subject = BranchSubject.retained(_Retained(None)).or_else(
-            BranchSubject.sampled(_Checkout("still-the-same"), tmp_path)
-        )
+        checkout = _Checkout("still-the-same")
+
+        subject = BranchSubject.reviewed(_Retained(None), checkout, tmp_path)
 
         assert subject.branch_name == "still-the-same"
+        assert checkout.reads == [tmp_path]
 
 
 class TestRendering:

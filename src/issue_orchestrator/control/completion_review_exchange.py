@@ -898,8 +898,8 @@ class CompletionReviewExchange:
         # renamed since (PR-collision remediation at ``_execute_create_pr_action``
         # does exactly that), and a replay must not name a branch the reviewer
         # never saw (#7268).
-        subject = BranchSubject.retained(existing_outcome.summary).or_else(
-            BranchSubject.sampled(self._branch_reader, worktree)
+        subject = BranchSubject.reviewed(
+            existing_outcome.summary, self._branch_reader, worktree
         )
         self._emit_review_started(
             issue_number=issue_number,
@@ -993,6 +993,17 @@ class CompletionReviewExchange:
         self._require_matching_review_run(exchange_result, review_run)
         run_assets = review_run.assets
         review_run_dir = run_assets.run_dir
+        # BEFORE the success/halt split, because both are terminal and both get
+        # replayed. Storing only on success left a halted exchange's summary
+        # without its reviewed branch, so a later cached halt named whatever the
+        # checkout held by then (#7269 round 3, finding [1]). The background path
+        # has always stored both; this is the inline path catching up.
+        self.store_review_exchange_summary(
+            review_run=review_run,
+            exchange_result=exchange_result,
+            current_head_sha=current_head_sha,
+            subject=subject,
+        )
         if exchange_result.status != "ok":
             _log_review_exchange_halt(
                 issue_number=issue_number,
@@ -1037,12 +1048,6 @@ class CompletionReviewExchange:
             summary=reviewer_summary,
             run_dir=review_run_dir,
             artifacts=self._review_artifacts_from_outcome(exchange_result),
-            subject=subject,
-        )
-        self.store_review_exchange_summary(
-            review_run=review_run,
-            exchange_result=exchange_result,
-            current_head_sha=current_head_sha,
             subject=subject,
         )
         return exchange_mode, exchange_result, False

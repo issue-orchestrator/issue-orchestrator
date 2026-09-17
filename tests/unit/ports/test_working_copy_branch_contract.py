@@ -151,6 +151,11 @@ def _factories() -> dict[str, Callable[[], object]]:
         # Constructor-dependent, so the import sweep skipped it and the contract
         # never reached it. The dependency is supplied here instead: "detached"
         # is the case these tests care about and the one the contract is about.
+        "tests.unit.test_completion_review_exchange_async._MutableBranchReader": _named(
+            "tests.unit.test_completion_review_exchange_async",
+            "_MutableBranchReader",
+            arguments=(None,),
+        ),
         "tests.unit.domain.test_review_subject._Checkout": _named(
             "tests.unit.domain.test_review_subject",
             "_Checkout",
@@ -185,6 +190,12 @@ def _static_definitions() -> dict[str, str]:
     Parsed, never imported: this sees nested and method-local classes that an
     import sweep cannot reach, boots no adapters, and cannot silently drop a
     module that fails to import.
+
+    The trade is that a method created at RUNTIME -- by ``type()``, a decorator,
+    a metaclass, or assignment rather than ``def`` -- is invisible to it. No
+    implementation in the tree is written that way, and the previous import
+    sweep's failures were the far more common kind, but a fake built that way
+    would escape this guard.
     """
     definitions: dict[str, str] = {}
     for tree in _SWEPT_TREES:
