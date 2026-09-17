@@ -6265,6 +6265,48 @@ class TestReviewOutcomeNamesTheBranchItReviewed:
         assert event is not None
         assert event.data["branch_name"] == "tech-lead-investigation-6410-df24fde45b3b"
 
+    def test_a_cached_replay_still_records_the_reviewed_branch(
+        self, tmp_path: Path, mock_git_adapter
+    ) -> None:
+        """A cache hit must not silently lose the branch (#7269 review F2).
+
+        Excluding cached replays from branch resolution was measured to be WORSE
+        than sampling: every cache hit WITHOUT a PR-collision rename then loses an
+        accurate branch, which is the common case, and the loss changes
+        attribution rather than merely reducing detail. #7268 carries the answer
+        that is right in both cases -- retain the reviewed branch on the exchange
+        summary and replay that immutable value.
+
+        Until then this pins the behaviour so the regression cannot return
+        unnoticed.
+        """
+        mock_git_adapter.get_current_branch.return_value = (
+            "tech-lead-investigation-6410-df24fde45b3b"
+        )
+        processor = self._processor(tmp_path, mock_git_adapter)
+        sink = InMemoryEventSink()
+        processor._trace_events = sink  # noqa: SLF001
+        processor._event_context = EventContext()  # noqa: SLF001
+
+        processor._emit_review_outcome(  # noqa: SLF001
+            issue_number=6410,
+            reviewer_label="agent:reviewer",
+            exchange_mode="via-local-loop",
+            approved=True,
+            rounds=2,
+            summary="approved",
+            run_dir=tmp_path / "run",
+            worktree=tmp_path / "worktree",
+            cached=True,
+        )
+
+        event = sink.last_event(str(EventName.REVIEW_APPROVED))
+        assert event is not None
+        assert event.data.get("cached") is True
+        assert (
+            event.data["branch_name"] == "tech-lead-investigation-6410-df24fde45b3b"
+        ), "a cached replay dropped the branch it reviewed"
+
     def test_a_worktree_with_no_readable_branch_records_none(
         self, tmp_path: Path, mock_git_adapter
     ) -> None:

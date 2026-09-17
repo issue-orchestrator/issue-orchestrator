@@ -559,9 +559,7 @@ class CompletionProcessor:
             )
         )
 
-    def _reviewed_branch_name(
-        self, worktree: Path | None, *, cached: bool = False
-    ) -> str | None:
+    def _reviewed_branch_name(self, worktree: Path | None) -> str | None:
         """The branch a review event is ABOUT, for attribution (#7263).
 
         A tech-lead failure investigation normally runs in a disposable scratch
@@ -575,19 +573,20 @@ class CompletionProcessor:
         Naming the branch a review approved is independently worth doing: it is
         the exact fact the #6410 misreading turned on.
 
-        A CACHED replay is deliberately excluded. It republishes a verdict an
-        EARLIER review reached, and the checkout has moved on since -- PR-collision
-        remediation renames the branch at ``_execute_create_pr_action`` -- so
-        sampling it now would name a branch that review never approved. Asserting
-        the wrong branch is worse than asserting none: a reader can corroborate an
-        absent fact, but a confident wrong one is what produced the #6410
-        misdiagnosis in the first place. A cached emission therefore falls back to
-        its ``run_dir``, which points at the ORIGINAL review-exchange session and
-        is the better evidence anyway.
+        A CACHED replay samples too, and that is the lesser of two wrongs rather
+        than a good answer. The checkout can have moved since the review it
+        replays -- PR-collision remediation renames the branch at
+        ``_execute_create_pr_action`` -- so after a rename this names a branch the
+        review never approved. Excluding cached replays instead was measured to be
+        WORSE: every cache hit WITHOUT a rename then loses an accurate branch,
+        which is the common case, and that loss changes attribution rather than
+        merely reducing detail (#7269 review F2).
 
-        Retaining the reviewed branch on the exchange summary — so a cached
-        replay can report it rather than omit it — is the complete fix and is
-        tracked separately (#7268).
+        The answer that is right in both cases is to retain the reviewed branch on
+        the exchange summary, beside the ``head_sha`` it already keeps, and replay
+        that immutable value. That needs the branch threaded to ``_write_summary``
+        through six call sites in the execution layer, so it is #7268 rather than
+        something bolted on here.
 
         No defensive catch: ``WorkingCopy.get_current_branch`` already contracts
         to return ``None`` on a detached HEAD or a read failure, so an adapter
@@ -595,7 +594,7 @@ class CompletionProcessor:
         silently absorbed into "no branch". A ``None`` simply records no branch
         and the attribution degrades to what shipped without it.
         """
-        if worktree is None or cached:
+        if worktree is None:
             return None
         return self.git_adapter.get_current_branch(worktree)
 
@@ -629,9 +628,7 @@ class CompletionProcessor:
             "run_id": str(self._event_context.run_id),
             "run_dir": str(run_dir),
         }
-        if (
-            reviewed_branch := self._reviewed_branch_name(worktree, cached=cached)
-        ) is not None:
+        if (reviewed_branch := self._reviewed_branch_name(worktree)) is not None:
             payload["branch_name"] = reviewed_branch
         if cached:
             payload["cached"] = True
@@ -679,9 +676,7 @@ class CompletionProcessor:
         }
         if run_dir is not None:
             payload["run_dir"] = str(run_dir)
-        if (
-            reviewed_branch := self._reviewed_branch_name(worktree, cached=cached)
-        ) is not None:
+        if (reviewed_branch := self._reviewed_branch_name(worktree)) is not None:
             payload["branch_name"] = reviewed_branch
         if artifacts:
             payload["artifacts"] = artifacts
