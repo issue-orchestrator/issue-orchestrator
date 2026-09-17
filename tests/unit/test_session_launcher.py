@@ -309,17 +309,6 @@ class MockWorktreeManager:
         self.remove_force_calls: list[tuple[Path, bool]] = []
         self.checkout_only_removals: list[tuple[Path, bool]] = []
         self.checkout_and_branch_removals: list[tuple[Path, bool]] = []
-        self.locked: list[Path] = []
-        self.lock_reasons: list[str] = []
-        self.lock_succeeds = True
-
-    def lock_checkout(self, worktree_path: Path, *, reason: str) -> bool:
-        if not self.lock_succeeds:
-            return False
-        self.locked.append(Path(worktree_path))
-        self.lock_reasons.append(reason)
-        return True
-
     def create(
         self,
         repo_root: Path,
@@ -2268,60 +2257,25 @@ class TestLaunchValidationRetrySession:
         assert result.disposition is LaunchDisposition.QUARANTINED
         assert len(escalations) == 1, "the record was dropped with nobody told"
         comment = escalations[0]["comment"]
-        assert "locked, so nothing will remove it" in comment
-        assert "git worktree unlock" in comment, (
-            "the operator is not told how to release the checkout"
-        )
         assert retry.branch_name in comment
+        assert "never pushed" in comment
+        assert "Nothing here holds the checkout open" in comment, (
+            "the handoff promised a protection this refusal cannot give"
+        )
 
-    def test_custody_is_taken_before_the_record_is_dropped(
+    def test_a_handoff_that_fails_keeps_the_record(
         self,
         launcher_bundle,
-        mock_worktree_manager,
     ):
-        """Git's own lock, not the comment, is what preserves the branch.
+        """The notification is the only thing protecting this work.
 
-        Startup reconciliation classifies an INACTIVE scratch checkout as
-        disposable and removes it with its never-pushed branch. A locked
-        checkout it retains -- so the lock is what makes "preserved" a fact.
+        Dropping the last queued reference to a never-pushed branch that nobody
+        has been told about is the one outcome worse than a poison item.
         """
+        launcher_bundle.launcher.escalate_issue_needs_human = (  # noqa: SLF001
+            lambda **kwargs: False
+        )
         token = "c" * 12
-        worktree = f"/tmp/w/{scratch_worktree_name('io', 123, token)}"
-        retry = PendingValidationRetry(
-            issue_number=123,
-            issue_title="Fix checkout",
-            agent_label="agent:web",
-            worktree_path=worktree,
-            branch_name=scratch_branch_name(123, token),
-            original_prompt="Investigate issue #123",
-            validation_error="boom",
-            validation_error_file=None,
-            retry_count=1,
-            source_task=TaskKind.CODE,
-            validation_cmd="make test",
-        )
-
-        result = launcher_bundle.launcher.launch_validation_retry_session(
-            retry, active_sessions=[]
-        )
-
-        assert result.disposition is LaunchDisposition.QUARANTINED
-        assert mock_worktree_manager.locked == [Path(worktree)], (
-            "the record was dropped without taking custody of its checkout"
-        )
-
-    def test_a_record_whose_checkout_cannot_be_locked_is_kept(
-        self,
-        launcher_bundle,
-        mock_worktree_manager,
-    ):
-        """Custody is the precondition, not the notification (#7263 r4 F1/F2).
-
-        If nothing is holding the checkout, the queued record is its last
-        reference, and dropping it loses the branch at the next restart.
-        """
-        mock_worktree_manager.lock_succeeds = False
-        token = new_scratch_token()
         retry = PendingValidationRetry(
             issue_number=123,
             issue_title="Fix checkout",
@@ -2341,9 +2295,9 @@ class TestLaunchValidationRetrySession:
         )
 
         assert result.disposition is LaunchDisposition.RETRYABLE_FAILURE, (
-            "the record was dropped although nothing was holding its checkout"
+            "the record was dropped although nobody was told about its branch"
         )
-        assert "could not lock" in (result.reason or "")
+        assert "handoff failed" in (result.reason or "")
 
     def test_internal_review_instructions_reach_validation_retry_command(
         self,

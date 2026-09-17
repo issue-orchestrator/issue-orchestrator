@@ -164,10 +164,9 @@ def quarantine_retry_launch(
     retry: "PendingValidationRetry",
     detail: str,
     *,
-    lock_checkout: Callable[..., bool],
     escalate: Callable[..., bool],
 ) -> "LaunchResult":
-    """Refuse an unrunnable retry, take custody of its branch, tell a human.
+    """Refuse an unrunnable retry, tell a human, and let the queue drop it.
 
     Relaunching it is the one thing that must not happen: the launcher still
     holds the recorded investigation branch, so the ordinary derivation would
@@ -176,49 +175,23 @@ def quarantine_retry_launch(
 
     Refusing it forever is the other thing that must not happen. Validation
     retries deliberately RETAIN a permanent failure, so a poison record would be
-    planned every tick against capacity another issue could use.
+    planned every tick against capacity another issue could use. ``QUARANTINED``
+    leaves the queue unconditionally, and the escalation is what makes that
+    safe -- so a failed escalation RETAINS the record instead of dropping the
+    last thing pointing at that branch.
 
-    What makes dropping it safe is CUSTODY, not notification. Git's own lock on
-    the checkout survives a restart, is visible in ``git worktree list``, and is
-    already honoured by every cleanup path here -- including startup
-    reconciliation, which would otherwise classify an inactive scratch checkout
-    as disposable and remove it with its never-pushed branch. So the lock is the
-    precondition: taken, the record leaves the queue; refused, the record stays,
-    because a branch nothing is holding must keep its last reference.
-
-    The escalation is best-effort on top of that. A comment that fails to post
-    is bad, and is logged as an error, but it does not decide the fate of the
-    branch -- the lock already has (#7263 review r4).
+    It deliberately does NOT claim the checkout is protected. It is exactly as
+    exposed as it already was: an investigation's scratch worktree is inactive
+    from the moment its session ends, whether or not a retry was queued, so
+    ordinary scratch cleanup and startup reconciliation treat it as they always
+    have. Saying otherwise would be a promise this refusal cannot keep, and
+    giving it real custody is a separate question with its own issue -- forced
+    removal falls back to ``shutil.rmtree``, so no git-level hold binds it.
     """
     from .session_launch_types import LaunchDisposition, LaunchResult
 
-    worktree = Path(retry.worktree_path)
-    reason = (
-        f"issue-orchestrator: validation retry of a tech-lead investigation "
-        f"refused and handed to a human (issue #{retry.issue_number}). "
-        "Unlock when resolved."
-    )
-    custody = lock_checkout(worktree, reason=reason)
-    if not custody:
-        logger.error(
-            "[issue-%d] Could not take custody of %s; keeping its retry queued "
-            "rather than dropping the last reference to branch %s",
-            retry.issue_number,
-            worktree,
-            retry.branch_name,
-        )
-        return LaunchResult(
-            None,
-            False,
-            f"{detail} (could not lock {worktree}; retained)",
-            disposition=LaunchDisposition.RETRYABLE_FAILURE,
-        )
-
     logger.error(
-        "[issue-%d] Refusing validation retry and holding %s: %s",
-        retry.issue_number,
-        worktree,
-        detail,
+        "[issue-%d] Refusing validation retry: %s", retry.issue_number, detail
     )
     notified = escalate(
         issue_number=retry.issue_number,
@@ -226,28 +199,35 @@ def quarantine_retry_launch(
         comment=(
             "## Needs Human Input — validation retry refused\n\n"
             f"{detail}\n\n"
-            f"- worktree: `{worktree}` (locked, so nothing will remove it)\n"
-            f"- branch: `{retry.branch_name}` (never pushed; its commits are "
-            "only here)\n\n"
-            "The retry has been removed from the queue. When you have finished "
-            "with the checkout, release it with "
-            f"`git worktree unlock {worktree}` and delete it if it is no longer "
-            "wanted."
+            f"- worktree: `{retry.worktree_path}`\n"
+            f"- branch: `{retry.branch_name}` — never pushed, so its commits "
+            "exist only in that checkout\n\n"
+            "The retry has been removed from the queue. Nothing here holds the "
+            "checkout open: a disposable investigation worktree is subject to "
+            "ordinary cleanup once its session ends, so salvage anything you "
+            "need from that branch promptly."
         ),
         context="validation_retry_refused",
         event_data={
             "issue_number": retry.issue_number,
             "issue_title": retry.issue_title,
             "reason": detail,
-            "worktree_path": str(worktree),
+            "worktree_path": retry.worktree_path,
             "branch_name": retry.branch_name,
         },
     )
     if not notified:
         logger.error(
-            "[issue-%d] The handoff comment did not post; the checkout is "
-            "locked and the branch is safe, but nobody has been told",
+            "[issue-%d] The handoff did not reach a human; keeping the retry "
+            "queued rather than dropping the last reference to branch %s",
             retry.issue_number,
+            retry.branch_name,
+        )
+        return LaunchResult(
+            None,
+            False,
+            f"{detail} (handoff failed; retained)",
+            disposition=LaunchDisposition.RETRYABLE_FAILURE,
         )
     return LaunchResult(
         None, False, detail, disposition=LaunchDisposition.QUARANTINED

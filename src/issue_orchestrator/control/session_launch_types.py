@@ -57,9 +57,10 @@ class LaunchDisposition(Enum):
     #: It leaves the queue UNCONDITIONALLY, unlike ``PERMANENT_FAILURE``, which
     #: some queues deliberately retain: retaining work that can never run turns
     #: a poison item into a starvation loop, planned every tick against a
-    #: capacity another issue could have used (#7263 review r2 F4). The
-    #: launcher escalates to a human before returning this, so dropping it
-    #: loses nothing.
+    #: capacity another issue could have used (#7263 review r2 F4). What makes
+    #: dropping it safe is the launcher's own precondition -- it returns this
+    #: only once the work has been handed to a human -- not anything this
+    #: disposition can enforce.
     QUARANTINED = "quarantined"
 
 

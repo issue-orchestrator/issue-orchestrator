@@ -3,7 +3,6 @@
 Implements the WorktreeManager port using the git worktree implementation.
 """
 
-import logging
 from pathlib import Path
 from .git_tools import run_git
 
@@ -21,9 +20,6 @@ from ..adapters.worktree._worktree import (
     extract_issue_number_from_branch,
     list_registered_worktrees,
 )
-
-
-logger = logging.getLogger(__name__)
 
 
 class GitWorktreeManager:
@@ -82,35 +78,6 @@ class GitWorktreeManager:
     ) -> None:
         """Remove a disposable worktree checkout and its local branch."""
         remove_worktree(worktree_path, force=force, delete_branch=True)
-
-    def lock_checkout(self, worktree_path: Path, *, reason: str) -> bool:
-        """Take git's own lock on a checkout; report whether it is held.
-
-        The answer is READ BACK from git rather than inferred from the exit
-        code, because the case that matters -- already locked, by this or an
-        earlier hand-off -- is a failure for the command and a success for the
-        caller. Custody is a state, so it is queried as one; matching on git's
-        message would be guessing at the same question.
-        """
-        locked, _ = run_git(
-            ["worktree", "lock", "--reason", reason, str(worktree_path)],
-            worktree_path.parent,
-        )
-        if locked:
-            logger.info("Locked worktree %s: %s", worktree_path, reason)
-            return True
-        held = self._is_locked(worktree_path)
-        if held:
-            logger.info("Worktree %s is already under a lock", worktree_path)
-        else:
-            logger.error("Could not lock worktree %s", worktree_path)
-        return held
-
-    def _is_locked(self, worktree_path: Path) -> bool:
-        for registered in self.list_registered(worktree_path.parent):
-            if registered.path == worktree_path:
-                return registered.locked
-        return False
 
     def can_remove_without_user_changes(self, worktree_path: Path) -> bool:
         """Return true when forced removal would not discard user changes."""

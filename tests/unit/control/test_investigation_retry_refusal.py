@@ -1,44 +1,33 @@
-"""A refused investigation's checkout is held by git, not by a promise (#7263).
+"""What a refused investigation retry actually does (#7263).
 
-The escalation tells an operator the branch is preserved. What makes that TRUE
-is git's own lock: startup reconciliation classifies an inactive scratch
-checkout as disposable and removes it WITH its never-pushed branch, and a locked
-checkout it retains. So the lock is the custody record, and the settlement that
-drops the queued retry is only safe because the lock was taken first.
+The refusal hands the work to a human and lets the queue drop it. It does NOT
+claim to protect the checkout: a disposable investigation worktree is inactive
+from the moment its session ends, whether or not a retry was queued, so it is
+subject to the same cleanup it always was. Giving it real custody is #7274 --
+forced removal falls back to ``shutil.rmtree``, so no git-level hold binds it.
 """
 
 from __future__ import annotations
-
-from pathlib import Path
 
 from issue_orchestrator.control.session_launch_types import (
     LaunchDisposition,
     LaunchResult,
 )
-from issue_orchestrator.control.worktree_reconciliation import _disposable_entry
 from issue_orchestrator.domain.models import PendingValidationRetry
 from issue_orchestrator.domain.session_key import TaskKind
 from issue_orchestrator.domain.tech_lead_scratch_identity import (
     new_scratch_identity,
 )
-from issue_orchestrator.ports.worktree_manager import RegisteredWorktree
 
 
 class _Recorder:
-    def __init__(self, *, lock_succeeds: bool = True) -> None:
-        self.lock_succeeds = lock_succeeds
-        self.locked: list[tuple[Path, str]] = []
+    def __init__(self, *, notified: bool = True) -> None:
+        self.notified = notified
         self.escalations: list[dict] = []
-
-    def lock_checkout(self, worktree_path: Path, *, reason: str) -> bool:
-        if not self.lock_succeeds:
-            return False
-        self.locked.append((worktree_path, reason))
-        return True
 
     def escalate(self, **kwargs: object) -> bool:
         self.escalations.append(kwargs)
-        return True
+        return self.notified
 
 
 def _retry(worktree: str, branch: str) -> PendingValidationRetry:
@@ -56,46 +45,8 @@ def _retry(worktree: str, branch: str) -> PendingValidationRetry:
     )
 
 
-class TestReconciliationHonoursTheLock:
-    """The half that makes the custody real, asserted rather than assumed."""
-
-    def _entry(self, *, locked: bool):
-        identity = new_scratch_identity("issue-orchestrator", 6410)
-        path = Path("/w") / identity.worktree_name
-        return _disposable_entry(
-            path,
-            RegisteredWorktree(
-                path=path,
-                head="abc1234",
-                branch=identity.branch_name,
-                locked=locked,
-            ),
-            kind="tech_lead_scratch",
-            candidate_reason="owned disposable scratch worktree is inactive",
-            activity=_Activity(),
-        )
-
-    def test_an_unlocked_inactive_scratch_checkout_is_a_cleanup_candidate(
-        self,
-    ) -> None:
-        """Which is exactly what would destroy the branch."""
-        assert self._entry(locked=False).disposition == "cleanup_candidate"
-
-    def test_a_locked_one_is_retained(self) -> None:
-        entry = self._entry(locked=True)
-
-        assert entry.disposition == "retained"
-        assert "locked" in entry.reason
-
-
-class _Activity:
-    """No active sessions: the state a restart starts from."""
-
-    active_paths: frozenset[Path] = frozenset()
-
-
-class TestQuarantineTakesCustodyFirst:
-    def test_the_lock_is_taken_before_the_record_is_dropped(self) -> None:
+class TestRefusalHandsOffBeforeDropping:
+    def test_a_handed_off_record_leaves_the_queue(self) -> None:
         from issue_orchestrator.control.tech_lead_session_policy import (
             quarantine_retry_launch,
         )
@@ -106,37 +57,39 @@ class TestQuarantineTakesCustodyFirst:
         result = quarantine_retry_launch(
             _retry(f"/w/{identity.worktree_name}", identity.branch_name),
             "because",
-            lock_checkout=recorder.lock_checkout,
             escalate=recorder.escalate,
         )
 
         assert isinstance(result, LaunchResult)
         assert result.disposition is LaunchDisposition.QUARANTINED
-        assert recorder.locked, "the record was dropped without taking custody"
-        assert "Unlock when resolved" in recorder.locked[0][1]
+        assert len(recorder.escalations) == 1
 
-    def test_a_checkout_that_cannot_be_locked_keeps_its_record(self) -> None:
+    def test_a_handoff_that_fails_keeps_the_record(self) -> None:
+        """The notification is the only thing protecting this work.
+
+        Dropping the last queued reference to a never-pushed branch that nobody
+        has been told about is the one outcome worse than a poison item.
+        """
         from issue_orchestrator.control.tech_lead_session_policy import (
             quarantine_retry_launch,
         )
 
         identity = new_scratch_identity("issue-orchestrator", 6410)
-        recorder = _Recorder(lock_succeeds=False)
+        recorder = _Recorder(notified=False)
 
         result = quarantine_retry_launch(
             _retry(f"/w/{identity.worktree_name}", identity.branch_name),
             "because",
-            lock_checkout=recorder.lock_checkout,
             escalate=recorder.escalate,
         )
 
         assert result.disposition is LaunchDisposition.RETRYABLE_FAILURE
-        assert recorder.escalations == [], (
-            "it told a human the branch was safe when nothing was holding it"
-        )
+        assert "handoff failed" in (result.reason or "")
 
-    def test_a_failed_escalation_does_not_undo_the_custody(self) -> None:
-        """The comment is best-effort; the lock is the guarantee."""
+    def test_the_handoff_names_the_branch_and_does_not_promise_it_is_held(
+        self,
+    ) -> None:
+        """An operator acting on this must know it is not protected."""
         from issue_orchestrator.control.tech_lead_session_policy import (
             quarantine_retry_launch,
         )
@@ -144,15 +97,17 @@ class TestQuarantineTakesCustodyFirst:
         identity = new_scratch_identity("issue-orchestrator", 6410)
         recorder = _Recorder()
 
-        result = quarantine_retry_launch(
+        quarantine_retry_launch(
             _retry(f"/w/{identity.worktree_name}", identity.branch_name),
             "because",
-            lock_checkout=recorder.lock_checkout,
-            escalate=lambda **_: False,
+            escalate=recorder.escalate,
         )
 
-        assert result.disposition is LaunchDisposition.QUARANTINED
-        assert recorder.locked
+        comment = recorder.escalations[0]["comment"]
+        assert identity.branch_name in comment
+        assert "never pushed" in comment
+        assert "Nothing here holds the checkout open" in comment
+        assert "salvage anything you need" in comment
 
 
 class TestGuardLabelOwner:

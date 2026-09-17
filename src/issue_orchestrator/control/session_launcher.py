@@ -1149,10 +1149,7 @@ class SessionLauncher:
         )
         if refusal is not None:
             return quarantine_retry_launch(
-                retry,
-                refusal,
-                lock_checkout=self._worktree_manager.lock_checkout,
-                escalate=self.escalate_issue_needs_human,
+                retry, refusal, escalate=self.escalate_issue_needs_human
             )
         resolved = self._resolve_validation_retry_issue(retry)
         if resolved is None:

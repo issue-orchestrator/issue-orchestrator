@@ -173,8 +173,7 @@ class ScratchWorktreeIdentity:
     Its presence fully determines the worktree directory basename and branch,
     and implies a clean checkout off the base branch: reuse of any existing
     worktree and the configured worktree ``seed_ref`` are both suppressed (the
-    caller disables reuse; ``WorktreeContext.create`` suppresses the seed) --
-    EXCEPT when the identity is a continuation, where reuse is the point.
+    caller disables reuse; ``WorktreeContext.create`` suppresses the seed).
 
     It lives here, beside the generator and matcher that decide its two strings,
     because an identity type whose shape is owned somewhere else is how the two

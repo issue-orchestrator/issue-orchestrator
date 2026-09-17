@@ -143,14 +143,14 @@ class TestFreshIdentity:
 
 
 class TestReadingARecordedPair:
-    """Resuming an investigation that is already on disk (#7263)."""
+    """Reading which investigation a queued record is about (#7263)."""
 
     def _launched(self, issue: int = 6410) -> ScratchWorktreeIdentity:
         return new_scratch_identity("issue-orchestrator", issue)
 
-    def test_a_launched_investigation_is_resumed_exactly(self) -> None:
-        """Read back, never re-minted: a new token would strand the commits the
-        retry exists to re-validate on the old branch."""
+    def test_a_launched_investigation_is_read_back_exactly(self) -> None:
+        """Read back, never re-minted: the durable halves are what say WHICH
+        investigation a record is about."""
         launched = self._launched()
 
         reading = read_scratch_identity(

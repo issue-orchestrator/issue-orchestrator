@@ -141,23 +141,6 @@ class WorktreeManager(Protocol):
         """
         ...
 
-    def lock_checkout(self, worktree_path: Path, *, reason: str) -> bool:
-        """Take durable custody of a checkout, so nothing removes it.
-
-        Git's own lock, not a record of our own: it survives a restart, it is
-        visible in ``git worktree list``, and every cleanup path in this system
-        already refuses a locked worktree. An operator releases it with
-        ``git worktree unlock``.
-
-        This is what makes "the branch is preserved" a fact rather than a
-        promise, for a checkout handed to a human (#7263).
-
-        Returns True when the checkout is locked afterwards. Never raises: a
-        caller that cannot take custody must be able to decide what to do about
-        it, and that decision is not the adapter's.
-        """
-        ...
-
     def can_remove_without_user_changes(self, worktree_path: Path) -> bool:
         """Return true when forced removal would only discard owned artifacts.
 
