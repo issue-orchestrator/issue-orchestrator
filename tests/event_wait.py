@@ -22,7 +22,10 @@ POLL_SECONDS = 0.05
 
 
 def await_event(
-    predicate: Callable[[], bool], *, backstop_seconds: float
+    predicate: Callable[[], bool],
+    *,
+    backstop_seconds: float,
+    poll_seconds: float = POLL_SECONDS,
 ) -> bool:
     """Wait for an event to have happened; report whether it did.
 
@@ -37,10 +40,14 @@ def await_event(
     process-reaping wait that is a quietly relaxed assertion, the "true because
     a sleep was long enough" this tree refuses. The cost is one 50ms poll gap of
     sensitivity at a boundary three orders of magnitude further out.
+
+    ``poll_seconds`` is granularity, never coordination: a caller polling a
+    scheduler rather than the filesystem pays per probe and says so here instead
+    of writing its own loop.
     """
     deadline = time.monotonic() + backstop_seconds
     while time.monotonic() < deadline:
         if predicate():
             return True
-        time.sleep(POLL_SECONDS)
+        time.sleep(poll_seconds)
     return False

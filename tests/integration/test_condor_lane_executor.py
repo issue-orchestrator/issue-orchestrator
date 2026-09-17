@@ -19,6 +19,7 @@ import pytest
 from issue_orchestrator.adapters.condor.lane_executor import (
     ADMISSION_TIMEOUT_SECONDS,
 )
+from issue_orchestrator.adapters.condor.tools import TOOL_TIMEOUT_SECONDS
 from issue_orchestrator.adapters.condor import CondorLaneExecutor, CondorTools
 from issue_orchestrator.domain.lane_execution import (
     LaneSuspendability,
@@ -145,8 +146,20 @@ _ESCAPE_SCRIPT = (
 # through is the "backstop as mechanism" mistake #7264 was filed about.
 # Admission, plus dispatch and interpreter startup, plus the lane's own clock
 # outliving both observation windows, all inside the 900s suite allowance.
-_CONTRACT_FIRST_FLUSH_BACKSTOP_SECONDS = ADMISSION_TIMEOUT_SECONDS + 60.0
-_CONTRACT_STREAMING_LANE_LIFETIME_SECONDS = 720.0
+# Two pool tool calls stand between `run()` being asked and the admission clock
+# starting -- the pool query at construction and the submission itself -- and
+# each is independently allowed TOOL_TIMEOUT_SECONDS. After the execute event
+# there is still file transfer and interpreter startup before the lane's first
+# instruction, which nothing bounds for us, so that allowance is named here
+# rather than folded into a round number.
+_LANE_STARTUP_ALLOWANCE_SECONDS = 60.0
+_CONTRACT_FIRST_FLUSH_BACKSTOP_SECONDS = (
+    ADMISSION_TIMEOUT_SECONDS
+    + 2 * TOOL_TIMEOUT_SECONDS
+    + _LANE_STARTUP_ALLOWANCE_SECONDS
+)
+# > first flush (720) + observation (45). Literal for the fixture-lifetime scan.
+_CONTRACT_STREAMING_LANE_LIFETIME_SECONDS = 840.0
 
 
 class TestCondorLaneExecutorContract(LaneExecutorContract):
@@ -170,11 +183,22 @@ class TestCondorLaneExecutorContract(LaneExecutorContract):
         green on the defaults while silently reimposing a 45s start-time limit
         on a backend allowed 600s of queue wait.
         """
-        assert self.first_flush_backstop_seconds > ADMISSION_TIMEOUT_SECONDS, (
-            "a job may be legitimately pending for the backend's full admission "
-            f"window ({ADMISSION_TIMEOUT_SECONDS:.0f}s); a first-flush backstop "
-            f"of {self.first_flush_backstop_seconds:.0f}s fails it for being "
-            "queued"
+        # Every bound between "run() was asked" and "the lane's first
+        # instruction", not just the admission clock: two pool tool calls
+        # precede it, and startup follows the execute event. `>` alone would
+        # accept ADMISSION_TIMEOUT_SECONDS + 0.001.
+        required = (
+            ADMISSION_TIMEOUT_SECONDS
+            + 2 * TOOL_TIMEOUT_SECONDS
+            + _LANE_STARTUP_ALLOWANCE_SECONDS
+        )
+
+        assert self.first_flush_backstop_seconds >= required, (
+            "a job may legitimately spend the backend's full admission window "
+            f"({ADMISSION_TIMEOUT_SECONDS:.0f}s) behind two "
+            f"{TOOL_TIMEOUT_SECONDS:.0f}s tool calls, and still has to start; a "
+            f"first-flush backstop of {self.first_flush_backstop_seconds:.0f}s "
+            f"fails it for being queued (needs >= {required:.0f}s)"
         )
         assert (
             self.streaming_lane_lifetime_seconds
@@ -685,16 +709,23 @@ _SUSPENDED_STATUS = "7"
 
 
 def _await_status(work_key: str, wanted: str, deadline_seconds: float) -> None:
-    deadline = time.monotonic() + deadline_seconds
+    """Wait for one scheduler state, and name the state that never arrived.
+
+    A semantic wrapper over the shared primitive, not a second copy of the loop:
+    the predicate captures the last status so the diagnostic can report it. The
+    poll gap is wider than the default because each probe costs a pool tool call.
+    """
     last = ""
-    while time.monotonic() < deadline:
+
+    def reached() -> bool:
+        nonlocal last
         last = _job_status(work_key)
-        if last == wanted:
-            return
-        time.sleep(0.5)
-    raise AssertionError(
-        f"lane {work_key} never reached JobStatus {wanted}; last={last!r}"
-    )
+        return last == wanted
+
+    if not await_event(reached, backstop_seconds=deadline_seconds, poll_seconds=0.5):
+        raise AssertionError(
+            f"lane {work_key} never reached JobStatus {wanted}; last={last!r}"
+        )
 
 
 def _release_batch(work_key: str) -> None:

@@ -214,16 +214,17 @@ def _command(
     )
 
 
-def _release_lane(handshake: Path, thread: threading.Thread) -> None:
+def release_lane(handshake: Path, thread: threading.Thread) -> None:
     """Let the streaming lane conclude, and wait for it, whatever else failed.
 
     The lane is held alive by the ABSENCE of ``handshake``, so this cannot be
     skipped -- a leaked lane costs a queueing backend scheduler time its own
     deadline never bounds. Two rules beyond "always join":
 
-    * a release failure never MASKS the failure it is cleaning up after. When
-      something is already propagating, that exception is the causal one and
-      this one is dropped to its ``__context__``;
+    * a release failure never REPLACES the failure it is cleaning up after. The
+      pending exception is re-raised from inside the handler, so it stays the
+      exception the operator reads and the release error is kept as its
+      ``__context__`` rather than discarded;
     * when nothing is propagating, the release failure is the failure.
     """
     pending = sys.exc_info()[1]
@@ -232,8 +233,76 @@ def _release_lane(handshake: Path, thread: threading.Thread) -> None:
     except OSError:
         if pending is None:
             raise
+        # Raised from inside the handler, so `pending.__context__` becomes the
+        # OSError: the causal failure is reported AND the leak is still visible.
+        raise pending
     finally:
         thread.join(timeout=_LANE_CONCLUSION_BACKSTOP_SECONDS)
+
+
+def streaming_failure(
+    *,
+    announced_flush: bool,
+    marker_seen: bool,
+    still_running: bool,
+    first_flush_backstop_seconds: float,
+) -> str | None:
+    """Which streaming failure the three observations describe, if any.
+
+    The diagnosis in ONE place, as a value, rather than three assertions whose
+    order encodes the precedence and whose messages cannot be tested. #7264 is
+    entirely about a message that named the wrong cause; a diagnosis worth
+    getting right is worth being able to test.
+
+    Precedence, and why:
+
+    1. no announced flush -- the precondition for reading anything into the
+       rest. Not a buffering diagnosis, and not proof that no bytes were
+       written: a lane killed between its print and its announcement leaves the
+       same silence;
+    2. concluded early -- the lane stopped before the handshake released it, so
+       the observation window was cut short by something other than the
+       backend's streaming. The message differs by whether the marker was seen
+       first, because those are genuinely different events;
+    3. flushed but never observable -- the only buffering diagnosis, and even
+       then it cannot separate a backend that buffers from a relay of its own
+       that stopped running.
+    """
+    if not announced_flush:
+        return (
+            "the lane never announced its first flush within "
+            f"{first_flush_backstop_seconds:.0f}s. This is NOT a buffering "
+            "diagnosis and NOT proof that no output was written: the lane may "
+            "never have been admitted or scheduled, or may have been killed "
+            "between writing the marker and announcing it. Nothing here is a "
+            "statement about the backend's streaming."
+        )
+    if not still_running:
+        if marker_seen:
+            return (
+                "the lane concluded before the handshake released it, although "
+                "its marker WAS observed - so the streaming duty was "
+                "discharged, but the lane ended on something else (its own "
+                "clock, or a backend cancellation) and this run proves nothing "
+                "about the outcome that follows"
+            )
+        return (
+            "the lane concluded before its output was ever observed, although "
+            "the handshake that releases it had not been written - the "
+            "fixture's own clock or a backend cancellation ended it, so nothing "
+            "here says anything about streaming"
+        )
+    if not marker_seen:
+        return (
+            "the lane announced that it flushed STREAM-MARKER, and it was still "
+            "not observable on the parent's streams "
+            f"{_STREAM_OBSERVABLE_BACKSTOP_SECONDS:.0f}s later while the lane "
+            "was still running. Either the backend buffers until completion, or "
+            "a relay it pumps on its own loop stopped running; this test cannot "
+            "tell those two apart, so check the backend's relay before "
+            "concluding it buffers."
+        )
+    return None
 
 
 def _await_pid_gone(pid: int, deadline_seconds: float) -> bool:
@@ -572,36 +641,16 @@ class LaneExecutorContract:
             )
             lane_still_running = thread.is_alive()
         finally:
-            _release_lane(handshake, thread)
+            release_lane(handshake, thread)
 
-        # The first-flush answer comes first: it is the precondition for reading
-        # anything into the other two, and a lane still queued at the end would
-        # otherwise be reported as one that failed to conclude.
-        assert lane_announced_flush, (
-            "the lane never announced its first flush within "
-            f"{self.first_flush_backstop_seconds:.0f}s. This is NOT a buffering "
-            "diagnosis and NOT proof that no output was written: the lane may "
-            "never have been admitted or scheduled, or may have been killed "
-            "between writing the marker and announcing it. Nothing here is a "
-            "statement about the backend's streaming."
+        failure = streaming_failure(
+            announced_flush=lane_announced_flush,
+            marker_seen=marker_seen,
+            still_running=lane_still_running,
+            first_flush_backstop_seconds=self.first_flush_backstop_seconds,
         )
-        assert marker_seen or lane_still_running, (
-            "the lane concluded before its output was ever observed, although "
-            "the handshake that releases it had not been written - the "
-            "fixture's own clock or a backend cancellation ended it, so nothing "
-            "here says anything about streaming. (A lane that concludes AFTER "
-            "the marker is observed is fine: the streaming duty was already "
-            "discharged.)"
-        )
-        assert marker_seen, (
-            "the lane announced that it flushed STREAM-MARKER, and it was still "
-            f"not observable on the parent's streams "
-            f"{_STREAM_OBSERVABLE_BACKSTOP_SECONDS:.0f}s later while the lane was "
-            "still running. Either the backend buffers until completion, or a "
-            "relay it pumps on its own loop stopped running; this test cannot "
-            "tell those two apart, so check the backend's relay before "
-            "concluding it buffers."
-        )
+
+        assert failure is None, failure
         assert not thread.is_alive(), (
             "the lane never concluded within "
             f"{_LANE_CONCLUSION_BACKSTOP_SECONDS:.0f}s of being released by "
