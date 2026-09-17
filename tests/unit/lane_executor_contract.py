@@ -21,7 +21,6 @@ import signal
 import sys
 import threading
 import time
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -38,6 +37,7 @@ from issue_orchestrator.domain.lane_execution import (
     LaneWorkKey,
 )
 from issue_orchestrator.ports.lane_executor import LaneExecutor
+from tests.event_wait import POLL_SECONDS as _POLL_SECONDS, await_event as _await
 from tests.load_fixture import reap_marked_processes
 
 # --------------------------------------------------------------------------
@@ -90,11 +90,6 @@ _STREAM_FLUSH_BACKSTOP_SECONDS = 45.0
 _STREAM_OBSERVABLE_BACKSTOP_SECONDS = 45.0
 # How long the lane may then take to conclude once the handshake releases it.
 _LANE_CONCLUSION_BACKSTOP_SECONDS = 60.0
-
-# Poll gap while waiting for an event. Granularity, not coordination:
-# there is no ack channel from the kernel for "this pid is gone" or from
-# the filesystem for "this file appeared".
-_POLL_SECONDS = 0.05
 
 # --------------------------------------------------------------------------
 # Fixture processes. Every one of them dies of its own clock (#7142): a
@@ -219,30 +214,26 @@ def _command(
     )
 
 
-def _await(predicate: "Callable[[], bool]", *, backstop_seconds: float) -> bool:
-    """Wait for an event to have happened; report whether it did.
+def _release_lane(handshake: Path, thread: threading.Thread) -> None:
+    """Let the streaming lane conclude, and wait for it, whatever else failed.
 
-    The waiting primitive of this SHARED contract, so "waiting is always waiting
-    on an EVENT, and the backstop only names the event that never happened" is
-    true by construction rather than by each test re-deriving the same loop. The
-    return value is the answer, never an assertion: the caller owns the message
-    that names ITS event, which is the whole point of #7264. Backend suites
-    under ``tests/integration`` keep their own waits; this owns this module's.
+    The lane is held alive by the ABSENCE of ``handshake``, so this cannot be
+    skipped -- a leaked lane costs a queueing backend scheduler time its own
+    deadline never bounds. Two rules beyond "always join":
 
-    The clock is read BEFORE the predicate, so ``True`` means the event was
-    observed strictly inside the window. A probe-first loop would also report an
-    event that became true only during an overscheduled final sleep -- for the
-    process-reaping wait below that is a quietly relaxed assertion, which is
-    exactly the "true because a sleep was long enough" this module refuses. The
-    cost is one 50ms poll gap of sensitivity at a boundary three orders of
-    magnitude further out.
+    * a release failure never MASKS the failure it is cleaning up after. When
+      something is already propagating, that exception is the causal one and
+      this one is dropped to its ``__context__``;
+    * when nothing is propagating, the release failure is the failure.
     """
-    deadline = time.monotonic() + backstop_seconds
-    while time.monotonic() < deadline:
-        if predicate():
-            return True
-        time.sleep(_POLL_SECONDS)
-    return False
+    pending = sys.exc_info()[1]
+    try:
+        handshake.write_text("go")
+    except OSError:
+        if pending is None:
+            raise
+    finally:
+        thread.join(timeout=_LANE_CONCLUSION_BACKSTOP_SECONDS)
 
 
 def _await_pid_gone(pid: int, deadline_seconds: float) -> bool:
@@ -581,14 +572,7 @@ class LaneExecutorContract:
             )
             lane_still_running = thread.is_alive()
         finally:
-            # The lane is held alive by the ABSENCE of this file, so releasing it
-            # cannot be skipped -- and the join cannot be skipped by a handshake
-            # write that fails, or a backend with a queue pays for the leak in
-            # scheduler time that its lane deadline never bounds.
-            try:
-                handshake.write_text("go")
-            finally:
-                thread.join(timeout=_LANE_CONCLUSION_BACKSTOP_SECONDS)
+            _release_lane(handshake, thread)
 
         # The first-flush answer comes first: it is the precondition for reading
         # anything into the other two, and a lane still queued at the end would
@@ -601,11 +585,13 @@ class LaneExecutorContract:
             "between writing the marker and announcing it. Nothing here is a "
             "statement about the backend's streaming."
         )
-        assert lane_still_running, (
-            "the lane concluded before its output was observed, although the "
-            "handshake that releases it had not been written - the fixture's "
-            "own clock or a backend cancellation ended it, so nothing here "
-            "says anything about streaming"
+        assert marker_seen or lane_still_running, (
+            "the lane concluded before its output was ever observed, although "
+            "the handshake that releases it had not been written - the "
+            "fixture's own clock or a backend cancellation ended it, so nothing "
+            "here says anything about streaming. (A lane that concludes AFTER "
+            "the marker is observed is fine: the streaming duty was already "
+            "discharged.)"
         )
         assert marker_seen, (
             "the lane announced that it flushed STREAM-MARKER, and it was still "

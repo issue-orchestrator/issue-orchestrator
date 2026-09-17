@@ -16,6 +16,9 @@ from pathlib import Path
 
 import pytest
 
+from issue_orchestrator.adapters.condor.lane_executor import (
+    ADMISSION_TIMEOUT_SECONDS,
+)
 from issue_orchestrator.adapters.condor import CondorLaneExecutor, CondorTools
 from issue_orchestrator.domain.lane_execution import (
     LaneSuspendability,
@@ -27,7 +30,8 @@ from issue_orchestrator.domain.lane_execution import (
 )
 from issue_orchestrator.ports.lane_executor import LaneExecutor
 from tests.load_fixture import cpu_load, reap_marked_processes
-from tests.unit.lane_executor_contract import LaneExecutorContract, _await
+from tests.event_wait import await_event
+from tests.unit.lane_executor_contract import LaneExecutorContract
 
 pytestmark = [
     pytest.mark.timeout(600),
@@ -134,19 +138,22 @@ _ESCAPE_SCRIPT = (
 
 
 # A queued job spends its wait in the contract's FIRST-FLUSH window, and this
-# backend's queue wait is deliberately unbounded by the lane deadline -- the
-# executor's own `_ADMISSION_TIMEOUT_SECONDS` (600s) is what catches a dead
-# pool. These give a healthy job room to be matched before the contract accuses
-# the backend of never starting it, and give the lane a clock that outlives both
-# observation windows (300 + 45).
-_CONTRACT_FIRST_FLUSH_BACKSTOP_SECONDS = 300.0
-_CONTRACT_STREAMING_LANE_LIFETIME_SECONDS = 420.0
+# backend's queue wait is deliberately unbounded by the lane deadline: the
+# executor's own ADMISSION_TIMEOUT_SECONDS is what catches a dead pool. So the
+# contract must give a job the backend's WHOLE permitted admission window before
+# accusing it of never starting -- failing a legitimately-pending job halfway
+# through is the "backstop as mechanism" mistake #7264 was filed about.
+# Admission, plus dispatch and interpreter startup, plus the lane's own clock
+# outliving both observation windows, all inside the 900s suite allowance.
+_CONTRACT_FIRST_FLUSH_BACKSTOP_SECONDS = ADMISSION_TIMEOUT_SECONDS + 60.0
+_CONTRACT_STREAMING_LANE_LIFETIME_SECONDS = 720.0
 
 
 class TestCondorLaneExecutorContract(LaneExecutorContract):
-    # The module's 600s allowance cannot hold 300 + 45 + 60 of backstops plus a
-    # real queue wait, and a pytest timeout firing first would replace the
-    # contract's own diagnosis with one that names nothing (#7264).
+    # The module's 600s allowance cannot hold 660 + 45 + 60 of backstops, and a
+    # pytest timeout firing first would replace the contract's own diagnosis
+    # with one that names nothing (#7264). Class-scoped: only the inherited
+    # contract needs it.
     pytestmark = pytest.mark.timeout(900)
 
     first_flush_backstop_seconds = _CONTRACT_FIRST_FLUSH_BACKSTOP_SECONDS
@@ -154,6 +161,25 @@ class TestCondorLaneExecutorContract(LaneExecutorContract):
 
     def build_executor(self) -> LaneExecutor:
         return CondorLaneExecutor(CondorTools.resolve())
+
+    def test_the_first_flush_window_covers_this_backend_s_admission(self) -> None:
+        """The override is the policy; the inherited guard cannot see it.
+
+        `test_the_streaming_lane_outlives_every_window_that_observes_it` checks
+        the numbers against each other, so deleting BOTH overrides leaves it
+        green on the defaults while silently reimposing a 45s start-time limit
+        on a backend allowed 600s of queue wait.
+        """
+        assert self.first_flush_backstop_seconds > ADMISSION_TIMEOUT_SECONDS, (
+            "a job may be legitimately pending for the backend's full admission "
+            f"window ({ADMISSION_TIMEOUT_SECONDS:.0f}s); a first-flush backstop "
+            f"of {self.first_flush_backstop_seconds:.0f}s fails it for being "
+            "queued"
+        )
+        assert (
+            self.streaming_lane_lifetime_seconds
+            > self.first_flush_backstop_seconds + 45.0
+        )
 
 
 def test_exclusive_token_serializes_concurrent_lanes(tmp_path: Path) -> None:
@@ -255,7 +281,7 @@ def test_detached_session_escape_states_the_platform_boundary(
     thread = threading.Thread(target=run_lane)
     thread.start()
     try:
-        assert _await(marker.exists, backstop_seconds=60.0), (
+        assert await_event(marker.exists, backstop_seconds=60.0), (
             "escape grandchild never started"
         )
         grandchild = int(marker.read_text())
@@ -269,10 +295,11 @@ def test_detached_session_escape_states_the_platform_boundary(
             except ProcessLookupError:
                 return False
 
-        # A HOLD, not a wait: this window exists for the escapee to be
-        # reaped IF the platform contains it, and the answer is read after
-        # it. `_await` is for waiting on an event that must happen.
-        _await(lambda: not alive(), backstop_seconds=20.0)
+        # A wait whose event MAY never happen: the window exists for the
+        # escapee to be reaped if the platform contains it, and the answer is
+        # read afterwards either way. On Linux it returns as soon as the pid is
+        # gone; on macOS it runs the full window.
+        await_event(lambda: not alive(), backstop_seconds=20.0)
         survived = alive()
         if sys.platform == "darwin":
             assert survived, (
@@ -710,7 +737,7 @@ def test_suspension_charges_neither_deadline_nor_observed_runtime(
     thread = threading.Thread(target=run_lane)
     thread.start()
     try:
-        assert _await(marker.exists, backstop_seconds=60.0), (
+        assert await_event(marker.exists, backstop_seconds=60.0), (
             "suspension lane never started"
         )
 
@@ -773,7 +800,7 @@ def test_true_overrun_is_still_enforced_across_a_suspension(
     thread = threading.Thread(target=run_lane)
     thread.start()
     try:
-        assert _await(marker.exists, backstop_seconds=60.0), (
+        assert await_event(marker.exists, backstop_seconds=60.0), (
             "overrun lane never started"
         )
 
@@ -958,9 +985,10 @@ def test_cooperative_lanes_are_not_freeze_eligible_even_when_marked_safe(
         # ...and through a full minute of that proven window (multiple
         # PERIODIC_EXPR_INTERVAL=5 evaluation cycles), the cooperative
         # job must never leave RUNNING.
-        # Also a hold rather than a wait: the assertion is that a condition
-        # NEVER breaks across the window, so the duration is the mechanism and
-        # `_await`'s early return would defeat it.
+        # A HOLD, not a wait: the assertion is that a condition NEVER breaks
+        # across the window, so the duration IS the mechanism and an early
+        # return would defeat it. The only loop in this module that is not
+        # waiting on an event.
         deadline = time.monotonic() + 60.0
         while time.monotonic() < deadline:
             status = _job_status(coop_key)
