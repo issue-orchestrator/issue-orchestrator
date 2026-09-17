@@ -326,13 +326,16 @@ class StubWorkingCopy:
     def get_head_sha(self, worktree: Path) -> str | None:
         return "deadbeef"
 
-    def get_current_branch(self, worktree: Path) -> str:
+    def get_current_branch(self, worktree: Path) -> str | None:
+        # Honours the port: `WorkingCopy.get_current_branch` returns None on a
+        # detached HEAD or a read failure. This used to raise AssertionError on
+        # None, which made a stub STRICTER than the contract its callers code
+        # against -- so a caller that correctly handles None (the review-outcome
+        # and processing-completed emitters) would abort a scenario instead
+        # (#7263 review F4).
         from issue_orchestrator.execution.git_working_copy import GitWorkingCopy
 
-        branch = GitWorkingCopy().get_current_branch(worktree)
-        if branch is None:
-            raise AssertionError("scenario checkout has no current branch")
-        return branch
+        return GitWorkingCopy().get_current_branch(worktree)
 
     def get_branch_status(self, worktree: Path) -> BranchStatus | None:
         return BranchStatus(

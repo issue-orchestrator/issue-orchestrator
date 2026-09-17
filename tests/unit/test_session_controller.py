@@ -9,6 +9,8 @@ No external mocking needed - pure logic tests.
 from tests.run_allocation_helpers import make_completion_processor
 
 import json
+from typing import Any, cast
+
 import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -2343,3 +2345,86 @@ class TestSessionControllerValidationCaching:
         label_adapter.add_label.assert_called_once_with(123, "validation-failed")
         pr_adapter.add_comment.assert_called_once()
         git_adapter.push.assert_not_called()
+
+
+class TestProcessingCompletedNamesItsBranch:
+    """`session.processing_completed` records which branch the work landed on.
+
+    This is the event whose `actions_taken` carries "Pushed branch to remote",
+    and it is the one the 2026-08-03 health review read as issue #6410's
+    IMPLEMENTATION being published — when the push had in fact been of a
+    tech-lead investigation branch.
+
+    A validation-retried investigation runs in the focus issue's ordinary
+    worktree, so `run_dir` cannot separate it from the implementation and the
+    branch is the only durable signal left (#7263 review F1). Driving the real
+    producer, not a fabricated payload.
+    """
+
+    class _RecordingSink:
+        def __init__(self) -> None:
+            self.events: list[TraceEvent] = []
+
+        def publish(self, event: TraceEvent) -> None:
+            self.events.append(event)
+
+    class _InvestigationWorkingCopy:
+        """Reports the investigation branch a retry relaunched onto."""
+
+        BRANCH = "tech-lead-investigation-6410-df24fde45b3b"
+
+        def get_head_sha(self, worktree: Path) -> str | None:
+            return "abc1234567890"
+
+        def get_current_branch(self, worktree: Path) -> str | None:
+            return self.BRANCH
+
+    class _DetachedWorkingCopy:
+        def get_head_sha(self, worktree: Path) -> str | None:
+            return "abc1234567890"
+
+        def get_current_branch(self, worktree: Path) -> str | None:
+            return None
+
+    def _completed(self, tmp_path: Path, working_copy: object) -> list[TraceEvent]:
+        sink = self._RecordingSink()
+        processor = MockCompletionProcessor()
+        processor.completion_record = make_record(CompletionOutcome.COMPLETED)
+        processor.process_result = ProcessingResult(
+            success=True,
+            message="Processed completion",
+            actions_taken=["Pushed branch to remote"],
+        )
+        controller = SessionController(
+            completion_processor=processor,
+            events=cast(Any, sink),
+            session_output=FileSystemSessionOutput(),
+            working_copy=cast(Any, working_copy),
+        )
+        decide_with_run_assets(
+            controller,
+            observation=SessionObservationResult.terminated(runtime_minutes=10.0),
+            worktree_path=tmp_path / "worktree",
+            issue_number=6410,
+            issue_title="Subject",
+            session_name="issue-6410",
+        )
+        return [
+            event
+            for event in sink.events
+            if event.name == str(EventName.SESSION_PROCESSING_COMPLETED)
+        ]
+
+    def test_the_branch_the_work_landed_on_is_recorded(self, tmp_path: Path) -> None:
+        [event] = self._completed(tmp_path, self._InvestigationWorkingCopy())
+
+        assert (
+            event.data["branch_name"] == self._InvestigationWorkingCopy.BRANCH
+        ), "the push event does not say which branch was pushed"
+
+    def test_a_detached_checkout_records_no_branch(self, tmp_path: Path) -> None:
+        # The port contracts to return None on a detached HEAD; that records no
+        # branch rather than raising or inventing one.
+        [event] = self._completed(tmp_path, self._DetachedWorkingCopy())
+
+        assert "branch_name" not in event.data

@@ -74,7 +74,18 @@ def make_completion_processor(*args, **kwargs) -> CompletionProcessor:
 
 def make_completion_review_exchange(**kwargs) -> CompletionReviewExchange:
     kwargs.setdefault("issue_run_allocator", allocation_for(kwargs["session_output"], kwargs.get("config")))
+    # A detached checkout, the honest default: tests that care which branch a
+    # review names inject a reader that answers, and the rest get the same
+    # "no branch" the port contracts for an unreadable checkout.
+    kwargs.setdefault("branch_reader", _detached_branch_reader())
     return CompletionReviewExchange(**kwargs)
+
+
+def _detached_branch_reader():
+    from issue_orchestrator.domain.review_subject import CurrentBranchReader
+    reader = Mock(spec=CurrentBranchReader)
+    reader.get_current_branch.return_value = None
+    return reader
 
 
 def make_session_launcher(*args, **kwargs) -> SessionLauncher:

@@ -78,9 +78,6 @@ class StubWorkingCopy:
     def get_head_sha(self, worktree: Path) -> str | None:
         return "abc1234567890"
 
-    def get_current_branch(self, worktree: Path) -> str | None:
-        return "test-branch"
-
     def rebase_on_branch(self, worktree: Path, target: str = "origin/main"):
         raise RuntimeError("rebase not expected")
 

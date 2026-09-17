@@ -1,6 +1,7 @@
 """Review-exchange orchestration for completion processing."""
 
 from ..ports.issue_run_allocator import IssueRunAllocator
+from ..domain.review_subject import BranchSubject, CurrentBranchReader
 from ..domain.issue_run_allocation import IssueExchangeRunAllocation
 from ..domain.models import Issue
 from ..domain.session_key import SessionKey, TaskKind
@@ -210,8 +211,13 @@ class CompletionReviewExchange:
         review_exchange_canceller: ReviewExchangeCanceller | None = None,
         agent_callback_endpoint: "AgentCallbackEndpoint",
         issue_run_allocator: IssueRunAllocator,
+        branch_reader: CurrentBranchReader,
     ) -> None:
         self._config = config
+        # The exchange samples the reviewed branch ONCE, when the exchange
+        # starts, and retains it on the summary; the emitters it calls hold no
+        # branch policy of their own (#7268).
+        self._branch_reader = branch_reader
         self._session_output = session_output
         self._issue_run_allocator = issue_run_allocator
         self._review_exchange_runner = review_exchange_runner
@@ -512,11 +518,17 @@ class CompletionReviewExchange:
             parent_session_name=session_name,
             agent_label=coder_label,
         )
+        # Sampled ONCE here, at the top of the exchange, and carried from this
+        # point on: the started event, the outcome event, and the summary that a
+        # later tick replays all name the same branch even if the checkout moves
+        # underneath them (#7268).
+        subject = BranchSubject.sampled(self._branch_reader, worktree)
         self._emit_review_started(
             issue_number=issue_number,
             reviewer_label=reviewer_label,
             exchange_mode=exchange_mode,
             run_dir=review_run.assets.run_dir,
+            subject=subject,
         )
         submitted = self._submit_background_review_exchange(
             job_id=job_id,
@@ -530,6 +542,7 @@ class CompletionReviewExchange:
             initial_validation_evidence=initial_validation_evidence,
             review_run=review_run,
             current_head_sha=current_head_sha,
+            subject=subject,
             run_review_exchange_loop=run_review_exchange_loop,
             approval_gate=approval_gate,
         )
@@ -553,6 +566,7 @@ class CompletionReviewExchange:
             initial_validation_evidence=initial_validation_evidence,
             review_run=review_run,
             current_head_sha=current_head_sha,
+            subject=subject,
             errors=errors,
             actions_taken=actions_taken,
             run_review_exchange_loop=run_review_exchange_loop,
@@ -711,6 +725,7 @@ class CompletionReviewExchange:
         initial_validation_evidence: ReviewValidationEvidence | None,
         review_run: ReviewExchangeRun,
         current_head_sha: str | None,
+        subject: BranchSubject,
         run_review_exchange_loop: RunReviewExchangeLoop,
         approval_gate: "ReviewExchangeApprovalGate | None",
     ) -> bool:
@@ -747,6 +762,7 @@ class CompletionReviewExchange:
                 review_run=review_run,
                 exchange_result=outcome,
                 current_head_sha=current_head_sha,
+                subject=subject,
             )
 
         return self._job_supervisor.submit(
@@ -876,6 +892,15 @@ class CompletionReviewExchange:
     ) -> tuple[str, ReviewExchangeOutcome, bool]:
         review_run_dir = run_assets.run_dir
         cache_metadata = _cached_review_event_metadata(existing_outcome)
+        # The branch the cached review actually covered, replayed from the
+        # summary that recorded it. Sampling is only the fallback, for summaries
+        # written before the branch was retained: the checkout can have been
+        # renamed since (PR-collision remediation at ``_execute_create_pr_action``
+        # does exactly that), and a replay must not name a branch the reviewer
+        # never saw (#7268).
+        subject = BranchSubject.reviewed(
+            existing_outcome.summary, self._branch_reader, worktree
+        )
         self._emit_review_started(
             issue_number=issue_number,
             reviewer_label=reviewer_label,
@@ -883,6 +908,7 @@ class CompletionReviewExchange:
             run_dir=review_run_dir,
             cached=True,
             **cache_metadata,
+            subject=subject,
         )
         if existing_outcome.status == "ok":
             actions_taken.append("Review exchange passed (cached)")
@@ -909,7 +935,7 @@ class CompletionReviewExchange:
                 cached=True,
                 artifacts=self._review_artifacts_from_outcome(existing_outcome),
                 **cache_metadata,
-                worktree=worktree,
+                subject=subject,
             )
             return exchange_mode, existing_outcome, False
         _log_review_exchange_halt(
@@ -930,7 +956,7 @@ class CompletionReviewExchange:
             cached=True,
             artifacts=self._review_artifacts_from_outcome(existing_outcome),
             **cache_metadata,
-            worktree=worktree,
+            subject=subject,
         )
         errors.append(_review_exchange_halt_error(existing_outcome))
         return exchange_mode, existing_outcome, True
@@ -948,6 +974,7 @@ class CompletionReviewExchange:
         initial_validation_evidence: ReviewValidationEvidence | None,
         review_run: ReviewExchangeRun,
         current_head_sha: str | None,
+        subject: BranchSubject,
         errors: list[str],
         actions_taken: list[str],
         run_review_exchange_loop: RunReviewExchangeLoop,
@@ -966,6 +993,17 @@ class CompletionReviewExchange:
         self._require_matching_review_run(exchange_result, review_run)
         run_assets = review_run.assets
         review_run_dir = run_assets.run_dir
+        # BEFORE the success/halt split, because both are terminal and both get
+        # replayed. Storing only on success left a halted exchange's summary
+        # without its reviewed branch, so a later cached halt named whatever the
+        # checkout held by then (#7269 round 3, finding [1]). The background path
+        # has always stored both; this is the inline path catching up.
+        self.store_review_exchange_summary(
+            review_run=review_run,
+            exchange_result=exchange_result,
+            current_head_sha=current_head_sha,
+            subject=subject,
+        )
         if exchange_result.status != "ok":
             _log_review_exchange_halt(
                 issue_number=issue_number,
@@ -983,7 +1021,7 @@ class CompletionReviewExchange:
                 summary=f"Review exchange halted: {exchange_result.reason}",
                 run_dir=review_run_dir,
                 artifacts=self._review_artifacts_from_outcome(exchange_result),
-                worktree=worktree,
+                subject=subject,
             )
             errors.append(_review_exchange_halt_error(exchange_result))
             return exchange_mode, exchange_result, True
@@ -1010,12 +1048,7 @@ class CompletionReviewExchange:
             summary=reviewer_summary,
             run_dir=review_run_dir,
             artifacts=self._review_artifacts_from_outcome(exchange_result),
-            worktree=worktree,
-        )
-        self.store_review_exchange_summary(
-            review_run=review_run,
-            exchange_result=exchange_result,
-            current_head_sha=current_head_sha,
+            subject=subject,
         )
         return exchange_mode, exchange_result, False
 
@@ -1101,11 +1134,14 @@ class CompletionReviewExchange:
         review_run: ReviewExchangeRun,
         exchange_result: ReviewExchangeOutcome,
         current_head_sha: str | None = None,
+        subject: BranchSubject = BranchSubject(branch_name=None),
     ) -> None:
         self._require_matching_review_run(exchange_result, review_run)
         if not exchange_result.summary:
             return
-        summary = exchange_result.summary.with_head_sha_if_missing(current_head_sha)
+        summary = exchange_result.summary.with_review_subject_if_missing(
+            current_head_sha, subject.branch_name
+        )
         self._session_output.store_review_exchange_summary(
             review_run,
             summary,
