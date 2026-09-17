@@ -61,11 +61,6 @@ class WorktreeReuseOptions:
     # must never mutate it — the reuse path leaves the branch exactly as-is
     # instead of freshening it onto the base branch.
     preserve_branch: bool = False
-    # When True, acquisition must end holding the EXACT branch it was asked for,
-    # with its commits. A reuse that cannot be salvaged is refused rather than
-    # deleted-and-recreated, because deleting the checkout deletes the local
-    # branch with it and a never-pushed branch has no other copy (#7263).
-    require_retained_branch: bool = False
 
 
 class WorktreeManager(Protocol):

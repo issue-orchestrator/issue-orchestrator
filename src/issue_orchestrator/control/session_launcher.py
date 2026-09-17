@@ -61,9 +61,8 @@ from ..infra.validation_state import DEFAULT_RETRY_TEMPLATE, _truncate_with_tail
 from ..domain.tech_lead_session import TechLeadLaunchScope
 from .tech_lead_session_policy import (
     failure_investigation_scratch_identity,
-    resumed_investigation_scope,
+    investigation_retry_refusal,
     quarantine_retry_launch,
-    retried_investigation_identity,
     is_tech_lead_session,
     prepare_tech_lead_session_data,
 )
@@ -286,7 +285,6 @@ class SessionLauncher:
         allow_remote_branch_delete: bool = True,
         force_fresh: bool = False,
         preserve_branch: bool = False,
-        require_retained_branch: bool = False,
     ) -> WorktreeReuseOptions:
         options = WorktreeReuseOptions(
             reuse_push_preflight=self.config.reuse_push_preflight,
@@ -294,7 +292,6 @@ class SessionLauncher:
             allow_no_verify_dry_run_preflight=self.config.allow_no_verify_dry_run_preflight,
             allow_remote_branch_delete=allow_remote_branch_delete,
             preserve_branch=preserve_branch,
-            require_retained_branch=require_retained_branch,
         )
         if force_fresh:
             options.disable_reuse = True
@@ -1144,12 +1141,12 @@ class SessionLauncher:
         may park the issue with a shared label and durable record.
         """
         # FIRST, before the precondition checks, the prompt prep and the
-        # provider gate -- each of which can label the issue or park it. A
-        # record that does not hold together is unrunnable now and next tick, so
-        # nothing about it should leave a trace of having been attempted.
-        if (reading := retried_investigation_identity(retry)).is_corrupt:
+        # provider gate -- each of which can label the issue or park it. An
+        # investigation's retry is not relaunchable at all yet, so nothing about
+        # it should leave a trace of having been attempted.
+        if (refusal := investigation_retry_refusal(retry)) is not None:
             return quarantine_retry_launch(
-                retry, reading.detail, escalate=self.escalate_issue_needs_human
+                retry, refusal, escalate=self.escalate_issue_needs_human
             )
         resolved = self._resolve_validation_retry_issue(retry)
         if resolved is None:
@@ -1229,12 +1226,6 @@ class SessionLauncher:
             return claim.as_launch_failure()
 
         phase_name = f"coding-{retry_count + 1}"
-        # A retried FAILURE INVESTIGATION continues in the disposable worktree it
-        # was launched with, never the focus issue's own (#6823 / #7263). Reuse,
-        # never force_fresh: the retry exists to re-validate commits that live on
-        # that branch, and a clean checkout would discard them. Admission has
-        # already refused anything but ORDINARY or RESUMABLE.
-        investigation_scratch = retried_investigation_identity(retry).identity
         ctx = WorktreeContext.create(
             command_runner=self._command_runner,
             worktree_manager=self._worktree_manager,
@@ -1250,19 +1241,9 @@ class SessionLauncher:
             branch_name=retry.branch_name or None,
             enforce_hooks=self.config.enforce_hooks,
             pre_push_hook=self.config.pre_push_hook,
-            reuse_options=self._worktree_reuse_options(
-                allow_remote_branch_delete=False,
-                # A resumed investigation's branch holds the commits this retry
-                # exists to re-validate, and is evidence besides: never rebase
-                # or hard-reset it onto the base (#6823), and never let a failed
-                # reuse delete the checkout -- that deletes the branch with it,
-                # and it was never pushed (#7263 review r1 F1).
-                preserve_branch=investigation_scratch is not None,
-                require_retained_branch=investigation_scratch is not None,
-            ),
+            reuse_options=self._worktree_reuse_options(allow_remote_branch_delete=False),
             phase_name=phase_name,
             stack_base_branch=stack_decision.base_branch,
-            scratch=investigation_scratch,
         )
         if ctx.error:
             log_transition("issue", issue.number, "LAUNCHING", "BLOCKED", "worktree preparation failed")
@@ -1401,12 +1382,6 @@ class SessionLauncher:
                 lease_id=claim.lease_id,
                 lease_acquired_at=claim.lease_acquired_at,
                 lease_expires_at=claim.lease_expires_at,
-                # A resumed investigation is still an investigation: its worktree
-                # stays disposable and it keeps the focused grant its original
-                # launch carried, so completion cleanup, termination and run
-                # admission read the same session they read before the retry.
-                scratch_worktree=investigation_scratch is not None,
-                tech_lead_scope=resumed_investigation_scope(investigation_scratch),
             )
             log_transition(
                 "issue",

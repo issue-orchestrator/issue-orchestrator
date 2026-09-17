@@ -29,7 +29,7 @@ from ..domain.tech_lead_escalation import render_tech_lead_escalation_comment
 from ..domain.session_key import TaskKind
 from ..domain.tech_lead_manifest import TechLeadManifest
 from ..domain.tech_lead_scratch_identity import (
-    ScratchIdentityReading,
+    ScratchIdentityVerdict,
     ScratchWorktreeIdentity,
     new_scratch_identity,
     read_scratch_identity,
@@ -162,51 +162,42 @@ def failure_investigation_scratch_identity(
     return new_scratch_identity(config.repo_root.name, issue.number)
 
 
-def retried_investigation_identity(
-    retry: "PendingValidationRetry",
-) -> ScratchIdentityReading:
-    """What the queued retry's recorded worktree and branch are (#6823 / #7263).
+def investigation_retry_refusal(retry: "PendingValidationRetry") -> str | None:
+    """Why a queued validation retry must NOT be relaunched, or ``None``.
 
-    A failure investigation that fails validation is relaunched through
-    ``SessionLauncher.launch_validation_retry_session``, and that path derived
-    its worktree from the focus issue like any other coding retry -- putting the
-    investigation back inside the very worktree #6823 exists to keep it out of,
-    where an agent commit lands on the focus branch it was sent to READ.
+    A tech-lead failure investigation runs in a disposable worktree on a
+    throwaway branch (#6823) because it READS its focus issue's worktree and
+    branch as evidence and must never mutate them. The retry path derives its
+    worktree from the focus issue like any other coding retry, so relaunching an
+    investigation's retry puts it straight back inside that evidence, on the
+    recorded investigation branch, where an agent commit lands on the focus
+    branch.
 
-    Nothing is recomputed: ``PendingValidationRetry`` already carries both halves
-    durably, and the rule for reading them belongs to the module that owns their
-    shape, not to this launch policy. The three-way answer matters at the call
-    site: a CORRUPT pair must block the relaunch, not fall back to the ordinary
-    derivation, which would still carry the recorded investigation branch into
-    the focus issue's own worktree.
+    Resuming it in its own worktree instead is the eventual answer and is #7273:
+    the resumed run needs the original run's launch authority and trusted
+    inputs, without which completion rejects it as ``missing_authority`` -- and a
+    session marked disposable to get its worktree back would then have that
+    rejection FORCE-DELETE the branch holding the commits under re-validation.
+    Until that lands, the safe answer is not to relaunch at all: escalate, and
+    leave the branch exactly where it is.
+
+    A pair that does not hold together is refused for a second reason -- there
+    is no single investigation to speak of -- and says which.
     """
-    return read_scratch_identity(
+    reading = read_scratch_identity(
         retry.worktree_path, retry.branch_name, retry.issue_number
     )
-
-
-def resumed_investigation_scope(
-    identity: "ScratchWorktreeIdentity | None",
-) -> TechLeadLaunchScope | None:
-    """The typed grant a RESUMED investigation carries (#7263 review r1 F3).
-
-    A validation retry relaunches the investigation, so the session it produces
-    must present the same scope the original launch did -- a focused failure
-    investigation of this issue, never the exclusive whole-board grant. Without
-    it the retry's session reads as an un-scoped tech-lead run: run admission
-    treats a focused retry as global, and completion and termination stop
-    recognising the worktree as disposable.
-
-    ``None`` for every ordinary retry, which is what those consumers already
-    expect of a coding session.
-    """
-    if identity is None:
-        return None
-    # No ``problem_issue_numbers``: an investigation derives its scope from its
-    # focus issue, and the type rejects a cohort for any flavor but a health
-    # review. This is the same value ``tech_lead_launch_scope`` builds for the
-    # original launch.
-    return TechLeadLaunchScope(flavor=TechLeadSessionFlavor.FAILURE_INVESTIGATION)
+    if reading.verdict is ScratchIdentityVerdict.CORRUPT:
+        return reading.detail
+    if reading.verdict is ScratchIdentityVerdict.RESUMABLE:
+        return (
+            "this is a tech-lead failure investigation on branch "
+            f"{retry.branch_name}, and a validation retry of one cannot be "
+            "relaunched without putting it back inside the focus issue's own "
+            "worktree (#6823). Resuming it in its own disposable worktree needs "
+            "the original run's launch authority and inputs, which is #7273."
+        )
+    return None
 
 
 def quarantine_retry_launch(
@@ -225,15 +216,19 @@ def quarantine_retry_launch(
     Refusing it forever is the other thing that must not happen. Validation
     retries deliberately RETAIN a permanent failure, so a poison record would be
     planned every tick against capacity another issue could use. ``QUARANTINED``
-    leaves the queue unconditionally, which is safe only because this escalates
-    first (#7263 review r2 F4).
+    leaves the queue unconditionally.
+
+    That is safe ONLY because a human was told, so the escalation's own answer
+    decides: when it fails, the record is RETAINED instead, because dropping the
+    only queued reference to a branch nobody has been told about is the one
+    outcome worse than a poison item (#7263 review r3 F4).
     """
     from .session_launch_types import LaunchDisposition, LaunchResult
 
     logger.error(
         "[issue-%d] Quarantining validation retry: %s", retry.issue_number, detail
     )
-    escalate(
+    escalated = escalate(
         issue_number=retry.issue_number,
         reason="validation retry has an unusable investigation identity",
         comment=(
@@ -251,6 +246,18 @@ def quarantine_retry_launch(
             "reason": detail,
         },
     )
+    if not escalated:
+        logger.error(
+            "[issue-%d] Quarantine escalation failed; retaining the record so "
+            "its branch keeps a queued reference",
+            retry.issue_number,
+        )
+        return LaunchResult(
+            None,
+            False,
+            f"{detail} (escalation failed; retained for the next tick)",
+            disposition=LaunchDisposition.RETRYABLE_FAILURE,
+        )
     return LaunchResult(
         None, False, detail, disposition=LaunchDisposition.QUARANTINED
     )

@@ -16,28 +16,6 @@ if TYPE_CHECKING:
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
 
 
-def _issues_with_a_queued_investigation_retry(
-    state: "OrchestratorState",
-) -> set[int]:
-    """Issues whose queued validation retry resumes an investigation.
-
-    Their scratch checkout is not disposable YET. It is held by the same
-    mechanism, and for the same reason, as the run assets a queued
-    investigation is waiting to read: work that has not happened still needs
-    them.
-    """
-    from ..domain.tech_lead_scratch_identity import read_scratch_identity
-
-    return {
-        retry.issue_number
-        for retry in state.pending_validation_retries
-        if read_scratch_identity(
-            retry.worktree_path, retry.branch_name, retry.issue_number
-        ).identity
-        is not None
-    }
-
-
 def tech_lead_problem_artifact_hold_issue_numbers(
     state: "OrchestratorState",
     config: "Config",
@@ -51,7 +29,6 @@ def tech_lead_problem_artifact_hold_issue_numbers(
 
     - failures discovered on this tick;
     - queued failure investigations;
-    - queued validation retries that resume an investigation;
     - active tech-lead sessions; and
     - storm cohorts owned by queued or active health-review anchors.
 
@@ -61,15 +38,9 @@ def tech_lead_problem_artifact_hold_issue_numbers(
     from ..domain.tech_lead_session import TechLeadSessionFlavor
     from .tech_lead_session_policy import is_tech_lead_session
 
-    # Computed BEFORE the config gate, and it is the one entry that must be: a
-    # queued retry's worktree is a DISPOSABLE checkout whose cleanup removes the
-    # branch with it, and that branch holds the only copy of the commits the
-    # retry exists to re-validate. Turning tech-lead review off must not turn
-    # that into a deletion (#7263 review r2 F2).
-    resuming = _issues_with_a_queued_investigation_retry(state)
     if not (config.tech_lead_review_on_failure and config.tech_lead_review_agent):
-        return frozenset(resuming)
-    held = {failure.issue_number for failure in state.discovered_failures} | resuming
+        return frozenset()
+    held = {failure.issue_number for failure in state.discovered_failures}
     referenced_anchors: set[int] = set()
     for item in state.pending_tech_lead_reviews:
         if item.flavor is TechLeadSessionFlavor.FAILURE_INVESTIGATION:
