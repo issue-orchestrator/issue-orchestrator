@@ -10,6 +10,11 @@ These tests verify:
 Tests mock at port boundaries, not internal patches, following the hexagonal architecture.
 """
 
+from issue_orchestrator.domain.tech_lead_scratch_identity import (
+    new_scratch_token,
+    scratch_branch_name,
+    scratch_worktree_name,
+)
 from issue_orchestrator.domain.registered_completion import CompletionProcessingPolicy
 from tests.run_allocation_helpers import make_session_launcher
 
@@ -2040,6 +2045,164 @@ class TestLaunchValidationRetrySession:
         command = launcher_bundle.create_session_calls[0]["cmd"]
         assert "Validation Retry" in command
         assert "dirty worktree" in command
+
+    def test_a_retried_investigation_resumes_its_disposable_worktree(
+        self,
+        launcher_bundle,
+        mock_worktree_manager,
+    ):
+        """#6823's rule survives a validation retry (#7263).
+
+        A failure investigation runs in a disposable worktree on a throwaway
+        branch precisely so it can never mutate the focus issue's worktree or
+        branch, which it is reading as evidence. The retry path derived its
+        worktree from the focus issue like any other coding retry, so a retried
+        investigation was put back inside the evidence -- where an agent commit
+        lands on the focus branch.
+
+        Both halves are already on the queued retry; this asserts they are USED.
+        """
+        token = new_scratch_token()
+        scratch_worktree = scratch_worktree_name("issue-orchestrator", 123, token)
+        scratch_branch = scratch_branch_name(123, token)
+        retry = PendingValidationRetry(
+            issue_number=123,
+            issue_title="Fix checkout",
+            agent_label="agent:web",
+            worktree_path=f"/tmp/worktrees/{scratch_worktree}",
+            branch_name=scratch_branch,
+            original_prompt="Investigate issue #123",
+            validation_error="boom",
+            validation_error_file=None,
+            retry_count=1,
+            source_task=TaskKind.CODE,
+            validation_cmd="make test",
+        )
+
+        result = launcher_bundle.launcher.launch_validation_retry_session(
+            retry,
+            active_sessions=[],
+        )
+
+        assert result.success is True
+        call = mock_worktree_manager.create_calls[0]
+        assert call["worktree_name"] == scratch_worktree, (
+            "the retried investigation was relaunched into the focus issue's own"
+            " worktree, which is the evidence it must never mutate (#6823)"
+        )
+        assert call["branch_name"] == scratch_branch
+        assert result.session is not None
+        assert result.session.worktree_path.name == scratch_worktree
+
+    def test_a_retried_investigation_keeps_the_commits_it_is_revalidating(
+        self,
+        launcher_bundle,
+        mock_worktree_manager,
+    ):
+        """Resume, never re-checkout: the retry is validating work on that branch.
+
+        ``force_fresh`` would mint a new branch off the base and the commits the
+        retry exists to re-validate would be stranded on the old one; a reuse
+        that rebases or hard-resets onto the base is the same loss by a slower
+        road. Both are refused here.
+        """
+        token = new_scratch_token()
+        retry = PendingValidationRetry(
+            issue_number=123,
+            issue_title="Fix checkout",
+            agent_label="agent:web",
+            worktree_path=f"/tmp/worktrees/{scratch_worktree_name('io', 123, token)}",
+            branch_name=scratch_branch_name(123, token),
+            original_prompt="Investigate issue #123",
+            validation_error="boom",
+            validation_error_file=None,
+            retry_count=2,
+            source_task=TaskKind.CODE,
+            validation_cmd="make test",
+        )
+
+        result = launcher_bundle.launcher.launch_validation_retry_session(
+            retry,
+            active_sessions=[],
+        )
+
+        assert result.success is True
+        reuse = mock_worktree_manager.create_calls[0]["reuse_options"]
+        assert reuse.disable_reuse is False, (
+            "a forced-fresh checkout discards the commits under re-validation"
+        )
+        assert reuse.preserve_branch is True, (
+            "the investigation branch was rebased/reset onto the base, which"
+            " discards unpushed work and mutates evidence (#6823)"
+        )
+        assert reuse.allow_remote_branch_delete is False
+
+    def test_an_ordinary_retry_is_untouched_by_the_investigation_rule(
+        self,
+        launcher_bundle,
+        mock_worktree_manager,
+    ):
+        """The overwhelmingly common path keeps its existing derivation."""
+        retry = PendingValidationRetry(
+            issue_number=123,
+            issue_title="Fix checkout",
+            agent_label="agent:web",
+            worktree_path="/tmp/worktree-123",
+            branch_name="123-fix-checkout",
+            original_prompt="Work on issue #123",
+            validation_error="boom",
+            validation_error_file=None,
+            retry_count=1,
+            source_task=TaskKind.CODE,
+            validation_cmd="make test",
+        )
+
+        result = launcher_bundle.launcher.launch_validation_retry_session(
+            retry,
+            active_sessions=[],
+        )
+
+        assert result.success is True
+        call = mock_worktree_manager.create_calls[0]
+        assert call["worktree_name"] is None
+        assert call["branch_name"] == "123-fix-checkout"
+        assert call["reuse_options"].preserve_branch is False
+
+    def test_a_half_scratch_retry_record_is_refused_rather_than_guessed(
+        self,
+        launcher_bundle,
+        mock_worktree_manager,
+        caplog,
+    ):
+        """A record naming a scratch branch but an ordinary worktree is corrupt.
+
+        Resuming from the half that parsed would check the investigation branch
+        out inside the focus issue's own worktree -- the exact mutation #6823
+        forbids -- so it falls back to the ordinary derivation and says so.
+        """
+        retry = PendingValidationRetry(
+            issue_number=123,
+            issue_title="Fix checkout",
+            agent_label="agent:web",
+            worktree_path="/tmp/worktree-123",
+            branch_name=scratch_branch_name(123, new_scratch_token()),
+            original_prompt="Investigate issue #123",
+            validation_error="boom",
+            validation_error_file=None,
+            retry_count=1,
+            source_task=TaskKind.CODE,
+            validation_cmd="make test",
+        )
+
+        with caplog.at_level("WARNING"):
+            result = launcher_bundle.launcher.launch_validation_retry_session(
+                retry,
+                active_sessions=[],
+            )
+
+        assert result.success is True
+        assert mock_worktree_manager.create_calls[0]["worktree_name"] is None
+        assert "Inconsistent investigation scratch identity" in caplog.text
 
     def test_internal_review_instructions_reach_validation_retry_command(
         self,

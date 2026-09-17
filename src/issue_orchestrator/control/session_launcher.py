@@ -61,6 +61,7 @@ from ..infra.validation_state import DEFAULT_RETRY_TEMPLATE, _truncate_with_tail
 from ..domain.tech_lead_session import TechLeadLaunchScope
 from .tech_lead_session_policy import (
     failure_investigation_scratch_identity,
+    retried_investigation_scratch_identity,
     is_tech_lead_session,
     prepare_tech_lead_session_data,
 )
@@ -367,57 +368,44 @@ class SessionLauncher:
         return retry_cfg.review_guard_label
 
     def _clear_interrupted_retry_guard_label(self, *, issue_number: int, mode: str, context: str) -> None:
-        """Best-effort cleanup of interrupted retry guard at launch boundary."""
-        guard_label = self._interrupted_retry_guard_label(mode)
+        self._clear_guard_label(
+            issue_number=issue_number,
+            label=self._interrupted_retry_guard_label(mode),
+            reason=f"{mode} session relaunched - clearing interrupted retry guard",
+            context=context,
+        )
+
+    def _clear_guard_label(
+        self, *, issue_number: int, label: str, reason: str, context: str
+    ) -> None:
+        """Best-effort removal of one relaunch guard label at a launch boundary.
+
+        One shape for all three guards. The two reset+retry clearers each used
+        to re-derive their label through a ``getattr``/``resolve``/literal
+        chain defending against a ``LabelManager`` lacking the property -- a
+        shape this same file already trusts unguarded where it READS the label
+        to make a decision. A fallback that cannot fire is a code path that can
+        only hide the bug it pretends to survive.
+        """
         self._apply_actions([
-            RemoveLabelAction(
-                issue_number=issue_number,
-                label=guard_label,
-                reason=f"{mode} session relaunched - clearing interrupted retry guard",
-            ),
+            RemoveLabelAction(issue_number=issue_number, label=label, reason=reason),
         ], context=context)
 
     def _clear_reset_retry_pending_label(self, *, issue_number: int, context: str) -> None:
-        """Best-effort cleanup of reset+retry pending guard at launch boundary."""
-        pending_label = getattr(self._lm, "reset_retry_pending", None)
-        if not isinstance(pending_label, str) or not pending_label:
-            resolver = getattr(self._lm, "resolve", None)
-            if callable(resolver):
-                resolved = resolver("reset-retry-pending")
-                pending_label = resolved if isinstance(resolved, str) and resolved else "reset-retry-pending"
-            else:
-                pending_label = "reset-retry-pending"
-        actions: list[Action] = [
-            RemoveLabelAction(
-                issue_number=issue_number,
-                label=pending_label,
-                reason="session launched - clearing reset+retry pending guard",
-            ),
-        ]
-        self._apply_actions(actions, context=context)
+        self._clear_guard_label(
+            issue_number=issue_number,
+            label=self._lm.reset_retry_pending,
+            reason="session launched - clearing reset+retry pending guard",
+            context=context,
+        )
 
     def _clear_reset_retry_scratch_pending_label(self, *, issue_number: int, context: str) -> None:
-        """Best-effort cleanup of reset+retry-from-scratch pending guard."""
-        pending_label = getattr(self._lm, "reset_retry_scratch_pending", None)
-        if not isinstance(pending_label, str) or not pending_label:
-            resolver = getattr(self._lm, "resolve", None)
-            if callable(resolver):
-                resolved = resolver("reset-retry-scratch-pending")
-                pending_label = (
-                    resolved
-                    if isinstance(resolved, str) and resolved
-                    else "reset-retry-scratch-pending"
-                )
-            else:
-                pending_label = "reset-retry-scratch-pending"
-        actions: list[Action] = [
-            RemoveLabelAction(
-                issue_number=issue_number,
-                label=pending_label,
-                reason="session launched - clearing reset+retry-from-scratch pending guard",
-            ),
-        ]
-        self._apply_actions(actions, context=context)
+        self._clear_guard_label(
+            issue_number=issue_number,
+            label=self._lm.reset_retry_scratch_pending,
+            reason="session launched - clearing reset+retry-from-scratch pending guard",
+            context=context,
+        )
 
     def _clear_launch_retry_guards(
         self, *, issue_number: int, mode: str, suffix: str
@@ -1250,6 +1238,11 @@ class SessionLauncher:
             return claim.as_launch_failure()
 
         phase_name = f"coding-{retry_count + 1}"
+        # A retried FAILURE INVESTIGATION continues in the disposable worktree it
+        # was launched with, never the focus issue's own (#6823 / #7263). Reuse,
+        # never force_fresh: the retry exists to re-validate commits that live on
+        # that branch, and a clean checkout would discard them.
+        investigation_scratch = retried_investigation_scratch_identity(retry)
         ctx = WorktreeContext.create(
             command_runner=self._command_runner,
             worktree_manager=self._worktree_manager,
@@ -1265,9 +1258,16 @@ class SessionLauncher:
             branch_name=retry.branch_name or None,
             enforce_hooks=self.config.enforce_hooks,
             pre_push_hook=self.config.pre_push_hook,
-            reuse_options=self._worktree_reuse_options(allow_remote_branch_delete=False),
+            reuse_options=self._worktree_reuse_options(
+                allow_remote_branch_delete=False,
+                # A resumed investigation's branch holds the commits this retry
+                # exists to re-validate, and is evidence besides: never rebase
+                # or hard-reset it onto the base (#6823).
+                preserve_branch=investigation_scratch is not None,
+            ),
             phase_name=phase_name,
             stack_base_branch=stack_decision.base_branch,
+            scratch=investigation_scratch,
         )
         if ctx.error:
             log_transition("issue", issue.number, "LAUNCHING", "BLOCKED", "worktree preparation failed")

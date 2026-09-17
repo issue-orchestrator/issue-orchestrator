@@ -29,9 +29,9 @@ from ..domain.tech_lead_escalation import render_tech_lead_escalation_comment
 from ..domain.session_key import TaskKind
 from ..domain.tech_lead_manifest import TechLeadManifest
 from ..domain.tech_lead_scratch_identity import (
-    new_scratch_token,
-    scratch_branch_name,
-    scratch_worktree_name,
+    ScratchWorktreeIdentity,
+    continuing_scratch_identity,
+    new_scratch_identity,
 )
 from ..domain.board_snapshot import BOARD_SNAPSHOT_FILENAME, BoardSnapshot
 from ..domain.tech_lead_session import (
@@ -61,8 +61,9 @@ if TYPE_CHECKING:
     from ..infra.config import Config
     from ..ports import ManifestDownloader, RepositoryHost
     from ..ports.issue import Issue
+    from ..domain.models import PendingValidationRetry
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
-    from .worktree_context import ScratchWorktreeIdentity, WorktreeContext
+    from .worktree_context import WorktreeContext
 
 logger = logging.getLogger(__name__)
 
@@ -151,17 +152,31 @@ def failure_investigation_scratch_identity(
     own anchor worktrees) and for ordinary non-tech-lead issues, leaving their
     worktree derivation unchanged.
     """
-    from .worktree_context import ScratchWorktreeIdentity
-
     if (
         tech_lead_scope is None
         or tech_lead_scope.flavor is not TechLeadSessionFlavor.FAILURE_INVESTIGATION
     ):
         return None
-    token = new_scratch_token()
-    return ScratchWorktreeIdentity(
-        worktree_name=scratch_worktree_name(config.repo_root.name, issue.number, token),
-        branch_name=scratch_branch_name(issue.number, token),
+    return new_scratch_identity(config.repo_root.name, issue.number)
+
+
+def retried_investigation_scratch_identity(
+    retry: "PendingValidationRetry",
+) -> ScratchWorktreeIdentity | None:
+    """The scratch identity a validation RETRY must continue in (#6823 / #7263).
+
+    A failure investigation that fails validation is relaunched through
+    ``SessionLauncher.launch_validation_retry_session``, and that path derived
+    its worktree from the focus issue like any other coding retry -- putting the
+    investigation back inside the very worktree #6823 exists to keep it out of,
+    where an agent commit lands on the focus branch it was sent to READ.
+
+    Nothing is recomputed: ``PendingValidationRetry`` already carries both halves
+    durably, and the rule for reading them back belongs to the module that owns
+    the shape, not to this launch policy.
+    """
+    return continuing_scratch_identity(
+        retry.worktree_path, retry.branch_name, retry.issue_number
     )
 
 

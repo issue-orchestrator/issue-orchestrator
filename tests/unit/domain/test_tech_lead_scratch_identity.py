@@ -9,17 +9,23 @@ failing test to announce it.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
 
 from issue_orchestrator.domain.tech_lead_scratch_identity import (
     SCRATCH_TOKEN_LENGTH,
+    ScratchWorktreeIdentity,
+    continuing_scratch_identity,
     is_scratch_branch_name,
     is_scratch_worktree_name,
+    new_scratch_identity,
     new_scratch_token,
     path_is_under_scratch_worktree,
+    scratch_branch_focus_issue,
     scratch_branch_name,
+    scratch_worktree_focus_issue,
     scratch_worktree_name,
 )
 
@@ -94,3 +100,102 @@ class TestPathMatching:
 
     def test_empty_path_does_not_match(self) -> None:
         assert not path_is_under_scratch_worktree("")
+
+
+class TestFreshIdentity:
+    def test_both_halves_share_one_token(self) -> None:
+        """The worktree and the branch of one run must agree, or a later resume
+        reads them as a corrupt pair."""
+        identity = new_scratch_identity("issue-orchestrator", 6410)
+
+        assert scratch_worktree_focus_issue(identity.worktree_name) == 6410
+        assert scratch_branch_focus_issue(identity.branch_name) == 6410
+        assert identity.worktree_name.endswith(identity.branch_name.rsplit("-", 1)[-1])
+
+    def test_two_runs_of_one_issue_never_collide(self) -> None:
+        first = new_scratch_identity("issue-orchestrator", 6410)
+        second = new_scratch_identity("issue-orchestrator", 6410)
+
+        assert first != second
+
+
+class TestContinuingIdentity:
+    """Resuming an investigation that is already on disk (#7263)."""
+
+    def _launched(self, issue: int = 6410) -> ScratchWorktreeIdentity:
+        return new_scratch_identity("issue-orchestrator", issue)
+
+    def test_a_launched_investigation_is_resumed_exactly(self) -> None:
+        """Read back, never re-minted: a new token would strand the commits the
+        retry exists to re-validate on the old branch."""
+        launched = self._launched()
+
+        resumed = continuing_scratch_identity(
+            f"/Users/dev/worktree/{launched.worktree_name}",
+            launched.branch_name,
+            6410,
+        )
+
+        assert resumed == launched
+
+    def test_an_ordinary_retry_is_not_an_investigation(self) -> None:
+        assert (
+            continuing_scratch_identity(
+                "/Users/dev/issue-orchestrator-6410", "6410-fix-the-thing", 6410
+            )
+            is None
+        )
+
+    def test_a_run_directory_inside_the_scratch_worktree_is_not_one(self) -> None:
+        """The path's OWN basename must be the worktree; a run dir nested inside
+        it is not a checkout to reuse, and reusing it would put the worktree
+        somewhere it has never been."""
+        launched = self._launched()
+        run_dir = (
+            f"/Users/dev/{launched.worktree_name}/.issue-orchestrator/sessions/run-1"
+        )
+
+        assert continuing_scratch_identity(run_dir, launched.branch_name, 6410) is None
+
+    @pytest.mark.parametrize(
+        "worktree_path,branch",
+        [
+            ("/Users/dev/issue-orchestrator-6410", "SCRATCH_BRANCH"),
+            ("/Users/dev/SCRATCH_WORKTREE", "6410-fix-the-thing"),
+        ],
+        ids=["scratch branch, ordinary worktree", "scratch worktree, ordinary branch"],
+    )
+    def test_a_half_scratch_pair_is_refused(
+        self, worktree_path: str, branch: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Guessing the missing half would resume the wrong checkout: an
+        investigation branch inside the focus issue's own worktree is the exact
+        mutation #6823 forbids."""
+        launched = self._launched()
+        worktree_path = worktree_path.replace("SCRATCH_WORKTREE", launched.worktree_name)
+        branch = branch.replace("SCRATCH_BRANCH", launched.branch_name)
+
+        with caplog.at_level(logging.WARNING):
+            assert continuing_scratch_identity(worktree_path, branch, 6410) is None
+
+        assert "Inconsistent investigation scratch identity" in caplog.text
+
+    def test_another_issues_investigation_is_refused(self) -> None:
+        """A retry queued for 6410 must never resume 6411's investigation.
+
+        Both halves parse and agree with each other; only the retry's own issue
+        disagrees, which is the case a self-consistency check alone would miss.
+        """
+        launched = self._launched(6411)
+
+        assert (
+            continuing_scratch_identity(
+                f"/Users/dev/{launched.worktree_name}", launched.branch_name, 6410
+            )
+            is None
+        )
+
+    def test_an_empty_worktree_path_is_not_an_investigation(self) -> None:
+        launched = self._launched()
+
+        assert continuing_scratch_identity("", launched.branch_name, 6410) is None
