@@ -138,6 +138,32 @@ class TestFormatDiscrimination:
         with pytest.raises(ValueError, match="carries no record.json"):
             store.read("tech-lead-patterns")
 
+    def test_a_legacy_record_that_quotes_the_marker_is_still_legacy(
+        self, store: GitRefCasStore, client: FakeGitHubRefClient
+    ) -> None:
+        """The marker is the final LINE, never a substring (round 2 F2).
+
+        A legacy record is the whole message and is arbitrary text: a pattern
+        title, diagnosis or evidence string can legitimately quote this very
+        marker. Matching it anywhere would announce a format the commit is not
+        in, and with an inherited root tree holding a ``record.json`` that reads
+        back somebody else's file as the registry.
+        """
+        quoting = (
+            'io-record-format: tree-blob-v1\n\n'
+            '{"entries":[{"signature":"records-io-record-format: tree-blob-v1"}],'
+            '"version":2}'
+        )
+        decoy = '{"entries":[{"signature":"not-the-registry"}],"version":2}'
+        client.seed_legacy_message_record(
+            f"{REF_PREFIX}/tech-lead-patterns", quoting, tree_paths={RECORD_PATH: decoy}
+        )
+
+        snapshot = store.read("tech-lead-patterns")
+
+        assert snapshot is not None
+        assert snapshot.record == quoting
+
     def test_the_marker_is_written_on_every_record_commit(
         self, store: GitRefCasStore, client: FakeGitHubRefClient
     ) -> None:

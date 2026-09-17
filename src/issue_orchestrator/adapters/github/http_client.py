@@ -1636,11 +1636,15 @@ class GitHubHttpClient:
         return payload
 
     def get_git_blob(self, sha: str) -> dict[str, Any]:
+        # Cached: a blob is addressed BY its content hash, so a 304 can only
+        # ever mean the same bytes. Conditional requests do not count against
+        # the primary rate limit, and a registry read repeats the same sha for
+        # as long as the record is unchanged.
         encoded = quote(sha, safe="")
         payload = self._request_json(
             "GET",
             f"/repos/{self._config.repo}/git/blobs/{encoded}",
-            use_cache=False,
+            use_cache=True,
             caller="get_git_blob",
         )
         if not isinstance(payload, dict):
@@ -1672,11 +1676,14 @@ class GitHubHttpClient:
         return payload
 
     def get_git_tree(self, sha: str) -> dict[str, Any]:
+        # Cached for the same reason as a blob: content-addressed, so a 304 is
+        # always correct. The REF read stays uncached -- that is the mutable
+        # cell, and a stale answer there is a lost claim.
         encoded = quote(sha, safe="")
         payload = self._request_json(
             "GET",
             f"/repos/{self._config.repo}/git/trees/{encoded}",
-            use_cache=False,
+            use_cache=True,
             caller="get_git_tree",
         )
         if not isinstance(payload, dict):

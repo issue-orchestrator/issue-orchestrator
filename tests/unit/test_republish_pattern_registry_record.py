@@ -24,7 +24,7 @@ from issue_orchestrator.adapters.github.pattern_registry import (
     PATTERN_REGISTRY_REF_PREFIX,
     parse_entries,
 )
-from issue_orchestrator.adapters.github.ref_store import RECORD_PATH
+from issue_orchestrator.adapters.github.ref_store import API_MESSAGE_CAP, RECORD_PATH
 from tests.registry_records import PORCHPIN_PATTERN_COUNT, registry_record
 
 SCRIPT = (
@@ -227,6 +227,35 @@ class TestConcurrency:
         assert _git(clone, "rev-parse", "FETCH_HEAD").strip() == concurrent, (
             "the concurrent writer's record was clobbered"
         )
+
+
+class TestExactlyAtTheCap:
+    def test_a_record_of_exactly_the_api_cap_is_recovered(
+        self, clone: Path, remote: Path
+    ) -> None:
+        """The one length production refuses to read is the one to recover.
+
+        A git object cannot be a silently truncated copy of itself -- it is
+        addressed by the hash of its bytes and arrives over the git protocol,
+        not the API that truncates -- so a local message of exactly the cap is
+        intact, and refusing it would leave no supported recovery at all
+        (round 2 F3).
+        """
+        record = registry_record(2)
+        # Padded inside an observation identity, which is free-form: the codec
+        # rejects unknown keys, so there is nowhere else to put the bytes.
+        anchor = "session-tech-lead-0001:A33"
+        assert record.count(anchor) == 1
+        padded = record.replace(
+            anchor, anchor + "P" * (API_MESSAGE_CAP - len(record)), 1
+        )
+        assert len(padded) == API_MESSAGE_CAP
+        _seed_legacy_ref(clone, remote, padded)
+
+        result = _run(clone, "--apply")
+
+        assert result.returncode == 0, result.stderr
+        assert _published_record(clone) == padded
 
 
 class TestPostPushVerification:

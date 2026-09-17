@@ -43,6 +43,10 @@ RECORD_PATH = "record.json"
 #: keep a root ``record.json`` would have that unrelated file read back as its
 #: registry -- valid-looking and wrong. The marker is written by this module, is
 #: a fixed size, and therefore can never be the thing that truncates.
+#:
+#: Read it with :func:`declares_tree_format`, never with ``in``: a legacy record
+#: is arbitrary text, and a pattern diagnosis quoting this very line would
+#: otherwise misclassify the commit carrying it.
 RECORD_FORMAT_MARKER = "io-record-format: tree-blob-v1"
 
 #: Where GitHub's Git Data API stops returning a commit message, to the
@@ -109,7 +113,7 @@ class GitRefCasStore:
         message = str(commit_payload.get("message") or "")
         record = (
             self._record_from_tree(tree_sha)
-            if RECORD_FORMAT_MARKER in message
+            if declares_tree_format(message)
             else _legacy_record(message, commit_sha=commit_sha)
         )
         return GitRefSnapshot(
@@ -204,12 +208,17 @@ class GitRefCasStore:
     def delete(self, snapshot: GitRefSnapshot) -> bool:
         """Delete the ref, refusing when it no longer holds ``snapshot``.
 
-        GitHub's Git Data API has no conditional delete, so this re-reads and
-        compares rather than compare-and-swapping. That NARROWS the window in
-        which a deleter holding a stale snapshot removes a successor's ref -- it
-        does not close it -- but an unconditional delete had no window at all:
-        it always removed whatever was there. Returns False when the ref has
-        moved on, which every caller already treats as "not mine to release".
+        GitHub's Git Data API has no conditional delete: ``DELETE /git/refs``
+        takes no expected sha, and only ``PATCH`` carries the non-force
+        fast-forward check this module's writes rely on. So this re-reads and
+        compares, which NARROWS the window in which a deleter holding a stale
+        snapshot removes a successor's ref. It does NOT close it -- a takeover
+        landing between the read and the DELETE still loses -- and no
+        delete-based release can, which is why closing it means changing release
+        to a compare-and-swap write of a released record (#7276). An
+        unconditional delete had no window at all: it removed whatever was there
+        every time. Returns False when the ref has already moved on, which every
+        caller treats as "not mine to release".
         """
         current = self._client.get_git_ref(snapshot.ref)
         if current is None:
@@ -228,6 +237,20 @@ class GitRefCasStore:
         if self._default_branch is None:
             self._default_branch = self._client.get_default_branch()
         return self._default_branch
+
+
+def declares_tree_format(message: str) -> bool:
+    """Whether a commit message DECLARES that its record lives in the tree.
+
+    The marker has to be the whole final line, not merely present somewhere: a
+    legacy record is the entire message and is arbitrary text, so a pattern
+    title, diagnosis or evidence string quoting the marker would otherwise
+    announce a format that commit is not in. Every message this module writes
+    ends with the marker on its own line; no registry or claim payload does,
+    because both end in their own syntax.
+    """
+    lines = message.rstrip("\n").splitlines()
+    return bool(lines) and lines[-1] == RECORD_FORMAT_MARKER
 
 
 def commit_summary(ref: str) -> str:

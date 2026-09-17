@@ -41,11 +41,10 @@ from issue_orchestrator.adapters.github.pattern_registry import (  # noqa: E402
     parse_entries,
 )
 from issue_orchestrator.adapters.github.ref_store import (  # noqa: E402
-    API_MESSAGE_CAP,
     MAX_RECORD_BYTES,
-    RECORD_FORMAT_MARKER,
     RECORD_PATH,
     commit_summary,
+    declares_tree_format,
 )
 
 DEFAULT_REF = f"{PATTERN_REGISTRY_REF_PREFIX}/{PATTERN_REGISTRY_REF_KEY}"
@@ -103,11 +102,12 @@ def _text(output: bytes) -> str:
 def is_tree_backed(repo_root: Path, commit_sha: str) -> bool:
     """Whether the commit declares that its record lives in its tree.
 
-    The same discriminator the store reads, imported rather than re-derived: a
-    pre-#7272 commit reused the default branch's ROOT tree, so the presence of
-    a ``record.json`` path proves nothing about which format a commit is in.
+    The store's own discriminator, imported rather than re-derived: a pre-#7272
+    commit reused the default branch's ROOT tree, so the presence of a
+    ``record.json`` path proves nothing about which format a commit is in, and
+    a legacy record quoting the marker proves nothing either.
     """
-    return RECORD_FORMAT_MARKER in commit_message(repo_root, commit_sha)
+    return declares_tree_format(commit_message(repo_root, commit_sha))
 
 
 def record_blob_sha(repo_root: Path, commit_sha: str) -> str:
@@ -143,16 +143,12 @@ def republish(
             f"record is {size} bytes, above the {MAX_RECORD_BYTES}-byte limit "
             "the store accepts"
         )
-    if len(record) == API_MESSAGE_CAP:
-        # EXACTLY the cap, not merely past it: a longer message is the intact
-        # original, which is the whole reason this script reads local objects.
-        # A message of exactly this length is indistinguishable from a copy the
-        # API already cut off, so there is nothing here to recover from.
-        raise RepublishError(
-            f"the commit message on {commit_sha[:12]} is {len(record)} "
-            f"characters, exactly GitHub's {API_MESSAGE_CAP}-character cap; "
-            "this clone holds a truncated copy, not the original"
-        )
+    # No length check here, deliberately. A record of exactly the API's cap is
+    # the one production refuses to read, so it is precisely what needs
+    # recovering -- and a git object cannot be a silently truncated copy of
+    # itself: it is addressed by the hash of these bytes, fetched over the git
+    # protocol, not the API that does the truncating.
+    #
     # Fails loudly on a record this clone cannot read either -- which would mean
     # the local object is ALSO short, and there is nothing here to recover.
     entries = read_entries(

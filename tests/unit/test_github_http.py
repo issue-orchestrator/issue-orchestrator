@@ -2646,19 +2646,15 @@ class TestGitDataBlobAndTreeEndpoints:
             "encoding": "utf-8",
         }
 
-    def test_a_blob_is_read_by_sha_and_never_from_cache(self) -> None:
+    def test_a_blob_is_read_by_its_sha(self) -> None:
         client, seen = self._recorded(
             {"sha": "blob-sha", "content": "e30=", "encoding": "base64"}
         )
 
-        first = client.get_git_blob("blob-sha")
-        client.get_git_blob("blob-sha")
+        assert client.get_git_blob("blob-sha")["encoding"] == "base64"
 
-        assert first["encoding"] == "base64"
-        assert [request.url.path for request in seen] == [
-            "/repos/owner/repo/git/blobs/blob-sha",
-            "/repos/owner/repo/git/blobs/blob-sha",
-        ], "a cached registry read would serve a record someone else replaced"
+        assert seen[0].method == "GET"
+        assert seen[0].url.path == "/repos/owner/repo/git/blobs/blob-sha"
 
     def test_a_tree_is_created_with_the_entries_it_was_given(self) -> None:
         client, seen = self._recorded({"sha": "tree-sha"})
@@ -2672,16 +2668,48 @@ class TestGitDataBlobAndTreeEndpoints:
         assert seen[0].url.path == "/repos/owner/repo/git/trees"
         assert json.loads(seen[0].content) == {"tree": entries}
 
-    def test_a_tree_is_read_by_sha_and_never_from_cache(self) -> None:
+    def test_a_tree_is_read_by_its_sha(self) -> None:
         client, seen = self._recorded({"sha": "tree-sha", "tree": []})
 
         client.get_git_tree("tree-sha")
-        client.get_git_tree("tree-sha")
 
-        assert [request.url.path for request in seen] == [
-            "/repos/owner/repo/git/trees/tree-sha",
-            "/repos/owner/repo/git/trees/tree-sha",
-        ]
+        assert seen[0].method == "GET"
+        assert seen[0].url.path == "/repos/owner/repo/git/trees/tree-sha"
+
+    @pytest.mark.parametrize(
+        "read, path",
+        [
+            (lambda client: client.get_git_blob("object-sha"), "git/blobs"),
+            (lambda client: client.get_git_tree("object-sha"), "git/trees"),
+        ],
+        ids=["blob", "tree"],
+    )
+    def test_a_repeat_read_of_one_sha_is_revalidated_not_refetched(
+        self, read, path: str
+    ) -> None:
+        """Content-addressed, so a 304 can only ever mean the same bytes.
+
+        Conditional requests do not count against GitHub's primary rate limit,
+        and a record read repeats the same sha for as long as it is unchanged --
+        which on the claim path is almost always. The REF read is the mutable
+        cell and stays unconditional; a stale answer there is a lost claim.
+        """
+        payload = {"sha": "object-sha", "content": "e30=", "encoding": "base64", "tree": []}
+        conditional: list[str | None] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            conditional.append(request.headers.get("If-None-Match"))
+            if request.headers.get("If-None-Match") == '"etag-1"':
+                return httpx.Response(304)
+            return httpx.Response(200, json=payload, headers={"ETag": '"etag-1"'})
+
+        client = _client_with_transport(httpx.MockTransport(handler))
+
+        first = read(client)
+        second = read(client)
+
+        assert conditional == [None, '"etag-1"']
+        assert second == first, "a 304 must hand back what the sha named"
 
     def test_a_payload_that_is_not_an_object_is_refused(self) -> None:
         client, _ = self._recorded({})
