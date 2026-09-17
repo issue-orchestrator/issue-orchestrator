@@ -11,8 +11,8 @@ from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from ..domain.tech_lead_scratch_identity import (
+    names_one_scratch_checkout,
     ordinary_worktree_name_pattern,
-    scratch_pair_identity,
     scratch_worktree_name_pattern,
 )
 from ..ports.worktree_manager import RegisteredWorktree, WORKTREE_ID_MARKER
@@ -170,8 +170,8 @@ def _classify_scratch(
     # The pair must hold together -- same focus issue, same run token -- and
     # that rule has one owner. Reconstructing the branch from a literal here was
     # a fourth copy of the owner's grammar.
-    if not _has_orchestrator_identity(path) or (
-        scratch_pair_identity(path.name, item.branch or "") is None
+    if not _has_orchestrator_identity(path) or not names_one_scratch_checkout(
+        path.name, item.branch or ""
     ):
         return WorktreeAuditEntry(
             path,

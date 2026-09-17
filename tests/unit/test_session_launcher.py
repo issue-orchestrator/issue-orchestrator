@@ -11,7 +11,8 @@ Tests mock at port boundaries, not internal patches, following the hexagonal arc
 """
 
 from issue_orchestrator.domain.tech_lead_scratch_identity import (
-    new_scratch_token,
+    names_one_scratch_checkout,
+    parse_scratch_worktree_name,
     scratch_branch_name,
     scratch_worktree_name,
 )
@@ -1133,12 +1134,16 @@ class TestLaunchIssueSession:
         call = next(
             c for c in mock_worktree_manager.create_calls if c["issue_number"] == focus
         )
-        # Scratch worktree name/branch are keyed to the run, NOT the focus issue.
-        assert call["worktree_name"] is not None
-        assert call["worktree_name"].startswith(f"repo-tech-lead-{focus}-")
+        # Scratch worktree name/branch are keyed to the run, NOT the focus
+        # issue. Read through the identity owner rather than re-spelling its
+        # grammar here, so a test cannot keep passing against a name the owner
+        # itself would no longer recognise.
+        assert names_one_scratch_checkout(
+            call["worktree_name"] or "", call["branch_name"] or ""
+        )
+        parts = parse_scratch_worktree_name(call["worktree_name"])
+        assert parts is not None and parts.issue_number == focus
         assert call["worktree_name"] != f"repo-{focus}"
-        assert call["branch_name"] is not None
-        assert call["branch_name"].startswith(f"tech-lead-investigation-{focus}-")
         # The scratch branch must never look like the focus issue's own branch.
         assert not call["branch_name"].startswith(f"{focus}-")
         # Disposable: force-fresh (no reuse), and nothing to preserve.
@@ -2049,6 +2054,8 @@ class TestLaunchValidationRetrySession:
         self,
         launcher_bundle,
         mock_worktree_manager,
+        sample_config,
+        tmp_path,
     ):
         """The BASELINE, pinned so a narrowing cannot be undone by accident.
 
@@ -2057,13 +2064,25 @@ class TestLaunchValidationRetrySession:
         not exist yet (#7273, #7274), so today's behaviour stands: the retry
         launches, carries the recorded branch, and gets no scratch treatment.
         A mutation restoring either would fail here.
+
+        The retry carries the REAL tech-lead identity -- the configured review
+        agent, not merely scratch-shaped strings -- because a refusal or a
+        scratch derivation conditioned on that identity is exactly what a
+        narrowing would reintroduce, and an ``agent:web`` retry would not see
+        it.
         """
+        sample_config.agents["agent:tech-lead"] = AgentConfig(
+            prompt_path=tmp_path / "prompt.md",
+            model="sonnet",
+            timeout_minutes=45,
+        )
+        sample_config.tech_lead_review_agent = "agent:tech-lead"
         token = "a" * 12
         scratch_branch = scratch_branch_name(123, token)
         retry = PendingValidationRetry(
             issue_number=123,
             issue_title="Fix checkout",
-            agent_label="agent:web",
+            agent_label="agent:tech-lead",
             worktree_path=f"/tmp/w/{scratch_worktree_name('io', 123, token)}",
             branch_name=scratch_branch,
             original_prompt="Investigate issue #123",
@@ -8375,3 +8394,158 @@ def test_failed_launch_refuses_cleanup_when_custody_fails(
     assert mock_worktree_manager.checkout_only_removals == []
     assert mock_worktree_manager.checkout_and_branch_removals == []
     launcher_bundle.action_applier.runtime_lifecycle.preserve.assert_called_once_with(sample_issue.number, "failed-launch-cleanup")
+
+
+class TestLaunchRetryGuardClearing:
+    """One owner for the guard-clear policy every launch path shares (#7263).
+
+    Five launch paths -- coding, validation-retry, review, retrospective-review
+    and rework -- repeated the same three removals in the same order, rework
+    through three separately injected clearers. Every existing launch test
+    asserts at most the interrupted guard, so deleting either of the other two,
+    or reordering them, passed everywhere. These assertions are the owner's
+    contract, read at the action-applier boundary each path actually writes
+    through.
+    """
+
+    def _guards_cleared(self, bundle, sample_config) -> list[tuple[str, str]]:
+        """Every (label, reason) removal a launch made, in the order it made them."""
+        interrupted = sample_config.retry.interrupted_sessions
+        lm = LabelManager(sample_config)
+        guards = {
+            interrupted.coding_guard_label,
+            interrupted.review_guard_label,
+            lm.reset_retry_pending,
+            lm.reset_retry_scratch_pending,
+        }
+        return [
+            (call.args[0].label, call.args[0].reason)
+            for call in bundle.action_applier.apply.call_args_list
+            if isinstance(call.args[0], RemoveLabelAction)
+            and call.args[0].label in guards
+        ]
+
+    def test_a_coding_launch_clears_all_three_guards_in_order(
+        self, launcher_bundle, sample_config, sample_issue
+    ) -> None:
+        interrupted = sample_config.retry.interrupted_sessions
+        lm = LabelManager(sample_config)
+
+        assert (
+            launcher_bundle.launcher.launch_issue_session(
+                sample_issue, active_sessions=[]
+            ).success
+            is True
+        )
+
+        assert self._guards_cleared(launcher_bundle, sample_config) == [
+            (
+                interrupted.coding_guard_label,
+                "coding session relaunched - clearing interrupted retry guard",
+            ),
+            (
+                lm.reset_retry_pending,
+                "session launched - clearing reset+retry pending guard",
+            ),
+            (
+                lm.reset_retry_scratch_pending,
+                "session launched - clearing reset+retry-from-scratch pending guard",
+            ),
+        ]
+
+    def test_a_review_launch_clears_the_review_guard_not_the_coding_one(
+        self, launcher_bundle, sample_config
+    ) -> None:
+        """The mode split is the half a silent fall-through used to get wrong."""
+        interrupted = sample_config.retry.interrupted_sessions
+        review = PendingReview(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="123"),
+            pr_number=456,
+            pr_url="https://github.com/test/repo/pull/456",
+            branch_name="123-feature",
+            _issue_number=123,
+        )
+
+        assert (
+            launcher_bundle.launcher.launch_review_session(
+                review, active_sessions=[]
+            ).success
+            is True
+        )
+
+        cleared = [
+            label for label, _ in self._guards_cleared(launcher_bundle, sample_config)
+        ]
+        assert cleared[0] == interrupted.review_guard_label
+        assert interrupted.coding_guard_label not in cleared
+
+    def test_rework_asks_the_owner_rather_than_clearing_guards_itself(
+        self, launcher_bundle, sample_config
+    ) -> None:
+        """Rework's three injected clearers are gone; it delegates here.
+
+        It relaunches a CODING session, so it must clear the coding guard --
+        a rework that asked for its own mode would clear the wrong one.
+        """
+        interrupted = sample_config.retry.interrupted_sessions
+        lm = LabelManager(sample_config)
+        rework = PendingRework(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="123"),
+            agent_type="agent:web",
+            rework_cycle=1,
+            feedback="please fix",
+        )
+
+        assert (
+            launcher_bundle.launcher.launch_rework_session(
+                rework, active_sessions=[]
+            ).success
+            is True
+        )
+
+        assert [
+            label for label, _ in self._guards_cleared(launcher_bundle, sample_config)
+        ] == [
+            interrupted.coding_guard_label,
+            lm.reset_retry_pending,
+            lm.reset_retry_scratch_pending,
+        ]
+
+    def test_one_guard_failing_does_not_skip_the_others(
+        self, launcher_bundle, sample_config, sample_issue
+    ) -> None:
+        """Best-effort per guard: a label GitHub refuses is not a launch abort.
+
+        Stopping at the first failure would leave a reset-retry guard standing
+        on an issue that has just relaunched, which is a relaunch loop nothing
+        clears.
+        """
+        interrupted = sample_config.retry.interrupted_sessions
+
+        def refuse_the_interrupted_guard(action):
+            if (
+                isinstance(action, RemoveLabelAction)
+                and action.label == interrupted.coding_guard_label
+            ):
+                return ActionResult.fail(action, "GitHub said no")
+            return ActionResult.ok(action)
+
+        launcher_bundle.action_applier.apply.side_effect = (
+            refuse_the_interrupted_guard
+        )
+
+        assert (
+            launcher_bundle.launcher.launch_issue_session(
+                sample_issue, active_sessions=[]
+            ).success
+            is True
+        )
+
+        lm = LabelManager(sample_config)
+        assert [
+            label for label, _ in self._guards_cleared(launcher_bundle, sample_config)
+        ] == [
+            interrupted.coding_guard_label,
+            lm.reset_retry_pending,
+            lm.reset_retry_scratch_pending,
+        ]

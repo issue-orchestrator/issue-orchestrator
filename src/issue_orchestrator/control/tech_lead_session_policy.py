@@ -28,10 +28,7 @@ from ..domain.models import CompletionOutcome, CompletionRecord, RequestedAction
 from ..domain.tech_lead_escalation import render_tech_lead_escalation_comment
 from ..domain.session_key import TaskKind
 from ..domain.tech_lead_manifest import TechLeadManifest
-from ..domain.tech_lead_scratch_identity import (
-    ScratchWorktreeIdentity,
-    new_scratch_identity,
-)
+from ..domain.tech_lead_scratch_identity import new_scratch_identity
 from ..domain.board_snapshot import BOARD_SNAPSHOT_FILENAME, BoardSnapshot
 from ..domain.tech_lead_session import (
     HEALTH_REVIEW_MARKER_LABEL,
@@ -61,6 +58,7 @@ if TYPE_CHECKING:
     from ..ports import ManifestDownloader, RepositoryHost
     from ..ports.issue import Issue
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
+    from ..domain.tech_lead_scratch_identity import ScratchWorktreeIdentity
     from .worktree_context import WorktreeContext
 
 logger = logging.getLogger(__name__)

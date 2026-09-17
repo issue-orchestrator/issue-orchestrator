@@ -23,7 +23,7 @@ from issue_orchestrator.domain.tech_lead_scratch_identity import (
     path_is_under_scratch_worktree,
     scratch_branch_focus_issue,
     scratch_branch_name,
-    scratch_pair_identity,
+    names_one_scratch_checkout,
     scratch_worktree_focus_issue,
     scratch_worktree_name,
 )
@@ -149,15 +149,13 @@ class TestPairMatching:
     def test_a_launched_investigations_own_pair_agrees(self) -> None:
         launched = self._launched()
 
-        assert (
-            scratch_pair_identity(launched.worktree_name, launched.branch_name)
-            == launched
+        assert names_one_scratch_checkout(
+            launched.worktree_name, launched.branch_name
         )
 
     def test_an_ordinary_issue_worktree_is_not_a_pair(self) -> None:
-        assert (
-            scratch_pair_identity("issue-orchestrator-6410", "6410-fix-the-thing")
-            is None
+        assert not names_one_scratch_checkout(
+            "issue-orchestrator-6410", "6410-fix-the-thing"
         )
 
     @pytest.mark.parametrize(
@@ -175,7 +173,7 @@ class TestPairMatching:
         worktree = worktree.replace("SCRATCH_WORKTREE", launched.worktree_name)
         branch = branch.replace("SCRATCH_BRANCH", launched.branch_name)
 
-        assert scratch_pair_identity(worktree, branch) is None
+        assert not names_one_scratch_checkout(worktree, branch)
 
     def test_halves_from_two_runs_of_one_issue_do_not_agree(self) -> None:
         """The case matching issue numbers alone would have accepted.
@@ -189,16 +187,16 @@ class TestPairMatching:
         first = scratch_worktree_name("issue-orchestrator", 6410, "a" * 12)
         second = scratch_branch_name(6410, "b" * 12)
 
-        assert scratch_pair_identity(first, second) is None
+        assert not names_one_scratch_checkout(first, second)
 
     def test_two_issues_investigations_do_not_agree(self) -> None:
         mine = self._launched(6410)
         theirs = self._launched(6411)
 
-        assert scratch_pair_identity(mine.worktree_name, theirs.branch_name) is None
+        assert not names_one_scratch_checkout(mine.worktree_name, theirs.branch_name)
 
     def test_an_empty_half_does_not_agree(self) -> None:
         launched = self._launched()
 
-        assert scratch_pair_identity("", launched.branch_name) is None
-        assert scratch_pair_identity(launched.worktree_name, "") is None
+        assert not names_one_scratch_checkout("", launched.branch_name)
+        assert not names_one_scratch_checkout(launched.worktree_name, "")

@@ -18,13 +18,10 @@ module generates is recognised by the matcher next to it.
 
 from __future__ import annotations
 
-import logging
 import re
 import uuid
 from dataclasses import dataclass
 from pathlib import PurePath
-
-logger = logging.getLogger(__name__)
 
 #: Length of the random token appended to a scratch worktree/branch name.
 SCRATCH_TOKEN_LENGTH = 12
@@ -194,23 +191,21 @@ def new_scratch_identity(
     )
 
 
-def scratch_pair_identity(
-    worktree_name: str, branch_name: str
-) -> ScratchWorktreeIdentity | None:
-    """The identity a (worktree basename, branch) pair describes, if they agree.
+def names_one_scratch_checkout(worktree_name: str, branch_name: str) -> bool:
+    """Whether a (worktree basename, branch) pair names ONE scratch checkout.
 
-    ``None`` when either half is not a scratch name, or when the two are from
+    False when either half is not a scratch name, or when the two are from
     different runs. Agreement means the same focus issue AND the same run
     TOKEN: matching issue numbers alone accepts halves from two different
     investigations of one issue, which describe no single checkout.
 
-    A pair matcher rather than a verdict: the only question a caller has is
-    whether these two names belong together, and answering more than that is
-    how an owner accumulates states nobody reads.
+    A predicate, not a verdict object: the only question a caller has is
+    whether these two names belong together, and the caller already holds both
+    names. Handing back an identity rebuilt from its own arguments is how an
+    owner accumulates states nobody reads.
     """
     from_worktree = parse_scratch_worktree_name(worktree_name)
-    if from_worktree is None or parse_scratch_branch_name(branch_name) != from_worktree:
-        return None
-    return ScratchWorktreeIdentity(
-        worktree_name=worktree_name, branch_name=branch_name
+    return (
+        from_worktree is not None
+        and parse_scratch_branch_name(branch_name) == from_worktree
     )
