@@ -138,11 +138,12 @@ _SLEEPER_LIFETIME_SECONDS = 300.0
 # and threaded through argv so the lifetime scan can see it — spelled as
 # ``time.time() + 90`` inside the script it was invisible to the scan.
 #
-# It must outlive BOTH observation windows above (45 + 45, plus margin), or its
-# own clock could end the lane mid-observation and the failure would name this
-# fixture instead of the backend. Spelled as a literal because the lifetime scan
-# reads literals; the arithmetic is asserted by
-# ``test_the_streaming_lane_outlives_every_window_that_observes_it``.
+# Its clock starts AFTER the lane has printed and announced its flush, so it has
+# nothing to do with the first-flush window or the queue wait that window
+# absorbs. What it must outlive is what comes after the announcement: the
+# observation window and then the conclusion that follows the handshake. Spelled
+# as a literal because the lifetime scan reads literals; the arithmetic is
+# asserted by ``test_the_streaming_lane_outlives_every_window_that_observes_it``.
 _STREAMING_LANE_LIFETIME_SECONDS = 120.0
 
 # A process tree that must be KILLED, never asked: both processes ignore
@@ -303,17 +304,22 @@ def _streaming_failure(
     still_running: bool,
     first_flush_backstop_seconds: float,
 ) -> str | None:
-    """Which streaming failure the three observations describe, if any.
+    """Which streaming failure the observations describe, if any.
 
     The diagnosis in ONE place, as a value, rather than assertions whose order
     encodes the precedence and whose messages cannot be tested. #7264 is
     entirely about a message that named the wrong cause; a diagnosis worth
-    getting right is worth being able to test, and all eight combinations of
-    the three observations are tested.
+    getting right is worth being able to test, and every reachable combination
+    of the four observations is tested.
 
-    The three observations are independent, and the answer is NOT a precedence
-    over them -- reading them in a fixed order is what produced two wrong
-    messages in round 3. They decide between four states:
+    FOUR observations, because "announced" is two: whether the sentinel arrived
+    inside its window, and whether it is there at all. Sixteen combinations,
+    twelve of them reachable -- a sentinel seen in the window cannot later be
+    absent, because it is a file.
+
+    They are independent, and the answer is NOT a precedence over them --
+    reading them in a fixed order is what produced two wrong messages. They
+    decide between five states:
 
     * **streaming proved** -- the marker was observed while the lane was
       provably still running. Nothing else matters, including whether the
@@ -557,7 +563,8 @@ class LaneExecutorContract:
 
     # How long THIS backend may take to reach the streaming lane's first flush,
     # and how long the lane's own clock then gives it. A queueing backend raises
-    # both; the constants above say why queue wait belongs to the first.
+    # only the FIRST: queue wait lands in that window, while the script's clock
+    # starts after the announcement and so is the same for every backend.
     first_flush_backstop_seconds = _STREAM_FLUSH_BACKSTOP_SECONDS
     streaming_lane_lifetime_seconds = _STREAMING_LANE_LIFETIME_SECONDS
 

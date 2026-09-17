@@ -144,8 +144,6 @@ _ESCAPE_SCRIPT = (
 # contract must give a job the backend's WHOLE permitted admission window before
 # accusing it of never starting -- failing a legitimately-pending job halfway
 # through is the "backstop as mechanism" mistake #7264 was filed about.
-# Admission, plus dispatch and interpreter startup, plus the lane's own clock
-# outliving both observation windows, all inside the 900s suite allowance.
 # Everything that can legitimately pass between "run() was asked" and the lane's
 # first flush, taken from the bounds the SYSTEM publishes rather than estimated:
 #
@@ -158,9 +156,9 @@ _ESCAPE_SCRIPT = (
 #     deadline expires, so a lane that has not flushed by then is gone -- and a
 #     gone lane is reported as an early conclusion, which is the honest answer.
 #
-# No estimate is left in the sum, which is also what keeps the guard below
-# independent: it recomposes the same published constants, so lowering a local
-# number cannot lower its own expectation.
+# No estimate is left in the sum. 945 + 45 of observation + 60 to conclude is
+# 1050s, which is why this class takes a 1200s timeout: a pytest timeout firing
+# first would replace the contract's diagnosis with one that names nothing.
 def _contract_first_flush_backstop_seconds(lane_deadline_seconds: float) -> float:
     """Everything that can legitimately pass before the lane's first flush.
 
@@ -201,9 +199,10 @@ class TestCondorLaneExecutorContract(LaneExecutorContract):
         """The override is the policy; the inherited guard cannot see it.
 
         `test_the_streaming_lane_outlives_every_window_that_observes_it` checks
-        the numbers against each other, so deleting BOTH overrides leaves it
-        green on the defaults while silently reimposing a 45s start-time limit
-        on a backend allowed 600s of queue wait.
+        the script's clock against the windows that follow the announcement, so
+        deleting this override leaves it green on the default while silently
+        reimposing a 135s start-time limit on a backend allowed 600s of queue
+        wait before its lane even begins.
         """
         # An INDEPENDENT oracle: composed here from the published constants and
         # the submitted command's own deadline, never through
