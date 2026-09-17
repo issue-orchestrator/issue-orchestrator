@@ -44,13 +44,17 @@ _POLL_INTERVAL_SECONDS = 0.1
 # deadline removal can land this much after the exact bound; the outer
 # wait must tolerate it before declaring the backend unresponsive.
 _SCHEDULER_SLACK_SECONDS = 120.0
+# PUBLIC: the contract suite sizes its first-flush window against this, because
+# a test that fails a job for being legitimately pending is the backstop-as-
+# mechanism mistake, and a second copy of the number is how that drifts (#7264).
+#
 # Queue-health bound, deliberately independent of the lane's own
 # deadline: queue wait is scheduling machinery and is never billed to
 # the lane's budget (a job may legitimately wait behind an exclusive
 # token or a full pool for longer than its own runtime deadline). This
 # bound only catches a structurally dead pool that accepts submissions
 # and never matches them.
-_ADMISSION_TIMEOUT_SECONDS = 600.0
+ADMISSION_TIMEOUT_SECONDS = 600.0
 
 # Per-job accounting (#7127). The pool is configured (by
 # scripts/condor-personal.sh and the execenv image) to drop every
@@ -311,10 +315,10 @@ class CondorLaneExecutor:
     ) -> None:
         now = time.monotonic()
         if execute_observed_at is None:
-            if now >= submitted_at + _ADMISSION_TIMEOUT_SECONDS:
+            if now >= submitted_at + ADMISSION_TIMEOUT_SECONDS:
                 raise LaneExecutorError(
                     "scheduler never started the lane: queued for "
-                    f"{_ADMISSION_TIMEOUT_SECONDS:.0f}s "
+                    f"{ADMISSION_TIMEOUT_SECONDS:.0f}s "
                     f"(lane={command.work_key.value} job={job_id})"
                 )
         elif now >= (
