@@ -16,6 +16,10 @@ from pathlib import Path
 
 import pytest
 
+from issue_orchestrator.adapters.condor.lane_executor import (
+    ADMISSION_TIMEOUT_SECONDS,
+)
+from issue_orchestrator.adapters.condor.tools import TOOL_TIMEOUT_SECONDS
 from issue_orchestrator.adapters.condor import CondorLaneExecutor, CondorTools
 from issue_orchestrator.domain.lane_execution import (
     LaneSuspendability,
@@ -27,7 +31,11 @@ from issue_orchestrator.domain.lane_execution import (
 )
 from issue_orchestrator.ports.lane_executor import LaneExecutor
 from tests.load_fixture import cpu_load, reap_marked_processes
-from tests.unit.lane_executor_contract import LaneExecutorContract
+from tests.event_wait import await_event
+from tests.unit.lane_executor_contract import (
+    _OBSERVATION_MARGIN_SECONDS,
+    LaneExecutorContract,
+)
 
 pytestmark = [
     pytest.mark.timeout(600),
@@ -133,9 +141,125 @@ _ESCAPE_SCRIPT = (
 )
 
 
+# A queued job spends its wait in the contract's FIRST-FLUSH window, and this
+# backend's queue wait is deliberately unbounded by the lane deadline: the
+# executor's own ADMISSION_TIMEOUT_SECONDS is what catches a dead pool. So the
+# contract must give a job the backend's WHOLE permitted admission window before
+# accusing it of never starting -- failing a legitimately-pending job halfway
+# through is the "backstop as mechanism" mistake #7264 was filed about.
+# Everything that can legitimately pass between "run() was asked" and the lane's
+# first flush, taken from the bounds the SYSTEM publishes rather than estimated:
+#
+#   * two pool tool calls before the admission clock even starts -- the pool
+#     query at construction and the submission itself -- each independently
+#     allowed TOOL_TIMEOUT_SECONDS;
+#   * the queue wait the backend permits, ADMISSION_TIMEOUT_SECONDS;
+#   * and after the execute event, the lane's OWN deadline. Nothing else bounds
+#     transfer and interpreter startup, but the lane's deadline is the budget
+#     the contract GRANTS it, so a lane still silent at the end of that budget
+#     is one this test has no reason to keep waiting for.
+#
+# That budget is not the backend's maximum wall-clock lifetime. `_enforce_watchdogs`
+# tolerates the execution deadline PLUS observed suspension PLUS
+# `_SCHEDULER_SLACK_SECONDS`, and the scheduler's periodic removal may land
+# after the exact bound, so the lane is not necessarily gone at 285s. This
+# contract lane is never suspended, and the window's job is to decide when a
+# SILENT lane stops being plausible -- not to predict when a doomed one dies --
+# so the slack terms are deliberately outside it. A lane that outlives the
+# window is reported by what was observed, which for no sentinel and no marker
+# is the never-announced answer, not an early conclusion.
+#
+# No estimate is left in the BOUND (945s). The window adds the contract's named
+# 15s observation margin, so 960 + 45 of observation + 60 to conclude is 1065s,
+# which is why this class takes a 1200s timeout: a pytest timeout firing first
+# would replace the contract's diagnosis with one that names nothing.
+def _contract_first_flush_bound_seconds(lane_deadline_seconds: float) -> float:
+    """The command BUDGET a silent lane may plausibly still be inside.
+
+    Not the backend's maximum wall-clock lifetime: removal can land after the
+    deadline by observed suspension plus scheduler slack. This is the budget the
+    contract grants, which is what decides when silence stops being plausible.
+
+    Taken from the SUBMITTED command's deadline, not from the interval constant
+    it was composed out of: this backend starts that deadline when execution is
+    observed, so a correct job may spend its whole admission allowance queued
+    and then legally execute for the whole deadline. Substituting the shorter
+    interval here made the window shorter than what the backend permits.
+
+    This is the BOUND, not the window: the window adds a margin, below.
+    """
+    return (
+        2 * TOOL_TIMEOUT_SECONDS
+        + ADMISSION_TIMEOUT_SECONDS
+        + lane_deadline_seconds
+    )
+
+
+# The window is the bound PLUS a margin, never equal to it. Equal was wrong in
+# two ways: the test's clock starts before work no published bound covers
+# (starting the thread, creating the temp directory, compiling and writing the
+# script), and the poll that notices the window can land a gap late. A backend
+# staying inside every bound it publishes must not be reported late for either
+# (#7264 review r11).
+_CONTRACT_FIRST_FLUSH_BACKSTOP_SECONDS = (
+    _contract_first_flush_bound_seconds(
+        LaneExecutorContract()
+        .streaming_command(
+            Path("/nonexistent"), Path("/nonexistent/go"), Path("/nonexistent/f")
+        )
+        .deadline.timeout_seconds
+    )
+    + _OBSERVATION_MARGIN_SECONDS
+)
+
+
 class TestCondorLaneExecutorContract(LaneExecutorContract):
+    # The module's 600s allowance cannot hold 960 + 45 + 60 of backstops, so
+    # this class takes 1200s. A
+    # pytest timeout firing first would replace the contract's own diagnosis
+    # with one that names nothing (#7264). Class-scoped: only the inherited
+    # contract needs it.
+    pytestmark = pytest.mark.timeout(1200)
+
+    first_flush_backstop_seconds = _CONTRACT_FIRST_FLUSH_BACKSTOP_SECONDS
+
     def build_executor(self) -> LaneExecutor:
         return CondorLaneExecutor(CondorTools.resolve())
+
+    def test_the_first_flush_window_covers_this_backend_s_admission(self) -> None:
+        """The override is the policy; the inherited guard cannot see it.
+
+        `test_the_streaming_lane_outlives_every_window_that_observes_it` checks
+        the script's clock against the windows that follow the announcement, so
+        deleting this override leaves it green on the default while silently
+        reimposing a 135s start-time limit on a backend allowed 600s of queue
+        wait before its lane even begins.
+        """
+        # An INDEPENDENT oracle: composed here from the published constants and
+        # the submitted command's own deadline, never through
+        # `_contract_first_flush_bound_seconds`. Sharing that helper with the
+        # value under test meant mutating it shrank both sides together and the
+        # assertion still passed.
+        submitted_deadline = self.streaming_command(
+            Path("/nonexistent"), Path("/nonexistent/go"), Path("/nonexistent/f")
+        ).deadline.timeout_seconds
+        required = (
+            TOOL_TIMEOUT_SECONDS  # the pool query at construction
+            + TOOL_TIMEOUT_SECONDS  # the submission
+            + ADMISSION_TIMEOUT_SECONDS  # the queue wait this backend permits
+            + submitted_deadline  # and then the whole of the lane's own deadline
+        )
+
+        # STRICTLY greater: equal leaves nothing for the work this test does
+        # around the backend, nor for the poll gap that notices the window.
+        assert self.first_flush_backstop_seconds > required, (
+            "a job may legitimately spend the backend's full admission window "
+            f"({ADMISSION_TIMEOUT_SECONDS:.0f}s) behind two "
+            f"{TOOL_TIMEOUT_SECONDS:.0f}s tool calls and then execute for its "
+            f"whole {submitted_deadline:.0f}s deadline; a first-flush backstop "
+            f"of {self.first_flush_backstop_seconds:.0f}s fails it for being "
+            f"slow (needs more than {required:.0f}s)"
+        )
 
 
 def test_exclusive_token_serializes_concurrent_lanes(tmp_path: Path) -> None:
@@ -237,10 +361,9 @@ def test_detached_session_escape_states_the_platform_boundary(
     thread = threading.Thread(target=run_lane)
     thread.start()
     try:
-        deadline = time.monotonic() + 60
-        while time.monotonic() < deadline and not marker.exists():
-            time.sleep(0.2)
-        assert marker.exists(), "escape grandchild never started"
+        assert await_event(marker.exists, backstop_seconds=60.0), (
+            "escape grandchild never started"
+        )
         grandchild = int(marker.read_text())
         thread.join(timeout=180)
         assert not thread.is_alive(), "lane did not conclude"
@@ -252,9 +375,11 @@ def test_detached_session_escape_states_the_platform_boundary(
             except ProcessLookupError:
                 return False
 
-        settle = time.monotonic() + 20
-        while time.monotonic() < settle and alive():
-            time.sleep(0.5)
+        # A wait whose event MAY never happen: the window exists for the
+        # escapee to be reaped if the platform contains it, and the answer is
+        # read afterwards either way. On Linux it returns as soon as the pid is
+        # gone; on macOS it runs the full window.
+        await_event(lambda: not alive(), backstop_seconds=20.0)
         survived = alive()
         if sys.platform == "darwin":
             assert survived, (
@@ -267,7 +392,7 @@ def test_detached_session_escape_states_the_platform_boundary(
                 "the execution environment's core guarantee has regressed"
             )
     finally:
-        # #7142: this test spawns an hour-long escapee ON PURPOSE and asserts
+        # #7142: this test spawns a ten-minute escapee ON PURPOSE and asserts
         # macOS cannot contain it, so the only thing standing between it and
         # the next nine gates is cleanup that runs on every path. `setsid`
         # puts it beyond any group signal; the argv is what still identifies
@@ -640,16 +765,23 @@ _SUSPENDED_STATUS = "7"
 
 
 def _await_status(work_key: str, wanted: str, deadline_seconds: float) -> None:
-    deadline = time.monotonic() + deadline_seconds
+    """Wait for one scheduler state, and name the state that never arrived.
+
+    A semantic wrapper over the shared primitive, not a second copy of the loop:
+    the predicate captures the last status so the diagnostic can report it. The
+    poll gap is wider than the default because each probe costs a pool tool call.
+    """
     last = ""
-    while time.monotonic() < deadline:
+
+    def reached() -> bool:
+        nonlocal last
         last = _job_status(work_key)
-        if last == wanted:
-            return
-        time.sleep(0.5)
-    raise AssertionError(
-        f"lane {work_key} never reached JobStatus {wanted}; last={last!r}"
-    )
+        return last == wanted
+
+    if not await_event(reached, backstop_seconds=deadline_seconds, poll_seconds=0.5):
+        raise AssertionError(
+            f"lane {work_key} never reached JobStatus {wanted}; last={last!r}"
+        )
 
 
 def _release_batch(work_key: str) -> None:
@@ -692,10 +824,9 @@ def test_suspension_charges_neither_deadline_nor_observed_runtime(
     thread = threading.Thread(target=run_lane)
     thread.start()
     try:
-        deadline = time.monotonic() + 60
-        while time.monotonic() < deadline and not marker.exists():
-            time.sleep(0.2)
-        assert marker.exists(), "suspension lane never started"
+        assert await_event(marker.exists, backstop_seconds=60.0), (
+            "suspension lane never started"
+        )
 
         suspended = _run_pool_tool(
             "condor_suspend", "-constraint", _batch_constraint(work_key)
@@ -756,10 +887,9 @@ def test_true_overrun_is_still_enforced_across_a_suspension(
     thread = threading.Thread(target=run_lane)
     thread.start()
     try:
-        deadline = time.monotonic() + 60
-        while time.monotonic() < deadline and not marker.exists():
-            time.sleep(0.2)
-        assert marker.exists(), "overrun lane never started"
+        assert await_event(marker.exists, backstop_seconds=60.0), (
+            "overrun lane never started"
+        )
 
         suspended = _run_pool_tool(
             "condor_suspend", "-constraint", _batch_constraint(work_key)
@@ -942,6 +1072,10 @@ def test_cooperative_lanes_are_not_freeze_eligible_even_when_marked_safe(
         # ...and through a full minute of that proven window (multiple
         # PERIODIC_EXPR_INTERVAL=5 evaluation cycles), the cooperative
         # job must never leave RUNNING.
+        # A HOLD, not a wait: the assertion is that a condition NEVER breaks
+        # across the window, so the duration IS the mechanism and an early
+        # return would defeat it. The only loop in this module that is not
+        # waiting on an event.
         deadline = time.monotonic() + 60.0
         while time.monotonic() < deadline:
             status = _job_status(coop_key)
