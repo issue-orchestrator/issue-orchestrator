@@ -66,14 +66,27 @@ _DEADLINE_UNDER_TEST_SECONDS = 5.0
 # less likely of the two things its expiry actually meant.
 #
 # First: how long the streaming lane may take to reach its FIRST FLUSH — it
-# announces that itself, so this expiry means the lane never produced output at
-# all (a starved runner, a scheduler that never started the job, an interpreter
-# that never got scheduled), which is not a statement about buffering.
+# announces that itself, so this expiry means the lane never got that far. It is
+# not a statement about buffering, and it is not a statement about output
+# either: a lane killed between its print and its announcement leaves the same
+# silence, which is why the assertion reports the announcement, not the bytes.
+#
+# QUEUE WAIT LANDS HERE. A scheduling backend's admission is explicitly outside
+# the lane's deadline and may legitimately exceed it, so a queued job spends its
+# wait in THIS window, and such a backend must raise
+# ``LaneExecutorContract.first_flush_backstop_seconds`` (and the lane lifetime
+# with it). The default suits a backend that starts its lane when asked.
 _STREAM_FLUSH_BACKSTOP_SECONDS = 45.0
 # Second: having been told the bytes were written, how long they may take to
 # become observable on the parent's streams while the lane is provably still
-# running. THIS expiry is the buffering diagnosis, and now it is the only thing
-# that can produce one.
+# running. THIS expiry is the buffering diagnosis, and it is the only thing that
+# can produce one.
+#
+# It is not a PROOF of buffering: a backend that relays through a poll loop of
+# its own (the Condor executor's ``_OutputStreamer.pump``) is indistinguishable
+# from one that buffers if that loop never runs. The window is sized so that
+# only a relay which has stopped entirely can reach it, and the assertion says
+# which two causes it cannot tell apart rather than asserting the likelier one.
 _STREAM_OBSERVABLE_BACKSTOP_SECONDS = 45.0
 # How long the lane may then take to conclude once the handshake releases it.
 _LANE_CONCLUSION_BACKSTOP_SECONDS = 60.0
@@ -209,19 +222,27 @@ def _command(
 def _await(predicate: "Callable[[], bool]", *, backstop_seconds: float) -> bool:
     """Wait for an event to have happened; report whether it did.
 
-    The module's one waiting primitive, so "waiting is always waiting on an
-    EVENT, and the backstop only names the event that never happened" is true
-    by construction rather than by each test re-deriving the same loop. The
+    The waiting primitive of this SHARED contract, so "waiting is always waiting
+    on an EVENT, and the backstop only names the event that never happened" is
+    true by construction rather than by each test re-deriving the same loop. The
     return value is the answer, never an assertion: the caller owns the message
-    that names ITS event, which is the whole point of #7264.
+    that names ITS event, which is the whole point of #7264. Backend suites
+    under ``tests/integration`` keep their own waits; this owns this module's.
+
+    The clock is read BEFORE the predicate, so ``True`` means the event was
+    observed strictly inside the window. A probe-first loop would also report an
+    event that became true only during an overscheduled final sleep -- for the
+    process-reaping wait below that is a quietly relaxed assertion, which is
+    exactly the "true because a sleep was long enough" this module refuses. The
+    cost is one 50ms poll gap of sensitivity at a boundary three orders of
+    magnitude further out.
     """
     deadline = time.monotonic() + backstop_seconds
-    while True:
+    while time.monotonic() < deadline:
         if predicate():
             return True
-        if time.monotonic() >= deadline:
-            return False
         time.sleep(_POLL_SECONDS)
+    return False
 
 
 def _await_pid_gone(pid: int, deadline_seconds: float) -> bool:
@@ -231,7 +252,8 @@ def _await_pid_gone(pid: int, deadline_seconds: float) -> bool:
         except ProcessLookupError:
             return True
         except PermissionError:
-            # Someone else's process now wears this pid; ours is gone.
+            # The pid EXISTS and is simply not ours to signal. Not gone: keep
+            # waiting, and report not-gone if the window closes on this.
             pass
         return False
 
@@ -312,17 +334,21 @@ class _CancelWhenTreeIsReady:
             )
 
     def _watch(self) -> None:
-        deadline = time.monotonic() + _READINESS_BACKSTOP_SECONDS
-        while time.monotonic() < deadline:
+        def announced_or_disarmed() -> bool:
             with self._lock:
                 if not self._armed:
-                    return
+                    return True
                 pids = self._read_pids()
-                if pids is not None:
-                    self._observed_pids = pids
-                    _thread.interrupt_main()
-                    return
-            time.sleep(_POLL_SECONDS)
+                if pids is None:
+                    return False
+                self._observed_pids = pids
+                _thread.interrupt_main()
+                return True
+
+        if _await(
+            announced_or_disarmed, backstop_seconds=_READINESS_BACKSTOP_SECONDS
+        ):
+            return
         # Nothing is ever going to announce itself. End the run on THIS
         # clock so the test's own assertion is the failure the operator
         # reads, and so the lane does not outlive the watcher.
@@ -373,6 +399,12 @@ class LaneExecutorContract:
     # Generous machinery allowance: scheduling/startup overhead must
     # never be billed against the behavior under test.
     completion_timeout_seconds = 120.0
+
+    # How long THIS backend may take to reach the streaming lane's first flush,
+    # and how long the lane's own clock then gives it. A queueing backend raises
+    # both; the constants above say why queue wait belongs to the first.
+    first_flush_backstop_seconds = _STREAM_FLUSH_BACKSTOP_SECONDS
+    streaming_lane_lifetime_seconds = _STREAMING_LANE_LIFETIME_SECONDS
 
     def build_executor(self) -> LaneExecutor:
         raise NotImplementedError
@@ -471,15 +503,18 @@ class LaneExecutorContract:
         If it could, a slow runner would kill the lane mid-window and the
         failure would name this fixture rather than the backend under test --
         which is the class of confusion #7264 was filed about. Asserted rather
-        than commented because the lifetime is spelled as a literal for the
-        fixture-lifetime scan, so nothing else keeps the three numbers in step.
+        than commented because both numbers are per-backend and the lifetime is
+        spelled as a literal for the fixture-lifetime scan, so nothing else keeps
+        them in step. It runs once per backend, against THAT backend's numbers.
         """
-        assert _STREAMING_LANE_LIFETIME_SECONDS > (
-            _STREAM_FLUSH_BACKSTOP_SECONDS + _STREAM_OBSERVABLE_BACKSTOP_SECONDS
-        ), (
+        windows = (
+            self.first_flush_backstop_seconds + _STREAM_OBSERVABLE_BACKSTOP_SECONDS
+        )
+
+        assert self.streaming_lane_lifetime_seconds > windows, (
             "the streaming lane can expire while the test is still watching it: "
-            f"lifetime={_STREAMING_LANE_LIFETIME_SECONDS:.0f}s vs windows "
-            f"{_STREAM_FLUSH_BACKSTOP_SECONDS:.0f}s + "
+            f"lifetime={self.streaming_lane_lifetime_seconds:.0f}s vs windows "
+            f"{self.first_flush_backstop_seconds:.0f}s + "
             f"{_STREAM_OBSERVABLE_BACKSTOP_SECONDS:.0f}s"
         )
 
@@ -515,7 +550,7 @@ class LaneExecutorContract:
                             "-c",
                             _STREAMING_SCRIPT,
                             str(handshake),
-                            str(_STREAMING_LANE_LIFETIME_SECONDS),
+                            str(self.streaming_lane_lifetime_seconds),
                             str(flushed),
                         ),
                         tmp_path,
@@ -528,8 +563,9 @@ class LaneExecutorContract:
         thread = threading.Thread(target=run_lane)
         thread.start()
         try:
-            lane_flushed = _await(
-                flushed.exists, backstop_seconds=_STREAM_FLUSH_BACKSTOP_SECONDS
+            lane_announced_flush = _await(
+                flushed.exists,
+                backstop_seconds=self.first_flush_backstop_seconds,
             )
             observed = ""
 
@@ -545,22 +581,25 @@ class LaneExecutorContract:
             )
             lane_still_running = thread.is_alive()
         finally:
-            # The lane is held alive by the absence of this file, so it is
-            # released even when an assertion below never runs.
-            handshake.write_text("go")
-            thread.join(timeout=_LANE_CONCLUSION_BACKSTOP_SECONDS)
+            # The lane is held alive by the ABSENCE of this file, so releasing it
+            # cannot be skipped -- and the join cannot be skipped by a handshake
+            # write that fails, or a backend with a queue pays for the leak in
+            # scheduler time that its lane deadline never bounds.
+            try:
+                handshake.write_text("go")
+            finally:
+                thread.join(timeout=_LANE_CONCLUSION_BACKSTOP_SECONDS)
 
-        assert not thread.is_alive(), (
-            "the lane never concluded within "
-            f"{_LANE_CONCLUSION_BACKSTOP_SECONDS:.0f}s of being released by "
-            "the handshake"
-        )
-        assert lane_flushed, (
+        # The first-flush answer comes first: it is the precondition for reading
+        # anything into the other two, and a lane still queued at the end would
+        # otherwise be reported as one that failed to conclude.
+        assert lane_announced_flush, (
             "the lane never announced its first flush within "
-            f"{_STREAM_FLUSH_BACKSTOP_SECONDS:.0f}s - it never produced output "
-            "to stream. This is NOT a buffering diagnosis: the lane did not "
-            "reach its first instruction (a starved runner, or a backend that "
-            "never started the job)."
+            f"{self.first_flush_backstop_seconds:.0f}s. This is NOT a buffering "
+            "diagnosis and NOT proof that no output was written: the lane may "
+            "never have been admitted or scheduled, or may have been killed "
+            "between writing the marker and announcing it. Nothing here is a "
+            "statement about the backend's streaming."
         )
         assert lane_still_running, (
             "the lane concluded before its output was observed, although the "
@@ -569,10 +608,18 @@ class LaneExecutorContract:
             "says anything about streaming"
         )
         assert marker_seen, (
-            "the lane flushed STREAM-MARKER to its descriptor, but it was not "
-            f"observable on the parent's streams {_STREAM_OBSERVABLE_BACKSTOP_SECONDS:.0f}s "
-            "later while the lane was still running - the backend buffers "
-            "instead of streaming"
+            "the lane announced that it flushed STREAM-MARKER, and it was still "
+            f"not observable on the parent's streams "
+            f"{_STREAM_OBSERVABLE_BACKSTOP_SECONDS:.0f}s later while the lane was "
+            "still running. Either the backend buffers until completion, or a "
+            "relay it pumps on its own loop stopped running; this test cannot "
+            "tell those two apart, so check the backend's relay before "
+            "concluding it buffers."
+        )
+        assert not thread.is_alive(), (
+            "the lane never concluded within "
+            f"{_LANE_CONCLUSION_BACKSTOP_SECONDS:.0f}s of being released by "
+            "the handshake"
         )
         assert outcomes and type(outcomes[0]) is LaneCompleted
         assert outcomes[0].exit_code == 0
