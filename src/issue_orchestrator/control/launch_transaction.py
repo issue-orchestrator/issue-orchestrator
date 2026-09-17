@@ -496,6 +496,17 @@ class LaunchSettlement:
             if self.drop_on_permanent_failure:
                 return SettlementDecision(WorkDisposal.DROPPED, claim, self.remove)
             return SettlementDecision(WorkDisposal.RETAINED, claim, _no_projection)
+        if result.disposition is LaunchDisposition.QUARANTINED:
+            # Unconditional, and deliberately not subject to
+            # ``drop_on_permanent_failure``: the queues that retain a permanent
+            # failure do so because the work may become runnable again, and
+            # this work cannot. A human has already been told.
+            logger.warning(
+                "[launch] Quarantining unrunnable %s work: %s",
+                claim.kind.value,
+                result.reason,
+            )
+            return SettlementDecision(WorkDisposal.DROPPED, claim, self.remove)
         # Named explicitly rather than left as a fall-through: dropping the
         # work is the destructive branch, and a disposition added later without
         # a decision here must not silently land in it (#6999 A1).

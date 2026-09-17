@@ -62,6 +62,7 @@ from ..domain.tech_lead_session import TechLeadLaunchScope
 from .tech_lead_session_policy import (
     failure_investigation_scratch_identity,
     resumed_investigation_scope,
+    quarantine_retry_launch,
     retried_investigation_identity,
     is_tech_lead_session,
     prepare_tech_lead_session_data,
@@ -1142,6 +1143,14 @@ class SessionLauncher:
         preparation deliberately precedes the provider gate because that gate
         may park the issue with a shared label and durable record.
         """
+        # FIRST, before the precondition checks, the prompt prep and the
+        # provider gate -- each of which can label the issue or park it. A
+        # record that does not hold together is unrunnable now and next tick, so
+        # nothing about it should leave a trace of having been attempted.
+        if (reading := retried_investigation_identity(retry)).is_corrupt:
+            return quarantine_retry_launch(
+                retry, reading.detail, escalate=self.escalate_issue_needs_human
+            )
         resolved = self._resolve_validation_retry_issue(retry)
         if resolved is None:
             return LaunchResult(
@@ -1163,13 +1172,6 @@ class SessionLauncher:
             )
         if result := self._check_provider_ready(agent_config, issue.number):
             return result
-        # Before the claim and before any worktree mutation: a retry whose
-        # recorded investigation identity does not hold together must not be
-        # relaunched at all. Falling back to the ordinary derivation would carry
-        # the recorded investigation branch into the focus issue's own worktree
-        # (#6823), which is worse than not retrying (#7263).
-        if (reading := retried_investigation_identity(retry)).is_corrupt:
-            return LaunchResult(None, False, reading.detail)
         return issue, agent_config, agent_label, prepared_coder_prompt
 
     def launch_validation_retry_session(

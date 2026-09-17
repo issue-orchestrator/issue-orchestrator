@@ -1022,6 +1022,18 @@ def _attempt_reuse(
     """Attempt to reuse an existing worktree, returning (result, recreated_reason)."""
     recreated_reason: str | None = None
     if ctx.disable_reuse:
+        if ctx.reuse_options.require_retained_branch:
+            # `_handle_reuse_disabled` removes the checkout and detaches the
+            # branch; an acquisition that must END holding this branch cannot
+            # start by dismantling it. The operator asking for a fresh checkout
+            # and the caller asking to resume one are in direct conflict, so it
+            # is refused rather than resolved in favour of either (#7263).
+            raise WorktreeError(
+                "worktree reuse is disabled "
+                "(ORCHESTRATOR_DISABLE_WORKTREE_REUSE=1), but this acquisition "
+                f"must resume branch {ctx.branch_name} with its commits; "
+                "refusing rather than recreating it from the base branch"
+            )
         recreated_reason = _handle_reuse_disabled(
             ctx.repo_root, ctx.worktree_path, ctx.branch_name, ctx.issue_number
         )
@@ -1040,6 +1052,9 @@ def _attempt_reuse(
         reuse_result, reuse_recreated_reason = _try_reuse_by_path(
             ctx.worktree_path, ctx.repo_root, ctx.issue_number, ctx.policy,
             ctx.reuse_options, ctx.runtime_setup, ctx.base_branch,
+            required_branch=(
+                ctx.branch_name if ctx.reuse_options.require_retained_branch else None
+            ),
         )
         if reuse_result is not None:
             return reuse_result, None
@@ -1134,6 +1149,7 @@ def _try_reuse_by_path(
     reuse_options: WorktreeReuseOptions,
     runtime_setup: WorktreeRuntimeSetup,
     base_branch: str | None,
+    required_branch: str | None = None,
 ) -> tuple[tuple[Path, str, str, str | None, bool, int, int] | None, str | None]:
     """Try to reuse an existing worktree by path.
 
@@ -1177,6 +1193,18 @@ def _try_reuse_by_path(
 
     existing_branch = branch_result.stdout.strip()
     logger.info(issue_log(issue_number, "Existing worktree branch: %s"), existing_branch)
+
+    if required_branch is not None and existing_branch != required_branch:
+        # Path lookup takes whatever branch occupies the directory. That is
+        # right for an ordinary issue worktree and wrong for an acquisition that
+        # promised a specific branch: the requested branch can exist locally but
+        # be checked out elsewhere, and this would silently validate the wrong
+        # commits (#7263 review r2 F3).
+        raise WorktreeError(
+            f"worktree {worktree_path} holds branch {existing_branch!r}, not the "
+            f"{required_branch!r} this acquisition must resume; refusing rather "
+            "than running against the wrong commits"
+        )
 
     result = _try_reuse_worktree(
         worktree_path,

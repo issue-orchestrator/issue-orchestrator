@@ -2590,6 +2590,61 @@ class TestRetainedBranchAcquisition:
             "the ordinary path no longer recreates an unusable worktree"
         )
 
+    def test_a_directory_holding_another_branch_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        """Path lookup takes whatever branch occupies the directory.
+
+        Right for an ordinary issue worktree; wrong when the acquisition
+        promised a specific branch. The requested branch can exist locally and
+        be checked out somewhere else, in which case branch lookup misses, path
+        lookup hits, and the retry silently validates the wrong commits.
+        """
+        repo, worktree, branch = self._repo_with_investigation_commit(tmp_path)
+        # The scratch directory now holds a DIFFERENT branch, and the requested
+        # one lives elsewhere.
+        subprocess.run(["git", "switch", "-c", "someone-elses-work"],
+                       cwd=worktree, check=True, capture_output=True)
+
+        with pytest.raises(WorktreeError, match="not the"):
+            create_worktree(
+                repo_root=repo,
+                issue_number=6410,
+                issue_title="Investigation",
+                worktree_base=tmp_path,
+                branch_name=branch,
+                worktree_name=worktree.name,
+                reuse_options=WorktreeReuseOptions(require_retained_branch=True),
+            )
+
+        assert self._head_subject(repo, branch) == "investigation finding"
+
+    def test_disabling_reuse_cannot_dismantle_a_branch_that_must_be_resumed(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """The operator's fresh-checkout switch and a resume are in conflict.
+
+        `_handle_reuse_disabled` removes the checkout and detaches the branch
+        before any retained-branch flag is consulted, so the conflict is refused
+        rather than resolved in favour of either side.
+        """
+        repo, worktree, branch = self._repo_with_investigation_commit(tmp_path)
+        monkeypatch.setenv("ORCHESTRATOR_DISABLE_WORKTREE_REUSE", "1")
+
+        with pytest.raises(WorktreeError, match="reuse is disabled"):
+            create_worktree(
+                repo_root=repo,
+                issue_number=6410,
+                issue_title="Investigation",
+                worktree_base=tmp_path,
+                branch_name=branch,
+                worktree_name=worktree.name,
+                reuse_options=WorktreeReuseOptions(require_retained_branch=True),
+            )
+
+        assert worktree.exists(), "the checkout was dismantled before the refusal"
+        assert self._head_subject(repo, branch) == "investigation finding"
+
     def test_a_missing_branch_is_refused_instead_of_created_from_base(
         self, tmp_path: Path
     ) -> None:

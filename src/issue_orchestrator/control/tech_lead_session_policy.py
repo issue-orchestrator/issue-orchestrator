@@ -63,6 +63,7 @@ if TYPE_CHECKING:
     from ..ports import ManifestDownloader, RepositoryHost
     from ..ports.issue import Issue
     from ..domain.models import PendingValidationRetry
+    from .session_launch_types import LaunchResult
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
     from .worktree_context import WorktreeContext
 
@@ -206,6 +207,53 @@ def resumed_investigation_scope(
     # review. This is the same value ``tech_lead_launch_scope`` builds for the
     # original launch.
     return TechLeadLaunchScope(flavor=TechLeadSessionFlavor.FAILURE_INVESTIGATION)
+
+
+def quarantine_retry_launch(
+    retry: "PendingValidationRetry",
+    detail: str,
+    *,
+    escalate: Callable[..., bool],
+) -> "LaunchResult":
+    """Refuse an unrunnable retry, tell a human, and let the queue drop it.
+
+    Relaunching it is the one thing that must not happen: the launcher still
+    holds the recorded investigation branch, so the ordinary derivation would
+    check that branch out inside the focus issue's own worktree -- the exact
+    mutation #6823 exists to prevent.
+
+    Refusing it forever is the other thing that must not happen. Validation
+    retries deliberately RETAIN a permanent failure, so a poison record would be
+    planned every tick against capacity another issue could use. ``QUARANTINED``
+    leaves the queue unconditionally, which is safe only because this escalates
+    first (#7263 review r2 F4).
+    """
+    from .session_launch_types import LaunchDisposition, LaunchResult
+
+    logger.error(
+        "[issue-%d] Quarantining validation retry: %s", retry.issue_number, detail
+    )
+    escalate(
+        issue_number=retry.issue_number,
+        reason="validation retry has an unusable investigation identity",
+        comment=(
+            "## Needs Human Input — validation retry quarantined\n\n"
+            f"{detail}\n\n"
+            "The queued retry names a tech-lead investigation worktree and "
+            "branch that do not agree, so it cannot be resumed and must not be "
+            "relaunched into this issue's own worktree. It has been removed "
+            "from the retry queue; the branch itself is untouched."
+        ),
+        context="validation_retry_identity_quarantine",
+        event_data={
+            "issue_number": retry.issue_number,
+            "issue_title": retry.issue_title,
+            "reason": detail,
+        },
+    )
+    return LaunchResult(
+        None, False, detail, disposition=LaunchDisposition.QUARANTINED
+    )
 
 
 #: Outcomes whose comment IS the tech lead's decision, not a work report.

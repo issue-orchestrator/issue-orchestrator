@@ -134,6 +134,31 @@ def path_is_under_scratch_worktree(path: str) -> bool:
     return scratch_worktree_focus_issue(path) is not None
 
 
+def scratch_worktree_name_pattern(repo_root_name: str) -> str:
+    """The regex SOURCE for a scratch worktree basename of one repository.
+
+    Exported so a caller that must dispatch on "does this directory look like
+    an investigation worktree at all?" -- startup reconciliation classifying a
+    registered worktree, and the reviewer worktrees named after one -- composes
+    the owner's grammar instead of re-typing it. A second copy of the shape
+    stops matching the moment the generator changes, and a classifier that
+    stops matching does not fail: it silently reclassifies (#6969, #7263).
+    """
+    return (
+        rf"{re.escape(repo_root_name)}-tech-lead-\d+-"
+        rf"[0-9a-f]{{{SCRATCH_TOKEN_LENGTH}}}"
+    )
+
+
+def ordinary_worktree_name_pattern(repo_root_name: str) -> str:
+    """The regex source for an ordinary issue worktree basename.
+
+    Its only purpose here is to sit beside the scratch grammar: the two are read
+    together by every caller that tells them apart.
+    """
+    return rf"{re.escape(repo_root_name)}-\d+"
+
+
 @dataclass(frozen=True, slots=True)
 class ScratchWorktreeIdentity:
     """Disposable, run-scoped worktree identity for an investigation session.

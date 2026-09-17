@@ -12,7 +12,10 @@ from typing import TYPE_CHECKING
 
 from ..domain.tech_lead_scratch_identity import (
     ScratchIdentityVerdict,
+    ordinary_worktree_name_pattern,
+    parse_scratch_worktree_name,
     read_scratch_identity,
+    scratch_worktree_name_pattern,
 )
 from ..ports.worktree_manager import RegisteredWorktree, WORKTREE_ID_MARKER
 
@@ -116,19 +119,20 @@ class _WorktreePatterns:
 
 
 def _worktree_patterns(repo_root: Path) -> _WorktreePatterns:
-    repo_name = re.escape(repo_root.name)
+    """The three shapes a registered worktree directory can have.
+
+    The scratch and ordinary grammars are COMPOSED from the domain owner rather
+    than re-typed. A second copy of the shape here would keep this dispatch
+    working against yesterday's names after the generator changed -- and a
+    classifier that stops matching does not fail, it silently reclassifies a
+    disposable checkout as external, or an external one as disposable (#7263).
+    """
+    ordinary = ordinary_worktree_name_pattern(repo_root.name)
+    scratch = scratch_worktree_name_pattern(repo_root.name)
     return _WorktreePatterns(
-        ordinary=re.compile(rf"^{repo_name}-(\d+)$"),
-        # Matched by the domain owner, not a fourth copy of the pattern: a
-        # regex here would silently stop classifying the moment the generator
-        # changed, which is the drift `tech_lead_scratch_identity` exists to
-        # prevent (#7263). Kept in this record only so the dispatch below can
-        # ask "does this look scratch-like at all?" in one place.
-        scratch=re.compile(rf"^{repo_name}-tech-lead-(\d+)-([0-9a-f]{{12}})$"),
-        reviewer=re.compile(
-            rf"^(?:{repo_name}-\d+|{repo_name}-tech-lead-\d+-[0-9a-f]{{12}})"
-            rf"-review-{_REVIEW_TIMESTAMP}$"
-        ),
+        ordinary=re.compile(rf"^{ordinary}$"),
+        scratch=re.compile(rf"^{scratch}$"),
+        reviewer=re.compile(rf"^(?:{ordinary}|{scratch})-review-{_REVIEW_TIMESTAMP}$"),
     )
 
 
@@ -160,23 +164,23 @@ def _disposable_entry(
     return WorktreeAuditEntry(path, kind, "cleanup_candidate", candidate_reason)
 
 
-def _focus_issue(match: "re.Match[str]") -> int:
-    """The focus issue the scratch-like directory name claims."""
-    return int(match.group(1))
-
-
 def _classify_scratch(
     path: Path,
     item: RegisteredWorktree,
-    match: re.Match[str],
     activity: WorktreeActivityEvidence,
 ) -> WorktreeAuditEntry:
     # The pair must hold together -- same focus issue, same run token -- and
-    # that rule has one owner. Reconstructing the branch from a literal here
-    # was a fourth copy of the shape (#7263 review r1 F4).
-    reading = read_scratch_identity(str(path), item.branch or "", _focus_issue(match))
+    # that rule has one owner, which also tells us which issue the directory
+    # claims. Reconstructing the branch from a literal here, or re-parsing the
+    # issue from a local match, were both copies of the owner's grammar.
+    claimed = parse_scratch_worktree_name(path.name)
+    reading = (
+        read_scratch_identity(str(path), item.branch or "", claimed.issue_number)
+        if claimed is not None
+        else None
+    )
     if not _has_orchestrator_identity(path) or (
-        reading.verdict is not ScratchIdentityVerdict.RESUMABLE
+        reading is None or reading.verdict is not ScratchIdentityVerdict.RESUMABLE
     ):
         return WorktreeAuditEntry(
             path,
@@ -244,8 +248,8 @@ def _classify_registered_worktree(
             "retained",
             "outside the configured worktree base",
         )
-    if scratch_match := patterns.scratch.fullmatch(path.name):
-        return _classify_scratch(path, item, scratch_match, activity)
+    if patterns.scratch.fullmatch(path.name):
+        return _classify_scratch(path, item, activity)
     if patterns.reviewer.fullmatch(path.name):
         return _classify_reviewer(path, item, activity)
     if patterns.ordinary.fullmatch(path.name) and _has_orchestrator_identity(path):

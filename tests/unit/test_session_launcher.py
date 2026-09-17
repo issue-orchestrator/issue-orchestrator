@@ -2241,6 +2241,49 @@ class TestLaunchValidationRetrySession:
         assert mock_worktree_manager.create_calls == [], (
             "the refused retry still touched a worktree"
         )
+        assert result.disposition is LaunchDisposition.QUARANTINED, (
+            "an unrunnable record retained on the queue is planned every tick"
+            " against capacity another issue could use"
+        )
+
+    def test_a_quarantined_retry_escalates_before_it_is_dropped(
+        self,
+        launcher_bundle,
+        mock_worktree_manager,
+    ):
+        """Dropping unrunnable work is only safe because a human is told.
+
+        The record names a real branch with real commits; the queue forgetting
+        it must not be the end of the story.
+        """
+        escalations: list[dict] = []
+        launcher_bundle.launcher.escalate_issue_needs_human = (  # noqa: SLF001
+            lambda **kwargs: escalations.append(kwargs) or True
+        )
+        token = new_scratch_token()
+        retry = PendingValidationRetry(
+            issue_number=123,
+            issue_title="Fix checkout",
+            agent_label="agent:web",
+            worktree_path="/tmp/worktree-123",
+            branch_name=scratch_branch_name(123, token),
+            original_prompt="Investigate issue #123",
+            validation_error="boom",
+            validation_error_file=None,
+            retry_count=1,
+            source_task=TaskKind.CODE,
+            validation_cmd="make test",
+        )
+
+        result = launcher_bundle.launcher.launch_validation_retry_session(
+            retry, active_sessions=[]
+        )
+
+        assert result.disposition is LaunchDisposition.QUARANTINED
+        assert len(escalations) == 1, "the record was dropped with nobody told"
+        assert escalations[0]["issue_number"] == 123
+        assert "quarantined" in escalations[0]["comment"]
+        assert "branch itself is untouched" in escalations[0]["comment"]
 
     def test_a_resumed_investigation_keeps_its_scope_and_disposability(
         self,
