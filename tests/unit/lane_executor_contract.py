@@ -263,6 +263,31 @@ def release_lane(handshake: Path, thread: threading.Thread) -> None:
         thread.join(timeout=_LANE_CONCLUSION_BACKSTOP_SECONDS)
 
 
+def streaming_verdict(
+    *,
+    sentinel: Path,
+    announced_in_window: bool,
+    marker_seen: bool,
+    still_running: bool,
+    first_flush_backstop_seconds: float,
+) -> str | None:
+    """Classify a finished streaming observation, re-reading the sentinel here.
+
+    The second read lives INSIDE this function rather than at the call site so
+    that the handoff is the thing under test. With the caller passing a path
+    instead of a boolean, "reuse the stale timed observation" is not something
+    the call site can express -- which is the mutation that reintroduced the
+    #7264 defect when the re-read was one line of caller code.
+    """
+    return streaming_failure(
+        announced_in_window=announced_in_window,
+        announced_eventually=sentinel.exists(),
+        marker_seen=marker_seen,
+        still_running=still_running,
+        first_flush_backstop_seconds=first_flush_backstop_seconds,
+    )
+
+
 def streaming_failure(
     *,
     announced_in_window: bool,
@@ -520,6 +545,29 @@ class LaneExecutorContract:
     first_flush_backstop_seconds = _STREAM_FLUSH_BACKSTOP_SECONDS
     streaming_lane_lifetime_seconds = _STREAMING_LANE_LIFETIME_SECONDS
 
+    def streaming_command(
+        self, working_directory: Path, handshake: Path, sentinel: Path
+    ) -> LaneCommand:
+        """The streaming lane, built in ONE place so its deadline can be tested.
+
+        Its deadline is not this contract's ordinary machinery allowance: the
+        lane is deliberately held alive to be observed, so it must outlive
+        reaching its first instruction AND both windows that then watch it.
+        """
+        return _command(
+            "contract.streaming",
+            (
+                sys.executable,
+                "-c",
+                _STREAMING_SCRIPT,
+                str(handshake),
+                str(self.streaming_lane_lifetime_seconds),
+                str(sentinel),
+            ),
+            working_directory,
+            _STREAMING_LANE_DEADLINE_SECONDS,
+        )
+
     def build_executor(self) -> LaneExecutor:
         raise NotImplementedError
 
@@ -625,13 +673,20 @@ class LaneExecutorContract:
             self.first_flush_backstop_seconds + _STREAM_OBSERVABLE_BACKSTOP_SECONDS
         )
 
-        assert _STREAMING_LANE_DEADLINE_SECONDS > (
+        # The deadline of the command this backend will actually SUBMIT, not the
+        # constant it is composed from: the two were the same number once, and a
+        # guard that reads the constant cannot see the argument change.
+        submitted = self.streaming_command(
+            Path("/nonexistent"), Path("/nonexistent/go"), Path("/nonexistent/f")
+        ).deadline.timeout_seconds
+
+        assert submitted > (
             LANE_FIRST_INSTRUCTION_SECONDS
             + _STREAM_OBSERVABLE_BACKSTOP_SECONDS
             + _LANE_CONCLUSION_BACKSTOP_SECONDS
         ), (
             "the streaming lane's own DEADLINE can expire while it is being "
-            f"observed: {_STREAMING_LANE_DEADLINE_SECONDS:.0f}s against "
+            f"observed: {submitted:.0f}s against "
             f"{LANE_FIRST_INSTRUCTION_SECONDS:.0f}s to start plus "
             f"{_STREAM_OBSERVABLE_BACKSTOP_SECONDS:.0f}s of observation plus "
             f"{_LANE_CONCLUSION_BACKSTOP_SECONDS:.0f}s to conclude"
@@ -668,19 +723,7 @@ class LaneExecutorContract:
         def run_lane() -> None:
             outcomes.append(
                 self.build_executor().run(
-                    _command(
-                        "contract.streaming",
-                        (
-                            sys.executable,
-                            "-c",
-                            _STREAMING_SCRIPT,
-                            str(handshake),
-                            str(self.streaming_lane_lifetime_seconds),
-                            str(flushed),
-                        ),
-                        tmp_path,
-                        _STREAMING_LANE_DEADLINE_SECONDS,
-                    ),
+                    self.streaming_command(tmp_path, handshake, flushed),
                     self.resources(),
                 )
             )
@@ -708,12 +751,9 @@ class LaneExecutorContract:
         finally:
             release_lane(handshake, thread)
 
-        failure = streaming_failure(
+        failure = streaming_verdict(
+            sentinel=flushed,
             announced_in_window=lane_announced_flush,
-            # Re-read now, not reused from the timed observation above: the
-            # sentinel is written just after the print, so one that landed a
-            # poll gap late is late, not absent.
-            announced_eventually=flushed.exists(),
             marker_seen=marker_seen,
             still_running=lane_still_running,
             first_flush_backstop_seconds=self.first_flush_backstop_seconds,

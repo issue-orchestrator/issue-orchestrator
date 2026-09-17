@@ -15,7 +15,11 @@ import pytest
 
 from tests import event_wait
 from tests.event_wait import await_event
-from tests.unit.lane_executor_contract import release_lane, streaming_failure
+from tests.unit.lane_executor_contract import (
+    release_lane,
+    streaming_failure,
+    streaming_verdict,
+)
 
 
 class _FakeClock:
@@ -300,4 +304,70 @@ class TestReleaseLane:
         assert isinstance(caught.value.__context__, OSError), (
             "the release failure was discarded instead of kept as context"
         )
+        assert caught.value.__suppress_context__ is False, (
+            "the release failure is attached but hidden from the rendered"
+            " traceback, so the leak is invisible to whoever reads the failure"
+        )
         assert thread.joins == 1
+
+
+class TestStreamingVerdict:
+    """The handoff from the timed observation to the classification (#7264).
+
+    `streaming_failure` can tell a late sentinel from an absent one; this is
+    what proves the caller actually gives it the chance to. The re-read lives
+    inside `streaming_verdict` precisely so this is testable -- when it was one
+    line of caller code, nothing stopped it from being replaced by the stale
+    timed observation.
+    """
+
+    def test_a_sentinel_that_appears_after_the_window_is_read_again(
+        self, tmp_path: Path
+    ) -> None:
+        sentinel = tmp_path / "flushed"
+        sentinel.write_text("")  # it exists NOW; it did not when the window closed
+
+        verdict = streaming_verdict(
+            sentinel=sentinel,
+            announced_in_window=False,
+            marker_seen=True,
+            still_running=True,
+            first_flush_backstop_seconds=45.0,
+        )
+
+        assert verdict is not None
+        assert "took longer than 45s to announce" in verdict, (
+            "the stale timed observation was reused, so a late sentinel is"
+            f" still being reported as an absent one: {verdict!r}"
+        )
+
+    def test_a_sentinel_that_never_appears_is_still_absent(
+        self, tmp_path: Path
+    ) -> None:
+        verdict = streaming_verdict(
+            sentinel=tmp_path / "never-written",
+            announced_in_window=False,
+            marker_seen=True,
+            still_running=True,
+            first_flush_backstop_seconds=45.0,
+        )
+
+        assert verdict is not None
+        assert "the sentinel never appeared at all" in verdict
+
+    def test_an_announcement_inside_the_window_needs_no_second_opinion(
+        self, tmp_path: Path
+    ) -> None:
+        sentinel = tmp_path / "flushed"
+        sentinel.write_text("")
+
+        assert (
+            streaming_verdict(
+                sentinel=sentinel,
+                announced_in_window=True,
+                marker_seen=True,
+                still_running=True,
+                first_flush_backstop_seconds=45.0,
+            )
+            is None
+        )
