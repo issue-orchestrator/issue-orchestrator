@@ -102,10 +102,11 @@ class TestStreamingVerdictTable:
     could be changed back to pass the stale timed observation and every test here
     would still have exercised the correct helper.
 
-    All TWELVE reachable combinations, because the observations are independent
-    and reading them in a fixed order produced wrong messages twice. The other
-    four -- announced in the window but not eventually -- cannot happen: the
-    sentinel is a file, so it does not un-appear.
+    All TWELVE reachable combinations, because reading them in a fixed order
+    produced wrong messages twice. The other four -- announced in the window but
+    not eventually -- cannot happen: the sentinel is a file, so it does not
+    un-appear, which is exactly why the two announcement observations are not
+    independent of each other.
     """
 
     def _verdict(
@@ -212,7 +213,12 @@ class _FinishedThread(threading.Thread):
 
 
 class TestReleaseLane:
-    """The lane is held alive by the ABSENCE of the handshake file."""
+    """The lane declines to conclude while the handshake file is absent.
+
+    Until its own safety clock expires -- which is what makes the fixture safe
+    when the handshake never comes, and why releasing it is best-effort cleanup
+    rather than the only thing standing between the lane and immortality.
+    """
 
     def test_it_releases_and_joins(self, tmp_path: Path) -> None:
         handshake = tmp_path / "proceed"

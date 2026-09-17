@@ -86,11 +86,17 @@ LANE_FIRST_INSTRUCTION_SECONDS = 120.0
 # not move with this one. The default suits a backend that starts its lane when
 # asked.
 #
-# Sized to the startup allowance this module declares, plus polling granularity
-# -- not a round number. A backend whose lane legitimately takes the whole of
-# LANE_FIRST_INSTRUCTION_SECONDS to reach its first instruction must not be
-# reported late for doing exactly what the contract permits (#7264 review r9).
-_STREAM_FLUSH_BACKSTOP_SECONDS = LANE_FIRST_INSTRUCTION_SECONDS + 15.0
+# Sized to the startup allowance this module declares, plus a margin for the
+# work AROUND it that no published bound covers: starting the thread, creating
+# the temp directory, compiling and writing the script, and the poll gap that
+# decides when the window is noticed. A backend whose lane legitimately takes
+# the whole of LANE_FIRST_INSTRUCTION_SECONDS to reach its first instruction
+# must not be reported late for doing exactly what the contract permits
+# (#7264 review r9).
+_OBSERVATION_MARGIN_SECONDS = 15.0
+_STREAM_FLUSH_BACKSTOP_SECONDS = (
+    LANE_FIRST_INSTRUCTION_SECONDS + _OBSERVATION_MARGIN_SECONDS
+)
 # Second: having been told the bytes were written, how long they may take to
 # become observable on the parent's streams while the lane is provably still
 # running. THIS expiry is the buffering diagnosis, and it is the only thing that
@@ -175,8 +181,11 @@ while time.monotonic() < deadline:
     time.sleep(0.5)
 """
 
-# Prints one marker, then refuses to conclude until the test releases it —
-# so the marker can only be observed while the lane is provably running.
+# Prints one marker, then declines to conclude until the test releases it OR
+# its own clock expires — so within that clock the marker can only be observed
+# while the lane is provably running. The clock is what makes the fixture safe
+# when the handshake never comes, and a lane that ends on it rather than on the
+# handshake is reported as an early conclusion, which is the honest answer.
 #
 # Its FIRST act after the flush is to ANNOUNCE the flush, the way the tree
 # fixture announces its pids: the sentinel's existence is the event "this lane
@@ -248,9 +257,10 @@ def _command(
 def release_lane(handshake: Path, thread: threading.Thread) -> None:
     """Let the streaming lane conclude, and wait for it, whatever else failed.
 
-    The lane is held alive by the ABSENCE of ``handshake``, so this cannot be
-    skipped -- a leaked lane costs a queueing backend scheduler time its own
-    deadline never bounds. Two rules beyond "always join":
+    The lane declines to conclude while ``handshake`` is absent -- until its own
+    clock expires -- so releasing it cannot be skipped: a leaked lane costs a
+    queueing backend scheduler time its own deadline never bounds. Two rules
+    beyond "always join":
 
     * a release failure never REPLACES the failure it is cleaning up after. The
       pending exception is re-raised from inside the handler, so it stays the
@@ -317,13 +327,19 @@ def _streaming_failure(
     twelve of them reachable -- a sentinel seen in the window cannot later be
     absent, because it is a file.
 
-    They are independent, and the answer is NOT a precedence over them --
-    reading them in a fixed order is what produced two wrong messages. They
-    decide between five states:
+    They are NOT independent -- ``announced_in_window`` implies
+    ``announced_eventually``, which is what makes four of the sixteen
+    unreachable -- but the answer is not a precedence over them either. Reading
+    them in a fixed order is what produced two wrong messages. Every reachable
+    combination maps to one of these:
 
     * **streaming proved** -- the marker was observed while the lane was
-      provably still running. Nothing else matters, including whether the
-      fixture managed to announce its flush;
+      provably still running, and the sentinel arrived inside its window;
+    * **the invariant held, the fixture did not** -- the marker was observed
+      while the lane was still running, but the announcement was late, or never
+      came at all. Two different messages, because a breached backstop and a
+      broken fixture are different things, and neither is a fault of the
+      backend;
     * **ordering unproved** -- the marker was observed, but the lane had
       concluded by the time that was sampled, so "before completion" is exactly
       what this run cannot establish;
@@ -331,12 +347,14 @@ def _streaming_failure(
       never arrived. The only diagnosis that says anything about the backend,
       and even then it cannot separate buffering from a relay of the backend's
       own that stopped running;
-    * **the lane never got that far** -- no announcement and no marker. Not a
-      buffering diagnosis and not proof that no bytes were written: a lane
+    * **concluded before anything was observed** -- announced, no marker, and
+      the lane had already ended;
+    * **flushed late, unproved** -- no marker, and the sentinel arrived only
+      after its window. The lane DID execute and write output, so this is not a
+      "never ran" answer;
+    * **the lane never got that far** -- no announcement at all and no marker.
+      Not a buffering diagnosis and not proof that no bytes were written: a lane
       killed between its print and its announcement leaves the same silence.
-
-    A missing announcement WITH an observed marker is a broken fixture, not a
-    broken backend, and says so: the invariant held.
 
     "Announced" is TWO observations, not one. ``announced_in_window`` is the
     timed one -- it answers whether the backstop was breached. It goes stale the
@@ -447,9 +465,9 @@ class _CancelWhenTreeIsReady:
     somebody else's clock (round 1, #7148). A lane that is admitted and
     then never dispatched does not reach its own deadline — that clock
     starts at dispatch — so it runs until the backend's admission
-    watchdog, ten minutes away, and the enclosing pytest timeout gets
+    watchdog, ten minutes away, and the enclosing pytest timeout may get
     there first. The operator would then read a generic "test exceeded
-    600s" for precisely the failure this suite exists to name. So the
+    its timeout" for precisely the failure this suite exists to name. So the
     expiry cancels too: the run ends here, the named readiness assertion
     is what fails, and the lane's job is removed instead of sitting in a
     queue nobody is watching any more.
@@ -741,17 +759,19 @@ class LaneExecutorContract:
         """The port promises STREAMED output, not buffered-until-done.
 
         The lane prints a marker, announces that it flushed it, and then
-        refuses to exit until this test writes a handshake file. Observing the
-        marker on the parent's streams while the lane is provably still running
-        is the streaming proof.
+        declines to exit until this test writes a handshake file -- or until its
+        own safety clock expires. Observing the marker on the parent's streams
+        while the lane is provably still running is the streaming proof.
 
         TWO events, not one clock (#7264). The previous version polled ``capfd``
         for 60s and blamed the backend for buffering when the poll came up
         empty -- but the identical observation is produced by a lane that never
         ran, and on a loaded runner with 12 xdist workers that is the likelier
         cause. The lane now says for itself when it has written its output, so
-        the two are separated: the flush window expiring means the lane never
-        spoke, and only the observation window expiring accuses the backend.
+        the causes separate: only the observation window expiring accuses the
+        backend, while the flush window expiring is read against the sentinel --
+        absent means the lane never spoke, present means it spoke late.
+        ``streaming_verdict`` owns which of those the observations support.
         """
         handshake = tmp_path / "proceed"
         flushed = tmp_path / "flushed"

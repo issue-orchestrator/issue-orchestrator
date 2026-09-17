@@ -32,7 +32,10 @@ from issue_orchestrator.domain.lane_execution import (
 from issue_orchestrator.ports.lane_executor import LaneExecutor
 from tests.load_fixture import cpu_load, reap_marked_processes
 from tests.event_wait import await_event
-from tests.unit.lane_executor_contract import LaneExecutorContract
+from tests.unit.lane_executor_contract import (
+    _OBSERVATION_MARGIN_SECONDS,
+    LaneExecutorContract,
+)
 
 pytestmark = [
     pytest.mark.timeout(600),
@@ -156,17 +159,19 @@ _ESCAPE_SCRIPT = (
 #     deadline expires, so a lane that has not flushed by then is gone -- and a
 #     gone lane is reported as an early conclusion, which is the honest answer.
 #
-# No estimate is left in the sum. 945 + 45 of observation + 60 to conclude is
-# 1050s, which is why this class takes a 1200s timeout: a pytest timeout firing
+# No estimate is left in the bound. 960 + 45 of observation + 60 to conclude is
+# 1065s, which is why this class takes a 1200s timeout: a pytest timeout firing
 # first would replace the contract's diagnosis with one that names nothing.
-def _contract_first_flush_backstop_seconds(lane_deadline_seconds: float) -> float:
-    """Everything that can legitimately pass before the lane's first flush.
+def _contract_first_flush_bound_seconds(lane_deadline_seconds: float) -> float:
+    """Everything the BACKEND may legitimately spend before the first flush.
 
     Taken from the SUBMITTED command's deadline, not from the interval constant
     it was composed out of: this backend starts that deadline when execution is
     observed, so a correct job may spend its whole admission allowance queued
     and then legally execute for the whole deadline. Substituting the shorter
     interval here made the window shorter than what the backend permits.
+
+    This is the BOUND, not the window: the window adds a margin, below.
     """
     return (
         2 * TOOL_TIMEOUT_SECONDS
@@ -175,15 +180,26 @@ def _contract_first_flush_backstop_seconds(lane_deadline_seconds: float) -> floa
     )
 
 
-_CONTRACT_FIRST_FLUSH_BACKSTOP_SECONDS = _contract_first_flush_backstop_seconds(
-    LaneExecutorContract().streaming_command(
-        Path("/nonexistent"), Path("/nonexistent/go"), Path("/nonexistent/f")
-    ).deadline.timeout_seconds
+# The window is the bound PLUS a margin, never equal to it. Equal was wrong in
+# two ways: the test's clock starts before work no published bound covers
+# (starting the thread, creating the temp directory, compiling and writing the
+# script), and the poll that notices the window can land a gap late. A backend
+# staying inside every bound it publishes must not be reported late for either
+# (#7264 review r11).
+_CONTRACT_FIRST_FLUSH_BACKSTOP_SECONDS = (
+    _contract_first_flush_bound_seconds(
+        LaneExecutorContract()
+        .streaming_command(
+            Path("/nonexistent"), Path("/nonexistent/go"), Path("/nonexistent/f")
+        )
+        .deadline.timeout_seconds
+    )
+    + _OBSERVATION_MARGIN_SECONDS
 )
 
 
 class TestCondorLaneExecutorContract(LaneExecutorContract):
-    # The module's 600s allowance cannot hold 945 + 45 + 60 of backstops, so
+    # The module's 600s allowance cannot hold 960 + 45 + 60 of backstops, so
     # this class takes 1200s. A
     # pytest timeout firing first would replace the contract's own diagnosis
     # with one that names nothing (#7264). Class-scoped: only the inherited
@@ -206,10 +222,9 @@ class TestCondorLaneExecutorContract(LaneExecutorContract):
         """
         # An INDEPENDENT oracle: composed here from the published constants and
         # the submitted command's own deadline, never through
-        # `_contract_first_flush_backstop_seconds`. Sharing that helper with the
+        # `_contract_first_flush_bound_seconds`. Sharing that helper with the
         # value under test meant mutating it shrank both sides together and the
-        # assertion still passed. `>=`, not `>`, because `>` alone would accept
-        # ADMISSION_TIMEOUT_SECONDS + 0.001.
+        # assertion still passed.
         submitted_deadline = self.streaming_command(
             Path("/nonexistent"), Path("/nonexistent/go"), Path("/nonexistent/f")
         ).deadline.timeout_seconds
@@ -220,13 +235,15 @@ class TestCondorLaneExecutorContract(LaneExecutorContract):
             + submitted_deadline  # and then the whole of the lane's own deadline
         )
 
-        assert self.first_flush_backstop_seconds >= required, (
+        # STRICTLY greater: equal leaves nothing for the work this test does
+        # around the backend, nor for the poll gap that notices the window.
+        assert self.first_flush_backstop_seconds > required, (
             "a job may legitimately spend the backend's full admission window "
             f"({ADMISSION_TIMEOUT_SECONDS:.0f}s) behind two "
             f"{TOOL_TIMEOUT_SECONDS:.0f}s tool calls and then execute for its "
             f"whole {submitted_deadline:.0f}s deadline; a first-flush backstop "
             f"of {self.first_flush_backstop_seconds:.0f}s fails it for being "
-            f"slow (needs >= {required:.0f}s)"
+            f"slow (needs more than {required:.0f}s)"
         )
 
 
@@ -360,7 +377,7 @@ def test_detached_session_escape_states_the_platform_boundary(
                 "the execution environment's core guarantee has regressed"
             )
     finally:
-        # #7142: this test spawns an hour-long escapee ON PURPOSE and asserts
+        # #7142: this test spawns an ten-minute escapee ON PURPOSE and asserts
         # macOS cannot contain it, so the only thing standing between it and
         # the next nine gates is cleanup that runs on every path. `setsid`
         # puts it beyond any group signal; the argv is what still identifies
