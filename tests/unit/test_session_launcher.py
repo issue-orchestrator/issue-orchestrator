@@ -2045,6 +2045,53 @@ class TestLaunchValidationRetrySession:
         assert "Validation Retry" in command
         assert "dirty worktree" in command
 
+    def test_an_investigations_retry_keeps_todays_behaviour(
+        self,
+        launcher_bundle,
+        mock_worktree_manager,
+    ):
+        """The BASELINE, pinned so a narrowing cannot be undone by accident.
+
+        Earlier revisions of this PR refused this launch or derived a scratch
+        worktree for it. Both turned out to need a lifecycle boundary that does
+        not exist yet (#7273, #7274), so today's behaviour stands: the retry
+        launches, carries the recorded branch, and gets no scratch treatment.
+        A mutation restoring either would fail here.
+        """
+        token = "a" * 12
+        scratch_branch = scratch_branch_name(123, token)
+        retry = PendingValidationRetry(
+            issue_number=123,
+            issue_title="Fix checkout",
+            agent_label="agent:web",
+            worktree_path=f"/tmp/w/{scratch_worktree_name('io', 123, token)}",
+            branch_name=scratch_branch,
+            original_prompt="Investigate issue #123",
+            validation_error="boom",
+            validation_error_file=None,
+            retry_count=1,
+            source_task=TaskKind.CODE,
+            validation_cmd="make test",
+        )
+
+        result = launcher_bundle.launcher.launch_validation_retry_session(
+            retry,
+            active_sessions=[],
+        )
+
+        assert result.success is True, (
+            "the investigation's retry was refused; that needs #7274 first"
+        )
+        call = mock_worktree_manager.create_calls[0]
+        assert call["worktree_name"] is None, (
+            "a scratch worktree was derived; that needs #7273 first"
+        )
+        assert call["branch_name"] == scratch_branch
+        assert call["reuse_options"].preserve_branch is False
+        assert result.session is not None
+        assert result.session.scratch_worktree is False
+        assert result.session.tech_lead_scope is None
+
     def test_an_ordinary_retry_keeps_its_existing_derivation(
         self,
         launcher_bundle,

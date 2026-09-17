@@ -11,10 +11,8 @@ from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from ..domain.tech_lead_scratch_identity import (
-    ScratchIdentityVerdict,
     ordinary_worktree_name_pattern,
-    parse_scratch_worktree_name,
-    read_scratch_identity,
+    scratch_pair_identity,
     scratch_worktree_name_pattern,
 )
 from ..ports.worktree_manager import RegisteredWorktree, WORKTREE_ID_MARKER
@@ -170,17 +168,10 @@ def _classify_scratch(
     activity: WorktreeActivityEvidence,
 ) -> WorktreeAuditEntry:
     # The pair must hold together -- same focus issue, same run token -- and
-    # that rule has one owner, which also tells us which issue the directory
-    # claims. Reconstructing the branch from a literal here, or re-parsing the
-    # issue from a local match, were both copies of the owner's grammar.
-    claimed = parse_scratch_worktree_name(path.name)
-    reading = (
-        read_scratch_identity(str(path), item.branch or "", claimed.issue_number)
-        if claimed is not None
-        else None
-    )
+    # that rule has one owner. Reconstructing the branch from a literal here was
+    # a fourth copy of the owner's grammar.
     if not _has_orchestrator_identity(path) or (
-        reading is None or reading.verdict is not ScratchIdentityVerdict.CONSISTENT
+        scratch_pair_identity(path.name, item.branch or "") is None
     ):
         return WorktreeAuditEntry(
             path,
