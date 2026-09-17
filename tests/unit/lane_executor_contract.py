@@ -21,6 +21,7 @@ import signal
 import sys
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -60,10 +61,21 @@ _TREE_REAP_BACKSTOP_SECONDS = 60.0
 # the time it fires, so it can be short.
 _DEADLINE_UNDER_TEST_SECONDS = 5.0
 
-# How long the streaming lane's first output may take to appear while the
-# lane is provably still running, and how long the lane may then take to
-# conclude once the handshake releases it.
-_STREAM_MARKER_BACKSTOP_SECONDS = 60.0
+# The streaming proof is TWO events, deliberately separated (#7264). The old
+# single window could only ever report "the backend buffers", which was the
+# less likely of the two things its expiry actually meant.
+#
+# First: how long the streaming lane may take to reach its FIRST FLUSH — it
+# announces that itself, so this expiry means the lane never produced output at
+# all (a starved runner, a scheduler that never started the job, an interpreter
+# that never got scheduled), which is not a statement about buffering.
+_STREAM_FLUSH_BACKSTOP_SECONDS = 45.0
+# Second: having been told the bytes were written, how long they may take to
+# become observable on the parent's streams while the lane is provably still
+# running. THIS expiry is the buffering diagnosis, and now it is the only thing
+# that can produce one.
+_STREAM_OBSERVABLE_BACKSTOP_SECONDS = 45.0
+# How long the lane may then take to conclude once the handshake releases it.
 _LANE_CONCLUSION_BACKSTOP_SECONDS = 60.0
 
 # Poll gap while waiting for an event. Granularity, not coordination:
@@ -87,7 +99,13 @@ _SLEEPER_LIFETIME_SECONDS = 300.0
 # what makes it safe when the handshake never comes. Declared as a constant
 # and threaded through argv so the lifetime scan can see it — spelled as
 # ``time.time() + 90`` inside the script it was invisible to the scan.
-_STREAMING_LANE_LIFETIME_SECONDS = 90.0
+#
+# It must outlive BOTH observation windows above (45 + 45, plus margin), or its
+# own clock could end the lane mid-observation and the failure would name this
+# fixture instead of the backend. Spelled as a literal because the lifetime scan
+# reads literals; the arithmetic is asserted by
+# ``test_the_streaming_lane_outlives_every_window_that_observes_it``.
+_STREAMING_LANE_LIFETIME_SECONDS = 120.0
 
 # A process tree that must be KILLED, never asked: both processes ignore
 # SIGTERM, so only an escalation to SIGKILL (or a scheduler's hard kill of
@@ -120,9 +138,17 @@ while time.monotonic() < deadline:
 
 # Prints one marker, then refuses to conclude until the test releases it —
 # so the marker can only be observed while the lane is provably running.
+#
+# Its FIRST act after the flush is to ANNOUNCE the flush, the way the tree
+# fixture announces its pids: the sentinel's existence is the event "this lane
+# has written its output", and it is what lets the test tell "the lane never
+# spoke" apart from "the lane spoke and the backend swallowed it" (#7264).
+# ``print(flush=True)`` has returned by then, so the bytes are already on the
+# inherited descriptor when the sentinel appears.
 _STREAMING_SCRIPT = """
 import sys, time, pathlib
 print('STREAM-MARKER', flush=True)
+pathlib.Path(sys.argv[3]).touch()
 deadline = time.monotonic() + float(sys.argv[2])
 while not pathlib.Path(sys.argv[1]).exists():
     if time.monotonic() > deadline:
@@ -180,17 +206,36 @@ def _command(
     )
 
 
+def _await(predicate: "Callable[[], bool]", *, backstop_seconds: float) -> bool:
+    """Wait for an event to have happened; report whether it did.
+
+    The module's one waiting primitive, so "waiting is always waiting on an
+    EVENT, and the backstop only names the event that never happened" is true
+    by construction rather than by each test re-deriving the same loop. The
+    return value is the answer, never an assertion: the caller owns the message
+    that names ITS event, which is the whole point of #7264.
+    """
+    deadline = time.monotonic() + backstop_seconds
+    while True:
+        if predicate():
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(_POLL_SECONDS)
+
+
 def _await_pid_gone(pid: int, deadline_seconds: float) -> bool:
-    deadline = time.monotonic() + deadline_seconds
-    while time.monotonic() < deadline:
+    def gone() -> bool:
         try:
             os.kill(pid, 0)
         except ProcessLookupError:
             return True
         except PermissionError:
+            # Someone else's process now wears this pid; ours is gone.
             pass
-        time.sleep(_POLL_SECONDS)
-    return False
+        return False
+
+    return _await(gone, backstop_seconds=deadline_seconds)
 
 
 @dataclass(frozen=True, slots=True)
@@ -420,18 +465,44 @@ class LaneExecutorContract:
         assert type(outcome) is LaneCompleted
         assert outcome.queue_wait_seconds >= 0.0
 
+    def test_the_streaming_lane_outlives_every_window_that_observes_it(self) -> None:
+        """The fixture's own clock may never end an observation in progress.
+
+        If it could, a slow runner would kill the lane mid-window and the
+        failure would name this fixture rather than the backend under test --
+        which is the class of confusion #7264 was filed about. Asserted rather
+        than commented because the lifetime is spelled as a literal for the
+        fixture-lifetime scan, so nothing else keeps the three numbers in step.
+        """
+        assert _STREAMING_LANE_LIFETIME_SECONDS > (
+            _STREAM_FLUSH_BACKSTOP_SECONDS + _STREAM_OBSERVABLE_BACKSTOP_SECONDS
+        ), (
+            "the streaming lane can expire while the test is still watching it: "
+            f"lifetime={_STREAMING_LANE_LIFETIME_SECONDS:.0f}s vs windows "
+            f"{_STREAM_FLUSH_BACKSTOP_SECONDS:.0f}s + "
+            f"{_STREAM_OBSERVABLE_BACKSTOP_SECONDS:.0f}s"
+        )
+
     def test_output_streams_before_the_lane_completes(
         self, tmp_path: Path, capfd: "pytest.CaptureFixture[str]"
     ) -> None:
         """The port promises STREAMED output, not buffered-until-done.
 
-        The lane prints a marker and then refuses to exit until this
-        test creates a handshake file. Observing the marker while the
-        lane is provably still running is the streaming proof; a
-        backend that buffers until completion deadlocks here and fails
-        by timeout instead of passing dishonestly.
+        The lane prints a marker, announces that it flushed it, and then
+        refuses to exit until this test writes a handshake file. Observing the
+        marker on the parent's streams while the lane is provably still running
+        is the streaming proof.
+
+        TWO events, not one clock (#7264). The previous version polled ``capfd``
+        for 60s and blamed the backend for buffering when the poll came up
+        empty -- but the identical observation is produced by a lane that never
+        ran, and on a loaded runner with 12 xdist workers that is the likelier
+        cause. The lane now says for itself when it has written its output, so
+        the two are separated: the flush window expiring means the lane never
+        spoke, and only the observation window expiring accuses the backend.
         """
         handshake = tmp_path / "proceed"
+        flushed = tmp_path / "flushed"
         outcomes: list[object] = []
 
         def run_lane() -> None:
@@ -445,6 +516,7 @@ class LaneExecutorContract:
                             _STREAMING_SCRIPT,
                             str(handshake),
                             str(_STREAMING_LANE_LIFETIME_SECONDS),
+                            str(flushed),
                         ),
                         tmp_path,
                         self.completion_timeout_seconds,
@@ -455,23 +527,52 @@ class LaneExecutorContract:
 
         thread = threading.Thread(target=run_lane)
         thread.start()
-        observed = ""
-        deadline = time.monotonic() + _STREAM_MARKER_BACKSTOP_SECONDS
-        while time.monotonic() < deadline and "STREAM-MARKER" not in observed:
-            captured = capfd.readouterr()
-            observed += captured.out + captured.err
-            time.sleep(_POLL_SECONDS)
-        marker_seen_while_running = "STREAM-MARKER" in observed and thread.is_alive()
-        handshake.write_text("go")
-        thread.join(timeout=_LANE_CONCLUSION_BACKSTOP_SECONDS)
+        try:
+            lane_flushed = _await(
+                flushed.exists, backstop_seconds=_STREAM_FLUSH_BACKSTOP_SECONDS
+            )
+            observed = ""
+
+            def marker_observed() -> bool:
+                nonlocal observed
+                captured = capfd.readouterr()
+                observed += captured.out + captured.err
+                return "STREAM-MARKER" in observed
+
+            marker_seen = _await(
+                marker_observed,
+                backstop_seconds=_STREAM_OBSERVABLE_BACKSTOP_SECONDS,
+            )
+            lane_still_running = thread.is_alive()
+        finally:
+            # The lane is held alive by the absence of this file, so it is
+            # released even when an assertion below never runs.
+            handshake.write_text("go")
+            thread.join(timeout=_LANE_CONCLUSION_BACKSTOP_SECONDS)
+
         assert not thread.is_alive(), (
             "the lane never concluded within "
             f"{_LANE_CONCLUSION_BACKSTOP_SECONDS:.0f}s of being released by "
             "the handshake"
         )
-        assert marker_seen_while_running, (
-            "output was not observable before completion - the backend "
-            "buffers instead of streaming"
+        assert lane_flushed, (
+            "the lane never announced its first flush within "
+            f"{_STREAM_FLUSH_BACKSTOP_SECONDS:.0f}s - it never produced output "
+            "to stream. This is NOT a buffering diagnosis: the lane did not "
+            "reach its first instruction (a starved runner, or a backend that "
+            "never started the job)."
+        )
+        assert lane_still_running, (
+            "the lane concluded before its output was observed, although the "
+            "handshake that releases it had not been written - the fixture's "
+            "own clock or a backend cancellation ended it, so nothing here "
+            "says anything about streaming"
+        )
+        assert marker_seen, (
+            "the lane flushed STREAM-MARKER to its descriptor, but it was not "
+            f"observable on the parent's streams {_STREAM_OBSERVABLE_BACKSTOP_SECONDS:.0f}s "
+            "later while the lane was still running - the backend buffers "
+            "instead of streaming"
         )
         assert outcomes and type(outcomes[0]) is LaneCompleted
         assert outcomes[0].exit_code == 0
