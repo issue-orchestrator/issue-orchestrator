@@ -146,28 +146,41 @@ _ESCAPE_SCRIPT = (
 # through is the "backstop as mechanism" mistake #7264 was filed about.
 # Admission, plus dispatch and interpreter startup, plus the lane's own clock
 # outliving both observation windows, all inside the 900s suite allowance.
-# Two pool tool calls stand between `run()` being asked and the admission clock
-# starting -- the pool query at construction and the submission itself -- and
-# each is independently allowed TOOL_TIMEOUT_SECONDS. After the execute event
-# there is still file transfer and interpreter startup before the lane's first
-# instruction, which nothing bounds for us, so that allowance is named here
-# rather than folded into a round number.
-_LANE_STARTUP_ALLOWANCE_SECONDS = 60.0
-_CONTRACT_FIRST_FLUSH_BACKSTOP_SECONDS = (
-    ADMISSION_TIMEOUT_SECONDS
-    + 2 * TOOL_TIMEOUT_SECONDS
-    + _LANE_STARTUP_ALLOWANCE_SECONDS
+# Everything that can legitimately pass between "run() was asked" and the lane's
+# first flush, taken from the bounds the SYSTEM publishes rather than estimated:
+#
+#   * two pool tool calls before the admission clock even starts -- the pool
+#     query at construction and the submission itself -- each independently
+#     allowed TOOL_TIMEOUT_SECONDS;
+#   * the queue wait the backend permits, ADMISSION_TIMEOUT_SECONDS;
+#   * and after the execute event, the lane's OWN deadline. Nothing else bounds
+#     transfer and interpreter startup, but the backend kills the lane when its
+#     deadline expires, so a lane that has not flushed by then is gone -- and a
+#     gone lane is reported as an early conclusion, which is the honest answer.
+#
+# No estimate is left in the sum, which is also what keeps the guard below
+# independent: it recomposes the same published constants, so lowering a local
+# number cannot lower its own expectation.
+def _contract_first_flush_backstop_seconds(lane_deadline_seconds: float) -> float:
+    return (
+        2 * TOOL_TIMEOUT_SECONDS + ADMISSION_TIMEOUT_SECONDS + lane_deadline_seconds
+    )
+
+
+_CONTRACT_FIRST_FLUSH_BACKSTOP_SECONDS = _contract_first_flush_backstop_seconds(
+    LaneExecutorContract.completion_timeout_seconds
 )
-# > first flush (720) + observation (45). Literal for the fixture-lifetime scan.
-_CONTRACT_STREAMING_LANE_LIFETIME_SECONDS = 840.0
+# > first flush (780) + observation (45). Literal for the fixture-lifetime scan,
+# and at its 900s budget.
+_CONTRACT_STREAMING_LANE_LIFETIME_SECONDS = 900.0
 
 
 class TestCondorLaneExecutorContract(LaneExecutorContract):
-    # The module's 600s allowance cannot hold 660 + 45 + 60 of backstops, and a
+    # The module's 600s allowance cannot hold 780 + 45 + 60 of backstops, and a
     # pytest timeout firing first would replace the contract's own diagnosis
     # with one that names nothing (#7264). Class-scoped: only the inherited
     # contract needs it.
-    pytestmark = pytest.mark.timeout(900)
+    pytestmark = pytest.mark.timeout(1200)
 
     first_flush_backstop_seconds = _CONTRACT_FIRST_FLUSH_BACKSTOP_SECONDS
     streaming_lane_lifetime_seconds = _CONTRACT_STREAMING_LANE_LIFETIME_SECONDS
@@ -183,22 +196,22 @@ class TestCondorLaneExecutorContract(LaneExecutorContract):
         green on the defaults while silently reimposing a 45s start-time limit
         on a backend allowed 600s of queue wait.
         """
-        # Every bound between "run() was asked" and "the lane's first
-        # instruction", not just the admission clock: two pool tool calls
-        # precede it, and startup follows the execute event. `>` alone would
-        # accept ADMISSION_TIMEOUT_SECONDS + 0.001.
+        # Recomposed from the PUBLISHED bounds, not from this module's constant,
+        # so lowering the constant cannot lower the expectation with it. `>`
+        # alone would accept ADMISSION_TIMEOUT_SECONDS + 0.001.
         required = (
-            ADMISSION_TIMEOUT_SECONDS
-            + 2 * TOOL_TIMEOUT_SECONDS
-            + _LANE_STARTUP_ALLOWANCE_SECONDS
+            2 * TOOL_TIMEOUT_SECONDS
+            + ADMISSION_TIMEOUT_SECONDS
+            + self.completion_timeout_seconds
         )
 
         assert self.first_flush_backstop_seconds >= required, (
             "a job may legitimately spend the backend's full admission window "
             f"({ADMISSION_TIMEOUT_SECONDS:.0f}s) behind two "
-            f"{TOOL_TIMEOUT_SECONDS:.0f}s tool calls, and still has to start; a "
+            f"{TOOL_TIMEOUT_SECONDS:.0f}s tool calls and then take its whole "
+            f"{self.completion_timeout_seconds:.0f}s deadline to start; a "
             f"first-flush backstop of {self.first_flush_backstop_seconds:.0f}s "
-            f"fails it for being queued (needs >= {required:.0f}s)"
+            f"fails it for being slow (needs >= {required:.0f}s)"
         )
         assert (
             self.streaming_lane_lifetime_seconds

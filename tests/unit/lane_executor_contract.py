@@ -249,60 +249,74 @@ def streaming_failure(
 ) -> str | None:
     """Which streaming failure the three observations describe, if any.
 
-    The diagnosis in ONE place, as a value, rather than three assertions whose
-    order encodes the precedence and whose messages cannot be tested. #7264 is
+    The diagnosis in ONE place, as a value, rather than assertions whose order
+    encodes the precedence and whose messages cannot be tested. #7264 is
     entirely about a message that named the wrong cause; a diagnosis worth
-    getting right is worth being able to test.
+    getting right is worth being able to test, and all eight combinations of
+    the three observations are tested.
 
-    Precedence, and why:
+    The three observations are independent, and the answer is NOT a precedence
+    over them -- reading them in a fixed order is what produced two wrong
+    messages in round 3. They decide between four states:
 
-    1. no announced flush -- the precondition for reading anything into the
-       rest. Not a buffering diagnosis, and not proof that no bytes were
-       written: a lane killed between its print and its announcement leaves the
-       same silence;
-    2. concluded early -- the lane stopped before the handshake released it, so
-       the observation window was cut short by something other than the
-       backend's streaming. The message differs by whether the marker was seen
-       first, because those are genuinely different events;
-    3. flushed but never observable -- the only buffering diagnosis, and even
-       then it cannot separate a backend that buffers from a relay of its own
-       that stopped running.
+    * **streaming proved** -- the marker was observed while the lane was
+      provably still running. Nothing else matters, including whether the
+      fixture managed to announce its flush;
+    * **ordering unproved** -- the marker was observed, but the lane had
+      concluded by the time that was sampled, so "before completion" is exactly
+      what this run cannot establish;
+    * **buffering** -- the lane ANNOUNCED the flush, stayed alive, and the bytes
+      never arrived. The only diagnosis that says anything about the backend,
+      and even then it cannot separate buffering from a relay of the backend's
+      own that stopped running;
+    * **the lane never got that far** -- no announcement and no marker. Not a
+      buffering diagnosis and not proof that no bytes were written: a lane
+      killed between its print and its announcement leaves the same silence.
+
+    A missing announcement WITH an observed marker is a broken fixture, not a
+    broken backend, and says so: the invariant held.
     """
+    if marker_seen and still_running:
+        if not announced_flush:
+            return (
+                "the streaming invariant HELD -- STREAM-MARKER was observed "
+                "while the lane was still running -- but the lane never "
+                "announced its first flush, so the fixture that separates "
+                "'never ran' from 'buffered' is broken. Fix the fixture; this "
+                "says nothing against the backend."
+            )
+        return None
+    if marker_seen:
+        return (
+            "STREAM-MARKER was observed, but the lane had already concluded "
+            "when that was sampled, so this run cannot establish that the "
+            "output was observable BEFORE completion - which is the whole "
+            "invariant. The lane ended on something other than the handshake: "
+            "its own clock, or a backend cancellation."
+        )
     if not announced_flush:
         return (
             "the lane never announced its first flush within "
-            f"{first_flush_backstop_seconds:.0f}s. This is NOT a buffering "
-            "diagnosis and NOT proof that no output was written: the lane may "
-            "never have been admitted or scheduled, or may have been killed "
-            "between writing the marker and announcing it. Nothing here is a "
-            "statement about the backend's streaming."
+            f"{first_flush_backstop_seconds:.0f}s, and no marker was observed. "
+            "This is NOT a buffering diagnosis and NOT proof that no output was "
+            "written: the lane may never have been admitted or scheduled, or "
+            "may have been killed between writing the marker and announcing it."
         )
     if not still_running:
-        if marker_seen:
-            return (
-                "the lane concluded before the handshake released it, although "
-                "its marker WAS observed - so the streaming duty was "
-                "discharged, but the lane ended on something else (its own "
-                "clock, or a backend cancellation) and this run proves nothing "
-                "about the outcome that follows"
-            )
         return (
             "the lane concluded before its output was ever observed, although "
             "the handshake that releases it had not been written - the "
             "fixture's own clock or a backend cancellation ended it, so nothing "
             "here says anything about streaming"
         )
-    if not marker_seen:
-        return (
-            "the lane announced that it flushed STREAM-MARKER, and it was still "
-            "not observable on the parent's streams "
-            f"{_STREAM_OBSERVABLE_BACKSTOP_SECONDS:.0f}s later while the lane "
-            "was still running. Either the backend buffers until completion, or "
-            "a relay it pumps on its own loop stopped running; this test cannot "
-            "tell those two apart, so check the backend's relay before "
-            "concluding it buffers."
-        )
-    return None
+    return (
+        "the lane announced that it flushed STREAM-MARKER, and it was still not "
+        "observable on the parent's streams "
+        f"{_STREAM_OBSERVABLE_BACKSTOP_SECONDS:.0f}s later while the lane was "
+        "still running. Either the backend buffers until completion, or a relay "
+        "it pumps on its own loop stopped running; this test cannot tell those "
+        "two apart, so check the backend's relay before concluding it buffers."
+    )
 
 
 def _await_pid_gone(pid: int, deadline_seconds: float) -> bool:

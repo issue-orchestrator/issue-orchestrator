@@ -95,65 +95,101 @@ class TestAwaitEvent:
 
 
 class TestStreamingFailure:
-    """Which cause the three observations actually support (#7264)."""
+    """Which cause the three observations actually support (#7264).
 
-    def _verdict(self, **overrides: bool) -> str | None:
-        observations: dict[str, bool] = {
-            "announced_flush": True,
-            "marker_seen": True,
-            "still_running": True,
-        }
-        observations.update(overrides)
+    All eight combinations, because the three observations are independent and
+    reading them in a fixed order is what produced two wrong messages in an
+    earlier round.
+    """
+
+    def _verdict(
+        self, announced_flush: bool, marker_seen: bool, still_running: bool
+    ) -> str | None:
         return streaming_failure(
-            first_flush_backstop_seconds=45.0, **observations
+            announced_flush=announced_flush,
+            marker_seen=marker_seen,
+            still_running=still_running,
+            first_flush_backstop_seconds=45.0,
         )
 
-    def test_a_healthy_stream_is_no_failure(self) -> None:
-        assert self._verdict() is None
+    def test_the_whole_truth_table_is_classified(self) -> None:
+        """No combination falls through to a wrong neighbour's message."""
+        expectations = {
+            # announced, marker, running
+            (True, True, True): None,
+            (False, True, True): "fixture",
+            (True, True, False): "ordering",
+            (False, True, False): "ordering",
+            (True, False, True): "buffering",
+            (True, False, False): "early",
+            (False, False, True): "never got that far",
+            (False, False, False): "never got that far",
+        }
+        markers = {
+            "fixture": "the streaming invariant HELD",
+            "ordering": "cannot establish that the output was observable BEFORE",
+            "buffering": "Either the backend buffers until completion",
+            "early": "concluded before its output was ever observed",
+            "never got that far": "never announced its first flush",
+        }
 
-    def test_no_announced_flush_is_not_a_buffering_diagnosis(self) -> None:
-        verdict = self._verdict(announced_flush=False, marker_seen=False)
+        for observations, expected in expectations.items():
+            verdict = self._verdict(*observations)
+            if expected is None:
+                assert verdict is None, f"{observations} was reported as {verdict!r}"
+                continue
+            assert verdict is not None, f"{observations} was reported as healthy"
+            assert markers[expected] in verdict, (
+                f"{observations} should be the {expected!r} diagnosis, got {verdict!r}"
+            )
 
-        assert verdict is not None
-        assert "never announced its first flush" in verdict
-        assert "NOT a buffering diagnosis" in verdict
+    def test_an_observed_marker_on_a_live_lane_is_the_invariant_holding(self) -> None:
+        assert self._verdict(True, True, True) is None
 
-    def test_the_missing_flush_outranks_everything_else(self) -> None:
-        """It is the precondition for reading anything into the rest."""
-        verdict = self._verdict(
-            announced_flush=False, marker_seen=False, still_running=False
-        )
+    def test_a_missing_announcement_never_overrides_an_observed_marker(self) -> None:
+        """The marker was seen WHILE RUNNING: the invariant held.
 
-        assert verdict is not None and "never announced its first flush" in verdict
-
-    def test_concluding_before_the_marker_was_seen_says_so(self) -> None:
-        verdict = self._verdict(marker_seen=False, still_running=False)
-
-        assert verdict is not None
-        assert "before its output was ever observed" in verdict
-        assert "buffers" not in verdict, "it blamed the backend for an early exit"
-
-    def test_concluding_after_the_marker_was_seen_is_a_different_failure(self) -> None:
-        """Both are early conclusions; only one leaves the streaming duty undone.
-
-        Reporting either as the other is how #7264's original message came to
-        name a cause its observation could not establish.
+        The fixture that separates "never ran" from "buffered" is broken, which
+        must be reported -- but as a fixture failure. Reading the announcement
+        first, as an earlier round did, blamed the backend for a lane that had
+        demonstrably streamed.
         """
-        verdict = self._verdict(still_running=False)
+        verdict = self._verdict(False, True, True)
 
         assert verdict is not None
-        assert "its marker WAS observed" in verdict
+        assert "the streaming invariant HELD" in verdict
+        assert "Fix the fixture" in verdict
+        assert "Either the backend buffers" not in verdict, (
+            "it accused the backend for a lane that had demonstrably streamed"
+        )
 
-    def test_flushed_but_never_observable_is_the_only_buffering_diagnosis(
-        self,
-    ) -> None:
-        verdict = self._verdict(marker_seen=False)
+    def test_a_marker_seen_after_conclusion_proves_no_ordering(self) -> None:
+        """"Observable before completion" is exactly what this cannot show.
+
+        An earlier round called this discharged, which it is not: the marker may
+        have become visible only as the lane ended.
+        """
+        verdict = self._verdict(True, True, False)
 
         assert verdict is not None
-        assert "buffers until completion" in verdict
+        assert "cannot establish that the output was observable BEFORE" in verdict
+        assert "discharged" not in verdict
+
+    def test_only_a_live_announced_lane_can_be_accused_of_buffering(self) -> None:
+        verdict = self._verdict(True, False, True)
+
+        assert verdict is not None
+        assert "Either the backend buffers until completion" in verdict
         assert "relay it pumps on its own loop" in verdict, (
             "it claimed to have proven buffering, which this observation cannot"
         )
+
+    def test_nothing_observed_and_nothing_announced_blames_nobody(self) -> None:
+        verdict = self._verdict(False, False, True)
+
+        assert verdict is not None
+        assert "NOT a buffering diagnosis" in verdict
+        assert "NOT proof that no output was written" in verdict
 
 
 class _FinishedThread(threading.Thread):
@@ -194,18 +230,37 @@ class TestReleaseLane:
     def test_a_release_failure_never_replaces_the_failure_it_cleans_up_after(
         self, tmp_path: Path
     ) -> None:
-        """The causal failure is the one the operator must read -- and the leak
-        must still be visible, so it is kept as that exception's context."""
+        """The causal failure is the one the operator must read -- the SAME
+        exception object, with its original traceback, and the leak kept as its
+        context so it is still visible.
+
+        Identity and traceback, not just type and message: re-raising a freshly
+        constructed exception with the same text would satisfy a message check
+        while throwing away the frames that say where the failure happened.
+        """
         unwritable = tmp_path / "no-such-directory" / "proceed"
         thread = _FinishedThread()
         thread.start()
+        original = AssertionError("the original failure")
 
-        with pytest.raises(AssertionError, match="the original failure") as caught:
+        with pytest.raises(AssertionError) as caught:
             try:
-                raise AssertionError("the original failure")
+                raise original
             finally:
                 release_lane(unwritable, thread)
 
+        assert caught.value is original, (
+            "a different exception object was raised, so the original traceback"
+            " is gone"
+        )
+        frames = []
+        traceback = caught.value.__traceback__
+        while traceback is not None:
+            frames.append(traceback.tb_frame.f_code.co_name)
+            traceback = traceback.tb_next
+        assert frames.count("test_a_release_failure_never_replaces_the_failure_it_cleans_up_after") >= 1, (
+            f"the raising frame was lost from the traceback: {frames}"
+        )
         assert isinstance(caught.value.__context__, OSError), (
             "the release failure was discarded instead of kept as context"
         )
