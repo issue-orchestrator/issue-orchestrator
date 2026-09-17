@@ -32,7 +32,10 @@ from issue_orchestrator.domain.lane_execution import (
 from issue_orchestrator.ports.lane_executor import LaneExecutor
 from tests.load_fixture import cpu_load, reap_marked_processes
 from tests.event_wait import await_event
-from tests.unit.lane_executor_contract import LaneExecutorContract
+from tests.unit.lane_executor_contract import (
+    LANE_FIRST_INSTRUCTION_SECONDS,
+    LaneExecutorContract,
+)
 
 pytestmark = [
     pytest.mark.timeout(600),
@@ -161,14 +164,16 @@ _ESCAPE_SCRIPT = (
 # No estimate is left in the sum, which is also what keeps the guard below
 # independent: it recomposes the same published constants, so lowering a local
 # number cannot lower its own expectation.
-def _contract_first_flush_backstop_seconds(lane_deadline_seconds: float) -> float:
+def _contract_first_flush_backstop_seconds(first_instruction_seconds: float) -> float:
     return (
-        2 * TOOL_TIMEOUT_SECONDS + ADMISSION_TIMEOUT_SECONDS + lane_deadline_seconds
+        2 * TOOL_TIMEOUT_SECONDS
+        + ADMISSION_TIMEOUT_SECONDS
+        + first_instruction_seconds
     )
 
 
 _CONTRACT_FIRST_FLUSH_BACKSTOP_SECONDS = _contract_first_flush_backstop_seconds(
-    LaneExecutorContract.completion_timeout_seconds
+    LANE_FIRST_INSTRUCTION_SECONDS
 )
 # > first flush (780) + observation (45). Literal for the fixture-lifetime scan,
 # and at its 900s budget.
@@ -202,14 +207,15 @@ class TestCondorLaneExecutorContract(LaneExecutorContract):
         required = (
             2 * TOOL_TIMEOUT_SECONDS
             + ADMISSION_TIMEOUT_SECONDS
-            + self.completion_timeout_seconds
+            + LANE_FIRST_INSTRUCTION_SECONDS
         )
 
         assert self.first_flush_backstop_seconds >= required, (
             "a job may legitimately spend the backend's full admission window "
             f"({ADMISSION_TIMEOUT_SECONDS:.0f}s) behind two "
             f"{TOOL_TIMEOUT_SECONDS:.0f}s tool calls and then take its whole "
-            f"{self.completion_timeout_seconds:.0f}s deadline to start; a "
+            f"{LANE_FIRST_INSTRUCTION_SECONDS:.0f}s to reach its first "
+            "instruction; a "
             f"first-flush backstop of {self.first_flush_backstop_seconds:.0f}s "
             f"fails it for being slow (needs >= {required:.0f}s)"
         )

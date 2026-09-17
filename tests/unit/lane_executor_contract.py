@@ -91,6 +91,29 @@ _STREAM_OBSERVABLE_BACKSTOP_SECONDS = 45.0
 # How long the lane may then take to conclude once the handshake releases it.
 _LANE_CONCLUSION_BACKSTOP_SECONDS = 60.0
 
+# How long a lane may take to reach its FIRST INSTRUCTION once it is executing:
+# file transfer, interpreter startup, imports. Distinct from the lane's deadline
+# even though both were once the same 120s number -- one is an interval inside
+# the lane's life, the other is the whole of it, and spending the whole deadline
+# on the interval leaves nothing for the windows that then observe the lane.
+LANE_FIRST_INSTRUCTION_SECONDS = 120.0
+
+# The deadline the STREAMING lane is submitted with. It is not the contract's
+# ordinary machinery allowance: this lane is deliberately held alive to be
+# observed, so its deadline must outlive reaching its first instruction AND both
+# windows that then watch it, or the backend kills it mid-observation and the
+# failure names the fixture instead of the backend (#7264).
+#
+# Strictly greater than that sum, not equal to it: a deadline that expires at
+# the exact instant the last window closes is a race, and this module does not
+# settle correctness with ties.
+_STREAMING_LANE_DEADLINE_SECONDS = (
+    LANE_FIRST_INSTRUCTION_SECONDS
+    + _STREAM_OBSERVABLE_BACKSTOP_SECONDS
+    + _LANE_CONCLUSION_BACKSTOP_SECONDS
+    + _LANE_CONCLUSION_BACKSTOP_SECONDS
+)
+
 # --------------------------------------------------------------------------
 # Fixture processes. Every one of them dies of its own clock (#7142): a
 # ``finally`` protects only a harness that gets to run it, and the machine
@@ -242,7 +265,8 @@ def release_lane(handshake: Path, thread: threading.Thread) -> None:
 
 def streaming_failure(
     *,
-    announced_flush: bool,
+    announced_in_window: bool,
+    announced_eventually: bool,
     marker_seen: bool,
     still_running: bool,
     first_flush_backstop_seconds: float,
@@ -275,17 +299,33 @@ def streaming_failure(
 
     A missing announcement WITH an observed marker is a broken fixture, not a
     broken backend, and says so: the invariant held.
+
+    "Announced" is TWO observations, not one. ``announced_in_window`` is the
+    timed one -- it answers whether the backstop was breached. It goes stale the
+    moment the window closes, and the sentinel is written just after the print,
+    so a lane whose sentinel lands one poll gap late would otherwise be reported
+    as one whose fixture never announced at all. ``announced_eventually`` is
+    re-read at classification time and separates LATE from ABSENT: both fail,
+    because a breached backstop is a real result, but only one of them is a
+    broken fixture.
     """
     if marker_seen and still_running:
-        if not announced_flush:
+        if announced_in_window:
+            return None
+        if announced_eventually:
             return (
                 "the streaming invariant HELD -- STREAM-MARKER was observed "
-                "while the lane was still running -- but the lane never "
-                "announced its first flush, so the fixture that separates "
-                "'never ran' from 'buffered' is broken. Fix the fixture; this "
-                "says nothing against the backend."
+                "while the lane was still running -- but the lane took longer "
+                f"than {first_flush_backstop_seconds:.0f}s to announce its "
+                "first flush. The backstop was breached, so this fails; the "
+                "backend is not the reason, and the window is what to look at."
             )
-        return None
+        return (
+            "the streaming invariant HELD -- STREAM-MARKER was observed while "
+            "the lane was still running -- but the sentinel never appeared at "
+            "all, so the fixture that separates 'never ran' from 'buffered' is "
+            "broken. Fix the fixture; this says nothing against the backend."
+        )
     if marker_seen:
         return (
             "STREAM-MARKER was observed, but the lane had already concluded "
@@ -294,7 +334,7 @@ def streaming_failure(
             "invariant. The lane ended on something other than the handshake: "
             "its own clock, or a backend cancellation."
         )
-    if not announced_flush:
+    if not announced_in_window:
         return (
             "the lane never announced its first flush within "
             f"{first_flush_backstop_seconds:.0f}s, and no marker was observed. "
@@ -585,6 +625,17 @@ class LaneExecutorContract:
             self.first_flush_backstop_seconds + _STREAM_OBSERVABLE_BACKSTOP_SECONDS
         )
 
+        assert _STREAMING_LANE_DEADLINE_SECONDS > (
+            LANE_FIRST_INSTRUCTION_SECONDS
+            + _STREAM_OBSERVABLE_BACKSTOP_SECONDS
+            + _LANE_CONCLUSION_BACKSTOP_SECONDS
+        ), (
+            "the streaming lane's own DEADLINE can expire while it is being "
+            f"observed: {_STREAMING_LANE_DEADLINE_SECONDS:.0f}s against "
+            f"{LANE_FIRST_INSTRUCTION_SECONDS:.0f}s to start plus "
+            f"{_STREAM_OBSERVABLE_BACKSTOP_SECONDS:.0f}s of observation plus "
+            f"{_LANE_CONCLUSION_BACKSTOP_SECONDS:.0f}s to conclude"
+        )
         assert self.streaming_lane_lifetime_seconds > windows, (
             "the streaming lane can expire while the test is still watching it: "
             f"lifetime={self.streaming_lane_lifetime_seconds:.0f}s vs windows "
@@ -628,7 +679,7 @@ class LaneExecutorContract:
                             str(flushed),
                         ),
                         tmp_path,
-                        self.completion_timeout_seconds,
+                        _STREAMING_LANE_DEADLINE_SECONDS,
                     ),
                     self.resources(),
                 )
@@ -658,7 +709,11 @@ class LaneExecutorContract:
             release_lane(handshake, thread)
 
         failure = streaming_failure(
-            announced_flush=lane_announced_flush,
+            announced_in_window=lane_announced_flush,
+            # Re-read now, not reused from the timed observation above: the
+            # sentinel is written just after the print, so one that landed a
+            # poll gap late is late, not absent.
+            announced_eventually=flushed.exists(),
             marker_seen=marker_seen,
             still_running=lane_still_running,
             first_flush_backstop_seconds=self.first_flush_backstop_seconds,

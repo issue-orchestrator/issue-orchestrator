@@ -103,10 +103,20 @@ class TestStreamingFailure:
     """
 
     def _verdict(
-        self, announced_flush: bool, marker_seen: bool, still_running: bool
+        self,
+        announced_in_window: bool,
+        marker_seen: bool,
+        still_running: bool,
+        *,
+        announced_eventually: bool | None = None,
     ) -> str | None:
         return streaming_failure(
-            announced_flush=announced_flush,
+            announced_in_window=announced_in_window,
+            announced_eventually=(
+                announced_in_window
+                if announced_eventually is None
+                else announced_eventually
+            ),
             marker_seen=marker_seen,
             still_running=still_running,
             first_flush_backstop_seconds=45.0,
@@ -126,7 +136,7 @@ class TestStreamingFailure:
             (False, False, False): "never got that far",
         }
         markers = {
-            "fixture": "the streaming invariant HELD",
+            "fixture": "the sentinel never appeared at all",
             "ordering": "cannot establish that the output was observable BEFORE",
             "buffering": "Either the backend buffers until completion",
             "early": "concluded before its output was ever observed",
@@ -154,14 +164,30 @@ class TestStreamingFailure:
         first, as an earlier round did, blamed the backend for a lane that had
         demonstrably streamed.
         """
-        verdict = self._verdict(False, True, True)
+        verdict = self._verdict(False, True, True, announced_eventually=False)
 
         assert verdict is not None
         assert "the streaming invariant HELD" in verdict
+        assert "the sentinel never appeared at all" in verdict
         assert "Fix the fixture" in verdict
         assert "Either the backend buffers" not in verdict, (
             "it accused the backend for a lane that had demonstrably streamed"
         )
+
+    def test_a_sentinel_that_lands_late_is_late_and_not_absent(self) -> None:
+        """The timed observation goes stale the moment its window closes.
+
+        The sentinel is written just after the print, so one that lands a poll
+        gap past the boundary would otherwise be reported as a fixture that
+        never announced at all. Both fail -- a breached backstop is a real
+        result -- but only one of them is a broken fixture.
+        """
+        verdict = self._verdict(False, True, True, announced_eventually=True)
+
+        assert verdict is not None
+        assert "took longer than 45s to announce" in verdict
+        assert "the sentinel never appeared" not in verdict
+        assert "Either the backend buffers" not in verdict
 
     def test_a_marker_seen_after_conclusion_proves_no_ordering(self) -> None:
         """"Observable before completion" is exactly what this cannot show.
@@ -243,9 +269,19 @@ class TestReleaseLane:
         thread.start()
         original = AssertionError("the original failure")
 
+        def raise_it_from_a_frame_of_its_own() -> None:
+            """Uniquely named so the traceback can be checked for IT.
+
+            Asserting on the test function's own frame proves nothing: the
+            cleanup call contributes that frame anyway, so clearing
+            ``__traceback__`` before re-raising the same object would still
+            pass.
+            """
+            raise original
+
         with pytest.raises(AssertionError) as caught:
             try:
-                raise original
+                raise_it_from_a_frame_of_its_own()
             finally:
                 release_lane(unwritable, thread)
 
@@ -258,8 +294,8 @@ class TestReleaseLane:
         while traceback is not None:
             frames.append(traceback.tb_frame.f_code.co_name)
             traceback = traceback.tb_next
-        assert frames.count("test_a_release_failure_never_replaces_the_failure_it_cleans_up_after") >= 1, (
-            f"the raising frame was lost from the traceback: {frames}"
+        assert "raise_it_from_a_frame_of_its_own" in frames, (
+            f"the frame the failure was RAISED from is gone: {frames}"
         )
         assert isinstance(caught.value.__context__, OSError), (
             "the release failure was discarded instead of kept as context"
