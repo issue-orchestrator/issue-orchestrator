@@ -15,11 +15,7 @@ import pytest
 
 from tests import event_wait
 from tests.event_wait import await_event
-from tests.unit.lane_executor_contract import (
-    release_lane,
-    streaming_failure,
-    streaming_verdict,
-)
+from tests.unit.lane_executor_contract import release_lane, streaming_verdict
 
 
 class _FakeClock:
@@ -98,128 +94,109 @@ class TestAwaitEvent:
             await_event(lambda: 1 // 0 == 0, backstop_seconds=5.0)
 
 
-class TestStreamingFailure:
-    """Which cause the three observations actually support (#7264).
+class TestStreamingVerdictTable:
+    """Which cause the observations actually support (#7264).
 
-    All eight combinations, because the three observations are independent and
-    reading them in a fixed order is what produced two wrong messages in an
-    earlier round.
+    Driven through `streaming_verdict`, the ONLY classifier -- the Boolean-taking
+    form is private to it now, because while it was public the real call site
+    could be changed back to pass the stale timed observation and every test here
+    would still have exercised the correct helper.
+
+    All sixteen combinations, because the observations are independent and
+    reading them in a fixed order is what produced wrong messages twice.
     """
 
     def _verdict(
         self,
+        tmp_path: Path,
         announced_in_window: bool,
+        announced_eventually: bool,
         marker_seen: bool,
         still_running: bool,
-        *,
-        announced_eventually: bool | None = None,
     ) -> str | None:
-        return streaming_failure(
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        sentinel = tmp_path / "flushed"
+        if announced_eventually:
+            sentinel.write_text("")
+        return streaming_verdict(
+            sentinel=sentinel,
             announced_in_window=announced_in_window,
-            announced_eventually=(
-                announced_in_window
-                if announced_eventually is None
-                else announced_eventually
-            ),
             marker_seen=marker_seen,
             still_running=still_running,
             first_flush_backstop_seconds=45.0,
         )
 
-    def test_the_whole_truth_table_is_classified(self) -> None:
-        """No combination falls through to a wrong neighbour's message."""
-        expectations = {
-            # announced, marker, running
-            (True, True, True): None,
-            (False, True, True): "fixture",
-            (True, True, False): "ordering",
-            (False, True, False): "ordering",
-            (True, False, True): "buffering",
-            (True, False, False): "early",
-            (False, False, True): "never got that far",
-            (False, False, False): "never got that far",
-        }
-        markers = {
-            "fixture": "the sentinel never appeared at all",
-            "ordering": "cannot establish that the output was observable BEFORE",
-            "buffering": "Either the backend buffers until completion",
-            "early": "concluded before its output was ever observed",
-            "never got that far": "never announced its first flush",
-        }
+    #: (in_window, eventually, marker, running) -> the diagnosis it must give.
+    #: `in_window and not eventually` is impossible: the sentinel is durable.
+    TABLE = {
+        (True, True, True, True): None,
+        (True, True, True, False): "ordering",
+        (True, True, False, True): "buffering",
+        (True, True, False, False): "early",
+        (False, True, True, True): "late",
+        (False, True, True, False): "ordering",
+        (False, True, False, True): "late-unproved",
+        (False, True, False, False): "late-unproved",
+        (False, False, True, True): "fixture",
+        (False, False, True, False): "ordering",
+        (False, False, False, True): "never",
+        (False, False, False, False): "never",
+    }
+    MARKERS = {
+        "ordering": "cannot establish that the output was observable BEFORE",
+        "buffering": "Either the backend buffers until completion",
+        "early": "concluded before its output was ever observed",
+        "late": "took longer than 45s to announce",
+        "late-unproved": "only announced it after its 45s window had closed",
+        "fixture": "the sentinel never appeared at all",
+        "never": "never announced its first flush within 45s, and no marker",
+    }
 
-        for observations, expected in expectations.items():
-            verdict = self._verdict(*observations)
+    def test_every_reachable_combination_is_classified(self, tmp_path: Path) -> None:
+        for index, (observations, expected) in enumerate(self.TABLE.items()):
+            verdict = self._verdict(tmp_path / str(index), *observations)
             if expected is None:
                 assert verdict is None, f"{observations} was reported as {verdict!r}"
                 continue
             assert verdict is not None, f"{observations} was reported as healthy"
-            assert markers[expected] in verdict, (
-                f"{observations} should be the {expected!r} diagnosis, got {verdict!r}"
+            assert self.MARKERS[expected] in verdict, (
+                f"{observations} should be the {expected!r} diagnosis,"
+                f" got {verdict!r}"
             )
 
-    def test_an_observed_marker_on_a_live_lane_is_the_invariant_holding(self) -> None:
-        assert self._verdict(True, True, True) is None
+    def test_a_late_sentinel_is_never_reported_as_a_lane_that_never_ran(
+        self, tmp_path: Path
+    ) -> None:
+        """The sentinel PROVES the lane executed and wrote output.
 
-    def test_a_missing_announcement_never_overrides_an_observed_marker(self) -> None:
-        """The marker was seen WHILE RUNNING: the invariant held.
-
-        The fixture that separates "never ran" from "buffered" is broken, which
-        must be reported -- but as a fixture failure. Reading the announcement
-        first, as an earlier round did, blamed the backend for a lane that had
-        demonstrably streamed.
+        Ignoring it when no marker was seen reported a lane that had
+        demonstrably flushed as one that may never have been admitted.
         """
-        verdict = self._verdict(False, True, True, announced_eventually=False)
+        verdict = self._verdict(tmp_path, False, True, False, True)
+
+        assert verdict is not None
+        assert "The lane DID execute and write output" in verdict
+        assert "never have been admitted" not in verdict
+
+    def test_a_missing_announcement_never_overrides_an_observed_marker(
+        self, tmp_path: Path
+    ) -> None:
+        """The marker was seen WHILE RUNNING: the invariant held."""
+        verdict = self._verdict(tmp_path, False, False, True, True)
 
         assert verdict is not None
         assert "the streaming invariant HELD" in verdict
-        assert "the sentinel never appeared at all" in verdict
-        assert "Fix the fixture" in verdict
-        assert "Either the backend buffers" not in verdict, (
-            "it accused the backend for a lane that had demonstrably streamed"
-        )
-
-    def test_a_sentinel_that_lands_late_is_late_and_not_absent(self) -> None:
-        """The timed observation goes stale the moment its window closes.
-
-        The sentinel is written just after the print, so one that lands a poll
-        gap past the boundary would otherwise be reported as a fixture that
-        never announced at all. Both fail -- a breached backstop is a real
-        result -- but only one of them is a broken fixture.
-        """
-        verdict = self._verdict(False, True, True, announced_eventually=True)
-
-        assert verdict is not None
-        assert "took longer than 45s to announce" in verdict
-        assert "the sentinel never appeared" not in verdict
         assert "Either the backend buffers" not in verdict
 
-    def test_a_marker_seen_after_conclusion_proves_no_ordering(self) -> None:
-        """"Observable before completion" is exactly what this cannot show.
-
-        An earlier round called this discharged, which it is not: the marker may
-        have become visible only as the lane ended.
-        """
-        verdict = self._verdict(True, True, False)
+    def test_only_a_live_announced_lane_can_be_accused_of_buffering(
+        self, tmp_path: Path
+    ) -> None:
+        verdict = self._verdict(tmp_path, True, True, False, True)
 
         assert verdict is not None
-        assert "cannot establish that the output was observable BEFORE" in verdict
-        assert "discharged" not in verdict
-
-    def test_only_a_live_announced_lane_can_be_accused_of_buffering(self) -> None:
-        verdict = self._verdict(True, False, True)
-
-        assert verdict is not None
-        assert "Either the backend buffers until completion" in verdict
         assert "relay it pumps on its own loop" in verdict, (
             "it claimed to have proven buffering, which this observation cannot"
         )
-
-    def test_nothing_observed_and_nothing_announced_blames_nobody(self) -> None:
-        verdict = self._verdict(False, False, True)
-
-        assert verdict is not None
-        assert "NOT a buffering diagnosis" in verdict
-        assert "NOT proof that no output was written" in verdict
 
 
 class _FinishedThread(threading.Thread):
@@ -309,65 +286,3 @@ class TestReleaseLane:
             " traceback, so the leak is invisible to whoever reads the failure"
         )
         assert thread.joins == 1
-
-
-class TestStreamingVerdict:
-    """The handoff from the timed observation to the classification (#7264).
-
-    `streaming_failure` can tell a late sentinel from an absent one; this is
-    what proves the caller actually gives it the chance to. The re-read lives
-    inside `streaming_verdict` precisely so this is testable -- when it was one
-    line of caller code, nothing stopped it from being replaced by the stale
-    timed observation.
-    """
-
-    def test_a_sentinel_that_appears_after_the_window_is_read_again(
-        self, tmp_path: Path
-    ) -> None:
-        sentinel = tmp_path / "flushed"
-        sentinel.write_text("")  # it exists NOW; it did not when the window closed
-
-        verdict = streaming_verdict(
-            sentinel=sentinel,
-            announced_in_window=False,
-            marker_seen=True,
-            still_running=True,
-            first_flush_backstop_seconds=45.0,
-        )
-
-        assert verdict is not None
-        assert "took longer than 45s to announce" in verdict, (
-            "the stale timed observation was reused, so a late sentinel is"
-            f" still being reported as an absent one: {verdict!r}"
-        )
-
-    def test_a_sentinel_that_never_appears_is_still_absent(
-        self, tmp_path: Path
-    ) -> None:
-        verdict = streaming_verdict(
-            sentinel=tmp_path / "never-written",
-            announced_in_window=False,
-            marker_seen=True,
-            still_running=True,
-            first_flush_backstop_seconds=45.0,
-        )
-
-        assert verdict is not None
-        assert "the sentinel never appeared at all" in verdict
-
-    def test_an_announcement_inside_the_window_needs_no_second_opinion(
-        self, tmp_path: Path
-    ) -> None:
-        sentinel = tmp_path / "flushed"
-        sentinel.write_text("")
-
-        assert (
-            streaming_verdict(
-                sentinel=sentinel,
-                announced_in_window=True,
-                marker_seen=True,
-                still_running=True,
-                first_flush_backstop_seconds=45.0,
-            )
-            is None
-        )

@@ -279,7 +279,7 @@ def streaming_verdict(
     the call site can express -- which is the mutation that reintroduced the
     #7264 defect when the re-read was one line of caller code.
     """
-    return streaming_failure(
+    return _streaming_failure(
         announced_in_window=announced_in_window,
         announced_eventually=sentinel.exists(),
         marker_seen=marker_seen,
@@ -288,7 +288,7 @@ def streaming_verdict(
     )
 
 
-def streaming_failure(
+def _streaming_failure(
     *,
     announced_in_window: bool,
     announced_eventually: bool,
@@ -360,6 +360,15 @@ def streaming_failure(
             "its own clock, or a backend cancellation."
         )
     if not announced_in_window:
+        if announced_eventually:
+            return (
+                "the lane flushed, but only announced it after its "
+                f"{first_flush_backstop_seconds:.0f}s window had closed, and no "
+                "marker was observed while it was still running. The lane DID "
+                "execute and write output -- the sentinel proves that -- so "
+                "this is not a 'never ran' diagnosis; the streaming invariant "
+                "is simply unproved, and the window is what to look at."
+            )
         return (
             "the lane never announced its first flush within "
             f"{first_flush_backstop_seconds:.0f}s, and no marker was observed. "
@@ -664,13 +673,17 @@ class LaneExecutorContract:
 
         If it could, a slow runner would kill the lane mid-window and the
         failure would name this fixture rather than the backend under test --
-        which is the class of confusion #7264 was filed about. Asserted rather
-        than commented because both numbers are per-backend and the lifetime is
-        spelled as a literal for the fixture-lifetime scan, so nothing else keeps
-        them in step. It runs once per backend, against THAT backend's numbers.
+        which is the class of confusion #7264 was filed about.
+
+        The script's clock starts at its FIRST INSTRUCTION, not when ``run()``
+        was asked, so it has nothing to do with the queue wait: what it must
+        outlive is the observation window and the conclusion that follows it.
+        Conflating the two made this guard demand a lifetime long enough to
+        cover a scheduler's whole admission allowance, which the fixture-lifetime
+        budget rightly refuses.
         """
         windows = (
-            self.first_flush_backstop_seconds + _STREAM_OBSERVABLE_BACKSTOP_SECONDS
+            _STREAM_OBSERVABLE_BACKSTOP_SECONDS + _LANE_CONCLUSION_BACKSTOP_SECONDS
         )
 
         # The deadline of the command this backend will actually SUBMIT, not the
@@ -693,9 +706,9 @@ class LaneExecutorContract:
         )
         assert self.streaming_lane_lifetime_seconds > windows, (
             "the streaming lane can expire while the test is still watching it: "
-            f"lifetime={self.streaming_lane_lifetime_seconds:.0f}s vs windows "
-            f"{self.first_flush_backstop_seconds:.0f}s + "
-            f"{_STREAM_OBSERVABLE_BACKSTOP_SECONDS:.0f}s"
+            f"lifetime={self.streaming_lane_lifetime_seconds:.0f}s vs "
+            f"{_STREAM_OBSERVABLE_BACKSTOP_SECONDS:.0f}s of observation plus "
+            f"{_LANE_CONCLUSION_BACKSTOP_SECONDS:.0f}s to conclude"
         )
 
     def test_output_streams_before_the_lane_completes(

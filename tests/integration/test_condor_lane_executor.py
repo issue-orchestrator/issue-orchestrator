@@ -32,10 +32,7 @@ from issue_orchestrator.domain.lane_execution import (
 from issue_orchestrator.ports.lane_executor import LaneExecutor
 from tests.load_fixture import cpu_load, reap_marked_processes
 from tests.event_wait import await_event
-from tests.unit.lane_executor_contract import (
-    LANE_FIRST_INSTRUCTION_SECONDS,
-    LaneExecutorContract,
-)
+from tests.unit.lane_executor_contract import LaneExecutorContract
 
 pytestmark = [
     pytest.mark.timeout(600),
@@ -164,31 +161,37 @@ _ESCAPE_SCRIPT = (
 # No estimate is left in the sum, which is also what keeps the guard below
 # independent: it recomposes the same published constants, so lowering a local
 # number cannot lower its own expectation.
-def _contract_first_flush_backstop_seconds(first_instruction_seconds: float) -> float:
+def _contract_first_flush_backstop_seconds(lane_deadline_seconds: float) -> float:
+    """Everything that can legitimately pass before the lane's first flush.
+
+    Taken from the SUBMITTED command's deadline, not from the interval constant
+    it was composed out of: this backend starts that deadline when execution is
+    observed, so a correct job may spend its whole admission allowance queued
+    and then legally execute for the whole deadline. Substituting the shorter
+    interval here made the window shorter than what the backend permits.
+    """
     return (
         2 * TOOL_TIMEOUT_SECONDS
         + ADMISSION_TIMEOUT_SECONDS
-        + first_instruction_seconds
+        + lane_deadline_seconds
     )
 
 
 _CONTRACT_FIRST_FLUSH_BACKSTOP_SECONDS = _contract_first_flush_backstop_seconds(
-    LANE_FIRST_INSTRUCTION_SECONDS
+    LaneExecutorContract().streaming_command(
+        Path("/nonexistent"), Path("/nonexistent/go"), Path("/nonexistent/f")
+    ).deadline.timeout_seconds
 )
-# > first flush (780) + observation (45). Literal for the fixture-lifetime scan,
-# and at its 900s budget.
-_CONTRACT_STREAMING_LANE_LIFETIME_SECONDS = 900.0
 
 
 class TestCondorLaneExecutorContract(LaneExecutorContract):
-    # The module's 600s allowance cannot hold 780 + 45 + 60 of backstops, and a
+    # The module's 600s allowance cannot hold 945 + 45 + 60 of backstops, and a
     # pytest timeout firing first would replace the contract's own diagnosis
     # with one that names nothing (#7264). Class-scoped: only the inherited
     # contract needs it.
     pytestmark = pytest.mark.timeout(1200)
 
     first_flush_backstop_seconds = _CONTRACT_FIRST_FLUSH_BACKSTOP_SECONDS
-    streaming_lane_lifetime_seconds = _CONTRACT_STREAMING_LANE_LIFETIME_SECONDS
 
     def build_executor(self) -> LaneExecutor:
         return CondorLaneExecutor(CondorTools.resolve())
@@ -204,18 +207,17 @@ class TestCondorLaneExecutorContract(LaneExecutorContract):
         # Recomposed from the PUBLISHED bounds, not from this module's constant,
         # so lowering the constant cannot lower the expectation with it. `>`
         # alone would accept ADMISSION_TIMEOUT_SECONDS + 0.001.
-        required = (
-            2 * TOOL_TIMEOUT_SECONDS
-            + ADMISSION_TIMEOUT_SECONDS
-            + LANE_FIRST_INSTRUCTION_SECONDS
+        required = _contract_first_flush_backstop_seconds(
+            self.streaming_command(
+                Path("/nonexistent"), Path("/nonexistent/go"), Path("/nonexistent/f")
+            ).deadline.timeout_seconds
         )
 
         assert self.first_flush_backstop_seconds >= required, (
             "a job may legitimately spend the backend's full admission window "
             f"({ADMISSION_TIMEOUT_SECONDS:.0f}s) behind two "
-            f"{TOOL_TIMEOUT_SECONDS:.0f}s tool calls and then take its whole "
-            f"{LANE_FIRST_INSTRUCTION_SECONDS:.0f}s to reach its first "
-            "instruction; a "
+            f"{TOOL_TIMEOUT_SECONDS:.0f}s tool calls and then execute for its whole "
+            "deadline; a "
             f"first-flush backstop of {self.first_flush_backstop_seconds:.0f}s "
             f"fails it for being slow (needs >= {required:.0f}s)"
         )
