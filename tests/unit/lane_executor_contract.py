@@ -72,11 +72,14 @@ LANE_FIRST_INSTRUCTION_SECONDS = 120.0
 # single window could only ever report "the backend buffers", which was the
 # less likely of the two things its expiry actually meant.
 #
-# First: how long the streaming lane may take to reach its FIRST FLUSH — it
-# announces that itself, so this expiry means the lane never got that far. It is
-# not a statement about buffering, and it is not a statement about output
-# either: a lane killed between its print and its announcement leaves the same
-# silence, which is why the assertion reports the announcement, not the bytes.
+# First: how long the streaming lane may take to ANNOUNCE its first flush. Its
+# expiry means exactly that the announcement was not observed in the window --
+# no more. It is not a statement about buffering, and not proof that no output
+# was written: the script prints BEFORE it touches the sentinel, so a lane
+# killed between those two leaves the same silence as one that never ran. The
+# classifier reads the sentinel again afterwards to tell late from absent, and
+# even absent is reported as an announcement that never arrived rather than as
+# an output that was never written.
 #
 # QUEUE WAIT LANDS HERE. A scheduling backend's admission is explicitly outside
 # the lane's deadline and may legitimately exceed it, so a queued job spends its
@@ -181,18 +184,18 @@ while time.monotonic() < deadline:
     time.sleep(0.5)
 """
 
-# Prints one marker, then declines to conclude until the test releases it OR
-# its own clock expires — so within that clock the marker can only be observed
-# while the lane is provably running. The clock is what makes the fixture safe
-# when the handshake never comes, and a lane that ends on it rather than on the
-# handshake is reported as an early conclusion, which is the honest answer.
+# Prints one marker, then declines to conclude until the test releases it OR its
+# own clock expires. Whether the lane was still running when the marker was
+# observed is not assumed from that -- it is its own observation, and a lane
+# that ended first is classified as ordering-unproved rather than as a proof.
+# The clock is what makes the fixture safe when the handshake never comes.
 #
-# Its FIRST act after the flush is to ANNOUNCE the flush, the way the tree
-# fixture announces its pids: the sentinel's existence is the event "this lane
-# has written its output", and it is what lets the test tell "the lane never
-# spoke" apart from "the lane spoke and the backend swallowed it" (#7264).
-# ``print(flush=True)`` has returned by then, so the bytes are already on the
-# inherited descriptor when the sentinel appears.
+# Its first act AFTER the flush is to announce it, the way the tree fixture
+# announces its pids: the sentinel's existence is the event "this lane has
+# written its output". ``print(flush=True)`` has returned by then, so the bytes
+# are already on the inherited descriptor when the sentinel appears -- but the
+# converse does not hold, and the ORDER is why: a lane killed between the print
+# and the touch has written output and announced nothing (#7264).
 _STREAMING_SCRIPT = """
 import sys, time, pathlib
 print('STREAM-MARKER', flush=True)
@@ -352,9 +355,10 @@ def _streaming_failure(
     * **flushed late, unproved** -- no marker, and the sentinel arrived only
       after its window. The lane DID execute and write output, so this is not a
       "never ran" answer;
-    * **the lane never got that far** -- no announcement at all and no marker.
+    * **no announcement at all, and no marker** -- the weakest answer there is.
       Not a buffering diagnosis and not proof that no bytes were written: a lane
-      killed between its print and its announcement leaves the same silence.
+      killed between its print and its announcement leaves the same silence as
+      one that never started.
 
     "Announced" is TWO observations, not one. ``announced_in_window`` is the
     timed one -- it answers whether the backstop was breached. It goes stale the
@@ -770,7 +774,8 @@ class LaneExecutorContract:
         cause. The lane now says for itself when it has written its output, so
         the causes separate: only the observation window expiring accuses the
         backend, while the flush window expiring is read against the sentinel --
-        absent means the lane never spoke, present means it spoke late.
+        present means the announcement was late, absent means it never arrived,
+        which is still not the same as no output having been written.
         ``streaming_verdict`` owns which of those the observations support.
         """
         handshake = tmp_path / "proceed"

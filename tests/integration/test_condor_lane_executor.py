@@ -156,12 +156,14 @@ _ESCAPE_SCRIPT = (
 #   * the queue wait the backend permits, ADMISSION_TIMEOUT_SECONDS;
 #   * and after the execute event, the lane's OWN deadline. Nothing else bounds
 #     transfer and interpreter startup, but the backend kills the lane when its
-#     deadline expires, so a lane that has not flushed by then is gone -- and a
-#     gone lane is reported as an early conclusion, which is the honest answer.
+#     deadline expires, so a lane that has not flushed by then is gone. How that
+#     is REPORTED depends on what was observed: with no sentinel and no marker
+#     it is the never-announced answer, not an early conclusion.
 #
-# No estimate is left in the bound. 960 + 45 of observation + 60 to conclude is
-# 1065s, which is why this class takes a 1200s timeout: a pytest timeout firing
-# first would replace the contract's diagnosis with one that names nothing.
+# No estimate is left in the BOUND (945s). The window adds the contract's named
+# 15s observation margin, so 960 + 45 of observation + 60 to conclude is 1065s,
+# which is why this class takes a 1200s timeout: a pytest timeout firing first
+# would replace the contract's diagnosis with one that names nothing.
 def _contract_first_flush_bound_seconds(lane_deadline_seconds: float) -> float:
     """Everything the BACKEND may legitimately spend before the first flush.
 
@@ -377,7 +379,7 @@ def test_detached_session_escape_states_the_platform_boundary(
                 "the execution environment's core guarantee has regressed"
             )
     finally:
-        # #7142: this test spawns an ten-minute escapee ON PURPOSE and asserts
+        # #7142: this test spawns a ten-minute escapee ON PURPOSE and asserts
         # macOS cannot contain it, so the only thing standing between it and
         # the next nine gates is cleanup that runs on every path. `setsid`
         # puts it beyond any group signal; the argv is what still identifies
