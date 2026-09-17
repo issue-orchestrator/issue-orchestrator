@@ -23,6 +23,7 @@ from tests.integration.completion_intake_fixture import (
     exchange_intake_context,
     serve_completion_submission,
 )
+from issue_orchestrator.execution.git_working_copy import GitWorkingCopy
 from issue_orchestrator.domain.issue_run_allocation import IssueExchangeRunAllocation
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
@@ -32,6 +33,10 @@ def make_completion_review_exchange(**kwargs):
     kwargs["issue_run_allocator"] = exchange_intake_context.get().allocator(
         kwargs["session_output"]
     )
+    # The production reader, over the real worktree this test builds: an
+    # integration test of the exchange should read the branch the way the
+    # orchestrator does, not through a stub.
+    kwargs.setdefault("branch_reader", GitWorkingCopy())
     return CompletionReviewExchange(**kwargs)
 
 

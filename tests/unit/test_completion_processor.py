@@ -6211,7 +6211,7 @@ def test_manual_settlement_preserves_requested_effects_without_generic_publish(
 
 
 class TestReviewOutcomeNamesTheBranchItReviewed:
-    """A review event records WHICH branch it approved (#7263).
+    """A review event records WHICH branch it approved (#7263, #7268).
 
     It used to carry only `run_dir`. That is enough to attribute a tech-lead
     investigation while it runs in its disposable scratch worktree, but a
@@ -6220,139 +6220,234 @@ class TestReviewOutcomeNamesTheBranchItReviewed:
     the approval is not the implementation's. Without it the retry's
     `review.approved` was recorded as the implementation being approved, which is
     the #6969 misdiagnosis returning by a different road.
+
+    Every test here drives the REAL exchange -> emitter path. Calling the
+    emitters directly with a branch in hand proves only that a dict got a key:
+    the first version of these tests stayed green with the whole wiring deleted
+    (#7269 review F5).
     """
 
-    def _processor(self, tmp_path: Path, mock_git_adapter) -> CompletionProcessor:
-        prompt = tmp_path / "p.md"
-        prompt.write_text("prompt")
+    def _make_config(self, tmp_path: Path) -> Config:
+        coder_prompt = tmp_path / "coder.md"
+        reviewer_prompt = tmp_path / "reviewer.md"
+        coder_prompt.write_text("Coder prompt")
+        reviewer_prompt.write_text("Reviewer prompt")
         config = Config(repo="test/repo")
+        config.review_enabled = True
+        config.review_exchange_mode = "via-local-loop"
+        config.code_review_agent = "agent:reviewer"
         config.config_path = _write_test_config(tmp_path)
-        config.agents = {"agent:coder": AgentConfig(prompt_path=prompt)}
-        return make_completion_processor(
+        config.agents = {
+            "agent:coder": AgentConfig(
+                prompt_path=coder_prompt, ai_system="claude-code"
+            ),
+            "agent:reviewer": AgentConfig(
+                prompt_path=reviewer_prompt, ai_system="codex"
+            ),
+        }
+        return config
+
+    def _processor(
+        self, tmp_path: Path, mock_git_adapter, mock_pr_adapter, sink
+    ) -> CompletionProcessor:
+        processor = make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=Mock(),
-            pr_adapter=Mock(),
+            pr_adapter=mock_pr_adapter,
             git_adapter=mock_git_adapter,
             session_output=FileSystemSessionOutput(),
             event_bus=EventBus(),
-            label_config={},
-            config=config,
+            label_config={
+                "code_reviewed": "code-reviewed",
+                "code_review": "needs-code-review",
+            },
+            config=self._make_config(tmp_path),
+        )
+        processor.set_event_emitter(sink, EventContext())
+        return processor
+
+    def _cached_worktree(self, tmp_path: Path, summary: dict) -> tuple[Path, str]:
+        """A worktree holding a finished review exchange, ready to be replayed."""
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        run_dir = (
+            worktree
+            / ".issue-orchestrator"
+            / "sessions"
+            / "20260201-000000Z__review-exchange-123"
+        )
+        exchange_dir = run_dir / "review-exchange"
+        exchange_dir.mkdir(parents=True, exist_ok=True)
+        (exchange_dir / "summary.json").write_text(json.dumps(summary))
+        validation_record = run_dir / "validation-record.json"
+        validation_record.write_text(
+            json.dumps({"passed": True, "head_sha": "same-sha"})
+        )
+        record = make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[
+                RequestedAction.PUSH_BRANCH,
+                RequestedAction.CREATE_PR,
+            ],
+            validation_record_path=str(validation_record),
+        )
+        completion_path = (
+            ".issue-orchestrator/sessions/20260201-000000Z__review-exchange-123/"
+            "completion-coder.json"
+        )
+        completion_file = worktree / completion_path
+        completion_file.parent.mkdir(parents=True, exist_ok=True)
+        completion_file.write_text(json.dumps(record.to_dict()))
+        return worktree, completion_path
+
+    _CACHED_SUMMARY = {
+        "completed_rounds": 2,
+        "status": "ok",
+        "reason": "reviewer_ok",
+        "response_text": "Looks good",
+        "timestamp": "2026-02-01T00:00:00Z",
+        "head_sha": "same-sha",
+        "validation_passed": True,
+    }
+
+    def _replay(
+        self, processor: CompletionProcessor, worktree: Path, completion_path: str
+    ):
+        processor._run_review_exchange_loop = MagicMock(  # noqa: SLF001
+            side_effect=AssertionError("cache hit must not re-run the exchange")
+        )
+        return processor.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
+            issue_title="Test Issue",
+            agent_label="agent:coder",
+            completion_path=completion_path,
         )
 
-    def test_the_reviewed_branch_is_recorded(
-        self, tmp_path: Path, mock_git_adapter
+    def test_a_fresh_exchange_names_and_retains_the_branch_it_reviewed(
+        self,
+        tmp_path: Path,
+        mock_git_adapter,
+        mock_pr_adapter,
+        worktree_with_completion,
     ) -> None:
+        """The branch reaches the events AND the summary a later tick replays."""
         mock_git_adapter.get_current_branch.return_value = (
             "tech-lead-investigation-6410-df24fde45b3b"
         )
-        processor = self._processor(tmp_path, mock_git_adapter)
         sink = InMemoryEventSink()
-        processor._trace_events = sink  # noqa: SLF001
-        processor._event_context = EventContext()  # noqa: SLF001
-
-        processor._emit_review_outcome(  # noqa: SLF001
-            issue_number=6410,
-            reviewer_label="agent:reviewer",
-            exchange_mode="via-local-loop",
-            approved=True,
-            rounds=2,
-            summary="approved",
-            run_dir=tmp_path / "run",
-            worktree=tmp_path / "worktree",
+        processor = self._processor(
+            tmp_path, mock_git_adapter, mock_pr_adapter, sink
+        )
+        record = make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR],
+        )
+        worktree = worktree_with_completion(record)
+        processor._run_review_exchange_loop = MagicMock(  # noqa: SLF001
+            side_effect=lambda **kw: _review_exchange_outcome(
+                kw["exchange_run"],
+                status="ok",
+                rounds=1,
+                reason="reviewer_ok",
+                summary={},
+            )
         )
 
-        event = sink.last_event(str(EventName.REVIEW_APPROVED))
-        assert event is not None
-        assert event.data["branch_name"] == "tech-lead-investigation-6410-df24fde45b3b"
+        result = processor.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
+            issue_title="Test Issue",
+            agent_label="agent:coder",
+        )
 
-    def test_a_cached_replay_still_records_the_reviewed_branch(
-        self, tmp_path: Path, mock_git_adapter
+        assert result.success is True
+        for event_name in (EventName.REVIEW_STARTED, EventName.REVIEW_APPROVED):
+            event = sink.last_event(str(event_name))
+            assert event is not None, event_name
+            assert (
+                event.data["branch_name"]
+                == "tech-lead-investigation-6410-df24fde45b3b"
+            ), event_name
+
+        exchange_run = processor._run_review_exchange_loop.call_args.kwargs[  # noqa: SLF001
+            "exchange_run"
+        ]
+        stored = json.loads(
+            exchange_run.assets.summary_path.read_text(encoding="utf-8")
+        )
+        assert stored["branch_name"] == "tech-lead-investigation-6410-df24fde45b3b", (
+            "the reviewed branch must be RETAINED with the summary, or a later"
+            " replay has nothing to name but the mutable checkout (#7268)"
+        )
+
+    def test_a_replay_names_the_branch_reviewed_not_the_renamed_checkout(
+        self, tmp_path: Path, mock_git_adapter, mock_pr_adapter, monkeypatch
     ) -> None:
-        """A cache hit must not silently lose the branch (#7269 review F2).
+        """The #7268 defect, pinned.
 
-        Excluding cached replays from branch resolution was measured to be WORSE
-        than sampling: every cache hit WITHOUT a PR-collision rename then loses an
-        accurate branch, which is the common case, and the loss changes
-        attribution rather than merely reducing detail. #7268 carries the answer
-        that is right in both cases -- retain the reviewed branch on the exchange
-        summary and replay that immutable value.
-
-        Until then this pins the behaviour so the regression cannot return
-        unnoticed.
+        PR-collision remediation renames the branch at
+        ``_execute_create_pr_action``. A replay that samples the checkout then
+        reports a branch the reviewer never saw — and the branch is the field
+        attribution turns on, so that is a wrong answer, not a vague one.
         """
-        mock_git_adapter.get_current_branch.return_value = (
-            "tech-lead-investigation-6410-df24fde45b3b"
+        mock_git_adapter.get_head_sha.return_value = "same-sha"
+        mock_git_adapter.get_current_branch.return_value = "123-renamed-after-review"
+        monkeypatch.setattr(
+            "issue_orchestrator.infra.review_exchange_registry.supports_mcp_pair",
+            lambda *_args, **_kwargs: True,
         )
-        processor = self._processor(tmp_path, mock_git_adapter)
         sink = InMemoryEventSink()
-        processor._trace_events = sink  # noqa: SLF001
-        processor._event_context = EventContext()  # noqa: SLF001
-
-        processor._emit_review_outcome(  # noqa: SLF001
-            issue_number=6410,
-            reviewer_label="agent:reviewer",
-            exchange_mode="via-local-loop",
-            approved=True,
-            rounds=2,
-            summary="approved",
-            run_dir=tmp_path / "run",
-            worktree=tmp_path / "worktree",
-            cached=True,
+        processor = self._processor(
+            tmp_path, mock_git_adapter, mock_pr_adapter, sink
+        )
+        worktree, completion_path = self._cached_worktree(
+            tmp_path,
+            {**self._CACHED_SUMMARY, "branch_name": "123-the-branch-reviewed"},
         )
 
-        event = sink.last_event(str(EventName.REVIEW_APPROVED))
-        assert event is not None
-        assert event.data.get("cached") is True
-        assert (
-            event.data["branch_name"] == "tech-lead-investigation-6410-df24fde45b3b"
-        ), "a cached replay dropped the branch it reviewed"
+        result = self._replay(processor, worktree, completion_path)
 
-    def test_a_worktree_with_no_readable_branch_records_none(
-        self, tmp_path: Path, mock_git_adapter
+        assert result.review_exchange_completed is True
+        for event_name in (EventName.REVIEW_STARTED, EventName.REVIEW_APPROVED):
+            event = sink.last_event(str(event_name))
+            assert event is not None, event_name
+            assert event.data.get("cached") is True, event_name
+            assert event.data["branch_name"] == "123-the-branch-reviewed", (
+                f"{event_name} replayed the CURRENT branch instead of the one"
+                " the cached review covered"
+            )
+
+    def test_a_replay_of_a_pre_retention_summary_still_names_a_branch(
+        self, tmp_path: Path, mock_git_adapter, mock_pr_adapter, monkeypatch
     ) -> None:
-        # `WorkingCopy.get_current_branch` contracts to return None on a detached
-        # HEAD or a read failure, so that is the case to pin -- not a raise, which
-        # would be a port violation and should surface.
-        mock_git_adapter.get_current_branch.return_value = None
-        processor = self._processor(tmp_path, mock_git_adapter)
-        sink = InMemoryEventSink()
-        processor._trace_events = sink  # noqa: SLF001
-        processor._event_context = EventContext()  # noqa: SLF001
+        """Summaries written before retention existed fall back to sampling.
 
-        processor._emit_review_outcome(  # noqa: SLF001
-            issue_number=6410,
-            reviewer_label="agent:reviewer",
-            exchange_mode="via-local-loop",
-            approved=True,
-            rounds=1,
-            summary="approved",
-            run_dir=tmp_path / "run",
-            worktree=tmp_path / "gone",
+        Dropping the field for them instead was measured to be worse: every
+        cache hit WITHOUT a rename — the common case — then loses an accurate
+        branch, and that loss changes attribution rather than reducing detail
+        (#7269 review F2).
+        """
+        mock_git_adapter.get_head_sha.return_value = "same-sha"
+        mock_git_adapter.get_current_branch.return_value = "123-still-the-same"
+        monkeypatch.setattr(
+            "issue_orchestrator.infra.review_exchange_registry.supports_mcp_pair",
+            lambda *_args, **_kwargs: True,
+        )
+        sink = InMemoryEventSink()
+        processor = self._processor(
+            tmp_path, mock_git_adapter, mock_pr_adapter, sink
+        )
+        worktree, completion_path = self._cached_worktree(
+            tmp_path, dict(self._CACHED_SUMMARY)
         )
 
-        event = sink.last_event(str(EventName.REVIEW_APPROVED))
-        assert event is not None
-        assert "branch_name" not in event.data
+        result = self._replay(processor, worktree, completion_path)
 
-    def test_no_worktree_records_no_branch(
-        self, tmp_path: Path, mock_git_adapter
-    ) -> None:
-        processor = self._processor(tmp_path, mock_git_adapter)
-        sink = InMemoryEventSink()
-        processor._trace_events = sink  # noqa: SLF001
-        processor._event_context = EventContext()  # noqa: SLF001
+        assert result.review_exchange_completed is True
+        approved = sink.last_event(str(EventName.REVIEW_APPROVED))
+        assert approved is not None
+        assert approved.data["branch_name"] == "123-still-the-same"
 
-        processor._emit_review_outcome(  # noqa: SLF001
-            issue_number=6410,
-            reviewer_label="agent:reviewer",
-            exchange_mode="via-local-loop",
-            approved=False,
-            rounds=1,
-            summary="halted",
-            run_dir=tmp_path / "run",
-        )
-
-        event = sink.last_event(str(EventName.REVIEW_CHANGES_REQUESTED))
-        assert event is not None
-        assert "branch_name" not in event.data
-        mock_git_adapter.get_current_branch.assert_not_called()

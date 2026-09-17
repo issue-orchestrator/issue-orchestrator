@@ -277,6 +277,31 @@ class _RecordingPRAdapter:
         return "https://example.test/comment/1"
 
 
+class _DirtyGit:
+    """Reports a worktree whose named files are still dirty.
+
+    Module-level on purpose: a class defined inside a test method cannot be
+    constructed by the ``get_current_branch`` contract test in
+    ``tests/unit/ports/test_working_copy_branch_contract.py``, so it would
+    escape the contract every other implementation is held to.
+    """
+
+    def __init__(self, *dirty_files: str) -> None:
+        self._dirty_files = list(dirty_files)
+
+    def get_current_branch(self, worktree) -> str:
+        return "issue-123"
+
+    def has_uncommitted_changes(self, worktree, **kwargs) -> bool:
+        return True
+
+    def has_tracked_changes(self, worktree, **kwargs) -> bool:
+        return True
+
+    def list_dirty_files(self, worktree, mode) -> list[str]:
+        return list(self._dirty_files)
+
+
 class _NoopGitAdapter:
     def get_current_branch(self, worktree: Path) -> str:
         return "issue-1"
@@ -809,24 +834,11 @@ class TestEscalationRecordSurvivesTheOrchestrator:
 
         repo = self._escalate(tmp_path)
 
-        class _DirtyGit:
-            """Reports exactly the state the escalation left behind."""
-
-            def get_current_branch(self, worktree):
-                return "issue-123"
-
-            def has_uncommitted_changes(self, worktree, **kwargs):
-                return True
-
-            def has_tracked_changes(self, worktree, **kwargs):
-                return True
-
-            def list_dirty_files(self, worktree, mode):
-                return ["operator_notes.py"]
-
         config = Config()
         config.validation.publish.dirty_check = "tracked"
-        validator = CompletionRecordValidator(config=config, git_adapter=_DirtyGit())
+        validator = CompletionRecordValidator(
+            config=config, git_adapter=_DirtyGit("operator_notes.py")
+        )
 
         record = validator.read_completion_record(repo)
         assert record is not None, "the CLI wrote no readable record"
@@ -872,22 +884,11 @@ class TestEscalationRecordSurvivesTheOrchestrator:
         )
         assert result.returncode == 0, result.stderr
 
-        class _DirtyGit:
-            def get_current_branch(self, worktree):
-                return "issue-123"
-
-            def has_uncommitted_changes(self, worktree, **kwargs):
-                return True
-
-            def has_tracked_changes(self, worktree, **kwargs):
-                return True
-
-            def list_dirty_files(self, worktree, mode):
-                return ["src.py"]
-
         config = Config()
         config.validation.publish.dirty_check = "tracked"
-        validator = CompletionRecordValidator(config=config, git_adapter=_DirtyGit())
+        validator = CompletionRecordValidator(
+            config=config, git_adapter=_DirtyGit("src.py")
+        )
         record = validator.read_completion_record(repo)
         assert record is not None, "the CLI wrote no record on a clean tree"
 

@@ -133,6 +133,7 @@ class ReviewExchangeSummaryV1:
     response_text: str | None
     timestamp: str
     head_sha: str | None = None
+    branch_name: str | None = None
     validation_passed: bool | None = None
     artifacts: tuple[ReviewExchangeSummaryArtifactRef, ...] = field(
         default_factory=tuple,
@@ -149,6 +150,8 @@ class ReviewExchangeSummaryV1:
             _require_str(self.response_text, "response_text")
         if self.head_sha is not None:
             _require_non_empty_str(self.head_sha, "head_sha")
+        if self.branch_name is not None:
+            _require_non_empty_str(self.branch_name, "branch_name")
         if (
             self.validation_passed is not None
             and type(self.validation_passed) is not bool
@@ -198,17 +201,40 @@ class ReviewExchangeSummaryV1:
             response_text=response_text,
             timestamp=timestamp,
             head_sha=_optional_str(payload, "head_sha"),
+            branch_name=_optional_str(payload, "branch_name"),
             validation_passed=_optional_bool(payload, "validation_passed"),
             artifacts=artifacts,
             detail=_optional_str(payload, "detail"),
         )
 
-    def with_head_sha_if_missing(
-        self, head_sha: str | None
+    def with_review_subject_if_missing(
+        self,
+        head_sha: str | None,
+        branch_name: str | None = None,
     ) -> "ReviewExchangeSummaryV1":
-        if self.head_sha is not None or head_sha is None or not head_sha.strip():
+        """Record WHICH CODE this review covered, if the loop did not.
+
+        The head_sha and the branch are one fact -- the review subject -- and
+        they are retained together so a cached replay can name the code the
+        reviewer actually saw. Sampling the checkout at replay time instead
+        names whatever it holds now, which after a PR-collision rename is a
+        branch the review never approved (#7268).
+
+        Only fills what is missing: a value the exchange loop wrote itself is
+        closer to the review than anything the caller can supply later.
+        """
+        updates: dict[str, str] = {}
+        if self.head_sha is None and head_sha is not None and head_sha.strip():
+            updates["head_sha"] = head_sha.strip()
+        if (
+            self.branch_name is None
+            and branch_name is not None
+            and branch_name.strip()
+        ):
+            updates["branch_name"] = branch_name.strip()
+        if not updates:
             return self
-        return replace(self, head_sha=head_sha.strip())
+        return replace(self, **updates)
 
     def to_payload(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -220,6 +246,8 @@ class ReviewExchangeSummaryV1:
         }
         if self.head_sha is not None:
             payload["head_sha"] = self.head_sha
+        if self.branch_name is not None:
+            payload["branch_name"] = self.branch_name
         if self.validation_passed is not None:
             payload["validation_passed"] = self.validation_passed
         if self.artifacts:

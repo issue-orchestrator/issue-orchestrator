@@ -105,7 +105,7 @@ class TestReviewExchangeSummaryV1:
         with pytest.raises(FrozenInstanceError):
             summary.completed_rounds = 2  # type: ignore[misc]
 
-    def test_with_head_sha_if_missing_returns_new_typed_summary(self) -> None:
+    def test_with_review_subject_if_missing_returns_new_typed_summary(self) -> None:
         summary = ReviewExchangeSummaryV1(
             completed_rounds=1,
             terminal=_terminal(),
@@ -113,11 +113,57 @@ class TestReviewExchangeSummaryV1:
             timestamp="2026-06-04T10:15:00Z",
         )
 
-        updated = summary.with_head_sha_if_missing(" abc123 ")
+        updated = summary.with_review_subject_if_missing(" abc123 ", " 123-fix ")
 
         assert updated is not summary
         assert updated.head_sha == "abc123"
+        assert updated.branch_name == "123-fix"
         assert summary.head_sha is None
+        assert summary.branch_name is None
+
+    def test_a_review_subject_the_loop_recorded_is_never_overwritten(self) -> None:
+        """What the exchange wrote is closer to the review than a later caller."""
+        summary = ReviewExchangeSummaryV1(
+            completed_rounds=1,
+            terminal=_terminal(),
+            response_text=None,
+            timestamp="2026-06-04T10:15:00Z",
+            head_sha="abc123",
+            branch_name="123-fix",
+        )
+
+        assert (
+            summary.with_review_subject_if_missing("later-sha", "renamed-since")
+            is summary
+        )
+
+    def test_the_reviewed_branch_survives_a_payload_round_trip(self) -> None:
+        """A replay reads the branch back off disk, so it must serialize."""
+        summary = ReviewExchangeSummaryV1(
+            completed_rounds=1,
+            terminal=_terminal(),
+            response_text=None,
+            timestamp="2026-06-04T10:15:00Z",
+            branch_name="123-the-branch-reviewed",
+        )
+
+        payload = summary.to_payload()
+
+        assert payload["branch_name"] == "123-the-branch-reviewed"
+        assert (
+            ReviewExchangeSummaryV1.from_payload(payload).branch_name
+            == "123-the-branch-reviewed"
+        )
+
+    def test_a_summary_with_no_branch_omits_the_key(self) -> None:
+        summary = ReviewExchangeSummaryV1(
+            completed_rounds=1,
+            terminal=_terminal(),
+            response_text=None,
+            timestamp="2026-06-04T10:15:00Z",
+        )
+
+        assert "branch_name" not in summary.to_payload()
 
     def test_rejects_bool_completed_rounds(self) -> None:
         with pytest.raises(ValueError, match="requires int completed_rounds"):

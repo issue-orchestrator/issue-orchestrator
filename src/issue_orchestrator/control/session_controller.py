@@ -37,6 +37,7 @@ if TYPE_CHECKING:
     from ..ports.validation_attempt_key_factory import ValidationAttemptKeyFactory
 
 from ..events import EventName
+from ..domain.review_subject import BranchSubject
 from ..domain.dirty_remediation import remediation_prompt_steps
 from ..domain.artifact_contracts import (
     ValidationFailed,
@@ -1142,7 +1143,7 @@ class SessionController:
         result: "ProcessingResult",
     ) -> None:
         """Emit session processing completed event."""
-        payload = {
+        payload: dict[str, Any] = {
             "issue_number": issue_number,
             "session_name": session_name,
             "success": result.success,
@@ -1159,9 +1160,14 @@ class SessionController:
         # branch. A validation-retried investigation runs in the focus issue's
         # ordinary worktree, so `run_dir` cannot tell them apart and the branch
         # is the only durable signal left (#6969).
-        branch_name = self._working_copy.get_current_branch(worktree_path)
-        if branch_name is not None:
-            payload["branch_name"] = branch_name
+        #
+        # The event is about the checkout as it stands at completion, so the
+        # sampled source is the right one -- but WHICH source, and whether a
+        # missing branch omits the field or writes a null, are BranchSubject's
+        # decisions, not this emitter's (#7268).
+        payload.update(
+            BranchSubject.sampled(self._working_copy, worktree_path).as_event_fields()
+        )
         self._emit_event(EventName.SESSION_PROCESSING_COMPLETED, payload)
 
     def _map_outcome_to_status(self, record: "CompletionRecord") -> SessionStatus:

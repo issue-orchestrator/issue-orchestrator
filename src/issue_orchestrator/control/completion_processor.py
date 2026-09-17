@@ -17,6 +17,7 @@ as untrusted input.
 
 from ..ports.issue_run_allocator import IssueRunAllocator
 from ..ports.completion_intake import CompletionIntakeRuntime
+from ..domain.review_subject import BranchSubject
 from ..domain.completion_intake import CompletionIntakeReceipt, CompletionIntakeError
 from ..domain.registered_completion import CompletionProcessingPolicy
 from ..domain.prepared_completion import PreparedCompletionEvidence
@@ -296,6 +297,7 @@ class CompletionProcessor:
             job_supervisor=background_job_supervisor,
             review_exchange_canceller=review_exchange_canceller,
             agent_callback_endpoint=agent_callback_endpoint,
+            branch_reader=self.git_adapter,
         )
         # Per-(session, head_sha) consecutive validation-failed reroute count.
         # The reroute path can re-enter every tick when downstream rework
@@ -559,45 +561,6 @@ class CompletionProcessor:
             )
         )
 
-    def _reviewed_branch_name(self, worktree: Path | None) -> str | None:
-        """The branch a review event is ABOUT, for attribution (#7263).
-
-        A tech-lead failure investigation normally runs in a disposable scratch
-        worktree, so its run directory alone says the record is not the issue's
-        own work. A validation RETRY of one relaunches in the focus issue's
-        ordinary worktree on the investigation branch — so the run directory
-        looks ordinary and the branch is the only durable signal left. Without it
-        the retry's `review.approved` is recorded as the implementation being
-        approved, which is the #6969 misdiagnosis returning by a different road.
-
-        Naming the branch a review approved is independently worth doing: it is
-        the exact fact the #6410 misreading turned on.
-
-        A CACHED replay samples too, and that is the lesser of two wrongs rather
-        than a good answer. The checkout can have moved since the review it
-        replays -- PR-collision remediation renames the branch at
-        ``_execute_create_pr_action`` -- so after a rename this names a branch the
-        review never approved. Excluding cached replays instead was measured to be
-        WORSE: every cache hit WITHOUT a rename then loses an accurate branch,
-        which is the common case, and that loss changes attribution rather than
-        merely reducing detail (#7269 review F2).
-
-        The answer that is right in both cases is to retain the reviewed branch on
-        the exchange summary, beside the ``head_sha`` it already keeps, and replay
-        that immutable value. That needs the branch threaded to ``_write_summary``
-        through six call sites in the execution layer, so it is #7268 rather than
-        something bolted on here.
-
-        No defensive catch: ``WorkingCopy.get_current_branch`` already contracts
-        to return ``None`` on a detached HEAD or a read failure, so an adapter
-        that raises here is violating its port and should surface rather than be
-        silently absorbed into "no branch". A ``None`` simply records no branch
-        and the attribution degrades to what shipped without it.
-        """
-        if worktree is None:
-            return None
-        return self.git_adapter.get_current_branch(worktree)
-
     def _emit_review_started(
         self,
         *,
@@ -609,7 +572,7 @@ class CompletionProcessor:
         review_cache_summary_path: str | None = None,
         review_cache_validation_record_path: str | None = None,
         review_cache_head_sha: str | None = None,
-        worktree: Path | None = None,
+        subject: BranchSubject = BranchSubject(branch_name=None),
     ) -> None:
         """Emit trace event when local review exchange starts.
 
@@ -627,9 +590,8 @@ class CompletionProcessor:
             "review_exchange_mode": exchange_mode,
             "run_id": str(self._event_context.run_id),
             "run_dir": str(run_dir),
+            **subject.as_event_fields(),
         }
-        if (reviewed_branch := self._reviewed_branch_name(worktree)) is not None:
-            payload["branch_name"] = reviewed_branch
         if cached:
             payload["cached"] = True
         if review_cache_summary_path:
@@ -655,7 +617,7 @@ class CompletionProcessor:
         review_cache_summary_path: str | None = None,
         review_cache_validation_record_path: str | None = None,
         review_cache_head_sha: str | None = None,
-        worktree: Path | None = None,
+        subject: BranchSubject = BranchSubject(branch_name=None),
     ) -> None:
         """Emit review terminal event from local exchange outcome.
 
@@ -676,8 +638,7 @@ class CompletionProcessor:
         }
         if run_dir is not None:
             payload["run_dir"] = str(run_dir)
-        if (reviewed_branch := self._reviewed_branch_name(worktree)) is not None:
-            payload["branch_name"] = reviewed_branch
+        payload.update(subject.as_event_fields())
         if artifacts:
             payload["artifacts"] = artifacts
         if cached:
