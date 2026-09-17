@@ -41,7 +41,9 @@ from issue_orchestrator.adapters.github.pattern_registry import (  # noqa: E402
     parse_entries,
 )
 from issue_orchestrator.adapters.github.ref_store import (  # noqa: E402
+    API_MESSAGE_CAP,
     MAX_RECORD_BYTES,
+    RECORD_FORMAT_MARKER,
     RECORD_PATH,
     commit_summary,
 )
@@ -98,14 +100,27 @@ def _text(output: bytes) -> str:
     return output.decode().strip()
 
 
-def record_blob_sha(repo_root: Path, commit_sha: str) -> str | None:
-    """The sha of the commit's ``record.json``, or None when it carries none."""
+def is_tree_backed(repo_root: Path, commit_sha: str) -> bool:
+    """Whether the commit declares that its record lives in its tree.
+
+    The same discriminator the store reads, imported rather than re-derived: a
+    pre-#7272 commit reused the default branch's ROOT tree, so the presence of
+    a ``record.json`` path proves nothing about which format a commit is in.
+    """
+    return RECORD_FORMAT_MARKER in commit_message(repo_root, commit_sha)
+
+
+def record_blob_sha(repo_root: Path, commit_sha: str) -> str:
+    """The sha of a tree-backed commit's ``record.json``."""
     listing = git(repo_root, "ls-tree", f"{commit_sha}^{{tree}}").decode()
     for line in listing.splitlines():
         meta, _, path = line.partition("\t")
         if path == RECORD_PATH:
             return meta.split()[2]
-    return None
+    raise RepublishError(
+        f"commit {commit_sha} declares the tree format but carries no "
+        f"{RECORD_PATH}"
+    )
 
 
 def republish(
@@ -115,9 +130,9 @@ def republish(
     git(repo_root, "fetch", "--no-tags", remote, ref)
     commit_sha = _text(git(repo_root, "rev-parse", "FETCH_HEAD"))
 
-    existing_blob = record_blob_sha(repo_root, commit_sha)
-    if existing_blob is not None:
-        record = git(repo_root, "cat-file", "blob", existing_blob).decode("utf-8")
+    if is_tree_backed(repo_root, commit_sha):
+        blob_sha = record_blob_sha(repo_root, commit_sha)
+        record = git(repo_root, "cat-file", "blob", blob_sha).decode("utf-8")
         entries = read_entries(record, source=f"the {RECORD_PATH} blob on {ref}")
         return "already blob-backed", len(entries)
 
@@ -127,6 +142,16 @@ def republish(
         raise RepublishError(
             f"record is {size} bytes, above the {MAX_RECORD_BYTES}-byte limit "
             "the store accepts"
+        )
+    if len(record) == API_MESSAGE_CAP:
+        # EXACTLY the cap, not merely past it: a longer message is the intact
+        # original, which is the whole reason this script reads local objects.
+        # A message of exactly this length is indistinguishable from a copy the
+        # API already cut off, so there is nothing here to recover from.
+        raise RepublishError(
+            f"the commit message on {commit_sha[:12]} is {len(record)} "
+            f"characters, exactly GitHub's {API_MESSAGE_CAP}-character cap; "
+            "this clone holds a truncated copy, not the original"
         )
     # Fails loudly on a record this clone cannot read either -- which would mean
     # the local object is ALSO short, and there is nothing here to recover.
@@ -141,8 +166,10 @@ def republish(
         repo_root, record=record, parent=commit_sha, ref=ref
     )
 
-    # Not forced: a concurrent writer that moved the ref first wins, and this
-    # run fails rather than discarding their record.
+    # Not forced, and that is the whole safety argument: the new commit's only
+    # parent is the one this recovery read, so git accepts the push exactly
+    # while the ref still points there. A writer that moved it first wins and
+    # this run fails, rather than discarding their record.
     git(repo_root, "push", remote, f"{new_commit}:{ref}")
 
     # Read the ref back from the remote rather than trusting the push. The
@@ -151,7 +178,7 @@ def republish(
     published = published_record(repo_root, remote=remote, ref=ref)
     if published is None:
         raise RepublishError(
-            f"{ref} carries no {RECORD_PATH} after the push; it was rewritten"
+            f"{ref} is not tree-backed after the push; it was rewritten"
         )
     republished = read_entries(published, source=f"{ref} after the push")
     if republished != entries:
@@ -192,12 +219,12 @@ def blob_backed_commit(
 
 
 def published_record(repo_root: Path, *, remote: str, ref: str) -> str | None:
-    """``ref``'s record as the remote now holds it, or None if it carries none."""
+    """``ref``'s record as the remote now holds it, or None if not tree-backed."""
     git(repo_root, "fetch", "--no-tags", remote, ref)
     commit_sha = _text(git(repo_root, "rev-parse", "FETCH_HEAD"))
-    blob_sha = record_blob_sha(repo_root, commit_sha)
-    if blob_sha is None:
+    if not is_tree_backed(repo_root, commit_sha):
         return None
+    blob_sha = record_blob_sha(repo_root, commit_sha)
     return git(repo_root, "cat-file", "blob", blob_sha).decode("utf-8")
 
 

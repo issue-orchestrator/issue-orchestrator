@@ -15,7 +15,10 @@ reported success.
 A blob has no such cap at these sizes, and this module still refuses a payload
 larger than :data:`MAX_RECORD_BYTES` at WRITE time rather than discovering it on
 the next read. Records written before this change are still read, from the
-message, so nothing has to be migrated before it can be opened.
+message, so nothing has to be migrated before it can be opened -- unless that
+message is at the cap, in which case the read RAISES. Handing back GitHub's
+truncated representation is what let a consumer treat a partial record as a
+whole one, and refusing it is the only answer a storage layer can honestly give.
 """
 
 from __future__ import annotations
@@ -33,6 +36,20 @@ if TYPE_CHECKING:
 #: Where the record lives inside the commit's tree.
 RECORD_PATH = "record.json"
 
+#: Declares, in the commit this module writes, that the record is in the TREE.
+#:
+#: The presence of ``record.json`` cannot be the discriminator. A pre-#7272
+#: commit reused the DEFAULT BRANCH's root tree, so a repository that happens to
+#: keep a root ``record.json`` would have that unrelated file read back as its
+#: registry -- valid-looking and wrong. The marker is written by this module, is
+#: a fixed size, and therefore can never be the thing that truncates.
+RECORD_FORMAT_MARKER = "io-record-format: tree-blob-v1"
+
+#: Where GitHub's Git Data API stops returning a commit message, to the
+#: character. A legacy record this long was cut off in transit, and no amount of
+#: re-reading through the API will produce the rest of it.
+API_MESSAGE_CAP = 65536
+
 #: Blob mode for a regular file, as the Git Data tree API spells it.
 _BLOB_MODE = "100644"
 
@@ -47,6 +64,17 @@ MAX_RECORD_BYTES = 8 * 1024 * 1024
 
 class RecordTooLargeError(ValueError):
     """A record was larger than this storage will accept."""
+
+
+class RecordTruncatedError(ValueError):
+    """A legacy record was cut off by the API and cannot be read back.
+
+    Raised rather than returned, because a truncated record is not a shorter
+    record: a claim payload cut inside its newest block still parses, and the
+    reader gets the PREVIOUS claim as though it were current. The intact object
+    is still in git, so this is recoverable -- see
+    ``scripts/republish_pattern_registry_record.py``.
+    """
 
 
 @dataclass(frozen=True)
@@ -78,14 +106,12 @@ class GitRefCasStore:
         commit_sha = payload_commit_sha(ref_payload)
         commit_payload = self._client.get_git_commit(commit_sha)
         tree_sha = payload_tree_sha(commit_payload)
-        record = self._record_from_tree(tree_sha)
-        if record is None:
-            # Written before the record moved out of the commit message. Read it
-            # where it is, so an existing ref opens without being migrated
-            # first; the next write moves it. This is the ONLY path that can
-            # still hand back a truncated record, and it is the one #7272 exists
-            # to retire.
-            record = str(commit_payload.get("message") or "")
+        message = str(commit_payload.get("message") or "")
+        record = (
+            self._record_from_tree(tree_sha)
+            if RECORD_FORMAT_MARKER in message
+            else _legacy_record(message, commit_sha=commit_sha)
+        )
         return GitRefSnapshot(
             ref=ref,
             commit_sha=commit_sha,
@@ -93,8 +119,8 @@ class GitRefCasStore:
             record=record,
         )
 
-    def _record_from_tree(self, tree_sha: str) -> str | None:
-        """The record blob's content, or ``None`` for a legacy message record."""
+    def _record_from_tree(self, tree_sha: str) -> str:
+        """The record blob's content. The commit said it is here, so it is."""
         tree = self._client.get_git_tree(tree_sha)
         entries = tree.get("tree")
         if not isinstance(entries, list):
@@ -106,14 +132,14 @@ class GitRefCasStore:
             if not isinstance(blob_sha, str) or not blob_sha:
                 raise ValueError(f"{RECORD_PATH} tree entry has no sha: {entry}")
             return _decode_blob(self._client.get_git_blob(blob_sha))
-        if tree.get("truncated"):
-            # A partial listing cannot prove the record is absent, and reading
-            # the message instead would answer from the wrong place. Say so.
-            raise ValueError(
-                f"GitHub truncated tree {tree_sha}, so whether it carries "
-                f"{RECORD_PATH} is unknown"
-            )
-        return None
+        # Never a fall-back to the message: the commit declared the tree format,
+        # so a missing blob is a broken record, not an old one. A truncated
+        # listing lands here too, and cannot prove the blob is absent either.
+        raise ValueError(
+            f"tree {tree_sha} carries no {RECORD_PATH} although its commit "
+            f"declares {RECORD_FORMAT_MARKER!r}"
+            + (" (GitHub truncated the listing)" if tree.get("truncated") else "")
+        )
 
     def _record_tree_sha(self, record: str) -> str:
         """Store the record as a blob and return the tree that carries it."""
@@ -176,6 +202,20 @@ class GitRefCasStore:
             raise
 
     def delete(self, snapshot: GitRefSnapshot) -> bool:
+        """Delete the ref, refusing when it no longer holds ``snapshot``.
+
+        GitHub's Git Data API has no conditional delete, so this re-reads and
+        compares rather than compare-and-swapping. That NARROWS the window in
+        which a deleter holding a stale snapshot removes a successor's ref -- it
+        does not close it -- but an unconditional delete had no window at all:
+        it always removed whatever was there. Returns False when the ref has
+        moved on, which every caller already treats as "not mine to release".
+        """
+        current = self._client.get_git_ref(snapshot.ref)
+        if current is None:
+            return True
+        if payload_commit_sha(current) != snapshot.commit_sha:
+            return False
         try:
             self._client.delete_git_ref(snapshot.ref)
             return True
@@ -191,12 +231,27 @@ class GitRefCasStore:
 
 
 def commit_summary(ref: str) -> str:
-    """What a person reads in ``git log``; the record itself is in the tree.
+    """The commit message for a tree-backed record.
 
-    Deliberately short and fixed-size: nothing reads it back, so it can never
-    become the place a record quietly outgrows again (#7272).
+    Deliberately short and fixed-size: it carries a summary for a person and
+    :data:`RECORD_FORMAT_MARKER` for a reader, and nothing whose length depends
+    on the record -- so it can never become the place a record quietly outgrows
+    again (#7272).
     """
-    return f"Update {ref} ({RECORD_PATH})"
+    return f"Update {ref} ({RECORD_PATH})\n\n{RECORD_FORMAT_MARKER}"
+
+
+def _legacy_record(message: str, *, commit_sha: str) -> str:
+    """A record written before #7272, read from the message it lives in."""
+    if len(message) >= API_MESSAGE_CAP:
+        raise RecordTruncatedError(
+            f"the record on commit {commit_sha} is {len(message)} characters, "
+            f"at GitHub's {API_MESSAGE_CAP}-character commit-message cap, so "
+            "what the API returned is a prefix of it; refusing to read a "
+            "partial record as a whole one. Recover it with "
+            "scripts/republish_pattern_registry_record.py"
+        )
+    return message
 
 
 def _decode_blob(blob: dict) -> str:

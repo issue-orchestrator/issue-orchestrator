@@ -19,7 +19,10 @@ from __future__ import annotations
 import base64
 
 from issue_orchestrator.adapters.github.errors import GitHubHttpError
-from issue_orchestrator.adapters.github.ref_store import RECORD_PATH
+from issue_orchestrator.adapters.github.ref_store import (
+    RECORD_PATH,
+    commit_summary,
+)
 
 BASE_COMMIT_SHA = "base"
 BASE_TREE_SHA = "tree-base"
@@ -153,23 +156,42 @@ class FakeGitHubRefClient:
                 }
             ]
         )
-        return self._point(ref, message=f"Update {ref}", tree_sha=tree["sha"])
+        # Through the store's own summary, so a seeded record is spelled the
+        # way a written one is -- marker included.
+        return self._point(ref, message=commit_summary(ref), tree_sha=tree["sha"])
 
     def record_at(self, ref: str) -> str:
-        """The record ``ref`` carries, read the way the store reads it."""
+        """The record ``ref`` carries, read from the tree the way the store does."""
         commit = self.commits[self.refs[ref]]
         for entry in self.trees[commit["tree"]["sha"]]["tree"]:
             if entry["path"] == RECORD_PATH:
                 return self.blobs[entry["sha"]]
         raise KeyError(f"{ref} carries no {RECORD_PATH}")
 
-    def seed_legacy_message_record(self, ref: str, record: str) -> str:
+    def seed_legacy_message_record(
+        self, ref: str, record: str, *, tree_paths: dict[str, str] | None = None
+    ) -> str:
         """Point ``ref`` at a commit carrying ``record`` in its MESSAGE.
 
         How every record was written before #7272, and what the read path still
-        has to open without a migration step first.
+        has to open without a migration step first. ``tree_paths`` populates the
+        default branch's root tree that such a commit reuses, so a repository
+        that happens to keep a file at one of these paths can be modelled.
         """
-        return self._point(ref, message=record, tree_sha=BASE_TREE_SHA)
+        tree_sha = BASE_TREE_SHA
+        if tree_paths:
+            tree_sha = self.create_git_tree(
+                tree=[
+                    {
+                        "path": path,
+                        "mode": "100644",
+                        "type": "blob",
+                        "sha": self.create_git_blob(content=content)["sha"],
+                    }
+                    for path, content in tree_paths.items()
+                ]
+            )["sha"]
+        return self._point(ref, message=record, tree_sha=tree_sha)
 
     # -- internals ----------------------------------------------------------
 

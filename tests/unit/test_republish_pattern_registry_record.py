@@ -11,6 +11,8 @@ only claim worth making here is that the plumbing works.
 
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -31,6 +33,7 @@ SCRIPT = (
     / "republish_pattern_registry_record.py"
 )
 REF = f"{PATTERN_REGISTRY_REF_PREFIX}/{PATTERN_REGISTRY_REF_KEY}"
+_REAL_GIT = shutil.which("git")
 
 
 def _git(cwd: Path, *args: str, stdin: bytes | None = None) -> str:
@@ -81,13 +84,42 @@ def _seed_legacy_ref(clone: Path, remote: Path, record: str) -> None:
     _git(clone, "push", "origin", f"{commit}:{REF}")
 
 
-def _run(clone: Path, *args: str) -> subprocess.CompletedProcess[str]:
+def _run(
+    clone: Path, *args: str, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, str(SCRIPT), "--repo-root", str(clone), *args],
         capture_output=True,
         text=True,
         check=False,
+        env={**os.environ, **(env or {})},
     )
+
+
+def _git_shim(tmp_path: Path, remote: Path, move_to: str) -> dict[str, str]:
+    """An environment whose ``git`` moves ``remote``'s ref after each fetch.
+
+    A concurrent writer landing exactly in the script's fetch-to-push window,
+    made deterministic: no sleeps, no second process, no chance of the race not
+    happening on the run that matters.
+    """
+    shim_dir = tmp_path / "shim"
+    shim_dir.mkdir(exist_ok=True)
+    shim = shim_dir / "git"
+    shim.write_text(
+        "#!/bin/sh\n"
+        f'"{_REAL_GIT}" "$@"\n'
+        "status=$?\n"
+        'for arg in "$@"; do\n'
+        '  if [ "$arg" = "fetch" ]; then\n'
+        f'    "{_REAL_GIT}" -C "{remote}" update-ref "{REF}" "{move_to}"\n'
+        "    break\n"
+        "  fi\n"
+        "done\n"
+        "exit $status\n"
+    )
+    shim.chmod(0o755)
+    return {"PATH": f"{shim_dir}:{os.environ['PATH']}"}
 
 
 def _published_record(clone: Path) -> str:
@@ -158,6 +190,43 @@ class TestInspection:
         assert f"recoverable ({PORCHPIN_PATTERN_COUNT} entries)" in result.stdout
         _git(clone, "fetch", "--no-tags", "origin", REF)
         assert _git(clone, "rev-parse", "FETCH_HEAD").strip() == before
+
+
+class TestConcurrency:
+    def test_a_writer_that_moved_the_ref_first_wins(
+        self, clone: Path, remote: Path, tmp_path: Path
+    ) -> None:
+        """The push is an ordinary fast-forward, so it cannot clobber.
+
+        Asserting the new commit's parent is not enough: a forced push would
+        keep that assertion green. This moves the remote ref BETWEEN the
+        script's fetch and its push, which is the only arrangement in which
+        forced and non-forced behave differently.
+        """
+        _seed_legacy_ref(clone, remote, registry_record(3))
+        # Built inside the REMOTE, so the shim's update-ref can reach the
+        # object: a commit that only exists in the clone would leave the ref
+        # where it was and quietly turn this into an ordinary push.
+        tip = _git(remote, "rev-parse", REF).strip()
+        concurrent = _git(
+            remote,
+            "commit-tree",
+            _git(remote, "rev-parse", f"{REF}^{{tree}}").strip(),
+            "-p",
+            tip,
+            "-F",
+            "-",
+            stdin=registry_record(4).encode(),
+        ).strip()
+
+        result = _run(clone, "--apply", env=_git_shim(tmp_path, remote, concurrent))
+
+        assert result.returncode == 1, result.stdout
+        assert "rejected" in result.stderr
+        _git(clone, "fetch", "--no-tags", "origin", REF)
+        assert _git(clone, "rev-parse", "FETCH_HEAD").strip() == concurrent, (
+            "the concurrent writer's record was clobbered"
+        )
 
 
 class TestPostPushVerification:

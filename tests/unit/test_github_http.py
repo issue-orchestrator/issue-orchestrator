@@ -2614,3 +2614,89 @@ def test_list_labels_returns_a_short_first_page() -> None:
     client = _client_with_transport(httpx.MockTransport(handler))
 
     assert [label["name"] for label in client.list_labels()] == ["bug", "agent:web"]
+
+
+class TestGitDataBlobAndTreeEndpoints:
+    """The HTTP boundary a blob-backed record actually travels over (#7272).
+
+    Every other test of this storage runs against an in-memory fake, so
+    inverting one of these endpoints -- a wrong path, a lost body, a cached
+    read -- would leave that whole suite green while every production read
+    failed.
+    """
+
+    def _recorded(self, payload: dict) -> tuple[GitHubHttpClient, list[httpx.Request]]:
+        seen: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            return httpx.Response(201 if request.method == "POST" else 200, json=payload)
+
+        return _client_with_transport(httpx.MockTransport(handler)), seen
+
+    def test_a_blob_is_created_as_utf8_at_the_repo_blob_endpoint(self) -> None:
+        client, seen = self._recorded({"sha": "blob-sha"})
+
+        assert client.create_git_blob(content='{"entries":[]}')["sha"] == "blob-sha"
+
+        assert seen[0].method == "POST"
+        assert seen[0].url.path == "/repos/owner/repo/git/blobs"
+        assert json.loads(seen[0].content) == {
+            "content": '{"entries":[]}',
+            "encoding": "utf-8",
+        }
+
+    def test_a_blob_is_read_by_sha_and_never_from_cache(self) -> None:
+        client, seen = self._recorded(
+            {"sha": "blob-sha", "content": "e30=", "encoding": "base64"}
+        )
+
+        first = client.get_git_blob("blob-sha")
+        client.get_git_blob("blob-sha")
+
+        assert first["encoding"] == "base64"
+        assert [request.url.path for request in seen] == [
+            "/repos/owner/repo/git/blobs/blob-sha",
+            "/repos/owner/repo/git/blobs/blob-sha",
+        ], "a cached registry read would serve a record someone else replaced"
+
+    def test_a_tree_is_created_with_the_entries_it_was_given(self) -> None:
+        client, seen = self._recorded({"sha": "tree-sha"})
+        entries = [
+            {"path": "record.json", "mode": "100644", "type": "blob", "sha": "blob-sha"}
+        ]
+
+        assert client.create_git_tree(tree=entries)["sha"] == "tree-sha"
+
+        assert seen[0].method == "POST"
+        assert seen[0].url.path == "/repos/owner/repo/git/trees"
+        assert json.loads(seen[0].content) == {"tree": entries}
+
+    def test_a_tree_is_read_by_sha_and_never_from_cache(self) -> None:
+        client, seen = self._recorded({"sha": "tree-sha", "tree": []})
+
+        client.get_git_tree("tree-sha")
+        client.get_git_tree("tree-sha")
+
+        assert [request.url.path for request in seen] == [
+            "/repos/owner/repo/git/trees/tree-sha",
+            "/repos/owner/repo/git/trees/tree-sha",
+        ]
+
+    def test_a_payload_that_is_not_an_object_is_refused(self) -> None:
+        client, _ = self._recorded({})
+        client._client = httpx.Client(  # noqa: SLF001 - test transport injection
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(200, json=["not", "an", "object"])
+            ),
+            base_url="https://api.github.com",
+        )
+
+        for call in (
+            lambda: client.get_git_blob("blob-sha"),
+            lambda: client.create_git_blob(content="{}"),
+            lambda: client.get_git_tree("tree-sha"),
+            lambda: client.create_git_tree(tree=[]),
+        ):
+            with pytest.raises(GitHubHttpError, match="was not an object"):
+                call()

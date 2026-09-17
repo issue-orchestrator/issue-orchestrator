@@ -2,7 +2,7 @@
 
 This implementation keeps the distributed coordination algorithm behind the
 ClaimManager port. It uses one issue-specific Git ref as an atomic compare-and-
-swap cell, with claim metadata stored in the referenced commit message.
+swap cell, with claim metadata stored in the referenced commit's tree (#7272).
 """
 
 from __future__ import annotations
