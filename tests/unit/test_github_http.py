@@ -8,6 +8,7 @@ import httpx
 
 import json
 import subprocess
+import threading
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,6 +23,7 @@ from issue_orchestrator.adapters.github.auth import (
 from issue_orchestrator.adapters.github.http_client import (
     GitHubAuthError,
     _ETagCache,
+    _ETagEntry,
     GitHubHttpClient,
     GitHubHttpConfig,
     GitHubHttpError,
@@ -2766,13 +2768,16 @@ class TestGitDataBlobAndTreeEndpoints:
         empty payload -- an unchanged registry read as gone (round 5 F1).
         """
         payload = {"sha": "blob-sha", "content": "e30=", "encoding": "base64"}
+        conditional: list[str | None] = []
         evict_now = False
 
         def handler(request: httpx.Request) -> httpx.Response:
-            nonlocal evict_now
+            conditional.append(request.headers.get("If-None-Match"))
             if request.headers.get("If-None-Match") == '"e"':
                 if evict_now:
-                    client._etag_cache = _ETagCache(max_bytes=1)  # noqa: SLF001
+                    # A cache that CAN hold the entry, emptied: the entry is
+                    # gone, but the re-store below has somewhere to put it.
+                    client._etag_cache = _ETagCache()  # noqa: SLF001
                 return httpx.Response(304)
             return httpx.Response(200, json=payload, headers={"ETag": '"e"'})
 
@@ -2781,6 +2786,12 @@ class TestGitDataBlobAndTreeEndpoints:
         evict_now = True
 
         assert client.get_git_blob("blob-sha") == payload
+
+        # And the 304 put it back, so the NEXT read still revalidates rather
+        # than downloading the whole body against the primary rate limit.
+        evict_now = False
+        client.get_git_blob("blob-sha")
+        assert conditional == [None, '"e"', '"e"']
 
     def test_a_304_nobody_asked_for_is_refused(self) -> None:
         """Its body is empty, so decoding it would hand back "no data"."""
@@ -2814,6 +2825,70 @@ class TestGitDataBlobAndTreeEndpoints:
         assert len(client._etag_cache) == 0, (  # noqa: SLF001
             "a payload of multibyte characters was measured as if it were ASCII"
         )
+
+    def test_a_recency_bump_survives_a_concurrent_eviction(self) -> None:
+        """One client serves the tick and the web worker at once.
+
+        A recency bump READS then MOVES. Interleaved with a store that evicts
+        the same key, the move raises ``KeyError`` and kills a registry, ledger
+        or claim read before it has even sent its request (round 6 finding 1).
+        The interleaving is forced rather than raced, so this cannot pass by
+        being lucky.
+        """
+        cache = _ETagCache(max_bytes=64)
+        entry = _ETagEntry(etag='"e"', payload={}, size=64)
+        cache.store("hot", entry)
+        entered = threading.Event()
+        evicted = threading.Event()
+        real_move = cache._entries.move_to_end  # noqa: SLF001
+
+        def move_late(key: str, last: bool = True) -> None:
+            entered.set()
+            evicted.wait(timeout=5)
+            real_move(key, last)
+
+        cache._entries.move_to_end = move_late  # type: ignore[method-assign]  # noqa: SLF001
+
+        def evict() -> None:
+            entered.wait(timeout=5)
+            # Would deadlock on a lock held across the bump, so run it only
+            # once the reader is inside; with the lock it simply waits.
+            cache.store("cold", _ETagEntry(etag='"f"', payload={}, size=64))
+            evicted.set()
+
+        evictor = threading.Thread(target=evict)
+        evictor.start()
+        try:
+            assert cache.get("hot") is entry
+        finally:
+            evicted.set()
+            evictor.join(timeout=5)
+
+    def test_concurrent_stores_keep_the_byte_count_honest(self) -> None:
+        """``+=`` then evict-loop is not one operation.
+
+        Interleaved, the count drifts until the budget stops meaning anything
+        -- which is the whole point of having one.
+        """
+        cache = _ETagCache(max_bytes=10_000)
+        barrier = threading.Barrier(8)
+
+        def fill(worker: int) -> None:
+            barrier.wait(timeout=5)
+            for index in range(50):
+                cache.store(
+                    f"{worker}-{index}",
+                    _ETagEntry(etag='"e"', payload={}, size=100),
+                )
+
+        workers = [threading.Thread(target=fill, args=(n,)) for n in range(8)]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(timeout=10)
+
+        assert cache.nbytes == len(cache) * 100
+        assert cache.nbytes <= 10_000
 
     def test_a_payload_that_is_not_an_object_is_refused(self) -> None:
         client, _ = self._recorded({})

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json as _json
 import logging
 import time
+import threading
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Iterator, Literal, cast
@@ -374,35 +375,50 @@ class _ETagCache:
         self._entries: OrderedDict[str, _ETagEntry] = OrderedDict()
         self._max_bytes = max_bytes
         self._bytes = 0
+        # One client is shared by the tick and the web worker, and none of
+        # these operations is a single dict access: a recency bump reads then
+        # moves, and a store adds then evicts in a loop. Interleaved, the bump
+        # raises KeyError on an entry another thread evicted, and the byte
+        # count drifts until the budget means nothing (#7272 round 6).
+        self._lock = threading.Lock()
 
     def get(self, key: str) -> _ETagEntry | None:
-        entry = self._entries.get(key)
-        if entry is not None:
-            self._entries.move_to_end(key)
-        return entry
+        with self._lock:
+            entry = self._entries.get(key)
+            if entry is not None:
+                self._entries.move_to_end(key)
+            return entry
 
     def store(self, key: str, entry: _ETagEntry) -> None:
-        self.pop(key)
-        self._entries[key] = entry
-        self._bytes += entry.size
-        # Evicts the new entry too when it alone exceeds the budget, which is
-        # the answer that keeps the invariant: a payload that cannot fit does
-        # not get to starve everything that can.
-        while self._bytes > self._max_bytes:
-            _, evicted = self._entries.popitem(last=False)
-            self._bytes -= evicted.size
+        with self._lock:
+            self._forget(key)
+            self._entries[key] = entry
+            self._bytes += entry.size
+            # Evicts the new entry too when it alone exceeds the budget, which
+            # is the answer that keeps the invariant: a payload that cannot fit
+            # does not get to starve everything that can.
+            while self._bytes > self._max_bytes:
+                _, evicted = self._entries.popitem(last=False)
+                self._bytes -= evicted.size
 
     def pop(self, key: str, default: None = None) -> None:
+        with self._lock:
+            self._forget(key)
+
+    def _forget(self, key: str) -> None:
+        """Drop one entry and its bytes. Callers hold the lock."""
         entry = self._entries.pop(key, None)
         if entry is not None:
             self._bytes -= entry.size
 
     def __len__(self) -> int:
-        return len(self._entries)
+        with self._lock:
+            return len(self._entries)
 
     @property
     def nbytes(self) -> int:
-        return self._bytes
+        with self._lock:
+            return self._bytes
 
 
 def _truncate_one_line(text: str, max_len: int) -> str:
