@@ -283,16 +283,51 @@ class WorktreeAuditOwner:
         activity: WorktreeActivityEvidence,
     ) -> tuple[WorktreeAuditEntry, ...]:
         registered = self._worktree_manager.list_registered(repo_root)
-        return apply_disposable_removal_safety(
-            audit_registered_worktrees(
-                repo_root=repo_root,
-                worktree_base=worktree_base,
-                registered=registered,
-                activity=activity,
+        return retain_checkouts_in_custody(
+            apply_disposable_removal_safety(
+                audit_registered_worktrees(
+                    repo_root=repo_root,
+                    worktree_base=worktree_base,
+                    registered=registered,
+                    activity=activity,
+                ),
+                self._worktree_manager,
+                registered,
             ),
             self._worktree_manager,
-            registered,
+            repo_root,
         )
+
+
+def retain_checkouts_in_custody(
+    entries: tuple[WorktreeAuditEntry, ...],
+    worktree_manager: WorktreeManager,
+    repo_root: Path,
+) -> tuple[WorktreeAuditEntry, ...]:
+    """Say why a held checkout stays, rather than failing to remove it (#7274).
+
+    The removal seam already refuses one, so without this the audit would keep
+    proposing a candidate that cannot be removed and every startup would log the
+    same refusal. Saying it here makes custody something an operator can SEE in
+    the audit, next to "git worktree is locked".
+    """
+    held = {
+        grant.path.resolve(): grant
+        for grant in worktree_manager.checkouts_in_custody(repo_root)
+    }
+    if not held:
+        return entries
+    return tuple(
+        replace(
+            entry,
+            disposition="retained",
+            reason=f"in the custody of {held[entry.path.resolve()].holder}",
+        )
+        if entry.disposition == "cleanup_candidate"
+        and entry.path.resolve() in held
+        else entry
+        for entry in entries
+    )
 
 
 def apply_disposable_removal_safety(

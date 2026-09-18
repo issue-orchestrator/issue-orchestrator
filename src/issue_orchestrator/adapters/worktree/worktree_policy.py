@@ -10,6 +10,7 @@ import logging
 import shutil
 from pathlib import Path
 from ...domain.escrow_retention_boundary import require_disposable_path
+from ...ports.worktree_custody import WorktreeInCustodyError
 
 from ...ports.worktree_policy import (
     ValidationResult,
@@ -145,6 +146,12 @@ class ValidateOrDeletePolicy:
             # Try git worktree remove first (clean removal)
             remove_worktree(worktree_path)
             return True
+        except WorktreeInCustodyError:
+            # The fallback below deletes the directory on ANY exception, so
+            # swallowing this one would turn a custody refusal into "git said
+            # no, try harder" -- exactly the bypass #7274 closes. The seam is
+            # the only thing that asks; this only has to not override it.
+            raise
         except Exception as e:
             logger.warning("[POLICY] git worktree remove failed: %s, trying rmtree", e)
 

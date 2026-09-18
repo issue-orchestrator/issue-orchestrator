@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from .worktree_custody import CustodyGrant, CustodyRelease
+
 
 WORKTREE_ID_MARKER = Path(".issue-orchestrator/worktree-id")
 REVIEWER_OWNED_HEAD_MARKER = Path(".issue-orchestrator/reviewer-owned-head")
@@ -112,16 +114,27 @@ class WorktreeManager(Protocol):
         """
         ...
 
-    def remove_checkout(self, worktree_path: Path, *, force: bool = False) -> None:
+    def remove_checkout(
+        self,
+        worktree_path: Path,
+        *,
+        force: bool = False,
+        custody_release: CustodyRelease | None = None,
+    ) -> None:
         """Remove a git worktree checkout while preserving its local branch.
 
         Args:
             worktree_path: Path to the worktree to remove
             force: If true, use forced worktree removal and fallback directory
                 cleanup. This is reserved for hard lifecycle boundaries where
-                the orchestrator intentionally discards local state.
+                the orchestrator intentionally discards local state. It does
+                NOT release custody (#7274).
+            custody_release: The explicit intent to end a custody grant as part
+                of this removal.
 
         Raises:
+            WorktreeInCustodyError: If the checkout is held and no release was
+                given.
             WorktreeError: If removal fails
         """
         ...
@@ -131,6 +144,7 @@ class WorktreeManager(Protocol):
         worktree_path: Path,
         *,
         force: bool = False,
+        custody_release: CustodyRelease | None = None,
     ) -> None:
         """Remove a disposable checkout and its associated local branch.
 
@@ -138,7 +152,35 @@ class WorktreeManager(Protocol):
         contract explicitly permits branch deletion, such as scratch/reset
         cleanup. Ordinary review-gated retention cleanup must call
         :meth:`remove_checkout` instead.
+
+        Raises the same custody refusal as :meth:`remove_checkout`, and for the
+        same reason: this is the path that deletes the branch, so it is the one
+        where a held checkout would cost the most.
         """
+        ...
+
+    def take_custody(
+        self, worktree_path: Path, *, holder: str, reason: str
+    ) -> CustodyGrant:
+        """Hold a checkout so no removal path can discard it (#7274).
+
+        Returns the grant, which is the EXISTING one when someone already holds
+        the checkout -- so a caller learns who has it rather than taking over.
+        """
+        ...
+
+    def release_custody(
+        self, worktree_path: Path, release: CustodyRelease
+    ) -> CustodyGrant | None:
+        """End a grant without removing anything. None when it was not held."""
+        ...
+
+    def custody_of(self, worktree_path: Path) -> CustodyGrant | None:
+        """Who holds this checkout, or None."""
+        ...
+
+    def checkouts_in_custody(self, repo_root: Path) -> tuple[CustodyGrant, ...]:
+        """Every checkout of ``repo_root`` held for a person, oldest first."""
         ...
 
     def can_remove_without_user_changes(self, worktree_path: Path) -> bool:

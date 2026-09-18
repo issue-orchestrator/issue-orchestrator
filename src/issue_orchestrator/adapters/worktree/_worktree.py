@@ -14,9 +14,11 @@ from ...infra.runtime_artifacts import is_cleanup_safe_untracked_path
 from ...infra.logging_config import issue_log
 from ...ports.git import GitResult
 from ...ports.worktree_policy import WorktreePolicy
+from ...ports.worktree_custody import CustodyRelease
 from ...ports.worktree_manager import RegisteredWorktree, WorktreeReuseOptions
 from ...infra.worktree_base import resolve_base_branch
 from ._worktree_errors import WorktreeError as WorktreeError
+from .custody import require_no_custody
 from ._worktree_git import _git, _git_env_no_prompt, _git_run
 from ._worktree_hooks import HOOKS_DIR as HOOKS_DIR
 from ._worktree_runtime_setup import WorktreeRuntimeSetup
@@ -1267,24 +1269,39 @@ def remove_worktree(
     *,
     force: bool = False,
     delete_branch: bool = True,
+    custody_release: CustodyRelease | None = None,
 ) -> None:
     """
     Remove a git worktree and optionally its associated branch.
 
+    Every removal in this repository funnels through here, which is why custody
+    is enforced HERE and not at the four callers: a fifth removal path cannot
+    bypass it by construction (#7274).
+
     Args:
         worktree_path: Path to the worktree to remove
         force: If true, use ``git worktree remove --force`` and fallback to
-            deleting the directory when git cannot remove it cleanly.
+            deleting the directory when git cannot remove it cleanly. It does
+            NOT imply custody release -- discarding someone's only copy of a
+            branch has to be something a caller said, not a side effect of
+            asking git to try harder.
         delete_branch: Whether to delete the associated local branch after the
             checkout is removed. Retention cleanup passes false; disposable
             scratch/reset owners pass true.
+        custody_release: The explicit intent to end a grant as part of this
+            removal, with the holder and reason that outlive it in the audit
+            trail.
 
     Raises:
+        WorktreeInCustodyError: If a human owns the checkout and no release was
+            given. The error carries the grant, so a caller can say who holds
+            it and why rather than reporting a generic failure.
         WorktreeError: If removal fails
     """
     require_disposable_path(worktree_path)
     worktree_path = Path(worktree_path)
     logger.info("Removing worktree: path=%s", worktree_path)
+    require_no_custody(worktree_path, custody_release)
 
     if not worktree_path.exists():
         if force:
@@ -1301,19 +1318,8 @@ def remove_worktree(
     try:
         repo_root = _resolve_repo_root_from_worktree(worktree_path)
         if repo_root is None:
-            if force:
-                logger.warning(
-                    "Forced worktree removal cannot resolve repo root; deleting path directly: %s",
-                    worktree_path,
-                )
-                _force_delete_worktree_path(worktree_path)
-                if worktree_path.exists():
-                    raise WorktreeError(
-                        f"Failed to remove orphaned worktree path after forced cleanup: {worktree_path}"
-                    )
-                logger.info("Orphaned worktree path removed: path=%s", worktree_path)
-                return
-            raise WorktreeError(f"Unable to resolve repo root for {worktree_path}")
+            _remove_orphaned_worktree_path(worktree_path, force=force)
+            return
         branch_name = get_worktree_branch(worktree_path)
 
         _remove_worktree_path(repo_root, worktree_path, force=force)
@@ -1334,6 +1340,22 @@ def remove_worktree(
         if isinstance(e, WorktreeError):
             raise
         raise WorktreeError(f"Error removing worktree: {e}")
+
+
+def _remove_orphaned_worktree_path(worktree_path: Path, *, force: bool) -> None:
+    """Delete a checkout whose repository this process cannot resolve."""
+    if not force:
+        raise WorktreeError(f"Unable to resolve repo root for {worktree_path}")
+    logger.warning(
+        "Forced worktree removal cannot resolve repo root; deleting path directly: %s",
+        worktree_path,
+    )
+    _force_delete_worktree_path(worktree_path)
+    if worktree_path.exists():
+        raise WorktreeError(
+            f"Failed to remove orphaned worktree path after forced cleanup: {worktree_path}"
+        )
+    logger.info("Orphaned worktree path removed: path=%s", worktree_path)
 
 
 def list_worktrees(repo_root: Path) -> list[Path]:

@@ -101,6 +101,7 @@ and this table is the same set with the tier each command carries:
 | `trace` | Diagnostics | Supported |
 | `demo` | Diagnostics | Supported |
 | `executor-status` | Diagnostics | Supported |
+| `worktree-custody` | Diagnostics | Supported |
 | `test-reset` | Development | Internal |
 | `e2e-reset` | Development | Internal |
 

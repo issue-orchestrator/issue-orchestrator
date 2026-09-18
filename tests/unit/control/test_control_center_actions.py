@@ -358,6 +358,7 @@ async def test_stale_worktrees_fallback_without_config(monkeypatch: pytest.Monke
     )
 
     fake_git = SimpleNamespace(
+        checkouts_in_custody=lambda _repo: (),
         list_registered=lambda _repo: (
             RegisteredWorktree(managed, "a" * 40, "4070-fix"),
             RegisteredWorktree(reviewer, "a" * 40, None),
@@ -433,6 +434,7 @@ async def test_worktree_audit_uses_selected_config_and_retains_active_disposable
         lambda repo, requested: loaded.append((repo, requested)) or selected_config,
     )
     fake_git = SimpleNamespace(
+        checkouts_in_custody=lambda _repo: (),
         list_registered=lambda _repo: (
             RegisteredWorktree(reviewer, "a" * 40, None),
             RegisteredWorktree(

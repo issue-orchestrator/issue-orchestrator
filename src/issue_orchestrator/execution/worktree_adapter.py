@@ -6,20 +6,24 @@ Implements the WorktreeManager port using the git worktree implementation.
 from pathlib import Path
 from .git_tools import run_git
 
+from ..ports.worktree_custody import CustodyGrant, CustodyRelease
 from ..ports.worktree_manager import (
     RegisteredWorktree,
     ReviewerHeadOwnership,
     WorktreeInfo,
     WorktreeReuseOptions,
 )
+from ..adapters.worktree._worktree_errors import WorktreeError
 from ..adapters.worktree._worktree_runtime import read_reviewer_head_ownership
 from ..adapters.worktree._worktree import (
     can_remove_without_user_changes,
     create_worktree,
+    get_worktree_branch,
     remove_worktree,
     extract_issue_number_from_branch,
     list_registered_worktrees,
 )
+from ..adapters.worktree.custody import GitMetadataWorktreeCustody
 
 
 class GitWorktreeManager:
@@ -66,18 +70,73 @@ class GitWorktreeManager:
             commits_discarded=commits_discarded,
         )
 
-    def remove_checkout(self, worktree_path: Path, *, force: bool = False) -> None:
+    def remove_checkout(
+        self,
+        worktree_path: Path,
+        *,
+        force: bool = False,
+        custody_release: CustodyRelease | None = None,
+    ) -> None:
         """Remove a git worktree checkout while preserving its branch."""
-        remove_worktree(worktree_path, force=force, delete_branch=False)
+        remove_worktree(
+            worktree_path,
+            force=force,
+            delete_branch=False,
+            custody_release=custody_release,
+        )
 
     def remove_checkout_and_branch(
         self,
         worktree_path: Path,
         *,
         force: bool = False,
+        custody_release: CustodyRelease | None = None,
     ) -> None:
         """Remove a disposable worktree checkout and its local branch."""
-        remove_worktree(worktree_path, force=force, delete_branch=True)
+        remove_worktree(
+            worktree_path,
+            force=force,
+            delete_branch=True,
+            custody_release=custody_release,
+        )
+
+    def take_custody(
+        self, worktree_path: Path, *, holder: str, reason: str
+    ) -> CustodyGrant:
+        """Hold a checkout so no removal path can discard it."""
+        custody = self._custody(worktree_path)
+        return custody.take(
+            worktree_path,
+            branch=get_worktree_branch(worktree_path),
+            holder=holder,
+            reason=reason,
+        )
+
+    def release_custody(
+        self, worktree_path: Path, release: CustodyRelease
+    ) -> CustodyGrant | None:
+        """End a grant without removing anything."""
+        return self._custody(worktree_path).release(worktree_path, release)
+
+    def custody_of(self, worktree_path: Path) -> CustodyGrant | None:
+        """Who holds this checkout, or None."""
+        custody = GitMetadataWorktreeCustody.for_path(worktree_path)
+        return None if custody is None else custody.held(worktree_path)
+
+    def checkouts_in_custody(self, repo_root: Path) -> tuple[CustodyGrant, ...]:
+        """Every checkout of ``repo_root`` held for a person, oldest first."""
+        return self._custody(repo_root).list_held()
+
+    @staticmethod
+    def _custody(path: Path) -> GitMetadataWorktreeCustody:
+        """Fails rather than reporting a path as unheld it cannot resolve."""
+        custody = GitMetadataWorktreeCustody.for_path(path)
+        if custody is None:
+            raise WorktreeError(
+                f"{path} is not inside a git repository, so nothing can be "
+                "held there"
+            )
+        return custody
 
     def can_remove_without_user_changes(self, worktree_path: Path) -> bool:
         """Return true when forced removal would not discard user changes."""

@@ -723,6 +723,18 @@ def cmd_executor_status(args: argparse.Namespace) -> int:
     return executor_status_main(forwarded)
 
 
+def cmd_worktree_custody(args: argparse.Namespace) -> int:
+    """Hold a worktree checkout, or let it go (#7274).
+
+    Needs no configuration: custody is recorded in the repository's own git
+    metadata, so it answers for a clone whose orchestrator config is missing --
+    which is exactly the state a salvage happens in.
+    """
+    from .cli_tools.worktree_custody import main as worktree_custody_main
+
+    return worktree_custody_main(list(getattr(args, "custody_args", []) or []))
+
+
 def cmd_default(args: argparse.Namespace) -> int:  # noqa: ARG001 - args unused but required for command signature
     """Default command when no subcommand is given - open unified dashboard."""
     import webbrowser
@@ -855,6 +867,7 @@ def main() -> int:
             demo=cmd_demo,
             trace=cmd_trace,
             executor_status=cmd_executor_status,
+            worktree_custody=cmd_worktree_custody,
         )
     )
 

@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..adapters.worktree.api import WorktreeError, install_worktree_identity
+from ..adapters.worktree.custody import require_no_custody
 from ..domain.review_exchange import REVIEWER_WORKTREE_CHECKOUT_FAILURE_MARKER
 from ..ports.worktree_manager import REVIEWER_OWNED_HEAD_MARKER, WORKTREE_ID_MARKER
 
@@ -217,6 +218,9 @@ def remove_reviewer_worktree(
             marker.unlink()
         except OSError:
             continue
+    # A reviewer checkout can be held too: the marker dance below is a
+    # rollback, not a licence to discard work someone claimed (#7274).
+    require_no_custody(reviewer.path)
     args = ["worktree", "remove", str(reviewer.path)]
     if force:
         args.append("--force")
