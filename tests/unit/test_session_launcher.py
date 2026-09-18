@@ -2107,6 +2107,11 @@ class TestLaunchValidationRetrySession:
         )
         assert call["branch_name"] == scratch_branch
         assert call["reuse_options"].preserve_branch is False
+        assert call["reuse_options"].disable_reuse is False, (
+            "the retry stopped REUSING its checkout, which detaches and "
+            "recreates it -- and reuse is what keeps the investigation's "
+            "checkout active, so #7274's custody has nothing to protect"
+        )
         assert result.session is not None
         assert result.session.scratch_worktree is False
         assert result.session.tech_lead_scope is None
