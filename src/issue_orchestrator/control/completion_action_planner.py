@@ -132,10 +132,7 @@ class CompletionActionPlanner:
         return None
 
     def _interrupted_retry_guard_label(self, mode: str) -> str:
-        retry_cfg = self.config.retry.interrupted_sessions
-        if mode == "coding":
-            return retry_cfg.coding_guard_label
-        return retry_cfg.review_guard_label
+        return self.config.retry.interrupted_sessions.guard_label(mode)
 
     def _is_interrupted_retry_enabled(self, mode: str) -> bool:
         retry_cfg = self.config.retry.interrupted_sessions

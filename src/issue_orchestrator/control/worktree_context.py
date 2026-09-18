@@ -34,6 +34,7 @@ from ..infra.config import Config
 from ..infra.logging_config import get_repo_log_path
 from ..infra.repo_identity import get_repo_head_sha
 from ..ports import EventSink,  make_trace_event
+from ..domain.tech_lead_scratch_identity import ScratchWorktreeIdentity
 from ..domain.session_run import SessionRunAssets
 from ..domain.session_key import SessionKey
 from ..domain.issue_run_allocation import IssueRunAllocation
@@ -57,27 +58,6 @@ def _escape_claude_project_path(path: Path) -> str:
     """Escape a worktree path into Claude Code's project directory name."""
     cleaned = str(path).lstrip("/")
     return "-" + cleaned.replace("/", "-")
-
-
-@dataclass(frozen=True)
-class ScratchWorktreeIdentity:
-    """Disposable, run-scoped worktree identity for an investigation session.
-
-    A tech_lead failure investigation READS its focus issue's branch history and
-    run-dirs as evidence and must never mutate them (#6823). It therefore runs
-    in a throwaway worktree — a unique directory basename plus a fresh branch
-    off the base branch, keyed to this run rather than the focus issue — so the
-    focus worktree/branch stay pure read-only evidence and even an agent commit
-    can only ever land on the disposable scratch branch.
-
-    Its presence fully determines the worktree directory basename and branch,
-    and implies a clean checkout off the base branch: reuse of any existing
-    worktree and the configured worktree ``seed_ref`` are both suppressed (the
-    caller disables reuse; :meth:`WorktreeContext.create` suppresses the seed).
-    """
-
-    worktree_name: str
-    branch_name: str
 
 
 def prepare_worktree_environment(

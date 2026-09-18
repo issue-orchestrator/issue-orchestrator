@@ -15,11 +15,16 @@ import pytest
 
 from issue_orchestrator.domain.tech_lead_scratch_identity import (
     SCRATCH_TOKEN_LENGTH,
+    ScratchWorktreeIdentity,
     is_scratch_branch_name,
     is_scratch_worktree_name,
+    new_scratch_identity,
     new_scratch_token,
     path_is_under_scratch_worktree,
+    scratch_branch_focus_issue,
     scratch_branch_name,
+    names_one_scratch_checkout,
+    scratch_worktree_focus_issue,
     scratch_worktree_name,
 )
 
@@ -94,3 +99,104 @@ class TestPathMatching:
 
     def test_empty_path_does_not_match(self) -> None:
         assert not path_is_under_scratch_worktree("")
+
+
+class TestFreshIdentity:
+    def test_both_halves_share_one_token(self) -> None:
+        """The worktree and the branch of one run must agree, or a later resume
+        reads them as a corrupt pair."""
+        identity = new_scratch_identity("issue-orchestrator", 6410)
+
+        assert scratch_worktree_focus_issue(identity.worktree_name) == 6410
+        assert scratch_branch_focus_issue(identity.branch_name) == 6410
+        assert identity.worktree_name.endswith(identity.branch_name.rsplit("-", 1)[-1])
+
+    def test_distinct_tokens_give_distinct_identities(self) -> None:
+        """Deterministic on purpose.
+
+        Asserting that two freshly minted identities differ is a probability
+        statement, not a property: two 48-bit tokens CAN collide, so the test
+        would be asserting odds. What the code actually promises is that a
+        different token yields a different worktree AND a different branch, and
+        that is what is checked -- the token supply is tested separately below.
+        """
+        first = ScratchWorktreeIdentity(
+            worktree_name=scratch_worktree_name("issue-orchestrator", 6410, "a" * 12),
+            branch_name=scratch_branch_name(6410, "a" * 12),
+        )
+        second = ScratchWorktreeIdentity(
+            worktree_name=scratch_worktree_name("issue-orchestrator", 6410, "b" * 12),
+            branch_name=scratch_branch_name(6410, "b" * 12),
+        )
+
+        assert first.worktree_name != second.worktree_name
+        assert first.branch_name != second.branch_name
+
+    def test_the_token_supply_is_the_declared_shape(self) -> None:
+        """What makes a collision unlikely, stated as the property it is."""
+        token = new_scratch_token()
+
+        assert len(token) == SCRATCH_TOKEN_LENGTH
+        assert all(character in "0123456789abcdef" for character in token)
+
+
+class TestPairMatching:
+    """Do a worktree basename and a branch describe the same run? (#7263)"""
+
+    def _launched(self, issue: int = 6410) -> ScratchWorktreeIdentity:
+        return new_scratch_identity("issue-orchestrator", issue)
+
+    def test_a_launched_investigations_own_pair_agrees(self) -> None:
+        launched = self._launched()
+
+        assert names_one_scratch_checkout(
+            launched.worktree_name, launched.branch_name
+        )
+
+    def test_an_ordinary_issue_worktree_is_not_a_pair(self) -> None:
+        assert not names_one_scratch_checkout(
+            "issue-orchestrator-6410", "6410-fix-the-thing"
+        )
+
+    @pytest.mark.parametrize(
+        "worktree,branch",
+        [
+            ("issue-orchestrator-6410", "SCRATCH_BRANCH"),
+            ("SCRATCH_WORKTREE", "6410-fix-the-thing"),
+        ],
+        ids=["scratch branch, ordinary worktree", "scratch worktree, ordinary branch"],
+    )
+    def test_a_half_scratch_pair_does_not_agree(
+        self, worktree: str, branch: str
+    ) -> None:
+        launched = self._launched()
+        worktree = worktree.replace("SCRATCH_WORKTREE", launched.worktree_name)
+        branch = branch.replace("SCRATCH_BRANCH", launched.branch_name)
+
+        assert not names_one_scratch_checkout(worktree, branch)
+
+    def test_halves_from_two_runs_of_one_issue_do_not_agree(self) -> None:
+        """The case matching issue numbers alone would have accepted.
+
+        Both halves are well-formed and both name issue 6410, but they are from
+        DIFFERENT investigations, so together they describe no single checkout.
+        Only the run token separates them, so the tokens are spelled out rather
+        than minted: asserting that two random ones differ is a probability
+        statement, not a property.
+        """
+        first = scratch_worktree_name("issue-orchestrator", 6410, "a" * 12)
+        second = scratch_branch_name(6410, "b" * 12)
+
+        assert not names_one_scratch_checkout(first, second)
+
+    def test_two_issues_investigations_do_not_agree(self) -> None:
+        mine = self._launched(6410)
+        theirs = self._launched(6411)
+
+        assert not names_one_scratch_checkout(mine.worktree_name, theirs.branch_name)
+
+    def test_an_empty_half_does_not_agree(self) -> None:
+        launched = self._launched()
+
+        assert not names_one_scratch_checkout("", launched.branch_name)
+        assert not names_one_scratch_checkout(launched.worktree_name, "")
