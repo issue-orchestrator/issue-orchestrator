@@ -21,6 +21,7 @@ from issue_orchestrator.adapters.github.auth import (
 )
 from issue_orchestrator.adapters.github.http_client import (
     GitHubAuthError,
+    _ETagCache,
     GitHubHttpClient,
     GitHubHttpConfig,
     GitHubHttpError,
@@ -2713,6 +2714,48 @@ class TestGitDataBlobAndTreeEndpoints:
 
         assert conditional == [None, '"etag-1"']
         assert second == first, "a 304 must hand back what the sha named"
+
+    def test_successive_shas_do_not_accumulate_without_bound(self) -> None:
+        """Content-addressed urls never repeat, so the cache must evict.
+
+        Every registry write mints a new blob and tree sha. Before the budget,
+        a long-running engine kept every historical record it had ever read --
+        a pattern registry is hundreds of kilobytes, so that is the shape that
+        exhausts memory rather than the thousands of small issue reads the
+        cache was built for (round 4 finding 1).
+        """
+        body = "x" * 4096
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200, json={"sha": "s", "content": body}, headers={"ETag": '"e"'}
+            )
+
+        client = _client_with_transport(httpx.MockTransport(handler))
+        client._etag_cache = _ETagCache(max_bytes=16 * 1024)  # noqa: SLF001
+
+        for index in range(50):
+            client.get_git_blob(f"sha-{index}")
+
+        assert client._etag_cache.nbytes <= 16 * 1024  # noqa: SLF001
+        assert len(client._etag_cache) < 50  # noqa: SLF001
+
+    def test_one_payload_larger_than_the_whole_budget_is_not_kept(self) -> None:
+        """It does not get to starve everything that would have fit."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={"sha": "s", "content": "x" * 40_000},
+                headers={"ETag": '"e"'},
+            )
+
+        client = _client_with_transport(httpx.MockTransport(handler))
+        client._etag_cache = _ETagCache(max_bytes=1024)  # noqa: SLF001
+
+        client.get_git_blob("sha-1")
+
+        assert len(client._etag_cache) == 0  # noqa: SLF001
 
     def test_a_payload_that_is_not_an_object_is_refused(self) -> None:
         client, _ = self._recorded({})

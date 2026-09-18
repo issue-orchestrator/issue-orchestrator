@@ -5,6 +5,7 @@ from __future__ import annotations
 import json as _json
 import logging
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Iterator, Literal, cast
 from urllib.parse import quote
@@ -347,6 +348,61 @@ class GitHubHttpConfig:
 class _ETagEntry:
     etag: str
     payload: Any
+    size: int
+
+
+#: How much decoded response text the ETag cache may hold at once.
+#:
+#: A budget in BYTES rather than entries, because the payloads are not
+#: comparable: an issue is a few kilobytes and a pattern registry is hundreds.
+#: Bounding by count would let a handful of registry revisions outweigh
+#: thousands of issue reads (#7272 round 4).
+ETAG_CACHE_MAX_BYTES = 16 * 1024 * 1024
+
+
+class _ETagCache:
+    """Least-recently-used conditional-request cache with a byte budget.
+
+    Most cached endpoints are keyed by a STABLE url -- one entry per issue, per
+    pull request -- so an unbounded store grew with the repository and no
+    faster. Content-addressed endpoints are a different shape: every registry
+    write mints a new blob and tree sha, so their urls never repeat and their
+    entries could accumulate for as long as the engine runs.
+    """
+
+    def __init__(self, max_bytes: int = ETAG_CACHE_MAX_BYTES) -> None:
+        self._entries: OrderedDict[str, _ETagEntry] = OrderedDict()
+        self._max_bytes = max_bytes
+        self._bytes = 0
+
+    def get(self, key: str) -> _ETagEntry | None:
+        entry = self._entries.get(key)
+        if entry is not None:
+            self._entries.move_to_end(key)
+        return entry
+
+    def store(self, key: str, entry: _ETagEntry) -> None:
+        self.pop(key)
+        self._entries[key] = entry
+        self._bytes += entry.size
+        # Evicts the new entry too when it alone exceeds the budget, which is
+        # the answer that keeps the invariant: a payload that cannot fit does
+        # not get to starve everything that can.
+        while self._bytes > self._max_bytes:
+            _, evicted = self._entries.popitem(last=False)
+            self._bytes -= evicted.size
+
+    def pop(self, key: str, default: None = None) -> None:
+        entry = self._entries.pop(key, None)
+        if entry is not None:
+            self._bytes -= entry.size
+
+    def __len__(self) -> int:
+        return len(self._entries)
+
+    @property
+    def nbytes(self) -> int:
+        return self._bytes
 
 
 def _truncate_one_line(text: str, max_len: int) -> str:
@@ -453,7 +509,7 @@ class GitHubHttpClient:
 
     def __init__(self, config: GitHubHttpConfig) -> None:
         self._config = config
-        self._etag_cache: dict[str, _ETagEntry] = {}
+        self._etag_cache = _ETagCache()
         if config.auth is not None:
             self._auth = config.auth
         elif config.token_provider is not None:
@@ -623,7 +679,12 @@ class GitHubHttpClient:
             if use_cache and method.upper() == "GET":
                 etag = response.headers.get("ETag")
                 if etag:
-                    self._etag_cache[cache_key] = _ETagEntry(etag=etag, payload=payload)
+                    self._etag_cache.store(
+                        cache_key,
+                        _ETagEntry(
+                            etag=etag, payload=payload, size=len(response_text)
+                        ),
+                    )
             return payload
         finally:
             duration_ms = int((time.monotonic() - start) * 1000)
