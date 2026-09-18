@@ -30,7 +30,7 @@ from pathlib import Path
 
 from ...domain.escrow_retention_boundary import require_disposable_path
 from ...ports.worktree_custody import CustodyRelease
-from .custody import custody_guard
+from .custody import custody_guard, git_common_dir
 
 logger = logging.getLogger(__name__)
 
@@ -85,17 +85,25 @@ def remove_checkout_path(
         CustodyUnavailableError: Whether it is held could not be determined.
     """
     require_disposable_path(worktree_path)
-    if worktree_path.resolve() == repo_root.resolve():
-        # The repository's own anchor. Its custody state and append-only trail
-        # live under ITS `.git`, so a forced removal deletes the audit trail it
-        # just wrote -- the release becomes unauditable at the moment it is
-        # exercised, and settlement reads an empty store (round 9 finding 3).
-        # The orchestrator has no reason to delete its own repository, so this
-        # is refused rather than made to work: supporting it would mean moving
-        # the store outside the repository, which is a different change.
+    target = worktree_path.resolve()
+    common_dir = git_common_dir(repo_root)
+    removes_common_dir = common_dir is not None and (
+        target == common_dir or target in common_dir.parents
+    )
+    if target == repo_root.resolve() or removes_common_dir:
+        # The repository's anchor contains the custody state and append-only
+        # trail. The caller's repo_root can itself be a LINKED worktree, so
+        # identity has to follow the git COMMON directory rather than compare
+        # checkout paths: a forced fallback that removes that directory, or any
+        # ancestor of it, destroys every grant and its audit trail (round 10
+        # finding 1). The orchestrator has no reason to delete its own
+        # repository, so this is refused rather than made to work: supporting it
+        # would mean moving the store outside the repository, which is a
+        # different change.
         raise ValueError(
-            f"{worktree_path} is the repository itself, not a disposable "
-            "checkout; removing it would destroy the custody trail it holds"
+            f"{worktree_path} is the repository itself or contains its custody "
+            "metadata, not a disposable checkout; removing it would destroy "
+            "the custody trail it holds"
         )
     with custody_guard(worktree_path, custody_release, repo_root=repo_root) as settled:
         error = _remove_with_git(worktree_path, force=force, run_git=run_git)

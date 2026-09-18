@@ -569,18 +569,18 @@ class TestOneRemovalOwner:
     #: somewhere the scan did not read -- ``scripts`` (round 3),
     #: ``repo-specific`` (round 4) -- so it reads all of them.
     #:
-    #: ``tests`` is excluded deliberately: a test building a worktree fixture is
-    #: not the orchestrator removing somebody's checkout. The one test helper
-    #: that DOES sweep real worktrees -- the E2E cleanup -- used to enter
-    #: ``custody_guard`` by hand and run its own ``shutil.rmtree``, which made
-    #: it a second owner this scan could not see (round 7 finding 1). It now
-    #: calls ``remove_checkout_path`` like everything else.
+    #: Ordinary tests are excluded: a test building a worktree fixture is not
+    #: the orchestrator removing somebody's checkout. ``tests/e2e/fixtures`` IS
+    #: included, because its cleanup helper sweeps real operator-visible
+    #: worktrees -- it used to be a second removal owner (round 7 finding 1),
+    #: so excluding it would let that exact regression satisfy this guard again
+    #: (round 10 finding 2).
     #:
     #: What this does NOT do is hunt ``shutil.rmtree``. Any line anywhere can
     #: delete a directory, and a guardrail chasing that is a search with no end
     #: -- four review rounds each found one more. The owner PREVENTS what goes
     #: through it; ``GitMetadataWorktreeCustody.breached`` DETECTS what does not.
-    SEARCHED = ("src", "scripts", "tools", "repo-specific")
+    SEARCHED = ("src", "scripts", "tools", "repo-specific", "tests/e2e/fixtures")
 
     def _builders(self) -> dict[str, list[int]]:
         root = Path(__file__).resolve().parents[2]
@@ -592,6 +592,22 @@ class TestOneRemovalOwner:
                 if lines:
                     found[str(path.relative_to(root))] = lines
         return found
+
+    def test_the_real_e2e_cleanup_is_inside_the_scan(self) -> None:
+        """The operational cleanup helper is not an ordinary test fixture.
+
+        Pinned separately from the scan itself: a future tidy-up that drops
+        ``tests/e2e/fixtures`` from SEARCHED would silently restore the blind
+        spot rather than fail anything.
+        """
+        root = Path(__file__).resolve().parents[2]
+        scanned = {
+            path.resolve()
+            for directory in self.SEARCHED
+            for path in (root / directory).rglob("*.py")
+        }
+
+        assert (root / "tests/e2e/fixtures/cleanup.py").resolve() in scanned
 
     def test_only_the_owner_builds_the_removal_command(self) -> None:
         builders = self._builders()
@@ -1737,6 +1753,34 @@ class TestRoundNineGaps:
                 force=True,
                 run_git=_git_in(repo),
                 repo_root=repo,
+                custody_release=CustodyRelease(holder=HOLDER, reason="collected"),
+            )
+
+        assert (repo / "README.md").exists()
+        assert manager.custody_of(repo) is not None, "the grant was discarded"
+        assert (repo / ".git" / CUSTODY_LOG).exists(), "the audit trail was deleted"
+
+    def test_the_main_checkout_is_refused_from_a_linked_repository_root(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        """The authoritative repo_root can itself be a linked checkout.
+
+        Its common git directory still lives under the MAIN checkout, so
+        comparing the removal target only with repo_root let the forced
+        fallback delete that main checkout and the custody trail inside it
+        (round 10 finding 1).
+        """
+        linked_root = tmp_path / "linked-control-root"
+        _git(repo, "worktree", "add", "--detach", str(linked_root))
+        manager = GitWorktreeManager(linked_root)
+        manager.take_custody(repo, holder=HOLDER, reason=REASON)
+
+        with pytest.raises(ValueError, match="custody metadata"):
+            remove_checkout_path(
+                repo,
+                force=True,
+                run_git=_git_in(linked_root),
+                repo_root=linked_root,
                 custody_release=CustodyRelease(holder=HOLDER, reason="collected"),
             )
 
