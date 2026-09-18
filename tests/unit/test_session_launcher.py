@@ -8511,6 +8511,72 @@ class TestLaunchRetryGuardClearing:
             lm.reset_retry_scratch_pending,
         ]
 
+    def test_a_validation_retry_clears_the_guards_too(
+        self, launcher_bundle, sample_config
+    ) -> None:
+        """A retry that kept its reset-retry guard would be reset again."""
+        interrupted = sample_config.retry.interrupted_sessions
+        lm = LabelManager(sample_config)
+        retry = PendingValidationRetry(
+            issue_number=123,
+            issue_title="Fix checkout",
+            agent_label="agent:web",
+            worktree_path="/tmp/worktree-123",
+            branch_name="123-fix-checkout",
+            original_prompt="Work on issue #123: Fix checkout",
+            validation_error="dirty worktree",
+            validation_error_file=None,
+            retry_count=1,
+            source_task=TaskKind.CODE,
+            validation_cmd="make test",
+        )
+
+        assert (
+            launcher_bundle.launcher.launch_validation_retry_session(
+                retry, active_sessions=[]
+            ).success
+            is True
+        )
+
+        assert [
+            label for label, _ in self._guards_cleared(launcher_bundle, sample_config)
+        ] == [
+            interrupted.coding_guard_label,
+            lm.reset_retry_pending,
+            lm.reset_retry_scratch_pending,
+        ]
+
+    def test_a_retrospective_review_clears_the_review_guard(
+        self, launcher_bundle, sample_config
+    ) -> None:
+        """Its guard, left standing, denies the NEXT legitimate retry."""
+        interrupted = sample_config.retry.interrupted_sessions
+        lm = LabelManager(sample_config)
+        review = PendingRetrospectiveReview(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="365"),
+            issue_number=365,
+            issue_title="Review old implementation",
+            agent_label="agent:web",
+            trigger_label="lack-of-review-redo",
+            prior_pr_number=512,
+            prior_pr_url="https://github.com/test/repo/pull/512",
+        )
+
+        assert (
+            launcher_bundle.launcher.launch_retrospective_review_session(
+                review, active_sessions=[]
+            ).success
+            is True
+        )
+
+        assert [
+            label for label, _ in self._guards_cleared(launcher_bundle, sample_config)
+        ] == [
+            interrupted.review_guard_label,
+            lm.reset_retry_pending,
+            lm.reset_retry_scratch_pending,
+        ]
+
     def test_one_guard_failing_does_not_skip_the_others(
         self, launcher_bundle, sample_config, sample_issue
     ) -> None:

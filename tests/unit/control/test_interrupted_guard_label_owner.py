@@ -80,7 +80,13 @@ class TestTheRefusalIsUnreachableFromProduction:
         assert set(passed) <= SUPPORTED_MODES
 
     def test_completion_planning_derives_only_supported_modes(self) -> None:
-        """The other former copy of the map, pinned at its source."""
+        """The other former copy of the map, pinned at its source.
+
+        Every return is read, not just the literal ones: a derivation that grew
+        ``return session.mode`` beside its existing literals would keep this
+        green while an unsupported value reached the owner and raised during
+        completion processing.
+        """
         module = self._source("control/completion_action_planner.py")
         derivation = next(
             node
@@ -89,11 +95,15 @@ class TestTheRefusalIsUnreachableFromProduction:
             and node.name == "_interrupted_retry_mode"
         )
 
-        returned = {
-            node.value.value
-            for node in ast.walk(derivation)
-            if isinstance(node, ast.Return) and isinstance(node.value, ast.Constant)
-        }
+        returns = [
+            node for node in ast.walk(derivation) if isinstance(node, ast.Return)
+        ]
 
-        assert returned, "the derivation returns no literals; re-read it"
-        assert returned <= SUPPORTED_MODES | {None}
+        assert returns, "the derivation returns nothing; re-read it"
+        for node in returns:
+            assert node.value is None or isinstance(node.value, ast.Constant), (
+                f"completion_action_planner.py:{node.lineno} returns a computed "
+                "mode; the guard-label owner refuses anything it does not know"
+            )
+            value = None if node.value is None else node.value.value
+            assert value in SUPPORTED_MODES | {None}
