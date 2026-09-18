@@ -5,6 +5,8 @@ from __future__ import annotations
 import json as _json
 import logging
 import time
+import threading
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Iterator, Literal, cast
 from urllib.parse import quote
@@ -347,6 +349,76 @@ class GitHubHttpConfig:
 class _ETagEntry:
     etag: str
     payload: Any
+    size: int
+
+
+#: How much decoded response text the ETag cache may hold at once.
+#:
+#: A budget in BYTES rather than entries, because the payloads are not
+#: comparable: an issue is a few kilobytes and a pattern registry is hundreds.
+#: Bounding by count would let a handful of registry revisions outweigh
+#: thousands of issue reads (#7272 round 4).
+ETAG_CACHE_MAX_BYTES = 16 * 1024 * 1024
+
+
+class _ETagCache:
+    """Least-recently-used conditional-request cache with a byte budget.
+
+    Most cached endpoints are keyed by a STABLE url -- one entry per issue, per
+    pull request -- so an unbounded store grew with the repository and no
+    faster. Content-addressed endpoints are a different shape: every registry
+    write mints a new blob and tree sha, so their urls never repeat and their
+    entries could accumulate for as long as the engine runs.
+    """
+
+    def __init__(self, max_bytes: int = ETAG_CACHE_MAX_BYTES) -> None:
+        self._entries: OrderedDict[str, _ETagEntry] = OrderedDict()
+        self._max_bytes = max_bytes
+        self._bytes = 0
+        # One client is shared by the tick and the web worker, and none of
+        # these operations is a single dict access: a recency bump reads then
+        # moves, and a store adds then evicts in a loop. Interleaved, the bump
+        # raises KeyError on an entry another thread evicted, and the byte
+        # count drifts until the budget means nothing (#7272 round 6).
+        self._lock = threading.Lock()
+
+    def get(self, key: str) -> _ETagEntry | None:
+        with self._lock:
+            entry = self._entries.get(key)
+            if entry is not None:
+                self._entries.move_to_end(key)
+            return entry
+
+    def store(self, key: str, entry: _ETagEntry) -> None:
+        with self._lock:
+            self._forget(key)
+            self._entries[key] = entry
+            self._bytes += entry.size
+            # Evicts the new entry too when it alone exceeds the budget, which
+            # is the answer that keeps the invariant: a payload that cannot fit
+            # does not get to starve everything that can.
+            while self._bytes > self._max_bytes:
+                _, evicted = self._entries.popitem(last=False)
+                self._bytes -= evicted.size
+
+    def pop(self, key: str, default: None = None) -> None:
+        with self._lock:
+            self._forget(key)
+
+    def _forget(self, key: str) -> None:
+        """Drop one entry and its bytes. Callers hold the lock."""
+        entry = self._entries.pop(key, None)
+        if entry is not None:
+            self._bytes -= entry.size
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._entries)
+
+    @property
+    def nbytes(self) -> int:
+        with self._lock:
+            return self._bytes
 
 
 def _truncate_one_line(text: str, max_len: int) -> str:
@@ -453,7 +525,7 @@ class GitHubHttpClient:
 
     def __init__(self, config: GitHubHttpConfig) -> None:
         self._config = config
-        self._etag_cache: dict[str, _ETagEntry] = {}
+        self._etag_cache = _ETagCache()
         if config.auth is not None:
             self._auth = config.auth
         elif config.token_provider is not None:
@@ -569,6 +641,11 @@ class GitHubHttpClient:
         if accept is not None:
             headers["Accept"] = accept
         cache_key = self._cache_key(method, url, params)
+        # Held for the whole call, not looked up again on the 304. The cache
+        # evicts, and this client is shared by the tick and the web worker, so
+        # a re-read could miss the very entry whose ETag produced the 304 --
+        # and the empty 304 body would then decode as an empty payload.
+        cached: _ETagEntry | None = None
         if use_cache and method.upper() == "GET":
             cached = self._etag_cache.get(cache_key)
             if cached:
@@ -602,12 +679,24 @@ class GitHubHttpClient:
             response_text = response.text
             # Extract rate limit headers from every response
             rate_limit_info = _extract_rate_limit_headers(response)
-            if status_code == 304 and use_cache:
-                cached = self._etag_cache.get(cache_key)
-                if cached is not None:
-                    payload = cached.payload
-                    was_304 = True
-                    return payload
+            if status_code == 304:
+                if cached is None:
+                    # Nothing asked for this: a 304 without an If-None-Match is
+                    # a response to a request this client did not make, and its
+                    # body is empty. Decoding it would hand back "no data".
+                    raise GitHubHttpError(
+                        f"GitHub {method.upper()} {path} returned 304 for a "
+                        "request that carried no ETag",
+                        method=method,
+                        url=str(response.url),
+                        status_code=status_code,
+                    )
+                payload = cached.payload
+                was_304 = True
+                # Re-stored so the budget sees it as freshly used rather than
+                # as the oldest thing in the cache.
+                self._etag_cache.store(cache_key, cached)
+                return payload
             if _response_status_is_error(status_code, response_kind):
                 error = f"{status_code} {response_text.strip()}"
                 summary = _summarize_github_error(response_text)
@@ -623,7 +712,17 @@ class GitHubHttpClient:
             if use_cache and method.upper() == "GET":
                 etag = response.headers.get("ETag")
                 if etag:
-                    self._etag_cache[cache_key] = _ETagEntry(etag=etag, payload=payload)
+                    self._etag_cache.store(
+                        cache_key,
+                        _ETagEntry(
+                            etag=etag,
+                            payload=payload,
+                            # Encoded length: `len` on a str counts code
+                            # POINTS, so a body of emoji would report a third
+                            # of what it actually costs.
+                            size=len(response_text.encode("utf-8")),
+                        ),
+                    )
             return payload
         finally:
             duration_ms = int((time.monotonic() - start) * 1000)
@@ -1633,6 +1732,61 @@ class GitHubHttpClient:
         )
         if not isinstance(payload, dict):
             raise GitHubHttpError("GitHub create commit payload was not an object")
+        return payload
+
+    def get_git_blob(self, sha: str) -> dict[str, Any]:
+        # Cached: a blob is addressed BY its content hash, so a 304 can only
+        # ever mean the same bytes. Conditional requests do not count against
+        # the primary rate limit, and a registry read repeats the same sha for
+        # as long as the record is unchanged.
+        encoded = quote(sha, safe="")
+        payload = self._request_json(
+            "GET",
+            f"/repos/{self._config.repo}/git/blobs/{encoded}",
+            use_cache=True,
+            caller="get_git_blob",
+        )
+        if not isinstance(payload, dict):
+            raise GitHubHttpError("GitHub blob payload was not an object")
+        return payload
+
+    def create_git_blob(self, *, content: str) -> dict[str, Any]:
+        payload = self._request_json(
+            "POST",
+            f"/repos/{self._config.repo}/git/blobs",
+            json_body={"content": content, "encoding": "utf-8"},
+            use_cache=False,
+            caller="create_git_blob",
+        )
+        if not isinstance(payload, dict):
+            raise GitHubHttpError("GitHub create blob payload was not an object")
+        return payload
+
+    def create_git_tree(self, *, tree: list[dict[str, Any]]) -> dict[str, Any]:
+        payload = self._request_json(
+            "POST",
+            f"/repos/{self._config.repo}/git/trees",
+            json_body={"tree": tree},
+            use_cache=False,
+            caller="create_git_tree",
+        )
+        if not isinstance(payload, dict):
+            raise GitHubHttpError("GitHub create tree payload was not an object")
+        return payload
+
+    def get_git_tree(self, sha: str) -> dict[str, Any]:
+        # Cached for the same reason as a blob: content-addressed, so a 304 is
+        # always correct. The REF read stays uncached -- that is the mutable
+        # cell, and a stale answer there is a lost claim.
+        encoded = quote(sha, safe="")
+        payload = self._request_json(
+            "GET",
+            f"/repos/{self._config.repo}/git/trees/{encoded}",
+            use_cache=True,
+            caller="get_git_tree",
+        )
+        if not isinstance(payload, dict):
+            raise GitHubHttpError("GitHub tree payload was not an object")
         return payload
 
     def update_issue_state(self, issue_number: int, state: str) -> None:

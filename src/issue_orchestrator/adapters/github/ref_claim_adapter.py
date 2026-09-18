@@ -2,7 +2,7 @@
 
 This implementation keeps the distributed coordination algorithm behind the
 ClaimManager port. It uses one issue-specific Git ref as an atomic compare-and-
-swap cell, with claim metadata stored in the referenced commit message.
+swap cell, with claim metadata stored in the referenced commit's tree (#7272).
 """
 
 from __future__ import annotations
@@ -192,7 +192,7 @@ def _ledger_of(snapshot: GitRefSnapshot | None) -> "RunLedger":
     """The ledger a ref snapshot carries; an absent ref is an empty ledger."""
     if snapshot is None:
         return RunLedger()
-    return parse_run_ledger(snapshot.message)
+    return parse_run_ledger(snapshot.record)
 
 
 def _format_run_ledger_commit_message(ledger: "RunLedger") -> str:
@@ -417,7 +417,7 @@ class GitHubRefClaimAdapter(ClaimManager):
     ) -> Claim | None:
         if snapshot is None:
             return None
-        claim = parse_claim_comment(snapshot.message, issue_number=issue_number)
+        claim = parse_claim_comment(snapshot.record, issue_number=issue_number)
         if claim is None or claim.is_expired(datetime.now()):
             return None
         return claim
@@ -452,7 +452,7 @@ class GitHubRefClaimAdapter(ClaimManager):
             held = (
                 None
                 if snapshot is None
-                else parse_claim_comment(snapshot.message, issue_number=issue_number)
+                else parse_claim_comment(snapshot.record, issue_number=issue_number)
             )
             if snapshot is None or held is None:
                 if remove_label:
