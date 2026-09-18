@@ -54,7 +54,11 @@ from .tech_lead_evidence import build_evidence_map, write_evidence_map
 from .tech_lead_dispositions import recovery_tracker_grants
 from .tech_lead_manifest_builder import TechLeadCandidatePolicy, TechLeadManifestBuilder
 from .tech_lead_recovery_targets import prepare_validated_work_recovery_targets
-from .tech_lead_run_inputs import LaunchAuthorityTransfer, carry_tech_lead_inputs
+from .tech_lead_run_inputs import (
+    LaunchAuthorityTransfer,
+    carry_tech_lead_inputs,
+    source_data_dir,
+)
 
 if TYPE_CHECKING:
     from .completion_ports import GitAdapter
@@ -182,8 +186,20 @@ def carry_launch_authority_forward(
     source = retry.authority_run
     if source is None:
         return None
-    authority = tech_lead_authority.load(
-        run_id=source.run_id, session_name=source.session_name
+    # Local import: completion authority validation reads assignments back
+    # through this launch-policy module, so importing it at module level cycles.
+    from .tech_lead_completion import resolve_tech_lead_launch_authority
+
+    # The SAME admission the completion owner applies, asked before the relaunch
+    # rather than after it. Checking only that the row and the file EXIST let a
+    # retry carry inputs the first agent had already edited, and spend a session
+    # on a completion guaranteed to be rejected as scope_tampered (round 5
+    # finding 2).
+    authority, source_error = resolve_tech_lead_launch_authority(
+        tech_lead_authority,
+        run_dir=source_data_dir(retry, source).parent,
+        run_id=source.run_id,
+        session_name=source.session_name,
     )
     if authority is None:
         return (
@@ -191,6 +207,12 @@ def carry_launch_authority_forward(
             f"{source.run_id} as its launch authority, and that record is "
             "gone; relaunching would produce a completion the orchestrator "
             "must reject"
+        )
+    if source_error is not None:
+        return (
+            f"Validation retry for issue #{retry.issue_number} names run "
+            f"{source.run_id}, whose launch inputs no longer match its "
+            f"authority: {source_error}"
         )
     if error := carry_tech_lead_inputs(retry, source, run):
         return error

@@ -134,6 +134,7 @@ from issue_orchestrator.domain.board_snapshot import (
     BoardSnapshot,
 )
 from issue_orchestrator.domain.tech_lead_session import (
+    TechLeadAssignment,
     TechLeadLaunchScope,
     TechLeadLaunchAuthority,
     TechLeadSessionFlavor,
@@ -8690,16 +8691,19 @@ class TestAValidationRetryCarriesItsLaunchAuthority:
             / "tech-lead-data"
         )
         data.mkdir(parents=True, exist_ok=True)
+        # What a real launch writes, through the domain type. A hand-rolled dict
+        # passed while admission only checked that the file EXISTED; once the
+        # launcher applies the completion owner's real validation it is rejected
+        # as malformed, which is the fixture being wrong rather than the code.
         (data / "tech-lead-assignment.json").write_text(
             json.dumps(
-                {
-                    "flavor": TechLeadSessionFlavor.FAILURE_INVESTIGATION.value,
-                    "anchor_issue_number": focus,
-                    "focus_issue_number": focus,
-                }
+                TechLeadAssignment(
+                    flavor=TechLeadSessionFlavor.FAILURE_INVESTIGATION,
+                    focus_issue_number=focus,
+                    focus_reason="stranded failure",
+                ).to_dict()
             )
         )
-        (data / "board-snapshot.json").write_text(json.dumps({"schema": 8}))
         return data
 
     def _retry(
@@ -8813,6 +8817,54 @@ class TestAValidationRetryCarriesItsLaunchAuthority:
 
         assert result.success is False
         assert "launch inputs" in (result.reason or "")
+
+    def test_a_retry_whose_launch_inputs_were_CHANGED_is_refused(
+        self, launcher_bundle, sample_config, tmp_path
+    ) -> None:
+        """Present is not the same as unchanged.
+
+        Admission checked that the row and the file existed. If the first agent
+        EDITED an input and validation failed before completion processing ever
+        ran, the retry carried already-invalid inputs forward and was rejected as
+        `scope_tampered` -- a whole agent session spent on a guaranteed no
+        (round 5 finding 2).
+        """
+        TestLaunchTechLeadIssueSessionFlavors.enable_tech_lead_agent(sample_config, tmp_path)
+        store = SqliteTechLeadAuthorityStore.for_repo(sample_config.repo_root)
+        source = SessionRunIdentity(
+            session_name="issue-6410", run_id="run-original", started_at="2026-09-18"
+        )
+        store.record(
+            run_id=source.run_id,
+            session_name=source.session_name,
+            authority=self._authority(),
+        )
+        checkout = tmp_path / "repo-tech-lead-6410-abcdef123456"
+        checkout.mkdir()
+        data = self._seed_launch_inputs(checkout, source)
+        # The agent repoints the investigation at a different issue.
+        (data / "tech-lead-assignment.json").write_text(
+            json.dumps(
+                TechLeadAssignment(
+                    flavor=TechLeadSessionFlavor.FAILURE_INVESTIGATION,
+                    focus_issue_number=9999,
+                    focus_reason="somewhere else entirely",
+                ).to_dict()
+            )
+        )
+
+        result = launcher_bundle.launcher.launch_validation_retry_session(
+            self._retry(source, worktree_path=str(checkout)), active_sessions=[]
+        )
+
+        assert result.success is False
+        assert "no longer match" in (result.reason or "")
+        assert launcher_bundle.create_session_calls == [], (
+            "a session was spent on a completion guaranteed to be rejected"
+        )
+        assert store.load(
+            run_id=source.run_id, session_name=source.session_name
+        ) is not None, "the refused relaunch spent the source authority"
 
     def test_a_retry_whose_authority_is_gone_is_refused_before_it_spends_a_session(
         self, launcher_bundle, sample_config, tmp_path
