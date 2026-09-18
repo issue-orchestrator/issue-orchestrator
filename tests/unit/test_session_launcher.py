@@ -45,6 +45,7 @@ from issue_orchestrator.control.provider_circuit_effects import (
 )
 from issue_orchestrator.control.session_completion import (
     _apply_completed_decisions,
+    unprocessed_session_policy,
     _terminate_finished_session,
     handle_session_completion,
     process_active_sessions,
@@ -587,6 +588,7 @@ def _build_launcher_bundle(
     provider_resilience: ProviderResilienceManager | None = None,
     provider_readiness_probe: ProviderReadinessProbe | None = None,
     issue_run_ledger: IssueRunLedger | None = None,
+    refresh_issue_fn: Callable[[int], Any] | None = None,
 ) -> LauncherTestBundle:
     """Create a SessionLauncher with mock dependencies and tracking.
 
@@ -656,6 +658,7 @@ def _build_launcher_bundle(
     if issue_run_ledger is None:
         issue_run_ledger = SqliteIssueRunLedger(sample_config.repo_root / "state" / "runs.sqlite", repo_slug="test-owner/test-repo")
     launcher = make_session_launcher(
+        refresh_issue_fn=refresh_issue_fn,
         issue_run_ledger=issue_run_ledger,
         config=sample_config,
         events=mock_events,
@@ -8632,6 +8635,25 @@ class TestLaunchRetryGuardClearing:
         ]
 
 
+def _authority_run_ids(repo_root: Path) -> set[str]:
+    """Every run id the launch-authority table currently holds.
+
+    Read straight out of the store's own table, because the port has no
+    "list all" read and the property under test is precisely that NO row
+    survives for a run that never ran -- which cannot be asked one key at a
+    time when the key belongs to a session that was never returned.
+    """
+    import sqlite3
+
+    from issue_orchestrator.infra.repo_identity import state_dir
+
+    with sqlite3.connect(state_dir(repo_root) / "tech_lead_authority.sqlite") as db:
+        return {
+            row[0]
+            for row in db.execute("SELECT run_id FROM tech_lead_launch_authority")
+        }
+
+
 class TestAValidationRetryCarriesItsLaunchAuthority:
     """A tech-lead investigation's retry could never complete before (#7273).
 
@@ -8899,6 +8921,132 @@ class TestAValidationRetryCarriesItsLaunchAuthority:
         assert held == [], (
             f"a refused relaunch left the durable claim held: {held}"
         )
+
+    def test_a_recovered_investigation_relaunches_as_the_tech_lead(
+        self,
+        sample_config,
+        tmp_path,
+        mock_events,
+        mock_repo_host,
+        mock_worktree_manager,
+        mock_working_copy,
+        mock_command_runner,
+    ) -> None:
+        """A restart must not hand an investigation back to the coder.
+
+        Recovery blanked the role, so `_resolve_validation_retry_issue` fell
+        through to the focus issue's OWN label -- which for an investigation is
+        the coder's. The resumed run was recorded as ordinary coding work, the
+        carried authority bypassed, the artifact hold released. `Issue.agent_type`
+        is the FIRST agent label, so appending the tech-lead one was not enough
+        either (round 2 finding 1).
+        """
+        TestLaunchTechLeadIssueSessionFlavors.enable_tech_lead_agent(sample_config, tmp_path)
+        # The focus issue still carries the coder label a real one would.
+        launcher_bundle = _build_launcher_bundle(
+            sample_config,
+            mock_events,
+            mock_repo_host,
+            mock_worktree_manager,
+            mock_working_copy,
+            mock_command_runner,
+            refresh_issue_fn=lambda _n: Issue(
+                number=6410,
+                title="Investigate stranded failure",
+                labels=["agent:web", "in-progress"],
+                repo="test-owner/test-repo",
+            ),
+        )
+        checkout = tmp_path / "repo-tech-lead-6410-abcdef123456"
+        checkout.mkdir()
+        source = SessionRunIdentity(
+            session_name="issue-6410", run_id="run-original", started_at="2026-09-18"
+        )
+        store = SqliteTechLeadAuthorityStore.for_repo(sample_config.repo_root)
+        store.record(
+            run_id=source.run_id,
+            session_name=source.session_name,
+            authority=self._authority(),
+        )
+        self._seed_launch_inputs(checkout, source)
+
+        result = launcher_bundle.launcher.launch_validation_retry_session(
+            self._retry(source, worktree_path=str(checkout)), active_sessions=[]
+        )
+
+        assert result.success is True, result.reason
+        assert result.session is not None
+        assert result.session.agent_label == "agent:tech-lead"
+        assert result.session.issue.agent_type == "agent:tech-lead", (
+            "the resumed issue still reads as the focus issue's coder"
+        )
+        assert unprocessed_session_policy(
+            result.session, sample_config
+        ).is_tech_lead, "the resumed run does not classify as tech-lead work"
+
+    def test_a_launch_that_never_spawns_leaves_no_destination_authority(
+        self, launcher_bundle, sample_config, tmp_path
+    ) -> None:
+        """Carrying authority is not finished until a terminal is running.
+
+        The destination row was recorded before the claim, the labels and the
+        spawn, and no failure path discarded it -- so every post-carry failure
+        left a row for a run that never existed operationally (round 2
+        finding 4).
+        """
+        checkout = tmp_path / "repo-tech-lead-6410-abcdef123456"
+        checkout.mkdir()
+        TestLaunchTechLeadIssueSessionFlavors.enable_tech_lead_agent(sample_config, tmp_path)
+        store = SqliteTechLeadAuthorityStore.for_repo(sample_config.repo_root)
+        source = SessionRunIdentity(
+            session_name="issue-6410", run_id="run-original", started_at="2026-09-18"
+        )
+        store.record(
+            run_id=source.run_id,
+            session_name=source.session_name,
+            authority=self._authority(),
+        )
+        self._seed_launch_inputs(checkout, source)
+        launcher_bundle.create_session_override[0] = lambda *a, **k: None
+
+        result = launcher_bundle.launcher.launch_validation_retry_session(
+            self._retry(source, worktree_path=str(checkout)), active_sessions=[]
+        )
+
+        assert result.success is False
+        assert store.load(
+            run_id=source.run_id, session_name=source.session_name
+        ) is not None, "the source authority was spent by a launch that never ran"
+        others = _authority_run_ids(sample_config.repo_root) - {source.run_id}
+        assert others == set(), (
+            f"a destination authority was left behind for runs that never ran: "
+            f"{sorted(others)}"
+        )
+
+    def test_a_successful_retry_does_not_keep_two_authorities(
+        self, launcher_bundle, sample_config, tmp_path
+    ) -> None:
+        """The source row is spent once the destination owns the grant.
+
+        Every successful retry used to leave both, against the store contract
+        that a row is discarded when its run terminalizes (round 2 finding 4).
+        """
+        checkout = tmp_path / "repo-tech-lead-6410-abcdef123456"
+        checkout.mkdir()
+        result, store, source, granted = self._resumed(
+            launcher_bundle, sample_config, tmp_path, checkout
+        )
+
+        assert result.success is True, result.reason
+        assert result.session is not None
+        resumed = result.session.run_assets.identity
+        assert (
+            store.load(run_id=resumed.run_id, session_name=resumed.session_name)
+            == granted
+        )
+        assert store.load(
+            run_id=source.run_id, session_name=source.session_name
+        ) is None, "the spent source authority survived the transfer"
 
     def test_an_ordinary_retry_records_nothing(
         self, launcher_bundle, sample_config

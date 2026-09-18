@@ -68,7 +68,7 @@ def tech_lead_problem_artifact_hold_issue_numbers(
         referenced_anchors.add(item.issue_number)
     for session in state.active_sessions:
         if is_tech_lead_session(
-            config.tech_lead_review_agent, session.issue.agent_type
+            config.tech_lead_review_agent, session.agent_label
         ):
             held.add(session.issue.number)
             referenced_anchors.add(session.issue.number)

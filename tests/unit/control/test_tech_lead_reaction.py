@@ -391,7 +391,6 @@ def _worker_session(
         issue=Issue(
             number=42,
             title="Issue 42",
-            # Issue.agent_type is derived from the agent:* label.
             labels=[agent_label],
             repo="test/repo",
             body="Some body",
@@ -402,6 +401,11 @@ def _worker_session(
         worktree_path=tmp_path,
         branch_name="42-branch",
         run_assets=make_session_run_assets(tmp_path, session_name="issue-42"),
+        # The role the LAUNCH settled, which is what the reaction owner reads.
+        # A real session always carries it, and reading the issue's labels
+        # instead is how a tech-lead run inherited the focus issue's coder role
+        # (#7273 round 2 finding 1).
+        agent_label=agent_label,
     )
 
 

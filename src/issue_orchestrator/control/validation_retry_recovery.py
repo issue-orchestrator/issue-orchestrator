@@ -137,7 +137,12 @@ class ValidationRetryRecovery:
         return PendingValidationRetry(
             issue_number=issue_number,
             issue_title=f"Issue #{issue_number}",  # The full title is not on disk
-            agent_label="",  # Determined when launching
+            # The role the run ACTUALLY had. Blank here fell through to the
+            # focus issue's label in `_resolve_validation_retry_issue`, and for
+            # an investigation that is the CODER's label -- so a recovered
+            # investigation relaunched as ordinary coding work and the carried
+            # authority was bypassed entirely (round 2 finding 1).
+            agent_label=artifacts.run_agent_label or "",
             worktree_path=str(checkout),
             branch_name=branch_name,
             original_prompt=self._retry_prompt(artifacts),

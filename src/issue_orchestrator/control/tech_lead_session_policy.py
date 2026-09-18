@@ -54,7 +54,7 @@ from .tech_lead_evidence import build_evidence_map, write_evidence_map
 from .tech_lead_dispositions import recovery_tracker_grants
 from .tech_lead_manifest_builder import TechLeadCandidatePolicy, TechLeadManifestBuilder
 from .tech_lead_recovery_targets import prepare_validated_work_recovery_targets
-from .tech_lead_run_inputs import carry_tech_lead_inputs
+from .tech_lead_run_inputs import LaunchAuthorityTransfer, carry_tech_lead_inputs
 
 if TYPE_CHECKING:
     from .completion_ports import GitAdapter
@@ -143,7 +143,7 @@ def carry_launch_authority_forward(
     tech_lead_authority: "TechLeadAuthorityStore",
     retry: "PendingValidationRetry",
     run: "SessionRunAssets",
-) -> str | None:
+) -> "LaunchAuthorityTransfer | str | None":
     """Carry a retried tech-lead run's whole trusted launch state forward (#7273).
 
     A tech-lead completion is admitted against TWO things, both created once at
@@ -169,9 +169,14 @@ def carry_launch_authority_forward(
     than in the launcher: the launcher is at its line budget and this is not its
     rule.
 
-    Returns a refusal message when the retry names launch state that is gone.
-    Relaunching without it would spend an agent session on work whose completion
-    is already guaranteed to be rejected.
+    Returns a refusal MESSAGE when the retry names launch state that is gone --
+    relaunching without it would spend an agent session on work whose completion
+    is already guaranteed to be rejected -- ``None`` when there is nothing to
+    carry, and otherwise an OPEN :class:`LaunchAuthorityTransfer`. Open, because
+    recording the destination row is not the end of the transfer: the caller
+    settles it on the spawn decision, so a launch that never starts a terminal
+    does not leave a row for a run that never existed, and one that does start
+    discards the spent source (round 2 finding 4).
     """
     source = retry.authority_run
     if source is None:
@@ -199,7 +204,9 @@ def carry_launch_authority_forward(
         source.run_id,
         run.identity.run_id,
     )
-    return None
+    return LaunchAuthorityTransfer(
+        store=tech_lead_authority, source=source, destination=run.identity
+    )
 
 
 def failure_investigation_scratch_identity(

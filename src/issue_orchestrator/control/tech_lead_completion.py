@@ -56,7 +56,6 @@ Policy summary:
 
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -110,33 +109,21 @@ logger = logging.getLogger(__name__)
 def read_tech_lead_manifest(run_dir: Path) -> TechLeadManifest | None:
     """Read the agent-visible batch PR manifest copy for a session run.
 
-    UNTRUSTED: this is the worktree copy, used only to detect divergence
-    from the launch authority (tamper evidence). Completion effects never
-    key off it. Fail-safe: a missing run manifest, key, or manifest file
-    yields None (with a warning where content is present but unreadable).
+    From the CANONICAL location, ``<run_dir>/tech-lead-data/manifest.json``, the
+    same way the assignment and the board snapshot are read. It used to be found
+    by following a ``tech_lead_manifest`` path out of the run manifest, which is
+    agent-writable and which a resumed run never writes -- so a batch review's
+    retry relaunched fine and was then rejected as ``scope_tampered`` against an
+    empty PR set (#7273 round 2 finding 3). Reading the canonical path also
+    stops trusting an arbitrary path from a file the agent can edit.
+
+    UNTRUSTED: this is the worktree copy, used only to detect divergence from
+    the launch authority (tamper evidence). Completion effects never key off it.
+    Fail-safe: a missing file yields None, with a warning where content is
+    present but unreadable.
     """
-    run_manifest_path = run_dir / "manifest.json"
-    if not run_manifest_path.exists():
-        return None
-    try:
-        run_manifest = json.loads(run_manifest_path.read_text())
-    except Exception as exc:
-        logger.warning(
-            "[tech_lead] Failed to read run manifest %s: %s",
-            run_manifest_path,
-            exc,
-            exc_info=True,
-        )
-        return None
-    tech_lead_manifest_path = run_manifest.get("tech_lead_manifest")
-    if not tech_lead_manifest_path:
-        return None
-    manifest_path = Path(tech_lead_manifest_path)
+    manifest_path = run_dir / TECH_LEAD_DATA_DIRNAME / "manifest.json"
     if not manifest_path.exists():
-        logger.warning(
-            "[tech_lead] Manifest path in run manifest doesn't exist: %s",
-            manifest_path,
-        )
         return None
     try:
         return TechLeadManifest.read(manifest_path)

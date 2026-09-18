@@ -122,6 +122,11 @@ def make_session(issue: Issue, task: TaskKind = TaskKind.CODE) -> Session:
         ),
         started_at=datetime.now(),
         status=SessionStatus.RUNNING,
+        # The role the LAUNCH settled. A real session always carries it, and
+        # the retention/reaction owners read it rather than the issue's labels
+        # -- `Issue.agent_type` is whichever `agent:` label the tracker happens
+        # to list first (#7273 round 2 finding 1).
+        agent_label=issue.agent_type,
     )
 
 

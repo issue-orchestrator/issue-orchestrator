@@ -97,6 +97,7 @@ from .needs_human_block import (
 )
 from .tech_lead_needs_human_reconcile import TechLeadNeedsHumanLifecycle, discover_tech_lead_needs_human_issue_numbers
 from .session_manager import SessionManager, SessionRef
+from .tech_lead_run_inputs import transfer_launch_authority
 from .launch_transaction import (
     NO_LAUNCH_WORK_CLAIM,
     LaunchWorkClaim,
@@ -1264,18 +1265,23 @@ class SessionLauncher:
         # hold returns with the claim still marked actively held -- a phantom
         # in-flight row that settlement can only refresh, never clear, and that
         # every retry attempt adds another of (round 1 finding 5).
-        if error := carry_launch_authority_forward(
+        carried = carry_launch_authority_forward(
             self._tech_lead_authority, retry, run
-        ):
+        )
+        if isinstance(carried, str):
             self._release_claim_if_held(issue.number, claim)
-            return LaunchResult(None, False, error)
+            return LaunchResult(None, False, carried)
 
         # Durable before anything irreversible (#6999 A2).
         if failure := work_claim.hold_before_spawn(run, issue_number=issue.number):
             self._release_claim_if_held(issue.number, claim)
             return failure
 
-        with abandon_claim_unless_spawned(work_claim, run) as spawn:
+        # The transfer settles on the same spawn decision the claim guard uses,
+        # so a new early return cannot split them (#7273 round 2 finding 4).
+        with abandon_claim_unless_spawned(work_claim, run) as spawn, (
+            transfer_launch_authority(carried, spawn)
+        ):
             extra_args = self._extra_provider_args_from_labels(issue.labels)
             retry_prompt = self._render_validation_retry_prompt(
                 retry=retry,
@@ -1438,9 +1444,18 @@ class SessionLauncher:
         agent_config = self.config.agents.get(agent_label)
         if not agent_config:
             return None
-        labels = list(fresh_issue.labels) if fresh_issue else []
-        if agent_label not in labels:
-            labels.append(agent_label)
+        # EXACTLY the selected execution role, not appended alongside whatever
+        # the focus issue still carries. `Issue.agent_type` returns the FIRST
+        # agent label, so appending left an investigation's resumed run reading
+        # as the focus issue's coder -- the carried authority bypassed, the
+        # artifact hold released, the run recorded as TaskKind.CODE (round 2
+        # finding 1).
+        labels = [
+            name
+            for name in (fresh_issue.labels if fresh_issue else [])
+            if not str(name).startswith("agent:")
+        ]
+        labels.append(agent_label)
         issue = Issue(
             number=retry.issue_number,
             title=(fresh_issue.title if fresh_issue else retry.issue_title),

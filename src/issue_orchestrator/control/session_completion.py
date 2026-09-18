@@ -700,7 +700,7 @@ def _apply_completed_decisions(
 def unprocessed_session_policy(session: Session, config: Config) -> CompletionProcessingPolicy:
     """Classify terminal-only paths that never invoked completion processing."""
     return CompletionProcessingPolicy.for_unprocessed_session(
-        session.issue.agent_type, config.tech_lead_review_agent
+        session.agent_label, config.tech_lead_review_agent
     )
 
 

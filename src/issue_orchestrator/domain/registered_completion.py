@@ -71,7 +71,15 @@ class CompletionProcessingPolicy:
     def for_unprocessed_session(
         cls, agent_label: str | None, tech_lead_label: str | None,
     ) -> "CompletionProcessingPolicy":
-        """Capture legacy session classification when no processor was invoked."""
+        """Capture legacy session classification when no processor was invoked.
+
+        ``agent_label`` is the SESSION's own role, settled by allocation at
+        launch -- never ``Issue.agent_type``, which is whichever ``agent:``
+        label the tracker happens to list first. A tech-lead run reading an
+        issue that still carries its coder label classified as ordinary coding
+        work, and the carried launch authority was bypassed (#7273 round 2
+        finding 1).
+        """
         task = TaskKind.TECH_LEAD if agent_label is not None and agent_label == tech_lead_label else None
         return cls(agent_label, task)
 
