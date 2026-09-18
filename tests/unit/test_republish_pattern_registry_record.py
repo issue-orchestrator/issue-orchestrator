@@ -52,6 +52,12 @@ def remote(tmp_path: Path) -> Path:
     origin = tmp_path / "origin.git"
     origin.mkdir()
     _git(origin, "init", "--bare", "--initial-branch=main", ".")
+    # The bare repository needs an identity of its own: the concurrency test
+    # builds a competing commit with `commit-tree` INSIDE it, and a machine with
+    # no global user.email -- a CI runner -- fails that with exit 128 while a
+    # developer's laptop silently supplies one.
+    _git(origin, "config", "user.email", "test@example.com")
+    _git(origin, "config", "user.name", "Test")
     seed = tmp_path / "seed"
     seed.mkdir()
     _git(seed, "init", "--initial-branch=main", ".")
