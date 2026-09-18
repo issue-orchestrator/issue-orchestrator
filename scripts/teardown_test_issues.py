@@ -13,6 +13,14 @@ import json
 import os
 import subprocess
 import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT / "src"))
+
+from issue_orchestrator.adapters.worktree.removal import (  # noqa: E402
+    remove_checkout_path,
+)
 
 # Default to issue-orchestrator repo, override with env var if needed
 REPO = os.environ.get("TEST_REPO", "BruceBGordon/issue-orchestrator")
@@ -120,18 +128,30 @@ def cleanup_local_worktrees() -> int:
             if any(f"-{i}-test" in worktree_path.lower() or
                    f"/{i}-test" in worktree_path.lower()
                    for i in range(1, 20)):
-                remove_result = subprocess.run(
-                    ["git", "worktree", "remove", "--force", worktree_path],
-                    capture_output=True, text=True
+                # Through the removal owner, which asks custody first: a
+                # test-shaped NAME is not proof that nobody is holding the
+                # checkout, and this also deletes the branch afterwards
+                # (#7274 round 3 finding 1).
+                outcome = remove_checkout_path(
+                    Path(worktree_path), force=True, run_git=_local_git
                 )
-                if remove_result.returncode == 0:
+                if outcome.removed:
                     print(f"Removed worktree: {worktree_path}")
                     count += 1
                 else:
-                    print(f"Failed to remove worktree {worktree_path}: {remove_result.stderr}")
+                    print(
+                        f"Failed to remove worktree {worktree_path}: "
+                        f"{outcome.git_error}"
+                    )
             worktree_path = None
 
     return count
+
+
+def _local_git(argv: list[str]) -> str | None:
+    """Run git here, reporting failure as text for the removal owner."""
+    result = subprocess.run(["git", *argv], capture_output=True, text=True)
+    return None if result.returncode == 0 else result.stderr.strip()
 
 
 def cleanup_local_branches() -> int:

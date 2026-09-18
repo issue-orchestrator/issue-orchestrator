@@ -4,6 +4,7 @@ import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from issue_orchestrator.adapters.worktree.removal import CheckoutRemoval
 from issue_orchestrator.adapters.worktree.worktree_policy import (
     ValidateOrDeletePolicy,
 )
@@ -165,36 +166,37 @@ class TestSyncRemoteRefs:
 class TestDeleteWorktree:
     """Test worktree deletion."""
 
-    def test_delete_calls_remove_worktree(self, tmp_path):
-        """Test delete uses remove_worktree function."""
+    def test_delete_asks_the_removal_owner(self, tmp_path):
+        """It has no removal of its own: git-then-directory lives in one place.
+
+        A second copy here was a second custody window, which is what #7274
+        rounds 2 and 3 kept finding.
+        """
         policy = ValidateOrDeletePolicy()
         worktree = tmp_path / "worktree"
         worktree.mkdir()
 
         with patch(
-            "issue_orchestrator.adapters.worktree.worktree_policy.remove_worktree"
+            "issue_orchestrator.adapters.worktree.worktree_policy.remove_checkout_path"
         ) as mock_remove:
+            mock_remove.return_value = CheckoutRemoval(
+                removed=True, used_filesystem_fallback=False
+            )
             result = policy.delete_worktree(worktree, tmp_path)
 
         assert result is True
-        mock_remove.assert_called_once_with(worktree)
+        assert mock_remove.call_args.args == (worktree,)
+        assert mock_remove.call_args.kwargs["force"] is True
+        assert mock_remove.call_args.kwargs["repo_root"] == tmp_path
 
-    def test_delete_fallback_to_rmtree(self, tmp_path):
-        """Test delete falls back to rmtree if git remove fails."""
+    def test_delete_falls_back_to_the_directory_when_git_declines(self, tmp_path):
+        """Still true end to end -- the owner does it, under one custody answer."""
         policy = ValidateOrDeletePolicy()
         worktree = tmp_path / "worktree"
         worktree.mkdir()
         (worktree / "file.txt").write_text("content")
 
-        with patch(
-            "issue_orchestrator.adapters.worktree.worktree_policy.remove_worktree",
-            side_effect=Exception("git remove failed"),
-        ):
-            with patch(
-                "issue_orchestrator.adapters.worktree.worktree_policy._git_run"
-            ) as mock_git:
-                mock_git.return_value = MagicMock(returncode=0)
-                result = policy.delete_worktree(worktree, tmp_path)
+        result = policy.delete_worktree(worktree, tmp_path)
 
         assert result is True
         assert not worktree.exists()

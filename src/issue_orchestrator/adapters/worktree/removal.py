@@ -53,6 +53,7 @@ def remove_checkout_path(
     *,
     force: bool,
     run_git: GitRunner | None,
+    repo_root: Path | None = None,
     custody_release: CustodyRelease | None = None,
     prune: bool = False,
 ) -> CheckoutRemoval:
@@ -66,6 +67,11 @@ def remove_checkout_path(
             effect of asking git to try harder.
         run_git: How to run git here, or ``None`` for a path whose repository
             cannot be resolved -- then only the filesystem attempt is possible.
+        repo_root: Where the repository is, when the caller knows. Custody
+            lives in the REPOSITORY's metadata, so a held checkout whose
+            ``.git`` file is gone is still held -- and without this, resolving
+            custody from the checkout alone would answer "not in a repository"
+            and delete it.
         custody_release: The explicit intent to end a grant as part of this
             removal.
         prune: Run ``git worktree prune`` after a successful removal.
@@ -75,7 +81,7 @@ def remove_checkout_path(
         CustodyUnavailableError: Whether it is held could not be determined.
     """
     require_disposable_path(worktree_path)
-    with custody_guard(worktree_path, custody_release):
+    with custody_guard(worktree_path, custody_release, repo_root=repo_root):
         error = _remove_with_git(worktree_path, force=force, run_git=run_git)
         if error is None:
             if prune and run_git is not None:

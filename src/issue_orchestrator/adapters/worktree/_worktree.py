@@ -1232,6 +1232,7 @@ def _remove_worktree_path(
         worktree_path,
         force=force,
         run_git=git_runner(repo_root),
+        repo_root=repo_root,
         custody_release=custody_release,
     )
     if not outcome.removed and not force:
@@ -1256,6 +1257,7 @@ def remove_worktree(
     force: bool = False,
     delete_branch: bool = True,
     custody_release: CustodyRelease | None = None,
+    repo_root_hint: Path | None = None,
 ) -> None:
     """
     Remove a git worktree and optionally its associated branch.
@@ -1303,7 +1305,10 @@ def remove_worktree(
         repo_root = _resolve_repo_root_from_worktree(worktree_path)
         if repo_root is None:
             _remove_orphaned_worktree_path(
-                worktree_path, force=force, custody_release=custody_release
+                worktree_path,
+                force=force,
+                repo_root=repo_root_hint,
+                custody_release=custody_release,
             )
             return
         branch_name = get_worktree_branch(worktree_path)
@@ -1339,9 +1344,15 @@ def _remove_orphaned_worktree_path(
     worktree_path: Path,
     *,
     force: bool,
+    repo_root: Path | None = None,
     custody_release: CustodyRelease | None = None,
 ) -> None:
-    """Delete a checkout whose repository this process cannot resolve."""
+    """Delete a checkout whose repository this process cannot resolve.
+
+    ``repo_root`` is whatever the CALLER knows, because the checkout no longer
+    says: a held worktree whose ``.git`` file was deleted still has its grant
+    in the repository's store (#7274 round 3 finding 2).
+    """
     if not force:
         raise WorktreeError(f"Unable to resolve repo root for {worktree_path}")
     logger.warning(
@@ -1349,7 +1360,11 @@ def _remove_orphaned_worktree_path(
         worktree_path,
     )
     remove_checkout_path(
-        worktree_path, force=True, run_git=None, custody_release=custody_release
+        worktree_path,
+        force=True,
+        run_git=None,
+        repo_root=repo_root,
+        custody_release=custody_release,
     )
     if worktree_path.exists():
         raise WorktreeError(

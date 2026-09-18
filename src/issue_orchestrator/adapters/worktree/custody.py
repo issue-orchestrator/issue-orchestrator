@@ -66,14 +66,22 @@ class GitMetadataWorktreeCustody:
         self._root = Path(common_dir)
 
     @classmethod
-    def for_path(cls, path: Path) -> "GitMetadataWorktreeCustody | None":
+    def for_path(
+        cls, path: Path, repo_root: Path | None = None
+    ) -> "GitMetadataWorktreeCustody | None":
         """The store shared by every worktree of ``path``'s repository.
 
-        None ONLY when ``path`` is not in a repository at all -- there is
-        nothing to hold there, because taking custody resolves the same way. A
-        repository whose metadata cannot be read raises instead.
+        ``repo_root`` is the fallback when the CHECKOUT can no longer say which
+        repository it belongs to -- a held worktree whose ``.git`` file has
+        been deleted still has its grant in the repository's store, and
+        answering "not in a repository, so not held" there would delete it
+        (round 3 finding 2).
+
+        None only when neither says.
         """
         common_dir = git_common_dir(path)
+        if common_dir is None and repo_root is not None:
+            common_dir = git_common_dir(repo_root)
         return None if common_dir is None else cls(common_dir)
 
     # -- reads --------------------------------------------------------------
@@ -192,7 +200,11 @@ class GitMetadataWorktreeCustody:
         Re-entrant within a thread, because removal paths nest.
         """
         path = self._root / CUSTODY_LOCK
-        key = (threading.get_ident(), str(path))
+        # Keyed by the CANONICAL path. Two stores addressing the same file
+        # through a relative and an absolute common directory would otherwise
+        # get different depths, nest, and flock the same file twice -- the
+        # self-deadlock the re-entrancy exists to prevent (round 3 finding 5).
+        key = (threading.get_ident(), str(_canonical_lock(path)))
         with _DEPTH_GUARD:
             depth = _DEPTH.get(key, 0)
             _DEPTH[key] = depth + 1
@@ -221,7 +233,15 @@ class GitMetadataWorktreeCustody:
         path = self._root / CUSTODY_FILE
         try:
             payload = json.loads(path.read_text())
-        except FileNotFoundError:
+        except FileNotFoundError as exc:
+            if _exists_but_unreadable(path):
+                # A dangling symlink raises the same error as an absent file,
+                # and reading it as "nothing is held" discards a grant that
+                # was recorded (round 3 finding 3).
+                raise CustodyUnavailableError(
+                    f"the worktree custody store at {path} cannot be read "
+                    f"although something is there: {exc}"
+                ) from exc
             return {}
         except (OSError, json.JSONDecodeError) as exc:
             raise CustodyUnavailableError(
@@ -278,7 +298,10 @@ class GitMetadataWorktreeCustody:
 
 @contextmanager
 def custody_guard(
-    worktree_path: Path, release: CustodyRelease | None = None
+    worktree_path: Path,
+    release: CustodyRelease | None = None,
+    *,
+    repo_root: Path | None = None,
 ) -> Iterator[None]:
     """Refuse to remove a held checkout, and hold that answer while you remove.
 
@@ -292,7 +315,7 @@ def custody_guard(
     removal path that forgets a dependency still compiles, and this one has to
     be impossible to forget.
     """
-    custody = GitMetadataWorktreeCustody.for_path(worktree_path)
+    custody = GitMetadataWorktreeCustody.for_path(worktree_path, repo_root)
     if custody is None:
         yield
         return
@@ -337,6 +360,20 @@ def git_common_dir(path: Path) -> Path | None:
     if git_dir.parent.name == "worktrees":
         return git_dir.parent.parent
     return git_dir
+
+
+def _canonical_lock(path: Path) -> Path:
+    """One spelling per lock file, even before it exists."""
+    return path.parent.resolve() / path.name
+
+
+def _exists_but_unreadable(path: Path) -> bool:
+    """Something is at this path, and opening it still failed."""
+    try:
+        path.lstat()
+    except OSError:
+        return False
+    return True
 
 
 def _release_depth(key: tuple[int, str]) -> None:

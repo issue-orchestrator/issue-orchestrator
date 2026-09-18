@@ -95,7 +95,12 @@ class GitCLI(Git):
         newlines: OutputNewlines = OutputNewlines.TRANSLATED,
     ) -> GitResult:
         if argv[:2] == ["worktree", "prune"]:
-            registered = self.run(repo, ["worktree", "list", "--porcelain", "-z"])
+            # check=False: this is an internal probe, and raising here would
+            # turn a caller's tolerated prune into a hard failure -- the
+            # caller's own `check` is what decides that.
+            registered = self.run(
+                repo, ["worktree", "list", "--porcelain", "-z"], check=False
+            )
             if any(is_escrow_path(Path(item[9:])) for item in registered.stdout.split("\0") if item.startswith("worktree ")):
                 return GitResult(["git", "-C", str(repo), *argv], 0, "Escrow worktree registration retained\n", "")
         cmd = ["git", "-C", str(repo)] + argv

@@ -55,6 +55,7 @@ from issue_orchestrator.ports.worktree_custody import (
     CustodyRelease,
     WorktreeInCustodyError,
 )
+from issue_orchestrator.adapters.worktree.removal import remove_checkout_path
 from issue_orchestrator.adapters.worktree.worktree_policy import (
     ValidateOrDeletePolicy,
 )
@@ -509,16 +510,22 @@ class TestOneRemovalOwner:
     classifier -- one owner, named, and a test that says so.
     """
 
-    OWNER = "adapters/worktree/removal.py"
+    OWNER = "src/issue_orchestrator/adapters/worktree/removal.py"
+
+    #: Everything shipped, not just the package. ``scripts/`` ships too, and
+    #: ``test-reset`` removed a worktree from there without asking (round 3
+    #: finding 1) precisely because the scan stopped at ``src``.
+    SEARCHED = ("src/issue_orchestrator", "scripts", "tools")
 
     def _builders(self) -> dict[str, list[int]]:
-        src = Path(__file__).resolve().parents[2] / "src" / "issue_orchestrator"
+        root = Path(__file__).resolve().parents[2]
         found: dict[str, list[int]] = {}
-        for path in sorted(src.rglob("*.py")):
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-            lines = _removal_lines(tree)
-            if lines:
-                found[str(path.relative_to(src))] = lines
+        for directory in self.SEARCHED:
+            for path in sorted((root / directory).rglob("*.py")):
+                tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+                lines = _removal_lines(tree)
+                if lines:
+                    found[str(path.relative_to(root))] = lines
         return found
 
     def test_only_the_owner_builds_the_removal_command(self) -> None:
@@ -542,8 +549,8 @@ class TestOneRemovalOwner:
         A call, not a scope analysis: that the guard actually covers both
         attempts is a behaviour, and the refusal tests above are what prove it.
         """
-        src = Path(__file__).resolve().parents[2] / "src" / "issue_orchestrator"
-        tree = ast.parse((src / self.OWNER).read_text(encoding="utf-8"))
+        root = Path(__file__).resolve().parents[2]
+        tree = ast.parse((root / self.OWNER).read_text(encoding="utf-8"))
 
         assert any(
             _is_call(node, "custody_guard") for node in ast.walk(tree)
@@ -558,24 +565,13 @@ class TestOneRemovalOwner:
         assert _removal_lines(as_varargs) == [1]
 
 
-class TestThePathsThatDoNotUseTheSeam:
-    """Two removals do not go through ``remove_worktree``. Both still ask."""
+class TestEachEntryPointRefuses:
+    """Driven through the functions production calls, not through the owner.
 
-    def test_reuse_cleanup_does_not_rmtree_past_a_refusal(
-        self, manager: GitWorktreeManager, repo: Path, checkout: Path
-    ) -> None:
-        """Its fallback deletes the directory on ANY exception from git.
-
-        Before this, a custody refusal read as "git said no, try harder" and
-        the checkout was removed by ``shutil.rmtree`` -- with the branch it
-        carried still only on disk.
-        """
-        manager.take_custody(checkout, holder=HOLDER, reason=REASON)
-
-        with pytest.raises(WorktreeInCustodyError):
-            ValidateOrDeletePolicy().delete_worktree(checkout, repo)
-
-        assert (checkout / "finding.md").exists()
+    A test that enters ``custody_guard`` itself stays green when the caller
+    stops routing through the owner, which is how round 3's finding [4] slipped
+    past an earlier version of these.
+    """
 
     def test_reviewer_cleanup_refuses_a_held_checkout(
         self, manager: GitWorktreeManager, repo: Path, checkout: Path
@@ -754,7 +750,7 @@ class TestTheFilesystemFallbacks:
     then lost to the ``rmtree`` (round 2 findings 2 and 3).
     """
 
-    def test_reuse_cleanup_holds_its_guard_through_the_fallback(
+    def test_a_guard_holds_through_a_callers_whole_body(
         self, manager: GitWorktreeManager, repo: Path, checkout: Path
     ) -> None:
         held: list[str] = []
@@ -800,3 +796,94 @@ def _take_or_fail(manager: GitWorktreeManager, path: Path) -> str:
         return "held"
     except CustodyUnavailableError:
         return "too late"
+
+
+class TestCustodyOutlivesTheCheckoutsOwnMetadata:
+    """A grant lives in the REPOSITORY, so the checkout cannot disown it.
+
+    Resolving custody from the checkout alone answered "not in a repository,
+    so not held" the moment its ``.git`` file went missing -- and forced
+    removal then deleted a checkout somebody was holding (round 3 finding 2).
+    """
+
+    def test_a_held_checkout_that_lost_its_git_file_is_still_held(
+        self, manager: GitWorktreeManager, repo: Path, checkout: Path
+    ) -> None:
+        manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+        (checkout / ".git").unlink()
+
+        with pytest.raises(WorktreeInCustodyError):
+            remove_checkout_path(
+                checkout, force=True, run_git=None, repo_root=repo
+            )
+
+        assert (checkout / "finding.md").exists()
+
+    def test_a_custody_file_that_exists_but_cannot_be_read_is_not_empty(
+        self, manager: GitWorktreeManager, repo: Path, checkout: Path
+    ) -> None:
+        """A dangling symlink raises the same error as an absent file.
+
+        Reading that as "nothing is held" discards a grant that WAS recorded
+        (round 3 finding 3).
+        """
+        manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+        store = repo / ".git" / CUSTODY_FILE
+        store.unlink()
+        store.symlink_to(repo / ".git" / "nowhere.json")
+
+        with pytest.raises(CustodyUnavailableError, match="cannot be read"):
+            manager.remove_checkout_and_branch(checkout, force=True)
+
+        assert (checkout / "finding.md").exists()
+
+    def test_an_absent_custody_file_really_is_an_empty_store(
+        self, manager: GitWorktreeManager, repo: Path, checkout: Path
+    ) -> None:
+        """Failing closed must not mean failing always."""
+        manager.remove_checkout_and_branch(checkout, force=True)
+
+        assert not checkout.exists()
+
+
+class TestTheReentrantLockKey:
+    def test_two_spellings_of_one_store_nest_without_deadlocking(
+        self, repo: Path, checkout: Path
+    ) -> None:
+        """Keyed by text, a relative and an absolute path deadlock each other.
+
+        The second ``flock`` is on a different descriptor for the same file, so
+        it waits for a lock this thread already holds (round 3 finding 5).
+        """
+        common = git_common_dir(repo)
+        assert common is not None
+        relative = Path(os.path.relpath(common, Path.cwd()))
+
+        with GitMetadataWorktreeCustody(common).guard(checkout):
+            with GitMetadataWorktreeCustody(relative).guard(checkout):
+                pass
+
+
+class TestReuseCleanup:
+    def test_delete_worktree_refuses_a_held_checkout(
+        self, manager: GitWorktreeManager, repo: Path, checkout: Path
+    ) -> None:
+        """It used to delete the directory on ANY exception from git.
+
+        So a custody refusal read as "git said no, try harder" and the checkout
+        went, with the branch it carried still only on disk. It has no fallback
+        of its own now: git first, then the directory, is what the removal
+        owner does under one custody answer.
+        """
+        manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+
+        with pytest.raises(WorktreeInCustodyError):
+            ValidateOrDeletePolicy().delete_worktree(checkout, repo)
+
+        assert (checkout / "finding.md").exists()
+
+    def test_delete_worktree_still_removes_what_nobody_holds(
+        self, repo: Path, checkout: Path
+    ) -> None:
+        assert ValidateOrDeletePolicy().delete_worktree(checkout, repo) is True
+        assert not checkout.exists()
