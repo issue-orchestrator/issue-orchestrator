@@ -2637,7 +2637,7 @@ class TestGitDataBlobAndTreeEndpoints:
     def test_a_blob_is_created_as_utf8_at_the_repo_blob_endpoint(self) -> None:
         client, seen = self._recorded({"sha": "blob-sha"})
 
-        assert client.create_git_blob(content='{"entries":[]}')["sha"] == "blob-sha"
+        assert client.create_git_blob(content='{"entries":[]}') == {"sha": "blob-sha"}
 
         assert seen[0].method == "POST"
         assert seen[0].url.path == "/repos/owner/repo/git/blobs"
@@ -2646,12 +2646,11 @@ class TestGitDataBlobAndTreeEndpoints:
             "encoding": "utf-8",
         }
 
-    def test_a_blob_is_read_by_its_sha(self) -> None:
-        client, seen = self._recorded(
-            {"sha": "blob-sha", "content": "e30=", "encoding": "base64"}
-        )
+    def test_a_blob_is_read_by_its_sha_and_handed_back(self) -> None:
+        payload = {"sha": "blob-sha", "content": "e30=", "encoding": "base64"}
+        client, seen = self._recorded(payload)
 
-        assert client.get_git_blob("blob-sha")["encoding"] == "base64"
+        assert client.get_git_blob("blob-sha") == payload
 
         assert seen[0].method == "GET"
         assert seen[0].url.path == "/repos/owner/repo/git/blobs/blob-sha"
@@ -2662,19 +2661,23 @@ class TestGitDataBlobAndTreeEndpoints:
             {"path": "record.json", "mode": "100644", "type": "blob", "sha": "blob-sha"}
         ]
 
-        assert client.create_git_tree(tree=entries)["sha"] == "tree-sha"
+        assert client.create_git_tree(tree=entries) == {"sha": "tree-sha"}
 
         assert seen[0].method == "POST"
         assert seen[0].url.path == "/repos/owner/repo/git/trees"
         assert json.loads(seen[0].content) == {"tree": entries}
 
-    def test_a_tree_is_read_by_its_sha(self) -> None:
-        client, seen = self._recorded({"sha": "tree-sha", "tree": []})
+    def test_a_tree_is_read_by_its_sha_and_handed_back(self) -> None:
+        entry = {"path": "record.json", "type": "blob", "sha": "blob-sha"}
+        client, seen = self._recorded({"sha": "tree-sha", "tree": [entry]})
 
-        client.get_git_tree("tree-sha")
+        tree = client.get_git_tree("tree-sha")
 
         assert seen[0].method == "GET"
         assert seen[0].url.path == "/repos/owner/repo/git/trees/tree-sha"
+        assert tree == {"sha": "tree-sha", "tree": [entry]}, (
+            "a tree read that returns nothing makes every record unreadable"
+        )
 
     @pytest.mark.parametrize(
         "read, path",
