@@ -552,9 +552,11 @@ class TestOneRemovalOwner:
     #: ``repo-specific`` (round 4) -- so it reads all of them.
     #:
     #: ``tests`` is excluded deliberately: a test building a worktree fixture is
-    #: not the orchestrator removing somebody's checkout, and the one test
-    #: helper that DID sweep real worktrees (the E2E cleanup) asks custody and
-    #: is covered by a test of its own rather than by this scan.
+    #: not the orchestrator removing somebody's checkout. The one test helper
+    #: that DOES sweep real worktrees -- the E2E cleanup -- used to enter
+    #: ``custody_guard`` by hand and run its own ``shutil.rmtree``, which made
+    #: it a second owner this scan could not see (round 7 finding 1). It now
+    #: calls ``remove_checkout_path`` like everything else.
     #:
     #: What this does NOT do is hunt ``shutil.rmtree``. Any line anywhere can
     #: delete a directory, and a guardrail chasing that is a search with no end
@@ -1039,7 +1041,7 @@ class TestRoundFourGaps:
         """It recursively deletes everything under the worktree base (finding 4)."""
         manager.take_custody(checkout, holder=HOLDER, reason=REASON)
 
-        cleanup_local_worktrees(checkout.parent)
+        cleanup_local_worktrees(checkout.parent, repo_root=repo)
 
         assert (checkout / "finding.md").exists()
 
@@ -1221,13 +1223,25 @@ class TestRoundFiveGaps:
     def test_the_e2e_sweep_asks_with_the_repository_it_knows(
         self, manager: GitWorktreeManager, repo: Path, checkout: Path
     ) -> None:
-        """Its checkouts can lose their markers too (finding 5)."""
+        """Its checkouts can lose their markers too (finding 5).
+
+        ``repo_root`` is keyword-only with NO default, so this is not a
+        courtesy a caller may forget: the e2e conftest, the only production
+        caller, is a type error without it. Round 7 finding 1 was that it HAD a
+        default and all three real call sites took it.
+        """
         manager.take_custody(checkout, holder=HOLDER, reason=REASON)
         (checkout / ".git").unlink()
 
         cleanup_local_worktrees(checkout.parent, repo_root=repo)
 
         assert (checkout / "finding.md").exists()
+
+    def test_the_e2e_sweep_still_removes_what_nobody_holds(self, repo: Path, checkout: Path) -> None:
+        """The premise: the sweep is a REMOVAL, and it goes through the owner."""
+        cleanup_local_worktrees(checkout.parent, repo_root=repo)
+
+        assert not checkout.exists()
 
 
 class TestTheFilesystemFallbackThroughProduction:
@@ -1394,22 +1408,132 @@ class TestRoundSixGaps:
     ) -> None:
         """A process that dies mid-removal leaves an audited hand-off.
 
-        Recorded only afterwards, a crash between the delete and the write
-        left a breach with no actor and no reason -- nobody could tell an
-        explicit hand-off from something that just vanished (round 6 finding 4).
+        Recorded only afterwards, a crash between the delete and the write left
+        a breach with no actor and no reason -- nobody could tell an explicit
+        hand-off from something that just vanished (round 6 finding 4).
+
+        The claim is about order against the DESTRUCTIVE ACT, so the trail is
+        read from inside the git seam, at the moment the removal runs. An
+        earlier version appended to a throwaway list and then only asserted
+        `release-intent` before `release` -- which stays true even if the intent
+        were written after the checkout was already gone (round 7 finding 6).
         """
         manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+        at_removal: list[list[str]] = []
+
+        def git_removes(argv: list[str]) -> None:
+            at_removal.append(_trail_actions(repo))
+            shutil.rmtree(checkout)
+            return None
 
         remove_checkout_path(
             checkout,
             force=True,
-            run_git=lambda argv: _trail_actions(repo).append("removal ran") or None,
+            run_git=git_removes,
             repo_root=repo,
             custody_release=CustodyRelease(holder=HOLDER, reason="collected"),
         )
 
-        actions = [entry["action"] for entry in _trail_entries(repo)]
-        assert actions.index("release-intent") < actions.index("release")
+        assert at_removal == [["take", "release-intent"]], (
+            "the hand-off was not audited before the removal ran: a crash here "
+            f"would leave a breach nobody can account for ({at_removal})"
+        )
+        assert _trail_actions(repo) == ["take", "release-intent", "release"]
+
+
+class TestRoundSevenGaps:
+    def test_an_unattributed_release_row_does_not_clear_a_grant(
+        self, manager: GitWorktreeManager, repo: Path, checkout: Path
+    ) -> None:
+        """A release nobody performed is damage, not a release.
+
+        The row is structurally well formed -- a known action and a real path --
+        so the round-6 shape check passed it, and the reconstructed grant was
+        cleared. With the state file gone that is the whole answer, and forced
+        cleanup deleted a held checkout on the strength of a line carrying no
+        actor and no reason (round 7 finding 3).
+        """
+        manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+        (repo / ".git" / CUSTODY_LOG).write_text(
+            json.dumps(
+                {
+                    "action": "take",
+                    "path": str(checkout),
+                    "holder": HOLDER,
+                    "actor": HOLDER,
+                    "reason": REASON,
+                }
+            )
+            + "\n"
+            + json.dumps({"action": "release", "path": str(checkout)})
+            + "\n"
+        )
+        (repo / ".git" / CUSTODY_FILE).unlink()
+
+        with pytest.raises(CustodyUnavailableError, match="with no"):
+            manager.remove_checkout_and_branch(checkout, force=True)
+
+        assert (checkout / "finding.md").exists()
+
+    def test_an_attributed_trail_still_reconstructs_the_release(
+        self, manager: GitWorktreeManager, repo: Path, checkout: Path
+    ) -> None:
+        """The premise: a properly attributed release DOES clear the grant."""
+        manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+        manager.release_custody(
+            checkout, CustodyRelease(holder=HOLDER, reason="done looking")
+        )
+        (repo / ".git" / CUSTODY_FILE).unlink()
+
+        manager.remove_checkout_and_branch(checkout, force=True)
+
+        assert not checkout.exists()
+
+    def test_custody_of_answers_for_a_checkout_that_lost_its_git_file(
+        self, manager: GitWorktreeManager, repo: Path, checkout: Path
+    ) -> None:
+        """The public read must use the SAME bound repository as the writes.
+
+        Asking the checkout which repository it belongs to is exactly the
+        question it can no longer answer, and answering "nobody holds it" is the
+        false negative the binding exists to prevent (round 7 finding 5).
+        """
+        grant = manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+        (checkout / ".git").unlink()
+
+        assert manager.custody_of(checkout) == grant
+
+
+class TestEveryManagerNamesItsRepository:
+    """No ``GitWorktreeManager()`` anywhere is built without a repository.
+
+    Round 6 made the argument required precisely so an unbound manager could not
+    answer "unheld" for a checkout that lost its ``.git`` file. Round 7 found the
+    migration incomplete: eight call sites in the test suites still built one
+    with no argument, raising ``TypeError`` before their behaviour ran, and
+    pyright covers ``src`` only (round 7 finding 7).
+    """
+
+    def test_no_call_site_omits_the_repository(self) -> None:
+        root = Path(__file__).resolve().parents[2]
+        unbound: list[str] = []
+        for directory in ("src", "tests", "scripts", "tools", "repo-specific"):
+            for path in sorted((root / directory).rglob("*.py")):
+                tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+                for node in ast.walk(tree):
+                    if (
+                        isinstance(node, ast.Call)
+                        and isinstance(node.func, ast.Name)
+                        and node.func.id == "GitWorktreeManager"
+                        and not node.args
+                        and not node.keywords
+                    ):
+                        rel = path.relative_to(root)
+                        unbound.append(f"{rel}:{node.lineno}")
+        assert unbound == [], (
+            "these build a GitWorktreeManager with no repository, so it cannot "
+            f"answer for a checkout that lost its .git file: {unbound}"
+        )
 
 
 def _trail_entries(repo: Path) -> list[dict]:

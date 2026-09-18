@@ -224,7 +224,9 @@ def kill_stale_orchestrators():
 
 
 @pytest.fixture(scope="session", autouse=True)
-def e2e_reconciliation_at_session_start(e2e_worktree_base: Path):
+def e2e_reconciliation_at_session_start(
+    e2e_worktree_base: Path, e2e_project_root: Path
+):
     """Comprehensive e2e test reconciliation around the test session.
 
     Cleans up:
@@ -242,9 +244,9 @@ def e2e_reconciliation_at_session_start(e2e_worktree_base: Path):
         logger.info("[E2E RECONCILIATION] Skipping local cleanup (E2E_KEEP_ARTIFACTS=1)")
     else:
         # Clean up default locations (from non-isolated runs)
-        cleanup_local_worktrees()
+        cleanup_local_worktrees(repo_root=e2e_project_root)
         # Clean up this session's isolated resources
-        cleanup_local_worktrees(e2e_worktree_base)
+        cleanup_local_worktrees(e2e_worktree_base, repo_root=e2e_project_root)
 
     if keep_remote_artifacts():
         logger.info("[E2E RECONCILIATION] Skipping remote cleanup (E2E_KEEP_REMOTE_ARTIFACTS=1)")
@@ -270,7 +272,7 @@ def e2e_reconciliation_at_session_start(e2e_worktree_base: Path):
     if keep_artifacts():
         logger.info("[E2E RECONCILIATION] Skipping post-run local cleanup (E2E_KEEP_ARTIFACTS=1)")
     else:
-        cleanup_local_worktrees(e2e_worktree_base)
+        cleanup_local_worktrees(e2e_worktree_base, repo_root=e2e_project_root)
 
     if keep_remote_artifacts():
         logger.info("[E2E RECONCILIATION] Skipping post-run remote cleanup (E2E_KEEP_REMOTE_ARTIFACTS=1)")

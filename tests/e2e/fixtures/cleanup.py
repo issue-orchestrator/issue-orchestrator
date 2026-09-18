@@ -1,12 +1,15 @@
 """E2E cleanup functions for test artifacts."""
 
 import logging
-import shutil
+import subprocess
 import threading
 import time
 from pathlib import Path
 
-from issue_orchestrator.adapters.worktree.custody import custody_guard
+from issue_orchestrator.adapters.worktree.removal import (
+    UnknownRepository,
+    remove_checkout_path,
+)
 from issue_orchestrator.ports.worktree_custody import CustodyError
 
 from .github_client import _github_adapter
@@ -19,12 +22,26 @@ DEFAULT_E2E_FILTER_LABEL = "io-e2e-test-data"
 
 
 def cleanup_local_worktrees(
-    worktree_base: Path | None = None, repo_root: Path | None = None
+    worktree_base: Path | None = None,
+    *,
+    repo_root: "Path | UnknownRepository",
 ) -> int:
-    """Clean up local e2e worktrees.
+    """Clean up local e2e worktrees, through the one removal owner.
+
+    A checkout retained from a failed run is exactly the thing an operator
+    holds, and the next session starting is exactly when they lose it (#7274).
+    Earlier versions entered ``custody_guard`` here and did their own
+    ``shutil.rmtree``, which made this a SECOND removal owner -- one the guard
+    test does not read, and one that could drift (round 7 finding 1).
 
     Args:
-        worktree_base: Base directory for worktrees. Defaults to /tmp/e2e-worktrees.
+        worktree_base: Base directory for worktrees. Defaults to
+            /tmp/e2e-worktrees.
+        repo_root: Which repository to ask about custody. Required and
+            keyword-only, with no default, because one of these checkouts can
+            have lost its own ``.git`` file and custody lives in the
+            REPOSITORY: a caller that simply omitted it would delete a held
+            checkout while believing it had asked.
     """
     if worktree_base is None:
         worktree_base = Path("/tmp/e2e-worktrees")
@@ -33,22 +50,41 @@ def cleanup_local_worktrees(
         for item in worktree_base.iterdir():
             if item.is_dir():
                 try:
-                    # Asks custody first: a checkout retained from a failed run
-                    # is exactly the thing an operator holds, and the next
-                    # session starting is exactly when they lose it (#7274).
-                    # ``repo_root`` matters: one of these checkouts can have
-                    # lost its own .git file, and custody lives in the
-                    # REPOSITORY (#7274 round 5 finding 5).
-                    with custody_guard(item, repo_root=repo_root):
-                        shutil.rmtree(item)
-                    count += 1
+                    outcome = remove_checkout_path(
+                        item,
+                        force=True,
+                        run_git=_sweep_git(repo_root),
+                        repo_root=repo_root,
+                    )
                 except CustodyError as e:
                     logger.warning("Retaining held worktree %s: %s", item, e)
+                    continue
                 except Exception as e:
                     logger.warning("Failed to remove worktree %s: %s", item, e)
+                    continue
+                if outcome.removed:
+                    count += 1
+                else:
+                    logger.warning(
+                        "Failed to remove worktree %s: %s", item, outcome.git_error
+                    )
         if count > 0:
             logger.info("[E2E CLEANUP] Removed %d local worktrees from %s", count, worktree_base)
     return 0
+
+
+def _sweep_git(repo_root: "Path | UnknownRepository"):
+    """How the removal owner runs git here, or None when no repository is known."""
+    if isinstance(repo_root, UnknownRepository):
+        return None
+
+    def run(argv: list[str]) -> "str | None":
+        result = subprocess.run(
+            ["git", "-C", str(repo_root), *argv], capture_output=True, text=True
+        )
+        return None if result.returncode == 0 else (result.stderr or "").strip()
+
+    return run
 
 
 def run_cleanup_step(name: str, fn, timeout_s: int) -> int:

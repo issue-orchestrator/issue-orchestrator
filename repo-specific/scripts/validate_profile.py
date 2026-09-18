@@ -286,10 +286,24 @@ def run_in_isolated_worktree(
         if dry_run:
             print(f"[dry-run] {name}:worktree-remove would remove {worktree}")
         else:
-            remove_checkout_path(
-                worktree, force=True, run_git=_profile_git(repo_root)
+            outcome = remove_checkout_path(
+                worktree,
+                force=True,
+                run_git=_profile_git(repo_root),
+                repo_root=repo_root,
             )
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+            if outcome.removed:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+            else:
+                # The checkout is STILL THERE -- held, or git and the guarded
+                # fallback both declined. Deleting its parent would be a third
+                # removal attempt, outside the custody lock and after the owner
+                # already answered no: exactly the second deletion that made
+                # the guard's answer meaningless (#7274 round 7 finding 2).
+                print(
+                    f"[{name}] retaining {tmp_dir}: {worktree} was not removed"
+                    + (f" ({outcome.git_error})" if outcome.git_error else "")
+                )
 
 
 def _profile_git(repo_root) -> "object":

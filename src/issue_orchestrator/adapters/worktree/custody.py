@@ -75,6 +75,10 @@ CUSTODY_LOCK = CUSTODY_DIR / "worktree-custody.lock"
 #: cannot read is a grant it cannot account for.
 _TRAIL_ACTIONS = frozenset({"take", "release", "release-intent"})
 
+#: Every trail row says who did it and why. A row missing either is refused
+#: rather than obeyed: see ``_readable_trail_row``.
+_TRAIL_ATTRIBUTION = ("holder", "actor", "reason")
+
 
 class GitMetadataWorktreeCustody:
     """One custody store per repository, shared by all of its worktrees."""
@@ -362,20 +366,7 @@ class GitMetadataWorktreeCustody:
                     f"the worktree custody trail at {path} has an unreadable "
                     f"row: {exc}"
                 ) from exc
-            if not isinstance(entry, dict):
-                raise CustodyUnavailableError(
-                    f"the worktree custody trail at {path} has a row that is "
-                    "not an object"
-                )
-            action, target = entry.get("action"), entry.get("path")
-            if action not in _TRAIL_ACTIONS or not isinstance(target, str) or not target:
-                # A row this file cannot read is a grant it cannot account for,
-                # and accounting for none is how a held checkout gets deleted
-                # (round 6 finding 3).
-                raise CustodyUnavailableError(
-                    f"the worktree custody trail at {path} has a row this build "
-                    f"cannot read: action={action!r} path={target!r}"
-                )
+            action, target = _readable_trail_row(entry, path)
             if action == "take":
                 held.add(target)
             elif action == "release":
@@ -512,6 +503,43 @@ def git_common_dir(path: Path) -> Path | None:
     if git_dir.parent.name == "worktrees":
         return git_dir.parent.parent
     return git_dir
+
+
+def _is_text(value: object) -> bool:
+    """A present, non-blank string -- the only shape a trail field may take."""
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _readable_trail_row(entry: object, path: Path) -> tuple[str, str]:
+    """The action and path of one trail row, or refuse the whole trail.
+
+    A row this build cannot read is a grant it cannot account for, and
+    accounting for none is how a held checkout gets deleted (round 6 finding 3).
+
+    Attribution is part of readable. Every row this build WRITES carries it:
+    ``CustodyGrant`` refuses an empty holder or reason, and ``_append_trail``
+    stamps the actor. A ``release`` row without them was not written by a
+    release anyone performed, so obeying it would clear a real grant on the
+    strength of a line nobody can be held to -- neither fail-closed nor
+    auditable (round 7 finding 3).
+    """
+    if not isinstance(entry, dict):
+        raise CustodyUnavailableError(
+            f"the worktree custody trail at {path} has a row that is not an object"
+        )
+    action, target = entry.get("action"), entry.get("path")
+    if action not in _TRAIL_ACTIONS or not _is_text(target):
+        raise CustodyUnavailableError(
+            f"the worktree custody trail at {path} has a row this build "
+            f"cannot read: action={action!r} path={target!r}"
+        )
+    missing = [name for name in _TRAIL_ATTRIBUTION if not _is_text(entry.get(name))]
+    if missing:
+        raise CustodyUnavailableError(
+            f"the worktree custody trail at {path} has a {action} row for "
+            f"{target} with no {', '.join(missing)}"
+        )
+    return str(action), str(target)
 
 
 def _canonical_lock(path: Path) -> Path:

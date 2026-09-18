@@ -106,6 +106,7 @@ def close_test_prs() -> int:
 
 def cleanup_local_worktrees() -> int:
     """Remove local worktrees created for test issues."""
+    repo_root = _repo_root()
     result = subprocess.run(
         ["git", "worktree", "list", "--porcelain"],
         capture_output=True, text=True
@@ -133,7 +134,10 @@ def cleanup_local_worktrees() -> int:
                 # checkout, and this also deletes the branch afterwards
                 # (#7274 round 3 finding 1).
                 outcome = remove_checkout_path(
-                    Path(worktree_path), force=True, run_git=_local_git
+                    Path(worktree_path),
+                    force=True,
+                    run_git=_local_git,
+                    repo_root=repo_root,
                 )
                 if outcome.removed:
                     print(f"Removed worktree: {worktree_path}")
@@ -146,6 +150,25 @@ def cleanup_local_worktrees() -> int:
             worktree_path = None
 
     return count
+
+
+def _repo_root() -> Path:
+    """The repository whose custody store answers for these checkouts.
+
+    ``git worktree list`` above is run here, so "here" is the repository -- but
+    ``remove_checkout_path`` will not accept that implicitly. It is named, once,
+    so a checkout that has lost its own ``.git`` file is still asked about
+    (#7274 round 7 finding 4).
+    """
+    result = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        raise SystemExit(
+            "teardown must run inside the repository whose test worktrees it "
+            f"removes: {result.stderr.strip()}"
+        )
+    return Path(result.stdout.strip())
 
 
 def _local_git(argv: list[str]) -> str | None:

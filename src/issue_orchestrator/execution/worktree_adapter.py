@@ -142,9 +142,15 @@ class GitWorktreeManager:
         return self._custody(worktree_path).release(worktree_path, release)
 
     def custody_of(self, worktree_path: Path) -> CustodyGrant | None:
-        """Who holds this checkout, or None."""
-        custody = GitMetadataWorktreeCustody.for_path(worktree_path)
-        return None if custody is None else custody.held(worktree_path)
+        """Who holds this checkout, or None.
+
+        Through the same bound repository as every other method here. Asking
+        the CHECKOUT which repository it belongs to is exactly the question a
+        checkout that has lost its ``.git`` file cannot answer, and answering
+        "nobody holds it" there is the false negative the binding exists to
+        prevent (round 7 finding 5).
+        """
+        return self._custody(worktree_path).held(worktree_path)
 
     def checkouts_in_custody(self, repo_root: Path) -> tuple[CustodyGrant, ...]:
         """Every checkout of ``repo_root`` held for a person, oldest first."""
