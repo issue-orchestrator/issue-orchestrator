@@ -2757,6 +2757,64 @@ class TestGitDataBlobAndTreeEndpoints:
 
         assert len(client._etag_cache) == 0  # noqa: SLF001
 
+    def test_a_304_still_answers_after_its_entry_is_evicted(self) -> None:
+        """The entry that produced the ETag is held through the response.
+
+        This client is shared by the tick and the web worker, so another
+        response can exhaust the budget after ``If-None-Match`` goes out. A
+        second lookup would miss, and the empty 304 body would decode as an
+        empty payload -- an unchanged registry read as gone (round 5 F1).
+        """
+        payload = {"sha": "blob-sha", "content": "e30=", "encoding": "base64"}
+        evict_now = False
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal evict_now
+            if request.headers.get("If-None-Match") == '"e"':
+                if evict_now:
+                    client._etag_cache = _ETagCache(max_bytes=1)  # noqa: SLF001
+                return httpx.Response(304)
+            return httpx.Response(200, json=payload, headers={"ETag": '"e"'})
+
+        client = _client_with_transport(httpx.MockTransport(handler))
+        client.get_git_blob("blob-sha")
+        evict_now = True
+
+        assert client.get_git_blob("blob-sha") == payload
+
+    def test_a_304_nobody_asked_for_is_refused(self) -> None:
+        """Its body is empty, so decoding it would hand back "no data"."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(304)
+
+        client = _client_with_transport(httpx.MockTransport(handler))
+
+        with pytest.raises(GitHubHttpError, match="carried no ETag"):
+            client.get_git_blob("blob-sha")
+
+    def test_the_budget_counts_encoded_bytes_not_characters(self) -> None:
+        """``len`` on a str counts code POINTS.
+
+        A repository whose issue bodies carry emoji would otherwise retain
+        several times the declared budget (round 5 F2).
+        """
+        body = "\U0001f600" * 1000  # 4 bytes each, 1 code point each
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200, json={"sha": "s", "content": body}, headers={"ETag": '"e"'}
+            )
+
+        client = _client_with_transport(httpx.MockTransport(handler))
+        client._etag_cache = _ETagCache(max_bytes=2000)  # noqa: SLF001
+
+        client.get_git_blob("sha-1")
+
+        assert len(client._etag_cache) == 0, (  # noqa: SLF001
+            "a payload of multibyte characters was measured as if it were ASCII"
+        )
+
     def test_a_payload_that_is_not_an_object_is_refused(self) -> None:
         client, _ = self._recorded({})
         client._client = httpx.Client(  # noqa: SLF001 - test transport injection

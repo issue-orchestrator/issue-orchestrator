@@ -625,6 +625,11 @@ class GitHubHttpClient:
         if accept is not None:
             headers["Accept"] = accept
         cache_key = self._cache_key(method, url, params)
+        # Held for the whole call, not looked up again on the 304. The cache
+        # evicts, and this client is shared by the tick and the web worker, so
+        # a re-read could miss the very entry whose ETag produced the 304 --
+        # and the empty 304 body would then decode as an empty payload.
+        cached: _ETagEntry | None = None
         if use_cache and method.upper() == "GET":
             cached = self._etag_cache.get(cache_key)
             if cached:
@@ -658,12 +663,24 @@ class GitHubHttpClient:
             response_text = response.text
             # Extract rate limit headers from every response
             rate_limit_info = _extract_rate_limit_headers(response)
-            if status_code == 304 and use_cache:
-                cached = self._etag_cache.get(cache_key)
-                if cached is not None:
-                    payload = cached.payload
-                    was_304 = True
-                    return payload
+            if status_code == 304:
+                if cached is None:
+                    # Nothing asked for this: a 304 without an If-None-Match is
+                    # a response to a request this client did not make, and its
+                    # body is empty. Decoding it would hand back "no data".
+                    raise GitHubHttpError(
+                        f"GitHub {method.upper()} {path} returned 304 for a "
+                        "request that carried no ETag",
+                        method=method,
+                        url=str(response.url),
+                        status_code=status_code,
+                    )
+                payload = cached.payload
+                was_304 = True
+                # Re-stored so the budget sees it as freshly used rather than
+                # as the oldest thing in the cache.
+                self._etag_cache.store(cache_key, cached)
+                return payload
             if _response_status_is_error(status_code, response_kind):
                 error = f"{status_code} {response_text.strip()}"
                 summary = _summarize_github_error(response_text)
@@ -682,7 +699,12 @@ class GitHubHttpClient:
                     self._etag_cache.store(
                         cache_key,
                         _ETagEntry(
-                            etag=etag, payload=payload, size=len(response_text)
+                            etag=etag,
+                            payload=payload,
+                            # Encoded length: `len` on a str counts code
+                            # POINTS, so a body of emoji would report a third
+                            # of what it actually costs.
+                            size=len(response_text.encode("utf-8")),
                         ),
                     )
             return payload
