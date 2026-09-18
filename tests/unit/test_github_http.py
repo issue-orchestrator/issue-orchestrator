@@ -9,7 +9,6 @@ import httpx
 import json
 import subprocess
 import threading
-import time
 from collections import OrderedDict
 import sys
 from pathlib import Path
@@ -2869,25 +2868,44 @@ class TestGitDataBlobAndTreeEndpoints:
     def test_a_store_cannot_interleave_with_another_stores_eviction(self) -> None:
         """``+=`` then evict-loop is not one operation.
 
-        Observed by ORDER rather than by hoping a lost update shows up: a
-        writer is held inside the eviction loop while a second writer tries to
-        store, and the second one's insert must land after the first is done.
-        Unsynchronised it lands in the middle, where its ``+=`` interleaves
-        with the other's subtractions and the count drifts from what the cache
-        holds -- after which the budget means nothing.
+        Every wait here is on an EVENT, never on a duration: the timeouts are
+        backstops that only fire when something is already broken.
+
+        A writer is held inside the eviction loop until the second writer has
+        provably entered ``store``. From there the two implementations diverge
+        deterministically -- locked, the second one blocks and its insert lands
+        after the eviction completes; unlocked, it proceeds and the insert
+        lands in the middle, which is where its ``+=`` interleaves with the
+        other's subtractions and the count drifts from what the cache holds.
         """
         order: list[str] = []
         evicting = threading.Event()
+        entering_store = threading.Event()
+        third_inserted = threading.Event()
         failures: list[BaseException] = []
+        #: Only reached when the second writer never inserts, which is the
+        #: passing case. It bounds the test; it never decides it.
+        BACKSTOP_SECONDS = 1.0
 
         class Recording(OrderedDict):
             def __setitem__(self, key, value):  # noqa: ANN001, ANN204
                 order.append(f"insert:{key}")
+                if key == "third":
+                    third_inserted.set()
                 super().__setitem__(key, value)
 
             def popitem(self, last: bool = True):  # noqa: ANN201, FBT001, FBT002
+                # Release the second writer only once this one is provably
+                # inside the eviction -- otherwise it can take the lock first
+                # and there is no interleaving to observe at all.
                 evicting.set()
-                time.sleep(0.2)  # long enough for an unlocked writer to get in
+                assert entering_store.wait(timeout=BACKSTOP_SECONDS), (
+                    "the second writer never started"
+                )
+                # Then give it every chance to insert. Locked it cannot, and
+                # this waits out the backstop; unlocked it does, and this
+                # returns the moment it has.
+                third_inserted.wait(timeout=BACKSTOP_SECONDS)
                 evicted = super().popitem(last)
                 order.append("evicted")
                 return evicted
@@ -2900,7 +2918,10 @@ class TestGitDataBlobAndTreeEndpoints:
 
         def store_second() -> None:
             try:
-                evicting.wait(timeout=5)
+                assert evicting.wait(timeout=BACKSTOP_SECONDS * 4), (
+                    "the first writer never reached its eviction"
+                )
+                entering_store.set()
                 cache.store("third", _ETagEntry(etag='"e"', payload={}, size=100))
             except BaseException as exc:  # noqa: BLE001 - reported below
                 failures.append(exc)
@@ -2910,7 +2931,7 @@ class TestGitDataBlobAndTreeEndpoints:
         try:
             cache.store("evictor", _ETagEntry(etag='"e"', payload={}, size=200))
         finally:
-            writer.join(timeout=5)
+            writer.join(timeout=BACKSTOP_SECONDS * 2)
 
         assert not failures, f"a concurrent store raised: {failures}"
         assert order.index("insert:third") > order.index("evicted"), (
