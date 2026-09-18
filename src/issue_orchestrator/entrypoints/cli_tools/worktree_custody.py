@@ -18,7 +18,11 @@ import sys
 from pathlib import Path
 
 from ...execution.worktree_adapter import GitWorktreeManager
-from ...ports.worktree_custody import CustodyGrant, CustodyRelease
+from ...ports.worktree_custody import (
+    CustodyError,
+    CustodyGrant,
+    CustodyRelease,
+)
 
 
 def _holder(requested: str | None) -> str:
@@ -47,12 +51,22 @@ def _render(grant: CustodyGrant) -> str:
 
 
 def cmd_list(manager: GitWorktreeManager, args: argparse.Namespace) -> int:
-    held = manager.checkouts_in_custody(Path(args.repo_root or ".").resolve())
+    repo_root = Path(args.repo_root or ".").resolve()
+    held = manager.checkouts_in_custody(repo_root)
+    breached = manager.breached_custody(repo_root)
     if not held:
         print("No checkouts are in custody.")
-        return 0
     for grant in held:
-        print(_render(grant))
+        if grant not in breached:
+            print(_render(grant))
+    if breached:
+        # Custody prevents inside this codebase and detects outside it. Saying
+        # nothing here would leave an operator believing a promise that was
+        # already broken.
+        print("\nGONE despite being held -- something outside removed these:")
+        for grant in breached:
+            print(_render(grant))
+        return 1
     return 0
 
 
@@ -111,7 +125,10 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         return args.run(GitWorktreeManager(), args)
-    except (ValueError, OSError) as exc:
+    except (CustodyError, ValueError, OSError) as exc:
+        # Every way custody can refuse arrives here as a message and an exit
+        # status. A traceback tells an operator nothing they can act on, and
+        # this command is the one they reach for when work is at stake.
         print(f"FAILED: {exc}", file=sys.stderr)
         return 1
 

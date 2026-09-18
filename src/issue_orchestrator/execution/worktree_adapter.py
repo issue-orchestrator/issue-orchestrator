@@ -17,7 +17,6 @@ from ..ports.worktree_manager import (
     WorktreeInfo,
     WorktreeReuseOptions,
 )
-from ..adapters.worktree._worktree_errors import WorktreeError
 from ..adapters.worktree._worktree_runtime import read_reviewer_head_ownership
 from ..adapters.worktree._worktree import (
     can_remove_without_user_changes,
@@ -139,12 +138,18 @@ class GitWorktreeManager:
         """Every checkout of ``repo_root`` held for a person, oldest first."""
         return self._custody(repo_root).list_held()
 
+    def breached_custody(self, repo_root: Path) -> tuple[CustodyGrant, ...]:
+        """Grants whose checkout is gone: something removed it anyway."""
+        return self._custody(repo_root).breached()
+
     @staticmethod
     def _custody(path: Path) -> GitMetadataWorktreeCustody:
         """Fails rather than reporting a path as unheld it cannot resolve."""
         custody = GitMetadataWorktreeCustody.for_path(path)
         if custody is None:
-            raise WorktreeError(
+            # A port error, not an adapter one: the caller asked about custody
+            # and the answer is that it cannot be determined here.
+            raise CustodyUnavailableError(
                 f"{path} is not inside a git repository, so nothing can be "
                 "held there"
             )

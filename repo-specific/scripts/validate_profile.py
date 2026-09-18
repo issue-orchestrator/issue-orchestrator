@@ -20,6 +20,14 @@ import sys
 import tempfile
 import time
 from dataclasses import asdict, dataclass
+from pathlib import Path as _Path
+
+_REPO_ROOT = _Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(_REPO_ROOT / "src"))
+
+from issue_orchestrator.adapters.worktree.removal import (  # noqa: E402
+    remove_checkout_path,
+)
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -272,13 +280,28 @@ def run_in_isolated_worktree(
             worktree_path=str(worktree),
         )
     finally:
-        _ = run_command(
-            name=f"{name}:worktree-remove",
-            command=["git", "-C", str(repo_root), "worktree", "remove", "--force", str(worktree)],
-            dry_run=dry_run,
-        )
-        if not dry_run:
+        # Through the removal owner, which asks custody first: this checkout
+        # runs for a long time and an operator can legitimately hold it while
+        # looking at what the profile did (#7274 round 4 finding 3).
+        if dry_run:
+            print(f"[dry-run] {name}:worktree-remove would remove {worktree}")
+        else:
+            remove_checkout_path(
+                worktree, force=True, run_git=_profile_git(repo_root)
+            )
             shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def _profile_git(repo_root) -> "object":
+    """Run git for the removal owner, reporting failure as text."""
+
+    def run(argv: list[str]) -> "str | None":
+        result = subprocess.run(
+            ["git", "-C", str(repo_root), *argv], capture_output=True, text=True
+        )
+        return None if result.returncode == 0 else result.stderr.strip()
+
+    return run
 
 
 def main() -> int:

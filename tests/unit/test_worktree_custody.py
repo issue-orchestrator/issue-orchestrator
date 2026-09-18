@@ -39,6 +39,7 @@ from issue_orchestrator.adapters.budgeted_validation_git import (
     BudgetedValidationGit,
 )
 from issue_orchestrator.control.maintenance import _remove_local_worktree
+from tests.e2e.fixtures.cleanup import cleanup_local_worktrees
 from issue_orchestrator.ports.worktree_custody import (
     CustodyUnavailableError,
     WorktreeCustody,
@@ -512,10 +513,20 @@ class TestOneRemovalOwner:
 
     OWNER = "src/issue_orchestrator/adapters/worktree/removal.py"
 
-    #: Everything shipped, not just the package. ``scripts/`` ships too, and
-    #: ``test-reset`` removed a worktree from there without asking (round 3
-    #: finding 1) precisely because the scan stopped at ``src``.
-    SEARCHED = ("src/issue_orchestrator", "scripts", "tools")
+    #: Every directory of SHIPPED code. Each round of review found the command
+    #: somewhere the scan did not read -- ``scripts`` (round 3),
+    #: ``repo-specific`` (round 4) -- so it reads all of them.
+    #:
+    #: ``tests`` is excluded deliberately: a test building a worktree fixture is
+    #: not the orchestrator removing somebody's checkout, and the one test
+    #: helper that DID sweep real worktrees (the E2E cleanup) asks custody and
+    #: is covered by a test of its own rather than by this scan.
+    #:
+    #: What this does NOT do is hunt ``shutil.rmtree``. Any line anywhere can
+    #: delete a directory, and a guardrail chasing that is a search with no end
+    #: -- four review rounds each found one more. The owner PREVENTS what goes
+    #: through it; ``GitMetadataWorktreeCustody.breached`` DETECTS what does not.
+    SEARCHED = ("src", "scripts", "tools", "repo-specific")
 
     def _builders(self) -> dict[str, list[int]]:
         root = Path(__file__).resolve().parents[2]
@@ -887,3 +898,149 @@ class TestReuseCleanup:
     ) -> None:
         assert ValidateOrDeletePolicy().delete_worktree(checkout, repo) is True
         assert not checkout.exists()
+
+
+class TestRoundFourGaps:
+    """Each of these deleted a held checkout by a route the owner did not see."""
+
+    def test_a_checkout_that_lost_its_git_file_is_reported_when_it_goes(
+        self, manager: GitWorktreeManager, repo: Path, checkout: Path
+    ) -> None:
+        """The honest half of finding [1].
+
+        Custody lives in the repository's metadata, and a checkout with no
+        ``.git`` file names no repository -- so there is no store to ask, and
+        guessing one from the surrounding directories is wrong for this
+        repository's layout (the worktree base is not inside the repo). What
+        the owner CAN do is not pretend: the grant survives, and the breach is
+        reported.
+        """
+        manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+        (checkout / ".git").unlink()
+
+        manager.remove_checkout_and_branch(checkout, force=True)
+
+        assert [grant.path for grant in manager.breached_custody(repo)] == [
+            checkout
+        ]
+
+    def test_a_caller_that_knows_the_repository_still_refuses(
+        self, manager: GitWorktreeManager, repo: Path, checkout: Path
+    ) -> None:
+        """And every caller inside the removal owner does know it."""
+        manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+        (checkout / ".git").unlink()
+
+        with pytest.raises(WorktreeInCustodyError):
+            remove_checkout_path(
+                checkout, force=True, run_git=None, repo_root=repo
+            )
+
+        assert (checkout / "finding.md").exists()
+
+    def test_a_vanished_state_file_is_damage_when_the_trail_says_so(
+        self, manager: GitWorktreeManager, repo: Path, checkout: Path
+    ) -> None:
+        """The trail is append-only, so it outlives the state (finding 2)."""
+        manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+        (repo / ".git" / CUSTODY_FILE).unlink()
+
+        with pytest.raises(CustodyUnavailableError, match="trail still holds"):
+            manager.remove_checkout_and_branch(checkout, force=True)
+
+        assert (checkout / "finding.md").exists()
+
+    def test_a_vanished_state_file_after_a_release_is_just_empty(
+        self, manager: GitWorktreeManager, repo: Path, checkout: Path
+    ) -> None:
+        """Failing closed must not mean failing forever."""
+        manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+        manager.release_custody(
+            checkout, CustodyRelease(holder=HOLDER, reason="collected")
+        )
+        (repo / ".git" / CUSTODY_FILE).unlink()
+
+        manager.remove_checkout_and_branch(checkout, force=True)
+
+        assert not checkout.exists()
+
+    def test_the_e2e_sweep_leaves_a_held_checkout(
+        self, manager: GitWorktreeManager, repo: Path, checkout: Path
+    ) -> None:
+        """It recursively deletes everything under the worktree base (finding 4)."""
+        manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+
+        cleanup_local_worktrees(checkout.parent)
+
+        assert (checkout / "finding.md").exists()
+
+    def test_the_reviewer_markers_survive_a_custody_refusal(
+        self, manager: GitWorktreeManager, repo: Path, checkout: Path
+    ) -> None:
+        """They come off BEFORE the removal, so a refusal must put them back.
+
+        Without it the checkout survives but stops looking like a reviewer
+        worktree, and reconciliation later calls it external (finding 5).
+        """
+        marker = checkout / WORKTREE_ID_MARKER
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("wt-test\n")
+        manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+
+        with pytest.raises(WorktreeInCustodyError):
+            remove_reviewer_worktree(
+                ReviewerWorktree(path=checkout, coder_branch="6410-work"),
+                force=True,
+            )
+
+        assert marker.read_text() == "wt-test\n"
+
+    def test_the_cli_refuses_rather_than_traceback(
+        self, manager: GitWorktreeManager, repo: Path, checkout: Path, capsys
+    ) -> None:
+        """This is the command an operator reaches for with work at stake."""
+        manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+        store = repo / ".git" / CUSTODY_FILE
+        store.write_text("{ not json")
+
+        exit_code = custody_cli(["list", "--repo-root", str(repo)])
+
+        assert exit_code == 1
+        assert "FAILED:" in capsys.readouterr().err
+
+
+class TestWhatCustodyDetectsRatherThanPrevents:
+    """Nothing stops a hand outside this codebase. Saying so is the honest part.
+
+    A guardrail hunting every ``shutil.rmtree`` in every script is a search with
+    no end -- four review rounds kept finding another one. So the owner prevents,
+    and everything past its edge is DETECTED and reported.
+    """
+
+    def test_a_grant_whose_checkout_vanished_is_reported(
+        self, manager: GitWorktreeManager, repo: Path, checkout: Path
+    ) -> None:
+        manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+        shutil.rmtree(checkout)  # something outside this codebase
+
+        breached = manager.breached_custody(repo)
+
+        assert [grant.path for grant in breached] == [checkout]
+
+    def test_the_operator_surface_says_so_and_exits_non_zero(
+        self, manager: GitWorktreeManager, repo: Path, checkout: Path, capsys
+    ) -> None:
+        manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+        shutil.rmtree(checkout)
+
+        exit_code = custody_cli(["list", "--repo-root", str(repo)])
+
+        assert exit_code == 1
+        assert "GONE despite being held" in capsys.readouterr().out
+
+    def test_a_held_checkout_that_is_still_there_is_not_a_breach(
+        self, manager: GitWorktreeManager, repo: Path, checkout: Path
+    ) -> None:
+        manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+
+        assert manager.breached_custody(repo) == ()

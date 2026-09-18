@@ -22,6 +22,7 @@ from pathlib import Path
 
 from ..adapters.worktree.api import WorktreeError, install_worktree_identity
 from ..adapters.worktree.removal import GitRunner, remove_checkout_path
+from ..ports.worktree_custody import CustodyError
 from ..domain.review_exchange import REVIEWER_WORKTREE_CHECKOUT_FAILURE_MARKER
 from ..ports.worktree_manager import REVIEWER_OWNED_HEAD_MARKER, WORKTREE_ID_MARKER
 
@@ -200,6 +201,23 @@ def fast_forward_reviewer_worktree(reviewer: ReviewerWorktree) -> str:
     return tip_sha
 
 
+def _restore_markers(
+    reviewer: "ReviewerWorktree", marker_contents: dict[Path, str]
+) -> None:
+    """Put back the ownership evidence a failed removal took off."""
+    if not reviewer.path.exists():
+        return
+    for marker, marker_content in marker_contents.items():
+        try:
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text(marker_content, encoding="utf-8")
+        except OSError:
+            logger.exception(
+                "Failed to restore reviewer ownership marker after removal failure: %s",
+                marker,
+            )
+
+
 def _removal_git(repo_root: Path) -> GitRunner:
     def run(argv: list[str]) -> str | None:
         try:
@@ -235,24 +253,25 @@ def remove_reviewer_worktree(
     # rollback, not a licence to discard work someone claimed (#7274).
     try:
         outcome = remove_checkout_path(
-            reviewer.path, force=force, run_git=_removal_git(repo_root)
+            reviewer.path,
+            force=force,
+            run_git=_removal_git(repo_root),
+            repo_root=repo_root,
         )
         if not outcome.removed:
             raise ReviewerWorktreeError(
                 f"Failed to remove reviewer worktree {reviewer.path}: "
                 f"{outcome.git_error}"
             )
+    except CustodyError:
+        # The markers came off BEFORE the removal. A custody refusal leaves the
+        # checkout standing, so putting them back is what keeps it a
+        # recognisable reviewer worktree instead of something reconciliation
+        # later calls external (#7274 round 4 finding 5).
+        _restore_markers(reviewer, marker_contents)
+        raise
     except ReviewerWorktreeError as exc:
-        if reviewer.path.exists():
-            for marker, marker_content in marker_contents.items():
-                try:
-                    marker.parent.mkdir(parents=True, exist_ok=True)
-                    marker.write_text(marker_content, encoding="utf-8")
-                except OSError:
-                    logger.exception(
-                        "Failed to restore reviewer ownership marker after removal failure: %s",
-                        marker,
-                    )
+        _restore_markers(reviewer, marker_contents)
         if force:
             logger.warning(
                 "git worktree remove --force failed for %s: %s",

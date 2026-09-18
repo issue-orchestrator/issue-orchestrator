@@ -6,6 +6,9 @@ import threading
 import time
 from pathlib import Path
 
+from issue_orchestrator.adapters.worktree.custody import custody_guard
+from issue_orchestrator.ports.worktree_custody import CustodyError
+
 from .github_client import _github_adapter
 from .orchestrator_process import keep_artifacts, keep_remote_artifacts
 
@@ -28,8 +31,14 @@ def cleanup_local_worktrees(worktree_base: Path | None = None) -> int:
         for item in worktree_base.iterdir():
             if item.is_dir():
                 try:
-                    shutil.rmtree(item)
+                    # Asks custody first: a checkout retained from a failed run
+                    # is exactly the thing an operator holds, and the next
+                    # session starting is exactly when they lose it (#7274).
+                    with custody_guard(item):
+                        shutil.rmtree(item)
                     count += 1
+                except CustodyError as e:
+                    logger.warning("Retaining held worktree %s: %s", item, e)
                 except Exception as e:
                     logger.warning("Failed to remove worktree %s: %s", item, e)
         if count > 0:

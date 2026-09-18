@@ -183,6 +183,16 @@ class WorktreeManager(Protocol):
         """Every checkout of ``repo_root`` held for a person, oldest first."""
         ...
 
+    def breached_custody(self, repo_root: Path) -> tuple[CustodyGrant, ...]:
+        """Grants whose checkout is gone: something removed it anyway.
+
+        Custody prevents inside this codebase and DETECTS outside it. Nothing
+        stops a hand or a script elsewhere from deleting a directory, and an
+        operator who was told their branch was protected should find that out
+        here rather than when they go looking for it.
+        """
+        ...
+
     def can_remove_without_user_changes(self, worktree_path: Path) -> bool:
         """Return true when forced removal would only discard owned artifacts.
 

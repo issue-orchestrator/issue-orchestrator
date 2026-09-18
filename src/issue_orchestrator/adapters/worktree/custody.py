@@ -5,6 +5,16 @@ the record has to outlive the deletion it exists to prevent, and an operator
 asking "what is being held?" needs one place to look rather than a walk over
 every worktree that might still be there.
 
+**What custody can and cannot promise.** Every removal the orchestrator makes
+goes through :func:`..removal.remove_checkout_path`, and that one asks. Nothing
+can stop a process outside this repository -- or a person with ``rm -rf`` --
+from deleting a directory, and a guardrail that tried to find every
+``shutil.rmtree`` in every script would be a search with no end. So custody
+PREVENTS inside the owner and DETECTS everywhere else:
+:meth:`GitMetadataWorktreeCustody.breached` reports grants whose checkout is no
+longer there, and the operator surface prints them. A promise that stops at the
+edge of this codebase is worth making; one that pretends to go further is not.
+
 Three properties this module is built around, each because losing them loses
 somebody's only copy of a branch:
 
@@ -89,6 +99,18 @@ class GitMetadataWorktreeCustody:
     def held(self, worktree_path: Path) -> CustodyGrant | None:
         with self._locked():
             return self._records().get(_key(worktree_path))
+
+    def breached(self) -> tuple[CustodyGrant, ...]:
+        """Grants whose checkout is gone: something removed it anyway.
+
+        Detection, not prevention. The orchestrator's own removals are refused,
+        but nothing stops a hand or a script outside this codebase, and an
+        operator who was told their branch was protected deserves to find out
+        that it is not -- rather than discovering it when they go looking.
+        """
+        return tuple(
+            grant for grant in self.list_held() if not grant.path.exists()
+        )
 
     def list_held(self) -> tuple[CustodyGrant, ...]:
         with self._locked():
@@ -242,6 +264,16 @@ class GitMetadataWorktreeCustody:
                     f"the worktree custody store at {path} cannot be read "
                     f"although something is there: {exc}"
                 ) from exc
+            outstanding = self._outstanding_in_trail()
+            if outstanding:
+                # The trail says grants were taken and not released, so the
+                # state file did not go missing because nothing was held. It
+                # went missing (round 4 finding 2).
+                raise CustodyUnavailableError(
+                    f"the worktree custody store at {path} is gone while its "
+                    f"trail still holds {len(outstanding)} grant(s): "
+                    f"{sorted(outstanding)}"
+                ) from exc
             return {}
         except (OSError, json.JSONDecodeError) as exc:
             raise CustodyUnavailableError(
@@ -257,6 +289,37 @@ class GitMetadataWorktreeCustody:
             raise CustodyUnavailableError(
                 f"the worktree custody store at {path} has an unreadable record: {exc}"
             ) from exc
+
+    def _outstanding_in_trail(self) -> set[str]:
+        """Paths the trail took and never released.
+
+        The trail is append-only and fsynced, so it is the one record that
+        survives the state file: if it says something is held and the state
+        file is absent, the store is damaged, not empty.
+        """
+        path = self._root / CUSTODY_LOG
+        try:
+            lines = path.read_text().splitlines()
+        except FileNotFoundError:
+            return set()
+        except OSError as exc:
+            raise CustodyUnavailableError(
+                f"the worktree custody trail at {path} is unreadable: {exc}"
+            ) from exc
+        held: set[str] = set()
+        for line in lines:
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(entry, dict):
+                continue
+            target = str(entry.get("path") or "")
+            if entry.get("action") == "take":
+                held.add(target)
+            elif entry.get("action") == "release":
+                held.discard(target)
+        return held
 
     def _write(self, records: dict[str, CustodyGrant]) -> None:
         path = self._root / CUSTODY_FILE
