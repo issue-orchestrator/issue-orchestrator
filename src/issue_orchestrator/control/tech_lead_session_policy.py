@@ -28,11 +28,7 @@ from ..domain.models import CompletionOutcome, CompletionRecord, RequestedAction
 from ..domain.tech_lead_escalation import render_tech_lead_escalation_comment
 from ..domain.session_key import TaskKind
 from ..domain.tech_lead_manifest import TechLeadManifest
-from ..domain.tech_lead_scratch_identity import (
-    new_scratch_token,
-    scratch_branch_name,
-    scratch_worktree_name,
-)
+from ..domain.tech_lead_scratch_identity import new_scratch_identity
 from ..domain.board_snapshot import BOARD_SNAPSHOT_FILENAME, BoardSnapshot
 from ..domain.tech_lead_session import (
     HEALTH_REVIEW_MARKER_LABEL,
@@ -62,7 +58,8 @@ if TYPE_CHECKING:
     from ..ports import ManifestDownloader, RepositoryHost
     from ..ports.issue import Issue
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
-    from .worktree_context import ScratchWorktreeIdentity, WorktreeContext
+    from ..domain.tech_lead_scratch_identity import ScratchWorktreeIdentity
+    from .worktree_context import WorktreeContext
 
 logger = logging.getLogger(__name__)
 
@@ -151,18 +148,12 @@ def failure_investigation_scratch_identity(
     own anchor worktrees) and for ordinary non-tech-lead issues, leaving their
     worktree derivation unchanged.
     """
-    from .worktree_context import ScratchWorktreeIdentity
-
     if (
         tech_lead_scope is None
         or tech_lead_scope.flavor is not TechLeadSessionFlavor.FAILURE_INVESTIGATION
     ):
         return None
-    token = new_scratch_token()
-    return ScratchWorktreeIdentity(
-        worktree_name=scratch_worktree_name(config.repo_root.name, issue.number, token),
-        branch_name=scratch_branch_name(issue.number, token),
-    )
+    return new_scratch_identity(config.repo_root.name, issue.number)
 
 
 #: Outcomes whose comment IS the tech lead's decision, not a work report.
