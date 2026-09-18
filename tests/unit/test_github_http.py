@@ -9,6 +9,8 @@ import httpx
 import json
 import subprocess
 import threading
+import time
+from collections import OrderedDict
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -2864,31 +2866,59 @@ class TestGitDataBlobAndTreeEndpoints:
             evicted.set()
             evictor.join(timeout=5)
 
-    def test_concurrent_stores_keep_the_byte_count_honest(self) -> None:
+    def test_a_store_cannot_interleave_with_another_stores_eviction(self) -> None:
         """``+=`` then evict-loop is not one operation.
 
-        Interleaved, the count drifts until the budget stops meaning anything
-        -- which is the whole point of having one.
+        Observed by ORDER rather than by hoping a lost update shows up: a
+        writer is held inside the eviction loop while a second writer tries to
+        store, and the second one's insert must land after the first is done.
+        Unsynchronised it lands in the middle, where its ``+=`` interleaves
+        with the other's subtractions and the count drifts from what the cache
+        holds -- after which the budget means nothing.
         """
-        cache = _ETagCache(max_bytes=10_000)
-        barrier = threading.Barrier(8)
+        order: list[str] = []
+        evicting = threading.Event()
+        failures: list[BaseException] = []
 
-        def fill(worker: int) -> None:
-            barrier.wait(timeout=5)
-            for index in range(50):
-                cache.store(
-                    f"{worker}-{index}",
-                    _ETagEntry(etag='"e"', payload={}, size=100),
-                )
+        class Recording(OrderedDict):
+            def __setitem__(self, key, value):  # noqa: ANN001, ANN204
+                order.append(f"insert:{key}")
+                super().__setitem__(key, value)
 
-        workers = [threading.Thread(target=fill, args=(n,)) for n in range(8)]
-        for worker in workers:
-            worker.start()
-        for worker in workers:
-            worker.join(timeout=10)
+            def popitem(self, last: bool = True):  # noqa: ANN201, FBT001, FBT002
+                evicting.set()
+                time.sleep(0.2)  # long enough for an unlocked writer to get in
+                evicted = super().popitem(last)
+                order.append("evicted")
+                return evicted
 
-        assert cache.nbytes == len(cache) * 100
-        assert cache.nbytes <= 10_000
+        cache = _ETagCache(max_bytes=300)
+        cache._entries = Recording()  # noqa: SLF001
+        cache.store("first", _ETagEntry(etag='"e"', payload={}, size=100))
+        cache.store("second", _ETagEntry(etag='"e"', payload={}, size=100))
+        order.clear()
+
+        def store_second() -> None:
+            try:
+                evicting.wait(timeout=5)
+                cache.store("third", _ETagEntry(etag='"e"', payload={}, size=100))
+            except BaseException as exc:  # noqa: BLE001 - reported below
+                failures.append(exc)
+
+        writer = threading.Thread(target=store_second)
+        writer.start()
+        try:
+            cache.store("evictor", _ETagEntry(etag='"e"', payload={}, size=200))
+        finally:
+            writer.join(timeout=5)
+
+        assert not failures, f"a concurrent store raised: {failures}"
+        assert order.index("insert:third") > order.index("evicted"), (
+            f"a store landed inside another store's eviction: {order}"
+        )
+        assert cache.nbytes == sum(
+            entry.size for entry in cache._entries.values()  # noqa: SLF001
+        ), "the byte count drifted from what the cache actually holds"
 
     def test_a_payload_that_is_not_an_object_is_refused(self) -> None:
         client, _ = self._recorded({})
