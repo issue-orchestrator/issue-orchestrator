@@ -1293,6 +1293,37 @@ class TestRoundFiveGaps:
         assert only_copy.read_text() == "not committed anywhere\n"
         assert manager.custody_of(checkout) is not None
 
+    def test_the_e2e_sweep_does_not_unlink_a_symlink_inside_a_held_checkout(
+        self,
+        manager: GitWorktreeManager,
+        repo: Path,
+        checkout: Path,
+        tmp_path: Path,
+    ) -> None:
+        """Resolving a child must not erase its lexical held ancestor.
+
+        The descendant test above uses an ordinary directory, where `resolve()`
+        preserves the ancestry. A SYMLINK does not: resolving it moves the
+        target outside the held checkout, the held ancestor disappears, and the
+        fallback unlinks the alias -- inside a checkout custody is protecting
+        (round 12 finding 2).
+        """
+        evidence = tmp_path / "external-evidence"
+        evidence.mkdir()
+        (evidence / "only-copy.md").write_text("not committed anywhere\n")
+        link = checkout / "investigation-link"
+        link.symlink_to(evidence, target_is_directory=True)
+        manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+        (checkout / ".git").unlink()
+
+        cleanup_local_worktrees(checkout.parent, repo_root=repo)
+
+        assert link.is_symlink(), (
+            "the sweep unlinked an uncommitted path inside a held checkout"
+        )
+        assert (link / "only-copy.md").read_text() == "not committed anywhere\n"
+        assert manager.custody_of(checkout) is not None
+
     def test_the_e2e_sweep_still_removes_what_nobody_holds(self, repo: Path, checkout: Path) -> None:
         """The premise: the sweep is a REMOVAL, and it goes through the owner."""
         cleanup_local_worktrees(checkout.parent, repo_root=repo)

@@ -111,8 +111,11 @@ def terminate_tech_lead_session(
     # A custody refusal is NOT a failed effect wearing the same clothes. It is
     # the system doing its job, and the operator needs the holder and the
     # release workflow -- not "remove it manually", which is the destruction
-    # custody exists to prevent (round 9 finding 2). Caught before `attempt`
-    # sees it, because `attempt` reduces every exception to False.
+    # custody exists to prevent (round 9 finding 2). The removal attempt passes
+    # this typed refusal THROUGH rather than reducing it to False -- wrapping
+    # `attempt` did not work, because `attempt` catches Exception itself, so the
+    # handler below was unreachable and round 9's fix never ran (round 12
+    # finding 1).
     retained_custody: "CustodyGrant | None" = None
     try:
         removal = _void(
@@ -123,7 +126,10 @@ def terminate_tech_lead_session(
             if (disposable and worktrees)
             else None
         )
-        worktree_removed = attempt(removal, "remove scratch worktree")
+        removal_attempt = _effect_runner(
+            session.issue.number, propagate=(WorktreeInCustodyError,)
+        )
+        worktree_removed = removal_attempt(removal, "remove scratch worktree")
     except WorktreeInCustodyError as refusal:
         retained_custody = refusal.grant
         worktree_removed = False
@@ -212,6 +218,8 @@ def _void(effect: Callable[[], object]) -> Callable[[], Optional[bool]]:
 
 def _effect_runner(
     issue_number: int,
+    *,
+    propagate: tuple[type[Exception], ...] = (),
 ) -> Callable[[Callable[[], Optional[bool]], str], bool]:
     """Attempt one effect, reporting success without letting it stop the rest.
 
@@ -220,12 +228,18 @@ def _effect_runner(
     returns ``None`` and succeeds by not raising. Both shapes are needed because
     the two coordination layers report failure differently — the run ledger
     returns a typed refusal rather than raising (#6994 round 3 F12).
+
+    Exceptions in ``propagate`` are typed OUTCOMES owned by the caller, not
+    generic effect failures, so they keep their identity instead of collapsing
+    to False (round 12 finding 1).
     """
 
     def attempt(effect: Callable[[], Optional[bool]], what: str) -> bool:
         try:
             verdict = effect()
             return True if verdict is None else verdict
+        except propagate:
+            raise
         except Exception:
             logger.warning(
                 "[TECH_LEAD] Failed to %s for issue #%d on timeout terminate",

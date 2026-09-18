@@ -616,21 +616,34 @@ def _other_grants_overlapping(
     work is deleted while the checkout root and its grant survive, looking
     untouched (round 11 finding 1).
 
+    Canonical containment alone is not enough when the TARGET is itself a
+    symlink. Resolving ``<held>/evidence-link`` moves the target outside the
+    held checkout and erases the lexical ancestor the filesystem fallback is
+    about to modify, so each lexical ancestor is resolved separately and
+    crossing a held root stays visible (round 12 finding 2).
+
     Either way a grant is discarded without being named. Exact equality is left
-    to :meth:`guard`, where an explicit release may legitimately settle it.
+    to :meth:`guard`, where an explicit release may legitimately settle it -- but
+    a final-component symlink is NOT exact equality: unlinking it removes the
+    alias, not the checkout the grant is about.
     """
     target = Path(_key(worktree_path))
-    return tuple(
-        sorted(
-            (
-                grant
-                for key, grant in records.items()
-                if Path(key) != target
-                and (target in Path(key).parents or Path(key) in target.parents)
-            ),
-            key=lambda grant: grant.taken_at,
+    lexical = Path(os.path.abspath(worktree_path))
+    resolved_ancestors = {
+        candidate.resolve() for candidate in (lexical, *lexical.parents)
+    }
+    target_is_symlink = Path(worktree_path).is_symlink()
+    overlapping = [
+        grant
+        for key, grant in records.items()
+        if not (Path(key) == target and not target_is_symlink)
+        and (
+            target in Path(key).parents
+            or Path(key) in target.parents
+            or Path(key) in resolved_ancestors
         )
-    )
+    ]
+    return tuple(sorted(overlapping, key=lambda grant: grant.taken_at))
 
 
 def _grant_from(key: str, value: object) -> CustodyGrant:
