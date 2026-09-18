@@ -156,6 +156,27 @@ class InterruptedSessionRetryConfig:
     coding_guard_label: str = "io:auto-retried-interrupted-coding"
     review_guard_label: str = "io:auto-retried-interrupted-review"
 
+    def guard_label(self, mode: str) -> str:
+        """The guard label for a relaunch of ``mode``.
+
+        Owned here, beside the two labels: a caller choosing between them had to
+        know both field names, which is the rummaging AGENTS.md names.
+
+        An unknown mode RAISES rather than falling through to the review label.
+        Both former copies of this choice treated every non-``coding`` value as
+        review, so a typo or a third mode would have silently cleared the wrong
+        guard -- and a guard cleared on the wrong issue is a relaunch loop that
+        nothing stops.
+        """
+        if mode == "coding":
+            return self.coding_guard_label
+        if mode == "review":
+            return self.review_guard_label
+        raise ValueError(
+            f"no interrupted-retry guard label for mode {mode!r}; "
+            "expected 'coding' or 'review'"
+        )
+
 
 @dataclass
 class ProviderShortRetryConfig:

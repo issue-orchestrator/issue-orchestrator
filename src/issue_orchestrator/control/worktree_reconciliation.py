@@ -10,6 +10,11 @@ from pathlib import Path
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
+from ..domain.tech_lead_scratch_identity import (
+    names_one_scratch_checkout,
+    ordinary_worktree_name_pattern,
+    scratch_worktree_name_pattern,
+)
 from ..ports.worktree_manager import RegisteredWorktree, WORKTREE_ID_MARKER
 
 if TYPE_CHECKING:
@@ -112,14 +117,20 @@ class _WorktreePatterns:
 
 
 def _worktree_patterns(repo_root: Path) -> _WorktreePatterns:
-    repo_name = re.escape(repo_root.name)
+    """The three shapes a registered worktree directory can have.
+
+    The scratch and ordinary grammars are COMPOSED from the domain owner rather
+    than re-typed. A second copy of the shape here would keep this dispatch
+    working against yesterday's names after the generator changed -- and a
+    classifier that stops matching does not fail, it silently reclassifies a
+    disposable checkout as external, or an external one as disposable (#7263).
+    """
+    ordinary = ordinary_worktree_name_pattern(repo_root.name)
+    scratch = scratch_worktree_name_pattern(repo_root.name)
     return _WorktreePatterns(
-        ordinary=re.compile(rf"^{repo_name}-(\d+)$"),
-        scratch=re.compile(rf"^{repo_name}-tech-lead-(\d+)-([0-9a-f]{{12}})$"),
-        reviewer=re.compile(
-            rf"^(?:{repo_name}-\d+|{repo_name}-tech-lead-\d+-[0-9a-f]{{12}})"
-            rf"-review-{_REVIEW_TIMESTAMP}$"
-        ),
+        ordinary=re.compile(rf"^{ordinary}$"),
+        scratch=re.compile(rf"^{scratch}$"),
+        reviewer=re.compile(rf"^(?:{ordinary}|{scratch})-review-{_REVIEW_TIMESTAMP}$"),
     )
 
 
@@ -154,12 +165,14 @@ def _disposable_entry(
 def _classify_scratch(
     path: Path,
     item: RegisteredWorktree,
-    match: re.Match[str],
     activity: WorktreeActivityEvidence,
 ) -> WorktreeAuditEntry:
-    issue_number, token = match.groups()
-    expected_branch = f"tech-lead-investigation-{issue_number}-{token}"
-    if not _has_orchestrator_identity(path) or item.branch != expected_branch:
+    # The pair must hold together -- same focus issue, same run token -- and
+    # that rule has one owner. Reconstructing the branch from a literal here was
+    # a fourth copy of the owner's grammar.
+    if not _has_orchestrator_identity(path) or not names_one_scratch_checkout(
+        path.name, item.branch or ""
+    ):
         return WorktreeAuditEntry(
             path,
             "external",
@@ -226,8 +239,8 @@ def _classify_registered_worktree(
             "retained",
             "outside the configured worktree base",
         )
-    if scratch_match := patterns.scratch.fullmatch(path.name):
-        return _classify_scratch(path, item, scratch_match, activity)
+    if patterns.scratch.fullmatch(path.name):
+        return _classify_scratch(path, item, activity)
     if patterns.reviewer.fullmatch(path.name):
         return _classify_reviewer(path, item, activity)
     if patterns.ordinary.fullmatch(path.name) and _has_orchestrator_identity(path):

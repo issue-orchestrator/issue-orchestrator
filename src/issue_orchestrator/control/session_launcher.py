@@ -360,88 +360,54 @@ class SessionLauncher:
         """Recover or clear marker-owned escalation state from GitHub."""
         self._tech_lead_needs_human.reconcile(active_sessions, discover_markers=discover_markers)
 
-    def _interrupted_retry_guard_label(self, mode: str) -> str:
-        retry_cfg = self.config.retry.interrupted_sessions
-        if mode == "coding":
-            return retry_cfg.coding_guard_label
-        return retry_cfg.review_guard_label
-
-    def _clear_interrupted_retry_guard_label(self, *, issue_number: int, mode: str, context: str) -> None:
-        """Best-effort cleanup of interrupted retry guard at launch boundary."""
-        guard_label = self._interrupted_retry_guard_label(mode)
+    def _clear_guard_label(
+        self, *, issue_number: int, label: str, reason: str, context: str
+    ) -> None:
+        """Best-effort removal of one relaunch guard label at a launch boundary."""
         self._apply_actions([
-            RemoveLabelAction(
-                issue_number=issue_number,
-                label=guard_label,
-                reason=f"{mode} session relaunched - clearing interrupted retry guard",
-            ),
+            RemoveLabelAction(issue_number=issue_number, label=label, reason=reason),
         ], context=context)
-
-    def _clear_reset_retry_pending_label(self, *, issue_number: int, context: str) -> None:
-        """Best-effort cleanup of reset+retry pending guard at launch boundary."""
-        pending_label = getattr(self._lm, "reset_retry_pending", None)
-        if not isinstance(pending_label, str) or not pending_label:
-            resolver = getattr(self._lm, "resolve", None)
-            if callable(resolver):
-                resolved = resolver("reset-retry-pending")
-                pending_label = resolved if isinstance(resolved, str) and resolved else "reset-retry-pending"
-            else:
-                pending_label = "reset-retry-pending"
-        actions: list[Action] = [
-            RemoveLabelAction(
-                issue_number=issue_number,
-                label=pending_label,
-                reason="session launched - clearing reset+retry pending guard",
-            ),
-        ]
-        self._apply_actions(actions, context=context)
-
-    def _clear_reset_retry_scratch_pending_label(self, *, issue_number: int, context: str) -> None:
-        """Best-effort cleanup of reset+retry-from-scratch pending guard."""
-        pending_label = getattr(self._lm, "reset_retry_scratch_pending", None)
-        if not isinstance(pending_label, str) or not pending_label:
-            resolver = getattr(self._lm, "resolve", None)
-            if callable(resolver):
-                resolved = resolver("reset-retry-scratch-pending")
-                pending_label = (
-                    resolved
-                    if isinstance(resolved, str) and resolved
-                    else "reset-retry-scratch-pending"
-                )
-            else:
-                pending_label = "reset-retry-scratch-pending"
-        actions: list[Action] = [
-            RemoveLabelAction(
-                issue_number=issue_number,
-                label=pending_label,
-                reason="session launched - clearing reset+retry-from-scratch pending guard",
-            ),
-        ]
-        self._apply_actions(actions, context=context)
 
     def _clear_launch_retry_guards(
         self, *, issue_number: int, mode: str, suffix: str
     ) -> None:
         """Clear every relaunch retry/reset guard label at a launch boundary.
 
-        Single owner for the guard-clear policy shared by all launch paths
-        (coding, validation-retry, review, retrospective-review), which each
-        otherwise repeated the same three calls. ``suffix`` distinguishes the
-        per-path audit context.
+        The single owner for the guard-clear policy shared by every launch path
+        -- coding, validation-retry, review, retrospective-review and rework --
+        each of which otherwise repeated the same three calls in the same order.
+        ``suffix`` distinguishes the per-path audit context.
+
+        The three guards had three near-identical clearers, and two of them
+        re-derived their label through a ``getattr``/``resolve``/literal chain
+        defending against a ``LabelManager`` lacking the property -- a shape
+        this same file already trusts unguarded where it READS the label to make
+        a decision. A fallback that cannot fire can only hide the bug it
+        pretends to survive, so they are gone.
         """
-        self._clear_interrupted_retry_guard_label(
-            issue_number=issue_number,
-            mode=mode,
-            context=f"launch_clear_interrupted_guard_{suffix}",
-        )
-        self._clear_reset_retry_pending_label(
-            issue_number=issue_number,
-            context=f"launch_clear_reset_retry_pending_{suffix}",
-        )
-        self._clear_reset_retry_scratch_pending_label(
-            issue_number=issue_number,
-            context=f"launch_clear_reset_retry_scratch_pending_{suffix}",
-        )
+        for label, reason, audit in (
+            (
+                self.config.retry.interrupted_sessions.guard_label(mode),
+                f"{mode} session relaunched - clearing interrupted retry guard",
+                "interrupted_guard",
+            ),
+            (
+                self._lm.reset_retry_pending,
+                "session launched - clearing reset+retry pending guard",
+                "reset_retry_pending",
+            ),
+            (
+                self._lm.reset_retry_scratch_pending,
+                "session launched - clearing reset+retry-from-scratch pending guard",
+                "reset_retry_scratch_pending",
+            ),
+        ):
+            self._clear_guard_label(
+                issue_number=issue_number,
+                label=label,
+                reason=reason,
+                context=f"launch_clear_{audit}_{suffix}",
+            )
 
     def _build_session_env(
         self,
@@ -2161,9 +2127,7 @@ class SessionLauncher:
             apply_actions=self._apply_actions,
             worktree_reuse_options=self._worktree_reuse_options,
             session_identity_launch_metadata=self._session_identity_launch_metadata,
-            clear_interrupted_retry_guard_label=self._clear_interrupted_retry_guard_label,
-            clear_reset_retry_pending_label=self._clear_reset_retry_pending_label,
-            clear_reset_retry_scratch_pending_label=self._clear_reset_retry_scratch_pending_label,
+            clear_launch_retry_guards=self._clear_launch_retry_guards,
             persist_session_prompt=self._persist_session_prompt,
             wrap_provider_command=self._wrap_provider_command,
             build_session_env=self._build_session_env,

@@ -328,10 +328,13 @@ class TestWorktreeContextCreate:
         """A scratch investigation OWNS its worktree name/branch and is a clean
         checkout off the base branch (#6823): the configured seed ref and any
         stack base are suppressed so it never seeds from the subject's branch."""
-        from issue_orchestrator.control.worktree_context import (
-            ScratchWorktreeIdentity,
+        from issue_orchestrator.domain.tech_lead_scratch_identity import (
+            new_scratch_identity,
         )
 
+        # Minted by the owner: a hand-spelled identity would let this test pass
+        # against a name nothing in production could produce.
+        scratch = new_scratch_identity("repo", 5980)
         mock_config.worktree_base_branch_override = "main"
         mock_config.worktree_seed_ref = "seed-abc"
         with patch(
@@ -350,15 +353,12 @@ class TestWorktreeContextCreate:
                 session_name="issue-5980",
                 agent_label="agent:tech-lead",
                 stack_base_branch="20-base",  # ignored for a scratch investigation
-                scratch=ScratchWorktreeIdentity(
-                    worktree_name="repo-tech-lead-5980-tok",
-                    branch_name="tech-lead-investigation-5980-tok",
-                ),
+                scratch=scratch,
             )
 
             call_kwargs = mock_worktree_manager.create.call_args.kwargs
-            assert call_kwargs["worktree_name"] == "repo-tech-lead-5980-tok"
-            assert call_kwargs["branch_name"] == "tech-lead-investigation-5980-tok"
+            assert call_kwargs["worktree_name"] == scratch.worktree_name
+            assert call_kwargs["branch_name"] == scratch.branch_name
             assert call_kwargs["base_branch"] == "main"
             assert call_kwargs["seed_ref"] is None
 

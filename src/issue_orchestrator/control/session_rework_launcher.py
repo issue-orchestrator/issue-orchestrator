@@ -103,12 +103,15 @@ class SessionIdentityMetadataBuilder(Protocol):
     ) -> dict[str, object]: ...
 
 
-class GuardLabelClearer(Protocol):
-    def __call__(self, *, issue_number: int, context: str) -> None: ...
+class LaunchRetryGuardClearer(Protocol):
+    """Clears EVERY relaunch guard for one launch boundary, in one call.
 
+    Rework used to clear the same three guards, in the same order, through three
+    separate injected clearers -- a second copy of a policy the launcher already
+    owns. It now asks the owner.
+    """
 
-class InterruptedGuardLabelClearer(Protocol):
-    def __call__(self, *, issue_number: int, mode: str, context: str) -> None: ...
+    def __call__(self, *, issue_number: int, mode: str, suffix: str) -> None: ...
 
 
 class PromptPersister(Protocol):
@@ -159,9 +162,7 @@ class ReworkLaunchDependencies:
     apply_actions: ActionApplierFn
     worktree_reuse_options: WorktreeReuseOptionsFactory
     session_identity_launch_metadata: SessionIdentityMetadataBuilder
-    clear_interrupted_retry_guard_label: InterruptedGuardLabelClearer
-    clear_reset_retry_pending_label: GuardLabelClearer
-    clear_reset_retry_scratch_pending_label: GuardLabelClearer
+    clear_launch_retry_guards: LaunchRetryGuardClearer
     persist_session_prompt: PromptPersister
     wrap_provider_command: ProviderCommandWrapper
     build_session_env: SessionEnvBuilder
@@ -417,18 +418,8 @@ def launch_rework_session(
                 extra_provider_args=None,
             ),
         })
-        deps.clear_interrupted_retry_guard_label(
-            issue_number=issue_number,
-            mode="coding",
-            context="launch_clear_interrupted_guard_rework",
-        )
-        deps.clear_reset_retry_pending_label(
-            issue_number=issue_number,
-            context="launch_clear_reset_retry_pending_rework",
-        )
-        deps.clear_reset_retry_scratch_pending_label(
-            issue_number=issue_number,
-            context="launch_clear_reset_retry_scratch_pending_rework",
+        deps.clear_launch_retry_guards(
+            issue_number=issue_number, mode="coding", suffix="rework"
         )
 
         logger.info(
