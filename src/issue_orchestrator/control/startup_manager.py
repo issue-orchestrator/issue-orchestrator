@@ -42,7 +42,6 @@ from ..domain.models import (
     OrchestratorState,
     PendingRetrospectiveReview,
     PendingReview,
-    PendingValidationRetry,
     SessionHistoryEntry,
     Session,
     ORCHESTRATOR_PR_MARKER,
@@ -60,15 +59,14 @@ from .queue_cache import QueueCache, QueueMutationStatus, record_issue_refreshes
 from .review_validity import evaluate_review_validity
 from .review_scope import ReviewScopeChecker, extract_issue_number_from_pr
 from .retrospective_review import discover_retrospective_review_issues
+from .validation_retry_recovery import ValidationRetryRecovery
 from .worker_budget import worker_slot_free
 from ..events import EventName
 from ..ports import EventSink, SessionRunner, make_trace_event, RepositoryHost
 from ..ports.session_runner import DiscoveredSession
 from ..infra import gh_audit
-from ..infra.validation_state import find_pending_retry_artifacts
 from ..infra.repo_identity import get_repo_head_sha
 from ..infra.sqlite_maintenance import enforce_pragmas_on_startup, run_backups_if_due
-from .worktree_manager import get_worktree_path
 
 
 
@@ -748,70 +746,18 @@ class StartupManager:
         state: OrchestratorState,
         issue_branches: dict[int, str],
     ) -> None:
-        """Recover validation retries from before restart.
+        """Re-queue the validation retries left behind by a restart.
 
-        Scans worktrees for issues that were mid-validation-retry when
-        the orchestrator restarted. Re-queues them for immediate retry.
-
-        Args:
-            state: Orchestrator state to update
-            issue_branches: Map of issue numbers to branch names
+        The scan is the recovery owner's, not this method's: a retry can be
+        waiting in an ordinary issue checkout or in a Tech Lead investigation's
+        disposable one, and only one of those is reachable from
+        ``issue_branches`` (#7273).
         """
-        recovered = 0
-        for issue_number, branch_name in issue_branches.items():
-            worktree_path = get_worktree_path(self.config, issue_number)
-            if not worktree_path.exists():
-                continue
-
-            session_name = f"issue-{issue_number}"
-            if self._session_exists(session_name):
-                logger.info(
-                    "[startup] Validation retry already has a running session: issue=%d",
-                    issue_number,
-                )
-                continue
-
-            # Resolve durable retry artifacts in one pass. The artifact owner has
-            # already resolved provenance: review-only and unrecognized run
-            # directories are refused upstream, so any artifact returned here
-            # carries a concrete coding-side ``source_task`` (#6426).
-            artifacts = find_pending_retry_artifacts(worktree_path)
-            if artifacts is None or not artifacts.state.can_retry:
-                continue
-
-            validation_state = artifacts.state
-            retry_prompt = None
-            if artifacts.retry_prompt_path is not None:
-                try:
-                    retry_prompt = artifacts.retry_prompt_path.read_text()
-                except OSError:
-                    pass
-
-            pending_retry = PendingValidationRetry(
-                issue_number=issue_number,
-                issue_title=f"Issue #{issue_number}",  # We don't have the full title here
-                agent_label="",  # Will be determined when launching
-                worktree_path=str(worktree_path),
-                branch_name=branch_name,
-                original_prompt=retry_prompt,
-                validation_error=validation_state.last_error or "Unknown validation error",
-                validation_error_file=validation_state.last_error_file,
-                retry_count=validation_state.retry_count,
-                source_task=artifacts.source_task,
-                validation_cmd=validation_state.validation_cmd,
-            )
-            state.pending_validation_retries.append(pending_retry)
-            recovered += 1
-
-            logger.info(
-                "[startup] Recovered pending validation retry: issue=%d retry_count=%d/%d",
-                issue_number,
-                validation_state.retry_count,
-                validation_state.max_retries,
-            )
-
+        recovered = ValidationRetryRecovery(
+            self.config, self._startup_worktree_reconciler, self._session_exists
+        ).recover(state, issue_branches)
         if recovered:
-            print(f"\n🔄 Recovered {recovered} pending validation retry(ies)")
+            print(f"\n\U0001f504 Recovered {recovered} pending validation retry(ies)")
 
     def _recover_orphaned_cleanups(self, state: OrchestratorState) -> None:
         """Recover review-gated issue trees and owned disposable orphans."""

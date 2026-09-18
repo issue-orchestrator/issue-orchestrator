@@ -6,7 +6,7 @@ from .completion_intake import CompletionIntakeError
 from .models import CompletionRecord, sanitize_agent_label
 from pathlib import Path
 from .session_key import TaskKind
-from .session_run import RunContainedFile
+from .session_run import RunContainedFile, SessionRunAssets, SessionRunIdentity
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +78,19 @@ class CompletionProcessingPolicy:
     @property
     def is_tech_lead(self) -> bool:
         return self.task is TaskKind.TECH_LEAD
+
+    def inheritable_launch_authority(
+        self, run: "SessionRunAssets"
+    ) -> "SessionRunIdentity | None":
+        """The run a validation retry of this one inherits authority from (#7273).
+
+        Only a Tech Lead run is admitted by a create-once authority row, so only
+        a Tech Lead retry names the run it came from. A retry that named a run
+        with no row would be indistinguishable from one whose row has been lost,
+        and the launcher refuses to relaunch the second -- so naming one for
+        every retry would strand every ordinary retry in the queue.
+        """
+        return run.identity if self.is_tech_lead else None
 
 
 @dataclass(frozen=True, slots=True)

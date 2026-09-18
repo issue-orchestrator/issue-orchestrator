@@ -24,6 +24,7 @@ from ..domain.artifact_contracts import (
     ValidationRetry,
 )
 from ..domain.run_manifest import RunManifest
+from ..domain.session_run import SessionRunIdentity
 from ..domain.session_key import TaskKind
 
 logger = logging.getLogger(__name__)
@@ -150,12 +151,18 @@ class ValidationRetryArtifacts:
     There is no ``None`` / ``or TaskKind.CODE`` fallback: the field is always a
     valid coding-side task, so a review-only or unknown-provenance artifact can
     never be relaunched as coding work.
+
+    ``run`` is the identity of the run that queued this retry, read back from
+    the run directory's manifest. A relaunch needs it to carry a Tech Lead run's
+    create-once launch authority forward (#7273); it is ``None`` for legacy
+    worktree-level state, which has no run directory at all.
     """
 
     state: ValidationState
     state_path: Path
     source_task: TaskKind
     retry_prompt_path: Path | None = None
+    run: SessionRunIdentity | None = None
 
 
 def _now_iso() -> str:
@@ -279,6 +286,29 @@ def _run_source_task(run_dir: Path) -> TaskKind | None:
     return TaskKind.from_session_name(_run_session_name(run_dir))
 
 
+def _run_identity(run_dir: Path) -> "SessionRunIdentity | None":
+    """The identity of the run that owns ``run_dir``, from its manifest.
+
+    The directory name carries the run id and session name, but not the start
+    time, and the identity type refuses a partial one. A manifest that cannot be
+    read, or that predates the started_at field, yields ``None`` rather than a
+    fabricated identity: a retry with no named source run simply inherits no
+    launch authority, which is the correct outcome for a run that recorded none.
+    """
+    try:
+        manifest = RunManifest.load(run_dir)
+    except (FileNotFoundError, json.JSONDecodeError, OSError, ValueError) as exc:
+        logger.warning("Failed to read run identity from %s: %s", run_dir, exc)
+        return None
+    if not (manifest.session_name and manifest.run_id and manifest.started_at):
+        return None
+    return SessionRunIdentity(
+        session_name=manifest.session_name,
+        run_id=manifest.run_id,
+        started_at=manifest.started_at,
+    )
+
+
 def _run_is_review_only(run_dir: Path) -> bool:
     task = _run_source_task(run_dir)
     return task is not None and task.is_review_only
@@ -328,6 +358,7 @@ def _find_run_scoped_retry_artifacts(
                 state_path=state_path,
                 source_task=source_task,
                 retry_prompt_path=prompt_path if prompt_path.exists() else None,
+                run=_run_identity(run_dir),
             )
 
         if _run_retry_prompt_file(run_dir).exists():

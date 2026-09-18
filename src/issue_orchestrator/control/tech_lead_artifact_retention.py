@@ -29,18 +29,30 @@ def tech_lead_problem_artifact_hold_issue_numbers(
 
     - failures discovered on this tick;
     - queued failure investigations;
-    - active tech-lead sessions; and
-    - storm cohorts owned by queued or active health-review anchors.
+    - active tech-lead sessions;
+    - storm cohorts owned by queued or active health-review anchors; and
+    - queued validation retries that resume an investigation (#7273).
 
     Once no pending or active work references an issue, re-evaluation releases
     its cleanup without a separate release mutation.
+
+    A QUEUED retry holds regardless of whether tech-lead review is switched on.
+    The configuration decides whether new investigations start, not whether
+    work already queued keeps the artifacts it will read -- switching the
+    feature off used to release every hold at once, discarding the inputs of
+    retries that were already waiting to run.
     """
     from ..domain.tech_lead_session import TechLeadSessionFlavor
     from .tech_lead_session_policy import is_tech_lead_session
 
+    held = {
+        retry.issue_number
+        for retry in state.pending_validation_retries
+        if retry.authority_run is not None
+    }
     if not (config.tech_lead_review_on_failure and config.tech_lead_review_agent):
-        return frozenset()
-    held = {failure.issue_number for failure in state.discovered_failures}
+        return frozenset(held)
+    held.update(failure.issue_number for failure in state.discovered_failures)
     referenced_anchors: set[int] = set()
     for item in state.pending_tech_lead_reviews:
         if item.flavor is TechLeadSessionFlavor.FAILURE_INVESTIGATION:

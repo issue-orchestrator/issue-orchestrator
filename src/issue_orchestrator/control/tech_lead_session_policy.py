@@ -58,6 +58,8 @@ if TYPE_CHECKING:
     from ..ports import ManifestDownloader, RepositoryHost
     from ..ports.issue import Issue
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
+    from ..domain.models import PendingValidationRetry
+    from ..domain.session_run import SessionRunIdentity
     from ..domain.tech_lead_scratch_identity import ScratchWorktreeIdentity
     from .worktree_context import WorktreeContext
 
@@ -121,6 +123,57 @@ def recover_tech_lead_launch_scope(
     if is_batch_anchor_title(issue.title):
         return TechLeadLaunchScope(flavor=TechLeadSessionFlavor.BATCH_REVIEW)
     return TechLeadLaunchScope(flavor=TechLeadSessionFlavor.FAILURE_INVESTIGATION)
+
+
+def carry_launch_authority_forward(
+    tech_lead_authority: "TechLeadAuthorityStore",
+    retry: "PendingValidationRetry",
+    run: "SessionRunIdentity",
+) -> str | None:
+    """Re-record a retried run's launch authority against its new run (#7273).
+
+    A tech-lead run's completion is accepted only against an authority row
+    keyed by ``(run_id, session_name)``, recorded create-once at the ORIGINAL
+    launch. A validation retry allocates a new run, so without this the resumed
+    run has no row and its completion is rejected as ``missing_authority`` --
+    pre-action, with zero push, which is to say a tech-lead validation retry
+    could never complete at all.
+
+    The grant is CARRIED, never re-derived: re-sampling scope from the board
+    would let a run's mutation scope grow between attempts, which is exactly
+    what the create-once row exists to prevent.
+
+    Lives here, with the rest of the tech-lead launch authority policy, rather
+    than in the launcher: the launcher is at its line budget and this is not
+    its rule.
+
+    Returns a refusal message when the retry names an authority that is gone.
+    Relaunching without it would spend an agent session on work whose
+    completion is already guaranteed to be rejected.
+    """
+    source = retry.authority_run
+    if source is None:
+        return None
+    authority = tech_lead_authority.load(
+        run_id=source.run_id, session_name=source.session_name
+    )
+    if authority is None:
+        return (
+            f"Validation retry for issue #{retry.issue_number} names run "
+            f"{source.run_id} as its launch authority, and that record is "
+            "gone; relaunching would produce a completion the orchestrator "
+            "must reject"
+        )
+    tech_lead_authority.record(
+        run_id=run.run_id, session_name=run.session_name, authority=authority
+    )
+    logger.info(
+        "Validation retry for issue #%d carried launch authority forward: %s -> %s",
+        retry.issue_number,
+        source.run_id,
+        run.run_id,
+    )
+    return None
 
 
 def failure_investigation_scratch_identity(

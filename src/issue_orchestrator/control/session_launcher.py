@@ -29,7 +29,6 @@ if TYPE_CHECKING:
     from .dependency_evaluator import DependencyEvaluator
     from .action_applier import ActionApplier
     from ..ports.claim_manager import ClaimManager
-    from ..domain.session_run import SessionRunIdentity
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
     from .provider_resilience import ProviderResilienceManager
     from .label_manager import LabelManager
@@ -61,6 +60,7 @@ from .worktree_context import WorktreeContext
 from ..infra.validation_state import DEFAULT_RETRY_TEMPLATE, _truncate_with_tail
 from ..domain.tech_lead_session import TechLeadLaunchScope
 from .tech_lead_session_policy import (
+    carry_launch_authority_forward,
     failure_investigation_scratch_identity,
     is_tech_lead_session,
     prepare_tech_lead_session_data,
@@ -614,54 +614,6 @@ class SessionLauncher:
             ctx=ctx,
             tech_lead_scope=tech_lead_scope,
         )
-
-    def _carry_launch_authority_forward(
-        self, retry: PendingValidationRetry, run: "SessionRunIdentity"
-    ) -> "LaunchResult | None":
-        """Re-record the retried run's launch authority against the new run.
-
-        A tech-lead run's completion is accepted only against an authority row
-        keyed by ``(run_id, session_name)``, recorded create-once at the
-        ORIGINAL launch. A validation retry allocates a new run, so without this
-        the resumed run has no row and its completion is rejected as
-        ``missing_authority`` -- which is to say a tech-lead validation retry
-        could never complete at all (#7273).
-
-        The grant is CARRIED, never re-derived: re-sampling scope from the board
-        would let a run's mutation scope grow between attempts, which is exactly
-        what the create-once row exists to prevent.
-
-        Returns a refusal when the retry claims an authority that is gone.
-        Relaunching without it would spend an agent session on work whose
-        completion is already guaranteed to be rejected.
-        """
-        source = retry.authority_run
-        if source is None:
-            return None
-        authority = self._tech_lead_authority.load(
-            run_id=source.run_id, session_name=source.session_name
-        )
-        if authority is None:
-            return LaunchResult(
-                None,
-                False,
-                f"Validation retry for issue #{retry.issue_number} names run "
-                f"{source.run_id} as its launch authority, and that record is "
-                "gone; relaunching would produce a completion the orchestrator "
-                "must reject",
-            )
-        self._tech_lead_authority.record(
-            run_id=run.run_id, session_name=run.session_name, authority=authority
-        )
-        logger.info(
-            issue_log(
-                retry.issue_number,
-                "Validation retry carried launch authority forward: %s -> %s",
-            ),
-            source.run_id,
-            run.run_id,
-        )
-        return None
 
     def _discard_tech_lead_authority_after_failed_launch(
         self, issue: "IssueProtocol", ctx: WorktreeContext
@@ -1303,9 +1255,11 @@ class SessionLauncher:
             self._release_claim_if_held(issue.number, claim)
             return failure
 
-        if refusal := self._carry_launch_authority_forward(retry, run.identity):
+        if error := carry_launch_authority_forward(
+            self._tech_lead_authority, retry, run.identity
+        ):
             self._release_claim_if_held(issue.number, claim)
-            return refusal
+            return LaunchResult(None, False, error)
 
         with abandon_claim_unless_spawned(work_claim, run) as spawn:
             extra_args = self._extra_provider_args_from_labels(issue.labels)

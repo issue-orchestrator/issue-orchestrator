@@ -308,6 +308,24 @@ class WorktreeAuditOwner:
         )
 
 
+def _checkouts_awaiting_a_retry(state: "OrchestratorState") -> set[Path]:
+    """Checkouts a queued validation retry is going to resume (#7273).
+
+    A retry's session is not active -- that is what makes it a retry -- so
+    without this a restart classifies its checkout as an inactive disposable
+    and removes it WITH ITS BRANCH. For a tech-lead investigation that branch
+    was never pushed, so its commits exist nowhere else.
+
+    Every queued retry counts, not only the tech-lead ones: an ordinary retry's
+    checkout is equally the thing it is about to resume.
+    """
+    return {
+        Path(retry.worktree_path)
+        for retry in state.pending_validation_retries
+        if retry.worktree_path
+    }
+
+
 def apply_disposable_removal_safety(
     entries: tuple[WorktreeAuditEntry, ...],
     worktree_manager: WorktreeManager,
@@ -393,9 +411,29 @@ class StartupWorktreeReconciler:
         self._audit_owner = audit_owner
         self._runtime_lifecycle = runtime_lifecycle
 
+    def investigation_checkouts(self) -> tuple[RegisteredWorktree, ...]:
+        """Registered Tech Lead investigation checkouts, whatever their state.
+
+        Startup retry recovery scans the numeric issue branches git reports and
+        the ordinary worktree path derived from each issue number. An
+        investigation runs on an unpushed branch in a run-scoped disposable
+        checkout, so it appears in neither, and a retry queued against it was
+        invisible to a restart -- while this same reconciler classified the
+        checkout as an inactive disposable and removed it WITH its branch
+        (#7273). Recovery reads the inventory this owner already holds rather
+        than re-deriving the investigation shape against the filesystem.
+        """
+        return tuple(
+            item
+            for item in self._worktree_manager.list_registered(self._config.repo_root)
+            if item.branch is not None
+            and names_one_scratch_checkout(item.path.name, item.branch)
+        )
+
     def audit(self, state: OrchestratorState) -> tuple[WorktreeAuditEntry, ...]:
         activity = WorktreeActivityEvidence.known(
             {session.worktree_path for session in state.active_sessions}
+            | _checkouts_awaiting_a_retry(state)
         )
         return self._audit_owner.audit(
             repo_root=self._config.repo_root,
