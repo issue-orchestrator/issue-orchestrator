@@ -241,9 +241,18 @@ class GitMetadataWorktreeCustody:
         The release INTENT is recorded before the body, so a process that dies
         mid-removal leaves an audited hand-off rather than a breach nobody
         asked for (round 6 finding 4).
+
+        A grant BENEATH the target refuses unconditionally, release or not. The
+        removal owner's forced fallback is a recursive delete, so removing a
+        directory removes everything under it -- and a release naming the parent
+        is not consent to discard a child nobody mentioned (round 8 finding 1).
         """
         with self._locked():
-            grant = self._records().get(_key(worktree_path))
+            records = self._records()
+            beneath = _grants_beneath(records, worktree_path)
+            if beneath:
+                raise WorktreeInCustodyError(beneath[0])
+            grant = records.get(_key(worktree_path))
             if grant is None:
                 yield CustodySettlement(lambda: None)
                 return
@@ -568,6 +577,35 @@ def _release_depth(key: tuple[int, str]) -> None:
 def _key(worktree_path: Path) -> str:
     """One spelling per checkout, so a relative path cannot hide a grant."""
     return str(Path(worktree_path).resolve())
+
+
+def _grants_beneath(
+    records: "dict[str, CustodyGrant]", worktree_path: Path
+) -> tuple[CustodyGrant, ...]:
+    """Held checkouts a removal of ``worktree_path`` would take with it.
+
+    Custody used to be an exact-key question, which reads the wrong thing: the
+    orchestrator's own per-session layout is
+    ``<worktree_base>/<session>/<checkout>``, and the E2E sweep hands the
+    SESSION directory to the removal owner. No grant names that directory, git
+    declines to remove something that is not a worktree, and the forced
+    fallback then deletes the whole subtree -- held checkout included (round 8
+    finding 1).
+
+    Strictly beneath: the target itself is the exact-key case, which a release
+    may legitimately settle.
+    """
+    target = Path(_key(worktree_path))
+    return tuple(
+        sorted(
+            (
+                grant
+                for key, grant in records.items()
+                if Path(key) != target and target in Path(key).parents
+            ),
+            key=lambda grant: grant.taken_at,
+        )
+    )
 
 
 def _grant_from(key: str, value: object) -> CustodyGrant:

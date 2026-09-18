@@ -96,7 +96,7 @@ class GitWorktreeManager:
             force=force,
             delete_branch=False,
             custody_release=custody_release,
-            repo_root_hint=self._repo_root,
+            repo_root=self._repo_root,
         )
 
     def remove_checkout_and_branch(
@@ -112,7 +112,7 @@ class GitWorktreeManager:
             force=force,
             delete_branch=True,
             custody_release=custody_release,
-            repo_root_hint=self._repo_root,
+            repo_root=self._repo_root,
         )
 
     def take_custody(

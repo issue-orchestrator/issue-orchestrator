@@ -893,7 +893,7 @@ class TestRemoveWorktree:
         mock_run.side_effect = mock_git_command
 
         # Execute
-        remove_worktree(worktree_path)
+        remove_worktree(worktree_path, repo_root=repo_root)
 
         # Verify git commands were called
         assert mock_run.call_count == 2
@@ -940,7 +940,7 @@ class TestRemoveWorktree:
 
         mock_run.side_effect = mock_git_command
 
-        remove_worktree(worktree_path, delete_branch=False)
+        remove_worktree(worktree_path, delete_branch=False, repo_root=repo_root)
 
         assert mock_run.call_count == 1
         assert mock_run.call_args.args[0][3:5] == ["worktree", "remove"]
@@ -953,7 +953,7 @@ class TestRemoveWorktree:
 
         # Execute & Verify
         with pytest.raises(WorktreeError, match="Worktree does not exist"):
-            remove_worktree(worktree_path)
+            remove_worktree(worktree_path, repo_root=tmp_path)
 
         # Git should not have been called
         mock_run.assert_not_called()
@@ -965,7 +965,7 @@ class TestRemoveWorktree:
         worktree_path = tmp_path / "already-gone"
 
         # No exception, and git is not invoked (nothing to remove).
-        remove_worktree(worktree_path, force=True)
+        remove_worktree(worktree_path, force=True, repo_root=tmp_path)
         mock_run.assert_not_called()
 
     @patch("issue_orchestrator.adapters.worktree._worktree.get_worktree_branch")
@@ -989,7 +989,7 @@ class TestRemoveWorktree:
         ]
 
         with pytest.raises(WorktreeError, match="Failed to remove worktree"):
-            remove_worktree(worktree_path)
+            remove_worktree(worktree_path, repo_root=repo_root)
 
         assert worktree_path.exists()
         assert mock_run.call_count == 1
@@ -1017,7 +1017,7 @@ class TestRemoveWorktree:
             MagicMock(returncode=0, stderr=""),
         ]
 
-        remove_worktree(worktree_path, force=True)
+        remove_worktree(worktree_path, force=True, repo_root=repo_root)
 
         assert not worktree_path.exists()
         assert mock_run.call_count == 2
@@ -1050,7 +1050,7 @@ class TestRemoveWorktree:
         )
 
         with pytest.raises(WorktreeError, match="Failed to remove worktree path"):
-            remove_worktree(worktree_path, force=True)
+            remove_worktree(worktree_path, force=True, repo_root=repo_root)
 
         mock_rmtree.assert_called_once_with(worktree_path, ignore_errors=True)
 
@@ -1065,7 +1065,7 @@ class TestRemoveWorktree:
         worktree_path.mkdir()
         (worktree_path / "leftover.txt").write_text("stale")
 
-        remove_worktree(worktree_path, force=True)
+        remove_worktree(worktree_path, force=True, repo_root=tmp_path)
 
         assert not worktree_path.exists()
         mock_run.assert_not_called()
@@ -1100,7 +1100,7 @@ class TestRemoveWorktree:
         mock_run.side_effect = mock_git_command
 
         # Execute - should not raise
-        remove_worktree(worktree_path)
+        remove_worktree(worktree_path, repo_root=repo_root)
 
         # Verify both commands were attempted
         assert mock_run.call_count == 2
@@ -1130,7 +1130,7 @@ class TestRemoveWorktree:
         mock_run.side_effect = mock_git_command
 
         # Execute
-        remove_worktree(worktree_path)
+        remove_worktree(worktree_path, repo_root=repo_root)
 
         # Verify only worktree removal was called (not branch deletion)
         assert mock_run.call_count == 1
@@ -1606,7 +1606,7 @@ class TestIntegrationScenarios:
         assert result is False
 
         # Remove worktree
-        remove_worktree(worktree_path)
+        remove_worktree(worktree_path, repo_root=tmp_path)
 
     @patch(
         "issue_orchestrator.adapters.worktree._worktree_runtime_setup.install_hooks",

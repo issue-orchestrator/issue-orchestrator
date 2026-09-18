@@ -58,6 +58,7 @@ from issue_orchestrator.ports.worktree_custody import (
     CustodyRelease,
     WorktreeInCustodyError,
 )
+import issue_orchestrator.adapters.worktree.removal as removal_module
 from issue_orchestrator.adapters.worktree.removal import remove_checkout_path
 from issue_orchestrator.adapters.worktree.worktree_policy import (
     ValidateOrDeletePolicy,
@@ -81,6 +82,18 @@ def _git(cwd: Path, *args: str) -> str:
     ).stdout
 
 
+def _git_in(repo: Path):
+    """A git runner for the removal owner, reporting failure as text."""
+
+    def run(argv: list[str]) -> "str | None":
+        result = subprocess.run(
+            ["git", "-C", str(repo), *argv], capture_output=True, text=True
+        )
+        return None if result.returncode == 0 else (result.stderr or "").strip()
+
+    return run
+
+
 @pytest.fixture
 def repo(tmp_path: Path) -> Path:
     """A repository with one commit on ``main``."""
@@ -93,6 +106,11 @@ def repo(tmp_path: Path) -> Path:
     _git(root, "add", "README.md")
     _git(root, "commit", "-m", "seed")
     return root
+
+
+#: The scratch run token the fixtures below share, so a worktree basename and
+#: its branch name agree the way ``names_one_scratch_checkout`` requires.
+TOKEN = "abcdef123456"
 
 
 @pytest.fixture
@@ -1502,6 +1520,164 @@ class TestRoundSevenGaps:
         (checkout / ".git").unlink()
 
         assert manager.custody_of(checkout) == grant
+
+
+class TestRoundEightGaps:
+    """A removal cannot take a held checkout out with its PARENT.
+
+    Custody used to be an exact-key question. E2E runs with
+    ``ORCHESTRATOR_WORKTREE_PER_SESSION=1``
+    (``tests/e2e/fixtures/orchestrator_process.py`` defaults it to "1"), so the
+    real layout is ``<base>/<session>/<checkout>`` -- and the sweep handed the
+    SESSION directory to the owner. No grant named it, git declined to remove
+    something that is not a worktree, and the forced fallback deleted the whole
+    subtree (round 8 finding 1).
+    """
+
+    @pytest.fixture
+    def nested(self, repo: Path, tmp_path: Path) -> Path:
+        """The real per-session layout: base / session / checkout."""
+        session = tmp_path / "worktree" / "issue-6410"
+        session.mkdir(parents=True)
+        path = session / f"{repo.name}-tech-lead-6410-{TOKEN}"
+        _git(
+            repo,
+            "worktree",
+            "add",
+            "-b",
+            f"tech-lead-investigation-6410-{TOKEN}",
+            str(path),
+        )
+        (path / "finding.md").write_text("the only copy of this work\n")
+        _git(path, "add", "finding.md")
+        _git(path, "commit", "-m", "the finding")
+        return path
+
+    def test_removing_the_session_container_refuses(
+        self, manager: GitWorktreeManager, repo: Path, nested: Path
+    ) -> None:
+        manager.take_custody(nested, holder=HOLDER, reason=REASON)
+
+        with pytest.raises(WorktreeInCustodyError):
+            remove_checkout_path(
+                nested.parent, force=True, run_git=_git_in(repo), repo_root=repo
+            )
+
+        assert (nested / "finding.md").exists()
+
+    def test_a_release_naming_the_parent_does_not_release_the_child(
+        self, manager: GitWorktreeManager, repo: Path, nested: Path
+    ) -> None:
+        """Consent has to name what it discards.
+
+        A release is an explicit hand-off of ONE grant. Applied to an ancestor
+        it would discard every checkout beneath it, none of which the holder
+        was asked about.
+        """
+        grant = manager.take_custody(nested, holder=HOLDER, reason=REASON)
+
+        with pytest.raises(WorktreeInCustodyError):
+            remove_checkout_path(
+                nested.parent,
+                force=True,
+                run_git=_git_in(repo),
+                repo_root=repo,
+                custody_release=CustodyRelease(holder=HOLDER, reason="collected"),
+            )
+
+        assert (nested / "finding.md").exists()
+        assert manager.custody_of(nested) == grant
+
+    def test_the_e2e_sweep_leaves_a_held_checkout_in_the_real_layout(
+        self, manager: GitWorktreeManager, repo: Path, nested: Path
+    ) -> None:
+        """The sweep, at the layout E2E actually produces."""
+        manager.take_custody(nested, holder=HOLDER, reason=REASON)
+
+        cleanup_local_worktrees(nested.parent.parent, repo_root=repo)
+
+        assert (nested / "finding.md").exists()
+        assert (
+            _git(repo, "branch", "--list", f"tech-lead-investigation-6410-{TOKEN}")
+            .strip()
+            .endswith(f"tech-lead-investigation-6410-{TOKEN}")
+        )
+
+    def test_a_held_checkout_does_not_shelter_its_siblings(
+        self, manager: GitWorktreeManager, repo: Path, nested: Path
+    ) -> None:
+        """The sweep enumerates CHECKOUTS, which is a separate property.
+
+        The guard already refuses to remove the container, so with
+        container-level enumeration one held checkout retained the whole
+        session directory -- every unheld sibling in it survived too, and the
+        next run inherited them. Sweeping checkouts means a hold protects
+        exactly what it names.
+        """
+        sibling = nested.parent / f"{repo.name}-tech-lead-6411-{TOKEN}"
+        _git(
+            repo,
+            "worktree",
+            "add",
+            "-b",
+            f"tech-lead-investigation-6411-{TOKEN}",
+            str(sibling),
+        )
+        manager.take_custody(nested, holder=HOLDER, reason=REASON)
+
+        cleanup_local_worktrees(nested.parent.parent, repo_root=repo)
+
+        assert (nested / "finding.md").exists(), "the held checkout was removed"
+        assert not sibling.exists(), (
+            "an unheld checkout was sheltered by its held sibling"
+        )
+
+    def test_the_e2e_sweep_still_empties_the_real_layout(
+        self, repo: Path, nested: Path
+    ) -> None:
+        """The premise: nothing held, and the container goes too."""
+        base = nested.parent.parent
+
+        cleanup_local_worktrees(base, repo_root=repo)
+
+        assert not nested.exists()
+        assert not nested.parent.exists()
+
+    def test_the_orphan_path_asks_the_repository_the_caller_names(
+        self, manager: GitWorktreeManager, repo: Path, checkout: Path
+    ) -> None:
+        """The exported raw removal, not the already-safe manager path.
+
+        This is the one case custody exists for -- a held checkout whose own
+        ``.git`` file is gone -- and it used to reach a sentinel that consulted
+        no store at all (round 8 finding 2).
+        """
+        grant = manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+        (checkout / ".git").unlink()
+
+        with pytest.raises(WorktreeInCustodyError):
+            worktree_module.remove_worktree(
+                checkout, force=True, repo_root=repo
+            )
+
+        assert (checkout / "finding.md").exists()
+        assert manager.custody_of(checkout) == grant
+
+    def test_the_raw_removal_cannot_be_called_without_a_repository(self) -> None:
+        """There is no longer a way to say "nobody knows" and proceed."""
+        import inspect
+
+        parameter = inspect.signature(
+            worktree_module.remove_worktree
+        ).parameters["repo_root"]
+
+        assert parameter.default is inspect.Parameter.empty, (
+            "repo_root has a default again, so a caller can omit it and remove "
+            "a held checkout while believing it asked"
+        )
+        assert not hasattr(removal_module, "UNKNOWN_REPOSITORY"), (
+            "the fail-open sentinel is back"
+        )
 
 
 class TestEveryManagerNamesItsRepository:

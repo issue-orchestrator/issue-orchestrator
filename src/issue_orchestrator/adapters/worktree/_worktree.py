@@ -17,7 +17,7 @@ from ...ports.worktree_custody import CustodyError, CustodyRelease
 from ...ports.worktree_manager import RegisteredWorktree, WorktreeReuseOptions
 from ...infra.worktree_base import resolve_base_branch
 from ._worktree_errors import WorktreeError as WorktreeError
-from .removal import UNKNOWN_REPOSITORY, GitRunner, remove_checkout_path
+from .removal import GitRunner, remove_checkout_path
 from ._worktree_git import _git, _git_env_no_prompt, _git_run
 from ._worktree_hooks import HOOKS_DIR as HOOKS_DIR
 from ._worktree_runtime_setup import WorktreeRuntimeSetup
@@ -1269,7 +1269,7 @@ def remove_worktree(
     force: bool = False,
     delete_branch: bool = True,
     custody_release: CustodyRelease | None = None,
-    repo_root_hint: Path | None = None,
+    repo_root: Path,
 ) -> None:
     """
     Remove a git worktree and optionally its associated branch.
@@ -1291,6 +1291,10 @@ def remove_worktree(
         custody_release: The explicit intent to end a grant as part of this
             removal, with the holder and reason that outlive it in the audit
             trail.
+        repo_root: The repository whose custody store answers for this
+            checkout. Required, not a hint: a checkout whose ``.git`` file is
+            gone names no repository, and that is precisely when a grant on it
+            still exists and still has to be honoured (round 8 finding 2).
 
     Raises:
         WorktreeInCustodyError: If a human owns the checkout and no release was
@@ -1314,23 +1318,26 @@ def remove_worktree(
         raise WorktreeError(f"Worktree does not exist at {worktree_path}")
 
     try:
-        repo_root = _resolve_repo_root_from_worktree(worktree_path)
-        if repo_root is None:
+        # What the CHECKOUT says, which is a different question from which
+        # repository holds its grant: a checkout that lost its `.git` file
+        # answers None here while `repo_root` still answers correctly.
+        resolved = _resolve_repo_root_from_worktree(worktree_path)
+        if resolved is None:
             _remove_orphaned_worktree_path(
                 worktree_path,
                 force=force,
-                repo_root=repo_root_hint,
+                repo_root=repo_root,
                 custody_release=custody_release,
             )
             return
         branch_name = get_worktree_branch(worktree_path)
 
         _remove_worktree_path(
-            repo_root,
+            resolved,
             worktree_path,
             force=force,
             custody_release=custody_release,
-            custody_repo_root=repo_root_hint or repo_root,
+            custody_repo_root=repo_root,
         )
         if worktree_path.exists():
             raise WorktreeError(
@@ -1338,7 +1345,7 @@ def remove_worktree(
             )
 
         if delete_branch:
-            _delete_worktree_branch(repo_root, branch_name)
+            _delete_worktree_branch(resolved, branch_name)
         logger.info(
             "Worktree removed: path=%s branch=%s",
             worktree_path,
@@ -1360,14 +1367,16 @@ def _remove_orphaned_worktree_path(
     worktree_path: Path,
     *,
     force: bool,
-    repo_root: Path | None = None,
+    repo_root: Path,
     custody_release: CustodyRelease | None = None,
 ) -> None:
-    """Delete a checkout whose repository this process cannot resolve.
+    """Delete a checkout whose own ``.git`` file no longer names a repository.
 
-    ``repo_root`` is whatever the CALLER knows, because the checkout no longer
+    ``repo_root`` is what the CALLER knows, because the checkout no longer
     says: a held worktree whose ``.git`` file was deleted still has its grant
-    in the repository's store (#7274 round 3 finding 2).
+    in the repository's store (#7274 round 3 finding 2). It is REQUIRED -- this
+    is exactly the path where custody matters most, and the sentinel that used
+    to let it proceed without a store was the fail-open hole (round 8 finding 2).
     """
     if not force:
         raise WorktreeError(f"Unable to resolve repo root for {worktree_path}")
@@ -1379,10 +1388,7 @@ def _remove_orphaned_worktree_path(
         worktree_path,
         force=True,
         run_git=None,
-        # Said outright: this path exists BECAUSE the repository could not be
-        # resolved, so custody cannot be determined and the loss, if there is
-        # one, is reported rather than prevented.
-        repo_root=repo_root or UNKNOWN_REPOSITORY,
+        repo_root=repo_root,
         custody_release=custody_release,
     )
     if worktree_path.exists():
