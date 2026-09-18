@@ -2827,119 +2827,53 @@ class TestGitDataBlobAndTreeEndpoints:
             "a payload of multibyte characters was measured as if it were ASCII"
         )
 
-    def test_a_recency_bump_survives_a_concurrent_eviction(self) -> None:
-        """One client serves the tick and the web worker at once.
+    def test_every_compound_cache_operation_holds_the_lock(self) -> None:
+        """No threads, no timing: the lock is either held here or it is not.
 
-        A recency bump READS then MOVES. Interleaved with a store that evicts
-        the same key, the move raises ``KeyError`` and kills a registry, ledger
-        or claim read before it has even sent its request (round 6 finding 1).
-        The interleaving is forced rather than raced, so this cannot pass by
-        being lucky.
+        Three rounds of review rejected the threaded versions of this, each
+        time for the same reason -- an interleaving you have to SCHEDULE is an
+        interleaving that can fail to happen, and a test that passes because
+        two threads did not collide proves nothing. The property is simpler
+        than the race it protects against: a recency bump READS then MOVES, and
+        a store adds then evicts in a loop, so every one of those mutations
+        must happen while this cache's lock is held. That is observable
+        directly, on one thread.
         """
-        cache = _ETagCache(max_bytes=64)
-        entry = _ETagEntry(etag='"e"', payload={}, size=64)
-        cache.store("hot", entry)
-        entered = threading.Event()
-        evicted = threading.Event()
-        real_move = cache._entries.move_to_end  # noqa: SLF001
+        held: list[tuple[str, bool]] = []
 
-        def move_late(key: str, last: bool = True) -> None:
-            entered.set()
-            evicted.wait(timeout=5)
-            real_move(key, last)
-
-        cache._entries.move_to_end = move_late  # type: ignore[method-assign]  # noqa: SLF001
-
-        def evict() -> None:
-            entered.wait(timeout=5)
-            # Would deadlock on a lock held across the bump, so run it only
-            # once the reader is inside; with the lock it simply waits.
-            cache.store("cold", _ETagEntry(etag='"f"', payload={}, size=64))
-            evicted.set()
-
-        evictor = threading.Thread(target=evict)
-        evictor.start()
-        try:
-            assert cache.get("hot") is entry
-        finally:
-            evicted.set()
-            evictor.join(timeout=5)
-
-    def test_a_store_cannot_interleave_with_another_stores_eviction(self) -> None:
-        """``+=`` then evict-loop is not one operation.
-
-        Every wait here is on an EVENT, never on a duration: the timeouts are
-        backstops that only fire when something is already broken.
-
-        A writer is held inside the eviction loop until the second writer has
-        provably entered ``store``. From there the two implementations diverge
-        deterministically -- locked, the second one blocks and its insert lands
-        after the eviction completes; unlocked, it proceeds and the insert
-        lands in the middle, which is where its ``+=`` interleaves with the
-        other's subtractions and the count drifts from what the cache holds.
-        """
-        order: list[str] = []
-        evicting = threading.Event()
-        entering_store = threading.Event()
-        third_inserted = threading.Event()
-        failures: list[BaseException] = []
-        #: Only reached when the second writer never inserts, which is the
-        #: passing case. It bounds the test; it never decides it.
-        BACKSTOP_SECONDS = 1.0
-
-        class Recording(OrderedDict):
+        class Observing(OrderedDict):
             def __setitem__(self, key, value):  # noqa: ANN001, ANN204
-                order.append(f"insert:{key}")
-                if key == "third":
-                    third_inserted.set()
+                held.append(("insert", cache._lock.locked()))  # noqa: SLF001
                 super().__setitem__(key, value)
 
+            def move_to_end(self, key, last: bool = True) -> None:  # noqa: ANN001, FBT001, FBT002
+                held.append(("bump", cache._lock.locked()))  # noqa: SLF001
+                super().move_to_end(key, last)
+
             def popitem(self, last: bool = True):  # noqa: ANN201, FBT001, FBT002
-                # Release the second writer only once this one is provably
-                # inside the eviction -- otherwise it can take the lock first
-                # and there is no interleaving to observe at all.
-                evicting.set()
-                assert entering_store.wait(timeout=BACKSTOP_SECONDS), (
-                    "the second writer never started"
-                )
-                # Then give it every chance to insert. Locked it cannot, and
-                # this waits out the backstop; unlocked it does, and this
-                # returns the moment it has.
-                third_inserted.wait(timeout=BACKSTOP_SECONDS)
-                evicted = super().popitem(last)
-                order.append("evicted")
-                return evicted
+                held.append(("evict", cache._lock.locked()))  # noqa: SLF001
+                return super().popitem(last)
 
-        cache = _ETagCache(max_bytes=300)
-        cache._entries = Recording()  # noqa: SLF001
+            def pop(self, key, default=None):  # noqa: ANN001, ANN201
+                held.append(("forget", cache._lock.locked()))  # noqa: SLF001
+                return super().pop(key, default)
+
+        cache = _ETagCache(max_bytes=200)
+        cache._entries = Observing()  # noqa: SLF001
+
         cache.store("first", _ETagEntry(etag='"e"', payload={}, size=100))
+        cache.get("first")  # a bump
         cache.store("second", _ETagEntry(etag='"e"', payload={}, size=100))
-        order.clear()
+        cache.store("third", _ETagEntry(etag='"e"', payload={}, size=100))  # evicts
+        cache.pop("second")
 
-        def store_second() -> None:
-            try:
-                assert evicting.wait(timeout=BACKSTOP_SECONDS * 4), (
-                    "the first writer never reached its eviction"
-                )
-                entering_store.set()
-                cache.store("third", _ETagEntry(etag='"e"', payload={}, size=100))
-            except BaseException as exc:  # noqa: BLE001 - reported below
-                failures.append(exc)
-
-        writer = threading.Thread(target=store_second)
-        writer.start()
-        try:
-            cache.store("evictor", _ETagEntry(etag='"e"', payload={}, size=200))
-        finally:
-            writer.join(timeout=BACKSTOP_SECONDS * 2)
-
-        assert not failures, f"a concurrent store raised: {failures}"
-        assert order.index("insert:third") > order.index("evicted"), (
-            f"a store landed inside another store's eviction: {order}"
+        assert {name for name, _ in held} == {"insert", "bump", "evict", "forget"}, (
+            f"the cache stopped doing one of these at all: {held}"
         )
-        assert cache.nbytes == sum(
-            entry.size for entry in cache._entries.values()  # noqa: SLF001
-        ), "the byte count drifted from what the cache actually holds"
+        assert all(was_held for _, was_held in held), (
+            f"a cache mutation ran without the lock: "
+            f"{[name for name, was_held in held if not was_held]}"
+        )
 
     def test_a_payload_that_is_not_an_object_is_refused(self) -> None:
         client, _ = self._recorded({})
