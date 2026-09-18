@@ -30,7 +30,7 @@ from issue_orchestrator.ports.pattern_registry import (
     PatternReservationState,
 )
 
-from .test_ref_claim_adapter import FakeGitHubRefClient
+from .fake_git_data import FakeGitHubRefClient
 
 
 def _pending(signature: str, observation: str = "run:session:A1") -> PendingCaseFile:
@@ -527,9 +527,7 @@ def test_unreadable_registry_fails_closed(body: str) -> None:
     registry = _registry(client, "engine-a", now)
     registry.reserve(_pending("pattern-a"))
     ref = f"{PATTERN_REGISTRY_REF_PREFIX}/{PATTERN_REGISTRY_REF_KEY}"
-    client.commits[client.refs[ref]]["message"] = (
-        "issue-orchestrator tech-lead pattern registry\n\n" + body
-    )
+    client.seed_record(ref, "issue-orchestrator tech-lead pattern registry\n\n" + body)
 
     with pytest.raises(PatternRegistryError, match="unreadable"):
         registry.list_entries()
@@ -542,8 +540,8 @@ def test_existing_blank_or_unmarked_registry_fails_closed() -> None:
     registry.reserve(_pending("pattern-a"))
     ref = f"{PATTERN_REGISTRY_REF_PREFIX}/{PATTERN_REGISTRY_REF_KEY}"
 
-    for message in ("", 'wrong marker\n\n{"version":1,"entries":[]}'):
-        client.commits[client.refs[ref]]["message"] = message
+    for record in ("", 'wrong marker\n\n{"version":1,"entries":[]}'):
+        client.seed_record(ref, record)
         with pytest.raises(PatternRegistryError, match="unreadable"):
             registry.list_entries()
 
@@ -554,9 +552,11 @@ def test_invalid_publication_state_fails_closed() -> None:
     registry = _registry(client, "engine-a", now)
     registry.reserve(_pending("pattern-a"))
     ref = f"{PATTERN_REGISTRY_REF_PREFIX}/{PATTERN_REGISTRY_REF_KEY}"
-    message = client.commits[client.refs[ref]]["message"]
-    client.commits[client.refs[ref]]["message"] = message.replace(
-        '"publication_started_at":null', '"publication_started_at":true'
+    client.seed_record(
+        ref,
+        client.record_at(ref).replace(
+            '"publication_started_at":null', '"publication_started_at":true'
+        ),
     )
 
     with pytest.raises(PatternRegistryError, match="unreadable"):

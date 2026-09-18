@@ -38,7 +38,7 @@ from issue_orchestrator.domain.tech_lead_run import (
     TechLeadRunScopeKind,
 )
 
-from .test_ref_claim_adapter import FakeGitHubRefClient
+from .fake_git_data import FakeGitHubRefClient
 
 HEALTH = GlobalHealthReviewScope()
 FOCUS = IssueInvestigationScope(42)
@@ -64,12 +64,9 @@ def _reserve(run_key: str = HEALTH.run_key, kind=None) -> RunLedgerRequest:
     )
 
 
-def _seed(client: FakeGitHubRefClient, message: str) -> None:
-    """Point the ledger ref at a commit carrying ``message``."""
-    commit = client.create_git_commit(
-        message=message, tree_sha="tree-base", parents=["base"]
-    )
-    client.create_git_ref(ref=LEDGER_REF, sha=commit["sha"])
+def _seed(client: FakeGitHubRefClient, record: str) -> None:
+    """Point the ledger ref at a commit carrying ``record``."""
+    client.seed_record(LEDGER_REF, record)
 
 
 def _peer_entry(

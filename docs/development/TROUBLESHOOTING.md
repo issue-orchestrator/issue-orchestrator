@@ -423,8 +423,13 @@ snapshot script against the same run.
 case-file marker is found without a registry mapping.
 
 The cross-client authority is the Git ref
-`refs/issue-orchestrator/registry/tech-lead-patterns`. Its commit message is a
-strict, versioned JSON ledger. The local `.issue-orchestrator` authority SQLite
+`refs/issue-orchestrator/registry/tech-lead-patterns`. The commit it points at
+carries a strict, versioned JSON ledger as `record.json` in its **tree**; the
+commit message is only a summary and the `io-record-format:` marker that says
+which storage the record is in. It lived in the commit message until #7272,
+where a registry past 65 536 characters became unreadable through GitHub's API;
+records written before that change are still read from the message, and the
+next write moves them. The local `.issue-orchestrator` authority SQLite
 database is a replica and rolling-upgrade source; GitHub issue titles, bodies,
 and comments are evidence only. A configuration with
 `tech_lead.authority.flag_pattern: execute` therefore needs repository
@@ -436,8 +441,16 @@ Inspect the shared ref without changing it:
 
 ```bash
 git fetch origin refs/issue-orchestrator/registry/tech-lead-patterns
+git show FETCH_HEAD:record.json
+
+# a record written before #7272 is still in the message
 git show --format=%B --no-patch FETCH_HEAD
 ```
+
+If a client reports the registry as unreadable with a JSON error around
+character 65 477, that ref is a pre-#7272 record that has outgrown the API.
+Recover it with `scripts/republish_pattern_registry_record.py` — see
+[CASE_FILE_RECONCILIATION.md](CASE_FILE_RECONCILIATION.md).
 
 An active creation or evidence reservation names its claimant and expiry. A
 reservation that has not started publication may be taken over after expiry;

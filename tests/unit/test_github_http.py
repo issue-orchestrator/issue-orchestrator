@@ -8,6 +8,8 @@ import httpx
 
 import json
 import subprocess
+import threading
+from collections import OrderedDict
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -21,6 +23,8 @@ from issue_orchestrator.adapters.github.auth import (
 )
 from issue_orchestrator.adapters.github.http_client import (
     GitHubAuthError,
+    _ETagCache,
+    _ETagEntry,
     GitHubHttpClient,
     GitHubHttpConfig,
     GitHubHttpError,
@@ -2614,3 +2618,277 @@ def test_list_labels_returns_a_short_first_page() -> None:
     client = _client_with_transport(httpx.MockTransport(handler))
 
     assert [label["name"] for label in client.list_labels()] == ["bug", "agent:web"]
+
+
+class TestGitDataBlobAndTreeEndpoints:
+    """The HTTP boundary a blob-backed record actually travels over (#7272).
+
+    Every other test of this storage runs against an in-memory fake, so
+    inverting one of these endpoints -- a wrong path, a lost body, a cached
+    read -- would leave that whole suite green while every production read
+    failed.
+    """
+
+    def _recorded(self, payload: dict) -> tuple[GitHubHttpClient, list[httpx.Request]]:
+        seen: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            return httpx.Response(201 if request.method == "POST" else 200, json=payload)
+
+        return _client_with_transport(httpx.MockTransport(handler)), seen
+
+    def test_a_blob_is_created_as_utf8_at_the_repo_blob_endpoint(self) -> None:
+        client, seen = self._recorded({"sha": "blob-sha"})
+
+        assert client.create_git_blob(content='{"entries":[]}') == {"sha": "blob-sha"}
+
+        assert seen[0].method == "POST"
+        assert seen[0].url.path == "/repos/owner/repo/git/blobs"
+        assert json.loads(seen[0].content) == {
+            "content": '{"entries":[]}',
+            "encoding": "utf-8",
+        }
+
+    def test_a_blob_is_read_by_its_sha_and_handed_back(self) -> None:
+        payload = {"sha": "blob-sha", "content": "e30=", "encoding": "base64"}
+        client, seen = self._recorded(payload)
+
+        assert client.get_git_blob("blob-sha") == payload
+
+        assert seen[0].method == "GET"
+        assert seen[0].url.path == "/repos/owner/repo/git/blobs/blob-sha"
+
+    def test_a_tree_is_created_with_the_entries_it_was_given(self) -> None:
+        client, seen = self._recorded({"sha": "tree-sha"})
+        entries = [
+            {"path": "record.json", "mode": "100644", "type": "blob", "sha": "blob-sha"}
+        ]
+
+        assert client.create_git_tree(tree=entries) == {"sha": "tree-sha"}
+
+        assert seen[0].method == "POST"
+        assert seen[0].url.path == "/repos/owner/repo/git/trees"
+        assert json.loads(seen[0].content) == {"tree": entries}
+
+    def test_a_tree_is_read_by_its_sha_and_handed_back(self) -> None:
+        entry = {"path": "record.json", "type": "blob", "sha": "blob-sha"}
+        client, seen = self._recorded({"sha": "tree-sha", "tree": [entry]})
+
+        tree = client.get_git_tree("tree-sha")
+
+        assert seen[0].method == "GET"
+        assert seen[0].url.path == "/repos/owner/repo/git/trees/tree-sha"
+        assert tree == {"sha": "tree-sha", "tree": [entry]}, (
+            "a tree read that returns nothing makes every record unreadable"
+        )
+
+    @pytest.mark.parametrize(
+        "read, path",
+        [
+            (lambda client: client.get_git_blob("object-sha"), "git/blobs"),
+            (lambda client: client.get_git_tree("object-sha"), "git/trees"),
+        ],
+        ids=["blob", "tree"],
+    )
+    def test_a_repeat_read_of_one_sha_is_revalidated_not_refetched(
+        self, read, path: str
+    ) -> None:
+        """Content-addressed, so a 304 can only ever mean the same bytes.
+
+        Conditional requests do not count against GitHub's primary rate limit,
+        and a record read repeats the same sha for as long as it is unchanged --
+        which on the claim path is almost always. The REF read is the mutable
+        cell and stays unconditional; a stale answer there is a lost claim.
+        """
+        payload = {"sha": "object-sha", "content": "e30=", "encoding": "base64", "tree": []}
+        conditional: list[str | None] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            conditional.append(request.headers.get("If-None-Match"))
+            if request.headers.get("If-None-Match") == '"etag-1"':
+                return httpx.Response(304)
+            return httpx.Response(200, json=payload, headers={"ETag": '"etag-1"'})
+
+        client = _client_with_transport(httpx.MockTransport(handler))
+
+        first = read(client)
+        second = read(client)
+
+        assert conditional == [None, '"etag-1"']
+        assert second == first, "a 304 must hand back what the sha named"
+
+    def test_successive_shas_do_not_accumulate_without_bound(self) -> None:
+        """Content-addressed urls never repeat, so the cache must evict.
+
+        Every registry write mints a new blob and tree sha. Before the budget,
+        a long-running engine kept every historical record it had ever read --
+        a pattern registry is hundreds of kilobytes, so that is the shape that
+        exhausts memory rather than the thousands of small issue reads the
+        cache was built for (round 4 finding 1).
+        """
+        body = "x" * 4096
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200, json={"sha": "s", "content": body}, headers={"ETag": '"e"'}
+            )
+
+        client = _client_with_transport(httpx.MockTransport(handler))
+        client._etag_cache = _ETagCache(max_bytes=16 * 1024)  # noqa: SLF001
+
+        for index in range(50):
+            client.get_git_blob(f"sha-{index}")
+
+        assert client._etag_cache.nbytes <= 16 * 1024  # noqa: SLF001
+        assert len(client._etag_cache) < 50  # noqa: SLF001
+
+    def test_one_payload_larger_than_the_whole_budget_is_not_kept(self) -> None:
+        """It does not get to starve everything that would have fit."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={"sha": "s", "content": "x" * 40_000},
+                headers={"ETag": '"e"'},
+            )
+
+        client = _client_with_transport(httpx.MockTransport(handler))
+        client._etag_cache = _ETagCache(max_bytes=1024)  # noqa: SLF001
+
+        client.get_git_blob("sha-1")
+
+        assert len(client._etag_cache) == 0  # noqa: SLF001
+
+    def test_a_304_still_answers_after_its_entry_is_evicted(self) -> None:
+        """The entry that produced the ETag is held through the response.
+
+        This client is shared by the tick and the web worker, so another
+        response can exhaust the budget after ``If-None-Match`` goes out. A
+        second lookup would miss, and the empty 304 body would decode as an
+        empty payload -- an unchanged registry read as gone (round 5 F1).
+        """
+        payload = {"sha": "blob-sha", "content": "e30=", "encoding": "base64"}
+        conditional: list[str | None] = []
+        evict_now = False
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            conditional.append(request.headers.get("If-None-Match"))
+            if request.headers.get("If-None-Match") == '"e"':
+                if evict_now:
+                    # A cache that CAN hold the entry, emptied: the entry is
+                    # gone, but the re-store below has somewhere to put it.
+                    client._etag_cache = _ETagCache()  # noqa: SLF001
+                return httpx.Response(304)
+            return httpx.Response(200, json=payload, headers={"ETag": '"e"'})
+
+        client = _client_with_transport(httpx.MockTransport(handler))
+        client.get_git_blob("blob-sha")
+        evict_now = True
+
+        assert client.get_git_blob("blob-sha") == payload
+
+        # And the 304 put it back, so the NEXT read still revalidates rather
+        # than downloading the whole body against the primary rate limit.
+        evict_now = False
+        client.get_git_blob("blob-sha")
+        assert conditional == [None, '"e"', '"e"']
+
+    def test_a_304_nobody_asked_for_is_refused(self) -> None:
+        """Its body is empty, so decoding it would hand back "no data"."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(304)
+
+        client = _client_with_transport(httpx.MockTransport(handler))
+
+        with pytest.raises(GitHubHttpError, match="carried no ETag"):
+            client.get_git_blob("blob-sha")
+
+    def test_the_budget_counts_encoded_bytes_not_characters(self) -> None:
+        """``len`` on a str counts code POINTS.
+
+        A repository whose issue bodies carry emoji would otherwise retain
+        several times the declared budget (round 5 F2).
+        """
+        body = "\U0001f600" * 1000  # 4 bytes each, 1 code point each
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200, json={"sha": "s", "content": body}, headers={"ETag": '"e"'}
+            )
+
+        client = _client_with_transport(httpx.MockTransport(handler))
+        client._etag_cache = _ETagCache(max_bytes=2000)  # noqa: SLF001
+
+        client.get_git_blob("sha-1")
+
+        assert len(client._etag_cache) == 0, (  # noqa: SLF001
+            "a payload of multibyte characters was measured as if it were ASCII"
+        )
+
+    def test_every_compound_cache_operation_holds_the_lock(self) -> None:
+        """No threads, no timing: the lock is either held here or it is not.
+
+        Three rounds of review rejected the threaded versions of this, each
+        time for the same reason -- an interleaving you have to SCHEDULE is an
+        interleaving that can fail to happen, and a test that passes because
+        two threads did not collide proves nothing. The property is simpler
+        than the race it protects against: a recency bump READS then MOVES, and
+        a store adds then evicts in a loop, so every one of those mutations
+        must happen while this cache's lock is held. That is observable
+        directly, on one thread.
+        """
+        held: list[tuple[str, bool]] = []
+
+        class Observing(OrderedDict):
+            def __setitem__(self, key, value):  # noqa: ANN001, ANN204
+                held.append(("insert", cache._lock.locked()))  # noqa: SLF001
+                super().__setitem__(key, value)
+
+            def move_to_end(self, key, last: bool = True) -> None:  # noqa: ANN001, FBT001, FBT002
+                held.append(("bump", cache._lock.locked()))  # noqa: SLF001
+                super().move_to_end(key, last)
+
+            def popitem(self, last: bool = True):  # noqa: ANN201, FBT001, FBT002
+                held.append(("evict", cache._lock.locked()))  # noqa: SLF001
+                return super().popitem(last)
+
+            def pop(self, key, default=None):  # noqa: ANN001, ANN201
+                held.append(("forget", cache._lock.locked()))  # noqa: SLF001
+                return super().pop(key, default)
+
+        cache = _ETagCache(max_bytes=200)
+        cache._entries = Observing()  # noqa: SLF001
+
+        cache.store("first", _ETagEntry(etag='"e"', payload={}, size=100))
+        cache.get("first")  # a bump
+        cache.store("second", _ETagEntry(etag='"e"', payload={}, size=100))
+        cache.store("third", _ETagEntry(etag='"e"', payload={}, size=100))  # evicts
+        cache.pop("second")
+
+        assert {name for name, _ in held} == {"insert", "bump", "evict", "forget"}, (
+            f"the cache stopped doing one of these at all: {held}"
+        )
+        assert all(was_held for _, was_held in held), (
+            f"a cache mutation ran without the lock: "
+            f"{[name for name, was_held in held if not was_held]}"
+        )
+
+    def test_a_payload_that_is_not_an_object_is_refused(self) -> None:
+        client, _ = self._recorded({})
+        client._client = httpx.Client(  # noqa: SLF001 - test transport injection
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(200, json=["not", "an", "object"])
+            ),
+            base_url="https://api.github.com",
+        )
+
+        for call in (
+            lambda: client.get_git_blob("blob-sha"),
+            lambda: client.create_git_blob(content="{}"),
+            lambda: client.get_git_tree("tree-sha"),
+            lambda: client.create_git_tree(tree=[]),
+        ):
+            with pytest.raises(GitHubHttpError, match="was not an object"):
+                call()
