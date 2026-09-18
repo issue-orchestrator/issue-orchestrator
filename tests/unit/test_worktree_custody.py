@@ -15,6 +15,7 @@ still there afterwards".
 from __future__ import annotations
 
 import ast
+import fcntl
 import json
 import os
 import re
@@ -29,6 +30,7 @@ import pytest
 
 from issue_orchestrator.adapters.worktree.custody import (
     CUSTODY_FILE,
+    CUSTODY_LOCK,
     CUSTODY_LOG,
     GitMetadataWorktreeCustody,
     custody_guard,
@@ -505,6 +507,25 @@ def _removal_lines(tree: ast.AST) -> list[int]:
                 if first == "worktree" and second == "remove":
                     lines.add(lineno)
     return sorted(lines)
+
+
+
+def _custody_lock_is_held(repo: Path) -> bool:
+    """Whether the custody lock is taken, asked the way another process would.
+
+    ``flock`` is per open file DESCRIPTION, so a descriptor this helper opens is
+    refused exactly when a descriptor in another process would be -- no thread,
+    no sleep, and no window to lose.
+    """
+    path = git_common_dir(repo) / CUSTODY_LOCK
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+") as handle:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        return False
 
 
 class TestOneRemovalOwner:
@@ -1224,46 +1245,42 @@ class TestTheFilesystemFallbackThroughProduction:
     ) -> None:
         """The control point is the caller's own git runner.
 
-        Earlier versions started a thread and hoped it ran in the window; if
-        the remover finished first the holder saw an absent path, recorded
-        "too late", and the test passed through the regression (round 6
-        finding 6). The runner is a PUBLIC seam the owner calls between its two
-        attempts, so failing git there puts the holder exactly where it needs
-        to be, every time.
-        """
-        order: list[str] = []
-        answered = threading.Event()
+        Earlier versions started a thread and hoped it ran in the window; if the
+        remover finished first the holder saw an absent path, recorded "too
+        late", and the test passed through the regression. Adding a control
+        point fixed the window but still proved the negative with a timeout, so
+        the odds moved rather than went away (round 6 finding 6).
 
-        def hold_now() -> None:
-            try:
-                manager.take_custody(checkout, holder=HOLDER, reason=REASON)
-                order.append("held")
-            except CustodyError:
-                order.append("refused")
-            answered.set()
+        There is no second thread and no timeout here. The runner is a PUBLIC
+        seam the owner calls BETWEEN its two removal attempts, and at that exact
+        moment the custody lock must already be held -- which is what makes any
+        holder arriving in the window block until the removal has committed.
+        ``flock`` is per file DESCRIPTION, so a fresh descriptor on the same
+        lock file answers that question the way another process would.
+        """
+        observed: list[tuple[str, bool]] = []
 
         def git_refuses(argv: list[str]) -> str:
-            # Inside the guard, after git has declined and before the
-            # filesystem fallback runs.
-            holder = threading.Thread(target=hold_now)
-            holder.start()
-            assert not answered.wait(timeout=0.5), (
-                "a hold was answered while a removal was already underway"
-            )
-            order.append("git refused")
-            holder.join(timeout=5)
+            observed.append((argv[0], _custody_lock_is_held(repo)))
+            if argv[0] == "worktree" and argv[1] == "prune":
+                return ""
             return "fatal: cannot remove a locked working tree"
 
+        # ``prune`` is asked for so the owner calls the seam a SECOND time,
+        # after the filesystem fallback has deleted the checkout. One
+        # observation would only prove the lock was held before the delete; a
+        # fallback lifted out of the guard would still pass it.
         outcome = remove_checkout_path(
-            checkout, force=True, run_git=git_refuses, repo_root=repo
+            checkout, force=True, run_git=git_refuses, repo_root=repo, prune=True
         )
 
+        assert [held for _, held in observed] == [True, True], (
+            "the custody lock was open across the filesystem fallback, so a "
+            f"hold could land on a checkout already being deleted: {observed}"
+        )
         assert outcome.used_filesystem_fallback is True
         assert outcome.removed is True
         assert not checkout.exists()
-        assert order[0] == "git refused", (
-            f"the hold was answered before the removal committed: {order}"
-        )
 
     def test_the_fallback_still_refuses_a_checkout_held_first(
         self, manager: GitWorktreeManager, repo: Path, checkout: Path
