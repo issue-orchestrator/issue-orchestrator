@@ -24,7 +24,6 @@ from ..domain.artifact_contracts import (
     ValidationRetry,
 )
 from ..domain.run_manifest import RunManifest
-from ..domain.session_run import SessionRunIdentity
 from ..domain.session_key import TaskKind
 
 logger = logging.getLogger(__name__)
@@ -152,21 +151,19 @@ class ValidationRetryArtifacts:
     valid coding-side task, so a review-only or unknown-provenance artifact can
     never be relaunched as coding work.
 
-    ``run`` is the identity of the run that queued this retry and
-    ``run_agent_label`` the agent it ran as, both read back from the run
-    directory's manifest. A relaunch needs the first to carry a Tech Lead run's
-    create-once launch authority forward, and the second to decide whether it
-    should -- the same question ``CompletionProcessingPolicy`` answers on the
-    live path (#7273). Both are ``None`` for legacy worktree-level state, which
-    has no run directory at all.
+    ``run_dir`` identifies the artifact CONTAINER only, and is ``None`` for
+    legacy worktree-level state that has no run directory at all. Recovery joins
+    that canonical path to the orchestrator-owned issue-run ledger before it
+    trusts any run identity or role: the manifest inside the directory is
+    agent-writable, and reading authority-bearing facts out of it let an edited
+    one select another run's grant (#7273 round 3 finding 1).
     """
 
     state: ValidationState
     state_path: Path
     source_task: TaskKind
     retry_prompt_path: Path | None = None
-    run: SessionRunIdentity | None = None
-    run_agent_label: str | None = None
+    run_dir: Path | None = None
 
 
 def _now_iso() -> str:
@@ -265,7 +262,7 @@ def _run_validation_status(run_dir: Path) -> str | None:
 
     try:
         manifest = RunManifest.load(run_dir)
-    except (json.JSONDecodeError, OSError) as e:
+    except (json.JSONDecodeError, OSError, ValueError) as e:
         logger.warning("Failed to read run manifest from %s: %s", manifest_path, e)
         return None
 
@@ -288,56 +285,6 @@ def _run_session_name(run_dir: Path) -> str:
 def _run_source_task(run_dir: Path) -> TaskKind | None:
     """Classify the task that produced this run directory from its identity."""
     return TaskKind.from_session_name(_run_session_name(run_dir))
-
-
-def _run_manifest(run_dir: Path) -> "RunManifest | None":
-    """The run's manifest, or ``None`` when this build cannot use it.
-
-    A run directory with no manifest at all predates run-scoped identity and is
-    simply legacy. A manifest that EXISTS and cannot be read is damage, and it
-    costs something specific: a Tech Lead retry recovered without its source run
-    carries no launch authority, so its completion is rejected. It cannot be
-    resolved here -- the checkout still has to be recovered, because losing the
-    retry loses the branch -- so it is reported at ERROR rather than passed over
-    quietly (round 1 finding 4).
-    """
-    if not (run_dir / "manifest.json").exists():
-        return None
-    try:
-        return RunManifest.load(run_dir)
-    except (FileNotFoundError, json.JSONDecodeError, OSError, ValueError) as exc:
-        logger.error(
-            "Run manifest at %s is unreadable (%s); a retry recovered from this "
-            "run cannot name the launch authority its completion needs",
-            run_dir,
-            exc,
-        )
-        return None
-
-
-def _run_identity(run_dir: Path) -> "SessionRunIdentity | None":
-    """The identity of the run that owns ``run_dir``, from its manifest.
-
-    The directory name carries the run id and session name, but not the start
-    time, and the identity type refuses a partial one, so a manifest that
-    predates ``started_at`` yields ``None`` rather than a fabricated identity.
-    """
-    manifest = _run_manifest(run_dir)
-    if manifest is None:
-        return None
-    if not (manifest.session_name and manifest.run_id and manifest.started_at):
-        return None
-    return SessionRunIdentity(
-        session_name=manifest.session_name,
-        run_id=manifest.run_id,
-        started_at=manifest.started_at,
-    )
-
-
-def _run_agent_label(run_dir: Path) -> str | None:
-    """The agent the run ran as, which is what says whether it was Tech Lead."""
-    manifest = _run_manifest(run_dir)
-    return None if manifest is None else manifest.agent_label
 
 
 def _run_is_review_only(run_dir: Path) -> bool:
@@ -389,8 +336,7 @@ def _find_run_scoped_retry_artifacts(
                 state_path=state_path,
                 source_task=source_task,
                 retry_prompt_path=prompt_path if prompt_path.exists() else None,
-                run=_run_identity(run_dir),
-                run_agent_label=_run_agent_label(run_dir),
+                run_dir=run_dir,
             )
 
         if _run_retry_prompt_file(run_dir).exists():

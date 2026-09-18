@@ -27,14 +27,16 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
 from ..domain.models import PendingValidationRetry
-from ..domain.registered_completion import CompletionProcessingPolicy
 from ..domain.tech_lead_scratch_identity import scratch_worktree_focus_issue
 from ..infra.validation_state import ValidationRetryArtifacts, find_pending_retry_artifacts
+from .recovered_run_identity import registered_run
 from .worktree_manager import get_worktree_path
 
 if TYPE_CHECKING:
     from ..domain.models import OrchestratorState
     from ..infra.config import Config
+    from ..ports.issue_run_evidence import IssueRunLedger
+    from ..ports.tech_lead_authority import TechLeadAuthorityStore
     from .worktree_reconciliation import StartupWorktreeReconciler
 
 logger = logging.getLogger(__name__)
@@ -48,10 +50,14 @@ class ValidationRetryRecovery:
         config: "Config",
         worktree_reconciler: "StartupWorktreeReconciler",
         session_exists: Callable[[str], bool],
+        issue_run_ledger: "IssueRunLedger | None" = None,
+        tech_lead_authority: "TechLeadAuthorityStore | None" = None,
     ) -> None:
         self._config = config
         self._worktree_reconciler = worktree_reconciler
         self._session_exists = session_exists
+        self._issue_run_ledger = issue_run_ledger
+        self._tech_lead_authority = tech_lead_authority
 
     def recover(
         self, state: "OrchestratorState", issue_branches: dict[int, str]
@@ -78,12 +84,13 @@ class ValidationRetryRecovery:
             recovered += 1
             logger.info(
                 "[startup] Recovered pending validation retry: issue=%d kind=%s "
-                "retry_count=%d/%d authority_run=%s",
+                "retry_count=%d/%d authority_run=%s recovery_error=%s",
                 issue_number,
                 kind,
                 artifacts.state.retry_count,
                 artifacts.state.max_retries,
-                artifacts.run.run_id if artifacts.run else None,
+                state.pending_validation_retries[-1].authority_run,
+                state.pending_validation_retries[-1].recovery_error,
             )
         return recovered
 
@@ -116,23 +123,21 @@ class ValidationRetryRecovery:
     ) -> PendingValidationRetry:
         """The queue entry a relaunch reads, rebuilt from durable artifacts.
 
-        ``authority_run`` carries the ORIGINAL run's identity, read back from its
-        manifest. A Tech Lead completion is accepted only against the create-once
-        authority row keyed by that run, so a resumed investigation that could not
-        name it would be rejected as ``missing_authority`` -- pre-action, with the
-        work pushed nowhere.
-
-        Which retries name one is NOT decided here. The same
-        ``CompletionProcessingPolicy`` that decides it on the live completion
-        path decides it here, from the agent the run recorded. Deciding it
-        locally -- "the manifest had an identity, so carry it" -- named a source
-        run for every ordinary coder retry too, and the launcher hard-refuses a
-        retry whose named authority has no row: every recovered coder retry
-        would sit in the queue forever (round 1 finding 2).
+        The canonical directory key is joined to the ISSUE-RUN LEDGER, which
+        supplies the allocation-owned role and the exact run identity, and the
+        authority store then says whether the corresponding launch grant still
+        exists. The agent-writable manifest supplies neither fact: one naming
+        another retained run made a retry inherit that run's grant, and one
+        naming a different role made a damaged investigation relaunch as
+        ordinary work (round 3 finding 1).
         """
         state = artifacts.state
-        policy = CompletionProcessingPolicy.for_unprocessed_session(
-            artifacts.run_agent_label, self._config.tech_lead_review_agent
+        recovered_run, recovery_error = registered_run(
+            issue_number,
+            checkout,
+            artifacts,
+            ledger=self._issue_run_ledger,
+            authority=self._tech_lead_authority,
         )
         return PendingValidationRetry(
             issue_number=issue_number,
@@ -142,16 +147,23 @@ class ValidationRetryRecovery:
             # an investigation that is the CODER's label -- so a recovered
             # investigation relaunched as ordinary coding work and the carried
             # authority was bypassed entirely (round 2 finding 1).
-            agent_label=artifacts.run_agent_label or "",
+            agent_label=recovered_run.agent_label if recovered_run else "",
             worktree_path=str(checkout),
             branch_name=branch_name,
             original_prompt=self._retry_prompt(artifacts),
             validation_error=state.last_error or "Unknown validation error",
             validation_error_file=state.last_error_file,
             retry_count=state.retry_count,
-            source_task=artifacts.source_task,
+            source_task=(
+                recovered_run.source_task
+                if recovered_run is not None
+                else artifacts.source_task
+            ),
             validation_cmd=state.validation_cmd,
-            authority_run=policy.inheritable_launch_authority(artifacts.run),
+            authority_run=(
+                recovered_run.authority_run if recovered_run is not None else None
+            ),
+            recovery_error=recovery_error,
         )
 
     @staticmethod

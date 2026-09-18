@@ -32,6 +32,7 @@ from ..infra.config import Config
 from ..ports.issue import Issue
 
 if TYPE_CHECKING:
+    from ..ports.issue_run_evidence import IssueRunLedger
     from ..ports.label_store import LabelStore
     from ..ports.queue_cache_store import QueueCacheStore
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
@@ -98,6 +99,7 @@ class StartupManager:
         label_manager: "LabelManager | None" = None,
         label_store: "LabelStore | None" = None,
         tech_lead_authority: "TechLeadAuthorityStore | None" = None,
+        issue_run_ledger: "IssueRunLedger | None" = None,
     ):
         """Initialize the startup manager.
 
@@ -140,6 +142,7 @@ class StartupManager:
         self._label_store = label_store
         # Gated-proposal ledger (#6778); None (tests) = no op-backed exclusions.
         self._tech_lead_authority = tech_lead_authority
+        self._issue_run_ledger = issue_run_ledger
         self._review_scope = ReviewScopeChecker(
             config,
             repository_host,
@@ -754,7 +757,11 @@ class StartupManager:
         ``issue_branches`` (#7273).
         """
         recovered = ValidationRetryRecovery(
-            self.config, self._startup_worktree_reconciler, self._session_exists
+            self.config,
+            self._startup_worktree_reconciler,
+            self._session_exists,
+            self._issue_run_ledger,
+            self._tech_lead_authority,
         ).recover(state, issue_branches)
         if recovered:
             print(f"\n\U0001f504 Recovered {recovered} pending validation retry(ies)")

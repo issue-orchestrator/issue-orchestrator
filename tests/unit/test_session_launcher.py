@@ -26,6 +26,7 @@ from issue_orchestrator.domain.provider_lane import BillingMode, ProviderLane
 import json
 import os
 import shlex
+from dataclasses import replace
 import pytest
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -9047,6 +9048,36 @@ class TestAValidationRetryCarriesItsLaunchAuthority:
         assert store.load(
             run_id=source.run_id, session_name=source.session_name
         ) is None, "the spent source authority survived the transfer"
+
+    def test_a_retry_recovery_marked_damaged_never_starts_a_session(
+        self, launcher_bundle, sample_config, tmp_path, mock_worktree_manager
+    ) -> None:
+        """Refused BEFORE worktree preparation, and the queue item is untouched.
+
+        Recovery can find a retry whose authority is required but whose durable
+        record does not support it. That is not an ordinary retry, and it is not
+        a reason to discard the queue entry either: its checkout and artifact
+        holds are the only remaining protection for work that exists nowhere
+        else (round 3 finding 1).
+        """
+        TestLaunchTechLeadIssueSessionFlavors.enable_tech_lead_agent(sample_config, tmp_path)
+        damaged = replace(
+            self._retry(None),
+            recovery_error="its original launch authority is missing",
+        )
+
+        result = launcher_bundle.launcher.launch_validation_retry_session(
+            damaged, active_sessions=[]
+        )
+
+        assert result.success is False
+        assert "not launchable" in (result.reason or "")
+        assert mock_worktree_manager.create_calls == [], (
+            "a worktree was prepared for a retry that cannot complete"
+        )
+        assert launcher_bundle.create_session_calls == [], (
+            "an agent session was spent on work guaranteed to be rejected"
+        )
 
     def test_an_ordinary_retry_records_nothing(
         self, launcher_bundle, sample_config

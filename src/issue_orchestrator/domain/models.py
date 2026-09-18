@@ -1896,8 +1896,16 @@ class PendingValidationRetry:
     #: board at relaunch would let a run's mutation scope GROW between attempts,
     #: which is the thing the create-once authority row exists to prevent.
     authority_run: SessionRunIdentity | None = None
+    #: A durable recovery inconsistency that makes this retry NON-LAUNCHABLE.
+    #: The item stays queued regardless, because its checkout and artifact holds
+    #: are the only remaining protection for work that exists nowhere else --
+    #: "authority required but damaged" must not be indistinguishable from
+    #: "ordinary retry that needs none" (#7273 round 3 finding 1).
+    recovery_error: str | None = None
 
     def __post_init__(self) -> None:
+        if self.recovery_error is not None and not self.recovery_error.strip():
+            raise ValueError("PendingValidationRetry.recovery_error must be non-empty")
         if self.source_task.is_review_only:
             raise ValueError(
                 "PendingValidationRetry cannot be created for review-only task "

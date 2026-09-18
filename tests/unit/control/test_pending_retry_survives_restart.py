@@ -27,9 +27,23 @@ from issue_orchestrator.control.worktree_reconciliation import (
     StartupWorktreeReconciler,
     WorktreeAuditOwner,
 )
+from unittest.mock import MagicMock
+
+from issue_orchestrator.domain.issue_key import FakeIssueKey
+from issue_orchestrator.domain.issue_run_evidence import (
+    IssueRunRecord,
+    RunTerminalBinding,
+)
 from issue_orchestrator.domain.models import OrchestratorState, PendingValidationRetry
-from issue_orchestrator.domain.session_key import TaskKind
-from issue_orchestrator.domain.session_run import SessionRunIdentity
+from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.session_run import SessionRunAssets, SessionRunIdentity
+from issue_orchestrator.domain.tech_lead_session import (
+    TechLeadLaunchAuthority,
+    TechLeadSessionFlavor,
+)
+from issue_orchestrator.ports.tech_lead_authority import (
+    InMemoryTechLeadAuthorityStore,
+)
 from issue_orchestrator.execution.worktree_adapter import GitWorktreeManager
 from issue_orchestrator.ports.worktree_manager import WORKTREE_ID_MARKER
 
@@ -172,12 +186,71 @@ def _leave_retry_artifacts(
     )
 
 
-def _recover(repo: Path, checkout: Path, state: OrchestratorState) -> int:
+def _run_assets(checkout: Path) -> SessionRunAssets:
+    """The run assets the ALLOCATOR durably recorded for this retry."""
+    run_dir = checkout / ".issue-orchestrator" / "sessions" / f"{RUN_ID}__{SESSION_NAME}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    recording = run_dir / "terminal-recording.jsonl"
+    recording.write_text("")
+    return SessionRunAssets.from_paths(
+        session_name=SESSION_NAME,
+        run_id=RUN_ID,
+        worktree_path=checkout,
+        run_dir=run_dir,
+        terminal_recording_path=recording,
+        manifest_path=run_dir / "manifest.json",
+        started_at="2026-09-18T12:00:00+00:00",
+    )
+
+
+def _ledger(checkout: Path, *, agent_label: str, completion_task: TaskKind):
+    """A durable issue-run ledger holding this retry's exact allocation."""
+    ledger = MagicMock()
+    ledger.recorded_runs.return_value = (
+        IssueRunRecord(
+            session_key=SessionKey(FakeIssueKey("6410"), TaskKind.CODE),
+            run=_run_assets(checkout),
+            recorded_at="2026-09-18T12:00:00+00:00",
+            branch_name=f"tech-lead-investigation-6410-{TOKEN}",
+            terminal_binding=RunTerminalBinding("issue-6410"),
+            agent_label=agent_label,
+            completion_task=completion_task,
+        ),
+    )
+    return ledger
+
+
+def _authority_store(*, grant: bool = True) -> InMemoryTechLeadAuthorityStore:
+    store = InMemoryTechLeadAuthorityStore()
+    if grant:
+        store.record(
+            run_id=RUN_ID,
+            session_name=SESSION_NAME,
+            authority=TechLeadLaunchAuthority(
+                flavor=TechLeadSessionFlavor.FAILURE_INVESTIGATION,
+                anchor_issue_number=6410,
+                focus_issue_number=6410,
+            ),
+        )
+    return store
+
+
+def _recover(
+    repo: Path,
+    checkout: Path,
+    state: OrchestratorState,
+    *,
+    agent_label: str = "agent:tech-lead",
+    completion_task: TaskKind = TaskKind.TECH_LEAD,
+    authority: "InMemoryTechLeadAuthorityStore | None" = None,
+) -> int:
     """Run the startup recovery pass with no issue branches to lean on."""
     return ValidationRetryRecovery(
         _Config(repo, checkout.parent),
         _reconciler(repo, checkout.parent, _Config),
         lambda _name: False,
+        _ledger(checkout, agent_label=agent_label, completion_task=completion_task),
+        authority if authority is not None else _authority_store(),
     ).recover(state, {})
 
 
@@ -244,7 +317,17 @@ def test_an_ordinary_coder_retry_names_no_authority_run(
     _leave_retry_artifacts(investigation, agent_label="agent:coder")
     state = OrchestratorState()
 
-    assert _recover(repo, investigation, state) == 1
+    assert (
+        _recover(
+            repo,
+            investigation,
+            state,
+            agent_label="agent:coder",
+            completion_task=TaskKind.CODE,
+            authority=_authority_store(grant=False),
+        )
+        == 1
+    )
 
     [retry] = state.pending_validation_retries
     assert retry.authority_run is None, (
@@ -260,3 +343,154 @@ def test_a_checkout_with_no_retry_artifacts_is_not_re_queued(
 
     assert _recover(repo, investigation, state) == 0
     assert state.pending_validation_retries == []
+
+
+# ---------------------------------------------------------------------------
+# The manifest inside the run directory is AGENT-WRITABLE. Authority-bearing
+# facts come from the orchestrator's own ledger, joined on the canonical
+# directory name (round 3 finding 1).
+# ---------------------------------------------------------------------------
+
+
+def test_an_edited_manifest_cannot_select_another_runs_grant(
+    repo: Path, investigation: Path
+) -> None:
+    """It names another retained run and lies about the role. Both are ignored."""
+    _leave_retry_artifacts(investigation)
+    authority = _authority_store()
+    authority.record(
+        run_id="other-retained-run",
+        session_name=SESSION_NAME,
+        authority=TechLeadLaunchAuthority(
+            flavor=TechLeadSessionFlavor.FAILURE_INVESTIGATION,
+            anchor_issue_number=9999,
+            focus_issue_number=9999,
+        ),
+    )
+    run_dir = (
+        investigation / ".issue-orchestrator" / "sessions" / f"{RUN_ID}__{SESSION_NAME}"
+    )
+    payload = json.loads((run_dir / "manifest.json").read_text())
+    payload["run_id"] = "other-retained-run"
+    payload["agent_label"] = "agent:coder"
+    (run_dir / "manifest.json").write_text(json.dumps(payload))
+    state = OrchestratorState()
+
+    assert _recover(repo, investigation, state, authority=authority) == 1
+
+    [retry] = state.pending_validation_retries
+    assert retry.authority_run is not None
+    assert retry.authority_run.run_id == RUN_ID, (
+        "the retry inherited the grant the edited manifest pointed at"
+    )
+    assert retry.agent_label == "agent:tech-lead", (
+        "the retry took its role from the manifest instead of the ledger"
+    )
+    assert retry.recovery_error is None
+
+
+def test_a_missing_launch_authority_is_named_not_silently_dropped(
+    repo: Path, investigation: Path
+) -> None:
+    """"Required but damaged" must not read as "ordinary retry that needs none".
+
+    The retry stays QUEUED either way -- its checkout and artifact holds are the
+    only remaining protection for the work -- but the launcher has to be able to
+    tell the two apart, and refuse before it spends a session.
+    """
+    _leave_retry_artifacts(investigation)
+    state = OrchestratorState()
+
+    assert (
+        _recover(repo, investigation, state, authority=_authority_store(grant=False))
+        == 1
+    )
+
+    [retry] = state.pending_validation_retries
+    assert "original launch authority is missing" in (retry.recovery_error or "")
+    assert _audit(repo, investigation, state)[0].disposition == "retained", (
+        "the checkout stopped being protected the moment recovery found damage"
+    )
+
+
+def test_a_run_directory_with_no_durable_allocation_is_refused(
+    repo: Path, investigation: Path
+) -> None:
+    """The premise: the ledger, not the directory, is what makes a run real."""
+    _leave_retry_artifacts(investigation)
+    empty = MagicMock()
+    empty.recorded_runs.return_value = ()
+    state = OrchestratorState()
+
+    recovered = ValidationRetryRecovery(
+        _Config(repo, investigation.parent),
+        _reconciler(repo, investigation.parent, _Config),
+        lambda _name: False,
+        empty,
+        _authority_store(),
+    ).recover(state, {})
+
+    assert recovered == 1
+    [retry] = state.pending_validation_retries
+    assert "0 exact durable allocation records" in (retry.recovery_error or "")
+
+
+def test_the_join_is_exact_not_merely_the_first_run_of_the_issue(
+    repo: Path, investigation: Path
+) -> None:
+    """The ledger holds EVERY run of an issue, not just this retry's.
+
+    Matching loosely -- "a run of issue 6410" -- would attach whichever record
+    came first. The join is on the canonical run key AND the run directory AND
+    the checkout, so a second run of the same issue is simply not this one.
+    """
+    _leave_retry_artifacts(investigation)
+    other_dir = (
+        investigation
+        / ".issue-orchestrator"
+        / "sessions"
+        / "20260101T000000000000Z__issue-6410"
+    )
+    other_dir.mkdir(parents=True)
+    other_recording = other_dir / "terminal-recording.jsonl"
+    other_recording.write_text("")
+    other = IssueRunRecord(
+        session_key=SessionKey(FakeIssueKey("6410"), TaskKind.CODE),
+        run=SessionRunAssets.from_paths(
+            session_name=SESSION_NAME,
+            run_id="20260101T000000000000Z",
+            worktree_path=investigation,
+            run_dir=other_dir,
+            terminal_recording_path=other_recording,
+            manifest_path=other_dir / "manifest.json",
+            started_at="2026-01-01T00:00:00+00:00",
+        ),
+        recorded_at="2026-01-01T00:00:00+00:00",
+        branch_name=f"tech-lead-investigation-6410-{TOKEN}",
+        terminal_binding=RunTerminalBinding("issue-6410"),
+        agent_label="agent:coder",
+        completion_task=TaskKind.CODE,
+    )
+    ledger = _ledger(
+        investigation, agent_label="agent:tech-lead", completion_task=TaskKind.TECH_LEAD
+    )
+    # The OTHER run first, so a loose match would take it.
+    ledger.recorded_runs.return_value = (other,) + ledger.recorded_runs.return_value
+    state = OrchestratorState()
+
+    recovered = ValidationRetryRecovery(
+        _Config(repo, investigation.parent),
+        _reconciler(repo, investigation.parent, _Config),
+        lambda _name: False,
+        ledger,
+        _authority_store(),
+    ).recover(state, {})
+
+    assert recovered == 1
+    [retry] = state.pending_validation_retries
+    assert retry.recovery_error is None, retry.recovery_error
+    assert retry.agent_label == "agent:tech-lead", (
+        "an unrelated run of the same issue supplied the role"
+    )
+    assert retry.authority_run is not None
+    assert retry.authority_run.run_id == RUN_ID

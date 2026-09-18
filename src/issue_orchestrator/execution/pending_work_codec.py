@@ -42,7 +42,11 @@ from ..domain.tech_lead_session import TechLeadSessionFlavor
 CLAIM_ARTIFACT_NAME = "pending-work-claim.json"
 # Bumped only when an encoding change cannot be read by the previous decoder.
 # A payload from a different version is refused rather than guessed at.
-CLAIM_SCHEMA_VERSION = 1
+CLAIM_SCHEMA_VERSION = 2
+#: Versions this build can still READ. A claim written before
+#: `recovery_error` existed decodes to None for it, which is correct: it
+#: was queued by a build that could not detect the inconsistency.
+READABLE_CLAIM_SCHEMA_VERSIONS = frozenset({1, CLAIM_SCHEMA_VERSION})
 
 
 class PendingWorkClaimDecodeError(ValueError):
@@ -65,7 +69,7 @@ def decode_claim(payload: object) -> PendingWorkClaim:
             f"claim payload must be an object, got {type(payload).__name__}"
         )
     version = payload.get("schema_version")
-    if version != CLAIM_SCHEMA_VERSION:
+    if version not in READABLE_CLAIM_SCHEMA_VERSIONS:
         raise PendingWorkClaimDecodeError(
             f"unsupported claim schema version {version!r}; "
             f"this build writes {CLAIM_SCHEMA_VERSION}"
@@ -217,6 +221,7 @@ def _encode_validation_retry(request: PendingWorkRequest) -> dict[str, Any]:
             if request.authority_run is not None
             else None
         ),
+        "recovery_error": request.recovery_error,
     }
 
 
@@ -234,6 +239,7 @@ def _decode_validation_retry(payload: dict[str, Any]) -> PendingValidationRetry:
         source_task=TaskKind(payload["source_task"]),
         validation_cmd=payload["validation_cmd"],
         authority_run=_decode_run_identity(payload.get("authority_run")),
+        recovery_error=payload.get("recovery_error"),
     )
 
 

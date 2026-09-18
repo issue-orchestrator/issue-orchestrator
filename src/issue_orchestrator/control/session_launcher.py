@@ -98,6 +98,7 @@ from .needs_human_block import (
 from .tech_lead_needs_human_reconcile import TechLeadNeedsHumanLifecycle, discover_tech_lead_needs_human_issue_numbers
 from .session_manager import SessionManager, SessionRef
 from .tech_lead_run_inputs import transfer_launch_authority
+from .recovered_run_identity import unlaunchable_recovery_refusal
 from .launch_transaction import (
     NO_LAUNCH_WORK_CLAIM,
     LaunchWorkClaim,
@@ -1172,6 +1173,10 @@ class SessionLauncher:
         work_claim: LaunchWorkClaim = NO_LAUNCH_WORK_CLAIM,
     ) -> LaunchResult:
         """Launch a coding session that continues after validation failure."""
+        if refusal := unlaunchable_recovery_refusal(retry):
+            return LaunchResult(
+                None, False, refusal, disposition=LaunchDisposition.RETRYABLE_FAILURE
+            )
         admitted = self._admit_validation_retry(retry, active_sessions)
         if isinstance(admitted, LaunchResult):
             return admitted
@@ -1444,18 +1449,12 @@ class SessionLauncher:
         agent_config = self.config.agents.get(agent_label)
         if not agent_config:
             return None
-        # EXACTLY the selected execution role, not appended alongside whatever
-        # the focus issue still carries. `Issue.agent_type` returns the FIRST
-        # agent label, so appending left an investigation's resumed run reading
-        # as the focus issue's coder -- the carried authority bypassed, the
-        # artifact hold released, the run recorded as TaskKind.CODE (round 2
-        # finding 1).
-        labels = [
-            name
-            for name in (fresh_issue.labels if fresh_issue else [])
-            if not str(name).startswith("agent:")
-        ]
-        labels.append(agent_label)
+        # EXACTLY the selected execution role. `Issue.agent_type` returns the
+        # FIRST agent label, so APPENDING left an investigation's resumed run
+        # reading as the focus issue's coder: authority bypassed, artifact hold
+        # released, run recorded as TaskKind.CODE (#7273 round 2 finding 1).
+        carried = fresh_issue.labels if fresh_issue else []
+        labels = [n for n in carried if not str(n).startswith("agent:")] + [agent_label]
         issue = Issue(
             number=retry.issue_number,
             title=(fresh_issue.title if fresh_issue else retry.issue_title),
