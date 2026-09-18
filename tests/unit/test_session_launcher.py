@@ -9024,6 +9024,59 @@ class TestAValidationRetryCarriesItsLaunchAuthority:
             f"{sorted(others)}"
         )
 
+    def test_a_refused_durable_claim_records_no_destination_authority(
+        self, launcher_bundle, sample_config, tmp_path
+    ) -> None:
+        """Authority begins only after the durable work claim succeeds.
+
+        The row was written before the claim while the guard that settles it
+        started after, so a claim the store REFUSED returned between the two and
+        left authority for a run that never existed. The earlier test stayed
+        green because it fails later, inside the guard (round 4 finding 1).
+        """
+        checkout = tmp_path / "repo-tech-lead-6410-abcdef123456"
+        checkout.mkdir()
+        TestLaunchTechLeadIssueSessionFlavors.enable_tech_lead_agent(sample_config, tmp_path)
+        store = SqliteTechLeadAuthorityStore.for_repo(sample_config.repo_root)
+        source = SessionRunIdentity(
+            session_name="issue-6410", run_id="run-original", started_at="2026-09-18"
+        )
+        store.record(
+            run_id=source.run_id,
+            session_name=source.session_name,
+            authority=self._authority(),
+        )
+        self._seed_launch_inputs(checkout, source)
+
+        class _RefusingClaim:
+            def can_reclaim_deferred(self) -> bool:
+                return True
+
+            def hold_before_spawn(self, run, *, issue_number):
+                return LaunchResult(None, False, "claim store refused the write")
+
+            def abandon_unspawned(self, run) -> None:
+                pytest.fail("an unrecorded claim cannot be abandoned")
+
+            def settle_unspawned(self, disposal, claim=None) -> None:
+                return None
+
+            def spend_budget(self, claim) -> bool:
+                return False
+
+        result = launcher_bundle.launcher.launch_validation_retry_session(
+            self._retry(source, worktree_path=str(checkout)),
+            active_sessions=[],
+            work_claim=cast(Any, _RefusingClaim()),
+        )
+
+        assert result.success is False
+        others = _authority_run_ids(sample_config.repo_root) - {source.run_id}
+        assert others == set(), (
+            f"a refused claim left authority for a run that never existed: "
+            f"{sorted(others)}"
+        )
+
     def test_a_successful_retry_does_not_keep_two_authorities(
         self, launcher_bundle, sample_config, tmp_path
     ) -> None:

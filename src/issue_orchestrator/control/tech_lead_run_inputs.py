@@ -28,6 +28,7 @@ from ..domain.tech_lead_session import TECH_LEAD_ASSIGNMENT_FILENAME
 
 if TYPE_CHECKING:
     from ..domain.models import PendingValidationRetry
+    from ..domain.tech_lead_session import TechLeadLaunchAuthority
     from ..domain.session_run import SessionRunAssets, SessionRunIdentity
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
     from .launch_transaction import SpawnGuard
@@ -117,6 +118,26 @@ class LaunchAuthorityTransfer:
     store: "TechLeadAuthorityStore"
     source: "SessionRunIdentity"
     destination: "SessionRunIdentity"
+    authority: "TechLeadLaunchAuthority"
+
+    def begin(self) -> None:
+        """Record the destination, once the durable work claim exists.
+
+        Preparing the transfer and RECORDING it are deliberately separate. The
+        row used to be written before the claim, while the guard that settles it
+        started after -- so a claim the store refused returned between the two
+        and left authority for a run that never existed (round 4 finding 1).
+        """
+        self.store.record(
+            run_id=self.destination.run_id,
+            session_name=self.destination.session_name,
+            authority=self.authority,
+        )
+        logger.info(
+            "Carried tech-lead launch authority forward: %s -> %s",
+            self.source.run_id,
+            self.destination.run_id,
+        )
 
     def settle(self, *, spawned: bool) -> None:
         """Discard whichever row the launch's outcome says does not survive.
@@ -145,6 +166,8 @@ def transfer_launch_authority(
     forget to settle what it did not know was there.
     """
     try:
+        if transfer is not None:
+            transfer.begin()
         yield
     finally:
         # No `return` in here: it would swallow an exception on its way out,

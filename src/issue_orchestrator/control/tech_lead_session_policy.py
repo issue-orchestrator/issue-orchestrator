@@ -172,11 +172,12 @@ def carry_launch_authority_forward(
     Returns a refusal MESSAGE when the retry names launch state that is gone --
     relaunching without it would spend an agent session on work whose completion
     is already guaranteed to be rejected -- ``None`` when there is nothing to
-    carry, and otherwise an OPEN :class:`LaunchAuthorityTransfer`. Open, because
-    recording the destination row is not the end of the transfer: the caller
-    settles it on the spawn decision, so a launch that never starts a terminal
-    does not leave a row for a run that never existed, and one that does start
-    discards the spent source (round 2 finding 4).
+    carry, and otherwise a PREPARED :class:`LaunchAuthorityTransfer`. Prepared,
+    not recorded: the destination row is written when the caller has taken the
+    durable work claim and entered the transfer guard, and settled on the spawn
+    decision. So a launch that never starts a terminal leaves no row for a run
+    that never existed, and one that does start discards the spent source
+    (round 2 finding 4, round 4 finding 1).
     """
     source = retry.authority_run
     if source is None:
@@ -193,19 +194,11 @@ def carry_launch_authority_forward(
         )
     if error := carry_tech_lead_inputs(retry, source, run):
         return error
-    tech_lead_authority.record(
-        run_id=run.identity.run_id,
-        session_name=run.identity.session_name,
-        authority=authority,
-    )
-    logger.info(
-        "Validation retry for issue #%d carried launch authority forward: %s -> %s",
-        retry.issue_number,
-        source.run_id,
-        run.identity.run_id,
-    )
     return LaunchAuthorityTransfer(
-        store=tech_lead_authority, source=source, destination=run.identity
+        store=tech_lead_authority,
+        source=source,
+        destination=run.identity,
+        authority=authority,
     )
 
 
