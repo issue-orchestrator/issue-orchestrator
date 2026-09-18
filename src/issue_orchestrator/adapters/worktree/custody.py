@@ -98,10 +98,23 @@ class GitMetadataWorktreeCustody:
         answering "not in a repository, so not held" there would delete it
         (round 3 finding 2).
 
-        None only when neither says.
+        A supplied ``repo_root`` is AUTHORITATIVE, including when it turns out
+        not to name a repository at all. Falling back to the checkout there
+        reproduced the fail-open the ``UNKNOWN_REPOSITORY`` sentinel used to be:
+        pass a path that is not a repository, and a held checkout whose ``.git``
+        file is gone answers "no store, so nothing is held" and is deleted
+        (round 9 finding 1).
+
+        None only when the caller named no repository AND the checkout cannot
+        say either.
         """
-        named = None if repo_root is None else git_common_dir(repo_root)
-        if named is not None:
+        if repo_root is not None:
+            named = git_common_dir(repo_root)
+            if named is None:
+                raise CustodyUnavailableError(
+                    f"{repo_root} is not a git repository, so whether {path} "
+                    "is held cannot be determined"
+                )
             # AUTHORITATIVE. The checkout's own pointer is a claim it makes
             # about itself, and a corrupted one still starting with "gitdir:"
             # would send this to an empty store somewhere else -- where
@@ -490,7 +503,11 @@ def git_common_dir(path: Path) -> Path | None:
     """
     git_entry = Path(path) / ".git"
     if git_entry.is_dir():
-        return git_entry
+        # Absolute, like the linked-worktree branch below. A main checkout
+        # addressed by a RELATIVE path used to answer with a relative
+        # directory, so the same repository compared unequal to itself and
+        # `for_path` refused a real grant (round 9 finding 1).
+        return git_entry.resolve()
     if not git_entry.is_file():
         return None
     try:

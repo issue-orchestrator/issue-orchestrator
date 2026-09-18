@@ -1680,6 +1680,71 @@ class TestRoundEightGaps:
         )
 
 
+class TestRoundNineGaps:
+    def test_a_repo_root_that_is_not_a_repository_refuses(
+        self, manager: GitWorktreeManager, repo: Path, checkout: Path, tmp_path: Path
+    ) -> None:
+        """Deleting the sentinel closed the name, not the property.
+
+        ``for_path`` still fell back to the CHECKOUT when a supplied
+        ``repo_root`` did not resolve, so a path that is not a repository
+        reproduced the old fail-open exactly: the checkout's ``.git`` is gone
+        too, neither says, and the removal proceeds (round 9 finding 1).
+        """
+        manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+        (checkout / ".git").unlink()
+        not_a_repo = tmp_path / "somewhere-else"
+        not_a_repo.mkdir()
+
+        with pytest.raises(CustodyUnavailableError, match="not a git repository"):
+            remove_checkout_path(
+                checkout, force=True, run_git=None, repo_root=not_a_repo
+            )
+
+        assert (checkout / "finding.md").exists()
+
+    def test_a_relative_repository_finds_the_same_grant(
+        self, repo: Path, checkout: Path, monkeypatch
+    ) -> None:
+        """A main checkout used to answer with a RELATIVE common directory.
+
+        The linked-worktree branch resolves, the directory branch did not, so
+        the same repository compared unequal to itself and a real grant was
+        refused as a disagreement (round 9 finding 1).
+        """
+        monkeypatch.chdir(repo.parent)
+        relative = GitWorktreeManager(Path(repo.name))
+        absolute = GitWorktreeManager(repo)
+        grant = absolute.take_custody(checkout, holder=HOLDER, reason=REASON)
+
+        assert relative.custody_of(checkout) == grant
+
+    def test_the_repository_itself_is_not_a_removal_target(
+        self, manager: GitWorktreeManager, repo: Path
+    ) -> None:
+        """Its custody store and trail live under its own ``.git``.
+
+        A forced removal deletes the audit trail it just wrote, so the release
+        becomes unauditable at the moment it is exercised and settlement reads
+        an empty store (round 9 finding 3). The linked-worktree fixtures cannot
+        see this: their common directory is in the main checkout.
+        """
+        manager.take_custody(repo, holder=HOLDER, reason=REASON)
+
+        with pytest.raises(ValueError, match="repository itself"):
+            remove_checkout_path(
+                repo,
+                force=True,
+                run_git=_git_in(repo),
+                repo_root=repo,
+                custody_release=CustodyRelease(holder=HOLDER, reason="collected"),
+            )
+
+        assert (repo / "README.md").exists()
+        assert manager.custody_of(repo) is not None, "the grant was discarded"
+        assert (repo / ".git" / CUSTODY_LOG).exists(), "the audit trail was deleted"
+
+
 class TestEveryManagerNamesItsRepository:
     """No ``GitWorktreeManager()`` anywhere is built without a repository.
 

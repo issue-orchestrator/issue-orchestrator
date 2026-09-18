@@ -85,6 +85,18 @@ def remove_checkout_path(
         CustodyUnavailableError: Whether it is held could not be determined.
     """
     require_disposable_path(worktree_path)
+    if worktree_path.resolve() == repo_root.resolve():
+        # The repository's own anchor. Its custody state and append-only trail
+        # live under ITS `.git`, so a forced removal deletes the audit trail it
+        # just wrote -- the release becomes unauditable at the moment it is
+        # exercised, and settlement reads an empty store (round 9 finding 3).
+        # The orchestrator has no reason to delete its own repository, so this
+        # is refused rather than made to work: supporting it would mean moving
+        # the store outside the repository, which is a different change.
+        raise ValueError(
+            f"{worktree_path} is the repository itself, not a disposable "
+            "checkout; removing it would destroy the custody trail it holds"
+        )
     with custody_guard(worktree_path, custody_release, repo_root=repo_root) as settled:
         error = _remove_with_git(worktree_path, force=force, run_git=run_git)
         if error is None:

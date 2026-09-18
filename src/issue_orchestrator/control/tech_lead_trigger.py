@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Sequence
+from ..ports.worktree_custody import CustodyGrant
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Protocol
@@ -135,6 +136,12 @@ class TechLeadTerminationOutcome:
     # requiring explicit operator action); None when there was nothing to remove
     # or removal succeeded.
     leaked_worktree: str | None = None
+    # The grant that REFUSED the removal, when a human owns the checkout. A
+    # custody refusal is the system working, not a leak, and flattening it into
+    # `leaked_worktree` told the operator to "remove it manually" -- the exact
+    # destruction custody exists to prevent (round 9 finding 2). Set here, the
+    # two are mutually exclusive: `leaked_worktree` means an unprotected leak.
+    retained_custody: "CustodyGrant | None" = None
 
     @property
     def clean(self) -> bool:

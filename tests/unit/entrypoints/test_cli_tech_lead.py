@@ -159,4 +159,60 @@ class TestCmdHealthReview:
         assert "/wt/repo-tech-lead-200-abc" in out  # the exact leaked path
         assert "remove it manually" in out
 
+    def test_a_protected_checkout_is_not_reported_as_a_leak(self) -> None:
+        """A custody refusal is the system working, not a cleanup failure.
+
+        Flattened into ``leaked_worktree``, the only instruction the operator
+        saw was "remove it manually" -- the exact destruction custody exists to
+        prevent, with no holder, no branch and no way to release it (round 9
+        finding 2).
+        """
+        from datetime import datetime, timezone
+
+        from issue_orchestrator.control.tech_lead_trigger import TechLeadTerminationOutcome
+        from issue_orchestrator.ports.worktree_custody import CustodyGrant
+
+        grant = CustodyGrant(
+            path=Path("/wt/repo-tech-lead-200-abc"),
+            branch="tech-lead-investigation-200-abc",
+            holder="operator",
+            reason="investigation #200 left commits only on this branch",
+            taken_at=datetime(2026, 9, 18, tzinfo=timezone.utc),
+        )
+        config = Config()
+        orchestrator = Mock()
+        load_p, log_p = _patches(config)
+        printed: list[str] = []
+        with load_p, log_p, _lock_held_ok(), patch.object(
+            cli_tech_lead, "_build_orchestrator", return_value=orchestrator
+        ), patch(
+            "issue_orchestrator.control.tech_lead_trigger.run_health_review",
+            return_value=HealthReviewResult(
+                200, status=TechLeadOutcomeStatus.TIMED_OUT, detail="timed out",
+                termination=TechLeadTerminationOutcome(
+                    validated_work=ValidatedWorkDispositionBatch.no_work(1, "fixture"),
+                    terminal_stopped=False, worktree_removed=False,
+                    retained_custody=grant,
+                ),
+            ),
+        ), patch.object(
+            cli_tech_lead.console, "print",
+            side_effect=lambda *a, **k: printed.append(" ".join(str(x) for x in a)),
+        ):
+            rc = cli_tech_lead.cmd_health_review(_args())
+
+        assert rc == 1
+        out = "\n".join(printed)
+        assert "remove it manually" not in out, (
+            "the operator was told to destroy a checkout custody is protecting"
+        )
+        assert "PROTECTED" in out
+        assert "operator" in out, "the holder is not named"
+        assert "tech-lead-investigation-200-abc" in out, "the branch is not named"
+        assert "investigation #200 left commits" in out, "the reason is not given"
+        assert "worktree-custody release" in out, "no way to release it is shown"
+
+
+from pathlib import Path
+
 from issue_orchestrator.domain.validated_work_commands import ValidatedWorkDispositionBatch

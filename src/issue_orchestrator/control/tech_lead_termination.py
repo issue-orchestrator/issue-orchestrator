@@ -31,6 +31,8 @@ from __future__ import annotations
 
 import logging
 from typing import TYPE_CHECKING, Callable, Optional, Protocol
+
+from ..ports.worktree_custody import CustodyGrant, WorktreeInCustodyError
 from ..domain.validated_work_commands import ValidatedWorkDispositionBatch
 
 if TYPE_CHECKING:
@@ -106,17 +108,31 @@ def terminate_tech_lead_session(
     disposable = bool(
         getattr(session, "scratch_worktree", False) and session.worktree_path
     )
-    worktree_removed = attempt(
-        _void(
+    # A custody refusal is NOT a failed effect wearing the same clothes. It is
+    # the system doing its job, and the operator needs the holder and the
+    # release workflow -- not "remove it manually", which is the destruction
+    # custody exists to prevent (round 9 finding 2). Caught before `attempt`
+    # sees it, because `attempt` reduces every exception to False.
+    retained_custody: "CustodyGrant | None" = None
+    try:
+        removal = _void(
             lambda: worktrees.remove_checkout_and_branch(
                 session.worktree_path,
                 force=True,
             )
             if (disposable and worktrees)
             else None
-        ),
-        "remove scratch worktree",
-    )
+        )
+        worktree_removed = attempt(removal, "remove scratch worktree")
+    except WorktreeInCustodyError as refusal:
+        retained_custody = refusal.grant
+        worktree_removed = False
+        logger.info(
+            "[TECH_LEAD] Scratch worktree for issue #%d is held by %s; "
+            "termination left it in place",
+            session.issue.number,
+            refusal.grant.holder,
+        )
     return TechLeadTerminationOutcome(
         validated_work=batch,
         terminal_stopped=terminal_stopped,
@@ -128,9 +144,10 @@ def terminate_tech_lead_session(
         # action before exit — this is the single cleanup-failure owner.
         leaked_worktree=(
             str(session.worktree_path)
-            if (disposable and not worktree_removed)
+            if (disposable and not worktree_removed and retained_custody is None)
             else None
         ),
+        retained_custody=retained_custody,
     )
 
 

@@ -57,8 +57,17 @@ class TestEnsureE2EWorktree:
 
     @pytest.fixture
     def repo_root(self, tmp_path: Path) -> Path:
+        """A REAL repository, because custody is read out of its metadata.
+
+        A bare directory used to pass: an unresolvable ``repo_root`` silently
+        fell back to the checkout and, when that could not answer either,
+        reported nothing held. That fail-open is now refused, so a fixture that
+        is not a repository would be asserting the old behaviour (#7274 round 9
+        finding 1).
+        """
         root = tmp_path / "issue-orchestrator"
         root.mkdir()
+        (root / ".git").mkdir()
         return root
 
     @patch("issue_orchestrator.infra.e2e_worktree.subprocess.run")

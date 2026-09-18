@@ -1061,11 +1061,14 @@ class TestRemoveWorktree:
         tmp_path,
     ):
         """Force cleanup deletes stale directories that are no longer git worktrees."""
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        (repo_root / ".git").mkdir()
         worktree_path = tmp_path / "worktree-123"
         worktree_path.mkdir()
         (worktree_path / "leftover.txt").write_text("stale")
 
-        remove_worktree(worktree_path, force=True, repo_root=tmp_path)
+        remove_worktree(worktree_path, force=True, repo_root=repo_root)
 
         assert not worktree_path.exists()
         mock_run.assert_not_called()
@@ -1606,7 +1609,7 @@ class TestIntegrationScenarios:
         assert result is False
 
         # Remove worktree
-        remove_worktree(worktree_path, repo_root=tmp_path)
+        remove_worktree(worktree_path, repo_root=repo_root)
 
     @patch(
         "issue_orchestrator.adapters.worktree._worktree_runtime_setup.install_hooks",

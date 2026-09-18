@@ -190,13 +190,21 @@ class TestDeleteWorktree:
         assert mock_remove.call_args.kwargs["repo_root"] == tmp_path
 
     def test_delete_falls_back_to_the_directory_when_git_declines(self, tmp_path):
-        """Still true end to end -- the owner does it, under one custody answer."""
+        """Still true end to end -- the owner does it, under one custody answer.
+
+        The repository is real: custody is read out of its metadata, and a
+        ``repo_root`` that is not a repository is now refused rather than
+        quietly answering "nothing held" (#7274 round 9 finding 1).
+        """
         policy = ValidateOrDeletePolicy()
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        (repo_root / ".git").mkdir()
         worktree = tmp_path / "worktree"
         worktree.mkdir()
         (worktree / "file.txt").write_text("content")
 
-        result = policy.delete_worktree(worktree, tmp_path)
+        result = policy.delete_worktree(worktree, repo_root)
 
         assert result is True
         assert not worktree.exists()
