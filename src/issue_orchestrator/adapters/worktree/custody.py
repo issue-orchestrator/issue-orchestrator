@@ -255,16 +255,19 @@ class GitMetadataWorktreeCustody:
         mid-removal leaves an audited hand-off rather than a breach nobody
         asked for (round 6 finding 4).
 
-        A grant BENEATH the target refuses unconditionally, release or not. The
-        removal owner's forced fallback is a recursive delete, so removing a
-        directory removes everything under it -- and a release naming the parent
-        is not consent to discard a child nobody mentioned (round 8 finding 1).
+        Any grant that OVERLAPS the target refuses unconditionally, release or
+        not. The removal owner's forced fallback is a recursive delete, so
+        removing a parent removes every held checkout beneath it. The reverse
+        matters too: a held checkout whose ``.git`` file is gone is mistaken for
+        a session container, and its child directories are handed to the removal
+        owner one at a time. A release naming either path is not consent to
+        discard the other (rounds 8 and 11, finding 1).
         """
         with self._locked():
             records = self._records()
-            beneath = _grants_beneath(records, worktree_path)
-            if beneath:
-                raise WorktreeInCustodyError(beneath[0])
+            overlapping = _other_grants_overlapping(records, worktree_path)
+            if overlapping:
+                raise WorktreeInCustodyError(overlapping[0])
             grant = records.get(_key(worktree_path))
             if grant is None:
                 yield CustodySettlement(lambda: None)
@@ -596,21 +599,25 @@ def _key(worktree_path: Path) -> str:
     return str(Path(worktree_path).resolve())
 
 
-def _grants_beneath(
+def _other_grants_overlapping(
     records: "dict[str, CustodyGrant]", worktree_path: Path
 ) -> tuple[CustodyGrant, ...]:
-    """Held checkouts a removal of ``worktree_path`` would take with it.
+    """Held checkouts above or beneath a removal target.
 
-    Custody used to be an exact-key question, which reads the wrong thing: the
-    orchestrator's own per-session layout is
-    ``<worktree_base>/<session>/<checkout>``, and the E2E sweep hands the
-    SESSION directory to the removal owner. No grant names that directory, git
-    declines to remove something that is not a worktree, and the forced
-    fallback then deletes the whole subtree -- held checkout included (round 8
-    finding 1).
+    The DESCENDANT case is the per-session layout
+    ``<worktree_base>/<session>/<checkout>``: the sweep hands the session
+    directory to the removal owner, no grant names it, git declines to remove
+    something that is not a worktree, and the forced fallback deletes the whole
+    subtree (round 8 finding 1).
 
-    Strictly beneath: the target itself is the exact-key case, which a release
-    may legitimately settle.
+    The ANCESTOR case is its mirror: a held checkout whose ``.git`` file is gone
+    looks like a session container, so the sweep hands each of ITS children to
+    the owner instead. Nothing names those, and an investigation's uncommitted
+    work is deleted while the checkout root and its grant survive, looking
+    untouched (round 11 finding 1).
+
+    Either way a grant is discarded without being named. Exact equality is left
+    to :meth:`guard`, where an explicit release may legitimately settle it.
     """
     target = Path(_key(worktree_path))
     return tuple(
@@ -618,7 +625,8 @@ def _grants_beneath(
             (
                 grant
                 for key, grant in records.items()
-                if Path(key) != target and target in Path(key).parents
+                if Path(key) != target
+                and (target in Path(key).parents or Path(key) in target.parents)
             ),
             key=lambda grant: grant.taken_at,
         )

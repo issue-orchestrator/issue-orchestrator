@@ -1271,6 +1271,28 @@ class TestRoundFiveGaps:
 
         assert (checkout / "finding.md").exists()
 
+    def test_the_e2e_sweep_does_not_delete_inside_a_held_checkout(
+        self, manager: GitWorktreeManager, repo: Path, checkout: Path
+    ) -> None:
+        """A missing ``.git`` must not turn the checkout into a container.
+
+        In the flat layout the sweep treats a directory without ``.git`` as a
+        per-session container and hands each CHILD to the forced removal owner.
+        Custody has to protect those descendants too, or an investigation's
+        uncommitted work is deleted while the checkout root and its grant
+        survive -- looking, to anyone who checks, untouched (round 11 finding 1).
+        """
+        only_copy = checkout / "investigation" / "only-copy.md"
+        only_copy.parent.mkdir()
+        only_copy.write_text("not committed anywhere\n")
+        manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+        (checkout / ".git").unlink()
+
+        cleanup_local_worktrees(checkout.parent, repo_root=repo)
+
+        assert only_copy.read_text() == "not committed anywhere\n"
+        assert manager.custody_of(checkout) is not None
+
     def test_the_e2e_sweep_still_removes_what_nobody_holds(self, repo: Path, checkout: Path) -> None:
         """The premise: the sweep is a REMOVAL, and it goes through the owner."""
         cleanup_local_worktrees(checkout.parent, repo_root=repo)
