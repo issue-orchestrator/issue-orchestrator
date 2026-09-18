@@ -42,13 +42,19 @@ def tech_lead_problem_artifact_hold_issue_numbers(
     feature off used to release every hold at once, discarding the inputs of
     retries that were already waiting to run.
     """
+    from ..domain.tech_lead_scratch_identity import scratch_worktree_focus_issue
     from ..domain.tech_lead_session import TechLeadSessionFlavor
     from .tech_lead_session_policy import is_tech_lead_session
 
+    # Keyed on the CHECKOUT, not on `authority_run`. The checkout path is a
+    # durable fact: an investigation runs in a run-scoped scratch worktree whose
+    # name says so. `authority_run` is read back off a run manifest, so a
+    # manifest that cannot be read released the hold on exactly the retry that
+    # most needed it (round 1 finding 4).
     held = {
         retry.issue_number
         for retry in state.pending_validation_retries
-        if retry.authority_run is not None
+        if scratch_worktree_focus_issue(retry.worktree_path) is not None
     }
     if not (config.tech_lead_review_on_failure and config.tech_lead_review_agent):
         return frozenset(held)

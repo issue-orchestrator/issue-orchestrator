@@ -99,9 +99,15 @@ def _retry(checkout: Path) -> PendingValidationRetry:
 
 
 class _Config:
-    def __init__(self, repo_root: Path, worktree_base: Path) -> None:
+    def __init__(
+        self,
+        repo_root: Path,
+        worktree_base: Path,
+        tech_lead_review_agent: str | None = "agent:tech-lead",
+    ) -> None:
         self.repo_root = repo_root
         self.worktree_base = worktree_base
+        self.tech_lead_review_agent = tech_lead_review_agent
 
 
 def _audit(repo: Path, checkout: Path, state: OrchestratorState) -> tuple:
@@ -136,7 +142,9 @@ RUN_ID = "20260918T120000000000Z"
 SESSION_NAME = "issue-6410"
 
 
-def _leave_retry_artifacts(checkout: Path) -> None:
+def _leave_retry_artifacts(
+    checkout: Path, *, agent_label: str = "agent:tech-lead"
+) -> None:
     """Write what a run that ended in NEEDS_VALIDATION_RETRY leaves on disk."""
     run_dir = checkout / ".issue-orchestrator" / "sessions" / f"{RUN_ID}__{SESSION_NAME}"
     run_dir.mkdir(parents=True)
@@ -147,7 +155,7 @@ def _leave_retry_artifacts(checkout: Path) -> None:
                 "run_id": RUN_ID,
                 "run_dir": str(run_dir),
                 "issue_number": 6410,
-                "agent_label": "agent:tech-lead",
+                "agent_label": agent_label,
                 "started_at": "2026-09-18T12:00:00+00:00",
             }
         )
@@ -221,6 +229,27 @@ def test_recovery_then_reconciliation_keeps_the_branch(
     entries = _audit(repo, investigation, state)
 
     assert [entry.disposition for entry in entries] == ["retained"]
+
+
+def test_an_ordinary_coder_retry_names_no_authority_run(
+    repo: Path, investigation: Path
+) -> None:
+    """Recovery must reach the SAME answer as the live completion path.
+
+    Deciding it locally -- "the manifest had an identity, so carry it" -- named
+    a source run for every ordinary retry too. The launcher hard-refuses a
+    retry whose named authority has no row, so every recovered coder retry sat
+    in the queue forever, relaunched never (round 1 finding 2).
+    """
+    _leave_retry_artifacts(investigation, agent_label="agent:coder")
+    state = OrchestratorState()
+
+    assert _recover(repo, investigation, state) == 1
+
+    [retry] = state.pending_validation_retries
+    assert retry.authority_run is None, (
+        "a coder retry named an authority row that was never recorded"
+    )
 
 
 def test_a_checkout_with_no_retry_artifacts_is_not_re_queued(

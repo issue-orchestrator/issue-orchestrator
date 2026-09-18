@@ -25,13 +25,17 @@ from typing import TYPE_CHECKING
 from collections.abc import Callable
 
 from ..domain.models import CompletionOutcome, CompletionRecord, RequestedAction
+from ..domain.tech_lead_run_artifacts import TECH_LEAD_DATA_DIRNAME
 from ..domain.tech_lead_escalation import render_tech_lead_escalation_comment
 from ..domain.session_key import TaskKind
 from ..domain.tech_lead_manifest import TechLeadManifest
-from ..domain.tech_lead_scratch_identity import new_scratch_identity
+from ..domain.tech_lead_scratch_identity import (
+    names_one_scratch_checkout,
+    new_scratch_identity,
+)
 from ..domain.board_snapshot import BOARD_SNAPSHOT_FILENAME, BoardSnapshot
 from ..domain.tech_lead_session import (
-    HEALTH_REVIEW_MARKER_LABEL,
+    health_review_flavor_if_anchored,
     TECH_LEAD_ASSIGNMENT_FILENAME,
     TechLeadAssignment,
     TechLeadLaunchAuthority,
@@ -50,6 +54,7 @@ from .tech_lead_evidence import build_evidence_map, write_evidence_map
 from .tech_lead_dispositions import recovery_tracker_grants
 from .tech_lead_manifest_builder import TechLeadCandidatePolicy, TechLeadManifestBuilder
 from .tech_lead_recovery_targets import prepare_validated_work_recovery_targets
+from .tech_lead_run_inputs import carry_tech_lead_inputs
 
 if TYPE_CHECKING:
     from .completion_ports import GitAdapter
@@ -59,7 +64,7 @@ if TYPE_CHECKING:
     from ..ports.issue import Issue
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
     from ..domain.models import PendingValidationRetry
-    from ..domain.session_run import SessionRunIdentity
+    from ..domain.session_run import SessionRunAssets
     from ..domain.tech_lead_scratch_identity import ScratchWorktreeIdentity
     from .worktree_context import WorktreeContext
 
@@ -100,15 +105,11 @@ def recover_tech_lead_launch_scope(
 
     Returns ``None`` for a session that is not a tech-lead run at all.
     """
-    from .health_review_trigger import (
-        HEALTH_REVIEW_MARKER_LABEL,
-        is_batch_anchor_title,
-    )
+    from .health_review_trigger import is_batch_anchor_title
 
     if not is_tech_lead_session(config.tech_lead_review_agent, issue.agent_type):
         return None
-    labels = [str(name).casefold() for name in issue.labels]
-    if HEALTH_REVIEW_MARKER_LABEL.casefold() in labels:
+    if health_review_flavor_if_anchored(issue.labels) is not None:
         cohort = (
             tech_lead_authority.load_storm_cohort(anchor_issue_number=issue.number)
             if tech_lead_authority is not None
@@ -125,31 +126,52 @@ def recover_tech_lead_launch_scope(
     return TechLeadLaunchScope(flavor=TechLeadSessionFlavor.FAILURE_INVESTIGATION)
 
 
+def resumes_an_investigation(retry: "PendingValidationRetry") -> bool:
+    """Whether this retry picks a failure investigation back up (#7273).
+
+    Read from the CHECKOUT and its BRANCH together, which is what the scratch
+    identity owner calls one checkout: both halves have to agree, so a checkout
+    re-pointed at some other branch is not mistaken for the investigation that
+    used to live there.
+    """
+    return names_one_scratch_checkout(
+        Path(retry.worktree_path).name, retry.branch_name or ""
+    )
+
+
 def carry_launch_authority_forward(
     tech_lead_authority: "TechLeadAuthorityStore",
     retry: "PendingValidationRetry",
-    run: "SessionRunIdentity",
+    run: "SessionRunAssets",
 ) -> str | None:
-    """Re-record a retried run's launch authority against its new run (#7273).
+    """Carry a retried tech-lead run's whole trusted launch state forward (#7273).
 
-    A tech-lead run's completion is accepted only against an authority row
-    keyed by ``(run_id, session_name)``, recorded create-once at the ORIGINAL
-    launch. A validation retry allocates a new run, so without this the resumed
-    run has no row and its completion is rejected as ``missing_authority`` --
-    pre-action, with zero push, which is to say a tech-lead validation retry
-    could never complete at all.
+    A tech-lead completion is admitted against TWO things, both created once at
+    the ORIGINAL launch: the authority row keyed by ``(run_id, session_name)``,
+    and the agent-visible ``tech-lead-data/`` copies that
+    ``resolve_tech_lead_launch_authority`` reads back out of the RUN DIRECTORY
+    to prove nothing was edited after launch. A validation retry allocates a new
+    run, so the resumed run has neither.
 
-    The grant is CARRIED, never re-derived: re-sampling scope from the board
-    would let a run's mutation scope grow between attempts, which is exactly
-    what the create-once row exists to prevent.
+    Carrying only the row is not enough, and fails in a way that looks fixed: the
+    row loads, and then the assignment copy is missing from the new run
+    directory, so the completion is rejected as ``scope_tampered`` instead of
+    ``missing_authority`` -- still pre-action, still zero push (round 1
+    finding 1).
+
+    Everything is COPIED, never re-derived: re-sampling scope from the board
+    would let a run's mutation scope grow between attempts, which is exactly what
+    the create-once row exists to prevent. The copy is byte-for-byte for the same
+    reason -- a regenerated assignment is a new assertion of scope, not evidence
+    of the old one.
 
     Lives here, with the rest of the tech-lead launch authority policy, rather
-    than in the launcher: the launcher is at its line budget and this is not
-    its rule.
+    than in the launcher: the launcher is at its line budget and this is not its
+    rule.
 
-    Returns a refusal message when the retry names an authority that is gone.
-    Relaunching without it would spend an agent session on work whose
-    completion is already guaranteed to be rejected.
+    Returns a refusal message when the retry names launch state that is gone.
+    Relaunching without it would spend an agent session on work whose completion
+    is already guaranteed to be rejected.
     """
     source = retry.authority_run
     if source is None:
@@ -164,14 +186,18 @@ def carry_launch_authority_forward(
             "gone; relaunching would produce a completion the orchestrator "
             "must reject"
         )
+    if error := carry_tech_lead_inputs(retry, source, run):
+        return error
     tech_lead_authority.record(
-        run_id=run.run_id, session_name=run.session_name, authority=authority
+        run_id=run.identity.run_id,
+        session_name=run.identity.session_name,
+        authority=authority,
     )
     logger.info(
         "Validation retry for issue #%d carried launch authority forward: %s -> %s",
         retry.issue_number,
         source.run_id,
-        run.run_id,
+        run.identity.run_id,
     )
     return None
 
@@ -318,7 +344,7 @@ def read_tech_lead_assignment(run_dir: Path) -> TechLeadAssignment | None:
     Returns None when the assignment file is absent (pre-upgrade sessions).
     Malformed content raises ValueError - callers decide the fail-safe.
     """
-    path = run_dir / "tech-lead-data" / TECH_LEAD_ASSIGNMENT_FILENAME
+    path = run_dir / TECH_LEAD_DATA_DIRNAME / TECH_LEAD_ASSIGNMENT_FILENAME
     if not path.exists():
         return None
     return TechLeadAssignment.read(path)
@@ -435,10 +461,10 @@ def prepare_tech_lead_session_data(
     """
     if not is_tech_lead_session(config.tech_lead_review_agent, issue.agent_type):
         return ()
-    flavor = (tech_lead_scope.flavor if tech_lead_scope is not None else None) or (
-        TechLeadSessionFlavor.HEALTH_REVIEW
-        if HEALTH_REVIEW_MARKER_LABEL in issue.labels
-        else TechLeadSessionFlavor.BATCH_REVIEW
+    flavor = (
+        (tech_lead_scope.flavor if tech_lead_scope is not None else None)
+        or health_review_flavor_if_anchored(issue.labels)
+        or TechLeadSessionFlavor.BATCH_REVIEW
     )
     run_dir = ctx.run.run_dir
     tech_lead_manifest = None
@@ -455,7 +481,7 @@ def prepare_tech_lead_session_data(
             ctx.update_manifest(
                 {
                     "tech_lead_manifest": str(
-                        run_dir / "tech-lead-data" / "manifest.json"
+                        run_dir / TECH_LEAD_DATA_DIRNAME / "manifest.json"
                     )
                 }
             )
@@ -465,7 +491,7 @@ def prepare_tech_lead_session_data(
         focus_issue_number=issue.number if focused else None,
         focus_reason=issue.title if focused else "",
     )
-    assignment_path = run_dir / "tech-lead-data" / TECH_LEAD_ASSIGNMENT_FILENAME
+    assignment_path = run_dir / TECH_LEAD_DATA_DIRNAME / TECH_LEAD_ASSIGNMENT_FILENAME
     assignment.write(assignment_path)
     ctx.update_manifest({"tech_lead_assignment": str(assignment_path)})
     focus_issue = issue.number if focused else None
@@ -505,7 +531,7 @@ def prepare_tech_lead_session_data(
         issue_numbers=rework_issue_numbers,
         expected_heads={pr.number: pr.head_sha for pr in tech_lead_manifest.prs} if tech_lead_manifest else None,
     )
-    (run_dir / "tech-lead-data" / "scoped-rework-targets.json").write_text(
+    (run_dir / TECH_LEAD_DATA_DIRNAME / "scoped-rework-targets.json").write_text(
         json.dumps([target.to_dict() for target in rework_targets], indent=2), encoding="utf-8"
     )
     act_level_issue_numbers = (
@@ -516,7 +542,7 @@ def prepare_tech_lead_session_data(
         else ()
     )
     validated_work_authorities = prepare_validated_work_recovery_targets(
-        data_dir=run_dir / "tech-lead-data",
+        data_dir=run_dir / TECH_LEAD_DATA_DIRNAME,
         authority=validated_work_recovery_authority,
         issue_numbers=act_level_issue_numbers,
     )
@@ -530,7 +556,7 @@ def prepare_tech_lead_session_data(
         {previous_disposition.tracker_issue_number} if previous_disposition else set()
     ))) if focused else ()
     if focused:
-        (run_dir / "tech-lead-data" / "recovery-context.json").write_text(json.dumps({
+        (run_dir / TECH_LEAD_DATA_DIRNAME / "recovery-context.json").write_text(json.dumps({
             "recovery_tracker_numbers": list(tracker_grants),
             "previous_disposition": previous_disposition.to_dict() if previous_disposition else None,
         }, indent=2) + "\n")
@@ -582,7 +608,7 @@ def _write_board_snapshot(
     The run-manifest entry is recorded only after a successful write so it
     never points at a missing file.
     """
-    snapshot_path = run_dir / "tech-lead-data" / BOARD_SNAPSHOT_FILENAME
+    snapshot_path = run_dir / TECH_LEAD_DATA_DIRNAME / BOARD_SNAPSHOT_FILENAME
     snapshot.write(snapshot_path)
     ctx.update_manifest({"board_snapshot": str(snapshot_path)})
 

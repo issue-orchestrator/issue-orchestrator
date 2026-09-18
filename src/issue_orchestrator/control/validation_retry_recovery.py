@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
 from ..domain.models import PendingValidationRetry
+from ..domain.registered_completion import CompletionProcessingPolicy
 from ..domain.tech_lead_scratch_identity import scratch_worktree_focus_issue
 from ..infra.validation_state import ValidationRetryArtifacts, find_pending_retry_artifacts
 from .worktree_manager import get_worktree_path
@@ -120,8 +121,19 @@ class ValidationRetryRecovery:
         authority row keyed by that run, so a resumed investigation that could not
         name it would be rejected as ``missing_authority`` -- pre-action, with the
         work pushed nowhere.
+
+        Which retries name one is NOT decided here. The same
+        ``CompletionProcessingPolicy`` that decides it on the live completion
+        path decides it here, from the agent the run recorded. Deciding it
+        locally -- "the manifest had an identity, so carry it" -- named a source
+        run for every ordinary coder retry too, and the launcher hard-refuses a
+        retry whose named authority has no row: every recovered coder retry
+        would sit in the queue forever (round 1 finding 2).
         """
         state = artifacts.state
+        policy = CompletionProcessingPolicy.for_unprocessed_session(
+            artifacts.run_agent_label, self._config.tech_lead_review_agent
+        )
         return PendingValidationRetry(
             issue_number=issue_number,
             issue_title=f"Issue #{issue_number}",  # The full title is not on disk
@@ -134,7 +146,7 @@ class ValidationRetryRecovery:
             retry_count=state.retry_count,
             source_task=artifacts.source_task,
             validation_cmd=state.validation_cmd,
-            authority_run=artifacts.run,
+            authority_run=policy.inheritable_launch_authority(artifacts.run),
         )
 
     @staticmethod

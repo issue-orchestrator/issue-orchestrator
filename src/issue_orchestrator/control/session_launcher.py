@@ -61,6 +61,7 @@ from ..infra.validation_state import DEFAULT_RETRY_TEMPLATE, _truncate_with_tail
 from ..domain.tech_lead_session import TechLeadLaunchScope
 from .tech_lead_session_policy import (
     carry_launch_authority_forward,
+    resumes_an_investigation,
     failure_investigation_scratch_identity,
     is_tech_lead_session,
     prepare_tech_lead_session_data,
@@ -1232,7 +1233,16 @@ class SessionLauncher:
             branch_name=retry.branch_name or None,
             enforce_hooks=self.config.enforce_hooks,
             pre_push_hook=self.config.pre_push_hook,
-            reuse_options=self._worktree_reuse_options(allow_remote_branch_delete=False),
+            reuse_options=self._worktree_reuse_options(
+                allow_remote_branch_delete=False,
+                # An investigation checkout is resumed, not refreshed. Reuse
+                # rebases the branch onto the base and hard-RESETS it when that
+                # conflicts -- and this branch was never pushed, so those
+                # commits exist nowhere else. The retry would destroy exactly
+                # the work the queue entry and the reconciliation hold both
+                # exist to protect (round 1 finding 3).
+                preserve_branch=resumes_an_investigation(retry),
+            ),
             phase_name=phase_name,
             stack_base_branch=stack_decision.base_branch,
         )
@@ -1250,16 +1260,20 @@ class SessionLauncher:
         branch_name = ctx.branch_name
         run = ctx.run
 
+        # BEFORE the durable hold: this can refuse, and a refusal after the
+        # hold returns with the claim still marked actively held -- a phantom
+        # in-flight row that settlement can only refresh, never clear, and that
+        # every retry attempt adds another of (round 1 finding 5).
+        if error := carry_launch_authority_forward(
+            self._tech_lead_authority, retry, run
+        ):
+            self._release_claim_if_held(issue.number, claim)
+            return LaunchResult(None, False, error)
+
         # Durable before anything irreversible (#6999 A2).
         if failure := work_claim.hold_before_spawn(run, issue_number=issue.number):
             self._release_claim_if_held(issue.number, claim)
             return failure
-
-        if error := carry_launch_authority_forward(
-            self._tech_lead_authority, retry, run.identity
-        ):
-            self._release_claim_if_held(issue.number, claim)
-            return LaunchResult(None, False, error)
 
         with abandon_claim_unless_spawned(work_claim, run) as spawn:
             extra_args = self._extra_provider_args_from_labels(issue.labels)

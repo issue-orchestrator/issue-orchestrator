@@ -152,10 +152,13 @@ class ValidationRetryArtifacts:
     valid coding-side task, so a review-only or unknown-provenance artifact can
     never be relaunched as coding work.
 
-    ``run`` is the identity of the run that queued this retry, read back from
-    the run directory's manifest. A relaunch needs it to carry a Tech Lead run's
-    create-once launch authority forward (#7273); it is ``None`` for legacy
-    worktree-level state, which has no run directory at all.
+    ``run`` is the identity of the run that queued this retry and
+    ``run_agent_label`` the agent it ran as, both read back from the run
+    directory's manifest. A relaunch needs the first to carry a Tech Lead run's
+    create-once launch authority forward, and the second to decide whether it
+    should -- the same question ``CompletionProcessingPolicy`` answers on the
+    live path (#7273). Both are ``None`` for legacy worktree-level state, which
+    has no run directory at all.
     """
 
     state: ValidationState
@@ -163,6 +166,7 @@ class ValidationRetryArtifacts:
     source_task: TaskKind
     retry_prompt_path: Path | None = None
     run: SessionRunIdentity | None = None
+    run_agent_label: str | None = None
 
 
 def _now_iso() -> str:
@@ -286,19 +290,40 @@ def _run_source_task(run_dir: Path) -> TaskKind | None:
     return TaskKind.from_session_name(_run_session_name(run_dir))
 
 
+def _run_manifest(run_dir: Path) -> "RunManifest | None":
+    """The run's manifest, or ``None`` when this build cannot use it.
+
+    A run directory with no manifest at all predates run-scoped identity and is
+    simply legacy. A manifest that EXISTS and cannot be read is damage, and it
+    costs something specific: a Tech Lead retry recovered without its source run
+    carries no launch authority, so its completion is rejected. It cannot be
+    resolved here -- the checkout still has to be recovered, because losing the
+    retry loses the branch -- so it is reported at ERROR rather than passed over
+    quietly (round 1 finding 4).
+    """
+    if not (run_dir / "manifest.json").exists():
+        return None
+    try:
+        return RunManifest.load(run_dir)
+    except (FileNotFoundError, json.JSONDecodeError, OSError, ValueError) as exc:
+        logger.error(
+            "Run manifest at %s is unreadable (%s); a retry recovered from this "
+            "run cannot name the launch authority its completion needs",
+            run_dir,
+            exc,
+        )
+        return None
+
+
 def _run_identity(run_dir: Path) -> "SessionRunIdentity | None":
     """The identity of the run that owns ``run_dir``, from its manifest.
 
     The directory name carries the run id and session name, but not the start
-    time, and the identity type refuses a partial one. A manifest that cannot be
-    read, or that predates the started_at field, yields ``None`` rather than a
-    fabricated identity: a retry with no named source run simply inherits no
-    launch authority, which is the correct outcome for a run that recorded none.
+    time, and the identity type refuses a partial one, so a manifest that
+    predates ``started_at`` yields ``None`` rather than a fabricated identity.
     """
-    try:
-        manifest = RunManifest.load(run_dir)
-    except (FileNotFoundError, json.JSONDecodeError, OSError, ValueError) as exc:
-        logger.warning("Failed to read run identity from %s: %s", run_dir, exc)
+    manifest = _run_manifest(run_dir)
+    if manifest is None:
         return None
     if not (manifest.session_name and manifest.run_id and manifest.started_at):
         return None
@@ -307,6 +332,12 @@ def _run_identity(run_dir: Path) -> "SessionRunIdentity | None":
         run_id=manifest.run_id,
         started_at=manifest.started_at,
     )
+
+
+def _run_agent_label(run_dir: Path) -> str | None:
+    """The agent the run ran as, which is what says whether it was Tech Lead."""
+    manifest = _run_manifest(run_dir)
+    return None if manifest is None else manifest.agent_label
 
 
 def _run_is_review_only(run_dir: Path) -> bool:
@@ -359,6 +390,7 @@ def _find_run_scoped_retry_artifacts(
                 source_task=source_task,
                 retry_prompt_path=prompt_path if prompt_path.exists() else None,
                 run=_run_identity(run_dir),
+                run_agent_label=_run_agent_label(run_dir),
             )
 
         if _run_retry_prompt_file(run_dir).exists():

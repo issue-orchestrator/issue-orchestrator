@@ -18,6 +18,7 @@ only (tamper evidence when they diverge).
 """
 
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
@@ -39,6 +40,28 @@ TECH_LEAD_ASSIGNMENT_FILENAME = "tech-lead-assignment.json"
 # already-open health-review anchor. Single owner — the planner, launcher,
 # fact gatherer, and startup recovery all import it from here.
 HEALTH_REVIEW_MARKER_LABEL = "tech_lead:health-review"
+
+
+def health_review_flavor_if_anchored(
+    labels: "Iterable[str]",
+) -> "TechLeadSessionFlavor | None":
+    """HEALTH_REVIEW when these labels carry the ADR-0031 §4 marker, else None.
+
+    Casefolded, because GitHub label names are case-insensitive and this is
+    crash-safe truth. Two launch paths used to read the marker by hand and they
+    disagreed: one casefolded both sides, the other compared exactly, so a label
+    stored with different case selected HEALTH_REVIEW on one path and
+    BATCH_REVIEW on the other. Same rule, two answers, which is the cross-path
+    drift the abstraction pass exists to catch.
+
+    Returns the flavor rather than a boolean so a caller composing a default
+    (``... or health_review_flavor_if_anchored(...) or BATCH_REVIEW``) does not
+    need a branch of its own.
+    """
+    marker = HEALTH_REVIEW_MARKER_LABEL.casefold()
+    if any(str(name).casefold() == marker for name in labels):
+        return TechLeadSessionFlavor.HEALTH_REVIEW
+    return None
 
 # Gate label carried by gated tech_lead proposal issues (#6778, ADR-0031 §2
 # amendment). Orchestrator-attached at creation; REMOVING it is per-instance

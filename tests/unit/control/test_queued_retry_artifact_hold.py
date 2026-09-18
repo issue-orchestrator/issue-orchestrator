@@ -25,12 +25,23 @@ ORIGINAL = SessionRunIdentity(
 )
 
 
-def _retry(authority_run: SessionRunIdentity | None) -> PendingValidationRetry:
+def _retry(
+    authority_run: SessionRunIdentity | None,
+    *,
+    worktree_path: str = "/tmp/wt/repo-tech-lead-6410-abcdef123456",
+) -> PendingValidationRetry:
+    """A queued retry. The CHECKOUT NAME is what says it is an investigation.
+
+    The hold used to key on ``authority_run``, which is read back off a run
+    manifest -- so a manifest that could not be read released the hold on
+    exactly the retry that most needed it (round 1 finding 4). The checkout
+    path is a durable fact that no read can lose.
+    """
     return PendingValidationRetry(
         issue_number=6410,
         issue_title="Investigate stranded failure",
         agent_label="agent:tech-lead",
-        worktree_path="/tmp/worktree-6410",
+        worktree_path=worktree_path,
         branch_name="tech-lead-investigation-6410-abcdef123456",
         original_prompt="Investigate issue #6410",
         validation_error="boom",
@@ -78,9 +89,31 @@ def test_switching_tech_lead_review_off_does_not_release_a_queued_retry(
 def test_an_ordinary_retry_holds_nothing(
     state: OrchestratorState, sample_config
 ) -> None:
-    """Only a retry resuming a run that HAD authority reads those artifacts."""
+    """An ordinary coding retry reads no tech-lead artifacts.
+
+    Its checkout is the issue's own worktree, which names no investigation --
+    and that, not the presence of an authority row, is what distinguishes it.
+    """
+    sample_config.tech_lead_review_on_failure = True
+    sample_config.tech_lead_review_agent = "agent:tech-lead"
+    state.pending_validation_retries.append(
+        _retry(None, worktree_path="/tmp/wt/repo-6410")
+    )
+
+    assert _held(state, sample_config) == frozenset()
+
+
+def test_an_investigation_retry_holds_even_with_no_authority_run(
+    state: OrchestratorState, sample_config
+) -> None:
+    """The hold survives a run manifest this build could not read.
+
+    That is the case where the artifacts matter MOST: the retry cannot name its
+    launch authority, so an operator is going to have to look at what the run
+    left behind (round 1 finding 4).
+    """
     sample_config.tech_lead_review_on_failure = True
     sample_config.tech_lead_review_agent = "agent:tech-lead"
     state.pending_validation_retries.append(_retry(None))
 
-    assert _held(state, sample_config) == frozenset()
+    assert _held(state, sample_config) == frozenset({6410})

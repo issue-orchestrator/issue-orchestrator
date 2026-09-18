@@ -30,7 +30,7 @@ import pytest
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, cast
+from typing import Any, Optional, cast
 from unittest.mock import MagicMock, patch
 
 from issue_orchestrator.domain.tech_lead_session import TechLeadCreationOrigin
@@ -2061,11 +2061,16 @@ class TestLaunchValidationRetrySession:
     ):
         """The BASELINE, pinned so a narrowing cannot be undone by accident.
 
-        Earlier revisions of this PR refused this launch or derived a scratch
-        worktree for it. Both turned out to need a lifecycle boundary that does
-        not exist yet (#7273, #7274), so today's behaviour stands: the retry
-        launches, carries the recorded branch, and gets no scratch treatment.
-        A mutation restoring either would fail here.
+        Earlier revisions of #7271 refused this launch or derived a scratch
+        worktree for it. Both needed a lifecycle boundary that did not exist
+        then, so #7271 pinned today's behaviour and left the rest to #7273 and
+        #7274: the retry launches, carries the recorded branch, and gets no
+        scratch treatment. A mutation restoring either would fail here.
+
+        #7273 has since landed ONE of the two things it was waiting for: the
+        branch is now PRESERVED, because reuse rebases onto the base and
+        hard-resets on conflict, and an investigation's branch was never pushed.
+        Everything else here still stands.
 
         The retry carries the REAL tech-lead identity -- the configured review
         agent, not merely scratch-shaped strings -- because a refusal or a
@@ -2108,7 +2113,10 @@ class TestLaunchValidationRetrySession:
             "a scratch worktree was derived; that needs #7273 first"
         )
         assert call["branch_name"] == scratch_branch
-        assert call["reuse_options"].preserve_branch is False
+        assert call["reuse_options"].preserve_branch is True, (
+            "the retry would rebase/reset the investigation's unpushed branch "
+            "onto base -- #7273"
+        )
         assert call["reuse_options"].disable_reuse is False, (
             "the retry stopped REUSING its checkout, which detaches and "
             "recreates it -- and reuse is what keeps the investigation's "
@@ -8641,16 +8649,47 @@ class TestAValidationRetryCarriesItsLaunchAuthority:
             focus_issue_number=focus,
         )
 
+    def _seed_launch_inputs(
+        self, checkout: Path, source: SessionRunIdentity, focus: int = 6410
+    ) -> Path:
+        """Write what the ORIGINAL launch left in its run directory.
+
+        The completion owner reads ``tech-lead-assignment.json`` back out of the
+        run directory and compares it with the authority row, so a resumed run
+        that does not have it is rejected as ``scope_tampered`` even though the
+        row loaded fine (round 1 finding 1).
+        """
+        data = (
+            checkout
+            / ".issue-orchestrator"
+            / "sessions"
+            / f"{source.run_id}__{source.session_name}"
+            / "tech-lead-data"
+        )
+        data.mkdir(parents=True, exist_ok=True)
+        (data / "tech-lead-assignment.json").write_text(
+            json.dumps(
+                {
+                    "flavor": TechLeadSessionFlavor.FAILURE_INVESTIGATION.value,
+                    "anchor_issue_number": focus,
+                    "focus_issue_number": focus,
+                }
+            )
+        )
+        (data / "board-snapshot.json").write_text(json.dumps({"schema": 8}))
+        return data
+
     def _retry(
         self,
         source: SessionRunIdentity | None,
         agent_label: str = "agent:tech-lead",
+        worktree_path: str = "/tmp/worktree-6410",
     ) -> PendingValidationRetry:
         return PendingValidationRetry(
             issue_number=6410,
             issue_title="Investigate stranded failure",
             agent_label=agent_label,
-            worktree_path="/tmp/worktree-6410",
+            worktree_path=worktree_path,
             branch_name="tech-lead-investigation-6410-abcdef123456",
             original_prompt="Investigate issue #6410",
             validation_error="boom",
@@ -8661,10 +8700,8 @@ class TestAValidationRetryCarriesItsLaunchAuthority:
             authority_run=source,
         )
 
-    def test_the_resumed_run_gets_the_original_grant(
-        self, launcher_bundle, sample_config, tmp_path
-    ) -> None:
-        """Carried, not re-derived: the row is the one the original recorded."""
+    def _resumed(self, launcher_bundle, sample_config, tmp_path, checkout: Path):
+        """Launch a retry of an investigation whose original run is intact."""
         TestLaunchTechLeadIssueSessionFlavors.enable_tech_lead_agent(sample_config, tmp_path)
         store = SqliteTechLeadAuthorityStore.for_repo(sample_config.repo_root)
         source = SessionRunIdentity(
@@ -8674,9 +8711,21 @@ class TestAValidationRetryCarriesItsLaunchAuthority:
         store.record(
             run_id=source.run_id, session_name=source.session_name, authority=granted
         )
+        self._seed_launch_inputs(checkout, source)
 
         result = launcher_bundle.launcher.launch_validation_retry_session(
-            self._retry(source), active_sessions=[]
+            self._retry(source, worktree_path=str(checkout)), active_sessions=[]
+        )
+        return result, store, source, granted
+
+    def test_the_resumed_run_gets_the_original_grant(
+        self, launcher_bundle, sample_config, tmp_path
+    ) -> None:
+        """Carried, not re-derived: the row is the one the original recorded."""
+        checkout = tmp_path / "repo-tech-lead-6410-abcdef123456"
+        checkout.mkdir()
+        result, store, source, granted = self._resumed(
+            launcher_bundle, sample_config, tmp_path, checkout
         )
 
         assert result.success is True, result.reason
@@ -8687,6 +8736,60 @@ class TestAValidationRetryCarriesItsLaunchAuthority:
             store.load(run_id=resumed.run_id, session_name=resumed.session_name)
             == granted
         ), "the resumed run does not carry the original grant"
+
+    def test_the_resumed_run_also_gets_the_launch_inputs(
+        self, launcher_bundle, sample_config, tmp_path
+    ) -> None:
+        """The row alone still fails, one step later and under another name.
+
+        ``resolve_tech_lead_launch_authority`` reads the assignment copy back
+        out of the NEW run directory and compares it with the row. Missing means
+        tampered, so carrying only the row moved the rejection from
+        ``missing_authority`` to ``scope_tampered`` -- still pre-action, still
+        zero push (round 1 finding 1).
+        """
+        checkout = tmp_path / "repo-tech-lead-6410-abcdef123456"
+        checkout.mkdir()
+        result, _, _, _ = self._resumed(
+            launcher_bundle, sample_config, tmp_path, checkout
+        )
+
+        assert result.success is True, result.reason
+        assert result.session is not None
+        carried = (
+            result.session.run_assets.run_dir
+            / "tech-lead-data"
+            / "tech-lead-assignment.json"
+        )
+        assert carried.is_file(), (
+            "the resumed run has no assignment copy, so its completion is "
+            "rejected as scope_tampered"
+        )
+        assert json.loads(carried.read_text())["focus_issue_number"] == 6410
+
+    def test_a_retry_whose_launch_inputs_are_gone_is_refused(
+        self, launcher_bundle, sample_config, tmp_path
+    ) -> None:
+        """The row can survive while the artifacts it is checked against do not."""
+        TestLaunchTechLeadIssueSessionFlavors.enable_tech_lead_agent(sample_config, tmp_path)
+        store = SqliteTechLeadAuthorityStore.for_repo(sample_config.repo_root)
+        source = SessionRunIdentity(
+            session_name="issue-6410", run_id="run-original", started_at="2026-09-18"
+        )
+        store.record(
+            run_id=source.run_id,
+            session_name=source.session_name,
+            authority=self._authority(),
+        )
+        checkout = tmp_path / "repo-tech-lead-6410-abcdef123456"
+        checkout.mkdir()
+
+        result = launcher_bundle.launcher.launch_validation_retry_session(
+            self._retry(source, worktree_path=str(checkout)), active_sessions=[]
+        )
+
+        assert result.success is False
+        assert "launch inputs" in (result.reason or "")
 
     def test_a_retry_whose_authority_is_gone_is_refused_before_it_spends_a_session(
         self, launcher_bundle, sample_config, tmp_path
@@ -8707,6 +8810,95 @@ class TestAValidationRetryCarriesItsLaunchAuthority:
 
         assert result.success is False
         assert "launch authority" in (result.reason or "")
+
+    def test_the_investigation_branch_is_not_rebased_away_by_the_retry(
+        self, launcher_bundle, sample_config, tmp_path, mock_worktree_manager
+    ) -> None:
+        """Reuse rebases onto the base and hard-RESETS when that conflicts.
+
+        The investigation branch was never pushed, so those commits exist
+        nowhere else. Without this the retry destroyed exactly the work the
+        queue entry and the reconciliation hold both exist to protect -- the
+        checkout survived the restart and then the relaunch emptied it (round 1
+        finding 3).
+        """
+        checkout = tmp_path / "repo-tech-lead-6410-abcdef123456"
+        checkout.mkdir()
+        result, _, _, _ = self._resumed(
+            launcher_bundle, sample_config, tmp_path, checkout
+        )
+
+        assert result.success is True, result.reason
+        [call] = [
+            c for c in mock_worktree_manager.create_calls if c["issue_number"] == 6410
+        ]
+        assert call["reuse_options"].preserve_branch is True, (
+            "the retry would rebase/reset the investigation branch onto base"
+        )
+
+    def test_an_ordinary_retry_keeps_being_refreshed(
+        self, launcher_bundle, sample_config, mock_worktree_manager
+    ) -> None:
+        """The premise: an ordinary coding retry still rebases onto base.
+
+        That is what makes a rerun pick up a moved base branch, and it is safe
+        there because the branch is pushed.
+        """
+        result = launcher_bundle.launcher.launch_validation_retry_session(
+            self._retry(None, agent_label="agent:web", worktree_path="/tmp/wt/repo-6410"),
+            active_sessions=[],
+        )
+
+        assert result.success is True, result.reason
+        [call] = [
+            c for c in mock_worktree_manager.create_calls if c["issue_number"] == 6410
+        ]
+        assert call["reuse_options"].preserve_branch is False
+
+    def test_a_refusal_never_takes_the_durable_hold(
+        self, launcher_bundle, sample_config, tmp_path
+    ) -> None:
+        """The refusal has to come BEFORE the durable hold.
+
+        After it, a refused relaunch returned with the claim marked actively
+        held and no terminal to settle it: the row is outside
+        ``abandon_claim_unless_spawned``, settlement can only refresh a deferred
+        row rather than clear that one, and every further attempt adds another
+        phantom (round 1 finding 5).
+        """
+        TestLaunchTechLeadIssueSessionFlavors.enable_tech_lead_agent(sample_config, tmp_path)
+        vanished = SessionRunIdentity(
+            session_name="issue-6410", run_id="run-gone", started_at="2026-09-18"
+        )
+        held: list[str] = []
+
+        class _RecordingClaim:
+            def can_reclaim_deferred(self) -> bool:
+                return True
+
+            def hold_before_spawn(self, run, *, issue_number):
+                held.append(run.identity.run_id)
+                return None
+
+            def abandon_unspawned(self, run) -> None:
+                held.remove(run.identity.run_id)
+
+            def settle_unspawned(self, disposal, claim=None) -> None:
+                return None
+
+            def spend_budget(self, claim) -> bool:
+                return True
+
+        result = launcher_bundle.launcher.launch_validation_retry_session(
+            self._retry(vanished),
+            active_sessions=[],
+            work_claim=cast(Any, _RecordingClaim()),
+        )
+
+        assert result.success is False
+        assert held == [], (
+            f"a refused relaunch left the durable claim held: {held}"
+        )
 
     def test_an_ordinary_retry_records_nothing(
         self, launcher_bundle, sample_config

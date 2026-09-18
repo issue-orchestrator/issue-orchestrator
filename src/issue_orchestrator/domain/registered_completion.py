@@ -6,7 +6,7 @@ from .completion_intake import CompletionIntakeError
 from .models import CompletionRecord, sanitize_agent_label
 from pathlib import Path
 from .session_key import TaskKind
-from .session_run import RunContainedFile, SessionRunAssets, SessionRunIdentity
+from .session_run import RunContainedFile, SessionRunIdentity
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,7 +80,7 @@ class CompletionProcessingPolicy:
         return self.task is TaskKind.TECH_LEAD
 
     def inheritable_launch_authority(
-        self, run: "SessionRunAssets"
+        self, run: "SessionRunIdentity | None"
     ) -> "SessionRunIdentity | None":
         """The run a validation retry of this one inherits authority from (#7273).
 
@@ -89,8 +89,14 @@ class CompletionProcessingPolicy:
         with no row would be indistinguishable from one whose row has been lost,
         and the launcher refuses to relaunch the second -- so naming one for
         every retry would strand every ordinary retry in the queue.
+
+        Takes the identity rather than the whole run assets because startup
+        recovery has only the identity, read back off the manifest, and it has
+        to reach the SAME answer as the live completion path. Recovery inferring
+        its own rule from "the manifest had an identity" is how the two drifted
+        and every recovered coder retry became unlaunchable (round 1 finding 2).
         """
-        return run.identity if self.is_tech_lead else None
+        return run if self.is_tech_lead else None
 
 
 @dataclass(frozen=True, slots=True)

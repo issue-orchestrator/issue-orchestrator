@@ -62,6 +62,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..domain.models import Session
+from ..domain.tech_lead_run_artifacts import TECH_LEAD_DATA_DIRNAME
 from ..domain.board_snapshot import BOARD_SNAPSHOT_FILENAME, BoardSnapshot
 from ..domain.tech_lead_manifest import TechLeadManifest
 from ..domain.tech_lead_session import TechLeadLaunchAuthority, TechLeadSessionFlavor
@@ -151,7 +152,7 @@ def read_tech_lead_manifest(run_dir: Path) -> TechLeadManifest | None:
 
 def _health_snapshot_scope_error(run_dir: Path, authority: TechLeadLaunchAuthority) -> str | None:
     """Return snapshot/cohort tamper detail for a health-review authority."""
-    snapshot_path = run_dir / "tech-lead-data" / BOARD_SNAPSHOT_FILENAME
+    snapshot_path = run_dir / TECH_LEAD_DATA_DIRNAME / BOARD_SNAPSHOT_FILENAME
     if not snapshot_path.exists():
         return "worktree board-snapshot.json is missing (deleted after launch)"
     try:

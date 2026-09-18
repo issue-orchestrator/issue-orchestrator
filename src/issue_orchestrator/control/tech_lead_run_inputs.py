@@ -1,0 +1,95 @@
+"""How a tech-lead run's agent-visible launch inputs travel (#7273).
+
+``resolve_tech_lead_launch_authority`` admits a completion against two things
+created once at the ORIGINAL launch: the authority row, and the
+``tech-lead-data/`` copies it reads back out of the RUN DIRECTORY to prove
+nothing was edited after launch. A validation retry allocates a new run, so the
+resumed run has neither, and carrying only the row fails in a way that looks
+fixed -- the row loads, the assignment copy is missing, and the completion is
+rejected as ``scope_tampered`` instead of ``missing_authority``. Still
+pre-action, still zero push.
+
+The inputs get their own owner rather than another branch inside the launch
+policy: they are a distinct thing that has to survive a run boundary, and the
+authority row already has one.
+"""
+
+from __future__ import annotations
+
+import logging
+import shutil
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+from ..domain.tech_lead_run_artifacts import TECH_LEAD_DATA_DIRNAME
+from ..domain.tech_lead_session import TECH_LEAD_ASSIGNMENT_FILENAME
+
+if TYPE_CHECKING:
+    from ..domain.models import PendingValidationRetry
+    from ..domain.session_run import SessionRunAssets, SessionRunIdentity
+
+logger = logging.getLogger(__name__)
+
+
+def carry_tech_lead_inputs(
+    retry: "PendingValidationRetry",
+    source: "SessionRunIdentity",
+    run: "SessionRunAssets",
+) -> str | None:
+    """Copy the original run's ``tech-lead-data/`` into the resumed run.
+
+    Everything is COPIED, never re-derived: re-sampling scope from the board
+    would let a run's mutation scope grow between attempts, which is exactly
+    what the create-once row exists to prevent. Byte-for-byte for the same
+    reason -- a regenerated assignment is a new assertion of scope, not evidence
+    of the old one.
+
+    Returns a refusal message when the original inputs are gone. Relaunching
+    without them would spend an agent session on work whose completion the
+    orchestrator is already guaranteed to reject.
+    """
+    origin = source_data_dir(retry, source)
+    if not (origin / TECH_LEAD_ASSIGNMENT_FILENAME).is_file():
+        return (
+            f"Validation retry for issue #{retry.issue_number} names run "
+            f"{source.run_id}, whose {TECH_LEAD_DATA_DIRNAME}/"
+            f"{TECH_LEAD_ASSIGNMENT_FILENAME} is gone; the resumed run has no "
+            "launch inputs the completion owner would trust"
+        )
+    destination = run.run_dir / TECH_LEAD_DATA_DIRNAME
+    try:
+        shutil.copytree(origin, destination, dirs_exist_ok=True)
+    except OSError as exc:
+        return (
+            f"Validation retry for issue #{retry.issue_number} could not carry "
+            f"{TECH_LEAD_DATA_DIRNAME} from run {source.run_id} to "
+            f"{run.identity.run_id}: {exc}"
+        )
+    logger.info(
+        "Validation retry for issue #%d carried %s forward: %s -> %s",
+        retry.issue_number,
+        TECH_LEAD_DATA_DIRNAME,
+        source.run_id,
+        run.identity.run_id,
+    )
+    return None
+
+
+def source_data_dir(
+    retry: "PendingValidationRetry", source: "SessionRunIdentity"
+) -> Path:
+    """Where the original run left its inputs, inside the retry's checkout.
+
+    Derived rather than stored: the retry already carries the durable checkout
+    and the run it came from, and a run directory is named by its own identity.
+    """
+    return (
+        Path(retry.worktree_path)
+        / ".issue-orchestrator"
+        / "sessions"
+        / f"{source.run_id}__{source.session_name}"
+        / TECH_LEAD_DATA_DIRNAME
+    )
+
+
+__all__ = ["carry_tech_lead_inputs", "source_data_dir"]
