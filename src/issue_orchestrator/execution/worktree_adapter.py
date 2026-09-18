@@ -42,8 +42,8 @@ class GitWorktreeManager:
     therefore carries the repository it belongs to.
     """
 
-    def __init__(self, repo_root: Path | None = None) -> None:
-        self._repo_root = None if repo_root is None else Path(repo_root)
+    def __init__(self, repo_root: Path) -> None:
+        self._repo_root = Path(repo_root)
 
     def create(
         self,

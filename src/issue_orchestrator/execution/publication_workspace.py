@@ -92,7 +92,10 @@ class EscrowPublicationWorkspaces:
             # Verification admits only exact source plus explicitly owned
             # runtime/dependency output. Git requires force for those paths.
             remove_checkout_path(
-                workspace.checkout, force=True, run_git=self._git_runner()
+                workspace.checkout,
+                force=True,
+                run_git=self._git_runner(),
+                repo_root=self._repository,
             )
         else:
             self._remove_absent_registration(workspace.checkout)
@@ -282,7 +285,12 @@ class EscrowPublicationWorkspaces:
             raise ValueError("cannot remove registration for a present checkout")
         registered = self._git.run(self._repository, ["worktree", "list", "--porcelain", "-z"]).stdout.split("\0")
         if f"worktree {checkout}" in registered:
-            remove_checkout_path(checkout, force=True, run_git=self._git_runner())
+            remove_checkout_path(
+                checkout,
+                force=True,
+                run_git=self._git_runner(),
+                repo_root=self._repository,
+            )
 
     @staticmethod
     def _canonical(path: Path) -> None:

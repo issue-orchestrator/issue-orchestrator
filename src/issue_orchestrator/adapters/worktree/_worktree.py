@@ -17,7 +17,7 @@ from ...ports.worktree_custody import CustodyError, CustodyRelease
 from ...ports.worktree_manager import RegisteredWorktree, WorktreeReuseOptions
 from ...infra.worktree_base import resolve_base_branch
 from ._worktree_errors import WorktreeError as WorktreeError
-from .removal import GitRunner, remove_checkout_path
+from .removal import UNKNOWN_REPOSITORY, GitRunner, remove_checkout_path
 from ._worktree_git import _git, _git_env_no_prompt, _git_run
 from ._worktree_hooks import HOOKS_DIR as HOOKS_DIR
 from ._worktree_runtime_setup import WorktreeRuntimeSetup
@@ -570,7 +570,10 @@ def _resolve_repo_root_from_worktree(worktree_path: Path) -> Path | None:
 def _remove_existing_worktree_path(repo_root: Path, worktree_path: Path) -> None:
     logger.info("Removing existing worktree path for fresh create: %s", worktree_path)
     remove_checkout_path(
-        worktree_path, force=True, run_git=git_runner(repo_root)
+        worktree_path,
+        force=True,
+        run_git=git_runner(repo_root),
+        repo_root=repo_root,
     )
 
 
@@ -1376,7 +1379,10 @@ def _remove_orphaned_worktree_path(
         worktree_path,
         force=True,
         run_git=None,
-        repo_root=repo_root,
+        # Said outright: this path exists BECAUSE the repository could not be
+        # resolved, so custody cannot be determined and the loss, if there is
+        # one, is reported rather than prevented.
+        repo_root=repo_root or UNKNOWN_REPOSITORY,
         custody_release=custody_release,
     )
     if worktree_path.exists():

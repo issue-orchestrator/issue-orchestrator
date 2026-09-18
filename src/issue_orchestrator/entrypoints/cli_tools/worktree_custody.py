@@ -22,23 +22,33 @@ from ...ports.worktree_custody import (
     CustodyError,
     CustodyGrant,
     CustodyRelease,
+    CustodyUnavailableError,
 )
 
 
-def _repo_root_of(args: argparse.Namespace) -> Path | None:
-    """The repository the OPERATOR named, and nothing inferred.
+def _repo_root_of(args: argparse.Namespace) -> Path:
+    """Which repository this invocation is about. Required, never guessed.
 
-    ``--repo-root`` is authoritative when given, and otherwise there is no
-    caller-known repository: the checkout answers for itself. Defaulting to
-    whatever repository the working directory happens to sit in would name the
-    wrong store for a checkout that belongs to another one -- and a store that
-    holds nothing is a removal that proceeds.
-
-    Releasing a grant whose checkout is already gone is the case that needs the
-    flag, and its help text says so.
+    ``--repo-root`` wins. Otherwise the repository enclosing the checkout the
+    operator named, and failing that the one enclosing the working directory.
+    If none of those is a repository the command REFUSES, because custody lives
+    in a repository's metadata and there is no such thing as a grant without
+    one -- answering from the wrong store is a removal that proceeds.
     """
     named = getattr(args, "repo_root", None)
-    return Path(named).resolve() if named else None
+    if named:
+        return Path(named).resolve()
+    path = getattr(args, "path", None)
+    for start in ([Path(path)] if path is not None else []) + [Path.cwd()]:
+        enclosing = _enclosing_repository(start.resolve())
+        if enclosing is not None:
+            return enclosing
+    raise CustodyUnavailableError(
+        "no repository here: name one with --repo-root. Custody lives in a "
+        "repository's git metadata, and a checkout that has lost its own .git "
+        "file cannot say which one -- which is exactly when a held checkout "
+        "needs releasing"
+    )
 
 
 def _enclosing_repository(start: Path) -> Path | None:
@@ -74,7 +84,7 @@ def _render(grant: CustodyGrant) -> str:
 
 
 def cmd_list(manager: GitWorktreeManager, args: argparse.Namespace) -> int:
-    repo_root = _repo_root_of(args) or _enclosing_repository(Path.cwd()) or Path.cwd()
+    repo_root = _repo_root_of(args)
     held = manager.checkouts_in_custody(repo_root)
     breached = manager.breached_custody(repo_root)
     if not held:
@@ -155,10 +165,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        manager = GitWorktreeManager(_repo_root_of(args))
         # Bound to the repository the operator named, so a grant is still
         # findable after its checkout lost its .git file -- which is
         # exactly when they are trying to release it.
-        return args.run(GitWorktreeManager(_repo_root_of(args)), args)
+        return args.run(manager, args)
     except (CustodyError, ValueError, OSError) as exc:
         # Every way custody can refuse arrives here as a message and an exit
         # status. A traceback tells an operator nothing they can act on, and

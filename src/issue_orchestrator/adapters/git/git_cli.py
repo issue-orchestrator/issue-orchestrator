@@ -178,6 +178,7 @@ class GitCLI(Git):
             force=force,
             prune=prune,
             run_git=lambda argv: self._error_of(self.run(repo, argv, check=False)),
+            repo_root=repo,
         )
 
     def commit(self, repo: Path, message: str) -> None:

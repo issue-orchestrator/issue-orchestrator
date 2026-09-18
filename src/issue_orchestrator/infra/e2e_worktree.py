@@ -186,7 +186,12 @@ def _recover_worktree(repo_root: Path, worktree_path: Path) -> None:
     # The directory removal that follows a failed git removal is part of the
     # same operation, so it is the primitive's fallback rather than a second
     # step here -- held under one custody answer for both.
-    remove_checkout_path(worktree_path, force=True, run_git=_removal_git(repo_root))
+    remove_checkout_path(
+        worktree_path,
+        force=True,
+        run_git=_removal_git(repo_root),
+        repo_root=repo_root,
+    )
     _create_worktree(repo_root, worktree_path)
 
 

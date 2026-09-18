@@ -378,7 +378,7 @@ async def test_stale_worktrees_fallback_without_config(monkeypatch: pytest.Monke
 
     cmd = ListStaleWorktreesCommand(
         ControlCenterWorktreeAuditOwner(
-            WorktreeAuditOwner(fake_git),
+            lambda _root: WorktreeAuditOwner(fake_git),
             activity_reader,
         )
     )
@@ -454,7 +454,7 @@ async def test_worktree_audit_uses_selected_config_and_retains_active_disposable
     )
     command = ListStaleWorktreesCommand(
         ControlCenterWorktreeAuditOwner(
-            WorktreeAuditOwner(fake_git),
+            lambda _root: WorktreeAuditOwner(fake_git),
             activity_reader,
         )
     )

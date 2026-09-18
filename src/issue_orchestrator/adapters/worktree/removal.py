@@ -40,6 +40,26 @@ GitRunner = Callable[[list[str]], "str | None"]
 
 
 @dataclass(frozen=True)
+class UnknownRepository:
+    """"Nobody here knows which repository this checkout belongs to."
+
+    Passed deliberately, never by default. Custody lives in the repository's
+    metadata, so this says the store cannot be located -- and a removal that
+    proceeds on it is one whose loss is reported by
+    ``GitMetadataWorktreeCustody.breached`` rather than prevented. Every caller
+    that DOES know its repository passes it, so this stays greppable and rare.
+    """
+
+    reason: str
+
+
+#: The one place a removal admits it cannot determine custody.
+UNKNOWN_REPOSITORY = UnknownRepository(
+    "the repository for this path could not be resolved"
+)
+
+
+@dataclass(frozen=True)
 class CheckoutRemoval:
     """What happened, so a caller decides without parsing a message."""
 
@@ -53,7 +73,7 @@ def remove_checkout_path(
     *,
     force: bool,
     run_git: GitRunner | None,
-    repo_root: Path | None = None,
+    repo_root: "Path | UnknownRepository",
     custody_release: CustodyRelease | None = None,
     prune: bool = False,
 ) -> CheckoutRemoval:
@@ -67,11 +87,13 @@ def remove_checkout_path(
             effect of asking git to try harder.
         run_git: How to run git here, or ``None`` for a path whose repository
             cannot be resolved -- then only the filesystem attempt is possible.
-        repo_root: Where the repository is, when the caller knows. Custody
-            lives in the REPOSITORY's metadata, so a held checkout whose
-            ``.git`` file is gone is still held -- and without this, resolving
-            custody from the checkout alone would answer "not in a repository"
-            and delete it.
+        repo_root: Which repository to ask about custody. REQUIRED, because
+            custody lives in the repository's metadata and a checkout that has
+            lost its ``.git`` file names none -- so a caller that simply omits
+            this would delete a held checkout while believing it had asked.
+            :data:`UNKNOWN_REPOSITORY` is the deliberate way to say "nobody
+            here knows which repository this is"; it proceeds, and the loss is
+            reported by ``GitMetadataWorktreeCustody.breached``.
         custody_release: The explicit intent to end a grant as part of this
             removal.
         prune: Run ``git worktree prune`` after a successful removal.
@@ -81,13 +103,18 @@ def remove_checkout_path(
         CustodyUnavailableError: Whether it is held could not be determined.
     """
     require_disposable_path(worktree_path)
-    with custody_guard(worktree_path, custody_release, repo_root=repo_root):
+    asked = None if isinstance(repo_root, UnknownRepository) else repo_root
+    with custody_guard(worktree_path, custody_release, repo_root=asked) as settled:
         error = _remove_with_git(worktree_path, force=force, run_git=run_git)
         if error is None:
             if prune and run_git is not None:
                 run_git(["worktree", "prune"])
+            settled.removed()
             return CheckoutRemoval(removed=True, used_filesystem_fallback=False)
         if not force:
+            # The checkout is still THERE. Ending its grant here would leave it
+            # standing and unprotected for the next forced cleanup, which is
+            # the opposite of what the release asked for (round 6 finding 2).
             return CheckoutRemoval(
                 removed=False, used_filesystem_fallback=False, git_error=error
             )
@@ -102,8 +129,11 @@ def remove_checkout_path(
         _delete_path(worktree_path)
         if prune and run_git is not None:
             run_git(["worktree", "prune"])
+        gone = not worktree_path.exists()
+        if gone:
+            settled.removed()
         return CheckoutRemoval(
-            removed=not worktree_path.exists(),
+            removed=gone,
             used_filesystem_fallback=True,
             git_error=error,
         )

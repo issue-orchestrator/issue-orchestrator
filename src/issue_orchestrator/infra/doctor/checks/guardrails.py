@@ -409,6 +409,7 @@ def _check_guardrails_in_worktree(
                     worktree_path,
                     force=True,
                     run_git=lambda argv: _runner_error(runner, argv, repo_root),
+                    repo_root=repo_root,
                 )
                 if branch_name:
                     runner.run(

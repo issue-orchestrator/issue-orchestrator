@@ -143,7 +143,10 @@ def create_reviewer_worktree(
     except (WorktreeError, ReviewerWorktreeError) as exc:
         try:
             remove_checkout_path(
-                sibling, force=True, run_git=_removal_git(repo_root)
+                sibling,
+                force=True,
+                run_git=_removal_git(repo_root),
+                repo_root=repo_root,
             )
         except ReviewerWorktreeError:
             logger.exception("Failed to roll back unowned reviewer worktree %s", sibling)

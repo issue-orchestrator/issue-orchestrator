@@ -105,8 +105,14 @@ def checkout(repo: Path, tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def manager() -> GitWorktreeManager:
-    return GitWorktreeManager()
+def manager(repo: Path) -> GitWorktreeManager:
+    """Bound to its repository, the way the composition root builds it.
+
+    Required, not convenient: custody lives in the REPOSITORY's metadata, and a
+    manager that does not know which repository it serves cannot answer for a
+    checkout that has lost its own ``.git`` file.
+    """
+    return GitWorktreeManager(repo)
 
 
 def _mark_orchestrator_owned(checkout: Path) -> None:
@@ -246,7 +252,7 @@ class TestTheGrant:
         orphan = tmp_path / "not-a-repo"
         orphan.mkdir()
 
-        with pytest.raises(Exception, match="not inside a git repository"):
+        with pytest.raises(CustodyUnavailableError, match="protect nothing"):
             manager.take_custody(orphan, holder=HOLDER, reason=REASON)
 
 
@@ -263,7 +269,7 @@ class TestTheStore:
         """Nothing is cached in the process that took it."""
         manager.take_custody(checkout, holder=HOLDER, reason=REASON)
 
-        held = GitWorktreeManager().custody_of(checkout)
+        held = GitWorktreeManager(repo).custody_of(checkout)
 
         assert held is not None and held.holder == HOLDER
         assert (repo / ".git" / CUSTODY_FILE).exists()
@@ -284,7 +290,14 @@ class TestTheStore:
             for line in (repo / ".git" / CUSTODY_LOG).read_text().splitlines()
         ]
 
-        assert [entry["action"] for entry in trail] == ["take", "release"]
+        assert [entry["action"] for entry in trail] == [
+            "take",
+            # The INTENT is on record before the removal runs, so a process
+            # that dies mid-removal leaves an audited hand-off rather than a
+            # breach nobody asked for.
+            "release-intent",
+            "release",
+        ]
         assert trail[-1]["reason"] == "collected"
         assert trail[-1]["branch"] == "tech-lead-investigation-6410-abcdef123456"
 
@@ -440,7 +453,7 @@ class TestReconciliationSeesCustody:
     """Startup says why a held checkout stays, instead of failing to remove it."""
 
     def _audit(self, repo: Path, base: Path) -> tuple:
-        return WorktreeAuditOwner(GitWorktreeManager()).audit(
+        return WorktreeAuditOwner(GitWorktreeManager(repo)).audit(
             repo_root=repo,
             worktree_base=base,
             activity=WorktreeActivityEvidence.known(set()),
@@ -554,18 +567,53 @@ class TestOneRemovalOwner:
             "fallback."
         )
 
-    def test_the_owner_asks_custody(self) -> None:
-        """The one place that removes is the one place that asks.
+    #: The two things the owner does that destroy a checkout. Both must sit
+    #: inside its guard -- a guard around only the git attempt leaves the
+    #: filesystem fallback in the window an operator can take custody in.
+    DESTRUCTIVE = ("_remove_with_git", "_delete_path")
 
-        A call, not a scope analysis: that the guard actually covers both
-        attempts is a behaviour, and the refusal tests above are what prove it.
+    def test_both_destructive_steps_run_inside_the_guard(self) -> None:
+        """Ancestry, not presence.
+
+        "Some ``custody_guard`` call exists in this module" was satisfiable by
+        dead code, or by a guard wrapping only half the removal (round 6
+        finding 5). This is one module, so checking the actual nesting is
+        cheap -- which is why declining it would have been laziness rather than
+        the boundary argument I made for the repo-wide scan.
         """
         root = Path(__file__).resolve().parents[2]
         tree = ast.parse((root / self.OWNER).read_text(encoding="utf-8"))
+        guarded = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.With)
+            and any(
+                _is_call(item.context_expr, "custody_guard") for item in node.items
+            )
+        ]
+        assert guarded, "the removal owner does not ask custody at all"
 
-        assert any(
-            _is_call(node, "custody_guard") for node in ast.walk(tree)
-        ), "the removal owner does not ask custody"
+        inside = {
+            name
+            for block in guarded
+            for node in ast.walk(block)
+            for name in self.DESTRUCTIVE
+            if _is_call(node, name)
+        }
+        called = {
+            name
+            for node in ast.walk(tree)
+            for name in self.DESTRUCTIVE
+            if _is_call(node, name)
+        }
+
+        assert called == set(self.DESTRUCTIVE), (
+            f"the owner no longer performs {set(self.DESTRUCTIVE) - called}; "
+            "this guard is watching the wrong names"
+        )
+        assert inside == called, (
+            f"these run OUTSIDE the custody guard: {sorted(called - inside)}"
+        )
 
     def test_the_scan_reads_both_ways_a_command_is_built(self) -> None:
         """A list literal and a vararg call are the same removal."""
@@ -903,26 +951,26 @@ class TestReuseCleanup:
 class TestRoundFourGaps:
     """Each of these deleted a held checkout by a route the owner did not see."""
 
-    def test_a_checkout_that_lost_its_git_file_is_reported_when_it_goes(
+    def test_a_checkout_that_lost_its_git_file_is_still_refused(
         self, manager: GitWorktreeManager, repo: Path, checkout: Path
     ) -> None:
-        """The honest half of finding [1].
+        """Finding [1], fixed rather than merely reported.
 
-        Custody lives in the repository's metadata, and a checkout with no
-        ``.git`` file names no repository -- so there is no store to ask, and
-        guessing one from the surrounding directories is wrong for this
-        repository's layout (the worktree base is not inside the repo). What
-        the owner CAN do is not pretend: the grant survives, and the breach is
-        reported.
+        A checkout with no ``.git`` file names no repository, so it cannot
+        resolve its own store. The MANAGER knows which repository it serves --
+        bound at composition, where the answer has always been available -- so
+        the grant is found and the removal refused. Last round this deleted the
+        checkout and reported a breach afterwards, which was the honest answer
+        to the wrong question.
         """
         manager.take_custody(checkout, holder=HOLDER, reason=REASON)
         (checkout / ".git").unlink()
 
-        manager.remove_checkout_and_branch(checkout, force=True)
+        with pytest.raises(WorktreeInCustodyError):
+            manager.remove_checkout_and_branch(checkout, force=True)
 
-        assert [grant.path for grant in manager.breached_custody(repo)] == [
-            checkout
-        ]
+        assert (checkout / "finding.md").exists()
+        assert manager.breached_custody(repo) == ()
 
     def test_a_caller_that_knows_the_repository_still_refuses(
         self, manager: GitWorktreeManager, repo: Path, checkout: Path
@@ -1174,31 +1222,48 @@ class TestTheFilesystemFallbackThroughProduction:
     def test_a_hold_cannot_land_between_the_failed_git_removal_and_the_rmtree(
         self, manager: GitWorktreeManager, repo: Path, checkout: Path
     ) -> None:
-        _git(repo, "worktree", "lock", str(checkout))
-        answered = threading.Event()
-        outcome: list[str] = []
+        """The control point is the caller's own git runner.
 
-        def hold_during_the_fallback() -> None:
-            # Runs while delete_worktree is somewhere between git and rmtree.
+        Earlier versions started a thread and hoped it ran in the window; if
+        the remover finished first the holder saw an absent path, recorded
+        "too late", and the test passed through the regression (round 6
+        finding 6). The runner is a PUBLIC seam the owner calls between its two
+        attempts, so failing git there puts the holder exactly where it needs
+        to be, every time.
+        """
+        order: list[str] = []
+        answered = threading.Event()
+
+        def hold_now() -> None:
             try:
                 manager.take_custody(checkout, holder=HOLDER, reason=REASON)
-                outcome.append("held")
-            except CustodyUnavailableError:
-                outcome.append("too late")
+                order.append("held")
+            except CustodyError:
+                order.append("refused")
             answered.set()
 
-        holder = threading.Thread(target=hold_during_the_fallback)
-        holder.start()
-        try:
-            assert ValidateOrDeletePolicy().delete_worktree(checkout, repo) is True
-        finally:
+        def git_refuses(argv: list[str]) -> str:
+            # Inside the guard, after git has declined and before the
+            # filesystem fallback runs.
+            holder = threading.Thread(target=hold_now)
+            holder.start()
+            assert not answered.wait(timeout=0.5), (
+                "a hold was answered while a removal was already underway"
+            )
+            order.append("git refused")
             holder.join(timeout=5)
+            return "fatal: cannot remove a locked working tree"
 
-        assert answered.is_set()
-        assert outcome == ["too late"], (
-            "a hold was granted inside a removal that was already underway"
+        outcome = remove_checkout_path(
+            checkout, force=True, run_git=git_refuses, repo_root=repo
         )
+
+        assert outcome.used_filesystem_fallback is True
+        assert outcome.removed is True
         assert not checkout.exists()
+        assert order[0] == "git refused", (
+            f"the hold was answered before the removal committed: {order}"
+        )
 
     def test_the_fallback_still_refuses_a_checkout_held_first(
         self, manager: GitWorktreeManager, repo: Path, checkout: Path
@@ -1258,3 +1323,85 @@ class TestTheDefaultWorktreeLayout:
             manager.remove_checkout_and_branch(sibling_checkout, force=True)
 
         assert (sibling_checkout / "work.md").exists()
+
+
+class TestRoundSixGaps:
+    def test_a_release_is_not_consumed_by_a_removal_that_REPORTED_failure(
+        self, manager: GitWorktreeManager, repo: Path, checkout: Path
+    ) -> None:
+        """Not raising is not the same as having removed anything.
+
+        A non-forced removal git declines returns ``removed=False`` and leaves
+        the checkout there. Ending its grant would leave it standing and
+        unprotected for the next forced cleanup -- the opposite of what the
+        release asked for (round 6 finding 2).
+        """
+        manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+
+        outcome = remove_checkout_path(
+            checkout,
+            force=False,
+            run_git=lambda argv: "fatal: contains modified or untracked files",
+            repo_root=repo,
+            custody_release=CustodyRelease(holder=HOLDER, reason="collected"),
+        )
+
+        assert outcome.removed is False
+        assert (checkout / "finding.md").exists()
+        assert manager.custody_of(checkout) is not None, (
+            "the grant ended for a removal that never removed anything"
+        )
+
+    def test_a_structurally_wrong_trail_row_is_damage(
+        self, manager: GitWorktreeManager, repo: Path, checkout: Path
+    ) -> None:
+        """A row this build cannot read is a grant it cannot account for.
+
+        Skipping it is how the trail reports "nothing held" while something is
+        (round 6 finding 3). Invalid JSON was already caught; a well-formed
+        object with an unknown action was not.
+        """
+        manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+        (repo / ".git" / CUSTODY_LOG).write_text(
+            json.dumps({"action": "tkae", "path": str(checkout)}) + "\n"
+        )
+        (repo / ".git" / CUSTODY_FILE).unlink()
+
+        with pytest.raises(CustodyUnavailableError, match="cannot read"):
+            manager.remove_checkout_and_branch(checkout, force=True)
+
+        assert (checkout / "finding.md").exists()
+
+    def test_a_hand_off_is_audited_before_the_removal_runs(
+        self, manager: GitWorktreeManager, repo: Path, checkout: Path
+    ) -> None:
+        """A process that dies mid-removal leaves an audited hand-off.
+
+        Recorded only afterwards, a crash between the delete and the write
+        left a breach with no actor and no reason -- nobody could tell an
+        explicit hand-off from something that just vanished (round 6 finding 4).
+        """
+        manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+
+        remove_checkout_path(
+            checkout,
+            force=True,
+            run_git=lambda argv: _trail_actions(repo).append("removal ran") or None,
+            repo_root=repo,
+            custody_release=CustodyRelease(holder=HOLDER, reason="collected"),
+        )
+
+        actions = [entry["action"] for entry in _trail_entries(repo)]
+        assert actions.index("release-intent") < actions.index("release")
+
+
+def _trail_entries(repo: Path) -> list[dict]:
+    return [
+        json.loads(line)
+        for line in (repo / ".git" / CUSTODY_LOG).read_text().splitlines()
+        if line.strip()
+    ]
+
+
+def _trail_actions(repo: Path) -> list[str]:
+    return [entry["action"] for entry in _trail_entries(repo)]

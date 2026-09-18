@@ -65,5 +65,8 @@ class BudgetedValidationGit:
 
     def remove_checkout(self, path: Path) -> None:
         remove_checkout_path(
-            path, force=True, run_git=lambda argv: self._try_git(argv)
+            path,
+            force=True,
+            run_git=lambda argv: self._try_git(argv),
+            repo_root=self._root,
         )

@@ -518,7 +518,7 @@ def build_orchestrator(
     )
 
     # Create IO adapters
-    worktree_manager, working_copy, command_runner, session_output = _create_io_adapters(github_auth)
+    worktree_manager, working_copy, command_runner, session_output = _create_io_adapters(config.repo_root, github_auth)
     budgeted_runtime, budgeted_reports = (
         build_budgeted_validation_services(config, command_runner, github)
         if github else (DisabledBudgetedValidation(), DisabledBudgetedValidationReports())

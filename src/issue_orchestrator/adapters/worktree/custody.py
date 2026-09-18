@@ -37,7 +37,9 @@ import json
 import logging
 import os
 import threading
+from collections.abc import Callable
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
@@ -67,6 +69,11 @@ CUSTODY_DIR = Path("issue-orchestrator")
 CUSTODY_FILE = CUSTODY_DIR / "worktree-custody.json"
 CUSTODY_LOG = CUSTODY_DIR / "worktree-custody.log.jsonl"
 CUSTODY_LOCK = CUSTODY_DIR / "worktree-custody.lock"
+
+#: Every action the trail may record. A row outside this set is damage: the
+#: trail is what accounts for grants when the state file is gone, so a row it
+#: cannot read is a grant it cannot account for.
+_TRAIL_ACTIONS = frozenset({"take", "release", "release-intent"})
 
 
 class GitMetadataWorktreeCustody:
@@ -147,6 +154,15 @@ class GitMetadataWorktreeCustody:
             records = self._records()
             key = _key(worktree_path)
             existing = records.get(key)
+            if existing is None and git_common_dir(worktree_path) is None:
+                # A grant on something that is not a checkout of any repository
+                # protects nothing and would later be reported as a breach the
+                # moment it is tidied away. Re-holding one that IS already held
+                # stays possible: that is the checkout which lost its `.git`.
+                raise CustodyUnavailableError(
+                    f"{worktree_path} is not a checkout of any repository, so "
+                    "holding it would protect nothing"
+                )
             if existing is not None:
                 # The first holder keeps it. A second caller learns who that is
                 # instead of quietly taking over a checkout someone else is
@@ -205,27 +221,36 @@ class GitMetadataWorktreeCustody:
     @contextmanager
     def guard(
         self, worktree_path: Path, release: CustodyRelease | None = None
-    ) -> Iterator[None]:
+    ) -> Iterator["CustodySettlement"]:
         """Refuse a held checkout, and hold that answer while the caller removes.
 
         The lock spans the caller's body on purpose: checking and then removing
         leaves a window in which an operator takes custody, is told no removal
         path will discard the checkout, and watches it go anyway.
+
+        The grant is dropped only when the caller calls
+        :meth:`CustodySettlement.removed`. Neither "the body did not raise" nor
+        "the body returned" is proof: a removal that reports failure leaves the
+        checkout THERE, and dropping its grant would leave it standing and
+        unprotected for the next forced cleanup (round 6 finding 2).
+
+        The release INTENT is recorded before the body, so a process that dies
+        mid-removal leaves an audited hand-off rather than a breach nobody
+        asked for (round 6 finding 4).
         """
         with self._locked():
             grant = self._records().get(_key(worktree_path))
             if grant is None:
-                yield
+                yield CustodySettlement(lambda: None)
                 return
             if release is None:
                 raise WorktreeInCustodyError(grant)
-            # The release is recorded AFTER the caller's body, so a removal
-            # that raised -- a dirty checkout git refused, a directory that
-            # would not go -- leaves the grant standing. Consuming it first
-            # would unprotect a checkout the operation never removed (round 5
-            # finding 6).
-            yield
-            self._release_locked(worktree_path, release)
+            self._append_trail(
+                "release-intent", grant, actor=release.holder, reason=release.reason
+            )
+            yield CustodySettlement(
+                lambda: self._release_locked(worktree_path, release)
+            )
 
     # -- storage ------------------------------------------------------------
 
@@ -342,10 +367,18 @@ class GitMetadataWorktreeCustody:
                     f"the worktree custody trail at {path} has a row that is "
                     "not an object"
                 )
-            target = str(entry.get("path") or "")
-            if entry.get("action") == "take":
+            action, target = entry.get("action"), entry.get("path")
+            if action not in _TRAIL_ACTIONS or not isinstance(target, str) or not target:
+                # A row this file cannot read is a grant it cannot account for,
+                # and accounting for none is how a held checkout gets deleted
+                # (round 6 finding 3).
+                raise CustodyUnavailableError(
+                    f"the worktree custody trail at {path} has a row this build "
+                    f"cannot read: action={action!r} path={target!r}"
+                )
+            if action == "take":
                 held.add(target)
-            elif entry.get("action") == "release":
+            elif action == "release":
                 held.discard(target)
         return held
 
@@ -399,13 +432,29 @@ class GitMetadataWorktreeCustody:
             os.fsync(trail.fileno())
 
 
+@dataclass(frozen=True)
+class CustodySettlement:
+    """How a guarded removal says it actually happened.
+
+    Handed to the caller rather than inferred, because the guard cannot see the
+    difference between a removal that worked and one that reported failure --
+    and only the first should end a grant.
+    """
+
+    _drop: "Callable[[], object]"
+
+    def removed(self) -> None:
+        """The checkout is gone; end the grant that was released for it."""
+        self._drop()
+
+
 @contextmanager
 def custody_guard(
     worktree_path: Path,
     release: CustodyRelease | None = None,
     *,
     repo_root: Path | None = None,
-) -> Iterator[None]:
+) -> Iterator[CustodySettlement]:
     """Refuse to remove a held checkout, and hold that answer while you remove.
 
     THE check. Every path in this repository that removes a worktree wraps the
@@ -420,10 +469,10 @@ def custody_guard(
     """
     custody = GitMetadataWorktreeCustody.for_path(worktree_path, repo_root)
     if custody is None:
-        yield
+        yield CustodySettlement(lambda: None)
         return
-    with custody.guard(worktree_path, release):
-        yield
+    with custody.guard(worktree_path, release) as settlement:
+        yield settlement
 
 
 def git_common_dir(path: Path) -> Path | None:
