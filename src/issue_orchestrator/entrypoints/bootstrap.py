@@ -960,7 +960,7 @@ def build_orchestrator_for_testing(
     _dependency_evaluator: DependencyEvaluator | None = None
 
     # Create adapters for IO operations
-    worktree_manager = GitWorktreeManager()
+    worktree_manager = GitWorktreeManager(config.repo_root)
     working_copy = GitWorkingCopy()
     command_runner = LocalCommandRunner()
     session_output = FileSystemSessionOutput()

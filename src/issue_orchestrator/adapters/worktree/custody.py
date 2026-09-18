@@ -89,9 +89,20 @@ class GitMetadataWorktreeCustody:
 
         None only when neither says.
         """
+        named = None if repo_root is None else git_common_dir(repo_root)
+        if named is not None:
+            # AUTHORITATIVE. The checkout's own pointer is a claim it makes
+            # about itself, and a corrupted one still starting with "gitdir:"
+            # would send this to an empty store somewhere else -- where
+            # nothing is held, and the removal proceeds (round 5 finding 2).
+            from_path = git_common_dir(path)
+            if from_path is not None and from_path != named:
+                raise CustodyUnavailableError(
+                    f"{path} points at {from_path} but its caller says "
+                    f"{named}; which store holds it is unknown"
+                )
+            return cls(named)
         common_dir = git_common_dir(path)
-        if common_dir is None and repo_root is not None:
-            common_dir = git_common_dir(repo_root)
         return None if common_dir is None else cls(common_dir)
 
     # -- reads --------------------------------------------------------------
@@ -203,11 +214,18 @@ class GitMetadataWorktreeCustody:
         """
         with self._locked():
             grant = self._records().get(_key(worktree_path))
-            if grant is not None:
-                if release is None:
-                    raise WorktreeInCustodyError(grant)
-                self._release_locked(worktree_path, release)
+            if grant is None:
+                yield
+                return
+            if release is None:
+                raise WorktreeInCustodyError(grant)
+            # The release is recorded AFTER the caller's body, so a removal
+            # that raised -- a dirty checkout git refused, a directory that
+            # would not go -- leaves the grant standing. Consuming it first
+            # would unprotect a checkout the operation never removed (round 5
+            # finding 6).
             yield
+            self._release_locked(worktree_path, release)
 
     # -- storage ------------------------------------------------------------
 
@@ -308,12 +326,22 @@ class GitMetadataWorktreeCustody:
             ) from exc
         held: set[str] = set()
         for line in lines:
+            if not line.strip():
+                continue
             try:
                 entry = json.loads(line)
-            except json.JSONDecodeError:
-                continue
+            except json.JSONDecodeError as exc:
+                # Skipping it could turn a recorded take into an empty store,
+                # which is the failure this whole file exists to avoid.
+                raise CustodyUnavailableError(
+                    f"the worktree custody trail at {path} has an unreadable "
+                    f"row: {exc}"
+                ) from exc
             if not isinstance(entry, dict):
-                continue
+                raise CustodyUnavailableError(
+                    f"the worktree custody trail at {path} has a row that is "
+                    "not an object"
+                )
             target = str(entry.get("path") or "")
             if entry.get("action") == "take":
                 held.add(target)
@@ -336,8 +364,20 @@ class GitMetadataWorktreeCustody:
         # Written whole and renamed into place: a torn custody file read back
         # as "nothing is held" is the failure this store exists to prevent.
         scratch = path.with_suffix(f".{os.getpid()}.tmp")
-        scratch.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+        with scratch.open("w") as handle:
+            handle.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
         scratch.replace(path)
+        # The directory entry too: without it a power loss can leave the OLD
+        # state file visible beside a trail that already recorded the take,
+        # and a state file that parses is trusted over the trail (round 5
+        # finding 3).
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
 
     def _append_trail(
         self, action: str, grant: CustodyGrant, *, actor: str, reason: str

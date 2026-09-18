@@ -1044,3 +1044,217 @@ class TestWhatCustodyDetectsRatherThanPrevents:
         manager.take_custody(checkout, holder=HOLDER, reason=REASON)
 
         assert manager.breached_custody(repo) == ()
+
+
+class TestRoundFiveGaps:
+    def test_the_manager_carries_its_repository_into_the_orphan_path(
+        self, repo: Path, checkout: Path
+    ) -> None:
+        """Bound at composition time, so the orphan path is not blind (finding 1).
+
+        A checkout that lost its ``.git`` file names no repository, and custody
+        lives in the repository's metadata. The manager knows which one it is.
+        """
+        bound = GitWorktreeManager(repo)
+        bound.take_custody(checkout, holder=HOLDER, reason=REASON)
+        (checkout / ".git").unlink()
+
+        with pytest.raises(WorktreeInCustodyError):
+            bound.remove_checkout_and_branch(checkout, force=True)
+
+        assert (checkout / "finding.md").exists()
+
+    def test_a_pointer_that_disagrees_with_the_caller_fails_closed(
+        self, repo: Path, checkout: Path, tmp_path: Path
+    ) -> None:
+        """A corrupted pointer that still parses would name an empty store.
+
+        Nothing is held there, so the removal proceeds -- while the real
+        repository's grant sits untouched (finding 2).
+        """
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        _git(elsewhere, "init", ".")
+        GitWorktreeManager(repo).take_custody(
+            checkout, holder=HOLDER, reason=REASON
+        )
+        (checkout / ".git").write_text(f"gitdir: {elsewhere / '.git'}\n")
+
+        with pytest.raises(CustodyUnavailableError, match="which store holds it"):
+            GitWorktreeManager(repo).remove_checkout_and_branch(checkout, force=True)
+
+        assert (checkout / "finding.md").exists()
+
+    def test_a_damaged_trail_row_is_not_silently_skipped(
+        self, manager: GitWorktreeManager, repo: Path, checkout: Path
+    ) -> None:
+        """Skipping it could turn a recorded take into an empty store (finding 3)."""
+        manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+        trail = repo / ".git" / CUSTODY_LOG
+        trail.write_text("{ not json\n")
+        (repo / ".git" / CUSTODY_FILE).unlink()
+
+        with pytest.raises(CustodyUnavailableError, match="unreadable row"):
+            manager.remove_checkout_and_branch(checkout, force=True)
+
+        assert (checkout / "finding.md").exists()
+
+    def test_a_release_is_not_consumed_by_a_removal_that_failed(
+        self, manager: GitWorktreeManager, repo: Path, checkout: Path
+    ) -> None:
+        """Consuming it first unprotects a checkout nothing removed (finding 6)."""
+        manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+        release = CustodyRelease(holder=HOLDER, reason="collected")
+
+        with pytest.raises(RuntimeError, match="the removal itself failed"):
+            with custody_guard(checkout, release):
+                raise RuntimeError("the removal itself failed")
+
+        assert manager.custody_of(checkout) is not None
+
+    def test_a_release_is_consumed_when_the_removal_succeeds(
+        self, manager: GitWorktreeManager, repo: Path, checkout: Path
+    ) -> None:
+        manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+
+        manager.remove_checkout_and_branch(
+            checkout,
+            force=True,
+            custody_release=CustodyRelease(holder=HOLDER, reason="collected"),
+        )
+
+        assert manager.custody_of(checkout) is None
+
+    def test_an_operator_can_release_a_grant_whose_checkout_is_gone(
+        self, manager: GitWorktreeManager, repo: Path, checkout: Path, capsys
+    ) -> None:
+        """Otherwise a breach stays active forever (finding 4)."""
+        manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+        shutil.rmtree(checkout)
+        assert manager.breached_custody(repo)
+
+        exit_code = custody_cli(
+            [
+                "release",
+                str(checkout),
+                "--reason",
+                "gone, closing the record",
+                "--holder",
+                HOLDER,
+                "--repo-root",
+                str(repo),
+            ]
+        )
+
+        assert exit_code == 0, capsys.readouterr().err
+        assert manager.breached_custody(repo) == ()
+
+    def test_the_e2e_sweep_asks_with_the_repository_it_knows(
+        self, manager: GitWorktreeManager, repo: Path, checkout: Path
+    ) -> None:
+        """Its checkouts can lose their markers too (finding 5)."""
+        manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+        (checkout / ".git").unlink()
+
+        cleanup_local_worktrees(checkout.parent, repo_root=repo)
+
+        assert (checkout / "finding.md").exists()
+
+
+class TestTheFilesystemFallbackThroughProduction:
+    """The git-fails-then-rmtree race, driven by the code that runs it.
+
+    Earlier versions of this entered ``custody_guard`` by hand and did their own
+    ``rmtree``, so moving the production fallback outside the guard left them
+    green (round 5 finding 8). Here git genuinely refuses -- the worktree is
+    locked -- so ``delete_worktree`` reaches its fallback for real, and a hold
+    attempted in between must not be granted.
+    """
+
+    def test_a_hold_cannot_land_between_the_failed_git_removal_and_the_rmtree(
+        self, manager: GitWorktreeManager, repo: Path, checkout: Path
+    ) -> None:
+        _git(repo, "worktree", "lock", str(checkout))
+        answered = threading.Event()
+        outcome: list[str] = []
+
+        def hold_during_the_fallback() -> None:
+            # Runs while delete_worktree is somewhere between git and rmtree.
+            try:
+                manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+                outcome.append("held")
+            except CustodyUnavailableError:
+                outcome.append("too late")
+            answered.set()
+
+        holder = threading.Thread(target=hold_during_the_fallback)
+        holder.start()
+        try:
+            assert ValidateOrDeletePolicy().delete_worktree(checkout, repo) is True
+        finally:
+            holder.join(timeout=5)
+
+        assert answered.is_set()
+        assert outcome == ["too late"], (
+            "a hold was granted inside a removal that was already underway"
+        )
+        assert not checkout.exists()
+
+    def test_the_fallback_still_refuses_a_checkout_held_first(
+        self, manager: GitWorktreeManager, repo: Path, checkout: Path
+    ) -> None:
+        """And the lock means git cannot remove it either way."""
+        _git(repo, "worktree", "lock", str(checkout))
+        manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+
+        with pytest.raises(WorktreeInCustodyError):
+            ValidateOrDeletePolicy().delete_worktree(checkout, repo)
+
+        assert (checkout / "finding.md").exists()
+
+
+class TestTheDefaultWorktreeLayout:
+    """The layout this repository actually uses (round 5 finding 9).
+
+    ``~/dev/worktree/<repo>/<checkout>`` -- a sibling tree OUTSIDE the
+    repository, which is why deriving a checkout's repository by walking up
+    from it does not work and the caller has to say.
+    """
+
+    @pytest.fixture
+    def sibling_checkout(self, repo: Path, tmp_path: Path) -> Path:
+        base = tmp_path / "dev" / "worktree" / repo.name
+        base.mkdir(parents=True)
+        path = base / f"{repo.name}-6410"
+        _git(repo, "worktree", "add", "-b", "6410-work", str(path))
+        (path / "work.md").write_text("the only copy\n")
+        _git(path, "add", "work.md")
+        _git(path, "commit", "-m", "work")
+        return path
+
+    def test_a_held_sibling_checkout_is_refused(
+        self, repo: Path, sibling_checkout: Path
+    ) -> None:
+        manager = GitWorktreeManager(repo)
+        manager.take_custody(sibling_checkout, holder=HOLDER, reason=REASON)
+
+        with pytest.raises(WorktreeInCustodyError):
+            manager.remove_checkout_and_branch(sibling_checkout, force=True)
+
+        assert (sibling_checkout / "work.md").exists()
+        assert "6410-work" in _branches(repo)
+
+    def test_a_real_checkout_whose_registration_was_removed_is_still_held(
+        self, repo: Path, sibling_checkout: Path
+    ) -> None:
+        """Not an arbitrary directory: a real linked checkout git forgot."""
+        manager = GitWorktreeManager(repo)
+        manager.take_custody(sibling_checkout, holder=HOLDER, reason=REASON)
+        _git(repo, "worktree", "remove", "--force", str(sibling_checkout))
+        sibling_checkout.mkdir(parents=True)
+        (sibling_checkout / "work.md").write_text("recovered by hand\n")
+
+        with pytest.raises(WorktreeInCustodyError):
+            manager.remove_checkout_and_branch(sibling_checkout, force=True)
+
+        assert (sibling_checkout / "work.md").exists()

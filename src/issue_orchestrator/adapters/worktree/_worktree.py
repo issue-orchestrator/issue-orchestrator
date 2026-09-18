@@ -1227,12 +1227,21 @@ def _remove_worktree_path(
     *,
     force: bool,
     custody_release: CustodyRelease | None = None,
+    custody_repo_root: Path | None = None,
 ) -> None:
+    """Remove the checkout.
+
+    ``custody_repo_root`` is which repository to ASK about custody, and it is
+    deliberately separate from ``repo_root``, which is where git runs. They
+    differ when the checkout's own pointer is corrupted: git still has to run
+    somewhere, but a caller that knows the real repository must not have its
+    answer taken from the pointer that lied (#7274 round 5 finding 2).
+    """
     outcome = remove_checkout_path(
         worktree_path,
         force=force,
         run_git=git_runner(repo_root),
-        repo_root=repo_root,
+        repo_root=custody_repo_root or repo_root,
         custody_release=custody_release,
     )
     if not outcome.removed and not force:
@@ -1314,7 +1323,11 @@ def remove_worktree(
         branch_name = get_worktree_branch(worktree_path)
 
         _remove_worktree_path(
-            repo_root, worktree_path, force=force, custody_release=custody_release
+            repo_root,
+            worktree_path,
+            force=force,
+            custody_release=custody_release,
+            custody_repo_root=repo_root_hint or repo_root,
         )
         if worktree_path.exists():
             raise WorktreeError(

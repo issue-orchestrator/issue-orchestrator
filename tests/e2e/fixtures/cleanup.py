@@ -18,7 +18,9 @@ logger = logging.getLogger(__name__)
 DEFAULT_E2E_FILTER_LABEL = "io-e2e-test-data"
 
 
-def cleanup_local_worktrees(worktree_base: Path | None = None) -> int:
+def cleanup_local_worktrees(
+    worktree_base: Path | None = None, repo_root: Path | None = None
+) -> int:
     """Clean up local e2e worktrees.
 
     Args:
@@ -34,7 +36,10 @@ def cleanup_local_worktrees(worktree_base: Path | None = None) -> int:
                     # Asks custody first: a checkout retained from a failed run
                     # is exactly the thing an operator holds, and the next
                     # session starting is exactly when they lose it (#7274).
-                    with custody_guard(item):
+                    # ``repo_root`` matters: one of these checkouts can have
+                    # lost its own .git file, and custody lives in the
+                    # REPOSITORY (#7274 round 5 finding 5).
+                    with custody_guard(item, repo_root=repo_root):
                         shutil.rmtree(item)
                     count += 1
                 except CustodyError as e:

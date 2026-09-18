@@ -25,6 +25,29 @@ from ...ports.worktree_custody import (
 )
 
 
+def _repo_root_of(args: argparse.Namespace) -> Path | None:
+    """The repository the OPERATOR named, and nothing inferred.
+
+    ``--repo-root`` is authoritative when given, and otherwise there is no
+    caller-known repository: the checkout answers for itself. Defaulting to
+    whatever repository the working directory happens to sit in would name the
+    wrong store for a checkout that belongs to another one -- and a store that
+    holds nothing is a removal that proceeds.
+
+    Releasing a grant whose checkout is already gone is the case that needs the
+    flag, and its help text says so.
+    """
+    named = getattr(args, "repo_root", None)
+    return Path(named).resolve() if named else None
+
+
+def _enclosing_repository(start: Path) -> Path | None:
+    for candidate in (start, *start.parents):
+        if (candidate / ".git").exists():
+            return candidate
+    return None
+
+
 def _holder(requested: str | None) -> str:
     """Who is taking or ending the grant.
 
@@ -51,7 +74,7 @@ def _render(grant: CustodyGrant) -> str:
 
 
 def cmd_list(manager: GitWorktreeManager, args: argparse.Namespace) -> int:
-    repo_root = Path(args.repo_root or ".").resolve()
+    repo_root = _repo_root_of(args) or _enclosing_repository(Path.cwd()) or Path.cwd()
     held = manager.checkouts_in_custody(repo_root)
     breached = manager.breached_custody(repo_root)
     if not held:
@@ -111,12 +134,20 @@ def build_parser() -> argparse.ArgumentParser:
     hold.add_argument("path", help="The worktree to hold")
     hold.add_argument("--reason", required=True, help="Why it is being held")
     hold.add_argument("--holder", default=None, help="Who holds it (default: you)")
+    hold.add_argument(
+        "--repo-root", default=None, help="Its repository (default: the cwd's)"
+    )
     hold.set_defaults(run=cmd_hold)
 
     release = sub.add_parser("release", help="End a grant without removing anything")
     release.add_argument("path", help="The worktree to release")
     release.add_argument("--reason", required=True, help="Why it is being released")
     release.add_argument("--holder", default=None, help="Who is releasing it")
+    release.add_argument(
+        "--repo-root",
+        default=None,
+        help="Its repository -- required once the checkout itself is gone",
+    )
     release.set_defaults(run=cmd_release)
     return parser
 
@@ -124,7 +155,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        return args.run(GitWorktreeManager(), args)
+        # Bound to the repository the operator named, so a grant is still
+        # findable after its checkout lost its .git file -- which is
+        # exactly when they are trying to release it.
+        return args.run(GitWorktreeManager(_repo_root_of(args)), args)
     except (CustodyError, ValueError, OSError) as exc:
         # Every way custody can refuse arrives here as a message and an exit
         # status. A traceback tells an operator nothing they can act on, and

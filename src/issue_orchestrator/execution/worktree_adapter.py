@@ -33,7 +33,17 @@ class GitWorktreeManager:
     """Git-based implementation of WorktreeManager.
 
     Wraps the _worktree_impl functions to implement the port protocol.
+
+    Bound to a repository when the composition root knows one, and that is not
+    a convenience: custody lives in the REPOSITORY's metadata, and a checkout
+    that has lost its ``.git`` file names no repository at all. Without this
+    the orphan path could not find the grant that was protecting it and deleted
+    the checkout (#7274 round 4/5 finding 1). Every removal this manager makes
+    therefore carries the repository it belongs to.
     """
+
+    def __init__(self, repo_root: Path | None = None) -> None:
+        self._repo_root = None if repo_root is None else Path(repo_root)
 
     def create(
         self,
@@ -86,6 +96,7 @@ class GitWorktreeManager:
             force=force,
             delete_branch=False,
             custody_release=custody_release,
+            repo_root_hint=self._repo_root,
         )
 
     def remove_checkout_and_branch(
@@ -101,6 +112,7 @@ class GitWorktreeManager:
             force=force,
             delete_branch=True,
             custody_release=custody_release,
+            repo_root_hint=self._repo_root,
         )
 
     def take_custody(
@@ -142,10 +154,9 @@ class GitWorktreeManager:
         """Grants whose checkout is gone: something removed it anyway."""
         return self._custody(repo_root).breached()
 
-    @staticmethod
-    def _custody(path: Path) -> GitMetadataWorktreeCustody:
+    def _custody(self, path: Path) -> GitMetadataWorktreeCustody:
         """Fails rather than reporting a path as unheld it cannot resolve."""
-        custody = GitMetadataWorktreeCustody.for_path(path)
+        custody = GitMetadataWorktreeCustody.for_path(path, self._repo_root)
         if custody is None:
             # A port error, not an adapter one: the caller asked about custody
             # and the answer is that it cannot be determined here.
