@@ -36,6 +36,7 @@ from ..domain.pending_work import (
     PendingWorkRequest,
 )
 from ..domain.session_key import TaskKind
+from ..domain.session_run import SessionRunIdentity
 from ..domain.tech_lead_session import TechLeadSessionFlavor
 
 CLAIM_ARTIFACT_NAME = "pending-work-claim.json"
@@ -207,6 +208,15 @@ def _encode_validation_retry(request: PendingWorkRequest) -> dict[str, Any]:
         "retry_count": request.retry_count,
         "source_task": request.source_task.value,
         "validation_cmd": request.validation_cmd,
+        "authority_run": (
+            {
+                "session_name": request.authority_run.session_name,
+                "run_id": request.authority_run.run_id,
+                "started_at": request.authority_run.started_at,
+            }
+            if request.authority_run is not None
+            else None
+        ),
     }
 
 
@@ -223,6 +233,24 @@ def _decode_validation_retry(payload: dict[str, Any]) -> PendingValidationRetry:
         retry_count=int(payload["retry_count"]),
         source_task=TaskKind(payload["source_task"]),
         validation_cmd=payload["validation_cmd"],
+        authority_run=_decode_run_identity(payload.get("authority_run")),
+    )
+
+
+def _decode_run_identity(payload: object) -> SessionRunIdentity | None:
+    """The run a retry inherits authority from, when it recorded one.
+
+    Absent for a retry queued before #7273, and for every non-tech-lead retry,
+    which have no authority row to inherit.
+    """
+    if payload is None:
+        return None
+    if not isinstance(payload, dict):
+        raise ValueError(f"authority_run is not an object: {payload!r}")
+    return SessionRunIdentity(
+        session_name=str(payload["session_name"]),
+        run_id=str(payload["run_id"]),
+        started_at=str(payload["started_at"]),
     )
 
 

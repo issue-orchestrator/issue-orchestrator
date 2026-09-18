@@ -336,6 +336,10 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
             retry_count=next_retry_count,
             source_task=session.key.task,
             validation_cmd=config.validation.quick.cmd,
+            # The run whose launch authority the relaunch inherits. Read from
+            # the session's own assets rather than reconstructed, so the key is
+            # the one the authority was recorded under (#7273).
+            authority_run=session.run_assets.identity,
         )
         state.replace_pending_validation_retry(pending_retry)
         # Kill the terminal session but don't cleanup worktree (agent will continue there)

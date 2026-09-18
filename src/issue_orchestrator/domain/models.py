@@ -21,7 +21,7 @@ from .sandbox_scope import (
     compute_session_scope,
 )
 from .pause_state import PauseState
-from .session_run import SessionRunAssets
+from .session_run import SessionRunAssets, SessionRunIdentity
 from .tech_lead_findings import PromotionUpdate, PromotableFinding, SettledPromotion
 from .tech_lead_session import (
     ApprovedTechLeadOp,
@@ -1883,6 +1883,19 @@ class PendingValidationRetry:
     retry_count: int  # Current retry count (will be incremented on re-launch)
     source_task: TaskKind
     validation_cmd: str | None = None  # For building retry prompt
+    #: The run this retry inherits its launch authority FROM (#7273).
+    #:
+    #: A tech-lead failure investigation's completion is accepted only against a
+    #: ``TechLeadLaunchAuthority`` row keyed by ``(run_id, session_name)``, and
+    #: only the ORIGINAL launch records one. A validation retry allocates a new
+    #: run, so without carrying this the resumed run has no authority row and
+    #: ``CompletionProcessor`` rejects its completion as ``missing_authority`` --
+    #: which is to say a tech-lead validation retry could never complete.
+    #:
+    #: Carried rather than re-derived on purpose: re-sampling scope from the
+    #: board at relaunch would let a run's mutation scope GROW between attempts,
+    #: which is the thing the create-once authority row exists to prevent.
+    authority_run: SessionRunIdentity | None = None
 
     def __post_init__(self) -> None:
         if self.source_task.is_review_only:

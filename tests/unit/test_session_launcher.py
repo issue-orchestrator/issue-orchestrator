@@ -16,6 +16,7 @@ from issue_orchestrator.domain.tech_lead_scratch_identity import (
     scratch_branch_name,
     scratch_worktree_name,
 )
+from issue_orchestrator.domain.session_run import SessionRunIdentity
 from issue_orchestrator.domain.registered_completion import CompletionProcessingPolicy
 from tests.run_allocation_helpers import make_session_launcher
 
@@ -132,6 +133,7 @@ from issue_orchestrator.domain.board_snapshot import (
 )
 from issue_orchestrator.domain.tech_lead_session import (
     TechLeadLaunchScope,
+    TechLeadLaunchAuthority,
     TechLeadSessionFlavor,
 )
 from issue_orchestrator.domain.state_machines.issue_machine import IssueStateMachine, IssueState
@@ -8620,3 +8622,106 @@ class TestLaunchRetryGuardClearing:
             lm.reset_retry_pending,
             lm.reset_retry_scratch_pending,
         ]
+
+
+class TestAValidationRetryCarriesItsLaunchAuthority:
+    """A tech-lead investigation's retry could never complete before (#7273).
+
+    Its completion is accepted only against a `TechLeadLaunchAuthority` row
+    keyed by ``(run_id, session_name)``, recorded create-once at the ORIGINAL
+    launch. A validation retry allocates a NEW run, so the resumed run had no
+    row and `CompletionProcessor` rejected its completion as
+    ``missing_authority`` -- pre-action, with zero push, so the work was lost.
+    """
+
+    def _authority(self, focus: int = 6410) -> TechLeadLaunchAuthority:
+        return TechLeadLaunchAuthority(
+            flavor=TechLeadSessionFlavor.FAILURE_INVESTIGATION,
+            anchor_issue_number=focus,
+            focus_issue_number=focus,
+        )
+
+    def _retry(
+        self,
+        source: SessionRunIdentity | None,
+        agent_label: str = "agent:tech-lead",
+    ) -> PendingValidationRetry:
+        return PendingValidationRetry(
+            issue_number=6410,
+            issue_title="Investigate stranded failure",
+            agent_label=agent_label,
+            worktree_path="/tmp/worktree-6410",
+            branch_name="tech-lead-investigation-6410-abcdef123456",
+            original_prompt="Investigate issue #6410",
+            validation_error="boom",
+            validation_error_file=None,
+            retry_count=1,
+            source_task=TaskKind.CODE,
+            validation_cmd="make test",
+            authority_run=source,
+        )
+
+    def test_the_resumed_run_gets_the_original_grant(
+        self, launcher_bundle, sample_config, tmp_path
+    ) -> None:
+        """Carried, not re-derived: the row is the one the original recorded."""
+        TestLaunchTechLeadIssueSessionFlavors.enable_tech_lead_agent(sample_config, tmp_path)
+        store = SqliteTechLeadAuthorityStore.for_repo(sample_config.repo_root)
+        source = SessionRunIdentity(
+            session_name="issue-6410", run_id="run-original", started_at="2026-09-18"
+        )
+        granted = self._authority()
+        store.record(
+            run_id=source.run_id, session_name=source.session_name, authority=granted
+        )
+
+        result = launcher_bundle.launcher.launch_validation_retry_session(
+            self._retry(source), active_sessions=[]
+        )
+
+        assert result.success is True, result.reason
+        assert result.session is not None
+        resumed = result.session.run_assets.identity
+        assert resumed.run_id != source.run_id, "the retry reused the original run"
+        assert (
+            store.load(run_id=resumed.run_id, session_name=resumed.session_name)
+            == granted
+        ), "the resumed run does not carry the original grant"
+
+    def test_a_retry_whose_authority_is_gone_is_refused_before_it_spends_a_session(
+        self, launcher_bundle, sample_config, tmp_path
+    ) -> None:
+        """Relaunching would produce a completion the orchestrator must reject.
+
+        Refusing costs an error message; relaunching costs an agent session and
+        then throws its work away pre-action.
+        """
+        TestLaunchTechLeadIssueSessionFlavors.enable_tech_lead_agent(sample_config, tmp_path)
+        vanished = SessionRunIdentity(
+            session_name="issue-6410", run_id="run-gone", started_at="2026-09-18"
+        )
+
+        result = launcher_bundle.launcher.launch_validation_retry_session(
+            self._retry(vanished), active_sessions=[]
+        )
+
+        assert result.success is False
+        assert "launch authority" in (result.reason or "")
+
+    def test_an_ordinary_retry_records_nothing(
+        self, launcher_bundle, sample_config
+    ) -> None:
+        """Only a run that HAD authority inherits any."""
+        store = SqliteTechLeadAuthorityStore.for_repo(sample_config.repo_root)
+
+        result = launcher_bundle.launcher.launch_validation_retry_session(
+            self._retry(None, agent_label="agent:web"), active_sessions=[]
+        )
+
+        assert result.success is True, result.reason
+        assert result.session is not None
+        resumed = result.session.run_assets.identity
+        assert (
+            store.load(run_id=resumed.run_id, session_name=resumed.session_name)
+            is None
+        )
