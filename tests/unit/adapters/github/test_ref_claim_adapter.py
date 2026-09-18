@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from issue_orchestrator.adapters.github.errors import GitHubHttpError
 from issue_orchestrator.adapters.github.claim_parser import format_claim_comment
 from issue_orchestrator.adapters.github.ref_claim_adapter import (
     CLAIM_REF_PREFIX,
@@ -13,93 +12,16 @@ from issue_orchestrator.adapters.github.ref_claim_adapter import (
 from issue_orchestrator.domain.claim import Claim, ClaimState
 from issue_orchestrator.domain.lease_config import LeaseConfig
 
+from .fake_git_data import FakeGitHubRefClient
 
-class FakeGitHubRefClient:
-    """In-memory GitHub Git Database subset with fast-forward ref updates."""
 
-    def __init__(self) -> None:
-        self.refs: dict[str, str] = {"refs/heads/main": "base"}
-        self.commits: dict[str, dict] = {
-            "base": {
-                "sha": "base",
-                "message": "base commit",
-                "tree": {"sha": "tree-base"},
-                "parents": [],
-            }
-        }
-        self.created_refs: list[tuple[str, str]] = []
-        self.updated_refs: list[tuple[str, str, bool]] = []
-        self.deleted_refs: list[str] = []
-        self.conflict_updates_remaining = 0
-        self.default_branch_reads = 0
-        self._next_commit = 1
-
-    def get_default_branch(self) -> str:
-        self.default_branch_reads += 1
-        return "main"
-
-    def get_git_ref(self, ref: str) -> dict | None:
-        sha = self.refs.get(ref)
-        if sha is None:
-            return None
-        return {"ref": ref, "object": {"type": "commit", "sha": sha}}
-
-    def create_git_ref(self, *, ref: str, sha: str) -> dict:
-        if ref in self.refs:
-            raise GitHubHttpError("ref exists", status_code=422)
-        self.refs[ref] = sha
-        self.created_refs.append((ref, sha))
-        return {"ref": ref, "object": {"type": "commit", "sha": sha}}
-
-    def update_git_ref(self, *, ref: str, sha: str, force: bool = False) -> dict:
-        if self.conflict_updates_remaining:
-            self.conflict_updates_remaining -= 1
-            raise GitHubHttpError("conflict", status_code=409)
-        current_sha = self.refs[ref]
-        parents = self.commits[sha]["parents"]
-        parent_sha = parents[0]["sha"] if parents else None
-        if not force and parent_sha != current_sha:
-            raise GitHubHttpError("not fast-forward", status_code=409)
-        self.refs[ref] = sha
-        self.updated_refs.append((ref, sha, force))
-        return {"ref": ref, "object": {"type": "commit", "sha": sha}}
-
-    def delete_git_ref(self, ref: str) -> None:
-        if ref not in self.refs:
-            raise GitHubHttpError("ref not found", status_code=404)
-        del self.refs[ref]
-        self.deleted_refs.append(ref)
-
-    def get_git_commit(self, sha: str) -> dict:
-        return self.commits[sha]
-
-    def create_git_commit(
-        self,
-        *,
-        message: str,
-        tree_sha: str,
-        parents: list[str],
-    ) -> dict:
-        sha = f"commit-{self._next_commit}"
-        self._next_commit += 1
-        self.commits[sha] = {
-            "sha": sha,
-            "message": message,
-            "tree": {"sha": tree_sha},
-            "parents": [{"sha": parent} for parent in parents],
-        }
-        return self.commits[sha]
-
-    def seed_claim_ref(self, issue_number: int, claim: Claim) -> None:
-        commit = self.create_git_commit(
-            message=format_claim_comment(claim),
-            tree_sha="tree-base",
-            parents=["base"],
-        )
-        self.create_git_ref(
-            ref=f"{CLAIM_REF_PREFIX}/issue-{issue_number}",
-            sha=commit["sha"],
-        )
+def seed_claim_ref(
+    client: FakeGitHubRefClient, issue_number: int, claim: Claim
+) -> None:
+    """Point an issue's claim ref at an existing claim."""
+    client.seed_record(
+        f"{CLAIM_REF_PREFIX}/issue-{issue_number}", format_claim_comment(claim)
+    )
 
 
 class FakeLabels:
@@ -259,6 +181,6 @@ def test_expired_claim_is_not_current() -> None:
         expires_at=datetime.now() - timedelta(seconds=1),
         priority=1,
     )
-    client.seed_claim_ref(42, expired_claim)
+    seed_claim_ref(client, 42, expired_claim)
 
     assert adapter.get_current_claim(42) is None
