@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from .label_manager import LabelManager
     from ..ports.label_store import LabelStore
 
+from ..ports.worktree_custody import CustodyError
 from .actions import RemoveLabelAction, SupersedePullRequestAction
 from .worktree_manager import get_worktree_path
 
@@ -104,6 +105,11 @@ def _remove_local_worktree(
             logger.warning("[reset] %s", message)
         else:
             logger.info("[reset] Deleted worktree: %s", worktree_path)
+    except CustodyError:
+        # Never swallowed. A reset that reports success here clears the issue's
+        # state and requeues it, and the next launch reuses or resets the
+        # checkout custody was taken to preserve (#7274 round 1 finding 1).
+        raise
     except Exception as e:
         logger.warning("[reset] Failed to delete worktree %s: %s", worktree_path, e)
         if from_scratch:

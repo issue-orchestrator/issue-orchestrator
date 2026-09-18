@@ -10,6 +10,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from ..adapters.worktree.custody import custody_guard
+
 logger = logging.getLogger(__name__)
 
 
@@ -172,10 +174,11 @@ def _recover_worktree(repo_root: Path, worktree_path: Path) -> None:
     """Remove a broken worktree and recreate it."""
     logger.warning("Recovering E2E worktree at %s", worktree_path)
     try:
-        _run_git(
-            ["worktree", "remove", "--force", str(worktree_path)],
-            cwd=repo_root,
-        )
+        with custody_guard(worktree_path):
+            _run_git(
+                ["worktree", "remove", "--force", str(worktree_path)],
+                cwd=repo_root,
+            )
     except (subprocess.CalledProcessError, FileNotFoundError):
         pass
     # The directory may still exist on disk if it was never a registered

@@ -7,6 +7,7 @@ from pathlib import Path
 
 from ...ports.command_runner import CommandRunner, CommandResult, OutputNewlines
 from ...domain.escrow_retention_boundary import is_escrow_path, require_disposable_path
+from ..worktree.custody import custody_guard
 from ...ports.git import Git, GitError, GitResult
 
 
@@ -164,13 +165,14 @@ class GitCLI(Git):
 
     def worktree_remove(self, repo: Path, path: Path, force: bool = True, prune: bool = True) -> None:
         require_disposable_path(path)
-        argv = ["worktree", "remove"]
-        if force:
-            argv.append("--force")
-        argv.append(str(path))
-        self.run(repo, argv, check=False)
-        if prune:
-            self.run(repo, ["worktree", "prune"], check=False)
+        with custody_guard(path):
+            argv = ["worktree", "remove"]
+            if force:
+                argv.append("--force")
+            argv.append(str(path))
+            self.run(repo, argv, check=False)
+            if prune:
+                self.run(repo, ["worktree", "prune"], check=False)
 
     def commit(self, repo: Path, message: str) -> None:
         self.run(repo, ["commit", "-am", message])

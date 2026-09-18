@@ -18,7 +18,7 @@ from ...ports.worktree_custody import CustodyRelease
 from ...ports.worktree_manager import RegisteredWorktree, WorktreeReuseOptions
 from ...infra.worktree_base import resolve_base_branch
 from ._worktree_errors import WorktreeError as WorktreeError
-from .custody import require_no_custody
+from .custody import custody_guard
 from ._worktree_git import _git, _git_env_no_prompt, _git_run
 from ._worktree_hooks import HOOKS_DIR as HOOKS_DIR
 from ._worktree_runtime_setup import WorktreeRuntimeSetup
@@ -571,6 +571,12 @@ def _resolve_repo_root_from_worktree(worktree_path: Path) -> Path | None:
 def _remove_existing_worktree_path(repo_root: Path, worktree_path: Path) -> None:
     require_disposable_path(worktree_path)
     logger.info("Removing existing worktree path for fresh create: %s", worktree_path)
+    with custody_guard(worktree_path):
+        _clear_existing_worktree_path(repo_root, worktree_path)
+
+
+def _clear_existing_worktree_path(repo_root: Path, worktree_path: Path) -> None:
+    """Force-remove a path a fresh create needs. Guarded by its caller."""
     result = _git_run(
         repo_root,
         ["worktree", "remove", "--force", str(worktree_path)],
@@ -1301,8 +1307,16 @@ def remove_worktree(
     require_disposable_path(worktree_path)
     worktree_path = Path(worktree_path)
     logger.info("Removing worktree: path=%s", worktree_path)
-    require_no_custody(worktree_path, custody_release)
+    with custody_guard(worktree_path, custody_release):
+        _remove_worktree_unguarded(
+            worktree_path, force=force, delete_branch=delete_branch
+        )
 
+
+def _remove_worktree_unguarded(
+    worktree_path: Path, *, force: bool, delete_branch: bool
+) -> None:
+    """The removal itself. Only :func:`remove_worktree` may call this."""
     if not worktree_path.exists():
         if force:
             # Idempotent for disposable/forced removal (#6824 R3): ``force`` means

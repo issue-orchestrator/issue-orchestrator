@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..adapters.worktree.api import WorktreeError, install_worktree_identity
-from ..adapters.worktree.custody import require_no_custody
+from ..adapters.worktree.custody import custody_guard
 from ..domain.review_exchange import REVIEWER_WORKTREE_CHECKOUT_FAILURE_MARKER
 from ..ports.worktree_manager import REVIEWER_OWNED_HEAD_MARKER, WORKTREE_ID_MARKER
 
@@ -141,7 +141,8 @@ def create_reviewer_worktree(
         _persist_owned_head(sibling, tip_sha)
     except (WorktreeError, ReviewerWorktreeError) as exc:
         try:
-            _git(repo_root, ["worktree", "remove", str(sibling), "--force"])
+            with custody_guard(sibling):
+                _git(repo_root, ["worktree", "remove", str(sibling), "--force"])
         except ReviewerWorktreeError:
             logger.exception("Failed to roll back unowned reviewer worktree %s", sibling)
         raise ReviewerWorktreeError(
@@ -218,14 +219,14 @@ def remove_reviewer_worktree(
             marker.unlink()
         except OSError:
             continue
-    # A reviewer checkout can be held too: the marker dance below is a
+    # A reviewer checkout can be held too: the marker dance above is a
     # rollback, not a licence to discard work someone claimed (#7274).
-    require_no_custody(reviewer.path)
     args = ["worktree", "remove", str(reviewer.path)]
     if force:
         args.append("--force")
     try:
-        _git(repo_root, args)
+        with custody_guard(reviewer.path):
+            _git(repo_root, args)
     except ReviewerWorktreeError as exc:
         if reviewer.path.exists():
             for marker, marker_content in marker_contents.items():

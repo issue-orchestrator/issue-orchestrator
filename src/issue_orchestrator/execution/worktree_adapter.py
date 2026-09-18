@@ -6,7 +6,11 @@ Implements the WorktreeManager port using the git worktree implementation.
 from pathlib import Path
 from .git_tools import run_git
 
-from ..ports.worktree_custody import CustodyGrant, CustodyRelease
+from ..ports.worktree_custody import (
+    CustodyGrant,
+    CustodyRelease,
+    CustodyUnavailableError,
+)
 from ..ports.worktree_manager import (
     RegisteredWorktree,
     ReviewerHeadOwnership,
@@ -104,6 +108,14 @@ class GitWorktreeManager:
         self, worktree_path: Path, *, holder: str, reason: str
     ) -> CustodyGrant:
         """Hold a checkout so no removal path can discard it."""
+        if not worktree_path.exists():
+            # Said here for the message: resolving the store first would report
+            # "not inside a git repository", which is true of a deleted
+            # checkout and tells an operator nothing. The authoritative check
+            # is inside the store's lock, where it closes the race.
+            raise CustodyUnavailableError(
+                f"{worktree_path} does not exist, so it cannot be held"
+            )
         custody = self._custody(worktree_path)
         return custody.take(
             worktree_path,

@@ -16,9 +16,14 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import re
+import shutil
 import subprocess
+import threading
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -26,7 +31,14 @@ from issue_orchestrator.adapters.worktree.custody import (
     CUSTODY_FILE,
     CUSTODY_LOG,
     GitMetadataWorktreeCustody,
+    custody_guard,
     git_common_dir,
+)
+import issue_orchestrator.adapters.worktree._worktree as worktree_module
+from issue_orchestrator.control.maintenance import _remove_local_worktree
+from issue_orchestrator.ports.worktree_custody import (
+    CustodyUnavailableError,
+    WorktreeCustody,
 )
 from issue_orchestrator.control.worktree_reconciliation import (
     WorktreeActivityEvidence,
@@ -224,7 +236,7 @@ class TestTheGrant:
 
     def test_an_unregistered_path_cannot_be_held(
         self, manager: GitWorktreeManager, tmp_path: Path
-    ) -> None:
+    ) -> None:  # noqa: D102
         """Failing beats reporting a path nobody can protect as protected."""
         orphan = tmp_path / "not-a-repo"
         orphan.mkdir()
@@ -279,8 +291,53 @@ class TestTheStore:
         store.parent.mkdir(parents=True, exist_ok=True)
         store.write_text("{ not json")
 
-        with pytest.raises(ValueError, match="unreadable"):
+        with pytest.raises(CustodyUnavailableError, match="unreadable"):
             GitMetadataWorktreeCustody.for_path(checkout).held(checkout)  # type: ignore[union-attr]
+
+    def test_a_damaged_store_stops_a_removal_instead_of_failing_open(
+        self, manager: GitWorktreeManager, repo: Path, checkout: Path
+    ) -> None:
+        """An unreadable store is not permission (round 1 finding 4).
+
+        Reuse cleanup deletes the directory on any exception from git, so a
+        custody store it cannot parse must not arrive there looking like an
+        ordinary removal failure.
+        """
+        store = repo / ".git" / CUSTODY_FILE
+        store.parent.mkdir(parents=True, exist_ok=True)
+        store.write_text("{ not json")
+
+        for removal in (
+            lambda: manager.remove_checkout_and_branch(checkout, force=True),
+            lambda: ValidateOrDeletePolicy().delete_worktree(checkout, repo),
+        ):
+            with pytest.raises(CustodyUnavailableError):
+                removal()
+
+        assert (checkout / "finding.md").exists()
+
+    def test_an_unreadable_git_pointer_stops_a_removal(
+        self, manager: GitWorktreeManager, checkout: Path
+    ) -> None:
+        """Reporting "not in a repository" there would report "not held"."""
+        (checkout / ".git").write_text("this is not a gitdir pointer\n")
+
+        with pytest.raises(CustodyUnavailableError):
+            manager.remove_checkout(checkout, force=True)
+
+        assert (checkout / "finding.md").exists()
+
+    def test_a_relative_gitdir_pointer_finds_the_same_store(
+        self, repo: Path, checkout: Path, monkeypatch
+    ) -> None:
+        """git writes these; resolving one against the CWD finds nothing."""
+        absolute = git_common_dir(checkout)
+        pointer = checkout / ".git"
+        target = Path(pointer.read_text().split(":", 1)[1].strip())
+        pointer.write_text(f"gitdir: {os.path.relpath(target, checkout)}\n")
+        monkeypatch.chdir(checkout.parent)
+
+        assert git_common_dir(checkout) == absolute
 
     def test_held_checkouts_are_listed_oldest_first(
         self, manager: GitWorktreeManager, repo: Path, checkout: Path, tmp_path: Path
@@ -398,87 +455,115 @@ class TestReconciliationSeesCustody:
         assert after[0].reason == f"in the custody of {HOLDER}"
 
 
-def _calls_require_no_custody(module: Path) -> bool:
+def _calls(node: ast.AST, name: str) -> bool:
     """A CALL, not a mention: an import left behind proves nothing."""
-    tree = ast.parse(module.read_text(encoding="utf-8"), filename=str(module))
     return any(
-        isinstance(node, ast.Call)
-        and getattr(node.func, "id", getattr(node.func, "attr", ""))
-        == "require_no_custody"
-        for node in ast.walk(tree)
+        isinstance(child, ast.Call)
+        and getattr(child.func, "id", getattr(child.func, "attr", "")) == name
+        for child in ast.walk(node)
     )
+
+
+def _builds_removal_argv(node: ast.AST) -> int | None:
+    """The line where this function spells ``worktree`` then ``remove``."""
+    for child in ast.walk(node):
+        if not isinstance(child, (ast.List, ast.Tuple)):
+            continue
+        words = [
+            element.value
+            for element in child.elts
+            if isinstance(element, ast.Constant) and isinstance(element.value, str)
+        ]
+        for first, second in zip(words, words[1:]):
+            if first == "worktree" and second == "remove":
+                return child.lineno
+    return None
 
 
 class TestNoRemovalPathCanSkipTheCheck:
     """Custody enforced at four call sites is custody a fifth one skips.
 
-    The shape of #7274 was not a missing check; it was four independent
-    removals and a lock only one of them honoured. So this reads the source: a
-    module that removes a WORKTREE must ask ``require_no_custody`` first, and a
-    new one that does not fails here rather than in production.
+    The shape of #7274 was not a missing check; it was several independent
+    removals and a lock only one of them honoured. So this reads the source
+    FUNCTION BY FUNCTION: anything that builds a ``git worktree remove``
+    argument list must wrap it in ``custody_guard``, and a new one that does
+    not fails here rather than in production.
+
+    Per function, not per module: the first version of this guard looked for
+    the call anywhere in the file, so deleting the call while leaving the
+    import kept it green -- and it missed the create path entirely, which was
+    round 1 finding [2].
     """
 
-    #: Modules that run ``git worktree remove`` against a workspace they made
-    #: themselves and nobody can hold: a validation lane's scratch checkout, a
-    #: publication workspace, an E2E fixture, a doctor repair. Each is listed
-    #: with the reason it is not a lifecycle worktree.
-    OWN_EPHEMERAL_WORKSPACES = {
-        "adapters/budgeted_validation_git.py": "validation lane scratch checkout",
-        "execution/publication_workspace.py": "publication workspace",
-        "infra/e2e_worktree.py": "E2E fixture repository",
-        "infra/doctor/checks/guardrails.py": "doctor repair of its own probe",
-        "adapters/git/git_cli.py": "the git command surface itself",
+    #: Removal helpers whose guard is held by the caller named here, because
+    #: the lock has to span the whole removal and the helper is the second half
+    #: of one. Each named guard is itself checked below.
+    GUARDED_BY_CALLER = {
+        "adapters/worktree/_worktree.py::_clear_existing_worktree_path": (
+            "_remove_existing_worktree_path"
+        ),
+        "adapters/worktree/_worktree.py::_remove_worktree_path": "remove_worktree",
     }
 
-    def _removal_modules(self) -> set[str]:
-        """Every module that issues a worktree removal, by repo-relative path.
+    def _src(self) -> Path:
+        return Path(__file__).resolve().parents[2] / "src" / "issue_orchestrator"
 
-        Read as a git ARGUMENT LIST -- ``"worktree"`` immediately followed by
-        ``"remove"`` -- with whitespace collapsed first, so a call split over
-        several lines counts and the words appearing separately in prose does
-        not.
+    def _removal_functions(self) -> dict[str, ast.FunctionDef]:
+        """Every function that builds a ``git worktree remove`` argument list.
+
+        Read as a LIST LITERAL rather than a substring, so a call split over
+        several lines counts and the two words appearing in prose do not.
         """
-        src = Path(__file__).resolve().parents[2] / "src" / "issue_orchestrator"
-        argv = re.compile(r"""(['"])worktree\1\s*,\s*(['"])remove\2""")
-        return {
-            str(path.relative_to(src))
-            for path in src.rglob("*.py")
-            if argv.search(path.read_text(encoding="utf-8"))
-        }
+        found: dict[str, ast.FunctionDef] = {}
+        for path in sorted(self._src().rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                if _builds_removal_argv(node):
+                    found[f"{path.relative_to(self._src())}::{node.name}"] = node
+        return found
 
-    def test_every_removal_module_asks_or_is_listed(self) -> None:
-        src = Path(__file__).resolve().parents[2] / "src" / "issue_orchestrator"
-        unguarded = []
-        for relative in sorted(self._removal_modules()):
-            if relative in self.OWN_EPHEMERAL_WORKSPACES:
-                continue
-            if not _calls_require_no_custody(src / relative):
-                unguarded.append(relative)
-
-        assert not unguarded, (
-            "these modules remove a worktree without asking whether it is in "
-            f"custody: {unguarded}. Call require_no_custody first, or list the "
-            "module in OWN_EPHEMERAL_WORKSPACES with the reason nobody can "
-            "hold what it removes."
-        )
-
-    def test_the_listed_exemptions_still_exist(self) -> None:
-        """An exemption for a deleted module is a rule nobody is following."""
-        src = Path(__file__).resolve().parents[2] / "src" / "issue_orchestrator"
-        missing = [
-            relative
-            for relative in self.OWN_EPHEMERAL_WORKSPACES
-            if not (src / relative).exists()
+    def test_every_removal_function_guards_its_removal(self) -> None:
+        unguarded = [
+            name
+            for name, node in self._removal_functions().items()
+            if name not in self.GUARDED_BY_CALLER and not _calls(node, "custody_guard")
         ]
 
-        assert not missing, f"exempted modules that no longer exist: {missing}"
+        assert not unguarded, (
+            "these functions remove a worktree without holding custody: "
+            f"{unguarded}. Wrap the removal in custody_guard, or -- if the "
+            "guard must span a caller's whole operation -- name that caller in "
+            "GUARDED_BY_CALLER."
+        )
 
-    def test_the_scan_finds_the_paths_it_is_supposed_to_guard(self) -> None:
+    def test_each_delegated_guard_really_guards(self) -> None:
+        """A helper is only exempt if the function it names actually holds one."""
+        functions = {}
+        for path in sorted(self._src().rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    functions[f"{path.relative_to(self._src())}::{node.name}"] = node
+
+        for helper, guardian in self.GUARDED_BY_CALLER.items():
+            module = helper.split("::", 1)[0]
+            node = functions.get(f"{module}::{guardian}")
+            assert node is not None, f"{helper} names a guard that does not exist"
+            assert _calls(node, "custody_guard"), (
+                f"{helper} is exempt because {guardian} guards it, but "
+                f"{guardian} holds no custody guard"
+            )
+
+    def test_the_scan_finds_the_functions_it_is_supposed_to_guard(self) -> None:
         """A scan that matches nothing would pass by finding no work."""
-        found = self._removal_modules()
+        found = self._removal_functions()
 
-        assert "adapters/worktree/_worktree.py" in found
-        assert "execution/reviewer_worktree.py" in found
+        assert "adapters/worktree/_worktree.py::_remove_worktree_path" in found
+        assert "execution/reviewer_worktree.py::remove_reviewer_worktree" in found
+        assert "adapters/git/git_cli.py::worktree_remove" in found
+        assert len(found) >= 8, f"only {len(found)} removal functions found"
 
 
 class TestThePathsThatDoNotUseTheSeam:
@@ -511,3 +596,159 @@ class TestThePathsThatDoNotUseTheSeam:
             remove_reviewer_worktree(reviewer, force=True)
 
         assert (checkout / "finding.md").exists()
+
+
+class TestTheRaceBetweenLookingAndDeleting:
+    """Checking and then deleting leaves a window custody cannot survive.
+
+    Without the lock spanning the removal, an operator takes custody after the
+    remover looked, is told no removal path will discard the checkout, and
+    watches it go anyway (round 1 finding 3).
+    """
+
+    def test_a_take_waits_for_a_removal_that_is_already_underway(
+        self, manager: GitWorktreeManager, repo: Path, checkout: Path
+    ) -> None:
+        """The guard holds the answer for as long as the removal takes."""
+        order: list[str] = []
+        inside = threading.Event()
+        answered = threading.Event()
+
+        def take_while_it_is_open() -> None:
+            inside.wait(timeout=5)
+            try:
+                manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+                order.append("held")
+            except CustodyUnavailableError:
+                order.append("too late")
+            answered.set()
+
+        taker = threading.Thread(target=take_while_it_is_open)
+        taker.start()
+        try:
+            with custody_guard(checkout):
+                inside.set()
+                # The take is running now. If it could answer here, an operator
+                # would be told the checkout is protected while this body is
+                # already committed to removing it.
+                assert not answered.wait(timeout=0.5), (
+                    "a take was answered inside an open removal"
+                )
+                order.append("removing")
+                shutil.rmtree(checkout)
+        finally:
+            taker.join(timeout=5)
+
+        assert order == ["removing", "too late"]
+
+    def test_a_checkout_that_is_gone_cannot_be_held(
+        self, manager: GitWorktreeManager, repo: Path, checkout: Path
+    ) -> None:
+        """Otherwise the grant promises to protect nothing."""
+        manager.remove_checkout_and_branch(checkout, force=True)
+
+        with pytest.raises(CustodyUnavailableError, match="does not exist"):
+            manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+
+
+class TestTheAuditOutlivesTheState:
+    """Each write fails toward "still protected", never toward "silently gone"."""
+
+    def test_a_take_whose_trail_fails_still_protects(
+        self, manager: GitWorktreeManager, checkout: Path, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(
+            GitMetadataWorktreeCustody,
+            "_append_trail",
+            lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")),
+        )
+
+        with pytest.raises(OSError):
+            manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+
+        assert manager.custody_of(checkout) is not None, (
+            "the grant was written after its trail, so a failed trail left the "
+            "checkout unprotected"
+        )
+
+    def test_a_release_whose_state_write_fails_stays_held_and_audited(
+        self, manager: GitWorktreeManager, repo: Path, checkout: Path, monkeypatch
+    ) -> None:
+        manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+        monkeypatch.setattr(
+            GitMetadataWorktreeCustody,
+            "_write",
+            lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")),
+        )
+
+        with pytest.raises(OSError):
+            manager.release_custody(
+                checkout, CustodyRelease(holder=HOLDER, reason="collected")
+            )
+
+        assert manager.custody_of(checkout) is not None
+        trail = (repo / ".git" / CUSTODY_LOG).read_text()
+        assert '"action": "release"' in trail, (
+            "the release was not on record before the state changed"
+        )
+
+
+class TestOperatorReset:
+    """A reset that reports success on a held checkout is worse than a failure.
+
+    It clears the issue's state and requeues it, and the next launch reuses or
+    resets the very checkout custody was taken to preserve (round 1 finding 1).
+    """
+
+    @pytest.mark.parametrize("from_scratch", [False, True], ids=["reuse", "scratch"])
+    def test_a_held_checkout_stops_the_reset(
+        self,
+        manager: GitWorktreeManager,
+        repo: Path,
+        checkout: Path,
+        from_scratch: bool,
+    ) -> None:
+        issue_checkout = checkout.parent / f"{repo.name}-6410"
+        _git(repo, "worktree", "add", "-b", "6410-work", str(issue_checkout))
+        (issue_checkout / "work.md").write_text("the only copy\n")
+        _git(issue_checkout, "add", "work.md")
+        _git(issue_checkout, "commit", "-m", "work")
+        manager.take_custody(issue_checkout, holder=HOLDER, reason=REASON)
+        config = SimpleNamespace(worktree_base=checkout.parent, repo_root=repo)
+
+        with pytest.raises(WorktreeInCustodyError):
+            _remove_local_worktree(
+                issue_number=6410,
+                config=cast(Any, config),
+                worktree_manager=manager,
+                from_scratch=from_scratch,
+            )
+
+        assert (issue_checkout / "work.md").exists()
+        assert "6410-work" in _branches(repo)
+
+
+class TestCreatingOverAHeldCheckout:
+    def test_a_fresh_create_does_not_delete_a_held_path(
+        self, manager: GitWorktreeManager, repo: Path, checkout: Path
+    ) -> None:
+        """The create path force-removes whatever is in the way.
+
+        With reuse disabled, launching against a held existing checkout deleted
+        and replaced it (round 1 finding 2).
+        """
+        manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+
+        with pytest.raises(WorktreeInCustodyError):
+            worktree_module._remove_existing_worktree_path(repo, checkout)  # noqa: SLF001
+
+        assert (checkout / "finding.md").exists()
+
+
+def test_the_store_satisfies_the_custody_port() -> None:
+    """The port is a checked contract, not documentation of one."""
+    store: WorktreeCustody = GitMetadataWorktreeCustody(Path("/nonexistent"))
+
+    assert isinstance(store, GitMetadataWorktreeCustody)
+    for method in ("take", "release", "held", "list_held"):
+        assert callable(getattr(store, method))

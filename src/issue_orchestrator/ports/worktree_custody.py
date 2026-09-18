@@ -27,7 +27,26 @@ from pathlib import Path
 from typing import Protocol
 
 
-class WorktreeInCustodyError(RuntimeError):
+class CustodyError(RuntimeError):
+    """Custody could not be honoured. NEVER catch this to keep removing.
+
+    The whole value of custody is that a removal stops. Every caller that wraps
+    a removal in ``except Exception`` has to let this through, or the refusal
+    becomes a log line and the checkout goes anyway -- which is how three of
+    this repository's removal paths behaved before #7274.
+    """
+
+
+class CustodyUnavailableError(CustodyError):
+    """Whether the checkout is held could not be determined.
+
+    Fails CLOSED. An unreadable ``.git`` file or a damaged custody store is not
+    "nothing is held": answering that way deletes the one copy of a branch on
+    the strength of a read that did not work.
+    """
+
+
+class WorktreeInCustodyError(CustodyError):
     """A removal was refused because a human owns the checkout.
 
     Carries the grant so a caller can tell the operator who holds it and why,
@@ -78,7 +97,21 @@ class CustodyRelease:
 
 
 class WorktreeCustody(Protocol):
-    """The single owner of "this checkout is not ours to delete"."""
+    """The single owner of "this checkout is not ours to delete".
+
+    Deliberately NOT injected into the removal paths. Enforcement is
+    ``adapters.worktree.custody.custody_guard``, a module-level function every
+    removal wraps itself in, because the property that matters is that removing
+    a worktree WITHOUT consulting custody is impossible -- and a collaborator
+    passed in can be not passed in. A new removal path that forgets an injected
+    dependency compiles; one that forgets the guard fails
+    ``tests/unit/test_worktree_custody.py``.
+
+    This protocol is the read/write surface an owner offers a caller that wants
+    to place or end a grant -- the CLI, and the launch paths that will hand a
+    checkout to a person (#7263). ``GitMetadataWorktreeCustody`` satisfies it,
+    and a test pins that it still does.
+    """
 
     def take(
         self, worktree_path: Path, *, branch: str | None, holder: str, reason: str

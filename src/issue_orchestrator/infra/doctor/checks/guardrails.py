@@ -7,6 +7,7 @@ from typing import Optional
 
 from ..types import Check
 from ...config import Config
+from ....adapters.worktree.custody import custody_guard
 from ....ports.command_runner import CommandRunner
 
 
@@ -397,10 +398,11 @@ def _check_guardrails_in_worktree(
     finally:
         if worktree_path and worktree_path.exists():
             try:
-                runner.run(
-                    ["git", "worktree", "remove", "--force", str(worktree_path)],
-                    cwd=repo_root,
-                )
+                with custody_guard(worktree_path):
+                    runner.run(
+                        ["git", "worktree", "remove", "--force", str(worktree_path)],
+                        cwd=repo_root,
+                    )
                 if branch_name:
                     runner.run(
                         ["git", "branch", "-D", branch_name],

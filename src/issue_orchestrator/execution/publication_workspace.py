@@ -6,6 +6,7 @@ from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
 
+from ..adapters.worktree.custody import custody_guard
 from ..domain.completion_intake import CompletionIntakeError
 from ..domain.publication_workspace import PublicationWorkspace
 from ..domain.validated_work_escrow import (
@@ -90,8 +91,9 @@ class EscrowPublicationWorkspaces:
             self._git.repair_worktree_registration(self._repository, workspace.checkout)
             # Verification admits only exact source plus explicitly owned
             # runtime/dependency output. Git requires force for those paths.
-            self._git.run(self._repository,
-                          ["worktree", "remove", "--force", "--", str(workspace.checkout)])
+            with custody_guard(workspace.checkout):
+                self._git.run(self._repository,
+                              ["worktree", "remove", "--force", "--", str(workspace.checkout)])
         else:
             self._remove_absent_registration(workspace.checkout)
         run = workspace.artifacts.completion.parent
@@ -270,7 +272,8 @@ class EscrowPublicationWorkspaces:
             raise ValueError("cannot remove registration for a present checkout")
         registered = self._git.run(self._repository, ["worktree", "list", "--porcelain", "-z"]).stdout.split("\0")
         if f"worktree {checkout}" in registered:
-            self._git.run(self._repository, ["worktree", "remove", "--force", "--", str(checkout)])
+            with custody_guard(checkout):
+                self._git.run(self._repository, ["worktree", "remove", "--force", "--", str(checkout)])
 
     @staticmethod
     def _canonical(path: Path) -> None:
