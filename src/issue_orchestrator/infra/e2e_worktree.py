@@ -6,11 +6,10 @@ SQLite files.
 """
 
 import logging
-import shutil
 import subprocess
 from pathlib import Path
 
-from ..adapters.worktree.custody import custody_guard
+from ..adapters.worktree.removal import GitRunner, remove_checkout_path
 
 logger = logging.getLogger(__name__)
 
@@ -170,23 +169,24 @@ def _sync_venv(worktree_path: Path) -> None:
     )
 
 
+def _removal_git(repo_root: Path) -> GitRunner:
+    def run(argv: list[str]) -> str | None:
+        try:
+            _run_git(argv, cwd=repo_root)
+        except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+            return str(exc)
+        return None
+
+    return run
+
+
 def _recover_worktree(repo_root: Path, worktree_path: Path) -> None:
     """Remove a broken worktree and recreate it."""
     logger.warning("Recovering E2E worktree at %s", worktree_path)
-    try:
-        with custody_guard(worktree_path):
-            _run_git(
-                ["worktree", "remove", "--force", str(worktree_path)],
-                cwd=repo_root,
-            )
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        pass
-    # The directory may still exist on disk if it was never a registered
-    # worktree (e.g. partial cleanup or corruption).  Remove it so that
-    # ``git worktree add`` doesn't fail with "already exists".
-    if worktree_path.exists():
-        logger.warning("Removing stale directory %s", worktree_path)
-        shutil.rmtree(worktree_path)
+    # The directory removal that follows a failed git removal is part of the
+    # same operation, so it is the primitive's fallback rather than a second
+    # step here -- held under one custody answer for both.
+    remove_checkout_path(worktree_path, force=True, run_git=_removal_git(repo_root))
     _create_worktree(repo_root, worktree_path)
 
 

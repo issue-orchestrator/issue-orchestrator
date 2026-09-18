@@ -35,6 +35,9 @@ from issue_orchestrator.adapters.worktree.custody import (
     git_common_dir,
 )
 import issue_orchestrator.adapters.worktree._worktree as worktree_module
+from issue_orchestrator.adapters.budgeted_validation_git import (
+    BudgetedValidationGit,
+)
 from issue_orchestrator.control.maintenance import _remove_local_worktree
 from issue_orchestrator.ports.worktree_custody import (
     CustodyUnavailableError,
@@ -455,115 +458,104 @@ class TestReconciliationSeesCustody:
         assert after[0].reason == f"in the custody of {HOLDER}"
 
 
-def _calls(node: ast.AST, name: str) -> bool:
-    """A CALL, not a mention: an import left behind proves nothing."""
-    return any(
-        isinstance(child, ast.Call)
-        and getattr(child.func, "id", getattr(child.func, "attr", "")) == name
-        for child in ast.walk(node)
+def _is_call(node: ast.AST, name: str) -> bool:
+    """A CALL of ``name``: an import left behind proves nothing."""
+    return (
+        isinstance(node, ast.Call)
+        and getattr(node.func, "id", getattr(node.func, "attr", "")) == name
     )
 
 
-def _builds_removal_argv(node: ast.AST) -> int | None:
-    """The line where this function spells ``worktree`` then ``remove``."""
-    for child in ast.walk(node):
-        if not isinstance(child, (ast.List, ast.Tuple)):
-            continue
-        words = [
-            element.value
-            for element in child.elts
-            if isinstance(element, ast.Constant) and isinstance(element.value, str)
-        ]
-        for first, second in zip(words, words[1:]):
-            if first == "worktree" and second == "remove":
-                return child.lineno
-    return None
+def _removal_lines(tree: ast.AST) -> list[int]:
+    """Every line spelling ``worktree`` then ``remove`` as adjacent arguments.
+
+    Both shapes count: a list literal passed as one argument, and a vararg call
+    spreading the words across positional arguments.
+    """
+    lines: set[int] = set()
+    for node in ast.walk(tree):
+        groups: list[tuple[int, list[ast.expr]]] = []
+        if isinstance(node, (ast.List, ast.Tuple)):
+            groups.append((node.lineno, list(node.elts)))
+        elif isinstance(node, ast.Call):
+            groups.append((node.lineno, list(node.args)))
+        for lineno, elements in groups:
+            words = [
+                element.value
+                for element in elements
+                if isinstance(element, ast.Constant)
+                and isinstance(element.value, str)
+            ]
+            for first, second in zip(words, words[1:]):
+                if first == "worktree" and second == "remove":
+                    lines.add(lineno)
+    return sorted(lines)
 
 
-class TestNoRemovalPathCanSkipTheCheck:
-    """Custody enforced at four call sites is custody a fifth one skips.
+class TestOneRemovalOwner:
+    """``git worktree remove`` is built in exactly one module.
 
-    The shape of #7274 was not a missing check; it was several independent
-    removals and a lock only one of them honoured. So this reads the source
-    FUNCTION BY FUNCTION: anything that builds a ``git worktree remove``
-    argument list must wrap it in ``custody_guard``, and a new one that does
-    not fails here rather than in production.
+    The shape of #7274 was not a missing check. It was NINE places that removed
+    a worktree -- four lifecycle paths, a reuse-cleanup fallback, a reviewer
+    rollback, a publication workspace, a validation lane, an E2E fixture and a
+    doctor repair -- each with its own command and most with their own
+    ``shutil.rmtree`` for when git declined. Custody added to nine places is
+    custody missing from the tenth.
 
-    Per function, not per module: the first version of this guard looked for
-    the call anywhere in the file, so deleting the call while leaving the
-    import kept it green -- and it missed the create path entirely, which was
-    round 1 finding [2].
+    So the rule is ownership, not inspection: everything calls
+    ``removal.remove_checkout_path``, which asks custody once and holds the
+    answer across both attempts. This is the same guardrail shape the
+    repository already uses for the process table and the provider-output
+    classifier -- one owner, named, and a test that says so.
     """
 
-    #: Removal helpers whose guard is held by the caller named here, because
-    #: the lock has to span the whole removal and the helper is the second half
-    #: of one. Each named guard is itself checked below.
-    GUARDED_BY_CALLER = {
-        "adapters/worktree/_worktree.py::_clear_existing_worktree_path": (
-            "_remove_existing_worktree_path"
-        ),
-        "adapters/worktree/_worktree.py::_remove_worktree_path": "remove_worktree",
-    }
+    OWNER = "adapters/worktree/removal.py"
 
-    def _src(self) -> Path:
-        return Path(__file__).resolve().parents[2] / "src" / "issue_orchestrator"
-
-    def _removal_functions(self) -> dict[str, ast.FunctionDef]:
-        """Every function that builds a ``git worktree remove`` argument list.
-
-        Read as a LIST LITERAL rather than a substring, so a call split over
-        several lines counts and the two words appearing in prose do not.
-        """
-        found: dict[str, ast.FunctionDef] = {}
-        for path in sorted(self._src().rglob("*.py")):
+    def _builders(self) -> dict[str, list[int]]:
+        src = Path(__file__).resolve().parents[2] / "src" / "issue_orchestrator"
+        found: dict[str, list[int]] = {}
+        for path in sorted(src.rglob("*.py")):
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-            for node in ast.walk(tree):
-                if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    continue
-                if _builds_removal_argv(node):
-                    found[f"{path.relative_to(self._src())}::{node.name}"] = node
+            lines = _removal_lines(tree)
+            if lines:
+                found[str(path.relative_to(src))] = lines
         return found
 
-    def test_every_removal_function_guards_its_removal(self) -> None:
-        unguarded = [
-            name
-            for name, node in self._removal_functions().items()
-            if name not in self.GUARDED_BY_CALLER and not _calls(node, "custody_guard")
-        ]
+    def test_only_the_owner_builds_the_removal_command(self) -> None:
+        builders = self._builders()
 
-        assert not unguarded, (
-            "these functions remove a worktree without holding custody: "
-            f"{unguarded}. Wrap the removal in custody_guard, or -- if the "
-            "guard must span a caller's whole operation -- name that caller in "
-            "GUARDED_BY_CALLER."
+        assert self.OWNER in builders, (
+            f"{self.OWNER} no longer builds the removal command; this guard is "
+            "pointing at the wrong owner"
+        )
+        assert set(builders) == {self.OWNER}, (
+            "these modules build their own `git worktree remove`: "
+            f"{sorted(set(builders) - {self.OWNER})}. Call "
+            "removal.remove_checkout_path instead -- it asks custody once and "
+            "holds the answer across the git attempt AND the filesystem "
+            "fallback."
         )
 
-    def test_each_delegated_guard_really_guards(self) -> None:
-        """A helper is only exempt if the function it names actually holds one."""
-        functions = {}
-        for path in sorted(self._src().rglob("*.py")):
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-            for node in ast.walk(tree):
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    functions[f"{path.relative_to(self._src())}::{node.name}"] = node
+    def test_the_owner_asks_custody(self) -> None:
+        """The one place that removes is the one place that asks.
 
-        for helper, guardian in self.GUARDED_BY_CALLER.items():
-            module = helper.split("::", 1)[0]
-            node = functions.get(f"{module}::{guardian}")
-            assert node is not None, f"{helper} names a guard that does not exist"
-            assert _calls(node, "custody_guard"), (
-                f"{helper} is exempt because {guardian} guards it, but "
-                f"{guardian} holds no custody guard"
-            )
+        A call, not a scope analysis: that the guard actually covers both
+        attempts is a behaviour, and the refusal tests above are what prove it.
+        """
+        src = Path(__file__).resolve().parents[2] / "src" / "issue_orchestrator"
+        tree = ast.parse((src / self.OWNER).read_text(encoding="utf-8"))
 
-    def test_the_scan_finds_the_functions_it_is_supposed_to_guard(self) -> None:
-        """A scan that matches nothing would pass by finding no work."""
-        found = self._removal_functions()
+        assert any(
+            _is_call(node, "custody_guard") for node in ast.walk(tree)
+        ), "the removal owner does not ask custody"
 
-        assert "adapters/worktree/_worktree.py::_remove_worktree_path" in found
-        assert "execution/reviewer_worktree.py::remove_reviewer_worktree" in found
-        assert "adapters/git/git_cli.py::worktree_remove" in found
-        assert len(found) >= 8, f"only {len(found)} removal functions found"
+    def test_the_scan_reads_both_ways_a_command_is_built(self) -> None:
+        """A list literal and a vararg call are the same removal."""
+        as_list = ast.parse('git.run(repo, ["worktree", "remove", str(p)])')
+        as_varargs = ast.parse('self.git("worktree", "remove", "--force", str(p))')
+
+        assert _removal_lines(as_list) == [1]
+        assert _removal_lines(as_varargs) == [1]
 
 
 class TestThePathsThatDoNotUseTheSeam:
@@ -752,3 +744,59 @@ def test_the_store_satisfies_the_custody_port() -> None:
     assert isinstance(store, GitMetadataWorktreeCustody)
     for method in ("take", "release", "held", "list_held"):
         assert callable(getattr(store, method))
+
+
+class TestTheFilesystemFallbacks:
+    """A guard held only around the git attempt is a guard with a hole.
+
+    Both of these delete the directory when git declines, and both used to do
+    it after the lock was released -- so a hold taken in between was granted and
+    then lost to the ``rmtree`` (round 2 findings 2 and 3).
+    """
+
+    def test_reuse_cleanup_holds_its_guard_through_the_fallback(
+        self, manager: GitWorktreeManager, repo: Path, checkout: Path
+    ) -> None:
+        held: list[str] = []
+        taking = threading.Thread(
+            target=lambda: held.append(_take_or_fail(manager, checkout))
+        )
+
+        with custody_guard(checkout):
+            taking.start()
+            # The policy's whole body runs under a guard, so a take cannot be
+            # answered anywhere inside it -- including between the failed git
+            # removal and the rmtree.
+            assert not held
+            taking.join(timeout=0.5)
+            assert not held, "a take was answered inside an open removal"
+
+        taking.join(timeout=5)
+        assert held == ["held"]
+
+    def test_budgeted_validation_cleanup_asks(
+        self, manager: GitWorktreeManager, repo: Path, checkout: Path
+    ) -> None:
+        """Its command is built from varargs, which the old scan did not read."""
+        manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+        git = BudgetedValidationGit(repo, _RecordingRunner())
+
+        with pytest.raises(WorktreeInCustodyError):
+            git.remove_checkout(checkout)
+
+        assert (checkout / "finding.md").exists()
+
+
+class _RecordingRunner:
+    """A command runner that must never be reached for a held checkout."""
+
+    def run(self, *args: object, **kwargs: object):  # noqa: ANN201, ARG002
+        raise AssertionError("a held checkout reached the command runner")
+
+
+def _take_or_fail(manager: GitWorktreeManager, path: Path) -> str:
+    try:
+        manager.take_custody(path, holder=HOLDER, reason=REASON)
+        return "held"
+    except CustodyUnavailableError:
+        return "too late"

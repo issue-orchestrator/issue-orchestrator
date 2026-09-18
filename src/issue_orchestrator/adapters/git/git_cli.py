@@ -6,8 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ...ports.command_runner import CommandRunner, CommandResult, OutputNewlines
-from ...domain.escrow_retention_boundary import is_escrow_path, require_disposable_path
-from ..worktree.custody import custody_guard
+from ...domain.escrow_retention_boundary import is_escrow_path
+from ..worktree.removal import remove_checkout_path
 from ...ports.git import Git, GitError, GitResult
 
 
@@ -163,16 +163,17 @@ class GitCLI(Git):
         from .worktree_registration import repair_worktree_registration
         repair_worktree_registration(self, repo, path)
 
+    @staticmethod
+    def _error_of(result: GitResult) -> str | None:
+        return None if result.returncode == 0 else (result.stderr or "").strip()
+
     def worktree_remove(self, repo: Path, path: Path, force: bool = True, prune: bool = True) -> None:
-        require_disposable_path(path)
-        with custody_guard(path):
-            argv = ["worktree", "remove"]
-            if force:
-                argv.append("--force")
-            argv.append(str(path))
-            self.run(repo, argv, check=False)
-            if prune:
-                self.run(repo, ["worktree", "prune"], check=False)
+        remove_checkout_path(
+            path,
+            force=force,
+            prune=prune,
+            run_git=lambda argv: self._error_of(self.run(repo, argv, check=False)),
+        )
 
     def commit(self, repo: Path, message: str) -> None:
         self.run(repo, ["commit", "-am", message])

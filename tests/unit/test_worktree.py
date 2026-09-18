@@ -1029,7 +1029,7 @@ class TestRemoveWorktree:
             str(worktree_path),
         ]
 
-    @patch("issue_orchestrator.adapters.worktree._worktree.shutil.rmtree")
+    @patch("issue_orchestrator.adapters.worktree.removal.shutil.rmtree")
     @patch("issue_orchestrator.adapters.worktree._worktree.get_worktree_branch")
     @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_remove_worktree_git_and_fallback_fail(

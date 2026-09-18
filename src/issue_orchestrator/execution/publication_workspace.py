@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
 
-from ..adapters.worktree.custody import custody_guard
+from ..adapters.worktree.removal import GitRunner, remove_checkout_path
 from ..domain.completion_intake import CompletionIntakeError
 from ..domain.publication_workspace import PublicationWorkspace
 from ..domain.validated_work_escrow import (
@@ -91,9 +91,9 @@ class EscrowPublicationWorkspaces:
             self._git.repair_worktree_registration(self._repository, workspace.checkout)
             # Verification admits only exact source plus explicitly owned
             # runtime/dependency output. Git requires force for those paths.
-            with custody_guard(workspace.checkout):
-                self._git.run(self._repository,
-                              ["worktree", "remove", "--force", "--", str(workspace.checkout)])
+            remove_checkout_path(
+                workspace.checkout, force=True, run_git=self._git_runner()
+            )
         else:
             self._remove_absent_registration(workspace.checkout)
         run = workspace.artifacts.completion.parent
@@ -266,14 +266,23 @@ class EscrowPublicationWorkspaces:
     def _common_directory(self, path: Path) -> Path:
         return Path(self._git.run(path, ["rev-parse", "--path-format=absolute", "--git-common-dir"]).stdout.strip()).resolve()
 
+    def _git_runner(self) -> GitRunner:
+        def run(argv: list[str]) -> str | None:
+            try:
+                self._git.run(self._repository, argv)
+            except GitError as exc:
+                return str(exc)
+            return None
+
+        return run
+
     def _remove_absent_registration(self, checkout: Path) -> None:
         self._canonical(checkout)
         if checkout.exists():
             raise ValueError("cannot remove registration for a present checkout")
         registered = self._git.run(self._repository, ["worktree", "list", "--porcelain", "-z"]).stdout.split("\0")
         if f"worktree {checkout}" in registered:
-            with custody_guard(checkout):
-                self._git.run(self._repository, ["worktree", "remove", "--force", "--", str(checkout)])
+            remove_checkout_path(checkout, force=True, run_git=self._git_runner())
 
     @staticmethod
     def _canonical(path: Path) -> None:

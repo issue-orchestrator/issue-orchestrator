@@ -18,6 +18,7 @@ from ...ports.worktree_policy import (
     WorktreePolicy,
 )
 from ._worktree import _git_run, remove_worktree
+from .custody import custody_guard
 
 logger = logging.getLogger(__name__)
 
@@ -142,30 +143,39 @@ class ValidateOrDeletePolicy:
         require_disposable_path(worktree_path)
         logger.info("[POLICY] Deleting worktree for fresh start: %s", worktree_path)
 
-        try:
-            # Try git worktree remove first (clean removal)
-            remove_worktree(worktree_path)
-            return True
-        except CustodyError:
-            # The fallback below deletes the directory on ANY exception, so
-            # swallowing this would turn a custody refusal -- or an unreadable
-            # custody store, which is equally not permission -- into "git said
-            # no, try harder". Exactly the bypass #7274 closes. The seam is the
-            # only thing that asks; this only has to not override it.
-            raise
-        except Exception as e:
-            logger.warning("[POLICY] git worktree remove failed: %s, trying rmtree", e)
+        # The guard spans BOTH attempts. Held only around the git one, the
+        # fallback below would run after the lock was released -- and an
+        # operator taking custody in between would be told the checkout is
+        # protected and then watch `rmtree` take it (#7274 round 2 finding 2).
+        # The inner seam takes the same lock again; it is re-entrant.
+        with custody_guard(worktree_path):
+            try:
+                # Try git worktree remove first (clean removal)
+                remove_worktree(worktree_path)
+                return True
+            except CustodyError:
+                # The fallback deletes the directory on ANY exception, so
+                # swallowing this -- or an unreadable custody store, which is
+                # equally not permission -- would turn it into "git said no,
+                # try harder". Exactly the bypass #7274 closes.
+                raise
+            except Exception as e:
+                logger.warning(
+                    "[POLICY] git worktree remove failed: %s, trying rmtree", e
+                )
 
-        # Fallback: just delete the directory
-        try:
-            if worktree_path.exists():
-                shutil.rmtree(worktree_path, ignore_errors=True)
-            # Also prune from git's worktree list
-            _git_run(repo_root, ["worktree", "prune"], check=False)
-            return True
-        except Exception as e:
-            logger.error("[POLICY] Failed to delete worktree %s: %s", worktree_path, e)
-            return False
+            # Fallback: just delete the directory
+            try:
+                if worktree_path.exists():
+                    shutil.rmtree(worktree_path, ignore_errors=True)
+                # Also prune from git's worktree list
+                _git_run(repo_root, ["worktree", "prune"], check=False)
+                return True
+            except Exception as e:
+                logger.error(
+                    "[POLICY] Failed to delete worktree %s: %s", worktree_path, e
+                )
+                return False
 
     def _check_broken_git_state(self, worktree_path: Path) -> str | None:
         """Check if worktree is in a broken git state.

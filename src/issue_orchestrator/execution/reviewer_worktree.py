@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..adapters.worktree.api import WorktreeError, install_worktree_identity
-from ..adapters.worktree.custody import custody_guard
+from ..adapters.worktree.removal import GitRunner, remove_checkout_path
 from ..domain.review_exchange import REVIEWER_WORKTREE_CHECKOUT_FAILURE_MARKER
 from ..ports.worktree_manager import REVIEWER_OWNED_HEAD_MARKER, WORKTREE_ID_MARKER
 
@@ -141,8 +141,9 @@ def create_reviewer_worktree(
         _persist_owned_head(sibling, tip_sha)
     except (WorktreeError, ReviewerWorktreeError) as exc:
         try:
-            with custody_guard(sibling):
-                _git(repo_root, ["worktree", "remove", str(sibling), "--force"])
+            remove_checkout_path(
+                sibling, force=True, run_git=_removal_git(repo_root)
+            )
         except ReviewerWorktreeError:
             logger.exception("Failed to roll back unowned reviewer worktree %s", sibling)
         raise ReviewerWorktreeError(
@@ -199,6 +200,17 @@ def fast_forward_reviewer_worktree(reviewer: ReviewerWorktree) -> str:
     return tip_sha
 
 
+def _removal_git(repo_root: Path) -> GitRunner:
+    def run(argv: list[str]) -> str | None:
+        try:
+            _git(repo_root, argv)
+        except ReviewerWorktreeError as exc:
+            return str(exc)
+        return None
+
+    return run
+
+
 def remove_reviewer_worktree(
     reviewer: ReviewerWorktree, *, force: bool = False,
 ) -> None:
@@ -221,12 +233,15 @@ def remove_reviewer_worktree(
             continue
     # A reviewer checkout can be held too: the marker dance above is a
     # rollback, not a licence to discard work someone claimed (#7274).
-    args = ["worktree", "remove", str(reviewer.path)]
-    if force:
-        args.append("--force")
     try:
-        with custody_guard(reviewer.path):
-            _git(repo_root, args)
+        outcome = remove_checkout_path(
+            reviewer.path, force=force, run_git=_removal_git(repo_root)
+        )
+        if not outcome.removed:
+            raise ReviewerWorktreeError(
+                f"Failed to remove reviewer worktree {reviewer.path}: "
+                f"{outcome.git_error}"
+            )
     except ReviewerWorktreeError as exc:
         if reviewer.path.exists():
             for marker, marker_content in marker_contents.items():

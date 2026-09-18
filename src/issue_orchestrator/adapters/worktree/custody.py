@@ -26,10 +26,11 @@ import fcntl
 import json
 import logging
 import os
+import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import IO, Iterator
+from typing import Iterator
 
 from ...ports.worktree_custody import (
     CustodyGrant,
@@ -39,6 +40,17 @@ from ...ports.worktree_custody import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: Lock depth per store, so a guard can nest inside a guard.
+#:
+#: ``flock`` is per open file DESCRIPTION: a second ``open`` of the same file in
+#: this process gets a new one, and locking it while the first is held is a
+#: self-deadlock. Removal paths legitimately nest -- a policy holds one around
+#: its git attempt AND its filesystem fallback, and the seam it calls in
+#: between holds its own -- so the count is kept here and the file lock is
+#: taken only on the way in from zero.
+_DEPTH_GUARD = threading.Lock()
+_DEPTH: dict[tuple[int, str], int] = {}
 
 #: Under the git COMMON dir, so every worktree of a repository sees one store.
 CUSTODY_DIR = Path("issue-orchestrator")
@@ -170,26 +182,40 @@ class GitMetadataWorktreeCustody:
     # -- storage ------------------------------------------------------------
 
     @contextmanager
-    def _locked(self) -> Iterator[IO[str]]:
+    def _locked(self) -> Iterator[None]:
         """Serialize read-modify-write against every process on this host.
 
         A lock FILE rather than an in-process one: the orchestrator, a CLI
         invocation and a recovery script are separate processes reading the
         same store, and losing a grant to a lost update is losing a branch.
+
+        Re-entrant within a thread, because removal paths nest.
         """
         path = self._root / CUSTODY_LOCK
+        key = (threading.get_ident(), str(path))
+        with _DEPTH_GUARD:
+            depth = _DEPTH.get(key, 0)
+            _DEPTH[key] = depth + 1
+        if depth:
+            try:
+                yield
+            finally:
+                _release_depth(key)
+            return
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             handle = path.open("a+")
         except OSError as exc:
+            _release_depth(key)
             raise CustodyUnavailableError(
                 f"cannot open the worktree custody lock at {path}: {exc}"
             ) from exc
         try:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-            yield handle
+            yield
         finally:
             handle.close()
+            _release_depth(key)
 
     def _records(self) -> dict[str, CustodyGrant]:
         path = self._root / CUSTODY_FILE
@@ -311,6 +337,15 @@ def git_common_dir(path: Path) -> Path | None:
     if git_dir.parent.name == "worktrees":
         return git_dir.parent.parent
     return git_dir
+
+
+def _release_depth(key: tuple[int, str]) -> None:
+    with _DEPTH_GUARD:
+        remaining = _DEPTH[key] - 1
+        if remaining:
+            _DEPTH[key] = remaining
+        else:
+            del _DEPTH[key]
 
 
 def _key(worktree_path: Path) -> str:

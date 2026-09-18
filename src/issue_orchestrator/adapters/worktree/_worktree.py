@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import os
 import re
-import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,11 +13,11 @@ from ...infra.runtime_artifacts import is_cleanup_safe_untracked_path
 from ...infra.logging_config import issue_log
 from ...ports.git import GitResult
 from ...ports.worktree_policy import WorktreePolicy
-from ...ports.worktree_custody import CustodyRelease
+from ...ports.worktree_custody import CustodyError, CustodyRelease
 from ...ports.worktree_manager import RegisteredWorktree, WorktreeReuseOptions
 from ...infra.worktree_base import resolve_base_branch
 from ._worktree_errors import WorktreeError as WorktreeError
-from .custody import custody_guard
+from .removal import GitRunner, remove_checkout_path
 from ._worktree_git import _git, _git_env_no_prompt, _git_run
 from ._worktree_hooks import HOOKS_DIR as HOOKS_DIR
 from ._worktree_runtime_setup import WorktreeRuntimeSetup
@@ -569,26 +568,10 @@ def _resolve_repo_root_from_worktree(worktree_path: Path) -> Path | None:
 
 
 def _remove_existing_worktree_path(repo_root: Path, worktree_path: Path) -> None:
-    require_disposable_path(worktree_path)
     logger.info("Removing existing worktree path for fresh create: %s", worktree_path)
-    with custody_guard(worktree_path):
-        _clear_existing_worktree_path(repo_root, worktree_path)
-
-
-def _clear_existing_worktree_path(repo_root: Path, worktree_path: Path) -> None:
-    """Force-remove a path a fresh create needs. Guarded by its caller."""
-    result = _git_run(
-        repo_root,
-        ["worktree", "remove", "--force", str(worktree_path)],
-        check=False,
+    remove_checkout_path(
+        worktree_path, force=True, run_git=git_runner(repo_root)
     )
-    if result.returncode != 0:
-        logger.warning(
-            "Failed to remove worktree via git, deleting directory: path=%s stderr=%s",
-            worktree_path,
-            result.stderr.strip(),
-        )
-        shutil.rmtree(worktree_path, ignore_errors=True)
 
 
 def _try_reuse_worktree(
@@ -1223,39 +1206,36 @@ def _recover_stale_branch_worktree_registration(
     return True
 
 
-def _remove_worktree_path(repo_root: Path, worktree_path: Path, *, force: bool) -> None:
-    require_disposable_path(worktree_path)
-    cmd = ["worktree", "remove"]
-    if force:
-        cmd.append("--force")
-    cmd.append(str(worktree_path))
-    result = _git_run(
-        repo_root,
-        cmd,
-        check=False,
-    )
+def git_runner(repo_root: Path) -> GitRunner:
+    """Run git in ``repo_root`` for a removal, reporting failure as text.
 
-    if result.returncode == 0:
-        return
-    if not force:
-        raise WorktreeError(f"Failed to remove worktree: {result.stderr}")
-    logger.warning(
-        "Forced worktree removal via git failed; deleting directory: path=%s stderr=%s",
+    Lives here, beside the other git helpers, rather than in the removal owner:
+    that module owns the COMMAND and the order of its two attempts, and stays
+    free of any particular transport.
+    """
+
+    def run(argv: list[str]) -> str | None:
+        result = _git_run(repo_root, argv, check=False)
+        return None if result.returncode == 0 else (result.stderr or "").strip()
+
+    return run
+
+
+def _remove_worktree_path(
+    repo_root: Path,
+    worktree_path: Path,
+    *,
+    force: bool,
+    custody_release: CustodyRelease | None = None,
+) -> None:
+    outcome = remove_checkout_path(
         worktree_path,
-        result.stderr.strip(),
+        force=force,
+        run_git=git_runner(repo_root),
+        custody_release=custody_release,
     )
-    _force_delete_worktree_path(worktree_path)
-
-
-def _force_delete_worktree_path(worktree_path: Path) -> None:
-    require_disposable_path(worktree_path)
-    if worktree_path.is_dir() and not worktree_path.is_symlink():
-        shutil.rmtree(worktree_path, ignore_errors=True)
-        return
-    try:
-        worktree_path.unlink()
-    except FileNotFoundError:
-        return
+    if not outcome.removed and not force:
+        raise WorktreeError(f"Failed to remove worktree: {outcome.git_error}")
 
 
 def _delete_worktree_branch(repo_root: Path, branch_name: str | None) -> None:
@@ -1307,16 +1287,6 @@ def remove_worktree(
     require_disposable_path(worktree_path)
     worktree_path = Path(worktree_path)
     logger.info("Removing worktree: path=%s", worktree_path)
-    with custody_guard(worktree_path, custody_release):
-        _remove_worktree_unguarded(
-            worktree_path, force=force, delete_branch=delete_branch
-        )
-
-
-def _remove_worktree_unguarded(
-    worktree_path: Path, *, force: bool, delete_branch: bool
-) -> None:
-    """The removal itself. Only :func:`remove_worktree` may call this."""
     if not worktree_path.exists():
         if force:
             # Idempotent for disposable/forced removal (#6824 R3): ``force`` means
@@ -1332,11 +1302,15 @@ def _remove_worktree_unguarded(
     try:
         repo_root = _resolve_repo_root_from_worktree(worktree_path)
         if repo_root is None:
-            _remove_orphaned_worktree_path(worktree_path, force=force)
+            _remove_orphaned_worktree_path(
+                worktree_path, force=force, custody_release=custody_release
+            )
             return
         branch_name = get_worktree_branch(worktree_path)
 
-        _remove_worktree_path(repo_root, worktree_path, force=force)
+        _remove_worktree_path(
+            repo_root, worktree_path, force=force, custody_release=custody_release
+        )
         if worktree_path.exists():
             raise WorktreeError(
                 f"Failed to remove worktree path after git/rmtree cleanup: {worktree_path}"
@@ -1350,13 +1324,23 @@ def _remove_worktree_unguarded(
             branch_name or "(unknown)",
         )
 
+    except CustodyError:
+        # Never re-wrapped. A caller that catches WorktreeError to decide
+        # whether to try harder would read a custody refusal as one -- which is
+        # the bypass #7274 closes, arriving by a different door.
+        raise
     except Exception as e:
         if isinstance(e, WorktreeError):
             raise
         raise WorktreeError(f"Error removing worktree: {e}")
 
 
-def _remove_orphaned_worktree_path(worktree_path: Path, *, force: bool) -> None:
+def _remove_orphaned_worktree_path(
+    worktree_path: Path,
+    *,
+    force: bool,
+    custody_release: CustodyRelease | None = None,
+) -> None:
     """Delete a checkout whose repository this process cannot resolve."""
     if not force:
         raise WorktreeError(f"Unable to resolve repo root for {worktree_path}")
@@ -1364,7 +1348,9 @@ def _remove_orphaned_worktree_path(worktree_path: Path, *, force: bool) -> None:
         "Forced worktree removal cannot resolve repo root; deleting path directly: %s",
         worktree_path,
     )
-    _force_delete_worktree_path(worktree_path)
+    remove_checkout_path(
+        worktree_path, force=True, run_git=None, custody_release=custody_release
+    )
     if worktree_path.exists():
         raise WorktreeError(
             f"Failed to remove orphaned worktree path after forced cleanup: {worktree_path}"
