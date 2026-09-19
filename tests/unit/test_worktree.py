@@ -2352,6 +2352,97 @@ class TestCreateWorktreeReuse:
             "unpushed investigation\n"
         )
 
+    def test_preserved_path_fallback_refuses_a_different_branch(self, tmp_path):
+        """The derived issue path is not authority to resume a different branch.
+
+        When the branch lookup misses the scratch checkout but <repo>-<issue>
+        exists, the path fallback validated with no expected branch and then
+        launched the investigation on whatever was there (round 10 finding 1).
+        """
+        from issue_orchestrator.ports.worktree_policy import (
+            SyncResult,
+            ValidationResult,
+        )
+
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        (repo_root / ".git").mkdir()
+        worktree_path = tmp_path / "repo-6410"
+        worktree_path.mkdir()
+        (worktree_path / "only-copy.txt").write_text("ordinary issue work\n")
+
+        expected_branch = "tech-lead-investigation-6410-abcdef123456"
+        ordinary_branch = "6410-ordinary"
+        deleted: list[Path] = []
+        validated: list[str | None] = []
+
+        class BranchCheckingPolicy:
+            def validate_for_reuse(self, candidate, expected, root):
+                validated.append(expected)
+                if expected is not None and expected != ordinary_branch:
+                    return ValidationResult(
+                        can_reuse=False,
+                        reason=(
+                            f"branch mismatch: expected {expected}, "
+                            f"found {ordinary_branch}"
+                        ),
+                    )
+                return ValidationResult(can_reuse=True, reason="ok")
+
+            def sync_remote_refs(self, candidate, branch):
+                return SyncResult(success=True, reason="ok")
+
+            def delete_worktree(self, candidate, root):
+                deleted.append(candidate)
+                shutil.rmtree(candidate)
+                return True
+
+        worktree_list_output = (
+            f"worktree {worktree_path}\n"
+            "HEAD abc123\n"
+            f"branch refs/heads/{ordinary_branch}\n\n"
+        )
+
+        with (
+            patch("issue_orchestrator.adapters.git.git_cli.subprocess.run") as mock_run,
+            patch("issue_orchestrator.adapters.worktree._worktree_runtime_setup.install_hooks"),
+            patch("issue_orchestrator.adapters.worktree._worktree_runtime_setup.install_claude_settings"),
+            patch("issue_orchestrator.adapters.worktree._worktree_runtime_setup.sync_cli_tools"),
+        ):
+            def run_side_effect(cmd, *args, **kwargs):
+                argv = cmd[3:]
+                if argv[:2] == ["worktree", "list"]:
+                    return MagicMock(
+                        returncode=0, stdout=worktree_list_output, stderr=""
+                    )
+                if argv[:3] == ["rev-parse", "--abbrev-ref", "HEAD"]:
+                    return MagicMock(
+                        returncode=0, stdout=f"{ordinary_branch}\n", stderr=""
+                    )
+                return MagicMock(returncode=0, stdout="", stderr="")
+
+            mock_run.side_effect = run_side_effect
+
+            with pytest.raises(WorktreeError, match="Preserved branch"):
+                create_worktree(
+                    repo_root,
+                    6410,
+                    "Investigate failure",
+                    worktree_base=tmp_path,
+                    base_branch="main",
+                    branch_name=expected_branch,
+                    reuse_options=WorktreeReuseOptions(
+                        reuse_push_preflight=False, preserve_branch=True
+                    ),
+                    policy=BranchCheckingPolicy(),
+                )
+
+        assert expected_branch in validated
+        assert deleted == []
+        assert (worktree_path / "only-copy.txt").read_text() == (
+            "ordinary issue work\n"
+        )
+
     def test_reuse_without_preserve_branch_still_resets(self, tmp_path):
         """Default (preserve_branch=False) still rebases and discards on conflict.
 

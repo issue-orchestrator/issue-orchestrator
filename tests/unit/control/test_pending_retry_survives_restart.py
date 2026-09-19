@@ -276,8 +276,10 @@ def test_the_re_queued_retry_still_names_its_launch_authority(
 ) -> None:
     """Without the original run, the resumed completion is `missing_authority`.
 
-    The identity comes back off the run manifest, not out of memory: the process
-    that queued the retry is gone.
+    The identity comes back off the durable ISSUE-RUN LEDGER, not out of memory:
+    the process that queued the retry is gone. The agent-writable manifest is
+    not the source -- one naming another retained run made a retry inherit that
+    run's grant (round 3 finding 1).
     """
     _leave_retry_artifacts(investigation)
     state = OrchestratorState()
@@ -374,6 +376,115 @@ def test_an_investigation_retry_wins_an_ordinary_checkout_collision(
     assert later_retry.worktree_path == str(ordinary)
     assert later_retry.branch_name == "6410-ordinary"
     assert later_retry.agent_label == "agent:coder"
+
+
+def test_a_running_ordinary_session_does_not_hide_an_investigation_retry(
+    repo: Path, investigation: Path, tmp_path: Path
+) -> None:
+    """A live terminal names the ISSUE; both checkout shapes share that number.
+
+    Skipping on the name alone let a restored ordinary session suppress the
+    investigation retry in a different checkout -- and reconciliation then saw
+    activity evidence only for the ordinary one and deleted the scratch branch
+    (round 10 finding 2).
+    """
+    _leave_retry_artifacts(investigation)
+    ordinary = tmp_path / "worktree" / f"{repo.name}-6410"
+    _git(repo, "worktree", "add", "-b", "6410-ordinary", str(ordinary))
+    marker = ordinary / WORKTREE_ID_MARKER
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("wt-ordinary\n")
+
+    active = MagicMock()
+    active.terminal_id = SESSION_NAME
+    active.issue.number = 6410
+    active.worktree_path = ordinary
+    state = OrchestratorState()
+    state.active_sessions.append(active)
+
+    recovered = ValidationRetryRecovery(
+        _Config(repo, investigation.parent),
+        _reconciler(repo, investigation.parent, _Config),
+        lambda name: name == SESSION_NAME,
+        _ledger(
+            investigation,
+            agent_label="agent:tech-lead",
+            completion_task=TaskKind.TECH_LEAD,
+        ),
+        _authority_store(),
+    ).recover(state, {})
+
+    assert recovered == 1
+    [retry] = state.pending_validation_retries
+    assert Path(retry.worktree_path) == investigation
+
+    by_path = {
+        Path(entry.path): entry for entry in _audit(repo, investigation, state)
+    }
+    assert by_path[investigation].disposition == "retained"
+
+
+def test_an_unrestored_live_terminal_keeps_the_retry_queued_but_unlaunchable(
+    repo: Path, investigation: Path
+) -> None:
+    """Queued keeps the reconciliation hold; the error keeps it unlaunchable."""
+    _leave_retry_artifacts(investigation)
+    state = OrchestratorState()
+
+    recovered = ValidationRetryRecovery(
+        _Config(repo, investigation.parent),
+        _reconciler(repo, investigation.parent, _Config),
+        lambda name: name == SESSION_NAME,
+        _ledger(
+            investigation,
+            agent_label="agent:tech-lead",
+            completion_task=TaskKind.TECH_LEAD,
+        ),
+        _authority_store(),
+    ).recover(state, {})
+
+    assert recovered == 1
+    [retry] = state.pending_validation_retries
+    assert "live issue terminal" in (retry.recovery_error or "")
+    assert _audit(repo, investigation, state)[0].disposition == "retained"
+
+
+def test_a_scratch_like_checkout_without_an_ownership_marker_is_not_recovered(
+    repo: Path, tmp_path: Path
+) -> None:
+    """Recovery and reconciliation have to agree on what "owned" means."""
+    base = tmp_path / "worktree"
+    base.mkdir()
+    checkout = base / f"{repo.name}-tech-lead-6410-{TOKEN}"
+    _git(
+        repo,
+        "worktree",
+        "add",
+        "-b",
+        f"tech-lead-investigation-6410-{TOKEN}",
+        str(checkout),
+    )
+    # Deliberately no WORKTREE_ID_MARKER: the audit owner calls this external,
+    # so recovery must not claim or relaunch it (round 10 finding 3).
+    _leave_retry_artifacts(checkout)
+    state = OrchestratorState()
+
+    recovered = ValidationRetryRecovery(
+        _Config(repo, base),
+        _reconciler(repo, base, _Config),
+        lambda _name: False,
+        _ledger(
+            checkout,
+            agent_label="agent:tech-lead",
+            completion_task=TaskKind.TECH_LEAD,
+        ),
+        _authority_store(),
+    ).recover(state, {})
+
+    assert recovered == 0
+    assert state.pending_validation_retries == []
+    [entry] = _audit(repo, checkout, state)
+    assert (entry.kind, entry.disposition) == ("external", "retained")
 
 
 def test_an_allocation_only_retry_run_does_not_hide_the_queued_retry(

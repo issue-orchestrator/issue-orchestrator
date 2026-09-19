@@ -1011,6 +1011,9 @@ def _attempt_reuse(
         reuse_result, reuse_recreated_reason = _try_reuse_by_path(
             ctx.worktree_path, ctx.repo_root, ctx.issue_number, ctx.policy,
             ctx.reuse_options, ctx.runtime_setup, ctx.base_branch,
+            expected_branch=(
+                ctx.branch_name if ctx.reuse_options.preserve_branch else None
+            ),
         )
         if reuse_result is not None:
             return reuse_result, None
@@ -1104,8 +1107,17 @@ def _try_reuse_by_path(
     reuse_options: WorktreeReuseOptions,
     runtime_setup: WorktreeRuntimeSetup,
     base_branch: str | None,
+    *,
+    expected_branch: str | None = None,
 ) -> tuple[tuple[Path, str, str, str | None, bool, int, int] | None, str | None]:
     """Try to reuse an existing worktree by path.
+
+    ``expected_branch`` is what a PRESERVED relaunch named. Without it this
+    fallback validated with no expectation and then launched on whatever branch
+    occupied the derived issue path, so an investigation that the branch lookup
+    missed resumed on the ordinary issue branch instead -- and these preliminary
+    exits deleted the checkout without going through ``_reuse_failure``
+    (round 10 finding 1).
 
     Returns:
         Tuple of (result, recreated_reason) where:
@@ -1114,15 +1126,18 @@ def _try_reuse_by_path(
     """
     logger.info(issue_log(issue_number, "Reusing existing worktree by path: %s"), worktree_path)
 
-    # Validate first (no expected branch - we use whatever is there)
-    validation = policy.validate_for_reuse(worktree_path, None, repo_root)
+    validation = policy.validate_for_reuse(worktree_path, expected_branch, repo_root)
     if not validation.can_reuse:
-        logger.warning(
-            issue_log(issue_number, "Worktree failed validation, deleting: %s"),
-            validation.reason,
+        failure = _reuse_failure(
+            worktree_path=worktree_path,
+            branch_name=expected_branch or "(unknown)",
+            repo_root=repo_root,
+            issue_number=issue_number,
+            policy=policy,
+            preserve_branch=reuse_options.preserve_branch,
+            reason=f"validation_failed: {validation.reason}",
         )
-        policy.delete_worktree(worktree_path, repo_root)
-        return (None, f"validation_failed: {validation.reason}")
+        return (None, failure.recreated_reason)
 
     # Get current branch
     branch_result = _git_run(
@@ -1131,9 +1146,16 @@ def _try_reuse_by_path(
         check=False,
     )
     if branch_result.returncode != 0:
-        logger.warning(issue_log(issue_number, "Could not get branch, deleting worktree"))
-        policy.delete_worktree(worktree_path, repo_root)
-        return (None, "validation_failed: could not determine branch")
+        failure = _reuse_failure(
+            worktree_path=worktree_path,
+            branch_name=expected_branch or "(unknown)",
+            repo_root=repo_root,
+            issue_number=issue_number,
+            policy=policy,
+            preserve_branch=reuse_options.preserve_branch,
+            reason="validation_failed: could not determine branch",
+        )
+        return (None, failure.recreated_reason)
 
     existing_branch = branch_result.stdout.strip()
     logger.info(issue_log(issue_number, "Existing worktree branch: %s"), existing_branch)

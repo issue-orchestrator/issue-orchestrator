@@ -28,6 +28,7 @@ ordinary checkout stays under the normal review-gated lifecycle.
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
@@ -72,18 +73,50 @@ class ValidationRetryRecovery:
         for issue_number, checkout, branch_name, kind in self._candidates(issue_branches):
             if issue_number in claimed:
                 continue
-            if self._session_exists(f"issue-{issue_number}"):
+            # A live terminal is named for the ISSUE, and both checkout shapes
+            # share the issue number. Skipping on the name alone let a restored
+            # ordinary session suppress an investigation retry in a different
+            # checkout -- and reconciliation then saw activity evidence only for
+            # the ordinary one and deleted the scratch branch (round 10
+            # finding 2). Identity here is the CHECKOUT.
+            session_name = f"issue-{issue_number}"
+            running = self._session_exists(session_name)
+            active = next(
+                (
+                    session
+                    for session in state.active_sessions
+                    if session.terminal_id == session_name
+                ),
+                None,
+            )
+            if (
+                running
+                and active is not None
+                and Path(active.worktree_path).resolve() == checkout.resolve()
+            ):
                 logger.info(
-                    "[startup] Validation retry already has a running session: issue=%d",
+                    "[startup] Validation retry checkout already has a running "
+                    "session: issue=%d",
                     issue_number,
                 )
                 continue
             artifacts = find_pending_retry_artifacts(checkout)
             if artifacts is None or not artifacts.state.can_retry:
                 continue
-            state.replace_pending_validation_retry(
-                self._queue_entry(issue_number, checkout, branch_name, artifacts)
-            )
+            retry = self._queue_entry(issue_number, checkout, branch_name, artifacts)
+            if running and active is None:
+                # The terminal exists but no restored session names it, so this
+                # retry is held rather than launched: queued keeps the
+                # reconciliation hold, the error keeps it unlaunchable.
+                retry = replace(
+                    retry,
+                    recovery_error=(
+                        retry.recovery_error
+                        or "a live issue terminal exists but startup could not "
+                        "match it to a restored checkout"
+                    ),
+                )
+            state.replace_pending_validation_retry(retry)
             claimed.add(issue_number)
             recovered += 1
             logger.info(

@@ -439,8 +439,16 @@ class StartupWorktreeReconciler:
                 continue
             path = item.path.resolve()
             focus = scratch_worktree_focus_issue(path.name)
-            if focus is not None and names_one_scratch_checkout(
-                path.name, item.branch
+            # "Owned" has to mean the same thing here as it does to the audit
+            # owner, or recovery relaunches a checkout reconciliation classifies
+            # as external -- the name and branch shape alone are not ownership
+            # (round 10 finding 3).
+            if (
+                focus is not None
+                and path.parent == worktree_base
+                and patterns.scratch.fullmatch(path.name)
+                and _has_orchestrator_identity(path)
+                and names_one_scratch_checkout(path.name, item.branch)
             ):
                 checkouts.append((focus, item, "investigation"))
                 continue
