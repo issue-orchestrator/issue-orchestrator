@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
 from ..domain.models import PendingValidationRetry
+from ..domain.tech_lead_scratch_identity import names_one_scratch_checkout
 from ..infra.validation_state import ValidationRetryArtifacts, find_pending_retry_artifacts
 from .recovered_run_identity import registered_run
 from .worktree_manager import get_worktree_path
@@ -68,11 +69,36 @@ class ValidationRetryRecovery:
         self, state: "OrchestratorState", issue_branches: dict[int, str]
     ) -> int:
         """Re-queue every resumable retry, and report how many were found."""
-        claimed = {retry.issue_number for retry in state.pending_validation_retries}
+        # The pending-work ledger is swept BEFORE this startup phase, so the
+        # queue may already hold a retry -- and that entry is not necessarily
+        # complete. A schema-v1 claim predates `authority_run` entirely, so
+        # skipping the checkout on its account left the retry with no grant to
+        # carry and its completion rejected as `missing_authority`: the original
+        # defect, reached by upgrading (round 15 finding 1). The durable
+        # artifacts remain the authority for joining a retry to its allocation.
+        claimed = {
+            retry.issue_number: retry for retry in state.pending_validation_retries
+        }
+        selected: set[int] = set()
         recovered = 0
         for issue_number, checkout, branch_name, kind in self._candidates(issue_branches):
-            if issue_number in claimed:
+            if issue_number in selected:
                 continue
+            existing = claimed.get(issue_number)
+            if (
+                existing is not None
+                and Path(existing.worktree_path).resolve() != checkout.resolve()
+            ):
+                existing_is_investigation = names_one_scratch_checkout(
+                    Path(existing.worktree_path).name, existing.branch_name or ""
+                )
+                # An already-restored INVESTIGATION outranks every other
+                # checkout. Otherwise only a newly discovered investigation may
+                # displace an ordinary entry -- two ordinary retries do not get
+                # to take each other's durable queue slot.
+                if existing_is_investigation or kind != "investigation":
+                    selected.add(issue_number)
+                    continue
             # A live terminal is named for the ISSUE, and both checkout shapes
             # share the issue number. Skipping on the name alone let a restored
             # ordinary session suppress an investigation retry in a different
@@ -99,6 +125,7 @@ class ValidationRetryRecovery:
                     "session: issue=%d",
                     issue_number,
                 )
+                selected.add(issue_number)
                 continue
             artifacts = find_pending_retry_artifacts(checkout)
             if artifacts is None or not artifacts.state.can_retry:
@@ -117,7 +144,8 @@ class ValidationRetryRecovery:
                     ),
                 )
             state.replace_pending_validation_retry(retry)
-            claimed.add(issue_number)
+            claimed[issue_number] = retry
+            selected.add(issue_number)
             recovered += 1
             logger.info(
                 "[startup] Recovered pending validation retry: issue=%d kind=%s "

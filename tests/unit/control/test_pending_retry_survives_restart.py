@@ -36,6 +36,7 @@ from issue_orchestrator.domain.issue_run_evidence import (
     RunTerminalBinding,
 )
 from issue_orchestrator.domain.models import OrchestratorState, PendingValidationRetry
+from issue_orchestrator.domain.pending_work import PendingWorkClaim, PendingWorkKind
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.domain.session_run import SessionRunAssets, SessionRunIdentity
 from issue_orchestrator.domain.tech_lead_session import (
@@ -45,6 +46,7 @@ from issue_orchestrator.domain.tech_lead_session import (
 from issue_orchestrator.ports.tech_lead_authority import (
     InMemoryTechLeadAuthorityStore,
 )
+from issue_orchestrator.execution.pending_work_codec import decode_claim, encode_claim
 from issue_orchestrator.execution.worktree_adapter import GitWorktreeManager
 from issue_orchestrator.ports.worktree_manager import WORKTREE_ID_MARKER
 
@@ -292,6 +294,87 @@ def test_the_re_queued_retry_still_names_its_launch_authority(
         run_id=RUN_ID,
         started_at="2026-09-18T12:00:00+00:00",
     )
+
+
+def test_a_schema_v1_claim_is_reconciled_with_its_original_authority(
+    repo: Path, investigation: Path
+) -> None:
+    """The step-4 claim sweep must not suppress step-10 artifact recovery.
+
+    A schema-v1 claim was written by the build being upgraded FROM and has no
+    `authority_run` at all. Skipping the checkout on its account left the retry
+    with no grant to carry and its completion rejected as `missing_authority` --
+    the original defect, reached by upgrading (round 15 finding 1).
+    """
+    _leave_retry_artifacts(investigation)
+    legacy_payload = encode_claim(
+        PendingWorkClaim(
+            kind=PendingWorkKind.VALIDATION_RETRY,
+            request=_retry(investigation),
+        )
+    )
+    legacy_payload["schema_version"] = 1
+    request_payload = legacy_payload["request"]
+    assert isinstance(request_payload, dict)
+    request_payload.pop("authority_run")
+    request_payload.pop("recovery_error")
+
+    legacy_retry = decode_claim(legacy_payload).request
+    assert isinstance(legacy_retry, PendingValidationRetry)
+    assert legacy_retry.authority_run is None
+    state = OrchestratorState(pending_validation_retries=[legacy_retry])
+
+    assert _recover(repo, investigation, state) == 1
+
+    [retry] = state.pending_validation_retries
+    assert retry.authority_run == SessionRunIdentity(
+        session_name=SESSION_NAME,
+        run_id=RUN_ID,
+        started_at="2026-09-18T12:00:00+00:00",
+    ), "the upgraded retry carries no grant, so its completion is refused"
+    assert retry.agent_label == "agent:tech-lead"
+    assert retry.recovery_error is None
+
+
+def test_a_pre_recovered_ordinary_claim_does_not_hide_an_investigation(
+    repo: Path, investigation: Path, tmp_path: Path
+) -> None:
+    """Step-4 queue contents obey the same collision rule as scanned artifacts."""
+    _leave_retry_artifacts(investigation)
+    ordinary = tmp_path / "worktree" / f"{repo.name}-6410"
+    _git(repo, "worktree", "add", "-b", "6410-ordinary", str(ordinary))
+    marker = ordinary / WORKTREE_ID_MARKER
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("wt-ordinary\n")
+    state = OrchestratorState(
+        pending_validation_retries=[
+            PendingValidationRetry(
+                issue_number=6410,
+                issue_title="Ordinary retry",
+                agent_label="agent:coder",
+                worktree_path=str(ordinary),
+                branch_name="6410-ordinary",
+                original_prompt="Fix issue #6410",
+                validation_error="boom",
+                validation_error_file=None,
+                retry_count=1,
+                source_task=TaskKind.CODE,
+                validation_cmd="make test",
+            )
+        ]
+    )
+
+    assert _recover(repo, investigation, state) == 1
+
+    [retry] = state.pending_validation_retries
+    assert retry.worktree_path == str(investigation)
+    assert retry.authority_run is not None
+    held = [
+        entry
+        for entry in _audit(repo, investigation, state)
+        if Path(entry.path) == investigation
+    ]
+    assert [entry.disposition for entry in held] == ["retained"]
 
 
 def test_recovery_then_reconciliation_keeps_the_branch(
