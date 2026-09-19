@@ -15,6 +15,7 @@ read the re-queued retry as evidence that the checkout is claimed.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -302,6 +303,49 @@ def test_recovery_then_reconciliation_keeps_the_branch(
     entries = _audit(repo, investigation, state)
 
     assert [entry.disposition for entry in entries] == ["retained"]
+
+
+def test_an_allocation_only_retry_run_does_not_hide_the_queued_retry(
+    repo: Path, investigation: Path
+) -> None:
+    """A pre-spawn refusal leaves a newer run directory but no new attempt.
+
+    Authority and input admission happen AFTER the retry's run is allocated. If
+    admission refuses, that bare directory is newer than the original retry and
+    used to supersede it purely because its name starts with `coding-`. Recovery
+    then queued nothing, and reconciliation was free to delete the scratch
+    checkout and its unpushed branch -- the loss arriving through the refusal
+    that exists to prevent it (round 7 finding 2).
+    """
+    _leave_retry_artifacts(investigation)
+    sessions = investigation / ".issue-orchestrator" / "sessions"
+    bare_run = sessions / "20260918T130000000000Z__coding-2"
+    bare_run.mkdir(parents=True)
+    (bare_run / "manifest.json").write_text(
+        json.dumps(
+            {
+                "session_name": "coding-2",
+                "run_id": "20260918T130000000000Z",
+                "run_dir": str(bare_run),
+                "issue_number": 6410,
+                "agent_label": "agent:tech-lead",
+                "started_at": "2026-09-18T13:00:00+00:00",
+            }
+        )
+    )
+    original = sessions / f"{RUN_ID}__{SESSION_NAME}" / "manifest.json"
+    newer = original.stat().st_mtime + 10
+    os.utime(bare_run, (newer, newer))
+    os.utime(bare_run / "manifest.json", (newer, newer))
+    state = OrchestratorState()
+
+    assert _recover(repo, investigation, state) == 1, (
+        "an allocation that never spawned hid the durable retry"
+    )
+    [retry] = state.pending_validation_retries
+    assert retry.authority_run is not None
+    assert retry.authority_run.run_id == RUN_ID
+    assert _audit(repo, investigation, state)[0].disposition == "retained"
 
 
 def test_an_ordinary_coder_retry_names_no_authority_run(

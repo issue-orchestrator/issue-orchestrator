@@ -41,15 +41,23 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# The source is AGENT-WRITABLE. Same limits the orchestrator already uses when
-# preserving agent-authored tech-lead artifacts (#6858 F8/F9): a pathological
-# tree must refuse the relaunch rather than consume unbounded resources, and a
-# planted symlink must not be dereferenced into a run the agent can then read.
-_TECH_LEAD_INPUT_FILE_BYTES = 2 * 1024 * 1024
+# The source is AGENT-WRITABLE, so traversal and aggregate bytes stay bounded and
+# links are never followed. But these are LAUNCH INPUTS, not the agent-authored
+# decision/report artifacts the archive policy covers, and borrowing that
+# policy's limits was wrong (round 7 finding 1): `TechLeadDownloader` emits two
+# files for each of as many as 100 PRs, on top of the assignment, manifest,
+# snapshots and evidence, so 200 files refuses a LEGITIMATE batch review. A
+# fetched diff is likewise not subject to the decision loader's 2 MiB parsing
+# limit, and a lower per-file ceiling silently SKIPS an admissible input without
+# exhausting the budget -- the retry then launches with evidence missing rather
+# than being refused. The traversal bound limits the file count; the aggregate
+# ceiling limits any one file.
+_TECH_LEAD_INPUT_TOTAL_BYTES = 96 * 1024 * 1024
+_TECH_LEAD_INPUT_SCAN_ENTRIES = 5_000
 _TECH_LEAD_INPUT_COPY_BOUNDS = CopyBounds(
-    files=200,
-    total_bytes=96 * 1024 * 1024,
-    entries=5_000,
+    files=_TECH_LEAD_INPUT_SCAN_ENTRIES,
+    total_bytes=_TECH_LEAD_INPUT_TOTAL_BYTES,
+    entries=_TECH_LEAD_INPUT_SCAN_ENTRIES,
     directories=250,
     depth=8,
 )
@@ -95,7 +103,7 @@ def carry_tech_lead_inputs(
             source_run_fd,
             TECH_LEAD_DATA_DIRNAME,
             run.run_dir,
-            cap=_TECH_LEAD_INPUT_FILE_BYTES,
+            cap=_TECH_LEAD_INPUT_TOTAL_BYTES,
             budget=budget,
             label=f"validation retry for issue #{retry.issue_number}",
         )

@@ -293,7 +293,37 @@ def _run_is_review_only(run_dir: Path) -> bool:
 
 
 def _run_can_supersede_retry_state(run_dir: Path) -> bool:
-    return _run_session_name(run_dir).startswith(("coding-", "issue-", "rework-"))
+    """Whether a newer run represents an actual ATTEMPT at the work.
+
+    Allocating a run directory is not the launch boundary. A validation retry's
+    authority and input admission happens AFTER allocation and can refuse the
+    relaunch before any terminal exists -- and that bare `coding-N` directory is
+    newer than the original retry, so it suppressed the older durable state
+    purely by its name. Recovery then queued nothing and startup reconciliation
+    was free to delete the scratch checkout and its unpushed branch: the exact
+    loss this issue is about, arriving through the refusal that was supposed to
+    protect the work (round 7 finding 2).
+
+    ``completion_path`` is the boundary. The launcher writes it only once the
+    durable claim and launch preparation have succeeded, immediately before the
+    terminal is spawned; after that the claim store owns crash recovery, and
+    before it the older retry state must stay discoverable.
+    """
+    if not _run_session_name(run_dir).startswith(("coding-", "issue-", "rework-")):
+        return False
+    if not (run_dir / "manifest.json").exists():
+        return False
+    try:
+        manifest = RunManifest.load(run_dir)
+    except (json.JSONDecodeError, OSError, ValueError) as exc:
+        logger.warning(
+            "Run %s cannot supersede older retry state because its manifest "
+            "cannot be read: %s",
+            run_dir,
+            exc,
+        )
+        return False
+    return bool(manifest.completion_path)
 
 
 def _find_run_scoped_retry_artifacts(

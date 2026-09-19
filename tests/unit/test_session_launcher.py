@@ -8794,6 +8794,50 @@ class TestAValidationRetryCarriesItsLaunchAuthority:
         )
         assert json.loads(carried.read_text())["focus_issue_number"] == 6410
 
+    def test_a_full_batch_review_and_a_large_diff_are_carried(
+        self, launcher_bundle, sample_config, tmp_path
+    ) -> None:
+        """The bounds must fit a LEGITIMATE tech-lead run, not just a hostile one.
+
+        The first version borrowed the artifact-archive limits: 200 files and
+        2 MiB per file. `TechLeadDownloader` emits two files per PR for up to
+        100 PRs, so a full batch review exceeded the file count; and a fetched
+        diff over 2 MiB was silently SKIPPED without exhausting the budget, so
+        the retry launched with evidence missing rather than being refused
+        (round 7 finding 1).
+        """
+        TestLaunchTechLeadIssueSessionFlavors.enable_tech_lead_agent(sample_config, tmp_path)
+        store = SqliteTechLeadAuthorityStore.for_repo(sample_config.repo_root)
+        source = SessionRunIdentity(
+            session_name="issue-6410", run_id="run-original", started_at="2026-09-18"
+        )
+        store.record(
+            run_id=source.run_id,
+            session_name=source.session_name,
+            authority=self._authority(),
+        )
+        checkout = tmp_path / "repo-tech-lead-6410-abcdef123456"
+        checkout.mkdir()
+        data = self._seed_launch_inputs(checkout, source)
+        for pr in range(100):
+            (data / f"pr-{pr}-meta.json").write_text(json.dumps({"number": pr}))
+            (data / f"pr-{pr}-diff.patch").write_text("diff\n")
+        (data / "big-diff.patch").write_text("x" * (3 * 1024 * 1024))
+
+        result = launcher_bundle.launcher.launch_validation_retry_session(
+            self._retry(source, worktree_path=str(checkout)), active_sessions=[]
+        )
+
+        assert result.success is True, result.reason
+        assert result.session is not None
+        carried = result.session.run_assets.run_dir / "tech-lead-data"
+        assert len(list(carried.glob("pr-*"))) == 200, (
+            "a legitimate 100-PR batch review was truncated by the file bound"
+        )
+        assert (carried / "big-diff.patch").stat().st_size == 3 * 1024 * 1024, (
+            "a large but admissible diff was silently skipped"
+        )
+
     def test_a_retry_whose_launch_inputs_are_gone_is_refused(
         self, launcher_bundle, sample_config, tmp_path
     ) -> None:
