@@ -235,14 +235,20 @@ def transfer_launch_authority(
     unconditionally rather than branching -- a new early return inside cannot
     forget to settle what it did not know was there.
     """
+    began = False
     try:
         if transfer is not None:
             transfer.begin()
+            began = True
         yield
     finally:
         # No `return` in here: it would swallow an exception on its way out,
         # and the launch paths this wraps report failure by raising.
-        if transfer is not None:
+        # `began` guards the case where begin() itself RAISED: the destination
+        # already holds a different create-once authority, owned by another
+        # launch. Settling then would delete a row this transfer never took
+        # (round 12 finding 3).
+        if transfer is not None and began:
             if spawn.terminal_spawned:
                 # The SOURCE authority is about to be retired, so the durable
                 # work this live terminal carries must name the destination

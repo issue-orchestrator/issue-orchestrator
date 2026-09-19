@@ -9242,6 +9242,163 @@ class TestAValidationRetryCarriesItsLaunchAuthority:
             run_id=source.run_id, session_name=source.session_name
         ) is None, "the spent source authority survived the transfer"
 
+    def test_replacing_a_held_claim_cannot_overwrite_a_concurrent_defer(
+        self, tmp_path
+    ) -> None:
+        """The replacement has to be ONE compare-and-swap.
+
+        A SELECT does not reserve the row in SQLite, so another store or
+        process could defer it between the check and the write -- and the
+        unconditional UPDATE then overwrote a deferred payload and reported
+        success (round 12 finding 2).
+        """
+        from dataclasses import replace as _replace
+
+        from issue_orchestrator.domain.pending_work import (
+            PendingWorkClaim,
+            PendingWorkKind,
+        )
+        from issue_orchestrator.domain.session_run import SessionRunAssets
+        from issue_orchestrator.ports.pending_work_claim_store import (
+            ClaimState,
+            ConflictingPendingWorkClaimError,
+        )
+
+        source = SessionRunIdentity(
+            session_name="issue-6410",
+            run_id="run-original",
+            started_at="2026-09-18",
+        )
+        retry = self._retry(source, worktree_path=str(tmp_path / "checkout"))
+        expected = PendingWorkClaim(PendingWorkKind.VALIDATION_RETRY, retry)
+        replacement = PendingWorkClaim(
+            PendingWorkKind.VALIDATION_RETRY,
+            _replace(retry, validation_error="replacement payload"),
+        )
+
+        checkout = tmp_path / "checkout"
+        run_dir = (
+            checkout / ".issue-orchestrator" / "sessions" / "run-resumed__issue-6410"
+        )
+        run_dir.mkdir(parents=True)
+        recording = run_dir / "terminal-recording.jsonl"
+        recording.write_text("")
+        run = SessionRunAssets.from_paths(
+            session_name="issue-6410",
+            run_id="run-resumed",
+            worktree_path=checkout,
+            run_dir=run_dir,
+            terminal_recording_path=recording,
+            manifest_path=run_dir / "manifest.json",
+            started_at="2026-09-19T12:00:00+00:00",
+        )
+
+        base = tmp_path / "claim-root"
+        primary = _claims_store(base)
+        rival = _claims_store(base)
+        primary.hold_pending_work_claim(run, expected, issue_number=6410)
+
+        connection = primary._get_connection()
+
+        class InterleavingConnection:
+            """Defers the row in the window a SELECT-then-UPDATE would leave."""
+
+            def __init__(self) -> None:
+                self.fired = False
+
+            def execute(self, sql, parameters=()):
+                if not self.fired and sql.startswith(
+                    "UPDATE pending_work_claim SET payload"
+                ):
+                    self.fired = True
+                    rival.defer_pending_work_claim(run)
+                return connection.execute(sql, parameters)
+
+            def __getattr__(self, name):
+                return getattr(connection, name)
+
+        primary._local.conn = InterleavingConnection()
+
+        with pytest.raises(
+            ConflictingPendingWorkClaimError, match="no longer holds"
+        ):
+            primary.replace_held_pending_work_claim(run, expected, replacement)
+
+        lookup = rival.look_up_pending_work_claim(run)
+        assert lookup.state is ClaimState.DEFERRED
+        assert lookup.claim == expected, (
+            "the replacement overwrote a payload another owner had deferred"
+        )
+
+    def test_a_conflicting_destination_authority_is_not_discarded(
+        self, sample_config
+    ) -> None:
+        """A transfer that never BEGAN owns no destination row to settle.
+
+        `begin()` raises when the destination already holds a different
+        create-once authority -- owned by another launch. The `finally` still
+        settled, which deleted that row (round 12 finding 3).
+        """
+        from issue_orchestrator.control.launch_transaction import SpawnGuard
+        from issue_orchestrator.control.tech_lead_run_inputs import (
+            LaunchAuthorityTransfer,
+            transfer_launch_authority,
+        )
+        from issue_orchestrator.ports.tech_lead_authority import (
+            TechLeadAuthorityConflictError,
+        )
+
+        store = SqliteTechLeadAuthorityStore.for_repo(sample_config.repo_root)
+        source = SessionRunIdentity(
+            session_name="issue-6410",
+            run_id="run-source",
+            started_at="2026-09-19T12:00:00+00:00",
+        )
+        destination = SessionRunIdentity(
+            session_name="issue-6410",
+            run_id="run-destination",
+            started_at="2026-09-19T12:01:00+00:00",
+        )
+        source_grant = self._authority(6410)
+        conflicting = self._authority(9999)
+        store.record(
+            run_id=source.run_id,
+            session_name=source.session_name,
+            authority=source_grant,
+        )
+        store.record(
+            run_id=destination.run_id,
+            session_name=destination.session_name,
+            authority=conflicting,
+        )
+        transfer = LaunchAuthorityTransfer(
+            store=store,
+            source=source,
+            destination=destination,
+            authority=source_grant,
+        )
+
+        with pytest.raises(TechLeadAuthorityConflictError):
+            with transfer_launch_authority(
+                transfer,
+                SpawnGuard(),
+                work=MagicMock(),
+                run=MagicMock(),
+                retry=MagicMock(),
+            ):
+                pytest.fail("a conflicting transfer entered the launch body")
+
+        assert (
+            store.load(
+                run_id=destination.run_id, session_name=destination.session_name
+            )
+            == conflicting
+        ), "a transfer that never began deleted another launch's authority"
+        assert (
+            store.load(run_id=source.run_id, session_name=source.session_name)
+            == source_grant
+        )
+
     def test_provider_defer_requeues_against_the_surviving_authority(
         self, launcher_bundle, sample_config, tmp_path
     ) -> None:

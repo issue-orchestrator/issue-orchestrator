@@ -23,6 +23,7 @@ from ..control.review_exchange_lifecycle import (
 
 )
 from ..control.retry_history_state import RetryHistoryState
+from ..control.validation_retry_retirement import ValidationRetryRetirement
 from ..events import EventName
 from ..history import latest_history_entries_by_issue
 from ..ports.event_sink import make_trace_event
@@ -407,6 +408,11 @@ def reset_and_retry_issue(  # noqa: PLR0913
                 result.error or "Unknown error",
             )
         if from_scratch:
+            ValidationRetryRetirement(
+                state=state,
+                claims=deps.pending_work_claims,
+                tech_lead_authority=deps.tech_lead_authority,
+            ).retire_issue(issue_number)
             _clear_scratch_retry_pending_state(state, issue_number, result)
 
         pending_labels_to_add = _pending_labels_for_retry(

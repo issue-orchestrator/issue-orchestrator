@@ -318,26 +318,31 @@ class SqlitePendingWorkClaimStore:
         expected_payload = json.dumps(encode_claim(expected), sort_keys=True)
         replacement_payload = json.dumps(encode_claim(replacement), sort_keys=True)
         with self._write_lock, self._transaction() as conn:
-            row = conn.execute(
-                "SELECT work_key, deferred, session_name, run_id, started_at, payload "
-                "FROM pending_work_claim WHERE run_key = ?",
-                (key,),
-            ).fetchone()
-            if (
-                row is None
-                or row["work_key"] != expected_work_key
-                or bool(row["deferred"])
-                or not self._identity_matches(row, identity)
-                or row["payload"] != expected_payload
-            ):
+            # ONE compare-and-swap statement. A SELECT does not reserve the
+            # row in SQLite, so another store or process could defer, delete or
+            # rewrite it between the check and the write -- and the
+            # unconditional UPDATE would then overwrite a deferred payload, or
+            # match nothing and still report success (round 12 finding 2).
+            cursor = conn.execute(
+                "UPDATE pending_work_claim SET payload = ? "
+                "WHERE run_key = ? AND work_key = ? AND deferred = 0 "
+                "AND session_name = ? AND run_id = ? AND started_at = ? "
+                "AND payload = ?",
+                (
+                    replacement_payload,
+                    key,
+                    expected_work_key,
+                    identity.session_name,
+                    identity.run_id,
+                    identity.started_at,
+                    expected_payload,
+                ),
+            )
+            if cursor.rowcount != 1:
                 raise ConflictingPendingWorkClaimError(
                     f"run {key} no longer holds the expected pending-work claim; "
                     "refusing to replace authoritative queued-work state"
                 )
-            conn.execute(
-                "UPDATE pending_work_claim SET payload = ? WHERE run_key = ?",
-                (replacement_payload, key),
-            )
 
     def defer_pending_work_claim(self, run: SessionRunAssets) -> None:
         with self._write_lock, self._transaction() as conn:

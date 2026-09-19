@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from ..control.label_manager import LabelManager
+from ..control.validation_retry_retirement import ValidationRetryRetirement
 from .operator_termination import (
     TerminationDeferred,
     TerminationIncomplete,
@@ -151,6 +152,11 @@ def _hold_queued_issue(orchestrator: Any, issue_number: int) -> dict[str, Any]:
         state,
         orchestrator.deps.queue_cache_store,
     ).remove_issue_and_save(issue_number)
+    ValidationRetryRetirement(
+        state=state,
+        claims=orchestrator.deps.pending_work_claims,
+        tech_lead_authority=orchestrator.deps.tech_lead_authority,
+    ).retire_issue(issue_number)
     state.release_issue(issue_number)
     state.session_history.append(
         SessionHistoryEntry(
