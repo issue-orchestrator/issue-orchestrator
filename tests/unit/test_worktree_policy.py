@@ -4,6 +4,7 @@ import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from issue_orchestrator.adapters.worktree.removal import CheckoutRemoval
 from issue_orchestrator.adapters.worktree.worktree_policy import (
     ValidateOrDeletePolicy,
 )
@@ -11,6 +12,18 @@ from issue_orchestrator.ports.worktree_policy import (
     ValidationResult,
     SyncResult,
 )
+
+
+def _make_git_metadata(git_dir: Path) -> None:
+    """The shape custody insists on before trusting a `.git` directory.
+
+    An empty replacement directory used to mint a fresh, empty custody store --
+    nothing held, remove away -- so the validator requires HEAD and objects
+    (#7274 round 14 finding 1). A fixture without them is not a repository.
+    """
+    git_dir.mkdir(parents=True, exist_ok=True)
+    (git_dir / "HEAD").write_text("ref: refs/heads/main\n")
+    (git_dir / "objects").mkdir(exist_ok=True)
 
 
 class TestValidateOrDeletePolicy:
@@ -165,36 +178,45 @@ class TestSyncRemoteRefs:
 class TestDeleteWorktree:
     """Test worktree deletion."""
 
-    def test_delete_calls_remove_worktree(self, tmp_path):
-        """Test delete uses remove_worktree function."""
+    def test_delete_asks_the_removal_owner(self, tmp_path):
+        """It has no removal of its own: git-then-directory lives in one place.
+
+        A second copy here was a second custody window, which is what #7274
+        rounds 2 and 3 kept finding.
+        """
         policy = ValidateOrDeletePolicy()
         worktree = tmp_path / "worktree"
         worktree.mkdir()
 
         with patch(
-            "issue_orchestrator.adapters.worktree.worktree_policy.remove_worktree"
+            "issue_orchestrator.adapters.worktree.worktree_policy.remove_checkout_path"
         ) as mock_remove:
+            mock_remove.return_value = CheckoutRemoval(
+                removed=True, used_filesystem_fallback=False
+            )
             result = policy.delete_worktree(worktree, tmp_path)
 
         assert result is True
-        mock_remove.assert_called_once_with(worktree)
+        assert mock_remove.call_args.args == (worktree,)
+        assert mock_remove.call_args.kwargs["force"] is True
+        assert mock_remove.call_args.kwargs["repo_root"] == tmp_path
 
-    def test_delete_fallback_to_rmtree(self, tmp_path):
-        """Test delete falls back to rmtree if git remove fails."""
+    def test_delete_falls_back_to_the_directory_when_git_declines(self, tmp_path):
+        """Still true end to end -- the owner does it, under one custody answer.
+
+        The repository is real: custody is read out of its metadata, and a
+        ``repo_root`` that is not a repository is now refused rather than
+        quietly answering "nothing held" (#7274 round 9 finding 1).
+        """
         policy = ValidateOrDeletePolicy()
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        _make_git_metadata(repo_root / ".git")
         worktree = tmp_path / "worktree"
         worktree.mkdir()
         (worktree / "file.txt").write_text("content")
 
-        with patch(
-            "issue_orchestrator.adapters.worktree.worktree_policy.remove_worktree",
-            side_effect=Exception("git remove failed"),
-        ):
-            with patch(
-                "issue_orchestrator.adapters.worktree.worktree_policy._git_run"
-            ) as mock_git:
-                mock_git.return_value = MagicMock(returncode=0)
-                result = policy.delete_worktree(worktree, tmp_path)
+        result = policy.delete_worktree(worktree, repo_root)
 
         assert result is True
         assert not worktree.exists()

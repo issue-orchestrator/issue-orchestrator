@@ -1,5 +1,7 @@
 """Compose IO adapters and the durable owner shared by every run allocator."""
 
+from pathlib import Path
+
 from ..control.issue_run_allocator import IssueRunAllocationService
 from ..execution.issue_run_ledger import SqliteIssueRunLedger
 from ..execution.worktree_adapter import GitWorktreeManager
@@ -19,15 +21,23 @@ from ..infra.repo_scope import require_repo
 from .bootstrap_validated_work import ValidatedWorkAdmissionOwners
 
 
-def create_io_adapters(github_auth: GitAuthEnvProvider | None = None) -> tuple[
+def create_io_adapters(
+    repo_root: Path, github_auth: GitAuthEnvProvider | None = None
+) -> tuple[
     GitWorktreeManager,
     GitWorkingCopy,
     LocalCommandRunner,
     FileSystemSessionOutput,
 ]:
-    """Create IO adapter instances."""
+    """Create IO adapter instances.
+
+    ``repo_root`` is required, not convenient: worktree custody lives in the
+    REPOSITORY's metadata, and a manager that does not know which repository it
+    serves cannot answer whether a checkout is held once that checkout has lost
+    its own ``.git`` file (#7274).
+    """
     return (
-        GitWorktreeManager(),
+        GitWorktreeManager(repo_root),
         GitWorkingCopy(git_auth=github_auth),
         LocalCommandRunner(),
         FileSystemSessionOutput(),

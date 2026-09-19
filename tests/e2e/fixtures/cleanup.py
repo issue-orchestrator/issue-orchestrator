@@ -1,10 +1,23 @@
 """E2E cleanup functions for test artifacts."""
 
 import logging
-import shutil
+import subprocess
 import threading
 import time
 from pathlib import Path
+
+from issue_orchestrator.adapters.worktree.custody import (
+    GitMetadataWorktreeCustody,
+    git_common_dir,
+)
+from issue_orchestrator.adapters.worktree.removal import (
+    remove_checkout_path,
+    remove_empty_worktree_container,
+)
+from issue_orchestrator.ports.worktree_custody import (
+    CustodyError,
+    CustodyUnavailableError,
+)
 
 from .github_client import _github_adapter
 from .orchestrator_process import keep_artifacts, keep_remote_artifacts
@@ -15,26 +28,175 @@ logger = logging.getLogger(__name__)
 DEFAULT_E2E_FILTER_LABEL = "io-e2e-test-data"
 
 
-def cleanup_local_worktrees(worktree_base: Path | None = None) -> int:
-    """Clean up local e2e worktrees.
+def cleanup_local_worktrees(
+    worktree_base: Path | None = None, *, repo_root: Path
+) -> int:
+    """Clean up local e2e worktrees, through the one removal owner.
+
+    A checkout retained from a failed run is exactly the thing an operator
+    holds, and the next session starting is exactly when they lose it (#7274).
+    Earlier versions entered ``custody_guard`` here and did their own
+    ``shutil.rmtree``, which made this a SECOND removal owner -- one the guard
+    test does not read (round 7 finding 1).
+
+    It sweeps CHECKOUTS, not whatever directories happen to sit under the base.
+    E2E runs with ``ORCHESTRATOR_WORKTREE_PER_SESSION=1``, so the real layout is
+    ``<base>/<session>/<checkout>``: handing the session container to the owner
+    asked about custody on a directory no grant names, and the forced fallback
+    then deleted the subtree with the held checkout inside it (round 8
+    finding 1). Containers are emptied by removing their checkouts and then
+    removed with a non-recursive ``rmdir``, which cannot take anything with it.
 
     Args:
-        worktree_base: Base directory for worktrees. Defaults to /tmp/e2e-worktrees.
+        worktree_base: Base directory for worktrees. Defaults to
+            /tmp/e2e-worktrees.
+        repo_root: Which repository to ask about custody. Required and
+            keyword-only, with no default, because one of these checkouts can
+            have lost its own ``.git`` file and custody lives in the
+            REPOSITORY: a caller that simply omitted it would delete a held
+            checkout while believing it had asked.
     """
     if worktree_base is None:
         worktree_base = Path("/tmp/e2e-worktrees")
-    if worktree_base.exists():
-        count = 0
-        for item in worktree_base.iterdir():
-            if item.is_dir():
-                try:
-                    shutil.rmtree(item)
-                    count += 1
-                except Exception as e:
-                    logger.warning("Failed to remove worktree %s: %s", item, e)
-        if count > 0:
-            logger.info("[E2E CLEANUP] Removed %d local worktrees from %s", count, worktree_base)
+    if not worktree_base.exists():
+        return 0
+    checkouts, containers = _sweep_targets(worktree_base, repo_root=repo_root)
+    count = 0
+    for checkout in checkouts:
+        try:
+            outcome = remove_checkout_path(
+                checkout,
+                force=True,
+                run_git=_sweep_git(repo_root),
+                repo_root=repo_root,
+            )
+        except CustodyError as e:
+            logger.warning("Retaining held worktree %s: %s", checkout, e)
+            continue
+        except Exception as e:
+            logger.warning("Failed to remove worktree %s: %s", checkout, e)
+            continue
+        if outcome.removed:
+            count += 1
+        else:
+            logger.warning(
+                "Failed to remove worktree %s: %s", checkout, outcome.git_error
+            )
+    _remove_empty_containers(containers, repo_root=repo_root)
+    if count > 0:
+        logger.info(
+            "[E2E CLEANUP] Removed %d local worktrees from %s", count, worktree_base
+        )
     return 0
+
+
+def _sweep_targets(
+    worktree_base: Path, *, repo_root: Path
+) -> tuple[list[Path], list[Path]]:
+    """Checkouts PROVEN to belong to this repository, and their containers.
+
+    A missing ``.git`` entry cannot establish ownership. The default base is
+    shared across runs, so asking repository B about an unregistered checkout
+    from repository A gives a truthful answer about the WRONG store -- and
+    deletes A's held checkout (round 15 finding 2). Such a path is swept only
+    when this repository's own custody store already names it.
+    """
+    repo_common = git_common_dir(repo_root)
+    if repo_common is None:
+        raise CustodyUnavailableError(
+            f"{repo_root} is not a repository, so E2E cleanup cannot establish "
+            "which checkouts it owns"
+        )
+    held = {
+        grant.path.resolve()
+        for grant in GitMetadataWorktreeCustody(repo_common).list_held()
+    }
+
+    def candidate_common_dir(candidate: Path) -> "Path | None":
+        """Repository identity, preserving the UNREADABLE third state.
+
+        A bool collapsed "not a repository", "another repository" and "identity
+        unreadable" into one answer, and the caller then descended into all
+        three as though they were session containers -- which is the opposite of
+        what the comment claimed (round 16 finding 2).
+        """
+        try:
+            resolved = candidate.resolve()
+        except (OSError, RuntimeError) as exc:
+            raise CustodyUnavailableError(
+                f"cannot resolve shared-base candidate {candidate}: {exc}"
+            ) from exc
+        if resolved in held:
+            return repo_common
+        return git_common_dir(candidate)
+
+    checkouts: list[Path] = []
+    containers: list[Path] = []
+    for item in sorted(worktree_base.iterdir()):
+        if item.is_symlink() or not item.is_dir():
+            continue
+        try:
+            item_common = candidate_common_dir(item)
+        except CustodyError as exc:
+            logger.warning(
+                "Retaining opaque worktree candidate %s without descending: %s",
+                item,
+                exc,
+            )
+            continue
+        if item_common == repo_common:
+            checkouts.append(item)
+            continue
+        if item_common is not None:
+            # A checkout of ANOTHER repository is not one of our containers.
+            continue
+        children: list[Path] = []
+        for child in sorted(item.iterdir()):
+            if child.is_symlink() or not child.is_dir():
+                continue
+            try:
+                child_common = candidate_common_dir(child)
+            except CustodyError as exc:
+                logger.warning("Retaining opaque worktree candidate %s: %s", child, exc)
+                continue
+            if child_common == repo_common:
+                children.append(child)
+        if children:
+            containers.append(item)
+            checkouts.extend(children)
+    return checkouts, containers
+
+
+def _remove_empty_containers(containers: list[Path], *, repo_root: Path) -> None:
+    """Drop only containers proven by their repository-owned children.
+
+    ``rmdir`` and not ``rmtree`` on purpose: a container that still holds
+    something holds a checkout this sweep RETAINED, and the whole point is that
+    removing the parent must not be a way around that.
+    """
+    for item in containers:
+        if item.is_dir():
+            # Through the removal owner, which asks custody first. An EMPTY held
+            # checkout that lost its `.git` looks exactly like a container from
+            # out here, and this was the one path that never asked (round 14
+            # finding 2).
+            try:
+                if not remove_empty_worktree_container(item, repo_root=repo_root):
+                    logger.info("Retaining non-empty worktree container %s", item)
+            except CustodyError as e:
+                logger.warning("Retaining held worktree container %s: %s", item, e)
+
+
+def _sweep_git(repo_root: Path):
+    """How the removal owner runs git for this sweep."""
+
+    def run(argv: list[str]) -> "str | None":
+        result = subprocess.run(
+            ["git", "-C", str(repo_root), *argv], capture_output=True, text=True
+        )
+        return None if result.returncode == 0 else (result.stderr or "").strip()
+
+    return run
 
 
 def run_cleanup_step(name: str, fn, timeout_s: int) -> int:

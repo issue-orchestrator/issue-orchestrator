@@ -42,6 +42,7 @@ from issue_orchestrator.ports.recovery_block import NullRecoveryBlockSweep
 from issue_orchestrator.ports.retained_claim_maintenance import (
     NullRetainedClaimMaintenance,
 )
+from issue_orchestrator.ports.worktree_custody import CustodyGrant
 from issue_orchestrator.ports.worktree_manager import (
     RegisteredWorktree,
     WorktreeInfo,
@@ -111,6 +112,11 @@ class MockWorktreeManager:
 
     def list_registered(self, repo_root: Path) -> tuple[RegisteredWorktree, ...]:
         """No registered worktrees are relevant to this test fake."""
+        del repo_root
+        return ()
+
+    def checkouts_in_custody(self, repo_root: Path) -> tuple[CustodyGrant, ...]:
+        """Nothing is held for a person in this fake's repository."""
         del repo_root
         return ()
 

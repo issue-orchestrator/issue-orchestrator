@@ -302,6 +302,95 @@ def test_the_run_is_released_even_when_another_cleanup_effect_FAILS():
     assert host.shared.live_keys() == ()
 
 
+def test_a_custody_refusal_is_reported_as_protected_not_leaked():
+    """Termination must preserve the typed refusal for the command surface.
+
+    Round 9 added the handler and round 12 found it was UNREACHABLE: the removal
+    went through ``attempt``, which catches ``Exception`` and returns False, so a
+    held checkout was reported as an ordinary leak and the operator was told to
+    "remove it manually" -- the destruction custody exists to prevent.
+
+    Round 9's own test missed it by constructing the outcome directly instead of
+    driving this path, which is what its prescription asked for. This drives the
+    real owner.
+    """
+    from datetime import timezone
+
+    from issue_orchestrator.ports.worktree_custody import (
+        CustodyGrant,
+        WorktreeInCustodyError,
+    )
+
+    grant = CustodyGrant(
+        path=Path(f"/tmp/scratch-{ANCHOR}"),
+        branch=f"tech-lead-investigation-{ANCHOR}-abc",
+        holder="operator",
+        reason="the only copy of the investigation",
+        taken_at=datetime(2026, 9, 18, tzinfo=timezone.utc),
+    )
+
+    class CustodiedWorktrees:
+        def remove_checkout_and_branch(
+            self, path: Path, *, force: bool = False
+        ) -> None:
+            assert path == grant.path
+            assert force is True
+            raise WorktreeInCustodyError(grant)
+
+    host = _Host(
+        flavor=TechLeadSessionFlavor.HEALTH_REVIEW,
+        worktrees=CustodiedWorktrees(),
+    )
+    session = FakeSession(ANCHOR, TechLeadSessionFlavor.HEALTH_REVIEW)
+    host.state.active_sessions.append(session)
+
+    outcome = host.terminate_tech_lead_session(session)
+
+    assert outcome.worktree_removed is False
+    assert outcome.retained_custody == grant, (
+        "the typed custody refusal was flattened into a generic effect failure"
+    )
+    assert outcome.leaked_worktree is None, (
+        "a protected checkout was reported as an unprotected leak"
+    )
+
+
+def test_unverifiable_custody_is_not_flattened_into_a_leak():
+    """Drives the REAL termination owner, not a hand-built outcome.
+
+    Round 15 added `custody_unavailable` and tested it by constructing a
+    `TechLeadTerminationOutcome` directly -- which stays green if the production
+    handler is deleted. That is the same vacuous shape round 12 caught in round
+    9's fix, made again immediately after (round 16 finding 1).
+    """
+    from issue_orchestrator.ports.worktree_custody import CustodyUnavailableError
+
+    class UnverifiableWorktrees:
+        def remove_checkout_and_branch(
+            self, path: Path, *, force: bool = False
+        ) -> None:
+            assert path == Path(f"/tmp/scratch-{ANCHOR}")
+            assert force is True
+            raise CustodyUnavailableError(
+                "the worktree custody lock cannot be acquired"
+            )
+
+    host = _Host(
+        flavor=TechLeadSessionFlavor.HEALTH_REVIEW,
+        worktrees=UnverifiableWorktrees(),
+    )
+    session = FakeSession(ANCHOR, TechLeadSessionFlavor.HEALTH_REVIEW)
+    host.state.active_sessions.append(session)
+
+    outcome = host.terminate_tech_lead_session(session)
+
+    assert outcome.worktree_removed is False
+    assert outcome.leaked_worktree is None, (
+        "a checkout kept because custody was UNKNOWN was reported as a leak"
+    )
+    assert "cannot be acquired" in (outcome.custody_unavailable or "")
+
+
 def test_an_UNAVAILABLE_ledger_is_reported_as_a_failed_release_not_a_clean_one():
     """The production contract: the store REFUSES, it does not raise (F12).
 

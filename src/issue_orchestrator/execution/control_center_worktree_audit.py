@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol
@@ -168,10 +168,14 @@ class ControlCenterWorktreeAuditOwner:
 
     def __init__(
         self,
-        audit_owner: WorktreeAuditOwner,
+        audit_owner_for: Callable[[Path], WorktreeAuditOwner],
         activity_reader: WorktreeActivityReader,
     ) -> None:
-        self._audit_owner = audit_owner
+        # A FACTORY, because the repository arrives with the request and the
+        # worktree manager is bound to one: custody lives in the repository's
+        # metadata, so a manager that does not know which repository it serves
+        # cannot answer for a checkout that has lost its own ``.git`` (#7274).
+        self._audit_owner_for = audit_owner_for
         self._activity_reader = activity_reader
 
     def audit(
@@ -202,7 +206,7 @@ class ControlCenterWorktreeAuditOwner:
             worktree_base = config.worktree_base
 
         activity = self._activity_reader.read(repo_root, selection)
-        entries = self._audit_owner.audit(
+        entries = self._audit_owner_for(repo_root).audit(
             repo_root=repo_root,
             worktree_base=worktree_base,
             activity=activity,

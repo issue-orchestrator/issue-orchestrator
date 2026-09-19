@@ -52,13 +52,34 @@ def _make_mock_run(extra_side_effect=None):
     return side_effect
 
 
+def _make_git_metadata(git_dir: Path) -> None:
+    """The shape custody insists on before trusting a `.git` directory.
+
+    An empty replacement directory used to mint a fresh, empty custody store --
+    nothing held, remove away -- so the validator requires HEAD and objects
+    (#7274 round 14 finding 1). A fixture without them is not a repository.
+    """
+    git_dir.mkdir(parents=True, exist_ok=True)
+    (git_dir / "HEAD").write_text("ref: refs/heads/main\n")
+    (git_dir / "objects").mkdir(exist_ok=True)
+
+
 class TestEnsureE2EWorktree:
     """Test worktree creation, update, and recovery."""
 
     @pytest.fixture
     def repo_root(self, tmp_path: Path) -> Path:
+        """A REAL repository, because custody is read out of its metadata.
+
+        A bare directory used to pass: an unresolvable ``repo_root`` silently
+        fell back to the checkout and, when that could not answer either,
+        reported nothing held. That fail-open is now refused, so a fixture that
+        is not a repository would be asserting the old behaviour (#7274 round 9
+        finding 1).
+        """
         root = tmp_path / "issue-orchestrator"
         root.mkdir()
+        _make_git_metadata(root / ".git")
         return root
 
     @patch("issue_orchestrator.infra.e2e_worktree.subprocess.run")

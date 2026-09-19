@@ -417,6 +417,39 @@ If a fixture starts failing because the contract LEGITIMATELY changed
 (matcher logic, view-model shape), re-bless it by re-running the
 snapshot script against the same run.
 
+## A Worktree You Need To Keep
+
+**Symptom:** an investigation left commits on a branch that was never pushed,
+and cleanup is about to remove the checkout that holds it.
+
+A tech-lead failure investigation runs in a **disposable** worktree on a branch
+that exists in exactly one place: on disk, in that checkout. Several paths
+remove it — action application, tech-lead termination, stale cleanup, startup
+reconciliation, reuse cleanup — and most ask git to remove it *forcibly*, which
+falls back to deleting the directory. `git worktree lock` does not stop that: it
+is metadata, honoured by `git worktree prune` and not by a filesystem delete.
+
+Custody does stop it (#7274):
+
+```bash
+issue-orchestrator worktree-custody hold ~/dev/worktree/<repo>/<checkout> \
+    --reason "salvaging the investigation for #6410"
+
+issue-orchestrator worktree-custody list          # what is being held, and why
+issue-orchestrator worktree-custody release <path> --reason "collected"
+```
+
+While a checkout is held, every removal path refuses it and says who holds it;
+startup reconciliation reports it as retained rather than repeatedly failing to
+remove it. Releasing is explicit — passing `force` does **not** release custody —
+and both the take and the release are recorded in
+`<repo>/.git/issue-orchestrator/worktree-custody.log.jsonl`, so "who threw away
+my branch" has an answer afterwards.
+
+The record lives beside the repository rather than inside the checkout, so it
+survives both a restart and the deletion it exists to prevent. The command needs
+no orchestrator configuration for the same reason.
+
 ## Tech Lead Pattern Registry
 
 **Symptom:** `flag_pattern` fails with a shared pattern-registry error, or a

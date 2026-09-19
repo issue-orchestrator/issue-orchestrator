@@ -503,7 +503,39 @@ def _report_incomplete_termination(
     console.print(
         f"    [red]⚠ termination incomplete — {', '.join(termination.failures())} failed[/red]"
     )
-    if termination.leaked_worktree:
+    if termination.retained_custody is not None:
+        # NOT a leak, and emphatically not something to remove by hand: a human
+        # owns this checkout and its branch was never pushed. Telling them to
+        # delete it is the destruction custody exists to prevent (round 9
+        # finding 2), so the refusal is reported as what it is, with who holds
+        # it and the one command that ends the hold.
+        grant = termination.retained_custody
+        console.print(
+            f"    [yellow]⚠ scratch worktree PROTECTED — {grant.path}[/yellow]"
+        )
+        console.print(
+            f"      held by {grant.holder} since {grant.taken_at.isoformat()}: "
+            f"{grant.reason}"
+        )
+        if grant.branch:
+            console.print(
+                f"      branch {grant.branch} is not pushed; it exists only here"
+            )
+        console.print(
+            "      to release it: issue-orchestrator worktree-custody release "
+            f"{grant.path} --holder <you> --reason <why>"
+        )
+    elif termination.custody_unavailable is not None:
+        console.print(
+            "    [yellow]⚠ scratch worktree RETAINED — custody status could "
+            "not be verified[/yellow]"
+        )
+        console.print(f"      {termination.custody_unavailable}")
+        console.print(
+            "      do not remove it manually; repair or inspect the "
+            "repository's custody metadata first"
+        )
+    elif termination.leaked_worktree:
         console.print(
             "    [red]⚠ scratch worktree LEAKED — remove it manually:"
             f" {termination.leaked_worktree}[/red]"

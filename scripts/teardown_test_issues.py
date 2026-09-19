@@ -13,6 +13,18 @@ import json
 import os
 import subprocess
 import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT / "src"))
+
+from issue_orchestrator.adapters.worktree.custody import (  # noqa: E402
+    custody_branch_guard,
+)
+from issue_orchestrator.adapters.worktree.removal import (  # noqa: E402
+    remove_checkout_path,
+)
+from issue_orchestrator.ports.worktree_custody import CustodyError  # noqa: E402
 
 # Default to issue-orchestrator repo, override with env var if needed
 REPO = os.environ.get("TEST_REPO", "BruceBGordon/issue-orchestrator")
@@ -98,6 +110,7 @@ def close_test_prs() -> int:
 
 def cleanup_local_worktrees() -> int:
     """Remove local worktrees created for test issues."""
+    repo_root = _repo_root()
     result = subprocess.run(
         ["git", "worktree", "list", "--porcelain"],
         capture_output=True, text=True
@@ -120,22 +133,62 @@ def cleanup_local_worktrees() -> int:
             if any(f"-{i}-test" in worktree_path.lower() or
                    f"/{i}-test" in worktree_path.lower()
                    for i in range(1, 20)):
-                remove_result = subprocess.run(
-                    ["git", "worktree", "remove", "--force", worktree_path],
-                    capture_output=True, text=True
+                # Through the removal owner, which asks custody first: a
+                # test-shaped NAME is not proof that nobody is holding the
+                # checkout, and this also deletes the branch afterwards
+                # (#7274 round 3 finding 1).
+                outcome = remove_checkout_path(
+                    Path(worktree_path),
+                    force=True,
+                    run_git=_local_git,
+                    repo_root=repo_root,
                 )
-                if remove_result.returncode == 0:
+                if outcome.removed:
                     print(f"Removed worktree: {worktree_path}")
                     count += 1
                 else:
-                    print(f"Failed to remove worktree {worktree_path}: {remove_result.stderr}")
+                    print(
+                        f"Failed to remove worktree {worktree_path}: "
+                        f"{outcome.git_error}"
+                    )
             worktree_path = None
 
     return count
 
 
+def _repo_root() -> Path:
+    """The repository whose custody store answers for these checkouts.
+
+    ``git worktree list`` above is run here, so "here" is the repository -- but
+    ``remove_checkout_path`` will not accept that implicitly. It is named, once,
+    so a checkout that has lost its own ``.git`` file is still asked about
+    (#7274 round 7 finding 4).
+    """
+    result = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        raise SystemExit(
+            "teardown must run inside the repository whose test worktrees it "
+            f"removes: {result.stderr.strip()}"
+        )
+    return Path(result.stdout.strip())
+
+
+def _local_git(argv: list[str]) -> str | None:
+    """Run git here, reporting failure as text for the removal owner."""
+    result = subprocess.run(["git", *argv], capture_output=True, text=True)
+    return None if result.returncode == 0 else result.stderr.strip()
+
+
 def cleanup_local_branches() -> int:
-    """Remove local branches created for test issues."""
+    """Remove local branches created for test issues.
+
+    Removes no directory, so the removal seam never sees it -- but for an
+    UNREGISTERED held checkout git no longer refuses, and this deletes the only
+    protected ref while the grant and the directory stand (round 23 finding 1).
+    """
+    repo_root = _repo_root()
     result = subprocess.run(
         ["git", "branch", "--list"],
         capture_output=True, text=True
@@ -150,15 +203,22 @@ def cleanup_local_branches() -> int:
         branch = line.strip().lstrip("* ")
         # Check if this looks like a test branch (starts with small number)
         if branch and any(branch.startswith(f"{i}-test") for i in range(1, 20)):
-            delete_result = subprocess.run(
-                ["git", "branch", "-D", branch],
-                capture_output=True, text=True
-            )
-            if delete_result.returncode == 0:
-                print(f"Deleted branch: {branch}")
-                count += 1
-            else:
-                print(f"Failed to delete branch {branch}: {delete_result.stderr}")
+            try:
+                with custody_branch_guard(repo_root, branch):
+                    delete_result = subprocess.run(
+                        ["git", "branch", "-D", branch],
+                        capture_output=True, text=True
+                    )
+                if delete_result.returncode == 0:
+                    print(f"Deleted branch: {branch}")
+                    count += 1
+                else:
+                    print(f"Failed to delete branch {branch}: {delete_result.stderr}")
+            except CustodyError as exc:
+                print(
+                    f"Retained branch {branch} because its checkout is in "
+                    f"custody: {exc}"
+                )
 
     return count
 

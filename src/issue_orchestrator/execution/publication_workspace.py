@@ -6,6 +6,8 @@ from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
 
+from ..adapters.worktree.custody import custody_guard
+from ..adapters.worktree.removal import GitRunner, remove_checkout_path
 from ..domain.completion_intake import CompletionIntakeError
 from ..domain.publication_workspace import PublicationWorkspace
 from ..domain.validated_work_escrow import (
@@ -62,19 +64,32 @@ class EscrowPublicationWorkspaces:
         durable_directory(directory)
         self._prepare_artifacts(capture, workspace)
         if not workspace.checkout.exists():
+            # Nothing to protect at a path with no checkout: a grant naming one
+            # is a breach, and `breached()` is what reports it.
             self._remove_absent_registration(workspace.checkout)
             self._create_verified_checkout(workspace)
+        # Verification FIRST, so a foreign repository planted here still gets
+        # its own precise diagnostic rather than a custody refusal.
         self._verify_checkout(workspace.checkout, workspace.key.validated_head_sha)
-        # A process may have died after the atomic move but before Git updated
-        # its reverse registration. The exact checkout is verified first.
-        self._git.repair_worktree_registration(self._repository, workspace.checkout)
-        self._clear_setup_outputs(workspace.checkout, workspace.key.validated_head_sha)
-        self._require_setup_roots_local(workspace.checkout)
-        try:
-            self._prepare(workspace.checkout)
-        except (OSError, RuntimeError) as exc:
-            raise CompletionIntakeError("publication workspace setup failed") from exc
-        self._verify_checkout(workspace.checkout, workspace.key.validated_head_sha)
+        # From here a retry repairs the registration, clears runtime directories
+        # and runs setup -- all destructive, and all BEFORE this path reaches
+        # its own removal guard (round 22 finding 1).
+        with custody_guard(workspace.checkout, repo_root=self._repository):
+            # A process may have died after the atomic move but before Git
+            # updated its reverse registration. The exact checkout is verified
+            # first.
+            self._git.repair_worktree_registration(self._repository, workspace.checkout)
+            self._clear_setup_outputs(
+                workspace.checkout, workspace.key.validated_head_sha
+            )
+            self._require_setup_roots_local(workspace.checkout)
+            try:
+                self._prepare(workspace.checkout)
+            except (OSError, RuntimeError) as exc:
+                raise CompletionIntakeError(
+                    "publication workspace setup failed"
+                ) from exc
+            self._verify_checkout(workspace.checkout, workspace.key.validated_head_sha)
         return workspace
 
     def release(self, admission: EvidenceAdmission) -> None:
@@ -86,12 +101,21 @@ class EscrowPublicationWorkspaces:
         self._verify_owner(workspace)
         self._verify_artifacts(capture, workspace, allow_missing=True)
         if workspace.checkout.exists():
-            self._verify_checkout(workspace.checkout, workspace.key.validated_head_sha)
-            self._git.repair_worktree_registration(self._repository, workspace.checkout)
-            # Verification admits only exact source plus explicitly owned
-            # runtime/dependency output. Git requires force for those paths.
-            self._git.run(self._repository,
-                          ["worktree", "remove", "--force", "--", str(workspace.checkout)])
+            self._verify_checkout(
+                workspace.checkout, workspace.key.validated_head_sha
+            )
+            with custody_guard(workspace.checkout, repo_root=self._repository):
+                self._git.repair_worktree_registration(
+                    self._repository, workspace.checkout
+                )
+                # Verification admits only exact source plus explicitly owned
+                # runtime/dependency output. Git requires force for those paths.
+                remove_checkout_path(
+                    workspace.checkout,
+                    force=True,
+                    run_git=self._git_runner(),
+                    repo_root=self._repository,
+                )
         else:
             self._remove_absent_registration(workspace.checkout)
         run = workspace.artifacts.completion.parent
@@ -183,7 +207,13 @@ class EscrowPublicationWorkspaces:
         # Only complete, verified work becomes the authoritative workspace.
         # An interrupted checkout stays in private staging and is never reused
         # or discarded on a guess that it contains no operator edits.
-        self._git.run(self._repository, ["worktree", "move", str(checkout), str(workspace.checkout)])
+        # Moving a held checkout leaves the grant naming a path nothing is at,
+        # so the next removal of the NEW path is unheld (round 21 finding 1).
+        with custody_guard(checkout, repo_root=self._repository):
+            self._git.run(
+                self._repository,
+                ["worktree", "move", str(checkout), str(workspace.checkout)],
+            )
         fsync_directory(workspace.checkout.parent)
         staging.rmdir()
         fsync_directory(staging.parent)
@@ -264,13 +294,28 @@ class EscrowPublicationWorkspaces:
     def _common_directory(self, path: Path) -> Path:
         return Path(self._git.run(path, ["rev-parse", "--path-format=absolute", "--git-common-dir"]).stdout.strip()).resolve()
 
+    def _git_runner(self) -> GitRunner:
+        def run(argv: list[str]) -> str | None:
+            try:
+                self._git.run(self._repository, argv)
+            except GitError as exc:
+                return str(exc)
+            return None
+
+        return run
+
     def _remove_absent_registration(self, checkout: Path) -> None:
         self._canonical(checkout)
         if checkout.exists():
             raise ValueError("cannot remove registration for a present checkout")
         registered = self._git.run(self._repository, ["worktree", "list", "--porcelain", "-z"]).stdout.split("\0")
         if f"worktree {checkout}" in registered:
-            self._git.run(self._repository, ["worktree", "remove", "--force", "--", str(checkout)])
+            remove_checkout_path(
+                checkout,
+                force=True,
+                run_git=self._git_runner(),
+                repo_root=self._repository,
+            )
 
     @staticmethod
     def _canonical(path: Path) -> None:
