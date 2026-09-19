@@ -173,7 +173,7 @@ class TestCreateWorktree:
         # Setup
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
-        (repo_root / ".git").mkdir()
+        _make_git_metadata(repo_root / ".git")
 
         worktree_base = tmp_path / "worktrees"
 
@@ -231,7 +231,7 @@ class TestCreateWorktree:
         """Fresh worktrees can be seeded from an explicit local ref without changing PR base."""
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
-        (repo_root / ".git").mkdir()
+        _make_git_metadata(repo_root / ".git")
         worktree_base = tmp_path / "worktrees"
 
         def run_side_effect(cmd, *args, **kwargs):
@@ -285,7 +285,7 @@ class TestCreateWorktree:
         """
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
-        (repo_root / ".git").mkdir()
+        _make_git_metadata(repo_root / ".git")
         worktree_base = tmp_path / "worktrees"
 
         def run_side_effect(cmd, *args, **kwargs):
@@ -325,7 +325,7 @@ class TestCreateWorktree:
         # Setup
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
-        (repo_root / ".git").mkdir()
+        _make_git_metadata(repo_root / ".git")
 
         # Mock successful git command
         mock_run.return_value = MagicMock(returncode=0, stderr="")
@@ -358,7 +358,7 @@ class TestCreateWorktree:
         # Setup
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
-        (repo_root / ".git").mkdir()
+        _make_git_metadata(repo_root / ".git")
 
         worktree_base = tmp_path / "worktrees"
         worktree_base.mkdir()
@@ -366,9 +366,12 @@ class TestCreateWorktree:
         # Create existing worktree directory with valid .git file
         existing_worktree = worktree_base / "repo-123"
         existing_worktree.mkdir()
-        gitdir = tmp_path / "gitdir"
-        gitdir.mkdir()
-        # Create .git file to make it look like a valid worktree
+        # Where git actually puts a linked worktree's admin directory. Reuse
+        # now asks custody before it resets, and custody resolves a checkout's
+        # repository through this path -- a gitdir somewhere unrelated is not a
+        # worktree of this repository, and failing closed there is correct.
+        gitdir = repo_root / ".git" / "worktrees" / "repo-123"
+        _make_git_metadata(gitdir)
         (existing_worktree / ".git").write_text(f"gitdir: {gitdir}")
 
         # Mock subprocess calls for worktree reuse validation:
@@ -413,7 +416,7 @@ class TestCreateWorktree:
         # Setup
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
-        (repo_root / ".git").mkdir()
+        _make_git_metadata(repo_root / ".git")
 
         # Respond by command, so read-only safety probes cannot shift the failure.
         def git_result(command, **kwargs):
@@ -438,7 +441,7 @@ class TestCreateWorktree:
         """Prune stale worktree metadata and retry when branch is bound to missing path."""
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
-        (repo_root / ".git").mkdir()
+        _make_git_metadata(repo_root / ".git")
         worktree_base = tmp_path / "worktrees"
         stale_path = tmp_path / "missing-worktree-123"
 
@@ -506,7 +509,7 @@ class TestCreateWorktree:
         """Detach existing worktree branch when reuse is disabled."""
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
-        (repo_root / ".git").mkdir()
+        _make_git_metadata(repo_root / ".git")
         existing_worktree = tmp_path / "worktrees" / "issue-123" / "repo-123"
         existing_worktree.mkdir(parents=True)
 
@@ -563,7 +566,7 @@ class TestCreateWorktree:
         """Remove existing worktree path when reuse is disabled."""
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
-        (repo_root / ".git").mkdir()
+        _make_git_metadata(repo_root / ".git")
         worktree_base = tmp_path / "worktrees"
         worktree_base.mkdir()
         existing_path = worktree_base / "repo-123"
@@ -631,7 +634,7 @@ class TestCreateWorktree:
         """Worktree setup must not mutate the issue branch with a synthetic commit."""
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
-        (repo_root / ".git").mkdir()
+        _make_git_metadata(repo_root / ".git")
         worktree_base = tmp_path / "worktrees"
         gitdir = repo_root / ".git" / "worktrees" / "repo-123"
         exclude_path = gitdir / "info" / "exclude"
@@ -734,7 +737,7 @@ class TestCreateWorktree:
         """Linked worktrees should write ignore entries where git actually reads them."""
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
-        (repo_root / ".git").mkdir()
+        _make_git_metadata(repo_root / ".git")
 
         worktree_base = tmp_path / "worktrees"
         gitdir = repo_root / ".git" / "worktrees" / "repo-123"
@@ -806,7 +809,7 @@ class TestCreateWorktree:
         # Setup
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
-        (repo_root / ".git").mkdir()
+        _make_git_metadata(repo_root / ".git")
 
         worktree_base = tmp_path / "new" / "nested" / "worktrees"
 
@@ -830,7 +833,7 @@ class TestCreateWorktree:
         # Setup
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
-        (repo_root / ".git").mkdir()
+        _make_git_metadata(repo_root / ".git")
 
         # Mock successful git command
         mock_run.return_value = MagicMock(returncode=0, stderr="")
@@ -848,7 +851,7 @@ class TestCreateWorktree:
         # Setup
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
-        (repo_root / ".git").mkdir()
+        _make_git_metadata(repo_root / ".git")
 
         # Mock: prune succeeds, find worktree (no match), then exception on branch check
         mock_run.side_effect = [
@@ -873,12 +876,13 @@ class TestRemoveWorktree:
         # Setup
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
-        (repo_root / ".git").mkdir()
+        _make_git_metadata(repo_root / ".git")
         worktree_path = tmp_path / "worktree-123"
         worktree_path.mkdir()
         (worktree_path / ".git").write_text(
             f"gitdir: {repo_root / '.git' / 'worktrees' / 'worktree-123'}"
         )
+        (repo_root / '.git' / 'worktrees' / 'worktree-123').mkdir(parents=True, exist_ok=True)
 
         # Mock branch name
         mock_get_branch.return_value = "123-test-branch"
@@ -893,7 +897,7 @@ class TestRemoveWorktree:
         mock_run.side_effect = mock_git_command
 
         # Execute
-        remove_worktree(worktree_path)
+        remove_worktree(worktree_path, repo_root=repo_root)
 
         # Verify git commands were called
         assert mock_run.call_count == 2
@@ -924,12 +928,13 @@ class TestRemoveWorktree:
         """Retention cleanup removes only the checkout, never its local ref."""
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
-        (repo_root / ".git").mkdir()
+        _make_git_metadata(repo_root / ".git")
         worktree_path = tmp_path / "worktree-123"
         worktree_path.mkdir()
         (worktree_path / ".git").write_text(
             f"gitdir: {repo_root / '.git' / 'worktrees' / 'worktree-123'}"
         )
+        (repo_root / '.git' / 'worktrees' / 'worktree-123').mkdir(parents=True, exist_ok=True)
         mock_get_branch.return_value = "123-local-only"
 
         def mock_git_command(*args, **kwargs):
@@ -940,7 +945,7 @@ class TestRemoveWorktree:
 
         mock_run.side_effect = mock_git_command
 
-        remove_worktree(worktree_path, delete_branch=False)
+        remove_worktree(worktree_path, delete_branch=False, repo_root=repo_root)
 
         assert mock_run.call_count == 1
         assert mock_run.call_args.args[0][3:5] == ["worktree", "remove"]
@@ -953,7 +958,7 @@ class TestRemoveWorktree:
 
         # Execute & Verify
         with pytest.raises(WorktreeError, match="Worktree does not exist"):
-            remove_worktree(worktree_path)
+            remove_worktree(worktree_path, repo_root=tmp_path)
 
         # Git should not have been called
         mock_run.assert_not_called()
@@ -965,7 +970,7 @@ class TestRemoveWorktree:
         worktree_path = tmp_path / "already-gone"
 
         # No exception, and git is not invoked (nothing to remove).
-        remove_worktree(worktree_path, force=True)
+        remove_worktree(worktree_path, force=True, repo_root=tmp_path)
         mock_run.assert_not_called()
 
     @patch("issue_orchestrator.adapters.worktree._worktree.get_worktree_branch")
@@ -975,12 +980,13 @@ class TestRemoveWorktree:
         # Setup
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
-        (repo_root / ".git").mkdir()
+        _make_git_metadata(repo_root / ".git")
         worktree_path = tmp_path / "worktree-123"
         worktree_path.mkdir()
         (worktree_path / ".git").write_text(
             f"gitdir: {repo_root / '.git' / 'worktrees' / 'worktree-123'}"
         )
+        (repo_root / '.git' / 'worktrees' / 'worktree-123').mkdir(parents=True, exist_ok=True)
 
         mock_get_branch.return_value = "123-test-branch"
 
@@ -989,7 +995,7 @@ class TestRemoveWorktree:
         ]
 
         with pytest.raises(WorktreeError, match="Failed to remove worktree"):
-            remove_worktree(worktree_path)
+            remove_worktree(worktree_path, repo_root=repo_root)
 
         assert worktree_path.exists()
         assert mock_run.call_count == 1
@@ -1005,19 +1011,20 @@ class TestRemoveWorktree:
         """Test force cleanup falls back to directory deletion."""
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
-        (repo_root / ".git").mkdir()
+        _make_git_metadata(repo_root / ".git")
         worktree_path = tmp_path / "worktree-123"
         worktree_path.mkdir()
         (worktree_path / ".git").write_text(
             f"gitdir: {repo_root / '.git' / 'worktrees' / 'worktree-123'}"
         )
+        (repo_root / '.git' / 'worktrees' / 'worktree-123').mkdir(parents=True, exist_ok=True)
         mock_get_branch.return_value = "123-test-branch"
         mock_run.side_effect = [
             MagicMock(returncode=1, stderr="fatal: worktree is locked"),
             MagicMock(returncode=0, stderr=""),
         ]
 
-        remove_worktree(worktree_path, force=True)
+        remove_worktree(worktree_path, force=True, repo_root=repo_root)
 
         assert not worktree_path.exists()
         assert mock_run.call_count == 2
@@ -1029,7 +1036,7 @@ class TestRemoveWorktree:
             str(worktree_path),
         ]
 
-    @patch("issue_orchestrator.adapters.worktree._worktree.shutil.rmtree")
+    @patch("issue_orchestrator.adapters.worktree.removal.shutil.rmtree")
     @patch("issue_orchestrator.adapters.worktree._worktree.get_worktree_branch")
     @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_remove_worktree_git_and_fallback_fail(
@@ -1038,19 +1045,20 @@ class TestRemoveWorktree:
         """Test error when neither git nor fallback removal deletes the path."""
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
-        (repo_root / ".git").mkdir()
+        _make_git_metadata(repo_root / ".git")
         worktree_path = tmp_path / "worktree-123"
         worktree_path.mkdir()
         (worktree_path / ".git").write_text(
             f"gitdir: {repo_root / '.git' / 'worktrees' / 'worktree-123'}"
         )
+        (repo_root / '.git' / 'worktrees' / 'worktree-123').mkdir(parents=True, exist_ok=True)
         mock_get_branch.return_value = "123-test-branch"
         mock_run.return_value = MagicMock(
             returncode=1, stderr="fatal: worktree is locked"
         )
 
         with pytest.raises(WorktreeError, match="Failed to remove worktree path"):
-            remove_worktree(worktree_path, force=True)
+            remove_worktree(worktree_path, force=True, repo_root=repo_root)
 
         mock_rmtree.assert_called_once_with(worktree_path, ignore_errors=True)
 
@@ -1061,11 +1069,14 @@ class TestRemoveWorktree:
         tmp_path,
     ):
         """Force cleanup deletes stale directories that are no longer git worktrees."""
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        _make_git_metadata(repo_root / ".git")
         worktree_path = tmp_path / "worktree-123"
         worktree_path.mkdir()
         (worktree_path / "leftover.txt").write_text("stale")
 
-        remove_worktree(worktree_path, force=True)
+        remove_worktree(worktree_path, force=True, repo_root=repo_root)
 
         assert not worktree_path.exists()
         mock_run.assert_not_called()
@@ -1079,12 +1090,13 @@ class TestRemoveWorktree:
         # Setup
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
-        (repo_root / ".git").mkdir()
+        _make_git_metadata(repo_root / ".git")
         worktree_path = tmp_path / "worktree-123"
         worktree_path.mkdir()
         (worktree_path / ".git").write_text(
             f"gitdir: {repo_root / '.git' / 'worktrees' / 'worktree-123'}"
         )
+        (repo_root / '.git' / 'worktrees' / 'worktree-123').mkdir(parents=True, exist_ok=True)
 
         mock_get_branch.return_value = "123-test-branch"
 
@@ -1100,7 +1112,7 @@ class TestRemoveWorktree:
         mock_run.side_effect = mock_git_command
 
         # Execute - should not raise
-        remove_worktree(worktree_path)
+        remove_worktree(worktree_path, repo_root=repo_root)
 
         # Verify both commands were attempted
         assert mock_run.call_count == 2
@@ -1112,12 +1124,13 @@ class TestRemoveWorktree:
         # Setup
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
-        (repo_root / ".git").mkdir()
+        _make_git_metadata(repo_root / ".git")
         worktree_path = tmp_path / "worktree-123"
         worktree_path.mkdir()
         (worktree_path / ".git").write_text(
             f"gitdir: {repo_root / '.git' / 'worktrees' / 'worktree-123'}"
         )
+        (repo_root / '.git' / 'worktrees' / 'worktree-123').mkdir(parents=True, exist_ok=True)
 
         mock_get_branch.return_value = None
 
@@ -1130,7 +1143,7 @@ class TestRemoveWorktree:
         mock_run.side_effect = mock_git_command
 
         # Execute
-        remove_worktree(worktree_path)
+        remove_worktree(worktree_path, repo_root=repo_root)
 
         # Verify only worktree removal was called (not branch deletion)
         assert mock_run.call_count == 1
@@ -1567,7 +1580,7 @@ class TestIntegrationScenarios:
         # Setup
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
-        (repo_root / ".git").mkdir()
+        _make_git_metadata(repo_root / ".git")
 
         worktree_base = tmp_path / "worktrees"
 
@@ -1599,6 +1612,9 @@ class TestIntegrationScenarios:
 
         # Check for uncommitted changes (should be clean)
         worktree_path.mkdir(parents=True, exist_ok=True)  # Create for existence check
+        (repo_root / ".git" / "worktrees" / worktree_path.name).mkdir(
+            parents=True, exist_ok=True
+        )
         (worktree_path / ".git").write_text(
             f"gitdir: {repo_root / '.git' / 'worktrees' / worktree_path.name}"
         )
@@ -1606,7 +1622,7 @@ class TestIntegrationScenarios:
         assert result is False
 
         # Remove worktree
-        remove_worktree(worktree_path)
+        remove_worktree(worktree_path, repo_root=repo_root)
 
     @patch(
         "issue_orchestrator.adapters.worktree._worktree_runtime_setup.install_hooks",
@@ -1618,7 +1634,7 @@ class TestIntegrationScenarios:
         # Setup
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
-        (repo_root / ".git").mkdir()
+        _make_git_metadata(repo_root / ".git")
 
         mock_run.return_value = MagicMock(returncode=0, stderr="")
 
@@ -2009,7 +2025,7 @@ class TestCreateWorktreeReuse:
         """Verify reuse path rebases onto origin/main."""
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
-        (repo_root / ".git").mkdir()
+        _make_git_metadata(repo_root / ".git")
         worktree_path = tmp_path / "worktree"
         worktree_path.mkdir()
 
@@ -2078,7 +2094,7 @@ class TestCreateWorktreeReuse:
         """Verify reuse path resets to origin/main on rebase failure."""
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
-        (repo_root / ".git").mkdir()
+        _make_git_metadata(repo_root / ".git")
         worktree_path = tmp_path / "worktree"
         worktree_path.mkdir()
 
@@ -2143,7 +2159,7 @@ class TestCreateWorktreeReuse:
         """Verify reuse path counts discarded uncommitted changes."""
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
-        (repo_root / ".git").mkdir()
+        _make_git_metadata(repo_root / ".git")
         worktree_path = tmp_path / "worktree"
         worktree_path.mkdir()
 
@@ -2207,7 +2223,7 @@ class TestCreateWorktreeReuse:
         """
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
-        (repo_root / ".git").mkdir()
+        _make_git_metadata(repo_root / ".git")
         worktree_path = tmp_path / "worktree"
         worktree_path.mkdir()
 
@@ -2285,7 +2301,7 @@ class TestCreateWorktreeReuse:
         """
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
-        (repo_root / ".git").mkdir()
+        _make_git_metadata(repo_root / ".git")
         worktree_path = tmp_path / "worktree"
         worktree_path.mkdir()
 
@@ -2503,3 +2519,15 @@ class TestWorktreePreparationError:
         error.__cause__ = original
 
         assert error.__cause__ is original
+
+
+def _make_git_metadata(git_dir: Path) -> None:
+    """The shape custody insists on before trusting a `.git` directory.
+
+    An empty replacement directory used to mint a fresh, empty custody store --
+    nothing held, remove away -- so the validator requires HEAD and objects
+    (#7274 round 14 finding 1). A fixture without them is not a repository.
+    """
+    git_dir.mkdir(parents=True, exist_ok=True)
+    (git_dir / "HEAD").write_text("ref: refs/heads/main\n")
+    (git_dir / "objects").mkdir(exist_ok=True)

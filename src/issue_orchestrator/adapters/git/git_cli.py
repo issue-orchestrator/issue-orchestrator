@@ -6,7 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ...ports.command_runner import CommandRunner, CommandResult, OutputNewlines
-from ...domain.escrow_retention_boundary import is_escrow_path, require_disposable_path
+from ...domain.escrow_retention_boundary import is_escrow_path
+from ..worktree.removal import remove_checkout_path
 from ...ports.git import Git, GitError, GitResult
 
 
@@ -94,7 +95,12 @@ class GitCLI(Git):
         newlines: OutputNewlines = OutputNewlines.TRANSLATED,
     ) -> GitResult:
         if argv[:2] == ["worktree", "prune"]:
-            registered = self.run(repo, ["worktree", "list", "--porcelain", "-z"])
+            # check=False: this is an internal probe, and raising here would
+            # turn a caller's tolerated prune into a hard failure -- the
+            # caller's own `check` is what decides that.
+            registered = self.run(
+                repo, ["worktree", "list", "--porcelain", "-z"], check=False
+            )
             if any(is_escrow_path(Path(item[9:])) for item in registered.stdout.split("\0") if item.startswith("worktree ")):
                 return GitResult(["git", "-C", str(repo), *argv], 0, "Escrow worktree registration retained\n", "")
         cmd = ["git", "-C", str(repo)] + argv
@@ -162,15 +168,18 @@ class GitCLI(Git):
         from .worktree_registration import repair_worktree_registration
         repair_worktree_registration(self, repo, path)
 
+    @staticmethod
+    def _error_of(result: GitResult) -> str | None:
+        return None if result.returncode == 0 else (result.stderr or "").strip()
+
     def worktree_remove(self, repo: Path, path: Path, force: bool = True, prune: bool = True) -> None:
-        require_disposable_path(path)
-        argv = ["worktree", "remove"]
-        if force:
-            argv.append("--force")
-        argv.append(str(path))
-        self.run(repo, argv, check=False)
-        if prune:
-            self.run(repo, ["worktree", "prune"], check=False)
+        remove_checkout_path(
+            path,
+            force=force,
+            prune=prune,
+            run_git=lambda argv: self._error_of(self.run(repo, argv, check=False)),
+            repo_root=repo,
+        )
 
     def commit(self, repo: Path, message: str) -> None:
         self.run(repo, ["commit", "-am", message])

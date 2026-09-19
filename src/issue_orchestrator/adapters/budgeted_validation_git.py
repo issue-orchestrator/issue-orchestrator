@@ -4,6 +4,7 @@ from pathlib import Path
 import hashlib
 import re
 
+from .worktree.removal import remove_checkout_path
 from ..ports.command_runner import CommandRunner
 
 
@@ -17,6 +18,13 @@ class BudgetedValidationGit:
         if result.returncode:
             raise RuntimeError(f"Budgeted validation Git operation failed: {result.stderr}")
         return result.stdout.strip()
+
+    def _try_git(self, arguments: list[str]) -> str | None:
+        """Run git without raising, for a removal that has a fallback."""
+        result = self._runner.run(
+            ["git", *arguments], cwd=self._root, timeout_seconds=120
+        )
+        return None if result.returncode == 0 else (result.stderr or "").strip()
 
     def storage_directory(self) -> Path:
         return Path(self.git("rev-parse", "--path-format=absolute", "--git-common-dir")) / "io-budgeted-validation"
@@ -56,4 +64,9 @@ class BudgetedValidationGit:
         self.git("worktree", "add", "--detach", str(path), commit)
 
     def remove_checkout(self, path: Path) -> None:
-        self.git("worktree", "remove", "--force", str(path))
+        remove_checkout_path(
+            path,
+            force=True,
+            run_git=lambda argv: self._try_git(argv),
+            repo_root=self._root,
+        )

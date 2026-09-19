@@ -21,6 +21,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..adapters.worktree.api import WorktreeError, install_worktree_identity
+from ..adapters.worktree.custody import custody_guard
+from ..adapters.worktree.removal import GitRunner, remove_checkout_path
+from ..ports.worktree_custody import CustodyError
 from ..domain.review_exchange import REVIEWER_WORKTREE_CHECKOUT_FAILURE_MARKER
 from ..ports.worktree_manager import REVIEWER_OWNED_HEAD_MARKER, WORKTREE_ID_MARKER
 
@@ -140,7 +143,12 @@ def create_reviewer_worktree(
         _persist_owned_head(sibling, tip_sha)
     except (WorktreeError, ReviewerWorktreeError) as exc:
         try:
-            _git(repo_root, ["worktree", "remove", str(sibling), "--force"])
+            remove_checkout_path(
+                sibling,
+                force=True,
+                run_git=_removal_git(repo_root),
+                repo_root=repo_root,
+            )
         except ReviewerWorktreeError:
             logger.exception("Failed to roll back unowned reviewer worktree %s", sibling)
         raise ReviewerWorktreeError(
@@ -168,33 +176,65 @@ def fast_forward_reviewer_worktree(reviewer: ReviewerWorktree) -> str:
     """
     repo_root = _resolve_repo_root(reviewer.path)
     tip_sha = _resolve_branch_tip(repo_root, reviewer.coder_branch)
-    try:
-        _git(reviewer.path, ["checkout", "--detach", tip_sha])
-    except ReviewerWorktreeError as exc:
-        context: dict[str, object] = {
-            "reviewer_worktree": str(reviewer.path),
-            "coder_branch": reviewer.coder_branch,
-            "target_sha": tip_sha,
-        }
-        enriched = ReviewerWorktreeError(
-            "Failed to fast-forward reviewer worktree "
-            f"{reviewer.path} to {reviewer.coder_branch}@{tip_sha}: "
-            f"{exc} {REVIEWER_WORKTREE_CHECKOUT_FAILURE_MARKER}",
-            git_failure=exc.git_failure,
-            context=context,
-        )
-        logger.error(
-            "Reviewer worktree fast-forward failed: %s",
-            enriched.diagnostic(),
-        )
-        raise enriched from exc
-    _persist_owned_head(reviewer.path, tip_sha)
+    # Checking out a new detached tip makes a held reviewer-only commit
+    # unreachable -- the checkout survives, the evidence does not (round 22
+    # finding 1).
+    with custody_guard(reviewer.path, repo_root=repo_root):
+        try:
+            _git(reviewer.path, ["checkout", "--detach", tip_sha])
+        except ReviewerWorktreeError as exc:
+            context: dict[str, object] = {
+                "reviewer_worktree": str(reviewer.path),
+                "coder_branch": reviewer.coder_branch,
+                "target_sha": tip_sha,
+            }
+            enriched = ReviewerWorktreeError(
+                "Failed to fast-forward reviewer worktree "
+                f"{reviewer.path} to {reviewer.coder_branch}@{tip_sha}: "
+                f"{exc} {REVIEWER_WORKTREE_CHECKOUT_FAILURE_MARKER}",
+                git_failure=exc.git_failure,
+                context=context,
+            )
+            logger.error(
+                "Reviewer worktree fast-forward failed: %s",
+                enriched.diagnostic(),
+            )
+            raise enriched from exc
+        _persist_owned_head(reviewer.path, tip_sha)
     logger.debug(
         "Fast-forwarded reviewer worktree path=%s tip=%s",
         reviewer.path,
         tip_sha,
     )
     return tip_sha
+
+
+def _restore_markers(
+    reviewer: "ReviewerWorktree", marker_contents: dict[Path, str]
+) -> None:
+    """Put back the ownership evidence a failed removal took off."""
+    if not reviewer.path.exists():
+        return
+    for marker, marker_content in marker_contents.items():
+        try:
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text(marker_content, encoding="utf-8")
+        except OSError:
+            logger.exception(
+                "Failed to restore reviewer ownership marker after removal failure: %s",
+                marker,
+            )
+
+
+def _removal_git(repo_root: Path) -> GitRunner:
+    def run(argv: list[str]) -> str | None:
+        try:
+            _git(repo_root, argv)
+        except ReviewerWorktreeError as exc:
+            return str(exc)
+        return None
+
+    return run
 
 
 def remove_reviewer_worktree(
@@ -217,22 +257,29 @@ def remove_reviewer_worktree(
             marker.unlink()
         except OSError:
             continue
-    args = ["worktree", "remove", str(reviewer.path)]
-    if force:
-        args.append("--force")
+    # A reviewer checkout can be held too: the marker dance above is a
+    # rollback, not a licence to discard work someone claimed (#7274).
     try:
-        _git(repo_root, args)
+        outcome = remove_checkout_path(
+            reviewer.path,
+            force=force,
+            run_git=_removal_git(repo_root),
+            repo_root=repo_root,
+        )
+        if not outcome.removed:
+            raise ReviewerWorktreeError(
+                f"Failed to remove reviewer worktree {reviewer.path}: "
+                f"{outcome.git_error}"
+            )
+    except CustodyError:
+        # The markers came off BEFORE the removal. A custody refusal leaves the
+        # checkout standing, so putting them back is what keeps it a
+        # recognisable reviewer worktree instead of something reconciliation
+        # later calls external (#7274 round 4 finding 5).
+        _restore_markers(reviewer, marker_contents)
+        raise
     except ReviewerWorktreeError as exc:
-        if reviewer.path.exists():
-            for marker, marker_content in marker_contents.items():
-                try:
-                    marker.parent.mkdir(parents=True, exist_ok=True)
-                    marker.write_text(marker_content, encoding="utf-8")
-                except OSError:
-                    logger.exception(
-                        "Failed to restore reviewer ownership marker after removal failure: %s",
-                        marker,
-                    )
+        _restore_markers(reviewer, marker_contents)
         if force:
             logger.warning(
                 "git worktree remove --force failed for %s: %s",

@@ -7,16 +7,15 @@ This module implements the WorktreePolicy protocol with a
 """
 
 import logging
-import shutil
 from pathlib import Path
-from ...domain.escrow_retention_boundary import require_disposable_path
 
 from ...ports.worktree_policy import (
     ValidationResult,
     SyncResult,
     WorktreePolicy,
 )
-from ._worktree import _git_run, remove_worktree
+from ._worktree import _git_run, git_runner
+from .removal import remove_checkout_path
 
 logger = logging.getLogger(__name__)
 
@@ -138,26 +137,25 @@ class ValidateOrDeletePolicy:
     ) -> bool:
         """Delete a worktree completely."""
         worktree_path = Path(worktree_path)
-        require_disposable_path(worktree_path)
         logger.info("[POLICY] Deleting worktree for fresh start: %s", worktree_path)
 
-        try:
-            # Try git worktree remove first (clean removal)
-            remove_worktree(worktree_path)
-            return True
-        except Exception as e:
-            logger.warning("[POLICY] git worktree remove failed: %s, trying rmtree", e)
-
-        # Fallback: just delete the directory
-        try:
-            if worktree_path.exists():
-                shutil.rmtree(worktree_path, ignore_errors=True)
-            # Also prune from git's worktree list
-            _git_run(repo_root, ["worktree", "prune"], check=False)
-            return True
-        except Exception as e:
-            logger.error("[POLICY] Failed to delete worktree %s: %s", worktree_path, e)
-            return False
+        # No fallback of its own. Git first, then the directory, is what the
+        # removal owner already does -- under ONE custody answer covering both.
+        # A second copy here was a second window (#7274 rounds 2 and 3).
+        outcome = remove_checkout_path(
+            worktree_path,
+            force=True,
+            run_git=git_runner(repo_root),
+            repo_root=repo_root,
+            prune=True,
+        )
+        if not outcome.removed:
+            logger.error(
+                "[POLICY] Failed to delete worktree %s: %s",
+                worktree_path,
+                outcome.git_error,
+            )
+        return outcome.removed
 
     def _check_broken_git_state(self, worktree_path: Path) -> str | None:
         """Check if worktree is in a broken git state.

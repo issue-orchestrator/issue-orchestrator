@@ -18,7 +18,7 @@ def test_worktree_cleanup_cannot_delete_escrow_even_with_force(tmp_path):
     evidence = escrow / "keep"
     evidence.write_text("unique evidence")
     with pytest.raises(ValueError, match="retention"):
-        remove_worktree(escrow, force=True)
+        remove_worktree(escrow, force=True, repo_root=tmp_path)
     with pytest.raises(ValueError, match="retention"):
         ValidateOrDeletePolicy().delete_worktree(escrow, tmp_path)
     assert evidence.read_text() == "unique evidence"

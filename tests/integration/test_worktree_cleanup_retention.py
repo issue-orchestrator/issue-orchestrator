@@ -61,6 +61,7 @@ def _cleanup_manager(
     *,
     repository_host: MagicMock,
     worktree_path: Path,
+    repo_root: Path,
 ) -> CleanupManager:
     config = SimpleNamespace(
         tech_lead_enabled=False,
@@ -78,7 +79,7 @@ def _cleanup_manager(
         runtime_lifecycle=runtime_owners(),
         config=config,
         repository_host=repository_host,
-        worktree_manager=GitWorktreeManager(),
+        worktree_manager=GitWorktreeManager(repo_root),
         kill_session_fn=lambda _terminal_id: None,
         session_exists_fn=lambda _terminal_id: False,
         get_worktree_path_fn=lambda _issue, _agent: worktree_path,
@@ -107,7 +108,9 @@ def test_graceful_review_cleanup_removes_checkout_but_preserves_branch(
             state="open",
         )
     ]
-    cleanup = _cleanup_manager(repository_host=host, worktree_path=worktree)
+    cleanup = _cleanup_manager(
+        repository_host=host, worktree_path=worktree, repo_root=repo
+    )
     pending = PendingCleanup(
         issue=SimpleNamespace(number=123),
         pr_number=456,
@@ -139,7 +142,9 @@ def test_startup_review_cleanup_removes_checkout_but_preserves_branch(
             state="open",
         )
     ]
-    cleanup = _cleanup_manager(repository_host=host, worktree_path=worktree)
+    cleanup = _cleanup_manager(
+        repository_host=host, worktree_path=worktree, repo_root=repo
+    )
 
     assert cleanup.recover_orphaned_cleanups() == 1
 
@@ -165,7 +170,7 @@ def test_startup_retains_clean_reviewer_with_detached_commit(tmp_path: Path) -> 
         "?? .issue-orchestrator/"
     )
 
-    manager = GitWorktreeManager()
+    manager = GitWorktreeManager(repo)
     cleanup = MagicMock()
     cleanup.recover_orphaned_cleanups.return_value = 0
     config = SimpleNamespace(repo_root=repo, worktree_base=tmp_path)
@@ -202,7 +207,7 @@ def test_startup_removes_owned_reviewer_after_coder_advances(tmp_path: Path) -> 
     _git(coder, "commit", "-m", "coder advances after review")
     assert _git(coder, "rev-parse", "HEAD").stdout.strip() != reviewer_head
 
-    manager = GitWorktreeManager()
+    manager = GitWorktreeManager(repo)
     cleanup = MagicMock()
     cleanup.recover_orphaned_cleanups.return_value = 0
     config = SimpleNamespace(repo_root=repo, worktree_base=tmp_path)

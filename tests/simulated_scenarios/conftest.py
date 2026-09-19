@@ -486,6 +486,11 @@ class TempWorktreeManager:
         del repo_root
         return ()
 
+    def checkouts_in_custody(self, repo_root: Path) -> tuple:
+        """Nothing is held for a person in a simulated repository."""
+        del repo_root
+        return ()
+
     def extract_issue_number(self, branch_name: str) -> int | None:
         parts = branch_name.split("-")
         return int(parts[0]) if parts and parts[0].isdigit() else None

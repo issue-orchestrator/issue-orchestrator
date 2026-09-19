@@ -513,10 +513,9 @@ class ControlCenterActions:
             )
             from .worktree_adapter import GitWorktreeManager
 
-            worktrees = GitWorktreeManager()
             stale_worktrees_cmd = ListStaleWorktreesCommand(
                 ControlCenterWorktreeAuditOwner(
-                    WorktreeAuditOwner(worktrees),
+                    lambda root: WorktreeAuditOwner(GitWorktreeManager(root)),
                     RepositoryEngineWorktreeActivityReader(
                         supervisor,
                         HttpRepositoryEngineStatusReader(),

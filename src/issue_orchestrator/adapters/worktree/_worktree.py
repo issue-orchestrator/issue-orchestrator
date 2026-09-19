@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import os
 import re
-import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,9 +13,21 @@ from ...infra.runtime_artifacts import is_cleanup_safe_untracked_path
 from ...infra.logging_config import issue_log
 from ...ports.git import GitResult
 from ...ports.worktree_policy import WorktreePolicy
+from ...ports.worktree_custody import (
+    CustodyError,
+    CustodyRelease,
+    CustodyUnavailableError,
+)
+from .custody import (
+    custody_branch_guard,
+    custody_guard,
+    custody_prune_guard,
+    names_a_local_branch,
+)
 from ...ports.worktree_manager import RegisteredWorktree, WorktreeReuseOptions
 from ...infra.worktree_base import resolve_base_branch
 from ._worktree_errors import WorktreeError as WorktreeError
+from .removal import GitRunner, remove_checkout_path
 from ._worktree_git import _git, _git_env_no_prompt, _git_run
 from ._worktree_hooks import HOOKS_DIR as HOOKS_DIR
 from ._worktree_runtime_setup import WorktreeRuntimeSetup
@@ -567,20 +578,13 @@ def _resolve_repo_root_from_worktree(worktree_path: Path) -> Path | None:
 
 
 def _remove_existing_worktree_path(repo_root: Path, worktree_path: Path) -> None:
-    require_disposable_path(worktree_path)
     logger.info("Removing existing worktree path for fresh create: %s", worktree_path)
-    result = _git_run(
-        repo_root,
-        ["worktree", "remove", "--force", str(worktree_path)],
-        check=False,
+    remove_checkout_path(
+        worktree_path,
+        force=True,
+        run_git=git_runner(repo_root),
+        repo_root=repo_root,
     )
-    if result.returncode != 0:
-        logger.warning(
-            "Failed to remove worktree via git, deleting directory: path=%s stderr=%s",
-            worktree_path,
-            result.stderr.strip(),
-        )
-        shutil.rmtree(worktree_path, ignore_errors=True)
 
 
 def _try_reuse_worktree(
@@ -592,6 +596,7 @@ def _try_reuse_worktree(
     reuse_push_preflight: bool,
     allow_no_verify_dry_run_preflight: bool,
     base_branch: str | None,
+    runtime_setup: WorktreeRuntimeSetup,
     preserve_branch: bool = False,
 ) -> _WorktreeReuseResult:
     """Try to reuse an existing worktree, validating and preparing it.
@@ -605,6 +610,42 @@ def _try_reuse_worktree(
     Returns:
         _WorktreeReuseResult indicating success/failure with details.
     """
+    # Reuse is ONE mutation, not just the reset in its middle. Round 21 guarded
+    # the reset alone, which left three gaps: preserve mode skipped the guard
+    # entirely and still wrote runtime files into a held checkout, the push
+    # preflight can run a hook, and successful reuse always applies runtime
+    # setup afterwards. One custody answer spans all of it, so an operator
+    # cannot be told the checkout is held between two steps of the same
+    # operation (round 22 finding 1).
+    with custody_guard(worktree_path, repo_root=repo_root):
+        result = _prepare_reused_worktree(
+            worktree_path,
+            branch_name,
+            repo_root,
+            issue_number,
+            policy,
+            reuse_push_preflight,
+            allow_no_verify_dry_run_preflight,
+            base_branch,
+            preserve_branch=preserve_branch,
+        )
+        if result.success:
+            runtime_setup.apply(worktree_path)
+        return result
+
+
+def _prepare_reused_worktree(
+    worktree_path: Path,
+    branch_name: str,
+    repo_root: Path,
+    issue_number: int,
+    policy: WorktreePolicy,
+    reuse_push_preflight: bool,
+    allow_no_verify_dry_run_preflight: bool,
+    base_branch: str | None,
+    preserve_branch: bool = False,
+) -> _WorktreeReuseResult:
+    """Prepare a reused checkout while the CALLER holds its custody lock."""
     # Policy: validate worktree can be reused
     validation = policy.validate_for_reuse(worktree_path, branch_name, repo_root)
     if not validation.can_reuse:
@@ -918,9 +959,11 @@ def create_worktree(
             reuse_options, policy, enforce_hooks, pre_push_hook, worktree_name,
         )
 
-        # Prune stale worktrees
-        prune_result = _git_run(ctx.repo_root, ["worktree", "prune"], check=False)
-        logger.debug("Worktree prune: returncode=%s", prune_result.returncode)
+        # Prune stale worktrees. Repository-WIDE, so it is gated on custody
+        # being able to account for every held checkout (round 20 finding 1).
+        with custody_prune_guard(ctx.repo_root):
+            prune_result = _git_run(ctx.repo_root, ["worktree", "prune"], check=False)
+            logger.debug("Worktree prune: returncode=%s", prune_result.returncode)
 
         reuse_result, recreated_reason = _attempt_reuse(ctx)
         if reuse_result is not None:
@@ -937,7 +980,9 @@ def create_worktree(
             ctx.repo_root, ctx.worktree_path, final_branch, ctx.base_branch, ctx.seed_ref, ctx.issue_number,
             ctx.runtime_setup, recreated_reason,
         )
-    except WorktreeError:
+    except (CustodyError, WorktreeError):
+        # A custody refusal is never re-wrapped: a caller catching WorktreeError
+        # to decide whether to try harder would read it as one.
         raise
     except Exception as e:
         raise WorktreeError(f"Error creating worktree: {e}")
@@ -991,8 +1036,12 @@ def _handle_reuse_disabled(
     if branch_name:
         existing_worktree = find_worktree_for_branch(repo_root, branch_name)
         if existing_worktree and existing_worktree.exists():
-            recreated_reason = "reuse_disabled: existing worktree branch removed"
-            _detach_worktree_branch(existing_worktree, branch_name)
+            # Detaching takes the protected branch OFF the held checkout and
+            # frees it to be attached elsewhere -- the grant survives while what
+            # it protects does not (round 21 finding 1).
+            with custody_guard(existing_worktree, repo_root=repo_root):
+                recreated_reason = "reuse_disabled: existing worktree branch removed"
+                _detach_worktree_branch(existing_worktree, branch_name)
     return recreated_reason
 
 
@@ -1027,6 +1076,7 @@ def _try_reuse_by_branch(
         reuse_options.reuse_push_preflight,
         reuse_options.allow_no_verify_dry_run_preflight,
         base_branch,
+        runtime_setup,
         preserve_branch=reuse_options.preserve_branch,
     )
 
@@ -1034,8 +1084,8 @@ def _try_reuse_by_branch(
         # Return the recreated_reason so create_worktree can handle branch_on_recreate
         return (None, result.recreated_reason)
 
-    # Success - finalize and return
-    runtime_setup.apply(existing_worktree)
+    # Success - finalize and return. Runtime setup already ran INSIDE the
+    # custody guard, with the rest of the reuse (round 22 finding 1).
     logger.info(issue_log(issue_number, "Worktree reuse complete: path=%s"), existing_worktree)
     reset_info = result.reset_info or ResetInfo(success=True)
     return (
@@ -1103,6 +1153,7 @@ def _try_reuse_by_path(
         reuse_options.reuse_push_preflight,
         reuse_options.allow_no_verify_dry_run_preflight,
         base_branch,
+        runtime_setup,
         preserve_branch=reuse_options.preserve_branch,
     )
 
@@ -1110,8 +1161,8 @@ def _try_reuse_by_path(
         # Return the recreated_reason so create_worktree can handle branch_on_recreate
         return (None, result.recreated_reason)
 
-    # Success - finalize and return
-    runtime_setup.apply(worktree_path)
+    # Success - finalize and return. Runtime setup already ran INSIDE the
+    # custody guard, with the rest of the reuse (round 22 finding 1).
     logger.info(issue_log(issue_number, "Worktree reuse complete: path=%s"), worktree_path)
     reset_info = result.reset_info or ResetInfo(success=True)
     return (
@@ -1194,7 +1245,18 @@ def _recover_stale_branch_worktree_registration(
     conflict_path = Path(match.group(2))
     if conflict_branch != branch_name:
         return False
-    if conflict_path.exists():
+    try:
+        conflict_path.lstat()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        # Unreadable is not deregistered. Treating it as absent prunes the
+        # registration of a checkout that is still there (round 20 finding 1).
+        raise CustodyUnavailableError(
+            f"cannot determine whether registered worktree {conflict_path} "
+            f"still exists: {exc}"
+        ) from exc
+    else:
         return False
 
     logger.warning(
@@ -1205,7 +1267,8 @@ def _recover_stale_branch_worktree_registration(
         branch_name,
         conflict_path,
     )
-    prune_result = _git_run(repo_root, ["worktree", "prune"], check=False)
+    with custody_prune_guard(repo_root):
+        prune_result = _git_run(repo_root, ["worktree", "prune"], check=False)
     if prune_result.returncode != 0:
         logger.warning(
             issue_log(issue_number, "Failed to prune stale worktree registration: %s"),
@@ -1215,51 +1278,70 @@ def _recover_stale_branch_worktree_registration(
     return True
 
 
-def _remove_worktree_path(repo_root: Path, worktree_path: Path, *, force: bool) -> None:
-    require_disposable_path(worktree_path)
-    cmd = ["worktree", "remove"]
-    if force:
-        cmd.append("--force")
-    cmd.append(str(worktree_path))
-    result = _git_run(
-        repo_root,
-        cmd,
-        check=False,
-    )
+def git_runner(repo_root: Path) -> GitRunner:
+    """Run git in ``repo_root`` for a removal, reporting failure as text.
 
-    if result.returncode == 0:
-        return
-    if not force:
-        raise WorktreeError(f"Failed to remove worktree: {result.stderr}")
-    logger.warning(
-        "Forced worktree removal via git failed; deleting directory: path=%s stderr=%s",
+    Lives here, beside the other git helpers, rather than in the removal owner:
+    that module owns the COMMAND and the order of its two attempts, and stays
+    free of any particular transport.
+    """
+
+    def run(argv: list[str]) -> str | None:
+        result = _git_run(repo_root, argv, check=False)
+        return None if result.returncode == 0 else (result.stderr or "").strip()
+
+    return run
+
+
+def _remove_worktree_path(
+    repo_root: Path,
+    worktree_path: Path,
+    *,
+    force: bool,
+    custody_release: CustodyRelease | None = None,
+    custody_repo_root: Path | None = None,
+) -> None:
+    """Remove the checkout.
+
+    ``custody_repo_root`` is which repository to ASK about custody, and it is
+    deliberately separate from ``repo_root``, which is where git runs. They
+    differ when the checkout's own pointer is corrupted: git still has to run
+    somewhere, but a caller that knows the real repository must not have its
+    answer taken from the pointer that lied (#7274 round 5 finding 2).
+    """
+    outcome = remove_checkout_path(
         worktree_path,
-        result.stderr.strip(),
+        force=force,
+        run_git=git_runner(repo_root),
+        repo_root=custody_repo_root or repo_root,
+        custody_release=custody_release,
     )
-    _force_delete_worktree_path(worktree_path)
-
-
-def _force_delete_worktree_path(worktree_path: Path) -> None:
-    require_disposable_path(worktree_path)
-    if worktree_path.is_dir() and not worktree_path.is_symlink():
-        shutil.rmtree(worktree_path, ignore_errors=True)
-        return
-    try:
-        worktree_path.unlink()
-    except FileNotFoundError:
-        return
+    if not outcome.removed and not force:
+        raise WorktreeError(f"Failed to remove worktree: {outcome.git_error}")
 
 
 def _delete_worktree_branch(repo_root: Path, branch_name: str | None) -> None:
-    if not branch_name:
+    if not names_a_local_branch(branch_name):
+        # A detached checkout answers "HEAD" here, which is not a branch to
+        # delete and is not a branch to ask custody about either.
         return
     # Branch deletion is best effort; stale branch cleanup should not mask a
-    # successfully removed worktree.
-    _git_run(
-        repo_root,
-        ["branch", "-D", branch_name],
-        check=False,
-    )
+    # successfully removed worktree. It still asks BRANCH custody: another held
+    # checkout may own this ref after registration or branch-identity drift
+    # (round 24 finding 1).
+    try:
+        with custody_branch_guard(repo_root, branch_name):
+            _git_run(
+                repo_root,
+                ["branch", "-D", branch_name],
+                check=False,
+            )
+    except CustodyError as exc:
+        logger.info(
+            "Retaining local branch %s because custody refused deletion: %s",
+            branch_name,
+            exc,
+        )
 
 
 def remove_worktree(
@@ -1267,26 +1349,51 @@ def remove_worktree(
     *,
     force: bool = False,
     delete_branch: bool = True,
+    custody_release: CustodyRelease | None = None,
+    repo_root: Path,
 ) -> None:
     """
     Remove a git worktree and optionally its associated branch.
 
+    Every removal in this repository funnels through here, which is why custody
+    is enforced HERE and not at the four callers: a fifth removal path cannot
+    bypass it by construction (#7274).
+
     Args:
         worktree_path: Path to the worktree to remove
         force: If true, use ``git worktree remove --force`` and fallback to
-            deleting the directory when git cannot remove it cleanly.
+            deleting the directory when git cannot remove it cleanly. It does
+            NOT imply custody release -- discarding someone's only copy of a
+            branch has to be something a caller said, not a side effect of
+            asking git to try harder.
         delete_branch: Whether to delete the associated local branch after the
             checkout is removed. Retention cleanup passes false; disposable
             scratch/reset owners pass true.
+        custody_release: The explicit intent to end a grant as part of this
+            removal, with the holder and reason that outlive it in the audit
+            trail.
+        repo_root: The repository whose custody store answers for this
+            checkout. Required, not a hint: a checkout whose ``.git`` file is
+            gone names no repository, and that is precisely when a grant on it
+            still exists and still has to be honoured (round 8 finding 2).
 
     Raises:
+        WorktreeInCustodyError: If a human owns the checkout and no release was
+            given. The error carries the grant, so a caller can say who holds
+            it and why rather than reporting a generic failure.
         WorktreeError: If removal fails
     """
     require_disposable_path(worktree_path)
     worktree_path = Path(worktree_path)
     logger.info("Removing worktree: path=%s", worktree_path)
-
-    if not worktree_path.exists():
+    # PROVEN absent, not merely unstattable. `Path.exists()` answers False for a
+    # path it cannot stat at all, so an unreadable HELD checkout took the early
+    # exit and forced removal reported success without ever consulting custody
+    # (round 19 finding 2). Unknown falls through to the guarded owner, which is
+    # the only thing entitled to decide that a held checkout may go.
+    try:
+        worktree_path.lstat()
+    except FileNotFoundError:
         if force:
             # Idempotent for disposable/forced removal (#6824 R3): ``force`` means
             # "discard this local worktree", and an already-absent path already
@@ -1297,43 +1404,100 @@ def remove_worktree(
             logger.info("Worktree already absent; forced removal is a no-op: path=%s", worktree_path)
             return
         raise WorktreeError(f"Worktree does not exist at {worktree_path}")
+    except OSError:
+        logger.info(
+            "Worktree presence could not be determined; asking custody: path=%s",
+            worktree_path,
+        )
 
     try:
-        repo_root = _resolve_repo_root_from_worktree(worktree_path)
-        if repo_root is None:
-            if force:
-                logger.warning(
-                    "Forced worktree removal cannot resolve repo root; deleting path directly: %s",
-                    worktree_path,
-                )
-                _force_delete_worktree_path(worktree_path)
-                if worktree_path.exists():
-                    raise WorktreeError(
-                        f"Failed to remove orphaned worktree path after forced cleanup: {worktree_path}"
-                    )
-                logger.info("Orphaned worktree path removed: path=%s", worktree_path)
-                return
-            raise WorktreeError(f"Unable to resolve repo root for {worktree_path}")
+        # What the CHECKOUT says, which is a different question from which
+        # repository holds its grant: a checkout that lost its `.git` file
+        # answers None here while `repo_root` still answers correctly.
+        resolved = _resolve_repo_root_from_worktree(worktree_path)
+        if resolved is None:
+            _remove_orphaned_worktree_path(
+                worktree_path,
+                force=force,
+                repo_root=repo_root,
+                custody_release=custody_release,
+            )
+            return
         branch_name = get_worktree_branch(worktree_path)
 
-        _remove_worktree_path(repo_root, worktree_path, force=force)
+        _remove_worktree_path(
+            resolved,
+            worktree_path,
+            force=force,
+            custody_release=custody_release,
+            custody_repo_root=repo_root,
+        )
         if worktree_path.exists():
             raise WorktreeError(
                 f"Failed to remove worktree path after git/rmtree cleanup: {worktree_path}"
             )
 
         if delete_branch:
-            _delete_worktree_branch(repo_root, branch_name)
+            _delete_worktree_branch(resolved, branch_name)
         logger.info(
             "Worktree removed: path=%s branch=%s",
             worktree_path,
             branch_name or "(unknown)",
         )
 
+    except CustodyError:
+        # Never re-wrapped. A caller that catches WorktreeError to decide
+        # whether to try harder would read a custody refusal as one -- which is
+        # the bypass #7274 closes, arriving by a different door.
+        raise
     except Exception as e:
         if isinstance(e, WorktreeError):
             raise
         raise WorktreeError(f"Error removing worktree: {e}")
+
+
+def _remove_orphaned_worktree_path(
+    worktree_path: Path,
+    *,
+    force: bool,
+    repo_root: Path,
+    custody_release: CustodyRelease | None = None,
+) -> None:
+    """Delete a checkout whose own ``.git`` file no longer names a repository.
+
+    ``repo_root`` is what the CALLER knows, because the checkout no longer
+    says: a held worktree whose ``.git`` file was deleted still has its grant
+    in the repository's store (#7274 round 3 finding 2). It is REQUIRED -- this
+    is exactly the path where custody matters most, and the sentinel that used
+    to let it proceed without a store was the fail-open hole (round 8 finding 2).
+    """
+    if not force:
+        # Ask custody BEFORE refusing generically. A caller that catches
+        # WorktreeError treats it as "could not remove, carry on" -- operator
+        # reset logs a warning and goes on to clear the issue's state -- so a
+        # held checkout reached here produced no custody answer at all. The
+        # guard raises WorktreeInCustodyError for a grant and
+        # CustodyUnavailableError when it cannot tell, both of which callers
+        # are required to propagate (round 19 finding 2, non-forced half).
+        with custody_guard(worktree_path, repo_root=repo_root):
+            pass
+        raise WorktreeError(f"Unable to resolve repo root for {worktree_path}")
+    logger.warning(
+        "Forced worktree removal cannot resolve repo root; deleting path directly: %s",
+        worktree_path,
+    )
+    remove_checkout_path(
+        worktree_path,
+        force=True,
+        run_git=None,
+        repo_root=repo_root,
+        custody_release=custody_release,
+    )
+    if worktree_path.exists():
+        raise WorktreeError(
+            f"Failed to remove orphaned worktree path after forced cleanup: {worktree_path}"
+        )
+    logger.info("Orphaned worktree path removed: path=%s", worktree_path)
 
 
 def list_worktrees(repo_root: Path) -> list[Path]:

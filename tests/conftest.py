@@ -1499,7 +1499,7 @@ def sample_orchestrator(sample_config, mock_repository_host):
 
     runner = MockSessionRunner()
     runner.plugin.session_exists_override = False
-    wt_manager = GitWorktreeManager()
+    wt_manager = GitWorktreeManager(sample_config.repo_root)
     wc = GitWorkingCopy()
     from issue_orchestrator.execution.command_runner import LocalCommandRunner
     initialized = LocalCommandRunner().run(

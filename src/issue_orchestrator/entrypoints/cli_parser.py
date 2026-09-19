@@ -44,6 +44,7 @@ class CLICommandHandlers:
     demo: CommandHandler
     trace: CommandHandler
     executor_status: CommandHandler
+    worktree_custody: CommandHandler
 
 
 class CLIStability(StrEnum):
@@ -116,6 +117,7 @@ CLI_COMMAND_SURFACE: tuple[CLICommandSpec, ...] = (
     CLICommandSpec("trace", CLIGroup.DIAGNOSTICS, CLIStability.SUPPORTED),
     CLICommandSpec("demo", CLIGroup.DIAGNOSTICS, CLIStability.SUPPORTED),
     CLICommandSpec("executor-status", CLIGroup.DIAGNOSTICS, CLIStability.SUPPORTED),
+    CLICommandSpec("worktree-custody", CLIGroup.DIAGNOSTICS, CLIStability.SUPPORTED),
     # Development only - these operate on test and E2E state and carry no
     # compatibility promise of any kind.
     CLICommandSpec("test-reset", CLIGroup.DEVELOPMENT, CLIStability.INTERNAL),
@@ -625,3 +627,14 @@ def _register_utility_commands(subparsers, handlers: CLICommandHandlers) -> None
         help="How many recent dispatch records to summarize",
     )
     executor_status_parser.set_defaults(func=handlers.executor_status)
+
+    custody_parser = subparsers.add_parser(
+        "worktree-custody",
+        help="Hold a worktree checkout so no cleanup path can discard it",
+    )
+    custody_parser.add_argument(
+        "custody_args",
+        nargs=argparse.REMAINDER,
+        help="list | hold <path> --reason ... | release <path> --reason ...",
+    )
+    custody_parser.set_defaults(func=handlers.worktree_custody)

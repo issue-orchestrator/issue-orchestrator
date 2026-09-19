@@ -67,7 +67,7 @@ def _build_orchestrator_with_sqlite_timeline(sample_config, mock_repository_host
         mock_repository_host,
         MockEventSink(),
         runner,
-        GitWorktreeManager(),
+        GitWorktreeManager(sample_config.repo_root),
         working_copy=GitWorkingCopy(),
         timeline_reader=timeline_reader,
         timeline_writer=timeline_writer,

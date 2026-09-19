@@ -174,7 +174,7 @@ def make_worktree(foreign_repo: Path, tmp_path: Path):
     """Factory fixture that creates real foreign-repo worktrees and cleans up."""
     worktree_base = tmp_path / "worktrees"
     worktree_base.mkdir(exist_ok=True)
-    mgr = GitWorktreeManager()
+    mgr = GitWorktreeManager(foreign_repo)
     created: list[WorktreeHandle] = []
 
     def _make(issue_number: int, issue_title: str) -> WorktreeHandle:
@@ -283,7 +283,7 @@ def test_foreign_repo_full_lifecycle(foreign_repo: Path, tmp_path: Path) -> None
         foreign_repo,
         [issue],
         config,
-        worktree_manager=GitWorktreeManager(),  # type: ignore[arg-type]  # duck-typed
+        worktree_manager=GitWorktreeManager(foreign_repo),  # type: ignore[arg-type]  # duck-typed
         working_copy=StubWorkingCopy(),
         runner=ScriptSessionRunner(),
     )
@@ -463,7 +463,7 @@ def test_foreign_repo_with_setup_commands(foreign_repo: Path, tmp_path: Path) ->
         foreign_repo,
         [issue],
         config,
-        worktree_manager=GitWorktreeManager(),  # type: ignore[arg-type]
+        worktree_manager=GitWorktreeManager(foreign_repo),  # type: ignore[arg-type]
         working_copy=StubWorkingCopy(),
         runner=ScriptSessionRunner(),
     )

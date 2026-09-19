@@ -77,7 +77,7 @@ class TestOrchestratorWiring:
 
         events = MockEventSink()
         runner = MockSessionRunner()
-        worktree_manager = GitWorktreeManager()
+        worktree_manager = GitWorktreeManager(config.repo_root)
 
         from issue_orchestrator.domain.models import OrchestratorState
         runtime_state = OrchestratorState()

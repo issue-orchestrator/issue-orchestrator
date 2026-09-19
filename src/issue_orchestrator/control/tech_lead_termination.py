@@ -31,6 +31,12 @@ from __future__ import annotations
 
 import logging
 from typing import TYPE_CHECKING, Callable, Optional, Protocol
+
+from ..ports.worktree_custody import (
+    CustodyError,
+    CustodyGrant,
+    WorktreeInCustodyError,
+)
 from ..domain.validated_work_commands import ValidatedWorkDispositionBatch
 
 if TYPE_CHECKING:
@@ -106,17 +112,51 @@ def terminate_tech_lead_session(
     disposable = bool(
         getattr(session, "scratch_worktree", False) and session.worktree_path
     )
-    worktree_removed = attempt(
-        _void(
+    # A custody refusal is NOT a failed effect wearing the same clothes. It is
+    # the system doing its job, and the operator needs the holder and the
+    # release workflow -- not "remove it manually", which is the destruction
+    # custody exists to prevent (round 9 finding 2). The removal attempt passes
+    # this typed refusal THROUGH rather than reducing it to False -- wrapping
+    # `attempt` did not work, because `attempt` catches Exception itself, so the
+    # handler below was unreachable and round 9's fix never ran (round 12
+    # finding 1).
+    retained_custody: "CustodyGrant | None" = None
+    custody_unavailable: str | None = None
+    try:
+        removal = _void(
             lambda: worktrees.remove_checkout_and_branch(
                 session.worktree_path,
                 force=True,
             )
             if (disposable and worktrees)
             else None
-        ),
-        "remove scratch worktree",
-    )
+        )
+        removal_attempt = _effect_runner(
+            session.issue.number, propagate=(CustodyError,)
+        )
+        worktree_removed = removal_attempt(removal, "remove scratch worktree")
+    except WorktreeInCustodyError as refusal:
+        retained_custody = refusal.grant
+        worktree_removed = False
+        logger.info(
+            "[TECH_LEAD] Scratch worktree for issue #%d is held by %s; "
+            "termination left it in place",
+            session.issue.number,
+            refusal.grant.holder,
+        )
+    except CustodyError as refusal:
+        # NOT a known grant and NOT an unprotected leak. The checkout was kept
+        # precisely because the system could not say whether anyone holds it,
+        # and "remove it manually" is the one instruction that must not follow
+        # from that (round 15 finding 1).
+        custody_unavailable = str(refusal)
+        worktree_removed = False
+        logger.warning(
+            "[TECH_LEAD] Scratch worktree for issue #%d was retained because "
+            "custody could not be determined: %s",
+            session.issue.number,
+            refusal,
+        )
     return TechLeadTerminationOutcome(
         validated_work=batch,
         terminal_stopped=terminal_stopped,
@@ -128,9 +168,16 @@ def terminate_tech_lead_session(
         # action before exit — this is the single cleanup-failure owner.
         leaked_worktree=(
             str(session.worktree_path)
-            if (disposable and not worktree_removed)
+            if (
+                disposable
+                and not worktree_removed
+                and retained_custody is None
+                and custody_unavailable is None
+            )
             else None
         ),
+        retained_custody=retained_custody,
+        custody_unavailable=custody_unavailable,
     )
 
 
@@ -195,6 +242,8 @@ def _void(effect: Callable[[], object]) -> Callable[[], Optional[bool]]:
 
 def _effect_runner(
     issue_number: int,
+    *,
+    propagate: tuple[type[Exception], ...] = (),
 ) -> Callable[[Callable[[], Optional[bool]], str], bool]:
     """Attempt one effect, reporting success without letting it stop the rest.
 
@@ -203,12 +252,18 @@ def _effect_runner(
     returns ``None`` and succeeds by not raising. Both shapes are needed because
     the two coordination layers report failure differently — the run ledger
     returns a typed refusal rather than raising (#6994 round 3 F12).
+
+    Exceptions in ``propagate`` are typed OUTCOMES owned by the caller, not
+    generic effect failures, so they keep their identity instead of collapsing
+    to False (round 12 finding 1).
     """
 
     def attempt(effect: Callable[[], Optional[bool]], what: str) -> bool:
         try:
             verdict = effect()
             return True if verdict is None else verdict
+        except propagate:
+            raise
         except Exception:
             logger.warning(
                 "[TECH_LEAD] Failed to %s for issue #%d on timeout terminate",
