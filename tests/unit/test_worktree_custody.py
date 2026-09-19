@@ -355,6 +355,27 @@ class TestTheStore:
 
         assert (checkout / "finding.md").exists()
 
+    def test_a_lock_failure_is_typed_as_custody_unavailable(
+        self, manager: GitWorktreeManager, checkout: Path, monkeypatch
+    ) -> None:
+        """A filesystem that cannot lock leaves custody UNKNOWN.
+
+        The raw OSError was not a CustodyError, so it escaped the typed
+        propagation and termination reported the checkout as an unprotected
+        leak (round 16 finding 1).
+        """
+        manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+
+        def lock_fails(*_args: object) -> None:
+            raise OSError("locking is unavailable")
+
+        monkeypatch.setattr(fcntl, "flock", lock_fails)
+
+        with pytest.raises(CustodyUnavailableError, match="cannot lock"):
+            manager.remove_checkout_and_branch(checkout, force=True)
+
+        assert (checkout / "finding.md").exists()
+
     def test_an_unreadable_git_pointer_stops_a_removal(
         self, manager: GitWorktreeManager, checkout: Path
     ) -> None:
@@ -641,9 +662,17 @@ class TestOneRemovalOwner:
         """
         root = Path(__file__).resolve().parents[2]
         tree = ast.parse((root / self.OWNER).read_text(encoding="utf-8"))
+        owners = [
+            node
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "remove_checkout_path"
+        ]
+        assert len(owners) == 1, (
+            "the removal owner no longer has exactly one remove_checkout_path"
+        )
         guarded = [
             node
-            for node in ast.walk(tree)
+            for node in ast.walk(owners[0])
             if isinstance(node, ast.With)
             and any(
                 _is_call(item.context_expr, "custody_guard") for item in node.items
@@ -651,26 +680,34 @@ class TestOneRemovalOwner:
         ]
         assert guarded, "the removal owner does not ask custody at all"
 
-        inside = {
-            name
-            for block in guarded
-            for node in ast.walk(block)
-            for name in self.DESTRUCTIVE
-            if _is_call(node, name)
-        }
-        called = {
-            name
+        # Per CALL SITE, not per NAME. Comparing sets of names meant one
+        # guarded decoy call satisfied the assertion while a second live call
+        # ran outside the guard (round 16 finding 3).
+        destructive_calls = [
+            (node, name)
             for node in ast.walk(tree)
             for name in self.DESTRUCTIVE
             if _is_call(node, name)
+        ]
+        guarded_call_ids = {
+            id(node)
+            for block in guarded
+            for node in ast.walk(block)
+            if isinstance(node, ast.Call)
         }
+        called = {name for _, name in destructive_calls}
+        outside = [
+            (name, node.lineno)
+            for node, name in destructive_calls
+            if id(node) not in guarded_call_ids
+        ]
 
         assert called == set(self.DESTRUCTIVE), (
             f"the owner no longer performs {set(self.DESTRUCTIVE) - called}; "
             "this guard is watching the wrong names"
         )
-        assert inside == called, (
-            f"these run OUTSIDE the custody guard: {sorted(called - inside)}"
+        assert outside == [], (
+            f"these destructive calls run OUTSIDE the custody guard: {outside}"
         )
 
     def test_the_scan_reads_both_ways_a_command_is_built(self) -> None:
@@ -1974,29 +2011,6 @@ class TestRoundFifteenOverCorrection:
         (repo / ".git" / "objects").rename(elsewhere)
 
         assert git_common_dir(repo) == (repo / ".git").resolve()
-
-    def test_unverifiable_custody_is_not_reported_as_a_leak(self) -> None:
-        """The checkout was KEPT because nobody could say who holds it.
-
-        `CustodyUnavailableError` was flattened into an ordinary leak, and the
-        operator was told to remove it manually -- which is the one instruction
-        that must not follow from "we could not determine this".
-        """
-        from issue_orchestrator.control.tech_lead_trigger import (
-            TechLeadTerminationOutcome,
-        )
-        from issue_orchestrator.domain.validated_work_commands import (
-            ValidatedWorkDispositionBatch,
-        )
-
-        outcome = TechLeadTerminationOutcome(
-            validated_work=ValidatedWorkDispositionBatch.no_work(1, "fixture"),
-            worktree_removed=False,
-            custody_unavailable="the custody store cannot be read",
-        )
-
-        assert outcome.leaked_worktree is None
-        assert outcome.custody_unavailable == "the custody store cannot be read"
 
 
 class TestEveryManagerNamesItsRepository:

@@ -323,7 +323,18 @@ class GitMetadataWorktreeCustody:
                 f"cannot open the worktree custody lock at {path}: {exc}"
             ) from exc
         try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            except OSError as exc:
+                # A raw OSError here is NOT a CustodyError, so `_effect_runner`
+                # did not propagate it and termination reported the retained
+                # checkout as an unprotected leak -- "remove it manually" again.
+                # A filesystem that cannot lock (ENOTSUP, EIO) leaves custody
+                # UNKNOWN, which is the fail-closed case (round 16 finding 1).
+                raise CustodyUnavailableError(
+                    f"cannot lock the worktree custody store at {path}, so "
+                    f"whether a checkout is held is unknown: {exc}"
+                ) from exc
             yield
         finally:
             handle.close()

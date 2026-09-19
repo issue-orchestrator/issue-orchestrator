@@ -112,29 +112,55 @@ def _sweep_targets(
         for grant in GitMetadataWorktreeCustody(repo_common).list_held()
     }
 
-    def belongs_to_repository(candidate: Path) -> bool:
-        if candidate.resolve() in held:
-            return True
+    def candidate_common_dir(candidate: Path) -> "Path | None":
+        """Repository identity, preserving the UNREADABLE third state.
+
+        A bool collapsed "not a repository", "another repository" and "identity
+        unreadable" into one answer, and the caller then descended into all
+        three as though they were session containers -- which is the opposite of
+        what the comment claimed (round 16 finding 2).
+        """
         try:
-            return git_common_dir(candidate) == repo_common
-        except CustodyError:
-            # Damaged identity is not authority to reinterpret the directory as
-            # a session container and descend into it.
-            return False
+            resolved = candidate.resolve()
+        except (OSError, RuntimeError) as exc:
+            raise CustodyUnavailableError(
+                f"cannot resolve shared-base candidate {candidate}: {exc}"
+            ) from exc
+        if resolved in held:
+            return repo_common
+        return git_common_dir(candidate)
 
     checkouts: list[Path] = []
     containers: list[Path] = []
     for item in sorted(worktree_base.iterdir()):
-        if not item.is_dir():
+        if item.is_symlink() or not item.is_dir():
             continue
-        if belongs_to_repository(item):
+        try:
+            item_common = candidate_common_dir(item)
+        except CustodyError as exc:
+            logger.warning(
+                "Retaining opaque worktree candidate %s without descending: %s",
+                item,
+                exc,
+            )
+            continue
+        if item_common == repo_common:
             checkouts.append(item)
             continue
-        children = [
-            child
-            for child in sorted(item.iterdir())
-            if child.is_dir() and belongs_to_repository(child)
-        ]
+        if item_common is not None:
+            # A checkout of ANOTHER repository is not one of our containers.
+            continue
+        children: list[Path] = []
+        for child in sorted(item.iterdir()):
+            if child.is_symlink() or not child.is_dir():
+                continue
+            try:
+                child_common = candidate_common_dir(child)
+            except CustodyError as exc:
+                logger.warning("Retaining opaque worktree candidate %s: %s", child, exc)
+                continue
+            if child_common == repo_common:
+                children.append(child)
         if children:
             containers.append(item)
             checkouts.extend(children)
