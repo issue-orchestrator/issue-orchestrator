@@ -378,6 +378,38 @@ def _find_run_scoped_retry_artifacts(
     return None
 
 
+def retire_pending_retry_artifacts(worktree_path: Path) -> None:
+    """Remove every retry state that startup recovery could rediscover.
+
+    The inverse of :func:`find_pending_retry_artifacts`, and it lives beside it
+    for that reason: an operator who abandons an issue must not have the retry
+    resurrected by the next restart, and clearing the NEWEST state alone just
+    exposes an older run's state underneath (round 14 finding 1).
+
+    Removed in the REVERSE of recovery preference -- legacy first, then
+    run-scoped oldest to newest -- so a fault partway through leaves the state
+    recovery would have chosen anyway, rather than an older one.
+    """
+    sessions_dir = _sessions_dir(worktree_path)
+    run_dirs: list[Path] = []
+    if sessions_dir.exists():
+        run_dirs = sorted(
+            (
+                path
+                for path in sessions_dir.iterdir()
+                if path.is_dir() and not path.is_symlink()
+            ),
+            key=lambda run_dir: run_dir.stat().st_mtime,
+        )
+    root = _state_dir(worktree_path)
+    for name in (VALIDATION_STATE_FILE, RETRY_PROMPT_FILE):
+        for path in [root / name, *(run_dir / name for run_dir in run_dirs)]:
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+
+
 def find_pending_retry_artifacts(worktree_path: Path) -> ValidationRetryArtifacts | None:
     """Find durable validation retry artifacts for a worktree.
 

@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING, Sequence
 from ..domain.models import (
     AgentConfig,
     PendingRework,
+    PendingTechLeadReview,
     PendingValidationRetry,
     Session,
 )
@@ -275,6 +276,7 @@ class InFlightWorkLedger:
         sessions: Sequence[Session],
         *,
         agent_configs: Mapping[str, AgentConfig],
+        tech_lead_label: str | None,
     ) -> "ClaimRestoration":
         """Re-take the claims of terminals that survived a restart (#6999 F4).
 
@@ -335,7 +337,9 @@ class InFlightWorkLedger:
                     self.state.in_flight_work.append(
                         InFlightWork(session.terminal_id, claim)
                     )
-                _reconcile_restored_identity(session, claim, agent_configs)
+                _reconcile_restored_identity(
+                    session, claim, agent_configs, tech_lead_label
+                )
                 logger.info(
                     "[WORK] Restored terminal %s is still holding %s",
                     session.terminal_id,
@@ -517,6 +521,7 @@ def _reconcile_restored_identity(
     session: Session,
     claim: PendingWorkClaim,
     agent_configs: Mapping[str, AgentConfig],
+    tech_lead_label: str | None,
 ) -> None:
     """Give a restored session back the identity its claim proves it has.
 
@@ -528,6 +533,30 @@ def _reconcile_restored_identity(
     label, which is keyed on the PR (#6999 F4), and classifying a resumed retry
     as tech-lead work so it can inherit its grant (#7273 round 13).
     """
+    if claim.kind is PendingWorkKind.TECH_LEAD:
+        # The third kind with the same gap. An ORIGINAL failure investigation is
+        # rebuilt with the focus issue's coder label and no launch scope, so its
+        # real completion is refused for a caller-role mismatch against the
+        # durable TECH_LEAD allocation (round 14 finding 2).
+        request = claim.request
+        assert isinstance(request, PendingTechLeadReview)
+        if tech_lead_label is None:
+            raise RuntimeError(
+                "Cannot restore tech-lead session without a configured "
+                "tech-lead agent"
+            )
+        try:
+            agent_config = agent_configs[tech_lead_label]
+        except KeyError as exc:
+            raise RuntimeError(
+                "Cannot restore tech-lead session for unconfigured "
+                f"agent {tech_lead_label!r}"
+            ) from exc
+        session.agent_label = tech_lead_label
+        session.agent_config = agent_config
+        session.tech_lead_scope = request.launch_scope()
+        return
+
     if claim.kind is PendingWorkKind.VALIDATION_RETRY:
         # The resumed run's ROLE lives only in the claim. Restoration rebuilds
         # a session from the focus issue's own label, which for an investigation

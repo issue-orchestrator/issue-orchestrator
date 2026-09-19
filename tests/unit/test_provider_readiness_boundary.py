@@ -4350,14 +4350,40 @@ def test_a_restart_still_returns_the_work_on_a_provider_failure(
 def test_a_restarted_failure_investigation_keeps_its_typed_trigger(
     tmp_path: Path,
 ) -> None:
-    """The DiscoveredFailure has to survive the disk round trip, not just exist."""
+    """The DiscoveredFailure and the ROLE both have to survive the round trip.
+
+    `TECH_LEAD` was the third restoration kind with the same missing-role gap
+    `VALIDATION_RETRY` and `REWORK` had: an original investigation came back
+    wearing the focus issue's coder label and carrying no launch scope, so its
+    real completion was refused for a caller-role mismatch against the durable
+    allocation (round 14 finding 2).
+    """
     from issue_orchestrator.domain.tech_lead_session import TechLeadSessionFlavor
 
     harness = _ready_harness(tmp_path)
     state = _pending_state("tech_lead")
     session = _route("tech_lead", state, harness)
     assert session is not None
+    # The focus issue carries its own coder label; only the claim knows the run
+    # was launched as tech-lead work.
+    session.issue.labels[:] = ["agent:backend"]
     restarted, restored = _restart(state, session, harness)
+
+    assert restored.agent_label == harness.launcher.config.tech_lead_review_agent
+    assert (
+        restored.agent_config
+        is harness.launcher.config.agents[
+            harness.launcher.config.tech_lead_review_agent
+        ]
+    )
+    assert restored.tech_lead_scope is not None, (
+        "the restored investigation carries no launch scope, so its completion "
+        "is refused for a caller-role mismatch"
+    )
+    assert (
+        restored.tech_lead_scope.flavor
+        is TechLeadSessionFlavor.FAILURE_INVESTIGATION
+    )
 
     _terminate_on_provider(restarted, restored, ProviderErrorType.AUTH, harness)
 
@@ -5635,7 +5661,9 @@ def test_a_still_discovered_run_whose_claim_is_deferred_is_not_admitted(
     harness.claims.defer_pending_work_claim(session.run_assets)
 
     restoration = InFlightWorkLedger(state, harness.claims).rehydrate(
-        [session], agent_configs=harness.launcher.config.agents
+        [session],
+        agent_configs=harness.launcher.config.agents,
+        tech_lead_label=harness.launcher.config.tech_lead_review_agent,
     )
 
     assert restoration.admitted == ()

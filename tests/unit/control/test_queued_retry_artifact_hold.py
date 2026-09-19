@@ -117,3 +117,49 @@ def test_an_investigation_retry_holds_even_with_no_authority_run(
     state.pending_validation_retries.append(_retry(None))
 
     assert _held(state, sample_config) == frozenset({6410})
+
+
+def test_switching_tech_lead_review_off_does_not_release_an_ACTIVE_session(
+    state: OrchestratorState, sample_config
+) -> None:
+    """The queued case was fixed; the ACTIVE one was still behind the gate.
+
+    Once the retry launches it leaves `pending_validation_retries` and becomes
+    an active session. Disabling review then returned an empty hold set, so
+    cleanup could delete the failed-run artifacts the session was reading right
+    then (round 14 finding 4).
+    """
+    from unittest.mock import MagicMock
+
+    from issue_orchestrator.domain.tech_lead_session import (
+        TechLeadLaunchScope,
+        TechLeadSessionFlavor,
+    )
+
+    sample_config.tech_lead_review_on_failure = False
+    sample_config.tech_lead_review_agent = "agent:tech-lead"
+    session = MagicMock()
+    session.issue.number = 6410
+    session.agent_label = "agent:backend"
+    session.tech_lead_scope = TechLeadLaunchScope(
+        flavor=TechLeadSessionFlavor.FAILURE_INVESTIGATION
+    )
+    state.active_sessions.append(session)
+
+    assert 6410 in _held(state, sample_config)
+
+
+def test_discovery_is_still_gated_on_the_configuration(
+    state: OrchestratorState, sample_config
+) -> None:
+    """What the switch DOES decide: whether new investigations start."""
+    from unittest.mock import MagicMock
+
+    sample_config.tech_lead_review_on_failure = False
+    sample_config.tech_lead_review_agent = "agent:tech-lead"
+    failure = MagicMock()
+    failure.issue_number = 7777
+    state.discovered_failures.append(failure)
+
+    assert 7777 not in _held(state, sample_config)
+

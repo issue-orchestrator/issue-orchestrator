@@ -3578,6 +3578,92 @@ class TestTechLeadCompletionEffects:
 
         assert not result.errors
 
+    def test_carried_investigation_grant_is_accepted_by_the_real_processor(
+        self,
+        tmp_path,
+        mock_label_adapter,
+        mock_pr_adapter,
+        mock_git_adapter,
+        event_bus,
+        tech_lead_authority_store,
+        worktree_with_completion,
+    ):
+        """Acceptance criterion 1, proven ACROSS the producer/processor seam.
+
+        The launcher test stops at the destination row and the copied file; the
+        processor tests record a row themselves. Both stay green if the CARRIED
+        destination is rejected by completion admission, so neither proves the
+        criterion (round 14 finding 5).
+        """
+        import json as _json
+
+        from issue_orchestrator.control.tech_lead_run_inputs import (
+            LaunchAuthorityTransfer,
+        )
+        from issue_orchestrator.control.tech_lead_session_policy import (
+            carry_launch_authority_forward,
+        )
+        from issue_orchestrator.domain.models import PendingValidationRetry
+        from issue_orchestrator.domain.session_key import TaskKind
+
+        processor = self._make_processor(
+            tmp_path,
+            mock_label_adapter,
+            mock_pr_adapter,
+            mock_git_adapter,
+            event_bus,
+            tech_lead_authority=tech_lead_authority_store,
+        )
+        worktree = worktree_with_completion(self._completed_record())
+        source = make_session_run_assets(
+            worktree, session_name="issue-123", run_id="run-original"
+        )
+        self._record_launch_authority(tech_lead_authority_store, source)
+        self._plant_valid_pair(source.run_dir)
+
+        retry = PendingValidationRetry(
+            issue_number=123,
+            issue_title="Investigate validation failure",
+            agent_label="agent:tech-lead",
+            worktree_path=str(worktree),
+            branch_name="tech-lead-investigation-123-abcdef123456",
+            original_prompt="Investigate",
+            validation_error="failed",
+            validation_error_file=None,
+            retry_count=1,
+            source_task=TaskKind.CODE,
+            authority_run=source.identity,
+        )
+        resumed = make_session_run_assets(
+            worktree, session_name="issue-123", run_id="run-retry"
+        )
+
+        # The REAL producer: it carries both the row and the tech-lead-data
+        # copies the processor reads back out of the run directory.
+        transfer = carry_launch_authority_forward(
+            tech_lead_authority_store, retry, resumed
+        )
+        assert isinstance(transfer, LaunchAuthorityTransfer), transfer
+        transfer.begin()
+        transfer.settle(spawned=True)
+
+        manifest_path = resumed.run_dir / "manifest.json"
+        manifest = _json.loads(manifest_path.read_text())
+        manifest["tech_lead_assignment"] = str(
+            resumed.run_dir / "tech-lead-data" / "tech-lead-assignment.json"
+        )
+        manifest_path.write_text(_json.dumps(manifest))
+
+        result = processor.process(
+            worktree,
+            run_assets=resumed,
+            issue_number=123,
+            issue_title="Investigate validation failure",
+            agent_label="agent:tech-lead",
+        )
+
+        assert not result.errors, result.errors
+
 
 class TestCompletionProcessorGitActions:
     """Tests for git-related actions from completion records."""

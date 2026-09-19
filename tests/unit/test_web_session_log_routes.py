@@ -451,7 +451,7 @@ class TestKillSessionEndpoint:
         finally:
             set_orchestrator(None)
 
-    def test_bulk_cancel_retires_a_deferred_tech_lead_retry(self):
+    def test_bulk_cancel_retires_a_deferred_tech_lead_retry(self, tmp_path):
         """Cancelled validation work must not be recoverable after a restart.
 
         Round 11 made a provider deferral RETAIN the authority row, because the
@@ -482,6 +482,12 @@ class TestKillSessionEndpoint:
         mock_orch.state.cached_scope_issues = [issue]
         mock_orch.state.cached_queue_issues = [issue]
 
+        checkout = tmp_path / "repo-tech-lead-4057-abcdef123456"
+        state_dir = checkout / ".issue-orchestrator"
+        state_dir.mkdir(parents=True)
+        retry_state = state_dir / "validation-state.json"
+        retry_state.write_text("{}")
+
         authority_run = SessionRunIdentity(
             session_name="issue-4057",
             run_id="run-provider-deferred",
@@ -491,7 +497,7 @@ class TestKillSessionEndpoint:
             issue_number=4057,
             issue_title="Queued investigation",
             agent_label="agent:tech-lead",
-            worktree_path="/tmp/repo-tech-lead-4057-abcdef123456",
+            worktree_path=str(checkout),
             branch_name="tech-lead-investigation-4057-abcdef123456",
             original_prompt=None,
             validation_error="provider unavailable",
@@ -530,6 +536,12 @@ class TestKillSessionEndpoint:
         )
         mock_orch.deps.tech_lead_authority.discard_storm_cohort.assert_called_once_with(
             anchor_issue_number=4057
+        )
+        # Startup scans validation-state.json independently of the claim store,
+        # so leaving it behind resurrects the cancelled retry (round 14 F1).
+        assert not retry_state.exists(), (
+            "the on-disk retry state survived cancellation, so the next "
+            "restart would requeue the abandoned investigation"
         )
 
 

@@ -32,6 +32,7 @@ from ..infra.contained_artifact_copy import (
     copy_contained_tree,
     open_contained_anchor,
 )
+from ..infra.validation_state import find_pending_retry_artifacts
 
 if TYPE_CHECKING:
     from ..domain.models import PendingValidationRetry
@@ -135,14 +136,23 @@ def carry_tech_lead_inputs(
 
 
 def preserved_source_run(retry: "PendingValidationRetry") -> "Path | None":
-    """The run whose artifacts this retry still has to read, if any.
+    """The run whose artifacts this retry still needs, if any.
 
     Worktree preparation prunes old runs BEFORE the copy happens, so the source
     has to be named to the pruner or repeated pre-spawn refusals eventually
     delete the only trusted copy of the launch inputs (round 8 finding 2).
+
+    A tech-lead retry names its exact authority-bearing run. An ORDINARY retry
+    intentionally has no authority row -- but its run still owns the durable
+    validation state restart recovery rebuilds the queue from, and preserving
+    only the authority-bearing case let repeated pre-spawn failures prune it
+    away and silently lose a local-only retry (round 14 finding 3).
     """
     source = retry.authority_run
-    return None if source is None else source_data_dir(retry, source).parent
+    if source is not None:
+        return source_data_dir(retry, source).parent
+    artifacts = find_pending_retry_artifacts(Path(retry.worktree_path))
+    return None if artifacts is None else artifacts.run_dir
 
 
 def source_data_dir(
