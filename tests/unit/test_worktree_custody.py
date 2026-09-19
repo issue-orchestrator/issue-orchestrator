@@ -550,6 +550,30 @@ def _removal_lines(tree: ast.AST) -> list[int]:
 
 
 
+def _runtime_nodes(root: ast.AST) -> list[ast.AST]:
+    """Nodes executed in this lexical block, excluding deferred bodies.
+
+    A function or lambda DEFINED inside a custody guard may be called after the
+    guard exits, so its body is not protected merely because its AST is nested
+    beneath the ``with``. Walking into those bodies would let a refactor move
+    the deletion into a callable invoked afterwards and keep this guard green
+    -- the round-16 vacuity in a new shape (round 17 finding 2).
+    """
+    found: list[ast.AST] = []
+    pending = [root]
+    deferred = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
+    while pending:
+        node = pending.pop()
+        found.append(node)
+        children = [
+            child
+            for child in ast.iter_child_nodes(node)
+            if not isinstance(child, deferred)
+        ]
+        pending.extend(reversed(children))
+    return found
+
+
 def _custody_lock_is_held(repo: Path) -> bool:
     """Whether the custody lock is taken, asked the way another process would.
 
@@ -649,7 +673,7 @@ class TestOneRemovalOwner:
     #: The two things the owner does that destroy a checkout. Both must sit
     #: inside its guard -- a guard around only the git attempt leaves the
     #: filesystem fallback in the window an operator can take custody in.
-    DESTRUCTIVE = ("_remove_with_git", "_delete_path")
+    DESTRUCTIVE = ("_remove_with_git", "_delete_path", "rmdir")
 
     def test_both_destructive_steps_run_inside_the_guard(self) -> None:
         """Ancestry, not presence.
@@ -662,17 +686,23 @@ class TestOneRemovalOwner:
         """
         root = Path(__file__).resolve().parents[2]
         tree = ast.parse((root / self.OWNER).read_text(encoding="utf-8"))
+        expected_owners = {
+            "remove_checkout_path",
+            "remove_empty_worktree_container",
+        }
         owners = [
             node
             for node in tree.body
-            if isinstance(node, ast.FunctionDef) and node.name == "remove_checkout_path"
+            if isinstance(node, ast.FunctionDef) and node.name in expected_owners
         ]
-        assert len(owners) == 1, (
-            "the removal owner no longer has exactly one remove_checkout_path"
+        assert {node.name for node in owners} == expected_owners, (
+            "the removal owner no longer exposes the guarded checkout and "
+            "container removal operations"
         )
         guarded = [
             node
-            for node in ast.walk(owners[0])
+            for owner in owners
+            for node in ast.walk(owner)
             if isinstance(node, ast.With)
             and any(
                 _is_call(item.context_expr, "custody_guard") for item in node.items
@@ -692,7 +722,7 @@ class TestOneRemovalOwner:
         guarded_call_ids = {
             id(node)
             for block in guarded
-            for node in ast.walk(block)
+            for node in _runtime_nodes(block)
             if isinstance(node, ast.Call)
         }
         called = {name for _, name in destructive_calls}
@@ -717,6 +747,34 @@ class TestOneRemovalOwner:
 
         assert _removal_lines(as_list) == [1]
         assert _removal_lines(as_varargs) == [1]
+
+    def test_a_deferred_body_is_not_mistaken_for_guarded_execution(self) -> None:
+        """Nesting under the ``with`` is not the same fact as running in it."""
+        tree = ast.parse(
+            """
+def remove_checkout_path(path):
+    with custody_guard(path):
+        remove_later = lambda: _delete_path(path)
+    remove_later()
+"""
+        )
+        owner = next(
+            node for node in tree.body if isinstance(node, ast.FunctionDef)
+        )
+        guarded = next(
+            node for node in ast.walk(owner) if isinstance(node, ast.With)
+        )
+        destructive = next(
+            node for node in ast.walk(owner) if _is_call(node, "_delete_path")
+        )
+
+        guarded_call_ids = {
+            id(node)
+            for node in _runtime_nodes(guarded)
+            if isinstance(node, ast.Call)
+        }
+
+        assert id(destructive) not in guarded_call_ids
 
 
 class TestEachEntryPointRefuses:
@@ -1528,6 +1586,33 @@ class TestRoundSixGaps:
         assert manager.custody_of(checkout) is not None, (
             "the grant ended for a removal that never removed anything"
         )
+
+    def test_a_release_is_not_consumed_when_git_claims_success_but_leaves_path(
+        self, manager: GitWorktreeManager, repo: Path, checkout: Path
+    ) -> None:
+        """A zero exit status is not proof that the checkout disappeared.
+
+        The success branch ended the grant and reported ``removed=True`` on the
+        strength of git's exit code alone, so a runner that succeeds while
+        leaving the path standing left it unprotected for the next forced
+        cleanup (round 17 finding 1).
+        """
+        grant = manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+
+        outcome = remove_checkout_path(
+            checkout,
+            force=False,
+            run_git=lambda _argv: None,
+            repo_root=repo,
+            custody_release=CustodyRelease(holder=HOLDER, reason="collected"),
+        )
+
+        assert outcome.removed is False
+        assert outcome.git_error == (
+            f"git reported success but left checkout at {checkout}"
+        )
+        assert (checkout / "finding.md").exists()
+        assert manager.custody_of(checkout) == grant
 
     def test_a_structurally_wrong_trail_row_is_damage(
         self, manager: GitWorktreeManager, repo: Path, checkout: Path

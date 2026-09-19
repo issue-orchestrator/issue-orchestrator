@@ -29,7 +29,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ...domain.escrow_retention_boundary import require_disposable_path
-from ...ports.worktree_custody import CustodyRelease
+from ...ports.worktree_custody import (
+    CustodyRelease,
+    CustodyUnavailableError,
+)
 from .custody import custody_guard, git_common_dir
 
 logger = logging.getLogger(__name__)
@@ -87,11 +90,18 @@ def remove_checkout_path(
     _require_removable_target(worktree_path, repo_root)
     with custody_guard(worktree_path, custody_release, repo_root=repo_root) as settled:
         error = _remove_with_git(worktree_path, force=force, run_git=run_git)
-        if error is None:
+        if error is None and _target_is_absent(worktree_path):
             if prune and run_git is not None:
                 run_git(["worktree", "prune"])
             settled.removed()
             return CheckoutRemoval(removed=True, used_filesystem_fallback=False)
+        if error is None:
+            # A zero exit status is not the same fact as an absent checkout. A
+            # runner that reports success while leaving the path standing would
+            # otherwise consume the grant and report removed=True, leaving the
+            # checkout unprotected for the next forced cleanup (round 17
+            # finding 1).
+            error = f"git reported success but left checkout at {worktree_path}"
         if not force:
             # The checkout is still THERE. Ending its grant here would leave it
             # standing and unprotected for the next forced cleanup, which is
@@ -110,7 +120,7 @@ def remove_checkout_path(
         _delete_path(worktree_path)
         if prune and run_git is not None:
             run_git(["worktree", "prune"])
-        gone = not worktree_path.exists()
+        gone = _target_is_absent(worktree_path)
         if gone:
             settled.removed()
         return CheckoutRemoval(
@@ -163,6 +173,24 @@ def _require_removable_target(worktree_path: Path, repo_root: Path) -> None:
             "metadata, not a disposable checkout; removing it would destroy "
             "the custody trail it holds"
         )
+
+
+def _target_is_absent(worktree_path: Path) -> bool:
+    """Whether the target is gone, distinguished from unable to tell.
+
+    ``Path.exists()`` answers False for a path it cannot stat at all, which
+    collapses an inspection error into absence -- and absence is what ends a
+    grant here.
+    """
+    try:
+        worktree_path.lstat()
+    except FileNotFoundError:
+        return True
+    except OSError as exc:
+        raise CustodyUnavailableError(
+            f"cannot verify whether {worktree_path} was removed: {exc}"
+        ) from exc
+    return False
 
 
 def _delete_path(worktree_path: Path) -> None:
