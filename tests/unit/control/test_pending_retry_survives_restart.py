@@ -322,6 +322,10 @@ def test_a_schema_v1_claim_is_reconciled_with_its_original_authority(
     legacy_retry = decode_claim(legacy_payload).request
     assert isinstance(legacy_retry, PendingValidationRetry)
     assert legacy_retry.authority_run is None
+    assert legacy_retry.recovery_error is not None, (
+        "a schema-v1 investigation claim became launchable before durable "
+        "artifact recovery restored its original authority"
+    )
     state = OrchestratorState(pending_validation_retries=[legacy_retry])
 
     assert _recover(repo, investigation, state) == 1

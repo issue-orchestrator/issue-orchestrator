@@ -2057,7 +2057,7 @@ class TestLaunchValidationRetrySession:
         assert "Validation Retry" in command
         assert "dirty worktree" in command
 
-    def test_an_investigations_retry_keeps_todays_behaviour(
+    def test_an_investigations_retry_reuses_its_exact_scratch_checkout(
         self,
         launcher_bundle,
         mock_worktree_manager,
@@ -2114,8 +2114,9 @@ class TestLaunchValidationRetrySession:
             "the investigation's retry was refused; that needs #7274 first"
         )
         call = mock_worktree_manager.create_calls[0]
-        assert call["worktree_name"] is None, (
-            "a scratch worktree was derived; that needs #7273 first"
+        assert call["worktree_name"] == scratch_worktree_name("io", 123, token), (
+            "the launcher discarded the CHECKOUT half of the retry identity, so "
+            "a stale branch name falls back to the ordinary issue worktree"
         )
         assert call["branch_name"] == scratch_branch
         assert call["reuse_options"].preserve_branch is True, (
@@ -2128,7 +2129,7 @@ class TestLaunchValidationRetrySession:
             "checkout active, so #7274's custody has nothing to protect"
         )
         assert result.session is not None
-        assert result.session.scratch_worktree is False
+        assert result.session.scratch_worktree is True
         assert result.session.tech_lead_scope is None
 
     def test_an_ordinary_retry_keeps_its_existing_derivation(
@@ -8710,7 +8711,7 @@ class TestAValidationRetryCarriesItsLaunchAuthority:
         self,
         source: SessionRunIdentity | None,
         agent_label: str = "agent:tech-lead",
-        worktree_path: str = "/tmp/worktree-6410",
+        worktree_path: str = "/tmp/repo-tech-lead-6410-abcdef123456",
     ) -> PendingValidationRetry:
         return PendingValidationRetry(
             issue_number=6410,
@@ -9008,7 +9009,12 @@ class TestAValidationRetryCarriesItsLaunchAuthority:
         there because the branch is pushed.
         """
         result = launcher_bundle.launcher.launch_validation_retry_session(
-            self._retry(None, agent_label="agent:web", worktree_path="/tmp/wt/repo-6410"),
+            replace(
+                self._retry(
+                    None, agent_label="agent:web", worktree_path="/tmp/wt/repo-6410"
+                ),
+                branch_name="6410-work",
+            ),
             active_sessions=[],
         )
 
@@ -9399,6 +9405,48 @@ class TestAValidationRetryCarriesItsLaunchAuthority:
             == source_grant
         )
 
+    def test_inconsistent_scratch_identity_is_refused_before_worktree_creation(
+        self, launcher_bundle, sample_config, tmp_path, mock_worktree_manager
+    ) -> None:
+        """A failed identity match must not fall through to an ordinary path.
+
+        The launcher rediscovered the checkout by BRANCH only, so a stale or
+        renamed scratch branch missed lookup and creation silently fell back to
+        `<repo>-<issue>` -- the agent working from a fresh base branch while the
+        investigation's commits stayed in the orphaned scratch checkout, waiting
+        to be deleted (round 16 finding 2).
+        """
+        TestLaunchTechLeadIssueSessionFlavors.enable_tech_lead_agent(
+            sample_config, tmp_path
+        )
+        store = SqliteTechLeadAuthorityStore.for_repo(sample_config.repo_root)
+        source = SessionRunIdentity(
+            session_name="issue-6410",
+            run_id="run-original",
+            started_at="2026-09-18",
+        )
+        store.record(
+            run_id=source.run_id,
+            session_name=source.session_name,
+            authority=self._authority(),
+        )
+        checkout = tmp_path / "repo-tech-lead-6410-abcdef123456"
+        checkout.mkdir()
+        self._seed_launch_inputs(checkout, source)
+        retry = replace(
+            self._retry(source, worktree_path=str(checkout)),
+            branch_name="tech-lead-investigation-6410-bbbbbbbbbbbb",
+        )
+
+        result = launcher_bundle.launcher.launch_validation_retry_session(
+            retry, active_sessions=[]
+        )
+
+        assert result.success is False
+        assert "do not name the same investigation" in (result.reason or "")
+        assert mock_worktree_manager.create_calls == []
+        assert launcher_bundle.create_session_calls == []
+
     def test_provider_defer_requeues_against_the_surviving_authority(
         self, launcher_bundle, sample_config, tmp_path
     ) -> None:
@@ -9508,7 +9556,13 @@ class TestAValidationRetryCarriesItsLaunchAuthority:
         store = SqliteTechLeadAuthorityStore.for_repo(sample_config.repo_root)
 
         result = launcher_bundle.launcher.launch_validation_retry_session(
-            self._retry(None, agent_label="agent:web"), active_sessions=[]
+            replace(
+                self._retry(
+                    None, agent_label="agent:web", worktree_path="/tmp/wt/repo-6410"
+                ),
+                branch_name="6410-work",
+            ),
+            active_sessions=[],
         )
 
         assert result.success is True, result.reason

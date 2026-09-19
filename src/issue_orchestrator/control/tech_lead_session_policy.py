@@ -29,8 +29,12 @@ from ..domain.tech_lead_run_artifacts import TECH_LEAD_DATA_DIRNAME
 from ..domain.tech_lead_escalation import render_tech_lead_escalation_comment
 from ..domain.session_key import TaskKind
 from ..domain.tech_lead_manifest import TechLeadManifest
+from .recovered_run_identity import unlaunchable_recovery_refusal
 from ..domain.tech_lead_scratch_identity import (
+    ScratchWorktreeIdentity,
     names_one_scratch_checkout,
+    parse_scratch_branch_name,
+    parse_scratch_worktree_name,
     new_scratch_identity,
 )
 from ..domain.board_snapshot import BOARD_SNAPSHOT_FILENAME, BoardSnapshot
@@ -69,7 +73,6 @@ if TYPE_CHECKING:
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
     from ..domain.models import PendingValidationRetry
     from ..domain.session_run import SessionRunAssets
-    from ..domain.tech_lead_scratch_identity import ScratchWorktreeIdentity
     from .worktree_context import WorktreeContext
 
 logger = logging.getLogger(__name__)
@@ -138,9 +141,54 @@ def resumes_an_investigation(retry: "PendingValidationRetry") -> bool:
     re-pointed at some other branch is not mistaken for the investigation that
     used to live there.
     """
-    return names_one_scratch_checkout(
-        Path(retry.worktree_path).name, retry.branch_name or ""
+    return isinstance(
+        resumed_investigation_scratch_identity(retry), ScratchWorktreeIdentity
     )
+
+
+def resumed_investigation_scratch_identity(
+    retry: "PendingValidationRetry",
+) -> "ScratchWorktreeIdentity | str | None":
+    """The EXACT scratch checkout to resume, or a refusal, or None.
+
+    A failed match is not evidence that a retry is ordinary work. If either
+    durable half is scratch-shaped, both halves must name the same checkout --
+    otherwise falling back to the derived ordinary issue path resumes DIFFERENT
+    work, on a fresh base branch, while the investigation's commits stay in the
+    orphaned scratch checkout waiting to be deleted (round 16 finding 2).
+    """
+    worktree_name = Path(retry.worktree_path).name
+    branch_name = retry.branch_name or ""
+    worktree_parts = parse_scratch_worktree_name(worktree_name)
+    branch_parts = parse_scratch_branch_name(branch_name)
+    if worktree_parts is None and branch_parts is None:
+        return None
+    if not names_one_scratch_checkout(worktree_name, branch_name):
+        return (
+            f"Validation retry for issue #{retry.issue_number} has inconsistent "
+            f"scratch identity: checkout {worktree_name!r} and branch "
+            f"{branch_name!r} do not name the same investigation"
+        )
+    return ScratchWorktreeIdentity(
+        worktree_name=worktree_name, branch_name=branch_name
+    )
+
+
+def resumable_retry_identity(
+    retry: "PendingValidationRetry",
+) -> "tuple[str | None, ScratchWorktreeIdentity | None]":
+    """``(refusal, scratch identity)`` -- can this retry resume AS RECORDED?
+
+    One owner for the whole question, because both halves mean the same thing
+    to the launcher: a missing grant, or scratch identity halves that do not
+    name the same checkout, are each "not resumable as recorded".
+    """
+    outcome = unlaunchable_recovery_refusal(retry) or (
+        resumed_investigation_scratch_identity(retry)
+    )
+    if isinstance(outcome, str):
+        return outcome, None
+    return None, outcome
 
 
 def carry_launch_authority_forward(

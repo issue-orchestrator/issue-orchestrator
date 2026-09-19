@@ -4448,6 +4448,62 @@ def test_a_restarted_validation_retry_keeps_its_prompt_and_budget(
     assert returned.source_task is TaskKind.CODE
 
 
+def test_a_live_retry_with_unverified_authority_is_quarantined(
+    tmp_path: Path,
+) -> None:
+    """A READABLE but incomplete legacy claim is not safe to rehydrate.
+
+    Step-10 artifact recovery deliberately skips a live terminal, so nothing
+    else repairs it -- the terminal keeps working and its completion is already
+    guaranteed to be rejected (round 16 finding 1).
+    """
+    from dataclasses import replace
+
+    from issue_orchestrator.control.in_flight_work import InFlightWorkLedger
+    from issue_orchestrator.domain.models import (
+        OrchestratorState,
+        PendingValidationRetry,
+    )
+    from issue_orchestrator.domain.pending_work import (
+        PendingWorkClaim,
+        PendingWorkKind,
+    )
+
+    harness = _ready_harness(tmp_path)
+    state = _pending_state("validation_retry")
+    session = _route("validation_retry", state, harness)
+    assert session is not None
+
+    held = harness.claims.look_up_pending_work_claim(session.run_assets).held
+    assert held is not None
+    assert isinstance(held.request, PendingValidationRetry)
+    damaged = PendingWorkClaim(
+        PendingWorkKind.VALIDATION_RETRY,
+        replace(
+            held.request,
+            recovery_error=(
+                "Schema-v1 investigation retry has no recorded "
+                "launch-authority provenance"
+            ),
+        ),
+    )
+    harness.claims.replace_held_pending_work_claim(
+        session.run_assets, expected=held, replacement=damaged
+    )
+
+    restarted = OrchestratorState()
+    restoration = InFlightWorkLedger(restarted, harness.claims).rehydrate(
+        [session],
+        agent_configs=harness.launcher.config.agents,
+        tech_lead_label=harness.launcher.config.tech_lead_review_agent,
+    )
+
+    assert restoration.admitted == ()
+    assert [item.session for item in restoration.quarantined] == [session]
+    assert restarted.active_sessions == []
+    assert restarted.in_flight_work == []
+
+
 def test_a_restarted_rework_can_still_restore_its_durable_label(
     tmp_path: Path,
 ) -> None:

@@ -61,7 +61,7 @@ from ..infra.validation_state import DEFAULT_RETRY_TEMPLATE, _truncate_with_tail
 from ..domain.tech_lead_session import TechLeadLaunchScope
 from .tech_lead_session_policy import (
     carry_launch_authority_forward,
-    resumes_an_investigation,
+    resumable_retry_identity,
     failure_investigation_scratch_identity,
     is_tech_lead_session,
     prepare_tech_lead_session_data,
@@ -98,7 +98,6 @@ from .needs_human_block import (
 from .tech_lead_needs_human_reconcile import TechLeadNeedsHumanLifecycle, discover_tech_lead_needs_human_issue_numbers
 from .session_manager import SessionManager, SessionRef
 from .tech_lead_run_inputs import preserved_source_run, transfer_launch_authority
-from .recovered_run_identity import unlaunchable_recovery_refusal
 from .launch_transaction import (
     NO_LAUNCH_WORK_CLAIM,
     LaunchWorkClaim,
@@ -1173,7 +1172,8 @@ class SessionLauncher:
         work_claim: LaunchWorkClaim = NO_LAUNCH_WORK_CLAIM,
     ) -> LaunchResult:
         """Launch a coding session that continues after validation failure."""
-        if refusal := unlaunchable_recovery_refusal(retry):
+        refusal, scratch_identity = resumable_retry_identity(retry)
+        if refusal:
             return LaunchResult(
                 None, False, refusal, disposition=LaunchDisposition.RETRYABLE_FAILURE
             )
@@ -1241,16 +1241,15 @@ class SessionLauncher:
             pre_push_hook=self.config.pre_push_hook,
             reuse_options=self._worktree_reuse_options(
                 allow_remote_branch_delete=False,
-                # An investigation checkout is resumed, not refreshed. Reuse
-                # rebases the branch onto the base and hard-RESETS it when that
-                # conflicts -- and this branch was never pushed, so those
-                # commits exist nowhere else. The retry would destroy exactly
-                # the work the queue entry and the reconciliation hold both
-                # exist to protect (round 1 finding 3).
-                preserve_branch=resumes_an_investigation(retry),
+                # An investigation checkout is RESUMED, not refreshed: reuse
+                # rebases onto the base and hard-resets on conflict, and this
+                # branch was never pushed, so the retry would destroy exactly
+                # the work the hold exists to protect (round 1 finding 3).
+                preserve_branch=scratch_identity is not None,
             ),
             phase_name=phase_name,
             stack_base_branch=stack_decision.base_branch,
+            scratch=scratch_identity,  # round 16 F2: the DIRECTORY half too
             preserve_run_dir=preserved_source_run(retry),
         )
         if ctx.error:
@@ -1405,6 +1404,7 @@ class SessionLauncher:
                 lease_id=claim.lease_id,
                 lease_acquired_at=claim.lease_acquired_at,
                 lease_expires_at=claim.lease_expires_at,
+                scratch_worktree=scratch_identity is not None,
             )
             log_transition(
                 "issue",

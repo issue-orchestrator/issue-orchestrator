@@ -333,6 +333,26 @@ class InFlightWorkLedger:
                 continue
             claim = lookup.held
             if claim is not None:
+                # Asked of the owner that already answers this for a QUEUE
+                # entry, so a live terminal and a queued retry cannot drift
+                # apart (round 16 finding 1).
+                unverified = claim.unverified_authority_refusal()
+                if unverified is not None:
+                    logger.error(
+                        "[WORK] Quarantining %s: its claim cannot prove the "
+                        "launch authority its completion requires: %s",
+                        session.terminal_id,
+                        unverified,
+                    )
+                    quarantined.append(
+                        QuarantinedSession(
+                            session,
+                            unverified,
+                            self.claims.run_key_for(session.run_assets),
+                            self.claims.quarantine_key_for(session.run_assets),
+                        )
+                    )
+                    continue
                 if self.holds(session.terminal_id) is None:
                     self.state.in_flight_work.append(
                         InFlightWork(session.terminal_id, claim)
