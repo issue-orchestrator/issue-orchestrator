@@ -21,7 +21,7 @@ from .sandbox_scope import (
     compute_session_scope,
 )
 from .pause_state import PauseState
-from .session_run import SessionRunAssets
+from .session_run import SessionRunAssets, SessionRunIdentity
 from .tech_lead_findings import PromotionUpdate, PromotableFinding, SettledPromotion
 from .tech_lead_session import (
     ApprovedTechLeadOp,
@@ -1883,8 +1883,29 @@ class PendingValidationRetry:
     retry_count: int  # Current retry count (will be incremented on re-launch)
     source_task: TaskKind
     validation_cmd: str | None = None  # For building retry prompt
+    #: The run this retry inherits its launch authority FROM (#7273).
+    #:
+    #: A tech-lead failure investigation's completion is accepted only against a
+    #: ``TechLeadLaunchAuthority`` row keyed by ``(run_id, session_name)``, and
+    #: only the ORIGINAL launch records one. A validation retry allocates a new
+    #: run, so without carrying this the resumed run has no authority row and
+    #: ``CompletionProcessor`` rejects its completion as ``missing_authority`` --
+    #: which is to say a tech-lead validation retry could never complete.
+    #:
+    #: Carried rather than re-derived on purpose: re-sampling scope from the
+    #: board at relaunch would let a run's mutation scope GROW between attempts,
+    #: which is the thing the create-once authority row exists to prevent.
+    authority_run: SessionRunIdentity | None = None
+    #: A durable recovery inconsistency that makes this retry NON-LAUNCHABLE.
+    #: The item stays queued regardless, because its checkout and artifact holds
+    #: are the only remaining protection for work that exists nowhere else --
+    #: "authority required but damaged" must not be indistinguishable from
+    #: "ordinary retry that needs none" (#7273 round 3 finding 1).
+    recovery_error: str | None = None
 
     def __post_init__(self) -> None:
+        if self.recovery_error is not None and not self.recovery_error.strip():
+            raise ValueError("PendingValidationRetry.recovery_error must be non-empty")
         if self.source_task.is_review_only:
             raise ValueError(
                 "PendingValidationRetry cannot be created for review-only task "

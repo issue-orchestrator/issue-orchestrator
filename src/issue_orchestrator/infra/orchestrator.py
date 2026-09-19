@@ -472,7 +472,7 @@ class Orchestrator:
             queue_cache_store=self.deps.queue_cache_store,
             label_manager=self.deps.label_manager,
             label_store=self.deps.label_store,
-            tech_lead_authority=self.deps.services.tech_lead_authority,
+            tech_lead_authority=self.deps.services.tech_lead_authority, issue_run_ledger=self.deps.issue_run_ledger,
         )
 
     @cached_property

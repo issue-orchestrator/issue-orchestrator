@@ -6,7 +6,7 @@ from .completion_intake import CompletionIntakeError
 from .models import CompletionRecord, sanitize_agent_label
 from pathlib import Path
 from .session_key import TaskKind
-from .session_run import RunContainedFile
+from .session_run import RunContainedFile, SessionRunIdentity
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,13 +71,40 @@ class CompletionProcessingPolicy:
     def for_unprocessed_session(
         cls, agent_label: str | None, tech_lead_label: str | None,
     ) -> "CompletionProcessingPolicy":
-        """Capture legacy session classification when no processor was invoked."""
+        """Capture legacy session classification when no processor was invoked.
+
+        ``agent_label`` is the SESSION's own role, settled by allocation at
+        launch -- never ``Issue.agent_type``, which is whichever ``agent:``
+        label the tracker happens to list first. A tech-lead run reading an
+        issue that still carries its coder label classified as ordinary coding
+        work, and the carried launch authority was bypassed (#7273 round 2
+        finding 1).
+        """
         task = TaskKind.TECH_LEAD if agent_label is not None and agent_label == tech_lead_label else None
         return cls(agent_label, task)
 
     @property
     def is_tech_lead(self) -> bool:
         return self.task is TaskKind.TECH_LEAD
+
+    def inheritable_launch_authority(
+        self, run: "SessionRunIdentity | None"
+    ) -> "SessionRunIdentity | None":
+        """The run a validation retry of this one inherits authority from (#7273).
+
+        Only a Tech Lead run is admitted by a create-once authority row, so only
+        a Tech Lead retry names the run it came from. A retry that named a run
+        with no row would be indistinguishable from one whose row has been lost,
+        and the launcher refuses to relaunch the second -- so naming one for
+        every retry would strand every ordinary retry in the queue.
+
+        Takes the identity rather than the whole run assets because startup
+        recovery has only the identity, read back off the manifest, and it has
+        to reach the SAME answer as the live completion path. Recovery inferring
+        its own rule from "the manifest had an identity" is how the two drifted
+        and every recovered coder retry became unlaunchable (round 1 finding 2).
+        """
+        return run if self.is_tech_lead else None
 
 
 @dataclass(frozen=True, slots=True)

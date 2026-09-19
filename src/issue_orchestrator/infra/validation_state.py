@@ -150,12 +150,20 @@ class ValidationRetryArtifacts:
     There is no ``None`` / ``or TaskKind.CODE`` fallback: the field is always a
     valid coding-side task, so a review-only or unknown-provenance artifact can
     never be relaunched as coding work.
+
+    ``run_dir`` identifies the artifact CONTAINER only, and is ``None`` for
+    legacy worktree-level state that has no run directory at all. Recovery joins
+    that canonical path to the orchestrator-owned issue-run ledger before it
+    trusts any run identity or role: the manifest inside the directory is
+    agent-writable, and reading authority-bearing facts out of it let an edited
+    one select another run's grant (#7273 round 3 finding 1).
     """
 
     state: ValidationState
     state_path: Path
     source_task: TaskKind
     retry_prompt_path: Path | None = None
+    run_dir: Path | None = None
 
 
 def _now_iso() -> str:
@@ -254,7 +262,7 @@ def _run_validation_status(run_dir: Path) -> str | None:
 
     try:
         manifest = RunManifest.load(run_dir)
-    except (json.JSONDecodeError, OSError) as e:
+    except (json.JSONDecodeError, OSError, ValueError) as e:
         logger.warning("Failed to read run manifest from %s: %s", manifest_path, e)
         return None
 
@@ -285,7 +293,37 @@ def _run_is_review_only(run_dir: Path) -> bool:
 
 
 def _run_can_supersede_retry_state(run_dir: Path) -> bool:
-    return _run_session_name(run_dir).startswith(("coding-", "issue-", "rework-"))
+    """Whether a newer run represents an actual ATTEMPT at the work.
+
+    Allocating a run directory is not the launch boundary. A validation retry's
+    authority and input admission happens AFTER allocation and can refuse the
+    relaunch before any terminal exists -- and that bare `coding-N` directory is
+    newer than the original retry, so it suppressed the older durable state
+    purely by its name. Recovery then queued nothing and startup reconciliation
+    was free to delete the scratch checkout and its unpushed branch: the exact
+    loss this issue is about, arriving through the refusal that was supposed to
+    protect the work (round 7 finding 2).
+
+    ``completion_path`` is the boundary. The launcher writes it only once the
+    durable claim and launch preparation have succeeded, immediately before the
+    terminal is spawned; after that the claim store owns crash recovery, and
+    before it the older retry state must stay discoverable.
+    """
+    if not _run_session_name(run_dir).startswith(("coding-", "issue-", "rework-")):
+        return False
+    if not (run_dir / "manifest.json").exists():
+        return False
+    try:
+        manifest = RunManifest.load(run_dir)
+    except (json.JSONDecodeError, OSError, ValueError) as exc:
+        logger.warning(
+            "Run %s cannot supersede older retry state because its manifest "
+            "cannot be read: %s",
+            run_dir,
+            exc,
+        )
+        return False
+    return bool(manifest.completion_path)
 
 
 def _find_run_scoped_retry_artifacts(
@@ -328,6 +366,7 @@ def _find_run_scoped_retry_artifacts(
                 state_path=state_path,
                 source_task=source_task,
                 retry_prompt_path=prompt_path if prompt_path.exists() else None,
+                run_dir=run_dir,
             )
 
         if _run_retry_prompt_file(run_dir).exists():
@@ -337,6 +376,38 @@ def _find_run_scoped_retry_artifacts(
             return _NO_CURRENT_RETRY
 
     return None
+
+
+def retire_pending_retry_artifacts(worktree_path: Path) -> None:
+    """Remove every retry state that startup recovery could rediscover.
+
+    The inverse of :func:`find_pending_retry_artifacts`, and it lives beside it
+    for that reason: an operator who abandons an issue must not have the retry
+    resurrected by the next restart, and clearing the NEWEST state alone just
+    exposes an older run's state underneath (round 14 finding 1).
+
+    Removed in the REVERSE of recovery preference -- legacy first, then
+    run-scoped oldest to newest -- so a fault partway through leaves the state
+    recovery would have chosen anyway, rather than an older one.
+    """
+    sessions_dir = _sessions_dir(worktree_path)
+    run_dirs: list[Path] = []
+    if sessions_dir.exists():
+        run_dirs = sorted(
+            (
+                path
+                for path in sessions_dir.iterdir()
+                if path.is_dir() and not path.is_symlink()
+            ),
+            key=lambda run_dir: run_dir.stat().st_mtime,
+        )
+    root = _state_dir(worktree_path)
+    for name in (VALIDATION_STATE_FILE, RETRY_PROMPT_FILE):
+        for path in [root / name, *(run_dir / name for run_dir in run_dirs)]:
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
 
 
 def find_pending_retry_artifacts(worktree_path: Path) -> ValidationRetryArtifacts | None:

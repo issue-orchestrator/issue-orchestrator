@@ -193,7 +193,8 @@ def record_completed_session_problem(
         return
     if status not in _REACTIVE_SESSION_STATUSES:
         return
-    if is_tech_lead_session(tech_lead_agent, session.issue.agent_type):
+    # The session's OWN role, settled at launch (#7273 round 2 finding 1).
+    if is_tech_lead_session(tech_lead_agent, session.agent_label):
         return
     record(
         DiscoveredFailure(

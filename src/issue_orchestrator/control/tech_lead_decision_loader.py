@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
+from ..domain.tech_lead_run_artifacts import TECH_LEAD_DATA_DIRNAME
 from ..domain.tech_lead_artifacts import (
     TECH_LEAD_DECISION_FILENAME,
     TECH_LEAD_REPORT_FILENAME,
@@ -62,7 +63,7 @@ class TechLeadArtifactLoadResult:
 
 def load_tech_lead_artifact_pair_for_run(run_dir: Path) -> TechLeadArtifactLoadResult:
     """Load the artifact pair from a session run dir's ``tech-lead-data`` directory."""
-    data_dir = run_dir / "tech-lead-data"
+    data_dir = run_dir / TECH_LEAD_DATA_DIRNAME
     return load_tech_lead_artifact_pair(
         data_dir / TECH_LEAD_DECISION_FILENAME,
         data_dir / TECH_LEAD_REPORT_FILENAME,

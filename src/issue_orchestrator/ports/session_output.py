@@ -232,12 +232,17 @@ class SessionOutput(Protocol):
         self,
         worktree_path: Path,
         keep: int,
+        *,
+        preserve_run_dir: Path | None = None,
     ) -> list[Path]:
         """Delete old runs, keeping the last N.
 
         Args:
             worktree_path: Path to the worktree
             keep: Number of runs to keep
+            preserve_run_dir: Exact run directory that must NOT be deleted. It
+                counts toward ``keep``, so preservation bounds retention rather
+                than growing it.
 
         Returns:
             List of paths that were deleted

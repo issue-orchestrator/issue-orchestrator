@@ -18,6 +18,7 @@ only (tamper evidence when they diverge).
 """
 
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
@@ -25,6 +26,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Collection, cast
 
 from .session_key import TaskKind
+from .session_run import SessionRunIdentity, canonical_run_dir_name
 from .tech_lead_artifacts import ACT_LEVEL_TECH_LEAD_ACTIONS
 from .scoped_rework import ReworkRequest, ReworkTarget
 
@@ -33,12 +35,71 @@ if TYPE_CHECKING:
 
 TECH_LEAD_ASSIGNMENT_FILENAME = "tech-lead-assignment.json"
 
+@dataclass(frozen=True, slots=True)
+class TechLeadAuthorityKey:
+    """The durable key of one tech-lead launch-authority row.
+
+    Built from the run directory's canonical BASENAME, never from the manifest
+    inside it. The manifest is agent-writable: one naming another retained run
+    made a retry inherit that run's grant, and one naming a different role made
+    a damaged investigation relaunch as ordinary work (#7273 round 3 finding 1).
+    """
+
+    run_id: str
+    session_name: str
+
+    def __post_init__(self) -> None:
+        if not self.run_id.strip() or not self.session_name.strip():
+            raise ValueError(
+                "tech-lead authority key requires run_id and session_name"
+            )
+
+    @classmethod
+    def from_identity(cls, identity: "SessionRunIdentity") -> "TechLeadAuthorityKey":
+        return cls(run_id=identity.run_id, session_name=identity.session_name)
+
+    @classmethod
+    def from_run_dir(cls, run_dir: Path) -> "TechLeadAuthorityKey":
+        """The key a run directory's own name declares, or refuse it."""
+        run_id, separator, session_name = run_dir.name.partition("__")
+        if (
+            not separator
+            or canonical_run_dir_name(run_id, session_name) != run_dir.name
+        ):
+            raise ValueError(
+                f"run directory {run_dir.name!r} does not carry a canonical run key"
+            )
+        return cls(run_id=run_id, session_name=session_name)
+
+
 # Marker label carried by health-review anchor issues (ADR-0031 §4).
 # Labels are crash-safe truth (ADR-0013): the marker is both how the launcher
 # derives the HEALTH_REVIEW flavor and how the fact gatherer deduplicates an
 # already-open health-review anchor. Single owner — the planner, launcher,
 # fact gatherer, and startup recovery all import it from here.
 HEALTH_REVIEW_MARKER_LABEL = "tech_lead:health-review"
+
+
+def health_review_flavor_if_anchored(
+    labels: "Iterable[str]",
+) -> "TechLeadSessionFlavor | None":
+    """HEALTH_REVIEW when these labels carry the ADR-0031 §4 marker, else None.
+
+    Casefolded, because GitHub label names are case-insensitive and this is
+    crash-safe truth. Two launch paths used to read the marker by hand and they
+    disagreed: one casefolded both sides, the other compared exactly, so a label
+    stored with different case selected HEALTH_REVIEW on one path and
+    BATCH_REVIEW on the other. Same rule, two answers, which is the cross-path
+    drift the abstraction pass exists to catch.
+
+    Returns the flavor rather than a boolean so a caller composing a default
+    (``... or health_review_flavor_if_anchored(...) or BATCH_REVIEW``) does not
+    need a branch of its own.
+    """
+    marker = HEALTH_REVIEW_MARKER_LABEL.casefold()
+    if any(str(name).casefold() == marker for name in labels):
+        return TechLeadSessionFlavor.HEALTH_REVIEW
+    return None
 
 # Gate label carried by gated tech_lead proposal issues (#6778, ADR-0031 §2
 # amendment). Orchestrator-attached at creation; REMOVING it is per-instance

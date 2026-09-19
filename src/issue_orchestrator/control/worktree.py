@@ -55,6 +55,7 @@ class Worktree:
         issue_number: int,
         session_output: SessionOutput,
         retain_runs: int = 7,
+        preserve_run_dir: Path | None = None,
     ):
         """Initialize worktree.
 
@@ -68,6 +69,8 @@ class Worktree:
         self.issue_number = issue_number
         self._orchestrator_dir = path / self.ORCHESTRATOR_DIR
         self._retain_runs = retain_runs
+        #: A run whose artifacts this launch still has to read.
+        self._preserve_run_dir = preserve_run_dir
         self._session_output = session_output
 
     def prepare_for_session(self, session_id: str) -> None:
@@ -93,7 +96,9 @@ class Worktree:
 
         try:
             removed_session_output = self._session_output.prune_runs(
-                self.path, self._retain_runs
+                self.path,
+                self._retain_runs,
+                preserve_run_dir=self._preserve_run_dir,
             )
             removed_completions = self._delete_files(self.COMPLETION_PATTERN)
             removed_identities = self._delete_files(self.SESSION_IDENTITY_PATTERN)

@@ -19,6 +19,8 @@ item by its own contract.
 
 from __future__ import annotations
 
+from dataclasses import replace
+from pathlib import Path
 from typing import Any, Callable
 
 from ..domain.issue_key import GitHubIssueKey, IssueKey
@@ -36,12 +38,21 @@ from ..domain.pending_work import (
     PendingWorkRequest,
 )
 from ..domain.session_key import TaskKind
+from ..domain.session_run import SessionRunIdentity
+from ..domain.tech_lead_scratch_identity import names_one_scratch_checkout
 from ..domain.tech_lead_session import TechLeadSessionFlavor
 
 CLAIM_ARTIFACT_NAME = "pending-work-claim.json"
 # Bumped only when an encoding change cannot be read by the previous decoder.
 # A payload from a different version is refused rather than guessed at.
-CLAIM_SCHEMA_VERSION = 1
+CLAIM_SCHEMA_VERSION = 2
+#: Versions this build can still READ. A schema-v1 INVESTIGATION retry recorded
+#: no authority provenance at all, so it decodes as explicitly unlaunchable
+#: until durable checkout recovery joins it to its original allocation. Letting
+#: it decode as ordinary launchable work meant a pruned-artifact or live-terminal
+#: case could relaunch with no grant and fail as `missing_authority` -- the
+#: defect this PR exists to fix, surviving the upgrade (round 16 finding 1).
+READABLE_CLAIM_SCHEMA_VERSIONS = frozenset({1, CLAIM_SCHEMA_VERSION})
 
 
 class PendingWorkClaimDecodeError(ValueError):
@@ -64,7 +75,7 @@ def decode_claim(payload: object) -> PendingWorkClaim:
             f"claim payload must be an object, got {type(payload).__name__}"
         )
     version = payload.get("schema_version")
-    if version != CLAIM_SCHEMA_VERSION:
+    if version not in READABLE_CLAIM_SCHEMA_VERSIONS:
         raise PendingWorkClaimDecodeError(
             f"unsupported claim schema version {version!r}; "
             f"this build writes {CLAIM_SCHEMA_VERSION}"
@@ -81,13 +92,29 @@ def decode_claim(payload: object) -> PendingWorkClaim:
             f"{kind.value} claim payload has no request object"
         )
     try:
-        return PendingWorkClaim(kind, _DECODERS[kind](request))
+        decoded = _DECODERS[kind](request)
     except PendingWorkClaimDecodeError:
         raise
     except (KeyError, TypeError, ValueError) as exc:
         raise PendingWorkClaimDecodeError(
             f"{kind.value} claim payload could not be rebuilt: {exc}"
         ) from exc
+    if (
+        version == 1
+        and isinstance(decoded, PendingValidationRetry)
+        and names_one_scratch_checkout(
+            Path(decoded.worktree_path).name, decoded.branch_name or ""
+        )
+    ):
+        decoded = replace(
+            decoded,
+            recovery_error=(
+                "Schema-v1 investigation retry has no recorded launch-authority "
+                "provenance; durable checkout recovery must join it to its "
+                "original allocation before relaunch"
+            ),
+        )
+    return PendingWorkClaim(kind, decoded)
 
 
 def _encode_issue_key(key: IssueKey) -> dict[str, str]:
@@ -207,6 +234,16 @@ def _encode_validation_retry(request: PendingWorkRequest) -> dict[str, Any]:
         "retry_count": request.retry_count,
         "source_task": request.source_task.value,
         "validation_cmd": request.validation_cmd,
+        "authority_run": (
+            {
+                "session_name": request.authority_run.session_name,
+                "run_id": request.authority_run.run_id,
+                "started_at": request.authority_run.started_at,
+            }
+            if request.authority_run is not None
+            else None
+        ),
+        "recovery_error": request.recovery_error,
     }
 
 
@@ -223,6 +260,25 @@ def _decode_validation_retry(payload: dict[str, Any]) -> PendingValidationRetry:
         retry_count=int(payload["retry_count"]),
         source_task=TaskKind(payload["source_task"]),
         validation_cmd=payload["validation_cmd"],
+        authority_run=_decode_run_identity(payload.get("authority_run")),
+        recovery_error=payload.get("recovery_error"),
+    )
+
+
+def _decode_run_identity(payload: object) -> SessionRunIdentity | None:
+    """The run a retry inherits authority from, when it recorded one.
+
+    Absent for a retry queued before #7273, and for every non-tech-lead retry,
+    which have no authority row to inherit.
+    """
+    if payload is None:
+        return None
+    if not isinstance(payload, dict):
+        raise ValueError(f"authority_run is not an object: {payload!r}")
+    return SessionRunIdentity(
+        session_name=str(payload["session_name"]),
+        run_id=str(payload["run_id"]),
+        started_at=str(payload["started_at"]),
     )
 
 

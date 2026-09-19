@@ -40,6 +40,7 @@ from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.models import AgentConfig, Issue, Session, SessionStatus
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.domain.tech_lead_manifest import PRToReview, TechLeadManifest
+from issue_orchestrator.domain.tech_lead_run_artifacts import TECH_LEAD_DATA_DIRNAME
 from issue_orchestrator.domain.tech_lead_session import (
     TECH_LEAD_ASSIGNMENT_FILENAME,
     TECH_LEAD_OBSERVATION_LABEL,
@@ -389,7 +390,14 @@ def plant_tech_lead_assignment(
 
 
 def plant_tech_lead_manifest(tmp_path: Path, session: Session) -> None:
-    """Write a two-PR tech_lead manifest discoverable via the run manifest."""
+    """Write a two-PR tech_lead manifest where production writes it.
+
+    Completion reads the CANONICAL ``<run_dir>/tech-lead-data/manifest.json``,
+    the same way it reads the assignment and the board snapshot. It used to
+    follow a path out of the agent-writable run manifest, which a resumed run
+    never writes -- so a batch review's retry was rejected as ``scope_tampered``
+    against an empty PR set (#7273 round 2 finding 3).
+    """
     manifest = TechLeadManifest(
         prs=[
             PRToReview(
@@ -400,12 +408,9 @@ def plant_tech_lead_manifest(tmp_path: Path, session: Session) -> None:
             ),
         ]
     )
-    manifest_path = tmp_path / "tech-lead-manifest.json"
+    manifest_path = session.run_dir / TECH_LEAD_DATA_DIRNAME / "manifest.json"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest.write(manifest_path)
-    run_manifest_path = session.run_dir / "manifest.json"
-    run_manifest = json.loads(run_manifest_path.read_text())
-    run_manifest["tech_lead_manifest"] = str(manifest_path)
-    run_manifest_path.write_text(json.dumps(run_manifest))
 
 
 def plant_tech_lead_decision_pair(
@@ -556,9 +561,10 @@ def test_tech_lead_manifest_in_sibling_run_dir_is_ignored(tmp_path: Path) -> Non
     """
     config = make_tech_lead_config(tmp_path)
     session = make_tech_lead_session(tmp_path)
-    plant_tech_lead_assignment(
-        session, TechLeadAssignment(flavor=TechLeadSessionFlavor.BATCH_REVIEW)
-    )
+    # Armed for real: without launch authority and a valid CURRENT-run manifest
+    # completion exits through `missing_authority`, so the assertion below held
+    # whether or not the sibling manifest was ignored (round 17 finding 2).
+    arm_batch_session(config, session, tmp_path)
     plant_tech_lead_decision_pair(session)
     stale_run_dir = session.run_dir.parent / "20250101T000000000000Z__issue-1"
     stale_run_dir.mkdir(parents=True)
@@ -569,11 +575,11 @@ def test_tech_lead_manifest_in_sibling_run_dir_is_ignored(tmp_path: Path) -> Non
             )
         ]
     )
-    stale_manifest_path = tmp_path / "stale-tech-lead-manifest.json"
-    stale_manifest.write(stale_manifest_path)
-    (stale_run_dir / "manifest.json").write_text(
-        json.dumps({"tech_lead_manifest": str(stale_manifest_path)})
+    stale_manifest_path = (
+        stale_run_dir / TECH_LEAD_DATA_DIRNAME / "manifest.json"
     )
+    stale_manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    stale_manifest.write(stale_manifest_path)
 
     actions = make_planner(config).generate_completion_actions(
         session,
@@ -586,7 +592,9 @@ def test_tech_lead_manifest_in_sibling_run_dir_is_ignored(tmp_path: Path) -> Non
         if isinstance(action, AddLabelAction)
         and action.label in ("tech-lead-reviewed", "tech-lead-failed")
     }
-    assert tech_lead_label_targets == set()
+    assert tech_lead_label_targets == {101, 102}, (
+        "completion did not use the valid manifest from the current run"
+    )
 
 
 def test_completed_tech_lead_investigation_session_plans_decision_without_labels(
@@ -1762,7 +1770,6 @@ class TestLaunchScopeTamperResistance:
         assert error is not None and error.startswith(
             "tech_lead_authority: scope_tampered"
         )
-
         actions = make_planner(config).generate_completion_actions(
             session, SessionStatus.COMPLETED, processing_errors=[error]
         , processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
@@ -1802,11 +1809,14 @@ class TestLaunchScopeTamperResistance:
         config = make_tech_lead_config(tmp_path)
         session = make_tech_lead_session(tmp_path)
         arm_batch_session(config, session, tmp_path)
-        # Agent tampering: substitute the manifest PR set.
+        # Agent tampering: substitute the manifest PR set, in place -- the
+        # agent edits the copy it can see, at the canonical path completion
+        # reads. Writing it somewhere else only tested the old indirection.
         tampered = TechLeadManifest(
             prs=[PRToReview(number=999, title="Sub", url="https://x/999", branch="s")]
         )
-        manifest_path = tmp_path / "tech-lead-manifest.json"
+        manifest_path = session.run_dir / TECH_LEAD_DATA_DIRNAME / "manifest.json"
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
         tampered.write(manifest_path)
 
         error = tech_lead_decision_processing_error(
@@ -1818,6 +1828,13 @@ class TestLaunchScopeTamperResistance:
         )
         assert error is not None and error.startswith(
             "tech_lead_authority: scope_tampered"
+        )
+        # The PREFIX alone is shared by both behaviours: reverting the canonical
+        # reader ignores the planted manifest, reports an empty set, and still
+        # says `scope_tampered` (round 17 finding 3). Name the tampered set, so
+        # the assertion proves the canonical file was actually read.
+        assert "[999]" in error, (
+            "completion did not read the tampered canonical manifest"
         )
 
         actions = make_planner(config).generate_completion_actions(

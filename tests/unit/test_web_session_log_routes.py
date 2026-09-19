@@ -451,6 +451,99 @@ class TestKillSessionEndpoint:
         finally:
             set_orchestrator(None)
 
+    def test_bulk_cancel_retires_a_deferred_tech_lead_retry(self, tmp_path):
+        """Cancelled validation work must not be recoverable after a restart.
+
+        Round 11 made a provider deferral RETAIN the authority row, because the
+        requeued claim still names it. Abandonment cleared only the in-memory
+        queue entry, so the durable claim and the grant both survived and
+        startup recovery could relaunch cancelled work -- successfully now
+        (round 12 finding 1).
+        """
+        from issue_orchestrator.domain.models import PendingValidationRetry
+        from issue_orchestrator.domain.pending_work import (
+            PendingWorkClaim,
+            PendingWorkKind,
+        )
+        from issue_orchestrator.domain.session_run import SessionRunIdentity
+        from issue_orchestrator.domain.tech_lead_session import (
+            TechLeadLaunchAuthority,
+            TechLeadSessionFlavor,
+        )
+        from issue_orchestrator.domain.session_key import TaskKind
+
+        mock_orch = create_mock_orchestrator()
+        lm = LabelManager(mock_orch.config)
+        mock_orch.deps.label_manager = lm
+        mock_orch.deps.queue_cache_store = MagicMock()
+        mock_orch.deps.pending_work_claims = MagicMock()
+        mock_orch.deps.tech_lead_authority = MagicMock()
+        issue = create_issue(4057, "Queued investigation", labels=["agent:web"])
+        mock_orch.state.cached_scope_issues = [issue]
+        mock_orch.state.cached_queue_issues = [issue]
+
+        checkout = tmp_path / "repo-tech-lead-4057-abcdef123456"
+        state_dir = checkout / ".issue-orchestrator"
+        state_dir.mkdir(parents=True)
+        retry_state = state_dir / "validation-state.json"
+        retry_state.write_text("{}")
+
+        authority_run = SessionRunIdentity(
+            session_name="issue-4057",
+            run_id="run-provider-deferred",
+            started_at="2026-09-19T12:00:00+00:00",
+        )
+        retry = PendingValidationRetry(
+            issue_number=4057,
+            issue_title="Queued investigation",
+            agent_label="agent:tech-lead",
+            worktree_path=str(checkout),
+            branch_name="tech-lead-investigation-4057-abcdef123456",
+            original_prompt=None,
+            validation_error="provider unavailable",
+            validation_error_file=None,
+            retry_count=1,
+            source_task=TaskKind.CODE,
+            authority_run=authority_run,
+        )
+        mock_orch.state.pending_validation_retries = [retry]
+        grant = TechLeadLaunchAuthority(
+            flavor=TechLeadSessionFlavor.FAILURE_INVESTIGATION,
+            anchor_issue_number=4057,
+            focus_issue_number=4057,
+        )
+        mock_orch.deps.tech_lead_authority.load.return_value = grant
+
+        set_orchestrator(mock_orch)
+        try:
+            response = TestClient(app).post(
+                "/api/bulk-cancel-queued", json={"issue_numbers": [4057]}
+            )
+        finally:
+            set_orchestrator(None)
+
+        assert response.status_code == 200
+        assert mock_orch.state.pending_validation_retries == []
+
+        work_key = PendingWorkClaim(
+            PendingWorkKind.VALIDATION_RETRY, retry
+        ).work_key()
+        mock_orch.deps.pending_work_claims.retire_deferred_claim.assert_called_once_with(
+            work_key
+        )
+        mock_orch.deps.tech_lead_authority.discard.assert_called_once_with(
+            run_id=authority_run.run_id, session_name=authority_run.session_name
+        )
+        mock_orch.deps.tech_lead_authority.discard_storm_cohort.assert_called_once_with(
+            anchor_issue_number=4057
+        )
+        # Startup scans validation-state.json independently of the claim store,
+        # so leaving it behind resurrects the cancelled retry (round 14 F1).
+        assert not retry_state.exists(), (
+            "the on-disk retry state survived cancellation, so the next "
+            "restart would requeue the abandoned investigation"
+        )
+
 
 class TestGetSessionLogEndpoint:
     """Test the GET /api/log/{issue_number} endpoint."""
