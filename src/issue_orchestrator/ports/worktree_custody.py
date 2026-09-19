@@ -96,6 +96,31 @@ class CustodyRelease:
                 raise ValueError(f"a custody release requires {name}")
 
 
+@dataclass(frozen=True)
+class CustodyInspectionFailure:
+    """One held checkout whose presence could not be determined."""
+
+    grant: CustodyGrant
+    detail: str
+
+
+@dataclass(frozen=True)
+class CustodyInspection:
+    """A complete best-effort report over ONE READABLE custody store.
+
+    The store itself still fails closed -- without a trustworthy grant list
+    there is nothing to report. But once that list is known, an inspection
+    failure on one checkout is that checkout's answer, not the report's: an
+    operator who cannot see their other grants or a later breach because of one
+    unreadable path has been told less than the system knows (round 19
+    finding 1).
+    """
+
+    held: tuple[CustodyGrant, ...]
+    breached: tuple[CustodyGrant, ...]
+    unknown: tuple[CustodyInspectionFailure, ...]
+
+
 class WorktreeCustody(Protocol):
     """The single owner of "this checkout is not ours to delete".
 
@@ -134,4 +159,8 @@ class WorktreeCustody(Protocol):
 
     def list_held(self) -> tuple[CustodyGrant, ...]:
         """Every checkout in custody, oldest first."""
+        ...
+
+    def inspect(self) -> CustodyInspection:
+        """Classify every grant without hiding later results behind one failure."""
         ...

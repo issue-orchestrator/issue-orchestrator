@@ -47,6 +47,8 @@ from typing import Iterator
 
 from ...ports.worktree_custody import (
     CustodyGrant,
+    CustodyInspection,
+    CustodyInspectionFailure,
     CustodyRelease,
     CustodyUnavailableError,
     WorktreeInCustodyError,
@@ -136,6 +138,39 @@ class GitMetadataWorktreeCustody:
         with self._locked():
             return self._records().get(_key(worktree_path))
 
+    def inspect(self) -> CustodyInspection:
+        """Classify every grant while preserving PER-CHECKOUT uncertainty.
+
+        Store failures still raise: without a trustworthy grant list there is
+        nothing to report. Once that list is known, though, being unable to
+        inspect one checkout must not hide the other grants or a later breach
+        from the operator (round 19 finding 1).
+        """
+        breached: list[CustodyGrant] = []
+        unknown: list[CustodyInspectionFailure] = []
+        with self._locked():
+            held = tuple(
+                sorted(self._records().values(), key=lambda grant: grant.taken_at)
+            )
+            for grant in held:
+                try:
+                    grant.path.lstat()
+                except FileNotFoundError:
+                    breached.append(grant)
+                except OSError as exc:
+                    unknown.append(
+                        CustodyInspectionFailure(
+                            grant=grant,
+                            detail=(
+                                f"cannot verify whether held checkout {grant.path} "
+                                f"still exists: {exc}"
+                            ),
+                        )
+                    )
+        return CustodyInspection(
+            held=held, breached=tuple(breached), unknown=tuple(unknown)
+        )
+
     def breached(self) -> tuple[CustodyGrant, ...]:
         """Grants whose checkout is PROVEN gone: something removed it anyway.
 
@@ -150,18 +185,10 @@ class GitMetadataWorktreeCustody:
         removal-success check, in the one place that tells the operator what
         happened (round 18 finding 1).
         """
-        breached: list[CustodyGrant] = []
-        for grant in self.list_held():
-            try:
-                grant.path.lstat()
-            except FileNotFoundError:
-                breached.append(grant)
-            except OSError as exc:
-                raise CustodyUnavailableError(
-                    f"cannot verify whether held checkout {grant.path} still "
-                    f"exists: {exc}"
-                ) from exc
-        return tuple(breached)
+        inspection = self.inspect()
+        if inspection.unknown:
+            raise CustodyUnavailableError(inspection.unknown[0].detail)
+        return inspection.breached
 
     def list_held(self) -> tuple[CustodyGrant, ...]:
         with self._locked():

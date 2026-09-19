@@ -22,6 +22,8 @@ import re
 import shutil
 import subprocess
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -56,6 +58,7 @@ from issue_orchestrator.entrypoints.cli_tools.worktree_custody import (
 )
 from issue_orchestrator.execution.worktree_adapter import GitWorktreeManager
 from issue_orchestrator.ports.worktree_custody import (
+    CustodyError,
     CustodyRelease,
     WorktreeInCustodyError,
 )
@@ -93,6 +96,25 @@ def _git_in(repo: Path):
         return None if result.returncode == 0 else (result.stderr or "").strip()
 
     return run
+
+
+@contextmanager
+def _unreadable(directory: Path) -> "Iterator[None]":
+    """Make everything under ``directory`` genuinely unstattable.
+
+    Monkeypatching ``Path.stat``/``Path.lstat`` does NOT work for this on
+    Python 3.14: ``Path.exists()`` calls ``os.stat`` directly, so a patched
+    ``Path.stat`` leaves ``exists()`` answering True and the mutation under test
+    becomes inert -- a test that passes with the fix reverted. Removing the
+    parent's execute bit makes the kernel raise EACCES for real, which is the
+    condition the production code actually has to survive.
+    """
+    original = directory.stat().st_mode
+    os.chmod(directory, 0o000)
+    try:
+        yield
+    finally:
+        os.chmod(directory, original)
 
 
 @pytest.fixture
@@ -323,10 +345,7 @@ class TestTheStore:
         assert trail[-1]["branch"] == "tech-lead-investigation-6410-abcdef123456"
 
     def test_an_unreadable_held_checkout_is_not_reported_as_gone(
-        self,
-        manager: GitWorktreeManager,
-        checkout: Path,
-        monkeypatch,
+        self, manager: GitWorktreeManager, repo: Path, tmp_path: Path
     ) -> None:
         """Inspection failure is unknown, not evidence of an external deletion.
 
@@ -334,32 +353,52 @@ class TestTheStore:
         removed anyway. Built on ``Path.exists()``, it said that about a
         checkout it merely could not read (round 18 finding 1).
         """
-        grant = manager.take_custody(checkout, holder=HOLDER, reason=REASON)
-        original_stat = Path.stat
-        original_lstat = Path.lstat
+        sealed = tmp_path / "sealed"
+        sealed.mkdir()
+        held = sealed / "repo-tech-lead-6410-abcdef123456"
+        _git(repo, "worktree", "add", "-b", "sealed-investigation", str(held))
+        (held / "finding.md").write_text("the only copy\n")
+        grant = manager.take_custody(held, holder=HOLDER, reason=REASON)
 
-        def stat_or_fail(path: Path, *args: object, **kwargs: object):
-            if path == checkout:
-                raise PermissionError("checkout cannot be inspected")
-            return original_stat(path, *args, **kwargs)
+        with _unreadable(sealed):
+            # The premise, asserted rather than assumed: this is exactly the
+            # state in which exists() answers False about a path that is there.
+            assert held.exists() is False
 
-        def lstat_or_fail(path: Path, *args: object, **kwargs: object):
-            if path == checkout:
-                raise PermissionError("checkout cannot be inspected")
-            return original_lstat(path, *args, **kwargs)
+            with pytest.raises(
+                CustodyUnavailableError,
+                match="cannot verify whether held checkout",
+            ):
+                manager.breached_custody(repo)
 
-        # Both, because Path.exists() suppresses the stat error and answers
-        # False -- the exact collapse under test.
-        monkeypatch.setattr(Path, "stat", stat_or_fail)
-        monkeypatch.setattr(Path, "lstat", lstat_or_fail)
+        assert manager.custody_of(held) == grant
+        assert (held / "finding.md").exists()
 
-        with pytest.raises(
-            CustodyUnavailableError, match="cannot verify whether held checkout"
-        ):
-            manager.breached_custody(checkout)
+    def test_removal_does_not_mistake_an_unreadable_held_checkout_for_absent(
+        self, manager: GitWorktreeManager, repo: Path, tmp_path: Path
+    ) -> None:
+        """The manager has to REACH custody before declaring success.
 
-        monkeypatch.undo()
-        assert manager.custody_of(checkout) == grant
+        ``remove_worktree`` took an early exit on ``Path.exists()``, so a forced
+        removal of an unreadable held checkout returned NORMALLY -- reporting
+        success for a checkout it never touched and never asked about (round 19
+        finding 2).
+        """
+        sealed = tmp_path / "sealed"
+        sealed.mkdir()
+        held = sealed / "repo-tech-lead-6410-abcdef123456"
+        _git(repo, "worktree", "add", "-b", "sealed-investigation", str(held))
+        (held / "finding.md").write_text("the only copy\n")
+        grant = manager.take_custody(held, holder=HOLDER, reason=REASON)
+
+        with _unreadable(sealed):
+            assert held.exists() is False
+
+            with pytest.raises(CustodyError):
+                manager.remove_checkout_and_branch(held, force=True)
+
+        assert manager.custody_of(held) == grant
+        assert (held / "finding.md").exists()
 
     def test_an_unreadable_store_is_an_error_not_an_empty_one(
         self, repo: Path, checkout: Path
@@ -516,6 +555,43 @@ class TestTheOperatorSurface:
         printed = capsys.readouterr().out
         assert "tech-lead-investigation-6410-abcdef123456" in printed
         assert REASON in printed
+
+    def test_listing_continues_after_an_unreadable_checkout(
+        self,
+        manager: GitWorktreeManager,
+        repo: Path,
+        checkout: Path,
+        tmp_path: Path,
+        capsys,
+    ) -> None:
+        """One unknown checkout does not hide valid grants or later breaches.
+
+        ``cmd_list`` asked for the breach list before printing anything, so a
+        raise there aborted the whole command (round 19 finding 1).
+        """
+        manager.take_custody(checkout, holder="present-holder", reason="still here")
+
+        gone = checkout.parent / "gone-checkout"
+        _git(repo, "worktree", "add", "-b", "gone-branch", str(gone))
+        manager.take_custody(gone, holder="gone-holder", reason="was here")
+        shutil.rmtree(gone)
+
+        sealed = tmp_path / "sealed"
+        sealed.mkdir()
+        unknown = sealed / "repo-tech-lead-6410-abcdef123456"
+        _git(repo, "worktree", "add", "-b", "sealed-branch", str(unknown))
+        manager.take_custody(unknown, holder="sealed-holder", reason="cannot see")
+
+        with _unreadable(sealed):
+            assert custody_cli(["list", "--repo-root", str(repo)]) == 1
+            captured = capsys.readouterr()
+
+        assert "present-holder" in captured.out
+        assert "GONE despite being held" in captured.out
+        assert "gone-branch" in captured.out
+        assert "UNKNOWN -- checkout presence could not be verified" in captured.out
+        assert "sealed-holder" in captured.out
+        assert "Permission denied" in captured.out
 
     def test_listing_an_empty_repository_says_so(
         self, repo: Path, capsys
@@ -1048,6 +1124,45 @@ class TestOperatorReset:
         assert (issue_checkout / "work.md").exists()
         assert "6410-work" in _branches(repo)
 
+    @pytest.mark.parametrize("from_scratch", [False, True], ids=["reuse", "scratch"])
+    def test_an_unreadable_held_checkout_still_stops_the_reset(
+        self,
+        manager: GitWorktreeManager,
+        repo: Path,
+        tmp_path: Path,
+        from_scratch: bool,
+    ) -> None:
+        """An inspection error is not an absent checkout or a successful reset.
+
+        The early `Path.exists()` return meant reset went on to clear the
+        issue's state without ever producing the custody refusal that is the
+        whole point of this path (round 19 finding 2).
+        """
+        sealed = tmp_path / "sealed"
+        sealed.mkdir()
+        issue_checkout = sealed / f"{repo.name}-6410"
+        _git(repo, "worktree", "add", "-b", "6410-work", str(issue_checkout))
+        (issue_checkout / "work.md").write_text("the only copy\n")
+        _git(issue_checkout, "add", "work.md")
+        _git(issue_checkout, "commit", "-m", "work")
+        grant = manager.take_custody(issue_checkout, holder=HOLDER, reason=REASON)
+        config = SimpleNamespace(worktree_base=sealed, repo_root=repo)
+
+        with _unreadable(sealed):
+            assert issue_checkout.exists() is False
+
+            with pytest.raises(CustodyError):
+                _remove_local_worktree(
+                    issue_number=6410,
+                    config=cast(Any, config),
+                    worktree_manager=manager,
+                    from_scratch=from_scratch,
+                )
+
+        assert (issue_checkout / "work.md").exists()
+        assert manager.custody_of(issue_checkout) == grant
+        assert "6410-work" in _branches(repo)
+
 
 class TestCreatingOverAHeldCheckout:
     def test_a_fresh_create_does_not_delete_a_held_path(
@@ -1071,7 +1186,7 @@ def test_the_store_satisfies_the_custody_port() -> None:
     store: WorktreeCustody = GitMetadataWorktreeCustody(Path("/nonexistent"))
 
     assert isinstance(store, GitMetadataWorktreeCustody)
-    for method in ("take", "release", "held", "list_held"):
+    for method in ("take", "release", "held", "list_held", "inspect"):
         assert callable(getattr(store, method))
 
 

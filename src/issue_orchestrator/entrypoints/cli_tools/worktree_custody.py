@@ -99,20 +99,32 @@ def _render(grant: CustodyGrant) -> str:
 
 def cmd_list(manager: GitWorktreeManager, args: argparse.Namespace) -> int:
     repo_root = _repo_root_of(args)
-    held = manager.checkouts_in_custody(repo_root)
-    breached = manager.breached_custody(repo_root)
-    if not held:
+    # One call, three classifications. Asking for the breach list separately
+    # meant one unreadable checkout aborted the whole command before it printed
+    # anything -- hiding every valid grant and every later breach from the
+    # operator (round 19 finding 1).
+    inspection = manager.inspect_custody(repo_root)
+    if not inspection.held:
         print("No checkouts are in custody.")
-    for grant in held:
-        if grant not in breached:
+    unaccounted = set(inspection.breached) | {
+        failure.grant for failure in inspection.unknown
+    }
+    for grant in inspection.held:
+        if grant not in unaccounted:
             print(_render(grant))
-    if breached:
+    if inspection.breached:
         # Custody prevents inside this codebase and detects outside it. Saying
         # nothing here would leave an operator believing a promise that was
         # already broken.
         print("\nGONE despite being held -- something outside removed these:")
-        for grant in breached:
+        for grant in inspection.breached:
             print(_render(grant))
+    if inspection.unknown:
+        print("\nUNKNOWN -- checkout presence could not be verified:")
+        for failure in inspection.unknown:
+            print(_render(failure.grant))
+            print(f"  inspection error: {failure.detail}")
+    if inspection.breached or inspection.unknown:
         return 1
     return 0
 

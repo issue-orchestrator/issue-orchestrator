@@ -8,6 +8,7 @@ from .git_tools import run_git
 
 from ..ports.worktree_custody import (
     CustodyGrant,
+    CustodyInspection,
     CustodyRelease,
     CustodyUnavailableError,
 )
@@ -155,6 +156,10 @@ class GitWorktreeManager:
     def checkouts_in_custody(self, repo_root: Path) -> tuple[CustodyGrant, ...]:
         """Every checkout of ``repo_root`` held for a person, oldest first."""
         return self._custody(repo_root).list_held()
+
+    def inspect_custody(self, repo_root: Path) -> CustodyInspection:
+        """Classify every grant without hiding later results."""
+        return self._custody(repo_root).inspect()
 
     def breached_custody(self, repo_root: Path) -> tuple[CustodyGrant, ...]:
         """Grants whose checkout is gone: something removed it anyway."""

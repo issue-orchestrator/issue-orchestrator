@@ -75,6 +75,24 @@ class ResetResult:
     error: str | None = None
 
 
+def _checkout_presence(worktree_path: Path) -> str:
+    """``absent``, ``present``, or ``unknown`` -- three answers, not two.
+
+    ``Path.exists()`` collapses "not there" and "cannot tell" into False, so a
+    reset over an unreadable HELD checkout returned early and went on to clear
+    the issue's state without ever producing the custody refusal that is the
+    whole point of this path (round 19 finding 2). Only a PROVEN absence may
+    skip the removal owner.
+    """
+    try:
+        worktree_path.lstat()
+    except FileNotFoundError:
+        return "absent"
+    except OSError:
+        return "unknown"
+    return "present"
+
+
 def _remove_local_worktree(
     *,
     issue_number: int,
@@ -83,14 +101,15 @@ def _remove_local_worktree(
     from_scratch: bool,
 ) -> str | None:
     worktree_path = get_worktree_path(config, issue_number)
+    path_state = _checkout_presence(worktree_path)
     logger.info(
-        "[reset] Begin issue reset: issue=%d from_scratch=%s worktree=%s exists=%s",
+        "[reset] Begin issue reset: issue=%d from_scratch=%s worktree=%s state=%s",
         issue_number,
         from_scratch,
         worktree_path,
-        worktree_path.exists(),
+        path_state,
     )
-    if not worktree_path.exists():
+    if path_state == "absent":
         return None
 
     try:

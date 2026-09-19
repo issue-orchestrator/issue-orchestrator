@@ -13,7 +13,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from .worktree_custody import CustodyGrant, CustodyRelease
+from .worktree_custody import (
+    CustodyGrant,
+    CustodyInspection,
+    CustodyRelease,
+)
 
 
 WORKTREE_ID_MARKER = Path(".issue-orchestrator/worktree-id")
@@ -181,6 +185,10 @@ class WorktreeManager(Protocol):
 
     def checkouts_in_custody(self, repo_root: Path) -> tuple[CustodyGrant, ...]:
         """Every checkout of ``repo_root`` held for a person, oldest first."""
+        ...
+
+    def inspect_custody(self, repo_root: Path) -> CustodyInspection:
+        """Classify every held checkout as present, breached, or unknown."""
         ...
 
     def breached_custody(self, repo_root: Path) -> tuple[CustodyGrant, ...]:

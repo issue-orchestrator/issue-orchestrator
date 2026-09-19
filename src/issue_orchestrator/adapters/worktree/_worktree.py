@@ -14,6 +14,7 @@ from ...infra.logging_config import issue_log
 from ...ports.git import GitResult
 from ...ports.worktree_policy import WorktreePolicy
 from ...ports.worktree_custody import CustodyError, CustodyRelease
+from .custody import custody_guard
 from ...ports.worktree_manager import RegisteredWorktree, WorktreeReuseOptions
 from ...infra.worktree_base import resolve_base_branch
 from ._worktree_errors import WorktreeError as WorktreeError
@@ -1305,7 +1306,14 @@ def remove_worktree(
     require_disposable_path(worktree_path)
     worktree_path = Path(worktree_path)
     logger.info("Removing worktree: path=%s", worktree_path)
-    if not worktree_path.exists():
+    # PROVEN absent, not merely unstattable. `Path.exists()` answers False for a
+    # path it cannot stat at all, so an unreadable HELD checkout took the early
+    # exit and forced removal reported success without ever consulting custody
+    # (round 19 finding 2). Unknown falls through to the guarded owner, which is
+    # the only thing entitled to decide that a held checkout may go.
+    try:
+        worktree_path.lstat()
+    except FileNotFoundError:
         if force:
             # Idempotent for disposable/forced removal (#6824 R3): ``force`` means
             # "discard this local worktree", and an already-absent path already
@@ -1316,6 +1324,11 @@ def remove_worktree(
             logger.info("Worktree already absent; forced removal is a no-op: path=%s", worktree_path)
             return
         raise WorktreeError(f"Worktree does not exist at {worktree_path}")
+    except OSError:
+        logger.info(
+            "Worktree presence could not be determined; asking custody: path=%s",
+            worktree_path,
+        )
 
     try:
         # What the CHECKOUT says, which is a different question from which
@@ -1379,6 +1392,15 @@ def _remove_orphaned_worktree_path(
     to let it proceed without a store was the fail-open hole (round 8 finding 2).
     """
     if not force:
+        # Ask custody BEFORE refusing generically. A caller that catches
+        # WorktreeError treats it as "could not remove, carry on" -- operator
+        # reset logs a warning and goes on to clear the issue's state -- so a
+        # held checkout reached here produced no custody answer at all. The
+        # guard raises WorktreeInCustodyError for a grant and
+        # CustodyUnavailableError when it cannot tell, both of which callers
+        # are required to propagate (round 19 finding 2, non-forced half).
+        with custody_guard(worktree_path, repo_root=repo_root):
+            pass
         raise WorktreeError(f"Unable to resolve repo root for {worktree_path}")
     logger.warning(
         "Forced worktree removal cannot resolve repo root; deleting path directly: %s",
