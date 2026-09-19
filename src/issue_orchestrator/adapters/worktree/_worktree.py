@@ -583,6 +583,50 @@ def _remove_existing_worktree_path(repo_root: Path, worktree_path: Path) -> None
         shutil.rmtree(worktree_path, ignore_errors=True)
 
 
+def _reuse_failure(
+    *,
+    worktree_path: Path,
+    branch_name: str,
+    repo_root: Path,
+    issue_number: int,
+    policy: WorktreePolicy,
+    preserve_branch: bool,
+    reason: str,
+) -> _WorktreeReuseResult:
+    """The one place reuse decides between destroying and retaining.
+
+    ``preserve_branch`` used to guard only the rebase/hard-reset, so the branch
+    was safe from being REWRITTEN but not from being DELETED: validation,
+    remote sync and push preflight each ran their own
+    ``policy.delete_worktree``, which removes the local branch too. A transient
+    auth or network failure while relaunching an investigation therefore
+    destroyed the only copy of its work on the way to reporting a launch
+    failure (round 9 finding 2).
+
+    A preserved branch has no surviving remote copy, so any failure must stop
+    the launch and keep the checkout; falling through to recreation converts a
+    transient failure into permanent loss.
+    """
+    if preserve_branch:
+        logger.warning(
+            issue_log(
+                issue_number,
+                "Worktree reuse failed; retaining preserved checkout: %s",
+            ),
+            reason,
+        )
+        raise WorktreeError(
+            f"Preserved branch {branch_name!r} at {worktree_path} could not be "
+            f"reused safely ({reason}); refusing destructive recreation"
+        )
+    logger.warning(
+        issue_log(issue_number, "Worktree reuse failed; deleting checkout: %s"),
+        reason,
+    )
+    policy.delete_worktree(worktree_path, repo_root)
+    return _WorktreeReuseResult(success=False, recreated_reason=reason)
+
+
 def _try_reuse_worktree(
     worktree_path: Path,
     branch_name: str,
@@ -608,14 +652,14 @@ def _try_reuse_worktree(
     # Policy: validate worktree can be reused
     validation = policy.validate_for_reuse(worktree_path, branch_name, repo_root)
     if not validation.can_reuse:
-        logger.warning(
-            issue_log(issue_number, "Worktree failed validation, deleting: %s"),
-            validation.reason,
-        )
-        policy.delete_worktree(worktree_path, repo_root)
-        return _WorktreeReuseResult(
-            success=False,
-            recreated_reason=f"validation_failed: {validation.reason}",
+        return _reuse_failure(
+            worktree_path=worktree_path,
+            branch_name=branch_name,
+            repo_root=repo_root,
+            issue_number=issue_number,
+            policy=policy,
+            preserve_branch=preserve_branch,
+            reason=f"validation_failed: {validation.reason}",
         )
 
     # Rebase onto latest base branch (critical for reruns with stale branches).
@@ -637,25 +681,25 @@ def _try_reuse_worktree(
     # Policy: sync remote refs to prevent stale-info push failures
     sync_result = policy.sync_remote_refs(worktree_path, branch_name)
     if not sync_result.success:
-        logger.warning(
-            issue_log(issue_number, "Failed to sync remote refs, deleting worktree: %s"),
-            sync_result.reason,
-        )
-        policy.delete_worktree(worktree_path, repo_root)
-        return _WorktreeReuseResult(
-            success=False,
-            recreated_reason=f"sync_failed: {sync_result.reason}",
+        return _reuse_failure(
+            worktree_path=worktree_path,
+            branch_name=branch_name,
+            repo_root=repo_root,
+            issue_number=issue_number,
+            policy=policy,
+            preserve_branch=preserve_branch,
+            reason=f"sync_failed: {sync_result.reason}",
         )
 
     if not reset_info.success:
-        logger.warning(
-            issue_log(issue_number, "Reset to base branch failed, deleting worktree: %s"),
-            reset_info.reason or "unknown",
-        )
-        policy.delete_worktree(worktree_path, repo_root)
-        return _WorktreeReuseResult(
-            success=False,
-            recreated_reason=f"reset_failed: {reset_info.reason or 'rebase failed'}",
+        return _reuse_failure(
+            worktree_path=worktree_path,
+            branch_name=branch_name,
+            repo_root=repo_root,
+            issue_number=issue_number,
+            policy=policy,
+            preserve_branch=preserve_branch,
+            reason=f"reset_failed: {reset_info.reason or 'rebase failed'}",
         )
 
     # Optional push preflight check
@@ -666,14 +710,14 @@ def _try_reuse_worktree(
             allow_no_verify=allow_no_verify_dry_run_preflight,
         )
         if not ok:
-            logger.warning(
-                issue_log(issue_number, "Push preflight failed, deleting worktree: %s"),
-                reason,
-            )
-            policy.delete_worktree(worktree_path, repo_root)
-            return _WorktreeReuseResult(
-                success=False,
-                recreated_reason=f"push_preflight_failed: {reason}",
+            return _reuse_failure(
+                worktree_path=worktree_path,
+                branch_name=branch_name,
+                repo_root=repo_root,
+                issue_number=issue_number,
+                policy=policy,
+                preserve_branch=preserve_branch,
+                reason=f"push_preflight_failed: {reason}",
             )
         logger.info(issue_log(issue_number, "Push preflight ok for reused worktree"))
 

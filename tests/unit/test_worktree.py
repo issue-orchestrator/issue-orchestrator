@@ -2277,6 +2277,81 @@ class TestCreateWorktreeReuse:
                 a[:3] == ["fetch", "origin", "main"] for a in issued
             ), issued
 
+    def test_preserved_reuse_failure_keeps_the_checkout_and_branch(self, tmp_path):
+        """preserve_branch also has to survive a FAILURE, not just the happy path.
+
+        It guarded the rebase/hard-reset, so the branch was safe from being
+        rewritten but not from being deleted: validation, remote sync and push
+        preflight each called ``policy.delete_worktree``, which removes the
+        local branch too. A transient auth failure while relaunching an
+        investigation destroyed its only copy on the way to reporting a launch
+        failure (round 9 finding 2).
+        """
+        from issue_orchestrator.ports.worktree_policy import (
+            SyncResult,
+            ValidationResult,
+        )
+
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        (repo_root / ".git").mkdir()
+        worktree_path = tmp_path / "repo-tech-lead-6410-abcdef123456"
+        worktree_path.mkdir()
+        (worktree_path / "only-copy.txt").write_text("unpushed investigation\n")
+        branch_name = "tech-lead-investigation-6410-abcdef123456"
+        deleted: list[Path] = []
+
+        class SyncFailurePolicy:
+            def validate_for_reuse(self, candidate, expected_branch, root):
+                return ValidationResult(can_reuse=True, reason="ok")
+
+            def sync_remote_refs(self, candidate, branch):
+                return SyncResult(success=False, reason="temporary auth failure")
+
+            def delete_worktree(self, candidate, root):
+                deleted.append(candidate)
+                shutil.rmtree(candidate)
+                return True
+
+        worktree_list_output = (
+            f"worktree {worktree_path}\n"
+            "HEAD abc123\n"
+            f"branch refs/heads/{branch_name}\n\n"
+        )
+
+        with (
+            patch("issue_orchestrator.adapters.git.git_cli.subprocess.run") as mock_run,
+            patch("issue_orchestrator.adapters.worktree._worktree_runtime_setup.install_hooks"),
+            patch("issue_orchestrator.adapters.worktree._worktree_runtime_setup.install_claude_settings"),
+            patch("issue_orchestrator.adapters.worktree._worktree_runtime_setup.sync_cli_tools"),
+        ):
+            def run_side_effect(cmd, *args, **kwargs):
+                argv = cmd[3:]
+                if argv[:2] == ["worktree", "list"]:
+                    return MagicMock(returncode=0, stdout=worktree_list_output, stderr="")
+                return MagicMock(returncode=0, stdout="", stderr="")
+
+            mock_run.side_effect = run_side_effect
+
+            with pytest.raises(WorktreeError, match="Preserved branch"):
+                create_worktree(
+                    repo_root,
+                    6410,
+                    "Investigate failure",
+                    worktree_base=tmp_path,
+                    branch_name=branch_name,
+                    reuse_options=WorktreeReuseOptions(
+                        reuse_push_preflight=False, preserve_branch=True
+                    ),
+                    policy=SyncFailurePolicy(),
+                )
+
+        assert deleted == []
+        assert worktree_path.exists()
+        assert (worktree_path / "only-copy.txt").read_text() == (
+            "unpushed investigation\n"
+        )
+
     def test_reuse_without_preserve_branch_still_resets(self, tmp_path):
         """Default (preserve_branch=False) still rebases and discards on conflict.
 

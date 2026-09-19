@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 from ..domain.tech_lead_scratch_identity import (
     names_one_scratch_checkout,
     ordinary_worktree_name_pattern,
+    scratch_worktree_focus_issue,
     scratch_worktree_name_pattern,
 )
 from ..ports.worktree_manager import RegisteredWorktree, WORKTREE_ID_MARKER
@@ -411,24 +412,45 @@ class StartupWorktreeReconciler:
         self._audit_owner = audit_owner
         self._runtime_lifecycle = runtime_lifecycle
 
-    def investigation_checkouts(self) -> tuple[RegisteredWorktree, ...]:
-        """Registered Tech Lead investigation checkouts, whatever their state.
+    def validation_retry_checkouts(
+        self,
+    ) -> tuple[tuple[int, RegisteredWorktree, str], ...]:
+        """Owned registered checkouts that can hold a validation retry.
 
-        Startup retry recovery scans the numeric issue branches git reports and
-        the ordinary worktree path derived from each issue number. An
-        investigation runs on an unpushed branch in a run-scoped disposable
-        checkout, so it appears in neither, and a retry queued against it was
-        invisible to a restart -- while this same reconciler classified the
-        checkout as an inactive disposable and removed it WITH its branch
-        (#7273). Recovery reads the inventory this owner already holds rather
-        than re-deriving the investigation shape against the filesystem.
+        This is INVENTORY, not queue-selection policy: the retry-recovery owner
+        still decides what wins a same-issue collision. Recovery reads the
+        inventory this owner already holds rather than re-deriving either
+        checkout shape against the filesystem.
+
+        Both shapes come from git's registered list because neither is reliably
+        reachable from a REMOTE branch. An investigation runs on an unpushed
+        branch in a run-scoped disposable checkout (#7273). An ordinary retry is
+        commonly local-only too, because validation runs before the first push --
+        so a restart that consulted only the remote issue branches left it
+        stranded indefinitely once an investigation had won its issue-number slot
+        (round 9 finding 1).
         """
-        return tuple(
-            item
-            for item in self._worktree_manager.list_registered(self._config.repo_root)
-            if item.branch is not None
-            and names_one_scratch_checkout(item.path.name, item.branch)
-        )
+        repo_root = Path(self._config.repo_root).resolve()
+        worktree_base = Path(self._config.worktree_base).resolve()
+        patterns = _worktree_patterns(repo_root)
+        checkouts: list[tuple[int, RegisteredWorktree, str]] = []
+        for item in self._worktree_manager.list_registered(repo_root):
+            if item.branch is None:
+                continue
+            path = item.path.resolve()
+            focus = scratch_worktree_focus_issue(path.name)
+            if focus is not None and names_one_scratch_checkout(
+                path.name, item.branch
+            ):
+                checkouts.append((focus, item, "investigation"))
+                continue
+            if (
+                path.parent == worktree_base
+                and patterns.ordinary.fullmatch(path.name)
+                and _has_orchestrator_identity(path)
+            ):
+                checkouts.append((int(path.name.rsplit("-", 1)[1]), item, "issue"))
+        return tuple(checkouts)
 
     def audit(self, state: OrchestratorState) -> tuple[WorktreeAuditEntry, ...]:
         activity = WorktreeActivityEvidence.known(

@@ -317,8 +317,11 @@ def test_an_investigation_retry_wins_an_ordinary_checkout_collision(
     under the review gate and is recoverable (round 8 finding 1).
     """
     _leave_retry_artifacts(investigation)
-    ordinary = tmp_path / "worktree" / "repo-6410"
+    ordinary = tmp_path / "worktree" / f"{repo.name}-6410"
     _git(repo, "worktree", "add", "-b", "6410-ordinary", str(ordinary))
+    ordinary_marker = ordinary / WORKTREE_ID_MARKER
+    ordinary_marker.parent.mkdir(parents=True, exist_ok=True)
+    ordinary_marker.write_text("wt-ordinary\n")
     _leave_retry_artifacts(ordinary)
     state = OrchestratorState()
 
@@ -336,7 +339,41 @@ def test_an_investigation_retry_wins_an_ordinary_checkout_collision(
         "the ordinary checkout took the slot and left the scratch branch "
         "with no activity evidence"
     )
-    assert _audit(repo, investigation, state)[0].disposition == "retained"
+    held = [
+        entry
+        for entry in _audit(repo, investigation, state)
+        if Path(entry.path) == investigation
+    ]
+    assert [entry.disposition for entry in held] == ["retained"]
+
+    # The investigation finishes, and the ordinary retry is still LOCAL-ONLY:
+    # validation failed before its first push, so startup's remote issue-branch
+    # map is empty. Its registered checkout has to be enough to resume it, or
+    # losing the first collision stranded it permanently (round 9 finding 1).
+    (
+        investigation
+        / ".issue-orchestrator"
+        / "sessions"
+        / f"{RUN_ID}__{SESSION_NAME}"
+        / "validation-state.json"
+    ).unlink()
+    later_state = OrchestratorState()
+
+    recovered_later = ValidationRetryRecovery(
+        _Config(repo, investigation.parent),
+        _reconciler(repo, investigation.parent, _Config),
+        lambda _name: False,
+        _ledger(ordinary, agent_label="agent:coder", completion_task=TaskKind.CODE),
+        _authority_store(grant=False),
+    ).recover(later_state, {})
+
+    assert recovered_later == 1, (
+        "the local-only ordinary retry that lost the first collision was stranded"
+    )
+    [later_retry] = later_state.pending_validation_retries
+    assert later_retry.worktree_path == str(ordinary)
+    assert later_retry.branch_name == "6410-ordinary"
+    assert later_retry.agent_label == "agent:coder"
 
 
 def test_an_allocation_only_retry_run_does_not_hide_the_queued_retry(

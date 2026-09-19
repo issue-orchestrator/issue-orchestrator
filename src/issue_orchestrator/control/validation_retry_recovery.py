@@ -9,8 +9,11 @@ branch.
 
 Two shapes of checkout hold a retry, and they are found in different ways:
 
-- An ordinary coding retry sits in the worktree derived from its issue number,
-  on a numeric branch git reports. The issue-branch scan finds it.
+- An ordinary coding retry sits in the worktree derived from its issue number.
+  It is commonly LOCAL-ONLY, because validation runs before the first push, so
+  the registered-checkout inventory is what finds it; the remote issue-branch
+  scan stays as a compatibility path for legacy checkouts with no ownership
+  marker.
 - A Tech Lead failure investigation runs on an UNPUSHED ``tech-lead-investigation``
   branch in a run-scoped disposable checkout under the focus issue's number, so
   neither the numeric branch scan nor the derived worktree path reaches it. Its
@@ -29,7 +32,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
 from ..domain.models import PendingValidationRetry
-from ..domain.tech_lead_scratch_identity import scratch_worktree_focus_issue
 from ..infra.validation_state import ValidationRetryArtifacts, find_pending_retry_artifacts
 from .recovered_run_identity import registered_run
 from .worktree_manager import get_worktree_path
@@ -107,17 +109,29 @@ class ValidationRetryRecovery:
         checkout holds the issue's own work. But losing the slot means
         reconciliation sees no activity evidence for the other checkout -- and
         for the investigation that means deleting a never-pushed branch with no
-        second copy anywhere, while the ordinary checkout stays managed by the
-        review gate and is recoverable (round 8 finding 1).
+        second copy anywhere (round 8 finding 1).
+
+        The claim that the loser is recoverable is only true if a later restart
+        can still FIND it. Reading the ordinary shape from the registered
+        inventory rather than from the remote issue branches is what makes that
+        true for a retry whose branch was never pushed (round 9 finding 1).
         """
+        registered = sorted(
+            self._worktree_reconciler.validation_retry_checkouts(),
+            key=lambda candidate: candidate[2] != "investigation",
+        )
         candidates: list[tuple[int, Path, str, str]] = []
-        for item in self._worktree_reconciler.investigation_checkouts():
-            focus = scratch_worktree_focus_issue(item.path.name)
-            if focus is not None and item.branch is not None:
-                candidates.append((focus, item.path, item.branch, "investigation"))
+        seen: set[Path] = set()
+        for issue_number, item, kind in registered:
+            assert item.branch is not None
+            candidates.append((issue_number, item.path, item.branch, kind))
+            seen.add(item.path.resolve())
+        # Compatibility path for a legacy ordinary checkout with no ownership
+        # marker, which the registered inventory declines to claim but which does
+        # have a published numeric branch.
         for issue_number, branch_name in issue_branches.items():
             worktree_path = get_worktree_path(self._config, issue_number)
-            if worktree_path.exists():
+            if worktree_path.exists() and worktree_path.resolve() not in seen:
                 candidates.append((issue_number, worktree_path, branch_name, "issue"))
         return candidates
 
