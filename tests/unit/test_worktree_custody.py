@@ -1237,6 +1237,68 @@ class TestCreatingOverAHeldCheckout:
         assert manager.custody_of(checkout) == grant
 
 
+    def test_preserved_reuse_refuses_a_held_checkout(
+        self, manager: GitWorktreeManager, repo: Path, checkout: Path, tmp_path: Path
+    ) -> None:
+        """Preserve mode SKIPPED the reset guard and still wrote runtime files.
+
+        Round 21 guarded the reset only, so the one mode that exists to protect
+        an investigation was the one mode that never asked (round 22 finding 1).
+        """
+        branch = "tech-lead-investigation-6410-abcdef123456"
+        only_copy = checkout / "uncommitted-investigation.txt"
+        only_copy.write_text("not committed anywhere\n")
+        _git(repo, "remote", "add", "origin", str(repo))
+        manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+
+        with pytest.raises(WorktreeInCustodyError):
+            worktree_module.create_worktree(
+                repo,
+                7278,
+                "preserved launch",
+                worktree_base=tmp_path / "new-worktrees",
+                branch_name=branch,
+                enforce_hooks=False,
+                reuse_options=WorktreeReuseOptions(
+                    preserve_branch=True, reuse_push_preflight=False
+                ),
+            )
+
+        assert only_copy.read_text() == "not committed anywhere\n"
+        assert _git(checkout, "branch", "--show-current").strip() == branch
+
+    def test_completion_rebase_refuses_a_held_checkout(
+        self, manager: GitWorktreeManager, repo: Path, checkout: Path
+    ) -> None:
+        """A completion retry rebases the branch a grant protects."""
+        from issue_orchestrator.execution.git_working_copy import GitWorkingCopy
+
+        (repo / "main-only.txt").write_text("advance main\n")
+        _git(repo, "add", "main-only.txt")
+        _git(repo, "commit", "-m", "advance main")
+        before = _git(checkout, "rev-parse", "HEAD").strip()
+        manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+
+        with pytest.raises(WorktreeInCustodyError):
+            GitWorkingCopy().rebase_on_branch(checkout, "main")
+
+        assert _git(checkout, "rev-parse", "HEAD").strip() == before
+
+    def test_collision_branch_switch_refuses_a_held_checkout(
+        self, manager: GitWorktreeManager, repo: Path, checkout: Path
+    ) -> None:
+        """`checkout -B` moves HEAD off the protected branch."""
+        from issue_orchestrator.execution.git_working_copy import GitWorkingCopy
+
+        original = _git(checkout, "branch", "--show-current").strip()
+        manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+
+        with pytest.raises(WorktreeInCustodyError):
+            GitWorkingCopy().create_branch_from_current(checkout, "replacement")
+
+        assert _git(checkout, "branch", "--show-current").strip() == original
+
+
 class TestPruningAroundCustody:
     """``git worktree prune`` is repository-WIDE, so it is custody-sensitive.
 
@@ -1289,7 +1351,7 @@ class TestPruningAroundCustody:
         _git(repo, "branch", "next-launch")
 
         with pytest.raises(
-            CustodyUnavailableError, match="has no readable registration"
+            CustodyUnavailableError, match="cannot prune worktree metadata"
         ):
             worktree_module.create_worktree(
                 repo,
@@ -1303,6 +1365,43 @@ class TestPruningAroundCustody:
         registrations = _git(repo, "worktree", "list", "--porcelain")
         assert f"worktree {held}" in registrations
         assert admin.is_dir()
+
+    def test_prune_refuses_a_held_checkout_pointing_at_a_sibling_admin(
+        self, manager: GitWorktreeManager, repo: Path, tmp_path: Path
+    ) -> None:
+        """Right repository is not the same fact as right REGISTRATION.
+
+        Checkout A's pointer can be replaced with B's, in this same repository.
+        `git_common_dir` still answers correctly, and git then prunes A's own
+        unclaimed registration (round 22 finding 2).
+        """
+        held = tmp_path / "held"
+        sibling = tmp_path / "sibling"
+        _git(repo, "worktree", "add", "-b", "held-branch", str(held))
+        _git(repo, "worktree", "add", "-b", "sibling-branch", str(sibling))
+        held_admin = Path(_git(held, "rev-parse", "--absolute-git-dir").strip())
+        manager.take_custody(held, holder=HOLDER, reason=REASON)
+
+        (held / ".git").write_bytes((sibling / ".git").read_bytes())
+        _git(repo, "config", "gc.worktreePruneExpire", "now")
+        _git(repo, "branch", "next-launch")
+
+        with pytest.raises(
+            CustodyUnavailableError, match="verify the git registration"
+        ):
+            worktree_module.create_worktree(
+                repo,
+                7279,
+                "another launch",
+                worktree_base=tmp_path / "new-worktrees",
+                branch_name="next-launch",
+                enforce_hooks=False,
+            )
+
+        registrations = _git(repo, "worktree", "list", "--porcelain")
+        assert f"worktree {held}" in registrations
+        assert held_admin.is_dir()
+        assert "held-branch" in _git(repo, "branch", "--list", "held-branch")
 
     def test_removal_does_not_prune_past_an_unreadable_held_sibling(
         self,

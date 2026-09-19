@@ -591,6 +591,7 @@ def _try_reuse_worktree(
     reuse_push_preflight: bool,
     allow_no_verify_dry_run_preflight: bool,
     base_branch: str | None,
+    runtime_setup: WorktreeRuntimeSetup,
     preserve_branch: bool = False,
 ) -> _WorktreeReuseResult:
     """Try to reuse an existing worktree, validating and preparing it.
@@ -604,6 +605,42 @@ def _try_reuse_worktree(
     Returns:
         _WorktreeReuseResult indicating success/failure with details.
     """
+    # Reuse is ONE mutation, not just the reset in its middle. Round 21 guarded
+    # the reset alone, which left three gaps: preserve mode skipped the guard
+    # entirely and still wrote runtime files into a held checkout, the push
+    # preflight can run a hook, and successful reuse always applies runtime
+    # setup afterwards. One custody answer spans all of it, so an operator
+    # cannot be told the checkout is held between two steps of the same
+    # operation (round 22 finding 1).
+    with custody_guard(worktree_path, repo_root=repo_root):
+        result = _prepare_reused_worktree(
+            worktree_path,
+            branch_name,
+            repo_root,
+            issue_number,
+            policy,
+            reuse_push_preflight,
+            allow_no_verify_dry_run_preflight,
+            base_branch,
+            preserve_branch=preserve_branch,
+        )
+        if result.success:
+            runtime_setup.apply(worktree_path)
+        return result
+
+
+def _prepare_reused_worktree(
+    worktree_path: Path,
+    branch_name: str,
+    repo_root: Path,
+    issue_number: int,
+    policy: WorktreePolicy,
+    reuse_push_preflight: bool,
+    allow_no_verify_dry_run_preflight: bool,
+    base_branch: str | None,
+    preserve_branch: bool = False,
+) -> _WorktreeReuseResult:
+    """Prepare a reused checkout while the CALLER holds its custody lock."""
     # Policy: validate worktree can be reused
     validation = policy.validate_for_reuse(worktree_path, branch_name, repo_root)
     if not validation.can_reuse:
@@ -631,14 +668,7 @@ def _try_reuse_worktree(
         )
         reset_info = ResetInfo(success=True)
     else:
-        # Custody prevented REMOVAL but not destructive REPURPOSING. A rebase,
-        # hard reset and clean discard exactly the work a grant protects, so
-        # the custody answer is held across the mutation the same way it is
-        # across a removal (round 21 finding 1).
-        with custody_guard(worktree_path, repo_root=repo_root):
-            reset_info = _update_worktree_onto_main(
-                worktree_path, repo_root, base_branch
-            )
+        reset_info = _update_worktree_onto_main(worktree_path, repo_root, base_branch)
 
     # Policy: sync remote refs to prevent stale-info push failures
     sync_result = policy.sync_remote_refs(worktree_path, branch_name)
@@ -1041,6 +1071,7 @@ def _try_reuse_by_branch(
         reuse_options.reuse_push_preflight,
         reuse_options.allow_no_verify_dry_run_preflight,
         base_branch,
+        runtime_setup,
         preserve_branch=reuse_options.preserve_branch,
     )
 
@@ -1048,8 +1079,8 @@ def _try_reuse_by_branch(
         # Return the recreated_reason so create_worktree can handle branch_on_recreate
         return (None, result.recreated_reason)
 
-    # Success - finalize and return
-    runtime_setup.apply(existing_worktree)
+    # Success - finalize and return. Runtime setup already ran INSIDE the
+    # custody guard, with the rest of the reuse (round 22 finding 1).
     logger.info(issue_log(issue_number, "Worktree reuse complete: path=%s"), existing_worktree)
     reset_info = result.reset_info or ResetInfo(success=True)
     return (
@@ -1117,6 +1148,7 @@ def _try_reuse_by_path(
         reuse_options.reuse_push_preflight,
         reuse_options.allow_no_verify_dry_run_preflight,
         base_branch,
+        runtime_setup,
         preserve_branch=reuse_options.preserve_branch,
     )
 
@@ -1124,8 +1156,8 @@ def _try_reuse_by_path(
         # Return the recreated_reason so create_worktree can handle branch_on_recreate
         return (None, result.recreated_reason)
 
-    # Success - finalize and return
-    runtime_setup.apply(worktree_path)
+    # Success - finalize and return. Runtime setup already ran INSIDE the
+    # custody guard, with the rest of the reuse (round 22 finding 1).
     logger.info(issue_log(issue_number, "Worktree reuse complete: path=%s"), worktree_path)
     reset_info = result.reset_info or ResetInfo(success=True)
     return (

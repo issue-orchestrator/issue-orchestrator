@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 
 from ..adapters.git.git_cli import GitCLI
+from ..adapters.worktree.custody import custody_guard
 from ..execution import git_push_operations as git_push_ops
 from ..execution.command_runner import LocalCommandRunner
 from ..execution.git_push_operations import GitAuthEnvProvider
@@ -536,42 +537,43 @@ class GitWorkingCopy:
     def rebase_on_branch(
         self, worktree: Path, target: str = "origin/main"
     ) -> RebaseResult:
-        """Rebase current branch onto target."""
-        try:
-            self._git.rebase(worktree, target)
-            return RebaseResult(success=True, message=f"Rebased onto {target}")
-        except GitError as e:
-            # Check for conflicts
+        """Rebase onto target, asking custody: it rewrites a protected branch."""
+        with custody_guard(worktree):
             try:
-                status = self._run_git(worktree, ["status", "--porcelain"])
-                conflicts = [
-                    line[3:] for line in status.stdout.split("\n")
-                    if line.startswith("UU ")
-                ]
-
-                # Abort the rebase
+                self._git.rebase(worktree, target)
+                return RebaseResult(success=True, message=f"Rebased onto {target}")
+            except GitError as e:
+                # Check for conflicts
                 try:
-                    self._git.rebase_abort(worktree)
-                    aborted = True
-                except Exception:
-                    aborted = False
+                    status = self._run_git(worktree, ["status", "--porcelain"])
+                    conflicts = [
+                        line[3:] for line in status.stdout.split("\n")
+                        if line.startswith("UU ")
+                    ]
 
-                return RebaseResult(
-                    success=False,
-                    message=f"Rebase failed with conflicts",
-                    conflicts=conflicts if conflicts else None,
-                    aborted=aborted,
-                )
-            except Exception:
-                error_msg = e.result.stderr or str(e)
-                return RebaseResult(
-                    success=False,
-                    message=f"Rebase failed: {error_msg}",
-                )
+                    try:
+                        self._git.rebase_abort(worktree)
+                        aborted = True
+                    except Exception:
+                        aborted = False
+
+                    return RebaseResult(
+                        success=False,
+                        message="Rebase failed with conflicts",
+                        conflicts=conflicts if conflicts else None,
+                        aborted=aborted,
+                    )
+                except Exception:
+                    error_msg = e.result.stderr or str(e)
+                    return RebaseResult(
+                        success=False,
+                        message=f"Rebase failed: {error_msg}",
+                    )
 
     def create_branch_from_current(self, worktree: Path, branch: str) -> None:
-        """Create and switch to a branch from the current HEAD."""
-        self._run_git(worktree, ["checkout", "-B", branch], timeout_s=60)
+        """Branch from current HEAD, asking custody: it moves HEAD off it."""
+        with custody_guard(worktree):
+            self._run_git(worktree, ["checkout", "-B", branch], timeout_s=60)
 
     def _check_e2e_dry_run(
         self, branch: str | None, remote: str

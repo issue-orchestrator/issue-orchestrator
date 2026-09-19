@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..adapters.worktree.api import WorktreeError, install_worktree_identity
+from ..adapters.worktree.custody import custody_guard
 from ..adapters.worktree.removal import GitRunner, remove_checkout_path
 from ..ports.worktree_custody import CustodyError
 from ..domain.review_exchange import REVIEWER_WORKTREE_CHECKOUT_FAILURE_MARKER
@@ -175,27 +176,31 @@ def fast_forward_reviewer_worktree(reviewer: ReviewerWorktree) -> str:
     """
     repo_root = _resolve_repo_root(reviewer.path)
     tip_sha = _resolve_branch_tip(repo_root, reviewer.coder_branch)
-    try:
-        _git(reviewer.path, ["checkout", "--detach", tip_sha])
-    except ReviewerWorktreeError as exc:
-        context: dict[str, object] = {
-            "reviewer_worktree": str(reviewer.path),
-            "coder_branch": reviewer.coder_branch,
-            "target_sha": tip_sha,
-        }
-        enriched = ReviewerWorktreeError(
-            "Failed to fast-forward reviewer worktree "
-            f"{reviewer.path} to {reviewer.coder_branch}@{tip_sha}: "
-            f"{exc} {REVIEWER_WORKTREE_CHECKOUT_FAILURE_MARKER}",
-            git_failure=exc.git_failure,
-            context=context,
-        )
-        logger.error(
-            "Reviewer worktree fast-forward failed: %s",
-            enriched.diagnostic(),
-        )
-        raise enriched from exc
-    _persist_owned_head(reviewer.path, tip_sha)
+    # Checking out a new detached tip makes a held reviewer-only commit
+    # unreachable -- the checkout survives, the evidence does not (round 22
+    # finding 1).
+    with custody_guard(reviewer.path, repo_root=repo_root):
+        try:
+            _git(reviewer.path, ["checkout", "--detach", tip_sha])
+        except ReviewerWorktreeError as exc:
+            context: dict[str, object] = {
+                "reviewer_worktree": str(reviewer.path),
+                "coder_branch": reviewer.coder_branch,
+                "target_sha": tip_sha,
+            }
+            enriched = ReviewerWorktreeError(
+                "Failed to fast-forward reviewer worktree "
+                f"{reviewer.path} to {reviewer.coder_branch}@{tip_sha}: "
+                f"{exc} {REVIEWER_WORKTREE_CHECKOUT_FAILURE_MARKER}",
+                git_failure=exc.git_failure,
+                context=context,
+            )
+            logger.error(
+                "Reviewer worktree fast-forward failed: %s",
+                enriched.diagnostic(),
+            )
+            raise enriched from exc
+        _persist_owned_head(reviewer.path, tip_sha)
     logger.debug(
         "Fast-forwarded reviewer worktree path=%s tip=%s",
         reviewer.path,

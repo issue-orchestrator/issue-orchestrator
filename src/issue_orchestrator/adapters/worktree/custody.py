@@ -195,6 +195,7 @@ class GitMetadataWorktreeCustody:
             for grant in inspection.held:
                 try:
                     grant_common_dir = git_common_dir(grant.path)
+                    _require_exact_worktree_backlink(grant.path)
                 except CustodyUnavailableError as exc:
                     raise CustodyUnavailableError(
                         "cannot prune worktree metadata while custody cannot "
@@ -676,6 +677,53 @@ def git_common_dir(path: Path) -> Path | None:
         git_dir.parent.parent if git_dir.parent.name == "worktrees" else git_dir
     )
     return _validated_git_common_dir(common_dir, claimed_by=path)
+
+
+def _require_exact_worktree_backlink(worktree_path: Path) -> None:
+    """Require a linked checkout's pointer and its backlink to name each other.
+
+    Reaching the right COMMON directory is not enough: checkout A's ``.git``
+    can be replaced with checkout B's pointer, in the same repository. Git then
+    finds A's own registration unclaimed and prunes it, freeing A's protected
+    branch while the grant still looks healthy (round 22 finding 2).
+    """
+    git_entry = Path(worktree_path) / ".git"
+    raw_pointer = _read_regular_text(
+        git_entry,
+        description=f"git metadata pointer for held checkout {worktree_path}",
+    )
+    if raw_pointer is None:
+        if git_entry.is_dir():
+            # A main checkout; `git_common_dir` already validated it.
+            return
+        raise CustodyUnavailableError(
+            f"held checkout {worktree_path} has no git metadata pointer"
+        )
+    pointer = raw_pointer.strip()
+    if not pointer.startswith("gitdir:"):
+        raise CustodyUnavailableError(
+            f"{git_entry} is not a readable linked-worktree pointer"
+        )
+    target = Path(pointer.split(":", 1)[1].strip())
+    admin = (target if target.is_absolute() else git_entry.parent / target).resolve()
+    if admin.parent.name != "worktrees":
+        # A main checkout using --separate-git-dir has no linked backlink.
+        return
+    raw_backlink = _read_regular_text(
+        admin / "gitdir",
+        description=f"git backlink for held checkout {worktree_path}",
+    )
+    if raw_backlink is None or not raw_backlink.strip():
+        raise CustodyUnavailableError(
+            f"{admin} has no backlink for held checkout {worktree_path}"
+        )
+    backlink = Path(raw_backlink.strip())
+    if not backlink.is_absolute():
+        backlink = admin / backlink
+    if backlink.resolve() != git_entry.resolve():
+        raise CustodyUnavailableError(
+            f"{admin} is registered to {backlink}, not held checkout {git_entry}"
+        )
 
 
 def _is_text(value: object) -> bool:

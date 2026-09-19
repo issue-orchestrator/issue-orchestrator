@@ -9,6 +9,7 @@ import logging
 import subprocess
 from pathlib import Path
 
+from ..adapters.worktree.custody import custody_guard
 from ..adapters.worktree.removal import GitRunner, remove_checkout_path
 
 logger = logging.getLogger(__name__)
@@ -210,14 +211,18 @@ def ensure_e2e_worktree(repo_root: Path) -> Path:
 
     try:
         if worktree_path.exists():
-            try:
-                _update_worktree(repo_root, worktree_path)
-            except subprocess.CalledProcessError:
-                _recover_worktree(repo_root, worktree_path)
+            # `checkout -f` and `clean -fdx` delete held untracked work, and
+            # recovery and dependency setup are part of the same destructive
+            # refresh -- a take must wait for all of it (round 22 finding 1).
+            with custody_guard(worktree_path, repo_root=repo_root):
+                try:
+                    _update_worktree(repo_root, worktree_path)
+                except subprocess.CalledProcessError:
+                    _recover_worktree(repo_root, worktree_path)
+                _sync_venv(worktree_path)
         else:
             _create_worktree(repo_root, worktree_path)
-
-        _sync_venv(worktree_path)
+            _sync_venv(worktree_path)
 
     except subprocess.CalledProcessError as exc:
         raise RuntimeError(
