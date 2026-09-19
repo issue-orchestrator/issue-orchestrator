@@ -18,7 +18,12 @@ from ...ports.worktree_custody import (
     CustodyRelease,
     CustodyUnavailableError,
 )
-from .custody import custody_guard, custody_prune_guard
+from .custody import (
+    custody_branch_guard,
+    custody_guard,
+    custody_prune_guard,
+    names_a_local_branch,
+)
 from ...ports.worktree_manager import RegisteredWorktree, WorktreeReuseOptions
 from ...infra.worktree_base import resolve_base_branch
 from ._worktree_errors import WorktreeError as WorktreeError
@@ -1316,15 +1321,27 @@ def _remove_worktree_path(
 
 
 def _delete_worktree_branch(repo_root: Path, branch_name: str | None) -> None:
-    if not branch_name:
+    if not names_a_local_branch(branch_name):
+        # A detached checkout answers "HEAD" here, which is not a branch to
+        # delete and is not a branch to ask custody about either.
         return
     # Branch deletion is best effort; stale branch cleanup should not mask a
-    # successfully removed worktree.
-    _git_run(
-        repo_root,
-        ["branch", "-D", branch_name],
-        check=False,
-    )
+    # successfully removed worktree. It still asks BRANCH custody: another held
+    # checkout may own this ref after registration or branch-identity drift
+    # (round 24 finding 1).
+    try:
+        with custody_branch_guard(repo_root, branch_name):
+            _git_run(
+                repo_root,
+                ["branch", "-D", branch_name],
+                check=False,
+            )
+    except CustodyError as exc:
+        logger.info(
+            "Retaining local branch %s because custody refused deletion: %s",
+            branch_name,
+            exc,
+        )
 
 
 def remove_worktree(

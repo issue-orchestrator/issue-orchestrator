@@ -38,6 +38,7 @@ from issue_orchestrator.adapters.worktree.custody import (
     CUSTODY_LOG,
     GitMetadataWorktreeCustody,
     custody_guard,
+    custody_prune_guard,
     git_common_dir,
 )
 import issue_orchestrator.adapters.worktree._worktree as worktree_module
@@ -687,6 +688,30 @@ def _removal_lines(tree: ast.AST) -> list[int]:
 
 
 
+def _branch_deletion_nodes(tree: ast.AST) -> list[ast.AST]:
+    """Every literal local ``git branch -d/-D`` command builder."""
+    found: dict[int, ast.AST] = {}
+    for node in ast.walk(tree):
+        groups: list[list[ast.expr]] = []
+        if isinstance(node, (ast.List, ast.Tuple)):
+            groups.append(list(node.elts))
+        elif isinstance(node, ast.Call):
+            groups.append(list(node.args))
+        for elements in groups:
+            words = [
+                element.value
+                for element in elements
+                if isinstance(element, ast.Constant)
+                and isinstance(element.value, str)
+            ]
+            if any(
+                first == "branch" and second in {"-d", "-D", "--delete"}
+                for first, second in zip(words, words[1:])
+            ):
+                found[id(node)] = node
+    return list(found.values())
+
+
 def _runtime_nodes(root: ast.AST) -> list[ast.AST]:
     """Nodes executed while this lexical block is ACTIVE.
 
@@ -893,6 +918,58 @@ class TestOneRemovalOwner:
         )
         assert outside == [], (
             f"these destructive calls run OUTSIDE the custody guard: {outside}"
+        )
+
+    def test_every_local_branch_deletion_runs_inside_branch_custody(self) -> None:
+        """Branch deletion gets the same non-vacuous guard checkout removal has.
+
+        Custody protects BRANCHES now, and a `branch -D` removes no directory --
+        so neither the removal seam nor the removal guard can see it (round 23
+        finding 1, round 24 finding 1).
+        """
+        root = Path(__file__).resolve().parents[2]
+        found: dict[str, list[int]] = {}
+        outside: list[str] = []
+        for directory in self.SEARCHED:
+            for path in sorted((root / directory).rglob("*.py")):
+                tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+                deletions = _branch_deletion_nodes(tree)
+                if not deletions:
+                    continue
+                relative = str(path.relative_to(root))
+                found[relative] = sorted(node.lineno for node in deletions)
+                guarded_blocks = [
+                    node
+                    for node in ast.walk(tree)
+                    if isinstance(node, ast.With)
+                    and any(
+                        _is_call(item.context_expr, "custody_branch_guard")
+                        for item in node.items
+                    )
+                ]
+                guarded_ids = {
+                    id(node)
+                    for block in guarded_blocks
+                    for node in _runtime_nodes(block)
+                }
+                outside.extend(
+                    f"{relative}:{node.lineno}"
+                    for node in deletions
+                    if id(node) not in guarded_ids
+                )
+
+        expected = {
+            "scripts/teardown_test_issues.py",
+            "src/issue_orchestrator/adapters/worktree/_worktree.py",
+            "src/issue_orchestrator/infra/doctor/checks/guardrails.py",
+        }
+        assert expected <= set(found), (
+            "the branch-deletion guard became vacuous; expected shipped "
+            f"deletion sites are missing: {sorted(expected - set(found))}"
+        )
+        assert outside == [], (
+            "these local branch deletions run outside custody_branch_guard: "
+            f"{outside}"
         )
 
     def test_the_scan_reads_both_ways_a_command_is_built(self) -> None:
@@ -2129,6 +2206,82 @@ class TestBranchRefDestruction:
         assert manager.custody_of(held) == grant
 
 
+    def test_a_renamed_held_branch_is_still_recognised(
+        self, manager: GitWorktreeManager, repo: Path, checkout: Path
+    ) -> None:
+        """The recorded name is TEXT, and a rename makes it stale.
+
+        `branch_guard` matched `grant.branch` exactly, so the branch a grant
+        actually protects went unrecognised once renamed -- a guard that
+        silently fails to match, which is worse than none (round 24 finding 1).
+
+        Driven through the guard rather than the sweep on purpose: while the
+        checkout is still REGISTERED git refuses the delete by itself, so an
+        end-to-end test passes either way and proves nothing.
+        """
+        from issue_orchestrator.adapters.worktree.custody import (
+            custody_branch_guard,
+        )
+
+        renamed = "tech-lead-investigation-6410-renamed"
+        manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+        _git(checkout, "branch", "-m", renamed)
+
+        with pytest.raises(WorktreeInCustodyError):
+            with custody_branch_guard(repo, renamed):
+                pytest.fail("the renamed protected branch was not recognised")
+
+    def test_a_detached_checkout_is_not_a_branch_to_ask_about(
+        self, manager: GitWorktreeManager, repo: Path, checkout: Path
+    ) -> None:
+        """`rev-parse --abbrev-ref HEAD` answers "HEAD" for a detached checkout.
+
+        That is not a branch to delete, and handing it to the branch guard as
+        one raised and aborted an otherwise clean reviewer-worktree removal.
+        """
+        from issue_orchestrator.adapters.worktree.custody import (
+            names_a_local_branch,
+        )
+
+        assert names_a_local_branch("HEAD") is False
+        assert names_a_local_branch(None) is False
+        assert names_a_local_branch("   ") is False
+        assert names_a_local_branch("refs/heads/") is False
+        assert names_a_local_branch("6410-work") is True
+        assert names_a_local_branch("refs/heads/6410-work") is True
+
+    def test_an_unreadable_held_branch_identity_refuses_deletion(
+        self, manager: GitWorktreeManager, repo: Path, checkout: Path
+    ) -> None:
+        """Unknown identity is not permission to delete somebody else's ref."""
+        from issue_orchestrator.adapters.worktree.custody import (
+            custody_branch_guard,
+        )
+
+        manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+        (checkout / ".git").unlink()
+
+        with pytest.raises(CustodyUnavailableError, match="readable branch identity"):
+            with custody_branch_guard(repo, "some-other-branch"):
+                pytest.fail("deletion proceeded with custody unable to answer")
+
+    def test_a_refs_heads_spelling_still_matches_a_grant(
+        self, manager: GitWorktreeManager, repo: Path, checkout: Path
+    ) -> None:
+        """A guard that silently fails to match is worse than none."""
+        from issue_orchestrator.adapters.worktree.custody import (
+            custody_branch_guard,
+        )
+
+        manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+
+        with pytest.raises(WorktreeInCustodyError):
+            with custody_branch_guard(
+                repo, "refs/heads/tech-lead-investigation-6410-abcdef123456"
+            ):
+                pytest.fail("a fully-qualified ref name bypassed branch custody")
+
+
 class TestRoundSixGaps:
     def test_a_release_is_not_consumed_by_a_removal_that_REPORTED_failure(
         self, manager: GitWorktreeManager, repo: Path, checkout: Path
@@ -2500,6 +2653,22 @@ class TestRoundNineGaps:
         grant = absolute.take_custody(checkout, holder=HOLDER, reason=REASON)
 
         assert relative.custody_of(checkout) == grant
+
+    def test_a_held_main_checkout_does_not_make_pruning_unknown(
+        self, manager: GitWorktreeManager, repo: Path
+    ) -> None:
+        """A main checkout has a metadata DIRECTORY, not a pointer file.
+
+        Round 22's backlink check read it as text first, so holding the main
+        checkout turned every prune into a false refusal (round 24 finding 2).
+        """
+        grant = manager.take_custody(repo, holder=HOLDER, reason=REASON)
+
+        with custody_prune_guard(repo):
+            _git(repo, "worktree", "prune")
+
+        assert manager.custody_of(repo) == grant
+        assert (repo / "README.md").read_text() == "seed\n"
 
     def test_the_repository_itself_is_not_a_removal_target(
         self, manager: GitWorktreeManager, repo: Path

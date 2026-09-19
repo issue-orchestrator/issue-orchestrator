@@ -43,7 +43,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, TypeIs
 
 from ...ports.worktree_custody import (
     CustodyGrant,
@@ -222,15 +222,36 @@ class GitMetadataWorktreeCustody:
         The lock spans the caller's deletion, so a grant cannot be taken
         between the check and ``git branch -D``.
         """
-        if not branch.strip():
+        candidate = _normalize_branch(branch)
+        if candidate is None:
             raise ValueError("a custody branch guard requires a branch name")
         with self._locked():
             grants = sorted(
                 self._records().values(), key=lambda grant: grant.taken_at
             )
-            held = next((g for g in grants if g.branch == branch), None)
-            if held is not None:
-                raise WorktreeInCustodyError(held)
+            for grant in grants:
+                recorded = _normalize_branch(grant.branch)
+                if recorded == candidate:
+                    raise WorktreeInCustodyError(grant)
+                # The recorded name is TEXT, and it can go stale: a branch
+                # renamed after the grant was taken no longer matches, and an
+                # unregistered checkout is exactly where git stops protecting
+                # its own checked-out branch (round 24 finding 1).
+                try:
+                    observed = _branch_from_checkout_metadata(grant.path)
+                except CustodyUnavailableError as exc:
+                    raise CustodyUnavailableError(
+                        f"cannot safely delete branch {candidate}: held checkout "
+                        f"{grant.path} no longer has readable branch identity"
+                    ) from exc
+                if observed == candidate:
+                    raise WorktreeInCustodyError(grant)
+                if observed != recorded:
+                    raise CustodyUnavailableError(
+                        f"cannot safely delete branch {candidate}: held checkout "
+                        f"{grant.path} changed branch from "
+                        f"{recorded or '(detached)'} to {observed or '(detached)'}"
+                    )
             yield
 
     def breached(self) -> tuple[CustodyGrant, ...]:
@@ -290,9 +311,27 @@ class GitMetadataWorktreeCustody:
                 # instead of quietly taking over a checkout someone else is
                 # using.
                 return existing
+            try:
+                requested_branch = _normalize_branch(branch)
+            except ValueError as exc:
+                raise CustodyUnavailableError(
+                    f"cannot record branch identity for {worktree_path}: {exc}"
+                ) from exc
+            observed_branch = _branch_from_checkout_metadata(worktree_path)
+            if requested_branch != observed_branch:
+                # The caller reads the branch BEFORE entering this lock, so a
+                # guarded branch switch can finish in between. Recording the
+                # stale name would leave branch deletion unable to recognise
+                # what this grant protects (round 24 finding 1).
+                raise CustodyUnavailableError(
+                    f"branch identity for {worktree_path} changed while custody "
+                    f"was being taken: requested="
+                    f"{requested_branch or '(detached)'} "
+                    f"observed={observed_branch or '(detached)'}"
+                )
             grant = CustodyGrant(
                 path=Path(key),
-                branch=branch,
+                branch=observed_branch,
                 holder=holder,
                 reason=reason,
                 taken_at=datetime.now(timezone.utc),
@@ -611,6 +650,23 @@ def custody_guard(
         yield settlement
 
 
+def names_a_local_branch(branch: str | None) -> TypeIs[str]:
+    """Whether this text names a deletable local branch.
+
+    ``git rev-parse --abbrev-ref HEAD`` answers ``HEAD`` for a DETACHED
+    checkout, which is not a branch and must not be handed to the branch guard
+    as one (round 24 finding 1).
+
+    A ``TypeIs`` rather than a ``bool`` so the caller's early return narrows the
+    name to ``str`` for real, instead of needing an assertion that says the same
+    thing twice.
+    """
+    try:
+        return _normalize_branch(branch) is not None
+    except ValueError:
+        return False
+
+
 @contextmanager
 def custody_branch_guard(repo_root: Path, branch: str) -> Iterator[None]:
     """Refuse branch-ref deletion while a grant names that branch."""
@@ -716,6 +772,95 @@ def git_common_dir(path: Path) -> Path | None:
     return _validated_git_common_dir(common_dir, claimed_by=path)
 
 
+def _normalize_branch(branch: str | None) -> str | None:
+    """Canonical short local-branch name; ``None`` means detached HEAD."""
+    if branch is None:
+        return None
+    normalized = branch.strip()
+    if not normalized:
+        raise ValueError("branch must not be blank")
+    if normalized == "HEAD":
+        return None
+    normalized = normalized.removeprefix("refs/heads/")
+    if not normalized:
+        raise ValueError("branch must name a local branch")
+    return normalized
+
+
+def _git_dir_of_checkout(worktree_path: Path) -> Path:
+    """The metadata directory a checkout's ``.git`` entry names.
+
+    A directory for a main checkout, a ``gitdir:`` pointer for a linked one.
+    Anything else is damage, not an answer.
+    """
+    git_entry = Path(worktree_path) / ".git"
+    try:
+        entry_stat = git_entry.lstat()
+    except OSError as exc:
+        raise CustodyUnavailableError(
+            f"cannot inspect git metadata for held checkout {worktree_path}: {exc}"
+        ) from exc
+    if stat.S_ISLNK(entry_stat.st_mode):
+        raise CustodyUnavailableError(
+            f"{git_entry} is a symlink, so its branch identity is unknown"
+        )
+    if stat.S_ISDIR(entry_stat.st_mode):
+        return git_entry
+    if not stat.S_ISREG(entry_stat.st_mode):
+        raise CustodyUnavailableError(
+            f"{git_entry} has the wrong type, so its branch identity is unknown"
+        )
+    raw_pointer = _read_regular_text(
+        git_entry,
+        description=f"git metadata pointer for held checkout {worktree_path}",
+    )
+    if raw_pointer is None:
+        raise CustodyUnavailableError(
+            f"held checkout {worktree_path} lost its git metadata pointer"
+        )
+    pointer = raw_pointer.strip()
+    if not pointer.startswith("gitdir:"):
+        raise CustodyUnavailableError(
+            f"{git_entry} is not a readable linked-worktree pointer"
+        )
+    target = Path(pointer.split(":", 1)[1].strip())
+    git_dir = target if target.is_absolute() else git_entry.parent / target
+    _require_real_directory(
+        git_dir, description=f"git directory named by {git_entry}", create=False
+    )
+    return git_dir
+
+
+def _branch_from_checkout_metadata(worktree_path: Path) -> str | None:
+    """A checkout's branch, without collapsing DAMAGE into detached HEAD.
+
+    Read off the filesystem for the same reason `git_common_dir` is: this runs
+    on branch-deletion paths, and an unreadable answer must be distinguishable
+    from "no branch" (round 24 finding 1).
+    """
+    raw_head = _read_regular_text(
+        _git_dir_of_checkout(worktree_path) / "HEAD",
+        description=f"HEAD for held checkout {worktree_path}",
+    )
+    if raw_head is None:
+        raise CustodyUnavailableError(
+            f"held checkout {worktree_path} has no readable HEAD"
+        )
+    head = raw_head.strip()
+    if head.startswith("ref:"):
+        ref = head.split(":", 1)[1].strip()
+        if not ref.startswith("refs/heads/"):
+            raise CustodyUnavailableError(
+                f"held checkout {worktree_path} points HEAD at non-branch {ref}"
+            )
+        return _normalize_branch(ref)
+    if len(head) in {40, 64} and all(c in "0123456789abcdefABCDEF" for c in head):
+        return None
+    raise CustodyUnavailableError(
+        f"held checkout {worktree_path} has an unreadable HEAD"
+    )
+
+
 def _require_exact_worktree_backlink(worktree_path: Path) -> None:
     """Require a linked checkout's pointer and its backlink to name each other.
 
@@ -725,14 +870,28 @@ def _require_exact_worktree_backlink(worktree_path: Path) -> None:
     branch while the grant still looks healthy (round 22 finding 2).
     """
     git_entry = Path(worktree_path) / ".git"
+    try:
+        entry_stat = git_entry.lstat()
+    except OSError as exc:
+        raise CustodyUnavailableError(
+            f"cannot inspect git metadata for held checkout {worktree_path}: {exc}"
+        ) from exc
+    if stat.S_ISDIR(entry_stat.st_mode):
+        # A MAIN checkout has a metadata directory, not a pointer file. Reading
+        # it as text always fails, so asking that first turned every prune into
+        # a false refusal whenever the main checkout was held (round 24
+        # finding 2) -- my round-22 check over-corrected.
+        _validated_git_common_dir(git_entry, claimed_by=worktree_path)
+        return
+    if not stat.S_ISREG(entry_stat.st_mode):
+        raise CustodyUnavailableError(
+            f"{git_entry} is not a readable linked-worktree pointer"
+        )
     raw_pointer = _read_regular_text(
         git_entry,
         description=f"git metadata pointer for held checkout {worktree_path}",
     )
     if raw_pointer is None:
-        if git_entry.is_dir():
-            # A main checkout; `git_common_dir` already validated it.
-            return
         raise CustodyUnavailableError(
             f"held checkout {worktree_path} has no git metadata pointer"
         )
@@ -971,10 +1130,15 @@ def _other_grants_overlapping(
 def _grant_from(key: str, value: object) -> CustodyGrant:
     if not isinstance(value, dict):
         raise ValueError(f"custody record for {key} is not an object")
-    branch = value.get("branch")
+    if "branch" not in value:
+        raise ValueError(f"custody record for {key} has no branch identity")
+    raw_branch = value["branch"]
+    if raw_branch is not None and not isinstance(raw_branch, str):
+        raise ValueError(f"custody record for {key} has a non-text branch identity")
+    branch = _normalize_branch(raw_branch)
     return CustodyGrant(
         path=Path(key),
-        branch=branch if isinstance(branch, str) else None,
+        branch=branch,
         holder=str(value.get("holder") or ""),
         reason=str(value.get("reason") or ""),
         taken_at=datetime.fromisoformat(str(value.get("taken_at"))),
