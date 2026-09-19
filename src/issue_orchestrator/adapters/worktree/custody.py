@@ -372,7 +372,17 @@ class GitMetadataWorktreeCustody:
         path = self._root / CUSTODY_LOG
         try:
             lines = path.read_text().splitlines()
-        except FileNotFoundError:
+        except FileNotFoundError as exc:
+            if _exists_but_unreadable(path):
+                # The same fail-open the STATE file already refuses (round 3
+                # finding 3), one file over. A dangling trail symlink is damage,
+                # not an empty audit -- and this is read exactly when the state
+                # file is unavailable, so treating it as absent erases the only
+                # surviving evidence of a grant (round 13 finding 1).
+                raise CustodyUnavailableError(
+                    f"the worktree custody trail at {path} cannot be read "
+                    f"although something is there: {exc}"
+                ) from exc
             return set()
         except OSError as exc:
             raise CustodyUnavailableError(

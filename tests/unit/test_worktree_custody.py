@@ -1005,6 +1005,27 @@ class TestReuseCleanup:
         assert not checkout.exists()
 
 
+    def test_a_trail_file_that_EXISTS_but_cannot_be_read_is_not_an_empty_audit(
+        self, manager: GitWorktreeManager, repo: Path, checkout: Path
+    ) -> None:
+        """A dangling audit symlink cannot erase an outstanding grant.
+
+        The STATE file already refuses this (round 3 finding 3). The trail did
+        not -- and the trail is read exactly when the state file is gone, so it
+        is the last evidence a grant ever existed (round 13 finding 1).
+        """
+        manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+        trail = repo / ".git" / CUSTODY_LOG
+        trail.unlink()
+        trail.symlink_to(repo / ".git" / "nothing-here.jsonl")
+        (repo / ".git" / CUSTODY_FILE).unlink()
+
+        with pytest.raises(CustodyUnavailableError, match="although something is there"):
+            manager.remove_checkout_and_branch(checkout, force=True)
+
+        assert (checkout / "finding.md").exists()
+
+
 class TestRoundFourGaps:
     """Each of these deleted a held checkout by a route the owner did not see."""
 
