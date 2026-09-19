@@ -6,7 +6,10 @@ import threading
 import time
 from pathlib import Path
 
-from issue_orchestrator.adapters.worktree.removal import remove_checkout_path
+from issue_orchestrator.adapters.worktree.removal import (
+    remove_checkout_path,
+    remove_empty_worktree_container,
+)
 from issue_orchestrator.ports.worktree_custody import CustodyError
 
 from .github_client import _github_adapter
@@ -71,7 +74,7 @@ def cleanup_local_worktrees(
             logger.warning(
                 "Failed to remove worktree %s: %s", checkout, outcome.git_error
             )
-    _remove_empty_containers(worktree_base)
+    _remove_empty_containers(worktree_base, repo_root=repo_root)
     if count > 0:
         logger.info(
             "[E2E CLEANUP] Removed %d local worktrees from %s", count, worktree_base
@@ -102,7 +105,7 @@ def _checkouts_under(worktree_base: Path) -> list[Path]:
     return checkouts
 
 
-def _remove_empty_containers(worktree_base: Path) -> None:
+def _remove_empty_containers(worktree_base: Path, *, repo_root: Path) -> None:
     """Drop session directories the sweep emptied, and nothing else.
 
     ``rmdir`` and not ``rmtree`` on purpose: a container that still holds
@@ -111,10 +114,15 @@ def _remove_empty_containers(worktree_base: Path) -> None:
     """
     for item in sorted(worktree_base.iterdir()):
         if item.is_dir() and not (item / ".git").exists():
+            # Through the removal owner, which asks custody first. An EMPTY held
+            # checkout that lost its `.git` looks exactly like a container from
+            # out here, and this was the one path that never asked (round 14
+            # finding 2).
             try:
-                item.rmdir()
-            except OSError:
-                logger.info("Retaining non-empty worktree container %s", item)
+                if not remove_empty_worktree_container(item, repo_root=repo_root):
+                    logger.info("Retaining non-empty worktree container %s", item)
+            except CustodyError as e:
+                logger.warning("Retaining held worktree container %s: %s", item, e)
 
 
 def _sweep_git(repo_root: Path):

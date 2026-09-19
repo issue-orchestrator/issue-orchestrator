@@ -84,27 +84,7 @@ def remove_checkout_path(
         WorktreeInCustodyError: The checkout is held and no release was given.
         CustodyUnavailableError: Whether it is held could not be determined.
     """
-    require_disposable_path(worktree_path)
-    target = worktree_path.resolve()
-    common_dir = git_common_dir(repo_root)
-    removes_common_dir = common_dir is not None and (
-        target == common_dir or target in common_dir.parents
-    )
-    if target == repo_root.resolve() or removes_common_dir:
-        # The repository's anchor contains the custody state and append-only
-        # trail. The caller's repo_root can itself be a LINKED worktree, so
-        # identity has to follow the git COMMON directory rather than compare
-        # checkout paths: a forced fallback that removes that directory, or any
-        # ancestor of it, destroys every grant and its audit trail (round 10
-        # finding 1). The orchestrator has no reason to delete its own
-        # repository, so this is refused rather than made to work: supporting it
-        # would mean moving the store outside the repository, which is a
-        # different change.
-        raise ValueError(
-            f"{worktree_path} is the repository itself or contains its custody "
-            "metadata, not a disposable checkout; removing it would destroy "
-            "the custody trail it holds"
-        )
+    _require_removable_target(worktree_path, repo_root)
     with custody_guard(worktree_path, custody_release, repo_root=repo_root) as settled:
         error = _remove_with_git(worktree_path, force=force, run_git=run_git)
         if error is None:
@@ -137,6 +117,51 @@ def remove_checkout_path(
             removed=gone,
             used_filesystem_fallback=True,
             git_error=error,
+        )
+
+
+def remove_empty_worktree_container(container_path: Path, *, repo_root: Path) -> bool:
+    """Remove an empty session container under the same custody decision.
+
+    A held checkout whose ``.git`` entry is gone is indistinguishable from a
+    container to a directory enumerator, so exact and overlapping grants have to
+    be checked before ``rmdir`` too -- otherwise an EMPTY held checkout is
+    quietly removed by the one path that never asked (round 14 finding 2).
+
+    Deliberately takes no release: tidying a container is never authority to end
+    somebody's grant.
+    """
+    _require_removable_target(container_path, repo_root)
+    with custody_guard(container_path, repo_root=repo_root) as settled:
+        try:
+            container_path.rmdir()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            return False
+        settled.removed()
+        return True
+
+
+def _require_removable_target(worktree_path: Path, repo_root: Path) -> None:
+    """Reject escrow, the repository, and anything holding custody metadata."""
+    require_disposable_path(worktree_path)
+    target = worktree_path.resolve()
+    common_dir = git_common_dir(repo_root)
+    removes_common_dir = common_dir is not None and (
+        target == common_dir or target in common_dir.parents
+    )
+    if target == repo_root.resolve() or removes_common_dir:
+        # The repository's anchor contains the custody state and append-only
+        # trail. The caller's repo_root can itself be a LINKED worktree, so
+        # identity has to follow the git COMMON directory rather than compare
+        # checkout paths: a forced fallback that removes that directory, or any
+        # ancestor of it, destroys every grant and its audit trail (round 10
+        # finding 1).
+        raise ValueError(
+            f"{worktree_path} is the repository itself or contains its custody "
+            "metadata, not a disposable checkout; removing it would destroy "
+            "the custody trail it holds"
         )
 
 

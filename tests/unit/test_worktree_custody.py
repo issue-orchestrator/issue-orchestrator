@@ -29,6 +29,7 @@ from typing import Any, cast
 import pytest
 
 from issue_orchestrator.adapters.worktree.custody import (
+    CUSTODY_DIR,
     CUSTODY_FILE,
     CUSTODY_LOCK,
     CUSTODY_LOG,
@@ -1861,6 +1862,81 @@ class TestRoundNineGaps:
         assert (repo / "README.md").exists()
         assert manager.custody_of(repo) is not None, "the grant was discarded"
         assert (repo / ".git" / CUSTODY_LOG).exists(), "the audit trail was deleted"
+
+
+class TestRoundFourteenHostileStorage:
+    """The absent/unreadable columns were closed. This is the HOSTILE one.
+
+    Thirteen rounds treated damaged state; round 14's enumeration asked what
+    happens when the state is readable, well-formed and LYING.
+    """
+
+    def test_a_redirected_custody_directory_is_not_an_empty_store(
+        self, manager: GitWorktreeManager, repo: Path, checkout: Path, tmp_path: Path
+    ) -> None:
+        """Swapping the directory for a symlink used to mint a fresh store."""
+        manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+        real = repo / ".git" / CUSTODY_DIR
+        decoy = tmp_path / "decoy-custody"
+        decoy.mkdir()
+        real.rename(tmp_path / "real-custody")
+        real.symlink_to(decoy, target_is_directory=True)
+
+        with pytest.raises(CustodyUnavailableError):
+            manager.remove_checkout_and_branch(checkout, force=True)
+
+        assert (checkout / "finding.md").exists()
+
+    def test_a_replacement_git_directory_is_not_a_repository(
+        self, manager: GitWorktreeManager, repo: Path, checkout: Path, tmp_path: Path
+    ) -> None:
+        """An empty `.git` produced a new, empty custody store: nothing held."""
+        manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+        (repo / ".git").rename(tmp_path / "real-git")
+        (repo / ".git").mkdir()
+
+        with pytest.raises(CustodyUnavailableError, match="git metadata"):
+            remove_checkout_path(
+                checkout, force=True, run_git=None, repo_root=repo
+            )
+
+        assert (checkout / "finding.md").exists()
+
+    def test_a_valid_but_EMPTY_state_cannot_contradict_an_outstanding_take(
+        self, manager: GitWorktreeManager, repo: Path, checkout: Path
+    ) -> None:
+        """`{}` is parseable. It is not therefore truthful.
+
+        The append-only trail still holds the take, and a state file that omits
+        it is damage however well-formed it is.
+        """
+        manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+        (repo / ".git" / CUSTODY_FILE).write_text("{}")
+
+        with pytest.raises(CustodyUnavailableError, match="omits grant"):
+            manager.remove_checkout_and_branch(checkout, force=True)
+
+        assert (checkout / "finding.md").exists()
+
+    def test_an_empty_held_checkout_is_not_removed_as_a_container(
+        self, manager: GitWorktreeManager, repo: Path, checkout: Path
+    ) -> None:
+        """The one path that never asked custody anything (finding 2).
+
+        An EMPTY held checkout that lost its `.git` is indistinguishable from a
+        session container to a directory enumerator, and the container sweep
+        removed it with a bare `rmdir`.
+        """
+        for child in checkout.iterdir():
+            if child.name != ".git":
+                shutil.rmtree(child) if child.is_dir() else child.unlink()
+        manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+        (checkout / ".git").unlink()
+
+        cleanup_local_worktrees(checkout.parent, repo_root=repo)
+
+        assert checkout.exists(), "a held checkout was rmdir'd as a container"
+        assert manager.custody_of(checkout) is not None
 
 
 class TestEveryManagerNamesItsRepository:

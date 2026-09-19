@@ -14,6 +14,18 @@ from issue_orchestrator.ports.worktree_policy import (
 )
 
 
+def _make_git_metadata(git_dir: Path) -> None:
+    """The shape custody insists on before trusting a `.git` directory.
+
+    An empty replacement directory used to mint a fresh, empty custody store --
+    nothing held, remove away -- so the validator requires HEAD and objects
+    (#7274 round 14 finding 1). A fixture without them is not a repository.
+    """
+    git_dir.mkdir(parents=True, exist_ok=True)
+    (git_dir / "HEAD").write_text("ref: refs/heads/main\n")
+    (git_dir / "objects").mkdir(exist_ok=True)
+
+
 class TestValidateOrDeletePolicy:
     """Test the ValidateOrDeletePolicy class."""
 
@@ -199,7 +211,7 @@ class TestDeleteWorktree:
         policy = ValidateOrDeletePolicy()
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
-        (repo_root / ".git").mkdir()
+        _make_git_metadata(repo_root / ".git")
         worktree = tmp_path / "worktree"
         worktree.mkdir()
         (worktree / "file.txt").write_text("content")

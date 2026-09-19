@@ -52,6 +52,18 @@ def _make_mock_run(extra_side_effect=None):
     return side_effect
 
 
+def _make_git_metadata(git_dir: Path) -> None:
+    """The shape custody insists on before trusting a `.git` directory.
+
+    An empty replacement directory used to mint a fresh, empty custody store --
+    nothing held, remove away -- so the validator requires HEAD and objects
+    (#7274 round 14 finding 1). A fixture without them is not a repository.
+    """
+    git_dir.mkdir(parents=True, exist_ok=True)
+    (git_dir / "HEAD").write_text("ref: refs/heads/main\n")
+    (git_dir / "objects").mkdir(exist_ok=True)
+
+
 class TestEnsureE2EWorktree:
     """Test worktree creation, update, and recovery."""
 
@@ -67,7 +79,7 @@ class TestEnsureE2EWorktree:
         """
         root = tmp_path / "issue-orchestrator"
         root.mkdir()
-        (root / ".git").mkdir()
+        _make_git_metadata(root / ".git")
         return root
 
     @patch("issue_orchestrator.infra.e2e_worktree.subprocess.run")

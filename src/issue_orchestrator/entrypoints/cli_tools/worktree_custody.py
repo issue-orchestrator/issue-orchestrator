@@ -63,13 +63,27 @@ def _holder(requested: str | None) -> str:
 
     Defaults to the login name rather than a placeholder: an audit trail whose
     every row says "operator" answers nothing six months later.
+
+    When even that cannot be resolved it RAISES rather than recording
+    ``unknown``. A release is the one moment the trail exists to attribute, and
+    "unknown ended this grant" is the row that answers nothing at all -- the
+    operator can always pass ``--holder`` (round 14 finding 3).
     """
     if requested:
         return requested
     try:
-        return getpass.getuser()
-    except Exception:
-        return "unknown"
+        resolved = getpass.getuser()
+    except Exception as exc:
+        raise CustodyUnavailableError(
+            "cannot determine who you are, so this grant cannot be attributed; "
+            "pass --holder"
+        ) from exc
+    if not resolved.strip():
+        raise CustodyUnavailableError(
+            "the resolved login name is empty, so this grant cannot be "
+            "attributed; pass --holder"
+        )
+    return resolved
 
 
 def _render(grant: CustodyGrant) -> str:

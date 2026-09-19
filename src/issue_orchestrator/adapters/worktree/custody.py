@@ -36,6 +36,7 @@ import fcntl
 import json
 import logging
 import os
+import stat
 import threading
 from collections.abc import Callable
 from contextlib import contextmanager
@@ -77,7 +78,7 @@ _TRAIL_ACTIONS = frozenset({"take", "release", "release-intent"})
 
 #: Every trail row says who did it and why. A row missing either is refused
 #: rather than obeyed: see ``_readable_trail_row``.
-_TRAIL_ATTRIBUTION = ("holder", "actor", "reason")
+_TRAIL_ATTRIBUTION = ("holder", "actor", "reason", "at")
 
 
 class GitMetadataWorktreeCustody:
@@ -293,7 +294,13 @@ class GitMetadataWorktreeCustody:
 
         Re-entrant within a thread, because removal paths nest.
         """
+        _require_real_directory(
+            self._root / CUSTODY_DIR,
+            description="worktree custody directory",
+            create=True,
+        )
         path = self._root / CUSTODY_LOCK
+        _require_regular_or_absent(path, description="worktree custody lock")
         # Keyed by the CANONICAL path. Two stores addressing the same file
         # through a relative and an absolute common directory would otherwise
         # get different depths, nest, and flock the same file twice -- the
@@ -309,7 +316,6 @@ class GitMetadataWorktreeCustody:
                 _release_depth(key)
             return
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
             handle = path.open("a+")
         except OSError as exc:
             _release_depth(key)
@@ -325,17 +331,8 @@ class GitMetadataWorktreeCustody:
 
     def _records(self) -> dict[str, CustodyGrant]:
         path = self._root / CUSTODY_FILE
-        try:
-            payload = json.loads(path.read_text())
-        except FileNotFoundError as exc:
-            if _exists_but_unreadable(path):
-                # A dangling symlink raises the same error as an absent file,
-                # and reading it as "nothing is held" discards a grant that
-                # was recorded (round 3 finding 3).
-                raise CustodyUnavailableError(
-                    f"the worktree custody store at {path} cannot be read "
-                    f"although something is there: {exc}"
-                ) from exc
+        raw = _read_regular_text(path, description="worktree custody store")
+        if raw is None:
             outstanding = self._outstanding_in_trail()
             if outstanding:
                 # The trail says grants were taken and not released, so the
@@ -345,9 +342,11 @@ class GitMetadataWorktreeCustody:
                     f"the worktree custody store at {path} is gone while its "
                     f"trail still holds {len(outstanding)} grant(s): "
                     f"{sorted(outstanding)}"
-                ) from exc
+                )
             return {}
-        except (OSError, json.JSONDecodeError) as exc:
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError as exc:
             raise CustodyUnavailableError(
                 f"the worktree custody store at {path} is unreadable: {exc}"
             ) from exc
@@ -356,11 +355,22 @@ class GitMetadataWorktreeCustody:
                 f"the worktree custody store at {path} is not an object"
             )
         try:
-            return {key: _grant_from(key, value) for key, value in payload.items()}
+            records = {key: _grant_from(key, value) for key, value in payload.items()}
         except (TypeError, ValueError) as exc:
             raise CustodyUnavailableError(
                 f"the worktree custody store at {path} has an unreadable record: {exc}"
             ) from exc
+        # A parseable file is not automatically a TRUTHFUL one. `{}` is valid
+        # JSON, so a hostile or truncated write could contradict the
+        # append-only audit and report an outstanding grant as released
+        # (round 14 finding 1).
+        missing = self._outstanding_in_trail().difference(records)
+        if missing:
+            raise CustodyUnavailableError(
+                f"the worktree custody store at {path} omits grant(s) that its "
+                f"audit trail still holds: {sorted(missing)}"
+            )
+        return records
 
     def _outstanding_in_trail(self) -> set[str]:
         """Paths the trail took and never released.
@@ -370,26 +380,11 @@ class GitMetadataWorktreeCustody:
         file is absent, the store is damaged, not empty.
         """
         path = self._root / CUSTODY_LOG
-        try:
-            lines = path.read_text().splitlines()
-        except FileNotFoundError as exc:
-            if _exists_but_unreadable(path):
-                # The same fail-open the STATE file already refuses (round 3
-                # finding 3), one file over. A dangling trail symlink is damage,
-                # not an empty audit -- and this is read exactly when the state
-                # file is unavailable, so treating it as absent erases the only
-                # surviving evidence of a grant (round 13 finding 1).
-                raise CustodyUnavailableError(
-                    f"the worktree custody trail at {path} cannot be read "
-                    f"although something is there: {exc}"
-                ) from exc
+        raw = _read_regular_text(path, description="worktree custody trail")
+        if raw is None:
             return set()
-        except OSError as exc:
-            raise CustodyUnavailableError(
-                f"the worktree custody trail at {path} is unreadable: {exc}"
-            ) from exc
         held: set[str] = set()
-        for line in lines:
+        for line in raw.splitlines():
             if not line.strip():
                 continue
             try:
@@ -515,20 +510,39 @@ def git_common_dir(path: Path) -> Path | None:
     checkout on the strength of a read that failed.
     """
     git_entry = Path(path) / ".git"
-    if git_entry.is_dir():
+    try:
+        entry_stat = git_entry.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise CustodyUnavailableError(
+            f"cannot inspect {git_entry}, so whether {path} is held is unknown: {exc}"
+        ) from exc
+    if stat.S_ISLNK(entry_stat.st_mode):
+        # A readable redirect is not the repository saying where it lives; it
+        # is somebody else saying so (round 14 finding 1).
+        raise CustodyUnavailableError(
+            f"{git_entry} is a symlink, so which repository owns {path} is unknown"
+        )
+    if stat.S_ISDIR(entry_stat.st_mode):
         # Absolute, like the linked-worktree branch below. A main checkout
         # addressed by a RELATIVE path used to answer with a relative
         # directory, so the same repository compared unequal to itself and
         # `for_path` refused a real grant (round 9 finding 1).
-        return git_entry.resolve()
-    if not git_entry.is_file():
-        return None
-    try:
-        content = git_entry.read_text().strip()
-    except OSError as exc:
+        return _validated_git_common_dir(git_entry, claimed_by=path)
+    if not stat.S_ISREG(entry_stat.st_mode):
         raise CustodyUnavailableError(
-            f"cannot read {git_entry}, so whether {path} is held is unknown: {exc}"
-        ) from exc
+            f"{git_entry} is not a regular git metadata entry, so whether "
+            f"{path} is held is unknown"
+        )
+    content = _read_regular_text(
+        git_entry, description=f"git metadata pointer for {path}"
+    )
+    if content is None:
+        raise CustodyUnavailableError(
+            f"{git_entry} vanished while resolving custody for {path}"
+        )
+    content = content.strip()
     if not content.startswith("gitdir:"):
         raise CustodyUnavailableError(
             f"{git_entry} is not a gitdir pointer, so whether {path} is held "
@@ -538,10 +552,14 @@ def git_common_dir(path: Path) -> Path | None:
     # Relative to the .git FILE, which is what git means by it -- not to
     # whatever directory this process happens to be running in.
     git_dir = target if target.is_absolute() else (git_entry.parent / target)
+    _require_real_directory(
+        git_dir, description=f"git directory named by {git_entry}", create=False
+    )
     git_dir = git_dir.resolve()
-    if git_dir.parent.name == "worktrees":
-        return git_dir.parent.parent
-    return git_dir
+    common_dir = (
+        git_dir.parent.parent if git_dir.parent.name == "worktrees" else git_dir
+    )
+    return _validated_git_common_dir(common_dir, claimed_by=path)
 
 
 def _is_text(value: object) -> bool:
@@ -586,13 +604,106 @@ def _canonical_lock(path: Path) -> Path:
     return path.parent.resolve() / path.name
 
 
-def _exists_but_unreadable(path: Path) -> bool:
-    """Something is at this path, and opening it still failed."""
+def _require_real_directory(path: Path, *, description: str, create: bool) -> None:
+    """Require a REAL directory, never a readable redirect to one."""
+    if create:
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise CustodyUnavailableError(
+                f"cannot create {description} at {path}: {exc}"
+            ) from exc
     try:
-        path.lstat()
-    except OSError:
-        return False
-    return True
+        path_stat = path.lstat()
+    except OSError as exc:
+        raise CustodyUnavailableError(
+            f"cannot inspect {description} at {path}: {exc}"
+        ) from exc
+    if not stat.S_ISDIR(path_stat.st_mode):
+        raise CustodyUnavailableError(
+            f"{description} at {path} is not a real directory"
+        )
+
+
+def _require_regular_or_absent(path: Path, *, description: str) -> None:
+    """Reject symlinks, devices and HARD-LINKED custody files.
+
+    A hard link matters for the lock specifically: two processes flocking what
+    they each believe is the lock would serialize on different inodes, which is
+    the same as not locking at all (round 14 finding 1).
+    """
+    try:
+        path_stat = path.lstat()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise CustodyUnavailableError(
+            f"cannot inspect {description} at {path}: {exc}"
+        ) from exc
+    if not stat.S_ISREG(path_stat.st_mode) or path_stat.st_nlink != 1:
+        raise CustodyUnavailableError(
+            f"{description} at {path} is not a private regular file"
+        )
+
+
+def _read_regular_text(path: Path, *, description: str) -> str | None:
+    """Read one custody file without treating INDIRECTION as absence.
+
+    ``None`` only when nothing is there at all. Anything present that is not a
+    private regular file raises: a readable symlink pointed at an empty store
+    used to read as "nothing is held", which deletes the checkout it was
+    protecting.
+    """
+    try:
+        path_stat = path.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise CustodyUnavailableError(
+            f"cannot inspect {description} at {path}: {exc}"
+        ) from exc
+    if not stat.S_ISREG(path_stat.st_mode) or path_stat.st_nlink != 1:
+        raise CustodyUnavailableError(
+            f"{description} at {path} cannot be read although something is there"
+        )
+    try:
+        return path.read_text()
+    except (OSError, UnicodeError) as exc:
+        raise CustodyUnavailableError(
+            f"{description} at {path} cannot be read although something is "
+            f"there: {exc}"
+        ) from exc
+
+
+def _validated_git_common_dir(path: Path, *, claimed_by: Path) -> Path:
+    """Reject an empty replacement directory masquerading as git metadata.
+
+    Swapping `.git` for an empty directory produced a NEW, empty custody store
+    -- nothing held, remove away. Real git metadata has a HEAD file and an
+    objects directory, and that is cheap to insist on.
+    """
+    common_dir = path.resolve()
+    _require_real_directory(
+        common_dir,
+        description=f"git common directory claimed by {claimed_by}",
+        create=False,
+    )
+    for candidate, expected in (
+        (common_dir / "HEAD", stat.S_ISREG),
+        (common_dir / "objects", stat.S_ISDIR),
+    ):
+        try:
+            candidate_stat = candidate.lstat()
+        except OSError as exc:
+            raise CustodyUnavailableError(
+                f"{common_dir} is not readable git metadata for {claimed_by}: {exc}"
+            ) from exc
+        if not expected(candidate_stat.st_mode):
+            raise CustodyUnavailableError(
+                f"{common_dir} is not git metadata for {claimed_by}: "
+                f"{candidate.name} has the wrong type"
+            )
+    return common_dir
 
 
 def _release_depth(key: tuple[int, str]) -> None:
