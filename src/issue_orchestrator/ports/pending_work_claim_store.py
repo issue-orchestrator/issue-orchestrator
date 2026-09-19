@@ -282,6 +282,20 @@ class PendingWorkClaimStore(Protocol):
         """
         ...
 
+    def replace_held_pending_work_claim(
+        self,
+        run: SessionRunAssets,
+        expected: PendingWorkClaim,
+        replacement: PendingWorkClaim,
+    ) -> None:
+        """Atomically replace the payload held by ``run``.
+
+        The work key must not change, and the row must still be HELD by this
+        exact run with ``expected`` as its payload. Any disagreement raises
+        rather than overwriting another owner or a deferred request.
+        """
+        ...
+
     def defer_pending_work_claim(self, run: SessionRunAssets) -> None:
         """Mark ``run``'s claim as waiting to be relaunched.
 

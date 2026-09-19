@@ -36,6 +36,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Sequence
 
+from ..domain.tech_lead_run_artifacts import TECH_LEAD_DATA_DIRNAME
+
 from ..infra.logging_config import get_repo_log_path
 from ..infra.repo_identity import state_dir
 from ..infra.validation_timings import resolve_git_common_dir
@@ -695,7 +697,7 @@ def build_evidence_map(
 
 def write_evidence_map(run_dir: Path, evidence: EvidenceMap) -> Path:
     """Write ``evidence-map.json`` into the run's tech-lead-data directory."""
-    path = run_dir / "tech-lead-data" / EVIDENCE_MAP_FILENAME
+    path = run_dir / TECH_LEAD_DATA_DIRNAME / EVIDENCE_MAP_FILENAME
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(evidence.to_dict(), indent=2), encoding="utf-8")
     logger.info(

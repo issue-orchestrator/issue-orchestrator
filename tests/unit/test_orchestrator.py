@@ -4530,3 +4530,68 @@ class TestReconcileSweepsThePendingWorkLedger:
         assert [
             t.issue_number for t in orchestrator.state.pending_tech_lead_reviews
         ] == [7]
+
+
+class TestAQueuedValidationRetryNamesTheRunItCameFrom:
+    """The retry has to say which run's launch authority it inherits (#7273).
+
+    A tech-lead investigation's completion is accepted only against an
+    authority row keyed by ``(run_id, session_name)``, and only the original
+    launch records one. If the queued retry does not name that run, the
+    relaunch has nothing to carry forward and its completion is rejected as
+    ``missing_authority`` -- pre-action, so the work is lost.
+    """
+
+    @pytest.fixture
+    def mock_worktree_manager(self, tmp_path: Path):
+        manager = MagicMock()
+        manager.worktree_path = tmp_path / "worktree"
+        manager.worktree_path.mkdir(parents=True)
+        return manager
+
+    def _queue_a_retry(self, config, worktree_manager, agent_label: str):
+        issue = create_issue(6410, labels=[agent_label])
+        session = create_session(issue)
+        session.agent_label = agent_label
+        orchestrator = create_test_orchestrator(
+            config, worktree_manager=worktree_manager
+        )
+        track_session(orchestrator, session)
+
+        orchestrator.handle_session_completion(
+            session, SessionStatus.NEEDS_VALIDATION_RETRY
+        )
+
+        queued = orchestrator.state.pending_validation_retries
+        assert len(queued) == 1, "the retry was not queued"
+        return session, queued[0]
+
+    def test_the_queued_retry_carries_the_completing_runs_identity(
+        self, sample_config, mock_worktree_manager
+    ) -> None:
+        sample_config.tech_lead_review_agent = "agent:tech-lead"
+        session, retry = self._queue_a_retry(
+            sample_config, mock_worktree_manager, "agent:tech-lead"
+        )
+
+        assert retry.authority_run == session.run_assets.identity, (
+            "the retry does not name the run whose authority it must inherit"
+        )
+
+    def test_an_ordinary_retry_names_no_authority_run(
+        self, sample_config, mock_worktree_manager
+    ) -> None:
+        """Only a tech-lead run has an authority row to inherit.
+
+        Naming one anyway would strand every coder retry in the queue: the
+        launcher cannot distinguish "this run never had a row" from "this
+        run's row is gone", so it would refuse to relaunch either.
+        """
+        sample_config.tech_lead_review_agent = "agent:tech-lead"
+        _, retry = self._queue_a_retry(
+            sample_config, mock_worktree_manager, "agent:coder"
+        )
+
+        assert retry.authority_run is None, (
+            "a coder retry named an authority row that was never recorded"
+        )

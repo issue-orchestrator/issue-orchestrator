@@ -29,18 +29,34 @@ def tech_lead_problem_artifact_hold_issue_numbers(
 
     - failures discovered on this tick;
     - queued failure investigations;
-    - active tech-lead sessions; and
-    - storm cohorts owned by queued or active health-review anchors.
+    - active tech-lead sessions;
+    - storm cohorts owned by queued or active health-review anchors; and
+    - queued validation retries that resume an investigation (#7273).
 
     Once no pending or active work references an issue, re-evaluation releases
     its cleanup without a separate release mutation.
+
+    Queued AND ACTIVE work holds regardless of whether tech-lead review is
+    switched on. The configuration decides whether new investigations start,
+    not whether already-admitted work keeps the artifacts it will read --
+    switching the feature off used to release every hold at once, discarding
+    the inputs of retries that were waiting to run, and of the session that was
+    reading them right then (round 14 finding 4).
     """
+    from ..domain.tech_lead_scratch_identity import scratch_worktree_focus_issue
     from ..domain.tech_lead_session import TechLeadSessionFlavor
     from .tech_lead_session_policy import is_tech_lead_session
 
-    if not (config.tech_lead_review_on_failure and config.tech_lead_review_agent):
-        return frozenset()
-    held = {failure.issue_number for failure in state.discovered_failures}
+    # Keyed on the CHECKOUT, not on `authority_run`. The checkout path is a
+    # durable fact: an investigation runs in a run-scoped scratch worktree whose
+    # name says so. `authority_run` is read back off a run manifest, so a
+    # manifest that cannot be read released the hold on exactly the retry that
+    # most needed it (round 1 finding 4).
+    held = {
+        retry.issue_number
+        for retry in state.pending_validation_retries
+        if scratch_worktree_focus_issue(retry.worktree_path) is not None
+    }
     referenced_anchors: set[int] = set()
     for item in state.pending_tech_lead_reviews:
         if item.flavor is TechLeadSessionFlavor.FAILURE_INVESTIGATION:
@@ -49,11 +65,20 @@ def tech_lead_problem_artifact_hold_issue_numbers(
         # succeeded, so the durable row below is the single cohort authority.
         referenced_anchors.add(item.issue_number)
     for session in state.active_sessions:
-        if is_tech_lead_session(
-            config.tech_lead_review_agent, session.issue.agent_type
+        # `tech_lead_scope` first: a restored session carries its scope from the
+        # claim, and it is a durable fact about the RUN rather than a reading of
+        # the current configuration.
+        if session.tech_lead_scope is not None or is_tech_lead_session(
+            config.tech_lead_review_agent, session.agent_label
         ):
             held.add(session.issue.number)
             referenced_anchors.add(session.issue.number)
+
+    # Only DISCOVERY is gated on the configuration: it decides whether new
+    # investigations start.
+    if config.tech_lead_review_on_failure and config.tech_lead_review_agent:
+        held.update(failure.issue_number for failure in state.discovered_failures)
+
     if tech_lead_authority is not None:
         for anchor, cohort in tech_lead_authority.list_storm_cohorts():
             if anchor in referenced_anchors:

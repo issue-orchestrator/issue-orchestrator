@@ -371,6 +371,7 @@ class CompletionHandler:
         if finalize_terminal:
             discard_tech_lead_authority_after_completion(
                 self.config, self._tech_lead_authority, session, processing_errors=processing_errors,
+                work_outcome=SettlementOutcome.for_provider_error(provider_error_type),
                 processing_policy=processing_policy,
             )
         # ADR-0033's run record is NOT closed here: the authoritative terminal
@@ -600,6 +601,7 @@ class CompletionHandler:
         # verdict, rather than while their command list is merely being built.
         discard_tech_lead_authority_after_completion(
             self.config, self._tech_lead_authority, session,
+            work_outcome=work_outcome,
             processing_errors=processing_errors,
             processing_policy=processing_policy,
         )

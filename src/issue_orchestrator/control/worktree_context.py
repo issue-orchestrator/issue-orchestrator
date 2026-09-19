@@ -149,6 +149,7 @@ class WorktreeContext:
         phase_name: Optional[str] = None,
         stack_base_branch: Optional[str] = None,
         scratch: Optional[ScratchWorktreeIdentity] = None,
+        preserve_run_dir: Path | None = None,
     ) -> "WorktreeContext":
         """Create and prepare a worktree context for a session.
 
@@ -328,6 +329,7 @@ class WorktreeContext:
             issue_number,
             retain_runs=config.session_output_retention_runs,
             session_output=session_output,
+            preserve_run_dir=preserve_run_dir,
         )
         try:
             worktree.prepare_for_session(phase_name)

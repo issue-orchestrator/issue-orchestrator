@@ -4350,14 +4350,40 @@ def test_a_restart_still_returns_the_work_on_a_provider_failure(
 def test_a_restarted_failure_investigation_keeps_its_typed_trigger(
     tmp_path: Path,
 ) -> None:
-    """The DiscoveredFailure has to survive the disk round trip, not just exist."""
+    """The DiscoveredFailure and the ROLE both have to survive the round trip.
+
+    `TECH_LEAD` was the third restoration kind with the same missing-role gap
+    `VALIDATION_RETRY` and `REWORK` had: an original investigation came back
+    wearing the focus issue's coder label and carrying no launch scope, so its
+    real completion was refused for a caller-role mismatch against the durable
+    allocation (round 14 finding 2).
+    """
     from issue_orchestrator.domain.tech_lead_session import TechLeadSessionFlavor
 
     harness = _ready_harness(tmp_path)
     state = _pending_state("tech_lead")
     session = _route("tech_lead", state, harness)
     assert session is not None
+    # The focus issue carries its own coder label; only the claim knows the run
+    # was launched as tech-lead work.
+    session.issue.labels[:] = ["agent:backend"]
     restarted, restored = _restart(state, session, harness)
+
+    assert restored.agent_label == harness.launcher.config.tech_lead_review_agent
+    assert (
+        restored.agent_config
+        is harness.launcher.config.agents[
+            harness.launcher.config.tech_lead_review_agent
+        ]
+    )
+    assert restored.tech_lead_scope is not None, (
+        "the restored investigation carries no launch scope, so its completion "
+        "is refused for a caller-role mismatch"
+    )
+    assert (
+        restored.tech_lead_scope.flavor
+        is TechLeadSessionFlavor.FAILURE_INVESTIGATION
+    )
 
     _terminate_on_provider(restarted, restored, ProviderErrorType.AUTH, harness)
 
@@ -4374,15 +4400,44 @@ def test_a_restarted_failure_investigation_keeps_its_typed_trigger(
 def test_a_restarted_validation_retry_keeps_its_prompt_and_budget(
     tmp_path: Path,
 ) -> None:
-    """Prompt, error and attempt count cannot be rebuilt from a terminal alone."""
+    """Prompt, error, attempt count and ROLE cannot be rebuilt from a terminal.
+
+    Restoration reads the focus issue's own label, which for an investigation is
+    the CODER label. The restored run was therefore classified as ordinary work
+    and the next retry queued with no `authority_run` at all -- the original
+    #7273 defect, reached through a restart instead of a relaunch (round 13
+    finding 1).
+    """
+    from issue_orchestrator.control.session_completion import (
+        unprocessed_session_policy,
+    )
     from issue_orchestrator.domain.session_key import TaskKind
 
     harness = _ready_harness(tmp_path)
     state = _pending_state("validation_retry")
     state.pending_validation_retries[0].original_prompt = "the original prompt"
+    state.pending_validation_retries[0].agent_label = "agent:tech-lead"
     session = _route("validation_retry", state, harness)
     assert session is not None
+    # The durable focus issue still carries its coder label. Only the in-flight
+    # claim knows which role the resumed run was actually launched under.
+    session.issue.labels[:] = ["agent:backend"]
     restarted, restored = _restart(state, session, harness)
+
+    assert restored.agent_label == "agent:tech-lead"
+    assert (
+        restored.agent_config is harness.launcher.config.agents["agent:tech-lead"]
+    )
+    assert restored.validation_retry_count == 1
+    policy = unprocessed_session_policy(restored, harness.launcher.config)
+    assert policy.is_tech_lead, (
+        "the restored run was classified as ordinary work, so its next retry "
+        "would inherit no launch authority"
+    )
+    assert (
+        policy.inheritable_launch_authority(restored.run_assets.identity)
+        == restored.run_assets.identity
+    )
 
     _terminate_on_provider(restarted, restored, ProviderErrorType.AUTH, harness)
 
@@ -4391,6 +4446,62 @@ def test_a_restarted_validation_retry_keeps_its_prompt_and_budget(
     assert returned.validation_error == "boom"
     assert returned.retry_count == 1
     assert returned.source_task is TaskKind.CODE
+
+
+def test_a_live_retry_with_unverified_authority_is_quarantined(
+    tmp_path: Path,
+) -> None:
+    """A READABLE but incomplete legacy claim is not safe to rehydrate.
+
+    Step-10 artifact recovery deliberately skips a live terminal, so nothing
+    else repairs it -- the terminal keeps working and its completion is already
+    guaranteed to be rejected (round 16 finding 1).
+    """
+    from dataclasses import replace
+
+    from issue_orchestrator.control.in_flight_work import InFlightWorkLedger
+    from issue_orchestrator.domain.models import (
+        OrchestratorState,
+        PendingValidationRetry,
+    )
+    from issue_orchestrator.domain.pending_work import (
+        PendingWorkClaim,
+        PendingWorkKind,
+    )
+
+    harness = _ready_harness(tmp_path)
+    state = _pending_state("validation_retry")
+    session = _route("validation_retry", state, harness)
+    assert session is not None
+
+    held = harness.claims.look_up_pending_work_claim(session.run_assets).held
+    assert held is not None
+    assert isinstance(held.request, PendingValidationRetry)
+    damaged = PendingWorkClaim(
+        PendingWorkKind.VALIDATION_RETRY,
+        replace(
+            held.request,
+            recovery_error=(
+                "Schema-v1 investigation retry has no recorded "
+                "launch-authority provenance"
+            ),
+        ),
+    )
+    harness.claims.replace_held_pending_work_claim(
+        session.run_assets, expected=held, replacement=damaged
+    )
+
+    restarted = OrchestratorState()
+    restoration = InFlightWorkLedger(restarted, harness.claims).rehydrate(
+        [session],
+        agent_configs=harness.launcher.config.agents,
+        tech_lead_label=harness.launcher.config.tech_lead_review_agent,
+    )
+
+    assert restoration.admitted == ()
+    assert [item.session for item in restoration.quarantined] == [session]
+    assert restarted.active_sessions == []
+    assert restarted.in_flight_work == []
 
 
 def test_a_restarted_rework_can_still_restore_its_durable_label(
@@ -5605,7 +5716,11 @@ def test_a_still_discovered_run_whose_claim_is_deferred_is_not_admitted(
     assert session is not None
     harness.claims.defer_pending_work_claim(session.run_assets)
 
-    restoration = InFlightWorkLedger(state, harness.claims).rehydrate([session])
+    restoration = InFlightWorkLedger(state, harness.claims).rehydrate(
+        [session],
+        agent_configs=harness.launcher.config.agents,
+        tech_lead_label=harness.launcher.config.tech_lead_review_agent,
+    )
 
     assert restoration.admitted == ()
     assert [s.session.terminal_id for s in restoration.stale] == [session.terminal_id]

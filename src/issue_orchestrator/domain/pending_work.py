@@ -71,6 +71,17 @@ class PendingWorkClaim:
         """
         return f"{self.kind.value}:{_request_id(self.request)}"
 
+    def unverified_authority_refusal(self) -> str | None:
+        """Why this claim cannot prove the authority its completion needs.
+
+        Lives on the claim so a QUEUED entry and a LIVE terminal cannot drift
+        apart: a readable-but-incomplete claim is unsafe either way, and
+        startup artifact recovery deliberately skips a live terminal, so
+        nothing else repairs it (#7273 round 16 finding 1).
+        """
+        request = self.request
+        return getattr(request, "recovery_error", None)
+
 
 @dataclass(frozen=True, slots=True)
 class InFlightWork:

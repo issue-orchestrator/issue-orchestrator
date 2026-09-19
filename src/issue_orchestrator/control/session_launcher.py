@@ -60,6 +60,8 @@ from .worktree_context import WorktreeContext
 from ..infra.validation_state import DEFAULT_RETRY_TEMPLATE, _truncate_with_tail
 from ..domain.tech_lead_session import TechLeadLaunchScope
 from .tech_lead_session_policy import (
+    carry_launch_authority_forward,
+    resumable_retry_identity,
     failure_investigation_scratch_identity,
     is_tech_lead_session,
     prepare_tech_lead_session_data,
@@ -95,6 +97,7 @@ from .needs_human_block import (
 )
 from .tech_lead_needs_human_reconcile import TechLeadNeedsHumanLifecycle, discover_tech_lead_needs_human_issue_numbers
 from .session_manager import SessionManager, SessionRef
+from .tech_lead_run_inputs import preserved_source_run, transfer_launch_authority
 from .launch_transaction import (
     NO_LAUNCH_WORK_CLAIM,
     LaunchWorkClaim,
@@ -1169,6 +1172,11 @@ class SessionLauncher:
         work_claim: LaunchWorkClaim = NO_LAUNCH_WORK_CLAIM,
     ) -> LaunchResult:
         """Launch a coding session that continues after validation failure."""
+        refusal, scratch_identity = resumable_retry_identity(retry)
+        if refusal:
+            return LaunchResult(
+                None, False, refusal, disposition=LaunchDisposition.RETRYABLE_FAILURE
+            )
         admitted = self._admit_validation_retry(retry, active_sessions)
         if isinstance(admitted, LaunchResult):
             return admitted
@@ -1231,9 +1239,18 @@ class SessionLauncher:
             branch_name=retry.branch_name or None,
             enforce_hooks=self.config.enforce_hooks,
             pre_push_hook=self.config.pre_push_hook,
-            reuse_options=self._worktree_reuse_options(allow_remote_branch_delete=False),
+            reuse_options=self._worktree_reuse_options(
+                allow_remote_branch_delete=False,
+                # An investigation checkout is RESUMED, not refreshed: reuse
+                # rebases onto the base and hard-resets on conflict, and this
+                # branch was never pushed, so the retry would destroy exactly
+                # the work the hold exists to protect (round 1 finding 3).
+                preserve_branch=scratch_identity is not None,
+            ),
             phase_name=phase_name,
             stack_base_branch=stack_decision.base_branch,
+            scratch=scratch_identity,  # round 16 F2: the DIRECTORY half too
+            preserve_run_dir=preserved_source_run(retry),
         )
         if ctx.error:
             log_transition("issue", issue.number, "LAUNCHING", "BLOCKED", "worktree preparation failed")
@@ -1249,12 +1266,27 @@ class SessionLauncher:
         branch_name = ctx.branch_name
         run = ctx.run
 
+        # BEFORE the durable hold: this can refuse, and a refusal after the
+        # hold returns with the claim still marked actively held -- a phantom
+        # in-flight row that settlement can only refresh, never clear, and that
+        # every retry attempt adds another of (round 1 finding 5).
+        carried = carry_launch_authority_forward(
+            self._tech_lead_authority, retry, run
+        )
+        if isinstance(carried, str):
+            self._release_claim_if_held(issue.number, claim)
+            return LaunchResult(None, False, carried)
+
         # Durable before anything irreversible (#6999 A2).
         if failure := work_claim.hold_before_spawn(run, issue_number=issue.number):
             self._release_claim_if_held(issue.number, claim)
             return failure
 
-        with abandon_claim_unless_spawned(work_claim, run) as spawn:
+        # The transfer settles on the same spawn decision the claim guard uses,
+        # so a new early return cannot split them (#7273 round 2 finding 4).
+        with abandon_claim_unless_spawned(work_claim, run) as spawn, (
+            transfer_launch_authority(carried, spawn, work=work_claim, run=run, retry=retry)
+        ):
             extra_args = self._extra_provider_args_from_labels(issue.labels)
             retry_prompt = self._render_validation_retry_prompt(
                 retry=retry,
@@ -1372,6 +1404,7 @@ class SessionLauncher:
                 lease_id=claim.lease_id,
                 lease_acquired_at=claim.lease_acquired_at,
                 lease_expires_at=claim.lease_expires_at,
+                scratch_worktree=scratch_identity is not None,
             )
             log_transition(
                 "issue",
@@ -1417,9 +1450,12 @@ class SessionLauncher:
         agent_config = self.config.agents.get(agent_label)
         if not agent_config:
             return None
-        labels = list(fresh_issue.labels) if fresh_issue else []
-        if agent_label not in labels:
-            labels.append(agent_label)
+        # EXACTLY the selected execution role. `Issue.agent_type` returns the
+        # FIRST agent label, so APPENDING left an investigation's resumed run
+        # reading as the focus issue's coder: authority bypassed, artifact hold
+        # released, run recorded as TaskKind.CODE (#7273 round 2 finding 1).
+        carried = fresh_issue.labels if fresh_issue else []
+        labels = [n for n in carried if not str(n).startswith("agent:")] + [agent_label]
         issue = Issue(
             number=retry.issue_number,
             title=(fresh_issue.title if fresh_issue else retry.issue_title),

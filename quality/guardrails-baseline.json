@@ -416,6 +416,14 @@
       "rule_id": "control_policy_branch_sites",
       "value": 5
     },
+    "control_policy_branch_sites:src/issue_orchestrator/control/tech_lead_reaction.py": {
+      "detail": "3 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/tech_lead_reaction.py",
+      "path": "src/issue_orchestrator/control/tech_lead_reaction.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 3
+    },
     "control_policy_branch_sites:src/issue_orchestrator/control/validation.py": {
       "detail": "6 branch site(s) mention lifecycle/control terms",
       "kind": "control_policy_branch_sites",

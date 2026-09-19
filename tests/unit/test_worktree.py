@@ -492,6 +492,62 @@ class TestCreateWorktree:
         assert branch_name == "123-test"
         assert state["worktree_add_calls"] == 2
 
+    def test_reuse_disabled_cannot_detach_a_preserved_branch(
+        self, tmp_path, monkeypatch
+    ):
+        """The global fresh-worktree switch cannot override branch preservation.
+
+        It DETACHED an investigation branch from its scratch checkout and
+        recreated it at the ordinary issue path, after which
+        `resumes_an_investigation()` is false and a later retry may rebase or
+        hard-reset the only copy (round 13 finding 2).
+        """
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        (repo_root / ".git").mkdir()
+        existing_worktree = tmp_path / "repo-tech-lead-6410-abcdef123456"
+        existing_worktree.mkdir()
+        branch_name = "tech-lead-investigation-6410-abcdef123456"
+        monkeypatch.setenv("ORCHESTRATOR_DISABLE_WORKTREE_REUSE", "1")
+
+        worktree_list_output = (
+            f"worktree {existing_worktree}\n"
+            "HEAD abc123\n"
+            f"branch refs/heads/{branch_name}\n\n"
+        )
+
+        with patch(
+            "issue_orchestrator.adapters.git.git_cli.subprocess.run"
+        ) as mock_run:
+            def run_side_effect(cmd, *args, **kwargs):
+                if "worktree" in cmd and "list" in cmd:
+                    return MagicMock(
+                        returncode=0, stdout=worktree_list_output, stderr=""
+                    )
+                return MagicMock(returncode=0, stdout="", stderr="")
+
+            mock_run.side_effect = run_side_effect
+
+            with pytest.raises(
+                WorktreeError, match="refusing destructive recreation"
+            ):
+                create_worktree(
+                    repo_root,
+                    6410,
+                    "Investigate failure",
+                    worktree_base=tmp_path,
+                    base_branch="main",
+                    branch_name=branch_name,
+                    reuse_options=WorktreeReuseOptions(
+                        preserve_branch=True, reuse_push_preflight=False
+                    ),
+                )
+
+        issued = [call.args[0] for call in mock_run.call_args_list]
+        assert not any(
+            "checkout" in cmd and "--detach" in cmd for cmd in issued
+        ), "the preserved branch was detached from its checkout"
+
     @patch("issue_orchestrator.adapters.worktree._worktree_runtime_setup.install_claude_settings")
     @patch("issue_orchestrator.adapters.worktree._worktree_runtime_setup.install_hooks")
     @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
@@ -2277,6 +2333,195 @@ class TestCreateWorktreeReuse:
                 a[:3] == ["fetch", "origin", "main"] for a in issued
             ), issued
 
+    def test_preserved_reuse_failure_keeps_the_checkout_and_branch(self, tmp_path):
+        """preserve_branch also has to survive a FAILURE, not just the happy path.
+
+        It guarded the rebase/hard-reset, so the branch was safe from being
+        rewritten but not from being deleted: validation, remote sync and push
+        preflight each called ``policy.delete_worktree``, which removes the
+        local branch too. A transient auth failure while relaunching an
+        investigation destroyed its only copy on the way to reporting a launch
+        failure (round 9 finding 2).
+        """
+        from issue_orchestrator.ports.worktree_policy import (
+            SyncResult,
+            ValidationResult,
+        )
+
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        (repo_root / ".git").mkdir()
+        worktree_path = tmp_path / "repo-tech-lead-6410-abcdef123456"
+        worktree_path.mkdir()
+        (worktree_path / "only-copy.txt").write_text("unpushed investigation\n")
+        branch_name = "tech-lead-investigation-6410-abcdef123456"
+        deleted: list[Path] = []
+
+        class SyncFailurePolicy:
+            def validate_for_reuse(self, candidate, expected_branch, root):
+                return ValidationResult(can_reuse=True, reason="ok")
+
+            def sync_remote_refs(self, candidate, branch):
+                return SyncResult(success=False, reason="temporary auth failure")
+
+            def delete_worktree(self, candidate, root):
+                deleted.append(candidate)
+                shutil.rmtree(candidate)
+                return True
+
+        worktree_list_output = (
+            f"worktree {worktree_path}\n"
+            "HEAD abc123\n"
+            f"branch refs/heads/{branch_name}\n\n"
+        )
+
+        with (
+            patch("issue_orchestrator.adapters.git.git_cli.subprocess.run") as mock_run,
+            patch("issue_orchestrator.adapters.worktree._worktree_runtime_setup.install_hooks"),
+            patch("issue_orchestrator.adapters.worktree._worktree_runtime_setup.install_claude_settings"),
+            patch("issue_orchestrator.adapters.worktree._worktree_runtime_setup.sync_cli_tools"),
+        ):
+            def run_side_effect(cmd, *args, **kwargs):
+                argv = cmd[3:]
+                if argv[:2] == ["worktree", "list"]:
+                    return MagicMock(returncode=0, stdout=worktree_list_output, stderr="")
+                return MagicMock(returncode=0, stdout="", stderr="")
+
+            mock_run.side_effect = run_side_effect
+
+            with pytest.raises(WorktreeError, match="Preserved branch"):
+                create_worktree(
+                    repo_root,
+                    6410,
+                    "Investigate failure",
+                    worktree_base=tmp_path,
+                    branch_name=branch_name,
+                    reuse_options=WorktreeReuseOptions(
+                        reuse_push_preflight=False, preserve_branch=True
+                    ),
+                    policy=SyncFailurePolicy(),
+                )
+
+        assert deleted == []
+        assert worktree_path.exists()
+        assert (worktree_path / "only-copy.txt").read_text() == (
+            "unpushed investigation\n"
+        )
+
+    @pytest.mark.parametrize("preserve_branch", [True, False])
+    def test_explicit_path_fallback_never_adopts_a_different_branch(
+        self, tmp_path, preserve_branch
+    ):
+        """A REQUESTED branch is authoritative for preserved and ordinary reuse.
+
+        When the branch lookup misses the checkout but <repo>-<issue> exists,
+        the path fallback validated with no expected branch and then launched on
+        whatever was there (round 10 finding 1). Round 10 threaded the
+        expectation only for a preserved relaunch -- so an ordinary retry could
+        still validate or publish unrelated work (round 11 finding 2).
+        """
+        from issue_orchestrator.ports.worktree_policy import (
+            SyncResult,
+            ValidationResult,
+        )
+
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        (repo_root / ".git").mkdir()
+        worktree_path = tmp_path / "repo-6410"
+        worktree_path.mkdir()
+        (worktree_path / "only-copy.txt").write_text("ordinary issue work\n")
+
+        expected_branch = "tech-lead-investigation-6410-abcdef123456"
+        ordinary_branch = "6410-ordinary"
+        deleted: list[Path] = []
+        validated: list[str | None] = []
+        created = None
+
+        class BranchCheckingPolicy:
+            def validate_for_reuse(self, candidate, expected, root):
+                validated.append(expected)
+                if expected is not None and expected != ordinary_branch:
+                    return ValidationResult(
+                        can_reuse=False,
+                        reason=(
+                            f"branch mismatch: expected {expected}, "
+                            f"found {ordinary_branch}"
+                        ),
+                    )
+                return ValidationResult(can_reuse=True, reason="ok")
+
+            def sync_remote_refs(self, candidate, branch):
+                return SyncResult(success=True, reason="ok")
+
+            def delete_worktree(self, candidate, root):
+                deleted.append(candidate)
+                shutil.rmtree(candidate)
+                return True
+
+        worktree_list_output = (
+            f"worktree {worktree_path}\n"
+            "HEAD abc123\n"
+            f"branch refs/heads/{ordinary_branch}\n\n"
+        )
+
+        with (
+            patch("issue_orchestrator.adapters.git.git_cli.subprocess.run") as mock_run,
+            patch("issue_orchestrator.adapters.worktree._worktree_runtime_setup.install_hooks"),
+            patch("issue_orchestrator.adapters.worktree._worktree_runtime_setup.install_claude_settings"),
+            patch("issue_orchestrator.adapters.worktree._worktree_runtime_setup.sync_cli_tools"),
+        ):
+            def run_side_effect(cmd, *args, **kwargs):
+                argv = cmd[3:]
+                if argv[:2] == ["worktree", "list"]:
+                    return MagicMock(
+                        returncode=0, stdout=worktree_list_output, stderr=""
+                    )
+                if argv[:3] == ["rev-parse", "--abbrev-ref", "HEAD"]:
+                    return MagicMock(
+                        returncode=0, stdout=f"{ordinary_branch}\n", stderr=""
+                    )
+                return MagicMock(returncode=0, stdout="", stderr="")
+
+            mock_run.side_effect = run_side_effect
+
+            def create():
+                return create_worktree(
+                    repo_root,
+                    6410,
+                    "Investigate failure",
+                    worktree_base=tmp_path,
+                    base_branch="main",
+                    branch_name=expected_branch,
+                    reuse_options=WorktreeReuseOptions(
+                        reuse_push_preflight=False,
+                        preserve_branch=preserve_branch,
+                    ),
+                    policy=BranchCheckingPolicy(),
+                )
+
+            if preserve_branch:
+                with pytest.raises(WorktreeError, match="Preserved branch"):
+                    create()
+            else:
+                created = create()
+
+        assert expected_branch in validated, (
+            "the requested branch never reached path validation"
+        )
+        if preserve_branch:
+            assert deleted == []
+            assert (worktree_path / "only-copy.txt").read_text() == (
+                "ordinary issue work\n"
+            )
+        else:
+            # Ordinary reuse MAY discard the mismatched checkout; what it may
+            # not do is silently adopt the branch that was sitting there.
+            assert deleted == [worktree_path]
+            assert created is not None
+            assert created[1] == expected_branch
+            assert created[1] != ordinary_branch
+
     def test_reuse_without_preserve_branch_still_resets(self, tmp_path):
         """Default (preserve_branch=False) still rebases and discards on conflict.
 
@@ -2456,7 +2701,29 @@ class TestWorktreePrepareForSession:
         worktree.prepare_for_session("issue-1")
 
         # Verify prune_runs was called with correct path and retention
-        mock_session_output.prune_runs.assert_called_once_with(tmp_path, 2)
+        mock_session_output.prune_runs.assert_called_once_with(
+            tmp_path, 2, preserve_run_dir=None
+        )
+
+    def test_a_preserved_run_is_passed_to_the_pruner(
+        self, tmp_path: Path, mock_session_output: MagicMock
+    ):
+        """A retry reads its launch inputs out of a run preparation may prune."""
+        mock_session_output.prune_runs.return_value = []
+        keep_me = tmp_path / ".issue-orchestrator" / "sessions" / "run__issue-1"
+
+        worktree = Worktree(
+            tmp_path,
+            issue_number=123,
+            retain_runs=2,
+            session_output=mock_session_output,
+            preserve_run_dir=keep_me,
+        )
+        worktree.prepare_for_session("issue-1")
+
+        mock_session_output.prune_runs.assert_called_once_with(
+            tmp_path, 2, preserve_run_dir=keep_me
+        )
 
     def test_raises_worktree_preparation_error_on_delete_failure(
         self, worktree: Worktree, worktree_dir: Path, monkeypatch

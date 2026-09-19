@@ -336,6 +336,7 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
             retry_count=next_retry_count,
             source_task=session.key.task,
             validation_cmd=config.validation.quick.cmd,
+            authority_run=processing_policy.inheritable_launch_authority(session.run_assets.identity),
         )
         state.replace_pending_validation_retry(pending_retry)
         # Kill the terminal session but don't cleanup worktree (agent will continue there)
@@ -699,7 +700,7 @@ def _apply_completed_decisions(
 def unprocessed_session_policy(session: Session, config: Config) -> CompletionProcessingPolicy:
     """Classify terminal-only paths that never invoked completion processing."""
     return CompletionProcessingPolicy.for_unprocessed_session(
-        session.issue.agent_type, config.tech_lead_review_agent
+        session.agent_label, config.tech_lead_review_agent
     )
 
 

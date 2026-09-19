@@ -56,12 +56,12 @@ Policy summary:
 
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..domain.models import Session
+from ..domain.tech_lead_run_artifacts import TECH_LEAD_DATA_DIRNAME
 from ..domain.board_snapshot import BOARD_SNAPSHOT_FILENAME, BoardSnapshot
 from ..domain.tech_lead_manifest import TechLeadManifest
 from ..domain.tech_lead_session import TechLeadLaunchAuthority, TechLeadSessionFlavor
@@ -92,6 +92,7 @@ from .tech_lead_case_files import build_pattern_ledger
 from .tech_lead_issue_policy import protected_tech_lead_label_violations
 from .tech_lead_proposals import build_op_ledger
 from .tech_lead_session_policy import read_tech_lead_assignment
+from .in_flight_work import SettlementOutcome
 from ..domain.registered_completion import CompletionProcessingPolicy
 from .tech_lead_target_scope import target_scope_violation
 from .tech_lead_dispositions import investigation_disposition_violation
@@ -109,33 +110,21 @@ logger = logging.getLogger(__name__)
 def read_tech_lead_manifest(run_dir: Path) -> TechLeadManifest | None:
     """Read the agent-visible batch PR manifest copy for a session run.
 
-    UNTRUSTED: this is the worktree copy, used only to detect divergence
-    from the launch authority (tamper evidence). Completion effects never
-    key off it. Fail-safe: a missing run manifest, key, or manifest file
-    yields None (with a warning where content is present but unreadable).
+    From the CANONICAL location, ``<run_dir>/tech-lead-data/manifest.json``, the
+    same way the assignment and the board snapshot are read. It used to be found
+    by following a ``tech_lead_manifest`` path out of the run manifest, which is
+    agent-writable and which a resumed run never writes -- so a batch review's
+    retry relaunched fine and was then rejected as ``scope_tampered`` against an
+    empty PR set (#7273 round 2 finding 3). Reading the canonical path also
+    stops trusting an arbitrary path from a file the agent can edit.
+
+    UNTRUSTED: this is the worktree copy, used only to detect divergence from
+    the launch authority (tamper evidence). Completion effects never key off it.
+    Fail-safe: a missing file yields None, with a warning where content is
+    present but unreadable.
     """
-    run_manifest_path = run_dir / "manifest.json"
-    if not run_manifest_path.exists():
-        return None
-    try:
-        run_manifest = json.loads(run_manifest_path.read_text())
-    except Exception as exc:
-        logger.warning(
-            "[tech_lead] Failed to read run manifest %s: %s",
-            run_manifest_path,
-            exc,
-            exc_info=True,
-        )
-        return None
-    tech_lead_manifest_path = run_manifest.get("tech_lead_manifest")
-    if not tech_lead_manifest_path:
-        return None
-    manifest_path = Path(tech_lead_manifest_path)
+    manifest_path = run_dir / TECH_LEAD_DATA_DIRNAME / "manifest.json"
     if not manifest_path.exists():
-        logger.warning(
-            "[tech_lead] Manifest path in run manifest doesn't exist: %s",
-            manifest_path,
-        )
         return None
     try:
         return TechLeadManifest.read(manifest_path)
@@ -151,7 +140,7 @@ def read_tech_lead_manifest(run_dir: Path) -> TechLeadManifest | None:
 
 def _health_snapshot_scope_error(run_dir: Path, authority: TechLeadLaunchAuthority) -> str | None:
     """Return snapshot/cohort tamper detail for a health-review authority."""
-    snapshot_path = run_dir / "tech-lead-data" / BOARD_SNAPSHOT_FILENAME
+    snapshot_path = run_dir / TECH_LEAD_DATA_DIRNAME / BOARD_SNAPSHOT_FILENAME
     if not snapshot_path.exists():
         return "worktree board-snapshot.json is missing (deleted after launch)"
     try:
@@ -344,6 +333,7 @@ def discard_tech_lead_authority_after_completion(
     session: Session,
     *,
     processing_policy: CompletionProcessingPolicy,
+    work_outcome: "SettlementOutcome",
     processing_errors: list[str] | None,
 ) -> None:
     """Retention owner (#6769 F3): drop the run's authority row at the end.
@@ -369,6 +359,25 @@ def discard_tech_lead_authority_after_completion(
     what releases the cohort's held run artifacts for cleanup.
     """
     if not processing_policy.is_tech_lead:
+        return
+    if work_outcome is SettlementOutcome.PROVIDER_DEFERRED:
+        if session.validation_retry_count > 0:
+            # A VALIDATION-RETRY claim is rebound to this run at launch and goes
+            # back on its queue still naming this grant. Discarding it would
+            # make that requeued retry permanently unlaunchable --
+            # `missing_authority`, pre-action, zero push, for every attempt that
+            # follows (round 11 finding 1). Explicit abandonment retires it
+            # through `ValidationRetryRetirement` instead (round 12 finding 1).
+            return
+        # An ORIGINAL tech-lead request defers back to `PendingTechLeadReview`,
+        # and its relaunch records a NEW run authority -- so this run's grant is
+        # spent, and retaining it leaves a row authorizing an abandoned run
+        # identity forever (round 13 finding 3). The storm cohort stays: the
+        # requeued review still owns it.
+        tech_lead_authority.discard(
+            run_id=session.run_assets.run_id,
+            session_name=session.run_assets.session_name,
+        )
         return
     if is_publish_failure(processing_errors):
         return

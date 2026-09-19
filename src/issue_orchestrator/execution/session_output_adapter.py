@@ -273,8 +273,10 @@ class FileSystemSessionOutput(RunDirectoryArtifacts):
         self,
         worktree_path: Path,
         keep: int,
+        *,
+        preserve_run_dir: Path | None = None,
     ) -> list[Path]:
-        """Delete old runs, keeping the last N."""
+        """Delete old runs, keeping the last N including any preserved run."""
         if is_escrow_path(worktree_path) or keep <= 0:
             return []
 
@@ -301,8 +303,18 @@ class FileSystemSessionOutput(RunDirectoryArtifacts):
             )
         ]
 
+        # A retry reads its launch inputs out of the ORIGINAL run, and
+        # preparation prunes before the copy happens. Repeated pre-spawn
+        # refusals pile up newer allocation-only directories, so once retention
+        # is exceeded the pruner deleted the only trusted copy of
+        # `tech-lead-data` and every later retry was permanently refused
+        # (round 8 finding 2).
+        preserved_run = preserve_run_dir if preserve_run_dir in runs else None
+        prunable_runs = [run for run in runs if run != preserved_run]
+        remaining_slots = keep - (1 if preserved_run is not None else 0)
+
         removed: list[Path] = []
-        for run_dir in runs[keep:]:
+        for run_dir in prunable_runs[max(0, remaining_slots):]:
             try:
                 self._delete_tree(run_dir)
                 removed.append(run_dir)

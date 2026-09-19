@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 from ..domain.tech_lead_scratch_identity import (
     names_one_scratch_checkout,
     ordinary_worktree_name_pattern,
+    scratch_worktree_focus_issue,
     scratch_worktree_name_pattern,
 )
 from ..ports.worktree_manager import RegisteredWorktree, WORKTREE_ID_MARKER
@@ -308,6 +309,24 @@ class WorktreeAuditOwner:
         )
 
 
+def _checkouts_awaiting_a_retry(state: "OrchestratorState") -> set[Path]:
+    """Checkouts a queued validation retry is going to resume (#7273).
+
+    A retry's session is not active -- that is what makes it a retry -- so
+    without this a restart classifies its checkout as an inactive disposable
+    and removes it WITH ITS BRANCH. For a tech-lead investigation that branch
+    was never pushed, so its commits exist nowhere else.
+
+    Every queued retry counts, not only the tech-lead ones: an ordinary retry's
+    checkout is equally the thing it is about to resume.
+    """
+    return {
+        Path(retry.worktree_path)
+        for retry in state.pending_validation_retries
+        if retry.worktree_path
+    }
+
+
 def apply_disposable_removal_safety(
     entries: tuple[WorktreeAuditEntry, ...],
     worktree_manager: WorktreeManager,
@@ -393,9 +412,58 @@ class StartupWorktreeReconciler:
         self._audit_owner = audit_owner
         self._runtime_lifecycle = runtime_lifecycle
 
+    def validation_retry_checkouts(
+        self,
+    ) -> tuple[tuple[int, RegisteredWorktree, str], ...]:
+        """Owned registered checkouts that can hold a validation retry.
+
+        This is INVENTORY, not queue-selection policy: the retry-recovery owner
+        still decides what wins a same-issue collision. Recovery reads the
+        inventory this owner already holds rather than re-deriving either
+        checkout shape against the filesystem.
+
+        Both shapes come from git's registered list because neither is reliably
+        reachable from a REMOTE branch. An investigation runs on an unpushed
+        branch in a run-scoped disposable checkout (#7273). An ordinary retry is
+        commonly local-only too, because validation runs before the first push --
+        so a restart that consulted only the remote issue branches left it
+        stranded indefinitely once an investigation had won its issue-number slot
+        (round 9 finding 1).
+        """
+        repo_root = Path(self._config.repo_root).resolve()
+        worktree_base = Path(self._config.worktree_base).resolve()
+        patterns = _worktree_patterns(repo_root)
+        checkouts: list[tuple[int, RegisteredWorktree, str]] = []
+        for item in self._worktree_manager.list_registered(repo_root):
+            if item.branch is None:
+                continue
+            path = item.path.resolve()
+            focus = scratch_worktree_focus_issue(path.name)
+            # "Owned" has to mean the same thing here as it does to the audit
+            # owner, or recovery relaunches a checkout reconciliation classifies
+            # as external -- the name and branch shape alone are not ownership
+            # (round 10 finding 3).
+            if (
+                focus is not None
+                and path.parent == worktree_base
+                and patterns.scratch.fullmatch(path.name)
+                and _has_orchestrator_identity(path)
+                and names_one_scratch_checkout(path.name, item.branch)
+            ):
+                checkouts.append((focus, item, "investigation"))
+                continue
+            if (
+                path.parent == worktree_base
+                and patterns.ordinary.fullmatch(path.name)
+                and _has_orchestrator_identity(path)
+            ):
+                checkouts.append((int(path.name.rsplit("-", 1)[1]), item, "issue"))
+        return tuple(checkouts)
+
     def audit(self, state: OrchestratorState) -> tuple[WorktreeAuditEntry, ...]:
         activity = WorktreeActivityEvidence.known(
             {session.worktree_path for session in state.active_sessions}
+            | _checkouts_awaiting_a_retry(state)
         )
         return self._audit_owner.audit(
             repo_root=self._config.repo_root,
