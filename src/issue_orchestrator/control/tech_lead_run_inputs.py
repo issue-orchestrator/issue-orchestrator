@@ -17,7 +17,6 @@ authority row already has one.
 from __future__ import annotations
 
 import logging
-import shutil
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,6 +24,13 @@ from typing import TYPE_CHECKING, Generator
 
 from ..domain.tech_lead_run_artifacts import TECH_LEAD_DATA_DIRNAME
 from ..domain.tech_lead_session import TECH_LEAD_ASSIGNMENT_FILENAME
+from ..infra.contained_artifact_copy import (
+    CopyBounds,
+    CopyBudget,
+    close_fd,
+    copy_contained_tree,
+    open_contained_anchor,
+)
 
 if TYPE_CHECKING:
     from ..domain.models import PendingValidationRetry
@@ -34,6 +40,19 @@ if TYPE_CHECKING:
     from .launch_transaction import SpawnGuard
 
 logger = logging.getLogger(__name__)
+
+# The source is AGENT-WRITABLE. Same limits the orchestrator already uses when
+# preserving agent-authored tech-lead artifacts (#6858 F8/F9): a pathological
+# tree must refuse the relaunch rather than consume unbounded resources, and a
+# planted symlink must not be dereferenced into a run the agent can then read.
+_TECH_LEAD_INPUT_FILE_BYTES = 2 * 1024 * 1024
+_TECH_LEAD_INPUT_COPY_BOUNDS = CopyBounds(
+    files=200,
+    total_bytes=96 * 1024 * 1024,
+    entries=5_000,
+    directories=250,
+    depth=8,
+)
 
 
 def carry_tech_lead_inputs(
@@ -53,22 +72,48 @@ def carry_tech_lead_inputs(
     without them would spend an agent session on work whose completion the
     orchestrator is already guaranteed to reject.
     """
+    checkout = Path(retry.worktree_path)
     origin = source_data_dir(retry, source)
-    if not (origin / TECH_LEAD_ASSIGNMENT_FILENAME).is_file():
+    try:
+        source_run_parts = origin.parent.relative_to(checkout).parts
+    except ValueError:
         return (
             f"Validation retry for issue #{retry.issue_number} names run "
-            f"{source.run_id}, whose {TECH_LEAD_DATA_DIRNAME}/"
-            f"{TECH_LEAD_ASSIGNMENT_FILENAME} is gone; the resumed run has no "
-            "launch inputs the completion owner would trust"
+            f"{source.run_id}, whose launch inputs are outside its checkout"
         )
-    destination = run.run_dir / TECH_LEAD_DATA_DIRNAME
+    source_run_fd = open_contained_anchor(checkout, source_run_parts)
+    if source_run_fd is None:
+        return (
+            f"Validation retry for issue #{retry.issue_number} names run "
+            f"{source.run_id}, whose {TECH_LEAD_DATA_DIRNAME} could not be "
+            "safely opened; the resumed run has no launch inputs the completion "
+            "owner would trust"
+        )
+    budget = CopyBudget(_TECH_LEAD_INPUT_COPY_BOUNDS)
     try:
-        shutil.copytree(origin, destination, dirs_exist_ok=True)
-    except OSError as exc:
+        copied = copy_contained_tree(
+            source_run_fd,
+            TECH_LEAD_DATA_DIRNAME,
+            run.run_dir,
+            cap=_TECH_LEAD_INPUT_FILE_BYTES,
+            budget=budget,
+            label=f"validation retry for issue #{retry.issue_number}",
+        )
+    finally:
+        close_fd(source_run_fd)
+    if budget.exhausted:
         return (
             f"Validation retry for issue #{retry.issue_number} could not carry "
             f"{TECH_LEAD_DATA_DIRNAME} from run {source.run_id} to "
-            f"{run.identity.run_id}: {exc}"
+            f"{run.identity.run_id}: {budget.exhausted_by}"
+        )
+    destination = run.run_dir / TECH_LEAD_DATA_DIRNAME
+    if copied == 0 or not (destination / TECH_LEAD_ASSIGNMENT_FILENAME).is_file():
+        return (
+            f"Validation retry for issue #{retry.issue_number} names run "
+            f"{source.run_id}, whose {TECH_LEAD_DATA_DIRNAME}/"
+            f"{TECH_LEAD_ASSIGNMENT_FILENAME} is gone or unsafe; the resumed "
+            "run has no launch inputs the completion owner would trust"
         )
     logger.info(
         "Validation retry for issue #%d carried %s forward: %s -> %s",

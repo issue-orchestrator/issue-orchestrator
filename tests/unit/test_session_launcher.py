@@ -8866,6 +8866,50 @@ class TestAValidationRetryCarriesItsLaunchAuthority:
             run_id=source.run_id, session_name=source.session_name
         ) is not None, "the refused relaunch spent the source authority"
 
+    def test_a_planted_symlink_is_not_carried_into_the_resumed_run(
+        self, launcher_bundle, sample_config, tmp_path
+    ) -> None:
+        """The source tree is AGENT-WRITABLE, so the copy must not follow links.
+
+        `shutil.copytree` follows symlinks. A failed agent could leave a valid
+        assignment plus `tech-lead-data/operator-files -> <orchestrator-only
+        path>`; admission passed because the extra entry was ignored, and the
+        orchestrator then dereferenced it into the resumed run, where the
+        resumed agent can read it. A FIFO or unbounded tree could also hang or
+        exhaust the orchestrator (round 6 finding 1).
+        """
+        TestLaunchTechLeadIssueSessionFlavors.enable_tech_lead_agent(sample_config, tmp_path)
+        store = SqliteTechLeadAuthorityStore.for_repo(sample_config.repo_root)
+        source = SessionRunIdentity(
+            session_name="issue-6410", run_id="run-original", started_at="2026-09-18"
+        )
+        store.record(
+            run_id=source.run_id,
+            session_name=source.session_name,
+            authority=self._authority(),
+        )
+        checkout = tmp_path / "repo-tech-lead-6410-abcdef123456"
+        checkout.mkdir()
+        data = self._seed_launch_inputs(checkout, source)
+        secret = tmp_path / "operator-only"
+        secret.mkdir()
+        (secret / "token.txt").write_text("orchestrator credential\n")
+        (data / "operator-files").symlink_to(secret, target_is_directory=True)
+
+        result = launcher_bundle.launcher.launch_validation_retry_session(
+            self._retry(source, worktree_path=str(checkout)), active_sessions=[]
+        )
+
+        assert result.success is True, result.reason
+        assert result.session is not None
+        carried = result.session.run_assets.run_dir / "tech-lead-data"
+        assert (carried / "tech-lead-assignment.json").is_file(), (
+            "the legitimate inputs were not carried"
+        )
+        assert not (carried / "operator-files" / "token.txt").exists(), (
+            "a planted symlink was dereferenced into a run the agent can read"
+        )
+
     def test_a_retry_whose_authority_is_gone_is_refused_before_it_spends_a_session(
         self, launcher_bundle, sample_config, tmp_path
     ) -> None:
