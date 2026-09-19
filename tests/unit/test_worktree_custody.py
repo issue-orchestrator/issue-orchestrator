@@ -22,7 +22,6 @@ import os
 import re
 import shutil
 import subprocess
-import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -1102,40 +1101,39 @@ class TestTheRaceBetweenLookingAndDeleting:
     watches it go anyway (round 1 finding 3).
     """
 
-    def test_a_take_waits_for_a_removal_that_is_already_underway(
-        self, manager: GitWorktreeManager, repo: Path, checkout: Path
+    def test_a_take_uses_the_repository_custody_lock(
+        self,
+        manager: GitWorktreeManager,
+        repo: Path,
+        checkout: Path,
+        monkeypatch,
     ) -> None:
-        """The guard holds the answer for as long as the removal takes."""
-        order: list[str] = []
-        inside = threading.Event()
-        answered = threading.Event()
+        """Taking custody and removal serialize on the same lock INODE.
 
-        def take_while_it_is_open() -> None:
-            inside.wait(timeout=5)
-            try:
-                manager.take_custody(checkout, holder=HOLDER, reason=REASON)
-                order.append("held")
-            except CustodyUnavailableError:
-                order.append("too late")
-            answered.set()
+        This was a thread racing a 0.5s timeout: if CI delayed the competing
+        thread past the guard, the assertion still held and the test passed
+        under the very regression it claims to catch (round 26 finding 1). A
+        timeout that IS the mechanism is a race with odds.
+        """
+        observed_locks: list[tuple[int, int]] = []
+        real_flock = fcntl.flock
 
-        taker = threading.Thread(target=take_while_it_is_open)
-        taker.start()
-        try:
-            with custody_guard(checkout):
-                inside.set()
-                # The take is running now. If it could answer here, an operator
-                # would be told the checkout is protected while this body is
-                # already committed to removing it.
-                assert not answered.wait(timeout=0.5), (
-                    "a take was answered inside an open removal"
-                )
-                order.append("removing")
-                shutil.rmtree(checkout)
-        finally:
-            taker.join(timeout=5)
+        def recording_flock(fd: int, operation: int) -> None:
+            if operation & fcntl.LOCK_EX:
+                opened = os.fstat(fd)
+                observed_locks.append((opened.st_dev, opened.st_ino))
+            real_flock(fd, operation)
 
-        assert order == ["removing", "too late"]
+        monkeypatch.setattr(fcntl, "flock", recording_flock)
+
+        manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+
+        common = git_common_dir(repo)
+        assert common is not None
+        lock = (common / CUSTODY_LOCK).stat()
+        assert (lock.st_dev, lock.st_ino) in observed_locks, (
+            "taking custody did not lock the repository's custody store"
+        )
 
     def test_a_checkout_that_is_gone_cannot_be_held(
         self, manager: GitWorktreeManager, repo: Path, checkout: Path
@@ -1573,24 +1571,19 @@ class TestTheFilesystemFallbacks:
     """
 
     def test_a_guard_holds_through_a_callers_whole_body(
-        self, manager: GitWorktreeManager, repo: Path, checkout: Path
+        self, repo: Path, checkout: Path
     ) -> None:
-        held: list[str] = []
-        taking = threading.Thread(
-            target=lambda: held.append(_take_or_fail(manager, checkout))
-        )
+        """Probed the way another PROCESS would, not raced against a timeout."""
+        assert _custody_lock_is_held(repo) is False
 
         with custody_guard(checkout):
-            taking.start()
-            # The policy's whole body runs under a guard, so a take cannot be
-            # answered anywhere inside it -- including between the failed git
-            # removal and the rmtree.
-            assert not held
-            taking.join(timeout=0.5)
-            assert not held, "a take was answered inside an open removal"
+            assert _custody_lock_is_held(repo) is True
+            shutil.rmtree(checkout)
+            # Still held AFTER the destructive step: a take cannot be answered
+            # between the failed git removal and the rmtree.
+            assert _custody_lock_is_held(repo) is True
 
-        taking.join(timeout=5)
-        assert held == ["held"]
+        assert _custody_lock_is_held(repo) is False
 
     def test_budgeted_validation_cleanup_asks(
         self, manager: GitWorktreeManager, repo: Path, checkout: Path
@@ -1610,14 +1603,6 @@ class _RecordingRunner:
 
     def run(self, *args: object, **kwargs: object):  # noqa: ANN201, ARG002
         raise AssertionError("a held checkout reached the command runner")
-
-
-def _take_or_fail(manager: GitWorktreeManager, path: Path) -> str:
-    try:
-        manager.take_custody(path, holder=HOLDER, reason=REASON)
-        return "held"
-    except CustodyUnavailableError:
-        return "too late"
 
 
 class TestCustodyOutlivesTheCheckoutsOwnMetadata:
