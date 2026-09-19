@@ -2238,6 +2238,10 @@ class TestBranchRefDestruction:
 
         That is not a branch to delete, and handing it to the branch guard as
         one raised and aborted an otherwise clean reviewer-worktree removal.
+
+        Drives the production removal path too: asserting only the predicate
+        stays green if `_delete_worktree_branch` stops using it and starts
+        handing "HEAD" to custody again (round 25 finding 1).
         """
         from issue_orchestrator.adapters.worktree.custody import (
             names_a_local_branch,
@@ -2249,6 +2253,14 @@ class TestBranchRefDestruction:
         assert names_a_local_branch("refs/heads/") is False
         assert names_a_local_branch("6410-work") is True
         assert names_a_local_branch("refs/heads/6410-work") is True
+
+        original_branch = _git(checkout, "branch", "--show-current").strip()
+        _git(checkout, "checkout", "--detach")
+
+        manager.remove_checkout_and_branch(checkout, force=True)
+
+        assert not checkout.exists()
+        assert original_branch in _branches(repo)
 
     def test_an_unreadable_held_branch_identity_refuses_deletion(
         self, manager: GitWorktreeManager, repo: Path, checkout: Path
