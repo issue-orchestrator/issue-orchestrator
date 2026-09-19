@@ -133,6 +133,17 @@ def carry_tech_lead_inputs(
     return None
 
 
+def preserved_source_run(retry: "PendingValidationRetry") -> "Path | None":
+    """The run whose artifacts this retry still has to read, if any.
+
+    Worktree preparation prunes old runs BEFORE the copy happens, so the source
+    has to be named to the pruner or repeated pre-spawn refusals eventually
+    delete the only trusted copy of the launch inputs (round 8 finding 2).
+    """
+    source = retry.authority_run
+    return None if source is None else source_data_dir(retry, source).parent
+
+
 def source_data_dir(
     retry: "PendingValidationRetry", source: "SessionRunIdentity"
 ) -> Path:
@@ -232,6 +243,7 @@ def transfer_launch_authority(
 __all__ = [
     "LaunchAuthorityTransfer",
     "carry_tech_lead_inputs",
+    "preserved_source_run",
     "source_data_dir",
     "transfer_launch_authority",
 ]

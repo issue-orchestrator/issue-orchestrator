@@ -305,6 +305,40 @@ def test_recovery_then_reconciliation_keeps_the_branch(
     assert [entry.disposition for entry in entries] == ["retained"]
 
 
+def test_an_investigation_retry_wins_an_ordinary_checkout_collision(
+    repo: Path, investigation: Path, tmp_path: Path
+) -> None:
+    """The only-copy scratch branch wins the queue's one slot per issue.
+
+    I had this ordered the other way, reasoning that the ordinary checkout holds
+    the issue's own work. But losing the slot means reconciliation sees no
+    activity evidence for the loser -- and for the investigation that is a
+    never-pushed branch with no second copy, while the ordinary checkout stays
+    under the review gate and is recoverable (round 8 finding 1).
+    """
+    _leave_retry_artifacts(investigation)
+    ordinary = tmp_path / "worktree" / "repo-6410"
+    _git(repo, "worktree", "add", "-b", "6410-ordinary", str(ordinary))
+    _leave_retry_artifacts(ordinary)
+    state = OrchestratorState()
+
+    recovered = ValidationRetryRecovery(
+        _Config(repo, investigation.parent),
+        _reconciler(repo, investigation.parent, _Config),
+        lambda _name: False,
+        _ledger(investigation, agent_label="agent:tech-lead", completion_task=TaskKind.TECH_LEAD),
+        _authority_store(),
+    ).recover(state, {6410: "6410-ordinary"})
+
+    assert recovered == 1
+    [retry] = state.pending_validation_retries
+    assert retry.worktree_path == str(investigation), (
+        "the ordinary checkout took the slot and left the scratch branch "
+        "with no activity evidence"
+    )
+    assert _audit(repo, investigation, state)[0].disposition == "retained"
+
+
 def test_an_allocation_only_retry_run_does_not_hide_the_queued_retry(
     repo: Path, investigation: Path
 ) -> None:

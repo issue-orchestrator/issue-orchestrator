@@ -2456,7 +2456,29 @@ class TestWorktreePrepareForSession:
         worktree.prepare_for_session("issue-1")
 
         # Verify prune_runs was called with correct path and retention
-        mock_session_output.prune_runs.assert_called_once_with(tmp_path, 2)
+        mock_session_output.prune_runs.assert_called_once_with(
+            tmp_path, 2, preserve_run_dir=None
+        )
+
+    def test_a_preserved_run_is_passed_to_the_pruner(
+        self, tmp_path: Path, mock_session_output: MagicMock
+    ):
+        """A retry reads its launch inputs out of a run preparation may prune."""
+        mock_session_output.prune_runs.return_value = []
+        keep_me = tmp_path / ".issue-orchestrator" / "sessions" / "run__issue-1"
+
+        worktree = Worktree(
+            tmp_path,
+            issue_number=123,
+            retain_runs=2,
+            session_output=mock_session_output,
+            preserve_run_dir=keep_me,
+        )
+        worktree.prepare_for_session("issue-1")
+
+        mock_session_output.prune_runs.assert_called_once_with(
+            tmp_path, 2, preserve_run_dir=keep_me
+        )
 
     def test_raises_worktree_preparation_error_on_delete_failure(
         self, worktree: Worktree, worktree_dir: Path, monkeypatch

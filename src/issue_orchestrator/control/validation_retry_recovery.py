@@ -16,8 +16,10 @@ Two shapes of checkout hold a retry, and they are found in different ways:
   neither the numeric branch scan nor the derived worktree path reaches it. Its
   branch exists nowhere else, so losing it loses the work (#7273).
 
-Both live here so the rules cannot drift apart: one pass over the artifacts, one
-queue owner call, one first-wins rule when both shapes name the same issue.
+Both live here so the rules cannot drift apart: one pass over the artifacts and
+one queue-owner call. When both shapes name the same issue, the INVESTIGATION
+wins: reconciliation may delete its disposable, never-pushed branch, while the
+ordinary checkout stays under the normal review-gated lifecycle.
 """
 
 from __future__ import annotations
@@ -97,21 +99,26 @@ class ValidationRetryRecovery:
     def _candidates(
         self, issue_branches: dict[int, str]
     ) -> list[tuple[int, Path, str, str]]:
-        """Every checkout that could hold a retry, issue branches first.
+        """Every checkout that could hold a retry, INVESTIGATIONS first.
 
-        Issue branches are listed first so an ordinary checkout wins over an
-        investigation checkout of the same focus issue: the ordinary one holds
-        the issue's own work, and an investigation reads that issue as evidence.
+        The queue admits one retry per issue, so when both shapes expose retry
+        artifacts for the same issue one of them loses the slot. I had this
+        backwards: I ordered issue branches first, reasoning that the ordinary
+        checkout holds the issue's own work. But losing the slot means
+        reconciliation sees no activity evidence for the other checkout -- and
+        for the investigation that means deleting a never-pushed branch with no
+        second copy anywhere, while the ordinary checkout stays managed by the
+        review gate and is recoverable (round 8 finding 1).
         """
         candidates: list[tuple[int, Path, str, str]] = []
-        for issue_number, branch_name in issue_branches.items():
-            worktree_path = get_worktree_path(self._config, issue_number)
-            if worktree_path.exists():
-                candidates.append((issue_number, worktree_path, branch_name, "issue"))
         for item in self._worktree_reconciler.investigation_checkouts():
             focus = scratch_worktree_focus_issue(item.path.name)
             if focus is not None and item.branch is not None:
                 candidates.append((focus, item.path, item.branch, "investigation"))
+        for issue_number, branch_name in issue_branches.items():
+            worktree_path = get_worktree_path(self._config, issue_number)
+            if worktree_path.exists():
+                candidates.append((issue_number, worktree_path, branch_name, "issue"))
         return candidates
 
     def _queue_entry(

@@ -97,7 +97,7 @@ from .needs_human_block import (
 )
 from .tech_lead_needs_human_reconcile import TechLeadNeedsHumanLifecycle, discover_tech_lead_needs_human_issue_numbers
 from .session_manager import SessionManager, SessionRef
-from .tech_lead_run_inputs import transfer_launch_authority
+from .tech_lead_run_inputs import preserved_source_run, transfer_launch_authority
 from .recovered_run_identity import unlaunchable_recovery_refusal
 from .launch_transaction import (
     NO_LAUNCH_WORK_CLAIM,
@@ -1251,6 +1251,7 @@ class SessionLauncher:
             ),
             phase_name=phase_name,
             stack_base_branch=stack_decision.base_branch,
+            preserve_run_dir=preserved_source_run(retry),
         )
         if ctx.error:
             log_transition("issue", issue.number, "LAUNCHING", "BLOCKED", "worktree preparation failed")
