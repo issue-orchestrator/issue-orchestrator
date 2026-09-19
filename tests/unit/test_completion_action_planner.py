@@ -561,9 +561,10 @@ def test_tech_lead_manifest_in_sibling_run_dir_is_ignored(tmp_path: Path) -> Non
     """
     config = make_tech_lead_config(tmp_path)
     session = make_tech_lead_session(tmp_path)
-    plant_tech_lead_assignment(
-        session, TechLeadAssignment(flavor=TechLeadSessionFlavor.BATCH_REVIEW)
-    )
+    # Armed for real: without launch authority and a valid CURRENT-run manifest
+    # completion exits through `missing_authority`, so the assertion below held
+    # whether or not the sibling manifest was ignored (round 17 finding 2).
+    arm_batch_session(config, session, tmp_path)
     plant_tech_lead_decision_pair(session)
     stale_run_dir = session.run_dir.parent / "20250101T000000000000Z__issue-1"
     stale_run_dir.mkdir(parents=True)
@@ -591,7 +592,9 @@ def test_tech_lead_manifest_in_sibling_run_dir_is_ignored(tmp_path: Path) -> Non
         if isinstance(action, AddLabelAction)
         and action.label in ("tech-lead-reviewed", "tech-lead-failed")
     }
-    assert tech_lead_label_targets == set()
+    assert tech_lead_label_targets == {101, 102}, (
+        "completion did not use the valid manifest from the current run"
+    )
 
 
 def test_completed_tech_lead_investigation_session_plans_decision_without_labels(
@@ -1767,7 +1770,6 @@ class TestLaunchScopeTamperResistance:
         assert error is not None and error.startswith(
             "tech_lead_authority: scope_tampered"
         )
-
         actions = make_planner(config).generate_completion_actions(
             session, SessionStatus.COMPLETED, processing_errors=[error]
         , processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
@@ -1826,6 +1828,13 @@ class TestLaunchScopeTamperResistance:
         )
         assert error is not None and error.startswith(
             "tech_lead_authority: scope_tampered"
+        )
+        # The PREFIX alone is shared by both behaviours: reverting the canonical
+        # reader ignores the planted manifest, reports an empty set, and still
+        # says `scope_tampered` (round 17 finding 3). Name the tampered set, so
+        # the assertion proves the canonical file was actually read.
+        assert "[999]" in error, (
+            "completion did not read the tampered canonical manifest"
         )
 
         actions = make_planner(config).generate_completion_actions(

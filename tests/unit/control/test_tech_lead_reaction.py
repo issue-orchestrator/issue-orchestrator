@@ -447,8 +447,14 @@ def test_every_worker_task_kind_records_its_problem(task, status, tmp_path) -> N
 
 
 def test_tech_lead_sessions_never_record_their_own_problems(tmp_path) -> None:
-    """Self-recursion is prevented by the tech-lead-agent check, not task kind."""
+    """The LAUNCH-OWNED role prevents recursion, not mutable issue labels."""
     session = _worker_session(TaskKind.CODE, tmp_path, agent_label="agent:tech-lead")
+    # A failure investigation runs against the original worker issue, whose
+    # tracker labels still identify its CODER. Classification must use the role
+    # settled at launch rather than re-reading this label -- and giving both the
+    # same value left the test green under exactly that regression (round 17
+    # finding 1).
+    session.issue.labels[:] = ["agent:backend"]
 
     assert _record(session, SessionStatus.FAILED) == []
 
