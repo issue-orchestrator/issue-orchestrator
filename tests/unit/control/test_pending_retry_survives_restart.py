@@ -89,7 +89,7 @@ def investigation(repo: Path, tmp_path: Path) -> Path:
 
 
 def _reconciler(repo: Path, base: Path, config_cls) -> StartupWorktreeReconciler:
-    manager = GitWorktreeManager()
+    manager = GitWorktreeManager(repo)
     config = config_cls(repo_root=repo, worktree_base=base)
     return StartupWorktreeReconciler(
         config, None, manager, WorktreeAuditOwner(manager), None
