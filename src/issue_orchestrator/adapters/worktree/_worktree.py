@@ -13,8 +13,12 @@ from ...infra.runtime_artifacts import is_cleanup_safe_untracked_path
 from ...infra.logging_config import issue_log
 from ...ports.git import GitResult
 from ...ports.worktree_policy import WorktreePolicy
-from ...ports.worktree_custody import CustodyError, CustodyRelease
-from .custody import custody_guard
+from ...ports.worktree_custody import (
+    CustodyError,
+    CustodyRelease,
+    CustodyUnavailableError,
+)
+from .custody import custody_guard, custody_prune_guard
 from ...ports.worktree_manager import RegisteredWorktree, WorktreeReuseOptions
 from ...infra.worktree_base import resolve_base_branch
 from ._worktree_errors import WorktreeError as WorktreeError
@@ -913,9 +917,11 @@ def create_worktree(
             reuse_options, policy, enforce_hooks, pre_push_hook, worktree_name,
         )
 
-        # Prune stale worktrees
-        prune_result = _git_run(ctx.repo_root, ["worktree", "prune"], check=False)
-        logger.debug("Worktree prune: returncode=%s", prune_result.returncode)
+        # Prune stale worktrees. Repository-WIDE, so it is gated on custody
+        # being able to account for every held checkout (round 20 finding 1).
+        with custody_prune_guard(ctx.repo_root):
+            prune_result = _git_run(ctx.repo_root, ["worktree", "prune"], check=False)
+            logger.debug("Worktree prune: returncode=%s", prune_result.returncode)
 
         reuse_result, recreated_reason = _attempt_reuse(ctx)
         if reuse_result is not None:
@@ -932,7 +938,9 @@ def create_worktree(
             ctx.repo_root, ctx.worktree_path, final_branch, ctx.base_branch, ctx.seed_ref, ctx.issue_number,
             ctx.runtime_setup, recreated_reason,
         )
-    except WorktreeError:
+    except (CustodyError, WorktreeError):
+        # A custody refusal is never re-wrapped: a caller catching WorktreeError
+        # to decide whether to try harder would read it as one.
         raise
     except Exception as e:
         raise WorktreeError(f"Error creating worktree: {e}")
@@ -1189,7 +1197,18 @@ def _recover_stale_branch_worktree_registration(
     conflict_path = Path(match.group(2))
     if conflict_branch != branch_name:
         return False
-    if conflict_path.exists():
+    try:
+        conflict_path.lstat()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        # Unreadable is not deregistered. Treating it as absent prunes the
+        # registration of a checkout that is still there (round 20 finding 1).
+        raise CustodyUnavailableError(
+            f"cannot determine whether registered worktree {conflict_path} "
+            f"still exists: {exc}"
+        ) from exc
+    else:
         return False
 
     logger.warning(
@@ -1200,7 +1219,8 @@ def _recover_stale_branch_worktree_registration(
         branch_name,
         conflict_path,
     )
-    prune_result = _git_run(repo_root, ["worktree", "prune"], check=False)
+    with custody_prune_guard(repo_root):
+        prune_result = _git_run(repo_root, ["worktree", "prune"], check=False)
     if prune_result.returncode != 0:
         logger.warning(
             issue_log(issue_number, "Failed to prune stale worktree registration: %s"),

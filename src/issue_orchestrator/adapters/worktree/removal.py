@@ -33,7 +33,7 @@ from ...ports.worktree_custody import (
     CustodyRelease,
     CustodyUnavailableError,
 )
-from .custody import custody_guard, git_common_dir
+from .custody import custody_guard, custody_prune_guard, git_common_dir
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +92,10 @@ def remove_checkout_path(
         error = _remove_with_git(worktree_path, force=force, run_git=run_git)
         if error is None and _target_is_absent(worktree_path):
             if prune and run_git is not None:
-                run_git(["worktree", "prune"])
+                # Repository-WIDE, so it has to account for every OTHER held
+                # checkout too, not just this one (round 20 finding 1).
+                with custody_prune_guard(repo_root):
+                    run_git(["worktree", "prune"])
             settled.removed()
             return CheckoutRemoval(removed=True, used_filesystem_fallback=False)
         if error is None:
@@ -119,7 +122,8 @@ def remove_checkout_path(
         )
         _delete_path(worktree_path)
         if prune and run_git is not None:
-            run_git(["worktree", "prune"])
+            with custody_prune_guard(repo_root):
+                run_git(["worktree", "prune"])
         gone = _target_is_absent(worktree_path)
         if gone:
             settled.removed()

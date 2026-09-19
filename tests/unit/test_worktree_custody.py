@@ -1181,6 +1181,101 @@ class TestCreatingOverAHeldCheckout:
         assert (checkout / "finding.md").exists()
 
 
+class TestPruningAroundCustody:
+    """``git worktree prune`` is repository-WIDE, so it is custody-sensitive.
+
+    Git treats a checkout it cannot stat exactly like a missing one. An
+    unreadable held checkout could therefore lose the registration keeping its
+    branch attached to it, and a later ``worktree add`` could attach that branch
+    elsewhere -- making the protection promise false while the grant still
+    stands (round 20 finding 1).
+    """
+
+    def test_create_does_not_prune_an_unreadable_held_checkout(
+        self, manager: GitWorktreeManager, repo: Path, tmp_path: Path
+    ) -> None:
+        sealed = tmp_path / "sealed"
+        sealed.mkdir()
+        held = sealed / "held"
+        _git(repo, "worktree", "add", "-b", "sealed-investigation", str(held))
+        (held / "finding.md").write_text("the only copy\n")
+        manager.take_custody(held, holder=HOLDER, reason=REASON)
+        _git(repo, "config", "gc.worktreePruneExpire", "now")
+
+        with _unreadable(sealed):
+            assert held.exists() is False
+            with pytest.raises(
+                CustodyUnavailableError, match="cannot prune worktree metadata"
+            ):
+                worktree_module.create_worktree(
+                    repo,
+                    7275,
+                    "another launch",
+                    worktree_base=tmp_path / "new-worktrees",
+                    branch_name="sealed-investigation",
+                    enforce_hooks=False,
+                )
+
+        registrations = _git(repo, "worktree", "list", "--porcelain")
+        assert f"worktree {held}" in registrations
+        assert (held / "finding.md").read_text() == "the only copy\n"
+
+    def test_removal_does_not_prune_past_an_unreadable_held_sibling(
+        self,
+        manager: GitWorktreeManager,
+        repo: Path,
+        checkout: Path,
+        tmp_path: Path,
+    ) -> None:
+        sealed = tmp_path / "sealed"
+        sealed.mkdir()
+        held = sealed / "held"
+        _git(repo, "worktree", "add", "-b", "sealed-investigation", str(held))
+        manager.take_custody(held, holder=HOLDER, reason=REASON)
+
+        with _unreadable(sealed):
+            assert held.exists() is False
+            with pytest.raises(
+                CustodyUnavailableError, match="cannot prune worktree metadata"
+            ):
+                remove_checkout_path(
+                    checkout,
+                    force=True,
+                    run_git=_git_in(repo),
+                    repo_root=repo,
+                    prune=True,
+                )
+
+        assert manager.custody_of(held) is not None
+
+    def test_stale_recovery_does_not_call_an_unreadable_registration_missing(
+        self, repo: Path, tmp_path: Path, monkeypatch
+    ) -> None:
+        sealed = tmp_path / "sealed"
+        sealed.mkdir()
+        registered = sealed / "registered"
+        registered.mkdir()
+        monkeypatch.setattr(
+            worktree_module,
+            "_git_run",
+            lambda *_args, **_kwargs: pytest.fail("prune was attempted"),
+        )
+
+        with _unreadable(sealed):
+            assert registered.exists() is False
+            with pytest.raises(
+                CustodyUnavailableError,
+                match="cannot determine whether registered worktree",
+            ):
+                worktree_module._recover_stale_branch_worktree_registration(
+                    repo,
+                    7275,
+                    "protected",
+                    "fatal: 'protected' is already used by worktree at "
+                    f"'{registered}'",
+                )
+
+
 def test_the_store_satisfies_the_custody_port() -> None:
     """The port is a checked contract, not documentation of one."""
     store: WorktreeCustody = GitMetadataWorktreeCustody(Path("/nonexistent"))

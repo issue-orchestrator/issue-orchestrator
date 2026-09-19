@@ -171,6 +171,24 @@ class GitMetadataWorktreeCustody:
             held=held, breached=tuple(breached), unknown=tuple(unknown)
         )
 
+    @contextmanager
+    def prune_guard(self) -> Iterator[None]:
+        """Hold a trustworthy inspection across a repository-wide prune.
+
+        The lock spans inspection AND the caller's prune, or a checkout could
+        enter custody in between. It is re-entrant, so a removal already
+        holding the guard nests without deadlocking.
+        """
+        with self._locked():
+            inspection = self.inspect()
+            if inspection.unknown:
+                failure = inspection.unknown[0]
+                raise CustodyUnavailableError(
+                    "cannot prune worktree metadata while custody cannot "
+                    f"inspect {failure.grant.path}: {failure.detail}"
+                )
+            yield
+
     def breached(self) -> tuple[CustodyGrant, ...]:
         """Grants whose checkout is PROVEN gone: something removed it anyway.
 
@@ -547,6 +565,32 @@ def custody_guard(
         return
     with custody.guard(worktree_path, release) as settlement:
         yield settlement
+
+
+@contextmanager
+def custody_prune_guard(repo_root: Path) -> Iterator[None]:
+    """Hold a trustworthy custody inspection across REPOSITORY-WIDE pruning.
+
+    ``git worktree prune`` is not scoped to the checkout being removed: it
+    mutates registrations for every checkout in the repository. Git treats a
+    checkout it cannot stat exactly like a missing one, so an unreadable HELD
+    checkout can lose the registration that keeps its branch attached to it --
+    and a later ``git worktree add`` can then attach that branch elsewhere,
+    which makes "your branch is protected" false while the grant still stands
+    (round 20 finding 1).
+
+    The custody lock spans inspection AND the prune, or a checkout could enter
+    custody in between. It is re-entrant, so a removal already holding the
+    guard nests without deadlocking.
+    """
+    custody = GitMetadataWorktreeCustody.for_path(repo_root, repo_root)
+    if custody is None:
+        raise CustodyUnavailableError(
+            f"{repo_root} has no custody store, so worktree metadata cannot "
+            "be pruned safely"
+        )
+    with custody.prune_guard():
+        yield
 
 
 def git_common_dir(path: Path) -> Path | None:
