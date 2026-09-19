@@ -249,6 +249,13 @@ class ScopedReworkLaunchClaim:
             )
         return None
 
+    def rebind_held_claim(
+        self, run: SessionRunAssets, replacement: PendingWorkClaim
+    ) -> None:
+        # Pure delegation: the scoped keys describe the REQUEST, which this
+        # does not change -- only the payload the inner claim holds.
+        self.work.rebind_held_claim(run, replacement)
+
     def abandon_unspawned(self, run: SessionRunAssets) -> None:
         self.owner.release_unspawned(self.keys, run.identity)
         self.work.abandon_unspawned(run)

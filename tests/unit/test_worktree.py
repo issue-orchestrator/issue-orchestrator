@@ -2352,12 +2352,17 @@ class TestCreateWorktreeReuse:
             "unpushed investigation\n"
         )
 
-    def test_preserved_path_fallback_refuses_a_different_branch(self, tmp_path):
-        """The derived issue path is not authority to resume a different branch.
+    @pytest.mark.parametrize("preserve_branch", [True, False])
+    def test_explicit_path_fallback_never_adopts_a_different_branch(
+        self, tmp_path, preserve_branch
+    ):
+        """A REQUESTED branch is authoritative for preserved and ordinary reuse.
 
-        When the branch lookup misses the scratch checkout but <repo>-<issue>
-        exists, the path fallback validated with no expected branch and then
-        launched the investigation on whatever was there (round 10 finding 1).
+        When the branch lookup misses the checkout but <repo>-<issue> exists,
+        the path fallback validated with no expected branch and then launched on
+        whatever was there (round 10 finding 1). Round 10 threaded the
+        expectation only for a preserved relaunch -- so an ordinary retry could
+        still validate or publish unrelated work (round 11 finding 2).
         """
         from issue_orchestrator.ports.worktree_policy import (
             SyncResult,
@@ -2375,6 +2380,7 @@ class TestCreateWorktreeReuse:
         ordinary_branch = "6410-ordinary"
         deleted: list[Path] = []
         validated: list[str | None] = []
+        created = None
 
         class BranchCheckingPolicy:
             def validate_for_reuse(self, candidate, expected, root):
@@ -2423,8 +2429,8 @@ class TestCreateWorktreeReuse:
 
             mock_run.side_effect = run_side_effect
 
-            with pytest.raises(WorktreeError, match="Preserved branch"):
-                create_worktree(
+            def create():
+                return create_worktree(
                     repo_root,
                     6410,
                     "Investigate failure",
@@ -2432,16 +2438,33 @@ class TestCreateWorktreeReuse:
                     base_branch="main",
                     branch_name=expected_branch,
                     reuse_options=WorktreeReuseOptions(
-                        reuse_push_preflight=False, preserve_branch=True
+                        reuse_push_preflight=False,
+                        preserve_branch=preserve_branch,
                     ),
                     policy=BranchCheckingPolicy(),
                 )
 
-        assert expected_branch in validated
-        assert deleted == []
-        assert (worktree_path / "only-copy.txt").read_text() == (
-            "ordinary issue work\n"
+            if preserve_branch:
+                with pytest.raises(WorktreeError, match="Preserved branch"):
+                    create()
+            else:
+                created = create()
+
+        assert expected_branch in validated, (
+            "the requested branch never reached path validation"
         )
+        if preserve_branch:
+            assert deleted == []
+            assert (worktree_path / "only-copy.txt").read_text() == (
+                "ordinary issue work\n"
+            )
+        else:
+            # Ordinary reuse MAY discard the mismatched checkout; what it may
+            # not do is silently adopt the branch that was sitting there.
+            assert deleted == [worktree_path]
+            assert created is not None
+            assert created[1] == expected_branch
+            assert created[1] != ordinary_branch
 
     def test_reuse_without_preserve_branch_still_resets(self, tmp_path):
         """Default (preserve_branch=False) still rebases and discards on conflict.

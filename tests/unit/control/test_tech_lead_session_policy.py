@@ -7,6 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from issue_orchestrator.control.in_flight_work import SettlementOutcome
+
 from issue_orchestrator.control import tech_lead_session_policy
 from issue_orchestrator.control.completion_pr_collision import NoCommitsBetweenError
 from issue_orchestrator.control.tech_lead_evidence import EVIDENCE_MAP_FILENAME
@@ -248,6 +250,7 @@ class TestDiscardTechLeadAuthorityAfterCompletion:
             self._config(),
             store,
             self._session("agent:tech-lead"),
+            work_outcome=SettlementOutcome.CONSUMED,
             processing_errors=None,
          processing_policy=CompletionProcessingPolicy.for_unprocessed_session(self._session('agent:tech-lead').issue.agent_type, self._config().tech_lead_review_agent))
 
@@ -269,6 +272,7 @@ class TestDiscardTechLeadAuthorityAfterCompletion:
             self._config(),
             store,
             self._session("agent:tech-lead"),
+            work_outcome=SettlementOutcome.CONSUMED,
             processing_errors=[f"{ERROR_PREFIX_PUSH}: remote rejected"],
          processing_policy=CompletionProcessingPolicy.for_unprocessed_session(self._session('agent:tech-lead').issue.agent_type, self._config().tech_lead_review_agent))
 
@@ -286,6 +290,7 @@ class TestDiscardTechLeadAuthorityAfterCompletion:
             self._config(),
             store,
             self._session("agent:coder"),
+            work_outcome=SettlementOutcome.CONSUMED,
             processing_errors=None,
          processing_policy=CompletionProcessingPolicy.for_unprocessed_session(self._session('agent:coder').issue.agent_type, self._config().tech_lead_review_agent))
 

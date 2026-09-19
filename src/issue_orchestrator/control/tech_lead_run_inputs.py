@@ -18,10 +18,11 @@ from __future__ import annotations
 
 import logging
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Generator
 
+from ..domain.pending_work import PendingWorkClaim, PendingWorkKind
 from ..domain.tech_lead_run_artifacts import TECH_LEAD_DATA_DIRNAME
 from ..domain.tech_lead_session import TECH_LEAD_ASSIGNMENT_FILENAME
 from ..infra.contained_artifact_copy import (
@@ -37,7 +38,7 @@ if TYPE_CHECKING:
     from ..domain.tech_lead_session import TechLeadLaunchAuthority
     from ..domain.session_run import SessionRunAssets, SessionRunIdentity
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
-    from .launch_transaction import SpawnGuard
+    from .launch_transaction import LaunchWorkClaim, SpawnGuard
 
 logger = logging.getLogger(__name__)
 
@@ -216,7 +217,12 @@ class LaunchAuthorityTransfer:
 
 @contextmanager
 def transfer_launch_authority(
-    transfer: "LaunchAuthorityTransfer | None", spawn: "SpawnGuard"
+    transfer: "LaunchAuthorityTransfer | None",
+    spawn: "SpawnGuard",
+    *,
+    work: "LaunchWorkClaim",
+    run: "SessionRunAssets",
+    retry: "PendingValidationRetry",
 ) -> Generator[None, None, None]:
     """Settle a carried authority on the way out, whichever way that is.
 
@@ -237,6 +243,23 @@ def transfer_launch_authority(
         # No `return` in here: it would swallow an exception on its way out,
         # and the launch paths this wraps report failure by raising.
         if transfer is not None:
+            if spawn.terminal_spawned:
+                # The SOURCE authority is about to be retired, so the durable
+                # work this live terminal carries must name the destination
+                # that survives. Otherwise a provider outage requeues a claim
+                # pointing at a deleted row and every later relaunch is refused
+                # as `missing_authority` (round 11 finding 1).
+                #
+                # Before `settle`, deliberately: if the ledger refuses, BOTH
+                # authority rows are still there and restart recovery can use
+                # the source claim safely.
+                work.rebind_held_claim(
+                    run,
+                    PendingWorkClaim(
+                        PendingWorkKind.VALIDATION_RETRY,
+                        replace(retry, authority_run=transfer.destination),
+                    ),
+                )
             transfer.settle(spawned=spawn.terminal_spawned)
 
 

@@ -6,6 +6,8 @@ from unittest.mock import Mock
 
 import pytest
 
+from issue_orchestrator.control.in_flight_work import SettlementOutcome
+
 from issue_orchestrator.control.completion_intake import CompletionEvidenceIntakeService
 from issue_orchestrator.control.completion_intake_validation import (
     ConfiguredCompletionEvidenceValidator,
@@ -412,6 +414,7 @@ def test_settings_change_cannot_reselect_in_flight_processing_role(
         assert authority.load(run_id=run.run_id, session_name=run.session_name) is not None
         discard_tech_lead_authority_after_completion(
             config, authority, session, processing_policy=policy,
+            work_outcome=SettlementOutcome.CONSUMED,
             processing_errors=completed.errors,
         )
         assert authority.load(run_id=run.run_id, session_name=run.session_name) is None

@@ -837,6 +837,7 @@ class _WorktreeCreateContext:
     repo_root: Path
     worktree_path: Path
     branch_name: str
+    branch_name_was_explicit: bool
     base_branch: str | None
     seed_ref: str | None
     issue_number: int
@@ -873,6 +874,7 @@ def _init_worktree_context(
 
     worktree_base = Path(worktree_base).resolve() if worktree_base else repo_root.parent
     worktree_base.mkdir(parents=True, exist_ok=True)
+    branch_name_was_explicit = bool(branch_name)
     branch_name = branch_name or generate_branch_name(issue_number, issue_title)
     # A run-scoped scratch worktree overrides the derived per-issue directory
     # basename so a disposable investigation never collides with — or reuses —
@@ -894,6 +896,7 @@ def _init_worktree_context(
         repo_root=repo_root,
         worktree_path=worktree_path,
         branch_name=branch_name,
+        branch_name_was_explicit=branch_name_was_explicit,
         base_branch=base_branch,
         seed_ref=seed_ref,
         issue_number=issue_number,
@@ -1011,8 +1014,15 @@ def _attempt_reuse(
         reuse_result, reuse_recreated_reason = _try_reuse_by_path(
             ctx.worktree_path, ctx.repo_root, ctx.issue_number, ctx.policy,
             ctx.reuse_options, ctx.runtime_setup, ctx.base_branch,
+            # An explicitly REQUESTED branch is part of the caller's work
+            # identity even when ordinary reuse may rebase or reset it. Path
+            # occupancy is not authority to substitute another branch, so an
+            # ordinary retry whose branch lookup misses must not silently
+            # validate or publish unrelated work (round 11 finding 2).
             expected_branch=(
-                ctx.branch_name if ctx.reuse_options.preserve_branch else None
+                ctx.branch_name
+                if ctx.branch_name_was_explicit or ctx.reuse_options.preserve_branch
+                else None
             ),
         )
         if reuse_result is not None:
@@ -1112,12 +1122,12 @@ def _try_reuse_by_path(
 ) -> tuple[tuple[Path, str, str, str | None, bool, int, int] | None, str | None]:
     """Try to reuse an existing worktree by path.
 
-    ``expected_branch`` is what a PRESERVED relaunch named. Without it this
-    fallback validated with no expectation and then launched on whatever branch
-    occupied the derived issue path, so an investigation that the branch lookup
-    missed resumed on the ordinary issue branch instead -- and these preliminary
-    exits deleted the checkout without going through ``_reuse_failure``
-    (round 10 finding 1).
+    ``expected_branch`` is what a NAMED relaunch requested. Without it this
+    fallback validates with no expectation and launches on whatever branch
+    occupies the derived issue path, so a retry whose branch lookup misses can
+    resume unrelated work -- and these preliminary exits deleted the checkout
+    without going through ``_reuse_failure`` (round 10 finding 1, round 11
+    finding 2).
 
     Returns:
         Tuple of (result, recreated_reason) where:

@@ -59,90 +59,11 @@ from .pending_work_codec import (
     decode_claim,
     encode_claim,
 )
-
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS pending_work_claim (
-    run_key TEXT PRIMARY KEY,
-    work_key TEXT NOT NULL,
-    deferred INTEGER NOT NULL DEFAULT 0,
-    session_name TEXT NOT NULL,
-    run_id TEXT NOT NULL,
-    started_at TEXT NOT NULL,
-    issue_number INTEGER NOT NULL,
-    payload TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS pending_work_claim_work
-    ON pending_work_claim (work_key);
-CREATE TABLE IF NOT EXISTS pending_work_claim_quarantine (
-    quarantine_key TEXT PRIMARY KEY,
-    run_key TEXT NOT NULL,
-    session_name TEXT NOT NULL,
-    issue_number INTEGER NOT NULL,
-    error TEXT NOT NULL,
-    -- Durable state machine (#6999 F12). ``label_state`` records whether THIS
-    -- quarantine actually acquired the shared blocking label or found it
-    -- already there, so release can only ever remove a label it added.
-    -- ``announced`` is separate because AddLabel can land while the comment
-    -- fails. ``releasing`` marks a resolved cause whose cleanup has not yet
-    -- committed, so the row survives to be retried.
-    label_state TEXT NOT NULL DEFAULT 'unknown',
-    announced INTEGER NOT NULL DEFAULT 0,
-    releasing INTEGER NOT NULL DEFAULT 0,
-    -- The observation the announcement was written for, and the work it names
-    -- (#6999 F6). Durable because ``announced`` is: a quarantine re-observed
-    -- under a DIFFERENT cause has to rewrite the operator's story, and the only
-    -- way to know it changed is to have kept the one that was announced.
-    -- Nullable on purpose - a row from before this column read as "no cause
-    -- recorded", which must differ from every observable cause so the next
-    -- scan re-announces rather than standing on a story nothing vouches for.
-    cause TEXT,
-    work_kind TEXT
-);
--- Durable provenance for every OTHER cause of the shared needs-human block
--- (#6999 F2 round 2). The tech-lead marker label and the quarantine table
--- above already record their own. A session or planner escalation recorded
--- nothing, so a remover saw an owner-less label and took it off. Rows are
--- meaningful only while the label is present and are dropped with it, so a
--- stale one can never strand an issue in needs-human.
--- NOTE: no semicolons in this comment - the schema is split on them.
--- An unacknowledged removal may have committed remotely. Preserve a present
--- label on replay until absence proves the old generation has ended.
-CREATE TABLE IF NOT EXISTS needs_human_removal_intent (
-    issue_number INTEGER PRIMARY KEY CHECK (issue_number > 0)
-);
-CREATE TABLE IF NOT EXISTS needs_human_cause (
-    issue_number INTEGER NOT NULL,
-    cause TEXT NOT NULL,
-    reason TEXT NOT NULL,
-    PRIMARY KEY (issue_number, cause)
-);
-"""
-
-# Additive columns the quarantine table gained after it shipped. ``CREATE TABLE
-# IF NOT EXISTS`` leaves an existing table exactly as it is, so a database
-# written by an earlier build keeps the old shape and every later statement
-# referencing these columns fails. Unlike the claim table this needs no
-# all-or-nothing rebuild: quarantines carry no queued work, so a NULL cause is
-# recoverable by the next scan re-announcing (#6999 F6).
-_QUARANTINE_ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
-    ("cause", "TEXT"),
-    ("work_kind", "TEXT"),
+from .pending_work_claim_schema import (
+    QUARANTINE_ADDED_COLUMNS,
+    STORE_FILENAME,
+    schema_statements,
 )
-
-STORE_FILENAME = "pending_work_claims.sqlite"
-
-
-def _schema_statements() -> tuple[str, ...]:
-    """The schema as individual statements.
-
-    ``executescript`` commits any pending transaction before it runs, so it
-    cannot be used inside the migration's single transaction (#6999 F13).
-    """
-    return tuple(
-        statement.strip()
-        for statement in _SCHEMA.split(";")
-        if statement.strip()
-    )
 
 logger = logging.getLogger(__name__)
 
@@ -204,7 +125,7 @@ class SqlitePendingWorkClaimStore:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = self._get_connection()
         self._migrate(conn)
-        for statement in _schema_statements():
+        for statement in schema_statements():
             conn.execute(statement)
         self._add_missing_quarantine_columns(conn)
         conn.commit()
@@ -216,7 +137,7 @@ class SqlitePendingWorkClaimStore:
             row[1]
             for row in conn.execute("PRAGMA table_info(pending_work_claim_quarantine)")
         }
-        for column, declaration in _QUARANTINE_ADDED_COLUMNS:
+        for column, declaration in QUARANTINE_ADDED_COLUMNS:
             if column not in existing:
                 conn.execute(
                     "ALTER TABLE pending_work_claim_quarantine "
@@ -304,7 +225,7 @@ class SqlitePendingWorkClaimStore:
             conn.execute(
                 "ALTER TABLE pending_work_claim RENAME TO pending_work_claim_old"
             )
-            for statement in _schema_statements():
+            for statement in schema_statements():
                 conn.execute(statement)
             conn.executemany(
                 "INSERT OR REPLACE INTO pending_work_claim "
@@ -370,6 +291,52 @@ class SqlitePendingWorkClaimStore:
                     issue_number,
                     payload,
                 ),
+            )
+
+    def replace_held_pending_work_claim(
+        self,
+        run: SessionRunAssets,
+        expected: PendingWorkClaim,
+        replacement: PendingWorkClaim,
+    ) -> None:
+        """Replace one live run's payload without opening an unowned window.
+
+        The work KEY may not change -- this moves the same queued request onto
+        a successor payload, it does not re-key the work -- and the row must
+        still be held by this exact run with ``expected`` in it. Any
+        disagreement raises rather than overwriting another owner or a deferred
+        request (round 11 finding 1).
+        """
+        expected_work_key = expected.work_key()
+        if replacement.work_key() != expected_work_key:
+            raise ConflictingPendingWorkClaimError(
+                "a held claim replacement cannot change the work key: "
+                f"{expected_work_key!r} -> {replacement.work_key()!r}"
+            )
+        key = self.run_key_for(run)
+        identity = run.identity
+        expected_payload = json.dumps(encode_claim(expected), sort_keys=True)
+        replacement_payload = json.dumps(encode_claim(replacement), sort_keys=True)
+        with self._write_lock, self._transaction() as conn:
+            row = conn.execute(
+                "SELECT work_key, deferred, session_name, run_id, started_at, payload "
+                "FROM pending_work_claim WHERE run_key = ?",
+                (key,),
+            ).fetchone()
+            if (
+                row is None
+                or row["work_key"] != expected_work_key
+                or bool(row["deferred"])
+                or not self._identity_matches(row, identity)
+                or row["payload"] != expected_payload
+            ):
+                raise ConflictingPendingWorkClaimError(
+                    f"run {key} no longer holds the expected pending-work claim; "
+                    "refusing to replace authoritative queued-work state"
+                )
+            conn.execute(
+                "UPDATE pending_work_claim SET payload = ? WHERE run_key = ?",
+                (replacement_payload, key),
             )
 
     def defer_pending_work_claim(self, run: SessionRunAssets) -> None:

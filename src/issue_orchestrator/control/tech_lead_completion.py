@@ -92,6 +92,7 @@ from .tech_lead_case_files import build_pattern_ledger
 from .tech_lead_issue_policy import protected_tech_lead_label_violations
 from .tech_lead_proposals import build_op_ledger
 from .tech_lead_session_policy import read_tech_lead_assignment
+from .in_flight_work import SettlementOutcome
 from ..domain.registered_completion import CompletionProcessingPolicy
 from .tech_lead_target_scope import target_scope_violation
 from .tech_lead_dispositions import investigation_disposition_violation
@@ -332,6 +333,7 @@ def discard_tech_lead_authority_after_completion(
     session: Session,
     *,
     processing_policy: CompletionProcessingPolicy,
+    work_outcome: "SettlementOutcome",
     processing_errors: list[str] | None,
 ) -> None:
     """Retention owner (#6769 F3): drop the run's authority row at the end.
@@ -357,6 +359,13 @@ def discard_tech_lead_authority_after_completion(
     what releases the cohort's held run artifacts for cleanup.
     """
     if not processing_policy.is_tech_lead:
+        return
+    if work_outcome is SettlementOutcome.PROVIDER_DEFERRED:
+        # The provider stopped the session before the work was attempted, so
+        # the claim goes back on the validation-retry queue still naming this
+        # run's grant. Discarding it here would make that requeued retry
+        # permanently unlaunchable -- `missing_authority`, pre-action, zero
+        # push, for every attempt that follows (round 11 finding 1).
         return
     if is_publish_failure(processing_errors):
         return

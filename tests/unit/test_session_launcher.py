@@ -9242,6 +9242,78 @@ class TestAValidationRetryCarriesItsLaunchAuthority:
             run_id=source.run_id, session_name=source.session_name
         ) is None, "the spent source authority survived the transfer"
 
+    def test_provider_defer_requeues_against_the_surviving_authority(
+        self, launcher_bundle, sample_config, tmp_path
+    ) -> None:
+        """A provider outage after relaunch must not requeue a spent grant.
+
+        The transfer retires the SOURCE row, but the live durable claim still
+        named it. A provider outage requeued that stale claim, and because
+        completion also discarded the destination row, every later relaunch was
+        refused as `missing_authority` -- permanently (round 11 finding 1).
+        """
+        from issue_orchestrator.control.in_flight_work import (
+            InFlightWorkLedger,
+            SettlementOutcome,
+        )
+        from issue_orchestrator.control.tech_lead_completion import (
+            discard_tech_lead_authority_after_completion,
+        )
+
+        TestLaunchTechLeadIssueSessionFlavors.enable_tech_lead_agent(
+            sample_config, tmp_path
+        )
+        authority = SqliteTechLeadAuthorityStore.for_repo(sample_config.repo_root)
+        source = SessionRunIdentity(
+            session_name="issue-6410", run_id="run-original", started_at="2026-09-18"
+        )
+        granted = self._authority()
+        authority.record(
+            run_id=source.run_id,
+            session_name=source.session_name,
+            authority=granted,
+        )
+        checkout = tmp_path / "repo-tech-lead-6410-abcdef123456"
+        checkout.mkdir()
+        self._seed_launch_inputs(checkout, source)
+        retry = self._retry(source, worktree_path=str(checkout))
+        state = OrchestratorState(pending_validation_retries=[retry])
+        claims = _claims_store(tmp_path / "claim-root")
+
+        session = orchestrator_launch_validation_retry_session(
+            retry, state, launcher_bundle.launcher, MagicMock(), claims
+        )
+
+        assert session is not None
+        resumed = session.run_assets.identity
+        held = claims.look_up_pending_work_claim(session.run_assets).held
+        assert held is not None
+        assert isinstance(held.request, PendingValidationRetry)
+        assert held.request.authority_run == resumed, (
+            "the live claim still names the source authority retired at launch"
+        )
+
+        InFlightWorkLedger(state, claims).settle(
+            session, SettlementOutcome.PROVIDER_DEFERRED
+        )
+        discard_tech_lead_authority_after_completion(
+            sample_config,
+            authority,
+            session,
+            processing_policy=CompletionProcessingPolicy.for_unprocessed_session(
+                session.issue.agent_type,
+                sample_config.tech_lead_review_agent,
+            ),
+            work_outcome=SettlementOutcome.PROVIDER_DEFERRED,
+            processing_errors=None,
+        )
+
+        [queued] = state.pending_validation_retries
+        assert queued.authority_run == resumed
+        assert authority.load(
+            run_id=resumed.run_id, session_name=resumed.session_name
+        ) == granted, "provider deferral discarded the grant the queued retry names"
+
     def test_a_retry_recovery_marked_damaged_never_starts_a_session(
         self, launcher_bundle, sample_config, tmp_path, mock_worktree_manager
     ) -> None:

@@ -1286,7 +1286,7 @@ class SessionLauncher:
         # The transfer settles on the same spawn decision the claim guard uses,
         # so a new early return cannot split them (#7273 round 2 finding 4).
         with abandon_claim_unless_spawned(work_claim, run) as spawn, (
-            transfer_launch_authority(carried, spawn)
+            transfer_launch_authority(carried, spawn, work=work_claim, run=run, retry=retry)
         ):
             extra_args = self._extra_provider_args_from_labels(issue.labels)
             retry_prompt = self._render_validation_retry_prompt(

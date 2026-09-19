@@ -83,6 +83,12 @@ class LaunchWorkClaim(Protocol):
         """Record the claim. A non-``None`` result aborts the launch."""
         ...
 
+    def rebind_held_claim(
+        self, run: SessionRunAssets, replacement: PendingWorkClaim
+    ) -> None:
+        """Move this launch's held payload to an equivalent successor."""
+        ...
+
     def abandon_unspawned(self, run: SessionRunAssets) -> None:
         """Hand the work back because no terminal ever started."""
         ...
@@ -98,7 +104,10 @@ class LaunchWorkClaim(Protocol):
         ...
 
 
-@dataclass(frozen=True, slots=True)
+# Not frozen: `rebind_held_claim` moves the held payload to its successor
+# after the durable write succeeds, so the in-memory claim must be able to
+# follow the row it describes (round 11 finding 1).
+@dataclass(slots=True)
 class PendingWorkLaunchClaim:
     """One queued request's durable ownership across a whole launch (#6999 A2).
 
@@ -180,6 +189,14 @@ class PendingWorkLaunchClaim:
             )
         return None
 
+    def rebind_held_claim(
+        self, run: SessionRunAssets, replacement: PendingWorkClaim
+    ) -> None:
+        self.claims.replace_held_pending_work_claim(
+            run, expected=self.claim, replacement=replacement
+        )
+        self.claim = replacement
+
     def abandon_unspawned(self, run: SessionRunAssets) -> None:
         self.claims.defer_pending_work_claim(run)
         logger.info(
@@ -260,6 +277,11 @@ class _ClaimlessLaunch:
     def hold_before_spawn(
         self, run: SessionRunAssets, *, issue_number: int
     ) -> LaunchResult | None:
+        return None
+
+    def rebind_held_claim(
+        self, run: SessionRunAssets, replacement: PendingWorkClaim
+    ) -> None:
         return None
 
     def abandon_unspawned(self, run: SessionRunAssets) -> None:
