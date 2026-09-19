@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import ast
 import fcntl
+import importlib.util
 import json
 import os
 import re
@@ -174,6 +175,24 @@ def _branches(repo: Path) -> set[str]:
         for line in _git(repo, "for-each-ref", "--format=%(refname:short)", "refs/heads").splitlines()
         if line.strip()
     }
+
+
+def _load_teardown_test_issues() -> Any:
+    """The SHIPPED teardown script, loaded as a module.
+
+    Driven directly because it removes no directory, so nothing in the removal
+    seam or its static guard sees it (round 23 finding 1).
+    """
+    script = (
+        Path(__file__).resolve().parents[2] / "scripts" / "teardown_test_issues.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "_teardown_test_issues_for_custody", script
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 class TestEveryRemovalPathAsks:
@@ -2072,6 +2091,42 @@ class TestTheDefaultWorktreeLayout:
             manager.remove_checkout_and_branch(sibling_checkout, force=True)
 
         assert (sibling_checkout / "work.md").exists()
+
+
+class TestBranchRefDestruction:
+    """A sweep that removes no directory can still destroy the only ref."""
+
+    def test_test_teardown_cannot_delete_an_unregistered_held_branch(
+        self,
+        manager: GitWorktreeManager,
+        repo: Path,
+        tmp_path: Path,
+        monkeypatch,
+    ) -> None:
+        branch = "1-test-custody"
+        held = tmp_path / "dev" / "worktree" / repo.name / "held-test"
+        held.parent.mkdir(parents=True)
+        _git(repo, "worktree", "add", "-b", branch, str(held))
+        (held / "only-copy.txt").write_text("protected commit\n")
+        _git(held, "add", "only-copy.txt")
+        _git(held, "commit", "-m", "only protected commit")
+        grant = manager.take_custody(held, holder=HOLDER, reason=REASON)
+
+        # The acceptance-criterion case: git has forgotten the checkout, but
+        # the custody store and the local branch remain.
+        _git(repo, "worktree", "remove", "--force", str(held))
+        held.mkdir(parents=True)
+        (held / "recovered-work.txt").write_text("operator recovery\n")
+
+        monkeypatch.chdir(repo)
+        teardown = _load_teardown_test_issues()
+
+        assert teardown.cleanup_local_branches() == 0
+        assert branch in _branches(repo), (
+            "the sweep deleted the only protected ref"
+        )
+        assert (held / "recovered-work.txt").read_text() == "operator recovery\n"
+        assert manager.custody_of(held) == grant
 
 
 class TestRoundSixGaps:

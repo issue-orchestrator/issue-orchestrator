@@ -209,6 +209,30 @@ class GitMetadataWorktreeCustody:
                     )
             yield
 
+    @contextmanager
+    def branch_guard(self, branch: str) -> Iterator[None]:
+        """Refuse to delete a local branch a custody grant names.
+
+        Git normally refuses to delete a branch checked out in a linked
+        worktree -- but an UNREGISTERED held checkout no longer contributes
+        that protection, so the custody record is the only durable evidence the
+        branch still belongs to it. A sweep that removes no directory can still
+        destroy the only protected ref (round 23 finding 1).
+
+        The lock spans the caller's deletion, so a grant cannot be taken
+        between the check and ``git branch -D``.
+        """
+        if not branch.strip():
+            raise ValueError("a custody branch guard requires a branch name")
+        with self._locked():
+            grants = sorted(
+                self._records().values(), key=lambda grant: grant.taken_at
+            )
+            held = next((g for g in grants if g.branch == branch), None)
+            if held is not None:
+                raise WorktreeInCustodyError(held)
+            yield
+
     def breached(self) -> tuple[CustodyGrant, ...]:
         """Grants whose checkout is PROVEN gone: something removed it anyway.
 
@@ -585,6 +609,19 @@ def custody_guard(
         return
     with custody.guard(worktree_path, release) as settlement:
         yield settlement
+
+
+@contextmanager
+def custody_branch_guard(repo_root: Path, branch: str) -> Iterator[None]:
+    """Refuse branch-ref deletion while a grant names that branch."""
+    custody = GitMetadataWorktreeCustody.for_path(repo_root, repo_root)
+    if custody is None:
+        raise CustodyUnavailableError(
+            f"{repo_root} has no custody store, so whether branch {branch} is "
+            "protected cannot be determined"
+        )
+    with custody.branch_guard(branch):
+        yield
 
 
 @contextmanager

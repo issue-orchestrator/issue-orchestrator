@@ -18,9 +18,13 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
+from issue_orchestrator.adapters.worktree.custody import (  # noqa: E402
+    custody_branch_guard,
+)
 from issue_orchestrator.adapters.worktree.removal import (  # noqa: E402
     remove_checkout_path,
 )
+from issue_orchestrator.ports.worktree_custody import CustodyError  # noqa: E402
 
 # Default to issue-orchestrator repo, override with env var if needed
 REPO = os.environ.get("TEST_REPO", "BruceBGordon/issue-orchestrator")
@@ -178,7 +182,13 @@ def _local_git(argv: list[str]) -> str | None:
 
 
 def cleanup_local_branches() -> int:
-    """Remove local branches created for test issues."""
+    """Remove local branches created for test issues.
+
+    Removes no directory, so the removal seam never sees it -- but for an
+    UNREGISTERED held checkout git no longer refuses, and this deletes the only
+    protected ref while the grant and the directory stand (round 23 finding 1).
+    """
+    repo_root = _repo_root()
     result = subprocess.run(
         ["git", "branch", "--list"],
         capture_output=True, text=True
@@ -193,15 +203,22 @@ def cleanup_local_branches() -> int:
         branch = line.strip().lstrip("* ")
         # Check if this looks like a test branch (starts with small number)
         if branch and any(branch.startswith(f"{i}-test") for i in range(1, 20)):
-            delete_result = subprocess.run(
-                ["git", "branch", "-D", branch],
-                capture_output=True, text=True
-            )
-            if delete_result.returncode == 0:
-                print(f"Deleted branch: {branch}")
-                count += 1
-            else:
-                print(f"Failed to delete branch {branch}: {delete_result.stderr}")
+            try:
+                with custody_branch_guard(repo_root, branch):
+                    delete_result = subprocess.run(
+                        ["git", "branch", "-D", branch],
+                        capture_output=True, text=True
+                    )
+                if delete_result.returncode == 0:
+                    print(f"Deleted branch: {branch}")
+                    count += 1
+                else:
+                    print(f"Failed to delete branch {branch}: {delete_result.stderr}")
+            except CustodyError as exc:
+                print(
+                    f"Retained branch {branch} because its checkout is in "
+                    f"custody: {exc}"
+                )
 
     return count
 
