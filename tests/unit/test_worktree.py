@@ -507,7 +507,7 @@ class TestCreateWorktree:
         """
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
-        (repo_root / ".git").mkdir()
+        _make_git_metadata(repo_root / ".git")
         existing_worktree = tmp_path / "repo-tech-lead-6410-abcdef123456"
         existing_worktree.mkdir()
         branch_name = "tech-lead-investigation-6410-abcdef123456"
@@ -2366,7 +2366,7 @@ class TestCreateWorktreeReuse:
 
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
-        (repo_root / ".git").mkdir()
+        _make_git_metadata(repo_root / ".git")
         worktree_path = tmp_path / "repo-tech-lead-6410-abcdef123456"
         worktree_path.mkdir()
         (worktree_path / "only-copy.txt").write_text("unpushed investigation\n")
@@ -2443,7 +2443,7 @@ class TestCreateWorktreeReuse:
 
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
-        (repo_root / ".git").mkdir()
+        _make_git_metadata(repo_root / ".git")
         worktree_path = tmp_path / "repo-6410"
         worktree_path.mkdir()
         (worktree_path / "only-copy.txt").write_text("ordinary issue work\n")
