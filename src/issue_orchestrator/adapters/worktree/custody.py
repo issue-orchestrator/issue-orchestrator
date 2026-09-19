@@ -137,16 +137,31 @@ class GitMetadataWorktreeCustody:
             return self._records().get(_key(worktree_path))
 
     def breached(self) -> tuple[CustodyGrant, ...]:
-        """Grants whose checkout is gone: something removed it anyway.
+        """Grants whose checkout is PROVEN gone: something removed it anyway.
 
         Detection, not prevention. The orchestrator's own removals are refused,
         but nothing stops a hand or a script outside this codebase, and an
         operator who was told their branch was protected deserves to find out
         that it is not -- rather than discovering it when they go looking.
+
+        An inspection failure is not proof of absence. ``Path.exists()`` answers
+        False for a path it cannot stat at all, so an unreadable held checkout
+        was reported as removed -- the same ambiguity round 17 took out of the
+        removal-success check, in the one place that tells the operator what
+        happened (round 18 finding 1).
         """
-        return tuple(
-            grant for grant in self.list_held() if not grant.path.exists()
-        )
+        breached: list[CustodyGrant] = []
+        for grant in self.list_held():
+            try:
+                grant.path.lstat()
+            except FileNotFoundError:
+                breached.append(grant)
+            except OSError as exc:
+                raise CustodyUnavailableError(
+                    f"cannot verify whether held checkout {grant.path} still "
+                    f"exists: {exc}"
+                ) from exc
+        return tuple(breached)
 
     def list_held(self) -> tuple[CustodyGrant, ...]:
         with self._locked():

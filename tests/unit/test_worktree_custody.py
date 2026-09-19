@@ -322,6 +322,45 @@ class TestTheStore:
         assert trail[-1]["reason"] == "collected"
         assert trail[-1]["branch"] == "tech-lead-investigation-6410-abcdef123456"
 
+    def test_an_unreadable_held_checkout_is_not_reported_as_gone(
+        self,
+        manager: GitWorktreeManager,
+        checkout: Path,
+        monkeypatch,
+    ) -> None:
+        """Inspection failure is unknown, not evidence of an external deletion.
+
+        ``breached()`` is what tells the operator their protected branch was
+        removed anyway. Built on ``Path.exists()``, it said that about a
+        checkout it merely could not read (round 18 finding 1).
+        """
+        grant = manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+        original_stat = Path.stat
+        original_lstat = Path.lstat
+
+        def stat_or_fail(path: Path, *args: object, **kwargs: object):
+            if path == checkout:
+                raise PermissionError("checkout cannot be inspected")
+            return original_stat(path, *args, **kwargs)
+
+        def lstat_or_fail(path: Path, *args: object, **kwargs: object):
+            if path == checkout:
+                raise PermissionError("checkout cannot be inspected")
+            return original_lstat(path, *args, **kwargs)
+
+        # Both, because Path.exists() suppresses the stat error and answers
+        # False -- the exact collapse under test.
+        monkeypatch.setattr(Path, "stat", stat_or_fail)
+        monkeypatch.setattr(Path, "lstat", lstat_or_fail)
+
+        with pytest.raises(
+            CustodyUnavailableError, match="cannot verify whether held checkout"
+        ):
+            manager.breached_custody(checkout)
+
+        monkeypatch.undo()
+        assert manager.custody_of(checkout) == grant
+
     def test_an_unreadable_store_is_an_error_not_an_empty_one(
         self, repo: Path, checkout: Path
     ) -> None:
@@ -551,25 +590,43 @@ def _removal_lines(tree: ast.AST) -> list[int]:
 
 
 def _runtime_nodes(root: ast.AST) -> list[ast.AST]:
-    """Nodes executed in this lexical block, excluding deferred bodies.
+    """Nodes executed while this lexical block is ACTIVE.
 
     A function or lambda DEFINED inside a custody guard may be called after the
     guard exits, so its body is not protected merely because its AST is nested
     beneath the ``with``. Walking into those bodies would let a refactor move
     the deletion into a callable invoked afterwards and keep this guard green
     -- the round-16 vacuity in a new shape (round 17 finding 2).
+
+    Definition-time expressions are the other half of the same question, and
+    excluding a whole node was too blunt for them: decorators and defaults run
+    immediately, as does a class body. A generator expression splits the two --
+    its OUTERMOST iterable is evaluated at construction, while its element,
+    filters and remaining iterators run only when it is advanced, so a deletion
+    placed in one and consumed after the guard was still counted as guarded
+    (round 18 finding 2).
     """
     found: list[ast.AST] = []
     pending = [root]
-    deferred = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
     while pending:
         node = pending.pop()
         found.append(node)
-        children = [
-            child
-            for child in ast.iter_child_nodes(node)
-            if not isinstance(child, deferred)
-        ]
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            children = [
+                *node.decorator_list,
+                *node.args.defaults,
+                *(d for d in node.args.kw_defaults if d is not None),
+            ]
+        elif isinstance(node, ast.Lambda):
+            children = [
+                *node.args.defaults,
+                *(d for d in node.args.kw_defaults if d is not None),
+            ]
+        elif isinstance(node, ast.GeneratorExp):
+            children = [node.generators[0].iter]
+        else:
+            # Class bodies and list/set/dict comprehensions execute eagerly.
+            children = list(ast.iter_child_nodes(node))
         pending.extend(reversed(children))
     return found
 
@@ -775,6 +832,70 @@ def remove_checkout_path(path):
         }
 
         assert id(destructive) not in guarded_call_ids
+
+    def test_a_generator_body_is_not_mistaken_for_guarded_execution(self) -> None:
+        """Constructing a generator does not execute its element expression."""
+        tree = ast.parse(
+            """
+def remove_checkout_path(path):
+    with custody_guard(path):
+        remove_later = (_delete_path(path) for _ in (None,))
+    next(remove_later)
+"""
+        )
+        owner = next(
+            node for node in tree.body if isinstance(node, ast.FunctionDef)
+        )
+        guarded = next(
+            node for node in ast.walk(owner) if isinstance(node, ast.With)
+        )
+        destructive = next(
+            node for node in ast.walk(owner) if _is_call(node, "_delete_path")
+        )
+
+        guarded_call_ids = {
+            id(node)
+            for node in _runtime_nodes(guarded)
+            if isinstance(node, ast.Call)
+        }
+
+        assert id(destructive) not in guarded_call_ids
+
+    def test_definition_time_calls_are_still_recognised_as_guarded(self) -> None:
+        """The other direction: do not reject calls that DO run in the guard."""
+        tree = ast.parse(
+            """
+def remove_checkout_path(path):
+    with custody_guard(path):
+        @decorate(_delete_path(path))
+        def remove_later(value=_delete_path(path)):
+            pass
+
+        remove_lambda = lambda value=_delete_path(path): None
+        eager_iterable = (value for value in _delete_path(path))
+
+        class Immediate:
+            value = _delete_path(path)
+"""
+        )
+        owner = next(
+            node for node in tree.body if isinstance(node, ast.FunctionDef)
+        )
+        guarded = next(
+            node for node in ast.walk(owner) if isinstance(node, ast.With)
+        )
+        destructive = [
+            node for node in ast.walk(owner) if _is_call(node, "_delete_path")
+        ]
+
+        guarded_call_ids = {
+            id(node)
+            for node in _runtime_nodes(guarded)
+            if isinstance(node, ast.Call)
+        }
+
+        assert len(destructive) == 5
+        assert {id(node) for node in destructive} <= guarded_call_ids
 
 
 class TestEachEntryPointRefuses:
