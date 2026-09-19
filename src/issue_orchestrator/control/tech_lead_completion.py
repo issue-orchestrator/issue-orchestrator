@@ -361,11 +361,23 @@ def discard_tech_lead_authority_after_completion(
     if not processing_policy.is_tech_lead:
         return
     if work_outcome is SettlementOutcome.PROVIDER_DEFERRED:
-        # The provider stopped the session before the work was attempted, so
-        # the claim goes back on the validation-retry queue still naming this
-        # run's grant. Discarding it here would make that requeued retry
-        # permanently unlaunchable -- `missing_authority`, pre-action, zero
-        # push, for every attempt that follows (round 11 finding 1).
+        if session.validation_retry_count > 0:
+            # A VALIDATION-RETRY claim is rebound to this run at launch and goes
+            # back on its queue still naming this grant. Discarding it would
+            # make that requeued retry permanently unlaunchable --
+            # `missing_authority`, pre-action, zero push, for every attempt that
+            # follows (round 11 finding 1). Explicit abandonment retires it
+            # through `ValidationRetryRetirement` instead (round 12 finding 1).
+            return
+        # An ORIGINAL tech-lead request defers back to `PendingTechLeadReview`,
+        # and its relaunch records a NEW run authority -- so this run's grant is
+        # spent, and retaining it leaves a row authorizing an abandoned run
+        # identity forever (round 13 finding 3). The storm cohort stays: the
+        # requeued review still owns it.
+        tech_lead_authority.discard(
+            run_id=session.run_assets.run_id,
+            session_name=session.run_assets.session_name,
+        )
         return
     if is_publish_failure(processing_errors):
         return

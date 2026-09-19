@@ -210,6 +210,7 @@ class TestDiscardTechLeadAuthorityAfterCompletion:
         session.issue.agent_type = agent_type
         session.run_assets.run_id = "r1"
         session.run_assets.session_name = "issue-999"
+        session.validation_retry_count = 0
         return session
 
     @staticmethod
@@ -257,6 +258,36 @@ class TestDiscardTechLeadAuthorityAfterCompletion:
         assert store.load(run_id="r1", session_name="issue-999") is None
         assert store.load_storm_cohort(anchor_issue_number=999) is None
         assert store.list_storm_cohorts() == ()
+
+    def test_original_provider_deferral_discards_only_the_run_authority(
+        self,
+    ) -> None:
+        """Only a validation-retry claim names this run's grant.
+
+        An ORIGINAL request defers back to PendingTechLeadReview, whose relaunch
+        records a new grant -- so retaining this one left a row authorizing an
+        abandoned run identity forever (round 13 finding 3).
+        """
+        from issue_orchestrator.control.tech_lead_completion import (
+            discard_tech_lead_authority_after_completion,
+        )
+
+        store = self._store_with_both_rows()
+        session = self._session("agent:tech-lead")
+
+        discard_tech_lead_authority_after_completion(
+            self._config(),
+            store,
+            session,
+            work_outcome=SettlementOutcome.PROVIDER_DEFERRED,
+            processing_errors=None,
+            processing_policy=CompletionProcessingPolicy.for_unprocessed_session(
+                session.issue.agent_type, self._config().tech_lead_review_agent
+            ),
+        )
+
+        assert store.load(run_id="r1", session_name="issue-999") is None
+        assert store.load_storm_cohort(anchor_issue_number=999) is not None
 
     def test_publish_failure_retains_both_for_the_retry(self) -> None:
         """A publish-stage failure re-enters completion for this same run, so

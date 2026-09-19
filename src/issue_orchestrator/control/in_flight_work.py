@@ -33,12 +33,18 @@ different failure modes, and only that module may depend on this one.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Sequence
 
-from ..domain.models import PendingRework, Session
+from ..domain.models import (
+    AgentConfig,
+    PendingRework,
+    PendingValidationRetry,
+    Session,
+)
 from ..domain.pending_work import InFlightWork, PendingWorkClaim, PendingWorkKind
 from ..domain.session_key import SessionKey, TaskKind
 from ..ports.pending_work_claim_store import ClaimState, PendingWorkClaimStore
@@ -264,7 +270,12 @@ class InFlightWorkLedger:
         self._forget_in_memory(session)
         return held
 
-    def rehydrate(self, sessions: Sequence[Session]) -> "ClaimRestoration":
+    def rehydrate(
+        self,
+        sessions: Sequence[Session],
+        *,
+        agent_configs: Mapping[str, AgentConfig],
+    ) -> "ClaimRestoration":
         """Re-take the claims of terminals that survived a restart (#6999 F4).
 
         The pending queues are in-memory, so after a restart a live terminal's
@@ -324,7 +335,7 @@ class InFlightWorkLedger:
                     self.state.in_flight_work.append(
                         InFlightWork(session.terminal_id, claim)
                     )
-                _reconcile_restored_identity(session, claim)
+                _reconcile_restored_identity(session, claim, agent_configs)
                 logger.info(
                     "[WORK] Restored terminal %s is still holding %s",
                     session.terminal_id,
@@ -503,16 +514,41 @@ class InFlightWorkLedger:
 
 
 def _reconcile_restored_identity(
-    session: Session, claim: PendingWorkClaim
+    session: Session,
+    claim: PendingWorkClaim,
+    agent_configs: Mapping[str, AgentConfig],
 ) -> None:
     """Give a restored session back the identity its claim proves it has.
 
     Restoration rebuilds a session from its terminal name and its run assets,
-    which cannot express every task kind: a ``rework-*`` terminal comes back as
-    generic CODE work with no PR number. The claim knows better, and downstream
-    policy depends on it - notably restoring the ``needs-rework`` label, which
-    is keyed on the PR (#6999 F4).
+    which cannot express every task kind OR launch role: a ``rework-*`` terminal
+    comes back as generic CODE work with no PR number, and a resumed tech-lead
+    retry comes back wearing the focus issue's coder label. The claim knows
+    better, and downstream policy depends on it - restoring the ``needs-rework``
+    label, which is keyed on the PR (#6999 F4), and classifying a resumed retry
+    as tech-lead work so it can inherit its grant (#7273 round 13).
     """
+    if claim.kind is PendingWorkKind.VALIDATION_RETRY:
+        # The resumed run's ROLE lives only in the claim. Restoration rebuilds
+        # a session from the focus issue's own label, which for an investigation
+        # is the coder label -- so `unprocessed_session_policy` classified the
+        # restored run as ordinary work and the next retry was queued with no
+        # `authority_run` at all. That is the original #7273 defect, reached
+        # through a restart instead of a relaunch (round 13 finding 1).
+        request = claim.request
+        assert isinstance(request, PendingValidationRetry)
+        try:
+            agent_config = agent_configs[request.agent_label]
+        except KeyError as exc:
+            raise RuntimeError(
+                "Cannot restore validation-retry session for unconfigured "
+                f"agent {request.agent_label!r}"
+            ) from exc
+        session.agent_label = request.agent_label
+        session.agent_config = agent_config
+        session.validation_retry_count = request.retry_count
+        return
+
     if claim.kind is not PendingWorkKind.REWORK:
         return
     request = claim.request

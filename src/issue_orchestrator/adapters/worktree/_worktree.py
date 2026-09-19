@@ -996,6 +996,17 @@ def _attempt_reuse(
     """Attempt to reuse an existing worktree, returning (result, recreated_reason)."""
     recreated_reason: str | None = None
     if ctx.disable_reuse:
+        if ctx.reuse_options.preserve_branch:
+            # The global fresh-worktree switch overrode branch preservation: it
+            # DETACHED an investigation branch from its scratch checkout and
+            # recreated it at the ordinary issue path, after which
+            # `resumes_an_investigation()` is false and a later retry may rebase
+            # or hard-reset the only copy (round 13 finding 2).
+            raise WorktreeError(
+                "Worktree reuse is disabled, but branch "
+                f"{ctx.branch_name!r} is marked for preservation; refusing "
+                "destructive recreation"
+            )
         recreated_reason = _handle_reuse_disabled(
             ctx.repo_root, ctx.worktree_path, ctx.branch_name, ctx.issue_number
         )

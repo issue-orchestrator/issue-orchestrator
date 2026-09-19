@@ -492,6 +492,62 @@ class TestCreateWorktree:
         assert branch_name == "123-test"
         assert state["worktree_add_calls"] == 2
 
+    def test_reuse_disabled_cannot_detach_a_preserved_branch(
+        self, tmp_path, monkeypatch
+    ):
+        """The global fresh-worktree switch cannot override branch preservation.
+
+        It DETACHED an investigation branch from its scratch checkout and
+        recreated it at the ordinary issue path, after which
+        `resumes_an_investigation()` is false and a later retry may rebase or
+        hard-reset the only copy (round 13 finding 2).
+        """
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        (repo_root / ".git").mkdir()
+        existing_worktree = tmp_path / "repo-tech-lead-6410-abcdef123456"
+        existing_worktree.mkdir()
+        branch_name = "tech-lead-investigation-6410-abcdef123456"
+        monkeypatch.setenv("ORCHESTRATOR_DISABLE_WORKTREE_REUSE", "1")
+
+        worktree_list_output = (
+            f"worktree {existing_worktree}\n"
+            "HEAD abc123\n"
+            f"branch refs/heads/{branch_name}\n\n"
+        )
+
+        with patch(
+            "issue_orchestrator.adapters.git.git_cli.subprocess.run"
+        ) as mock_run:
+            def run_side_effect(cmd, *args, **kwargs):
+                if "worktree" in cmd and "list" in cmd:
+                    return MagicMock(
+                        returncode=0, stdout=worktree_list_output, stderr=""
+                    )
+                return MagicMock(returncode=0, stdout="", stderr="")
+
+            mock_run.side_effect = run_side_effect
+
+            with pytest.raises(
+                WorktreeError, match="refusing destructive recreation"
+            ):
+                create_worktree(
+                    repo_root,
+                    6410,
+                    "Investigate failure",
+                    worktree_base=tmp_path,
+                    base_branch="main",
+                    branch_name=branch_name,
+                    reuse_options=WorktreeReuseOptions(
+                        preserve_branch=True, reuse_push_preflight=False
+                    ),
+                )
+
+        issued = [call.args[0] for call in mock_run.call_args_list]
+        assert not any(
+            "checkout" in cmd and "--detach" in cmd for cmd in issued
+        ), "the preserved branch was detached from its checkout"
+
     @patch("issue_orchestrator.adapters.worktree._worktree_runtime_setup.install_claude_settings")
     @patch("issue_orchestrator.adapters.worktree._worktree_runtime_setup.install_hooks")
     @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")

@@ -440,7 +440,9 @@ def restore_running_sessions(
 
     ledger = InFlightWorkLedger(state, claims)
     restored = session_restorer.restore_sessions(running, state.active_sessions)
-    restoration = ledger.rehydrate(restored)
+    restoration = ledger.rehydrate(
+        restored, agent_configs=session_restorer.config.agents
+    )
     for quarantined in restoration.quarantined:
         quarantine.quarantine(
             QuarantineSubject.live_run_with_unreadable_claim(quarantined)
