@@ -631,7 +631,14 @@ def _try_reuse_worktree(
         )
         reset_info = ResetInfo(success=True)
     else:
-        reset_info = _update_worktree_onto_main(worktree_path, repo_root, base_branch)
+        # Custody prevented REMOVAL but not destructive REPURPOSING. A rebase,
+        # hard reset and clean discard exactly the work a grant protects, so
+        # the custody answer is held across the mutation the same way it is
+        # across a removal (round 21 finding 1).
+        with custody_guard(worktree_path, repo_root=repo_root):
+            reset_info = _update_worktree_onto_main(
+                worktree_path, repo_root, base_branch
+            )
 
     # Policy: sync remote refs to prevent stale-info push failures
     sync_result = policy.sync_remote_refs(worktree_path, branch_name)
@@ -994,8 +1001,12 @@ def _handle_reuse_disabled(
     if branch_name:
         existing_worktree = find_worktree_for_branch(repo_root, branch_name)
         if existing_worktree and existing_worktree.exists():
-            recreated_reason = "reuse_disabled: existing worktree branch removed"
-            _detach_worktree_branch(existing_worktree, branch_name)
+            # Detaching takes the protected branch OFF the held checkout and
+            # frees it to be attached elsewhere -- the grant survives while what
+            # it protects does not (round 21 finding 1).
+            with custody_guard(existing_worktree, repo_root=repo_root):
+                recreated_reason = "reuse_disabled: existing worktree branch removed"
+                _detach_worktree_branch(existing_worktree, branch_name)
     return recreated_reason
 
 

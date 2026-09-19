@@ -6,6 +6,7 @@ from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
 
+from ..adapters.worktree.custody import custody_guard
 from ..adapters.worktree.removal import GitRunner, remove_checkout_path
 from ..domain.completion_intake import CompletionIntakeError
 from ..domain.publication_workspace import PublicationWorkspace
@@ -188,7 +189,13 @@ class EscrowPublicationWorkspaces:
         # Only complete, verified work becomes the authoritative workspace.
         # An interrupted checkout stays in private staging and is never reused
         # or discarded on a guess that it contains no operator edits.
-        self._git.run(self._repository, ["worktree", "move", str(checkout), str(workspace.checkout)])
+        # Moving a held checkout leaves the grant naming a path nothing is at,
+        # so the next removal of the NEW path is unheld (round 21 finding 1).
+        with custody_guard(checkout, repo_root=self._repository):
+            self._git.run(
+                self._repository,
+                ["worktree", "move", str(checkout), str(workspace.checkout)],
+            )
         fsync_directory(workspace.checkout.parent)
         staging.rmdir()
         fsync_directory(staging.parent)

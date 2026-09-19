@@ -187,6 +187,25 @@ class GitMetadataWorktreeCustody:
                     "cannot prune worktree metadata while custody cannot "
                     f"inspect {failure.grant.path}: {failure.detail}"
                 )
+            # Git prunes by the registered `.git` BACKLINK, not by whether the
+            # directory is there. A held checkout whose pointer was lost stats
+            # fine and is deregistered anyway, which frees its branch to be
+            # attached elsewhere (round 21 finding 2).
+            common_dir = self._root.resolve()
+            for grant in inspection.held:
+                try:
+                    grant_common_dir = git_common_dir(grant.path)
+                except CustodyUnavailableError as exc:
+                    raise CustodyUnavailableError(
+                        "cannot prune worktree metadata while custody cannot "
+                        f"verify the git registration for {grant.path}: {exc}"
+                    ) from exc
+                if grant_common_dir != common_dir:
+                    raise CustodyUnavailableError(
+                        "cannot prune worktree metadata while held checkout "
+                        f"{grant.path} has no readable registration in "
+                        f"{common_dir}"
+                    )
             yield
 
     def breached(self) -> tuple[CustodyGrant, ...]:

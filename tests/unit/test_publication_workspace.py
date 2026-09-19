@@ -500,6 +500,52 @@ def test_interrupted_git_initialization_preserves_remnants_and_replays(prepared,
         assert str(remnant) in rig.run("worktree", "list", "--porcelain")
 
 
+def test_publication_move_refuses_a_staging_checkout_in_custody(prepared):
+    """A move leaves the grant naming a path nothing is at (round 21 finding 1).
+
+    The next removal then addresses the NEW path, which is unheld.
+    """
+    from pathlib import Path
+    from unittest.mock import Mock
+
+    from issue_orchestrator.execution.worktree_adapter import GitWorktreeManager
+    from issue_orchestrator.ports.git import Git
+    from issue_orchestrator.ports.worktree_custody import WorktreeInCustodyError
+
+    rig, admission, escrow, _, _ = prepared
+    git = Mock(spec=Git, wraps=rig.git)
+    manager = GitWorktreeManager(rig.root)
+    held: Path | None = None
+
+    def run(repo, argv, **kwargs):
+        nonlocal held
+        result = rig.git.run(repo, argv, **kwargs)
+        if argv[:2] == ["worktree", "add"]:
+            held = Path(argv[-2])
+            manager.take_custody(
+                held,
+                holder="operator",
+                reason="inspecting publication reconstruction",
+            )
+        return result
+
+    git.run.side_effect = run
+    moving = EscrowPublicationWorkspaces(
+        root=publication_root(escrow),
+        repository=rig.root,
+        repo_slug="owner/repo",
+        escrow=escrow,
+        git=git,
+        prepare=lambda _: None,
+    )
+
+    with pytest.raises(WorktreeInCustodyError):
+        moving.prepare(admission)
+
+    assert held is not None and held.exists()
+    assert manager.custody_of(held) is not None
+
+
 @pytest.mark.parametrize("operation", ["prepare", "release"])
 def test_registration_repair_never_changes_an_unrelated_worktree_gitfile(prepared, tmp_path, operation):
     rig, admission, _, owner, _ = prepared

@@ -71,7 +71,10 @@ from issue_orchestrator.execution.reviewer_worktree import (
     ReviewerWorktree,
     remove_reviewer_worktree,
 )
-from issue_orchestrator.ports.worktree_manager import WORKTREE_ID_MARKER
+from issue_orchestrator.ports.worktree_manager import (
+    WORKTREE_ID_MARKER,
+    WorktreeReuseOptions,
+)
 
 HOLDER = "operator"
 REASON = "investigation #6410 left commits only on this branch"
@@ -1181,6 +1184,59 @@ class TestCreatingOverAHeldCheckout:
         assert (checkout / "finding.md").exists()
 
 
+    def test_reuse_cannot_reset_a_held_checkout(
+        self, manager: GitWorktreeManager, repo: Path, checkout: Path, tmp_path: Path
+    ) -> None:
+        """Custody stopped REMOVAL but not destructive REPURPOSING.
+
+        Reuse rebases, hard-resets and cleans -- which discards exactly the
+        uncommitted evidence a grant is taken to protect (round 21 finding 1).
+        """
+        branch = "tech-lead-investigation-6410-abcdef123456"
+        only_copy = checkout / "uncommitted-investigation.txt"
+        only_copy.write_text("not committed anywhere\n")
+        _git(repo, "remote", "add", "origin", str(repo))
+        manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+
+        with pytest.raises(WorktreeInCustodyError):
+            worktree_module.create_worktree(
+                repo,
+                7275,
+                "another launch",
+                worktree_base=tmp_path / "new-worktrees",
+                base_branch="main",
+                branch_name=branch,
+                enforce_hooks=False,
+                reuse_options=WorktreeReuseOptions(reuse_push_preflight=False),
+            )
+
+        assert only_copy.read_text() == "not committed anywhere\n"
+        assert _git(checkout, "branch", "--show-current").strip() == branch
+
+    def test_reuse_disabled_cannot_detach_a_held_branch(
+        self, manager: GitWorktreeManager, repo: Path, checkout: Path, tmp_path: Path
+    ) -> None:
+        """Detaching frees the protected branch to be attached elsewhere."""
+        branch = "tech-lead-investigation-6410-abcdef123456"
+        grant = manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+
+        with pytest.raises(WorktreeInCustodyError):
+            worktree_module.create_worktree(
+                repo,
+                7276,
+                "fresh launch",
+                worktree_base=tmp_path / "fresh-worktrees",
+                branch_name=branch,
+                enforce_hooks=False,
+                reuse_options=WorktreeReuseOptions(
+                    disable_reuse=True, reuse_push_preflight=False
+                ),
+            )
+
+        assert _git(checkout, "branch", "--show-current").strip() == branch
+        assert manager.custody_of(checkout) == grant
+
+
 class TestPruningAroundCustody:
     """``git worktree prune`` is repository-WIDE, so it is custody-sensitive.
 
@@ -1219,6 +1275,34 @@ class TestPruningAroundCustody:
         registrations = _git(repo, "worktree", "list", "--porcelain")
         assert f"worktree {held}" in registrations
         assert (held / "finding.md").read_text() == "the only copy\n"
+
+    def test_create_does_not_prune_a_held_checkout_with_missing_gitfile(
+        self, manager: GitWorktreeManager, repo: Path, tmp_path: Path
+    ) -> None:
+        """Git prunes by the BACKLINK, not by whether the directory is there."""
+        held = tmp_path / "held-without-gitfile"
+        _git(repo, "worktree", "add", "-b", "missing-gitfile", str(held))
+        admin = Path(_git(held, "rev-parse", "--absolute-git-dir").strip())
+        manager.take_custody(held, holder=HOLDER, reason=REASON)
+        (held / ".git").unlink()
+        _git(repo, "config", "gc.worktreePruneExpire", "now")
+        _git(repo, "branch", "next-launch")
+
+        with pytest.raises(
+            CustodyUnavailableError, match="has no readable registration"
+        ):
+            worktree_module.create_worktree(
+                repo,
+                7277,
+                "another launch",
+                worktree_base=tmp_path / "new-worktrees",
+                branch_name="next-launch",
+                enforce_hooks=False,
+            )
+
+        registrations = _git(repo, "worktree", "list", "--porcelain")
+        assert f"worktree {held}" in registrations
+        assert admin.is_dir()
 
     def test_removal_does_not_prune_past_an_unreadable_held_sibling(
         self,

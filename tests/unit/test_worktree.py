@@ -366,9 +366,12 @@ class TestCreateWorktree:
         # Create existing worktree directory with valid .git file
         existing_worktree = worktree_base / "repo-123"
         existing_worktree.mkdir()
-        gitdir = tmp_path / "gitdir"
-        gitdir.mkdir()
-        # Create .git file to make it look like a valid worktree
+        # Where git actually puts a linked worktree's admin directory. Reuse
+        # now asks custody before it resets, and custody resolves a checkout's
+        # repository through this path -- a gitdir somewhere unrelated is not a
+        # worktree of this repository, and failing closed there is correct.
+        gitdir = repo_root / ".git" / "worktrees" / "repo-123"
+        _make_git_metadata(gitdir)
         (existing_worktree / ".git").write_text(f"gitdir: {gitdir}")
 
         # Mock subprocess calls for worktree reuse validation:
