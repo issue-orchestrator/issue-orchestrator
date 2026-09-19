@@ -6,11 +6,18 @@ import threading
 import time
 from pathlib import Path
 
+from issue_orchestrator.adapters.worktree.custody import (
+    GitMetadataWorktreeCustody,
+    git_common_dir,
+)
 from issue_orchestrator.adapters.worktree.removal import (
     remove_checkout_path,
     remove_empty_worktree_container,
 )
-from issue_orchestrator.ports.worktree_custody import CustodyError
+from issue_orchestrator.ports.worktree_custody import (
+    CustodyError,
+    CustodyUnavailableError,
+)
 
 from .github_client import _github_adapter
 from .orchestrator_process import keep_artifacts, keep_remote_artifacts
@@ -53,8 +60,9 @@ def cleanup_local_worktrees(
         worktree_base = Path("/tmp/e2e-worktrees")
     if not worktree_base.exists():
         return 0
+    checkouts, containers = _sweep_targets(worktree_base, repo_root=repo_root)
     count = 0
-    for checkout in _checkouts_under(worktree_base):
+    for checkout in checkouts:
         try:
             outcome = remove_checkout_path(
                 checkout,
@@ -74,7 +82,7 @@ def cleanup_local_worktrees(
             logger.warning(
                 "Failed to remove worktree %s: %s", checkout, outcome.git_error
             )
-    _remove_empty_containers(worktree_base, repo_root=repo_root)
+    _remove_empty_containers(containers, repo_root=repo_root)
     if count > 0:
         logger.info(
             "[E2E CLEANUP] Removed %d local worktrees from %s", count, worktree_base
@@ -82,38 +90,66 @@ def cleanup_local_worktrees(
     return 0
 
 
-def _checkouts_under(worktree_base: Path) -> list[Path]:
-    """Every checkout under the base, flat layout or per-session.
+def _sweep_targets(
+    worktree_base: Path, *, repo_root: Path
+) -> tuple[list[Path], list[Path]]:
+    """Checkouts PROVEN to belong to this repository, and their containers.
 
-    A directory holding a ``.git`` entry is a checkout; one that holds none is
-    a session container, and its children are asked instead. Only those two
-    levels exist, so the walk does not recurse further and cannot wander into a
-    checkout's own contents.
+    A missing ``.git`` entry cannot establish ownership. The default base is
+    shared across runs, so asking repository B about an unregistered checkout
+    from repository A gives a truthful answer about the WRONG store -- and
+    deletes A's held checkout (round 15 finding 2). Such a path is swept only
+    when this repository's own custody store already names it.
     """
+    repo_common = git_common_dir(repo_root)
+    if repo_common is None:
+        raise CustodyUnavailableError(
+            f"{repo_root} is not a repository, so E2E cleanup cannot establish "
+            "which checkouts it owns"
+        )
+    held = {
+        grant.path.resolve()
+        for grant in GitMetadataWorktreeCustody(repo_common).list_held()
+    }
+
+    def belongs_to_repository(candidate: Path) -> bool:
+        if candidate.resolve() in held:
+            return True
+        try:
+            return git_common_dir(candidate) == repo_common
+        except CustodyError:
+            # Damaged identity is not authority to reinterpret the directory as
+            # a session container and descend into it.
+            return False
+
     checkouts: list[Path] = []
+    containers: list[Path] = []
     for item in sorted(worktree_base.iterdir()):
         if not item.is_dir():
             continue
-        if (item / ".git").exists():
+        if belongs_to_repository(item):
             checkouts.append(item)
             continue
-        checkouts.extend(
+        children = [
             child
             for child in sorted(item.iterdir())
-            if child.is_dir()
-        )
-    return checkouts
+            if child.is_dir() and belongs_to_repository(child)
+        ]
+        if children:
+            containers.append(item)
+            checkouts.extend(children)
+    return checkouts, containers
 
 
-def _remove_empty_containers(worktree_base: Path, *, repo_root: Path) -> None:
-    """Drop session directories the sweep emptied, and nothing else.
+def _remove_empty_containers(containers: list[Path], *, repo_root: Path) -> None:
+    """Drop only containers proven by their repository-owned children.
 
     ``rmdir`` and not ``rmtree`` on purpose: a container that still holds
     something holds a checkout this sweep RETAINED, and the whole point is that
     removing the parent must not be a way around that.
     """
-    for item in sorted(worktree_base.iterdir()):
-        if item.is_dir() and not (item / ".git").exists():
+    for item in containers:
+        if item.is_dir():
             # Through the removal owner, which asks custody first. An EMPTY held
             # checkout that lost its `.git` looks exactly like a container from
             # out here, and this was the one path that never asked (round 14

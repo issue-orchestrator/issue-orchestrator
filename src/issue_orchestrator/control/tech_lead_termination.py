@@ -32,7 +32,11 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Callable, Optional, Protocol
 
-from ..ports.worktree_custody import CustodyGrant, WorktreeInCustodyError
+from ..ports.worktree_custody import (
+    CustodyError,
+    CustodyGrant,
+    WorktreeInCustodyError,
+)
 from ..domain.validated_work_commands import ValidatedWorkDispositionBatch
 
 if TYPE_CHECKING:
@@ -117,6 +121,7 @@ def terminate_tech_lead_session(
     # handler below was unreachable and round 9's fix never ran (round 12
     # finding 1).
     retained_custody: "CustodyGrant | None" = None
+    custody_unavailable: str | None = None
     try:
         removal = _void(
             lambda: worktrees.remove_checkout_and_branch(
@@ -127,7 +132,7 @@ def terminate_tech_lead_session(
             else None
         )
         removal_attempt = _effect_runner(
-            session.issue.number, propagate=(WorktreeInCustodyError,)
+            session.issue.number, propagate=(CustodyError,)
         )
         worktree_removed = removal_attempt(removal, "remove scratch worktree")
     except WorktreeInCustodyError as refusal:
@@ -138,6 +143,19 @@ def terminate_tech_lead_session(
             "termination left it in place",
             session.issue.number,
             refusal.grant.holder,
+        )
+    except CustodyError as refusal:
+        # NOT a known grant and NOT an unprotected leak. The checkout was kept
+        # precisely because the system could not say whether anyone holds it,
+        # and "remove it manually" is the one instruction that must not follow
+        # from that (round 15 finding 1).
+        custody_unavailable = str(refusal)
+        worktree_removed = False
+        logger.warning(
+            "[TECH_LEAD] Scratch worktree for issue #%d was retained because "
+            "custody could not be determined: %s",
+            session.issue.number,
+            refusal,
         )
     return TechLeadTerminationOutcome(
         validated_work=batch,
@@ -150,10 +168,16 @@ def terminate_tech_lead_session(
         # action before exit — this is the single cleanup-failure owner.
         leaked_worktree=(
             str(session.worktree_path)
-            if (disposable and not worktree_removed and retained_custody is None)
+            if (
+                disposable
+                and not worktree_removed
+                and retained_custody is None
+                and custody_unavailable is None
+            )
             else None
         ),
         retained_custody=retained_custody,
+        custody_unavailable=custody_unavailable,
     )
 
 

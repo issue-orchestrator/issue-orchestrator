@@ -626,11 +626,12 @@ def _require_real_directory(path: Path, *, description: str, create: bool) -> No
 
 
 def _require_regular_or_absent(path: Path, *, description: str) -> None:
-    """Reject symlinks, devices and HARD-LINKED custody files.
+    """Reject symlinks and special files.
 
-    A hard link matters for the lock specifically: two processes flocking what
-    they each believe is the lock would serialize on different inodes, which is
-    the same as not locking at all (round 14 finding 1).
+    NOT hard links. Round 14 refused ``st_nlink != 1`` on the reasoning that two
+    processes would flock different inodes -- which is backwards: every hard link
+    names the SAME inode, so they all flock the same file. The check bought no
+    integrity and broke legitimate hard-link snapshots (round 15 finding 3).
     """
     try:
         path_stat = path.lstat()
@@ -640,7 +641,7 @@ def _require_regular_or_absent(path: Path, *, description: str) -> None:
         raise CustodyUnavailableError(
             f"cannot inspect {description} at {path}: {exc}"
         ) from exc
-    if not stat.S_ISREG(path_stat.st_mode) or path_stat.st_nlink != 1:
+    if not stat.S_ISREG(path_stat.st_mode):
         raise CustodyUnavailableError(
             f"{description} at {path} is not a private regular file"
         )
@@ -650,9 +651,9 @@ def _read_regular_text(path: Path, *, description: str) -> str | None:
     """Read one custody file without treating INDIRECTION as absence.
 
     ``None`` only when nothing is there at all. Anything present that is not a
-    private regular file raises: a readable symlink pointed at an empty store
-    used to read as "nothing is held", which deletes the checkout it was
-    protecting.
+    regular file raises: a readable symlink pointed at an empty store used to
+    read as "nothing is held", which deletes the checkout it was protecting.
+    Several hard-link names still refer to this one regular-file inode.
     """
     try:
         path_stat = path.lstat()
@@ -662,7 +663,7 @@ def _read_regular_text(path: Path, *, description: str) -> str | None:
         raise CustodyUnavailableError(
             f"cannot inspect {description} at {path}: {exc}"
         ) from exc
-    if not stat.S_ISREG(path_stat.st_mode) or path_stat.st_nlink != 1:
+    if not stat.S_ISREG(path_stat.st_mode):
         raise CustodyUnavailableError(
             f"{description} at {path} cannot be read although something is there"
         )
@@ -676,11 +677,13 @@ def _read_regular_text(path: Path, *, description: str) -> str | None:
 
 
 def _validated_git_common_dir(path: Path, *, claimed_by: Path) -> Path:
-    """Reject an empty replacement directory masquerading as git metadata.
+    """Reject a directory without git's mandatory HEAD metadata.
 
     Swapping `.git` for an empty directory produced a NEW, empty custody store
-    -- nothing held, remove away. Real git metadata has a HEAD file and an
-    objects directory, and that is cheap to insist on.
+    -- nothing held, remove away. HEAD is what a valid repository must have; the
+    object database may legitimately be relocated with ``GIT_OBJECT_DIRECTORY``,
+    so requiring the default ``objects`` path refused real repositories (round
+    15 finding 3).
     """
     common_dir = path.resolve()
     _require_real_directory(
@@ -688,21 +691,18 @@ def _validated_git_common_dir(path: Path, *, claimed_by: Path) -> Path:
         description=f"git common directory claimed by {claimed_by}",
         create=False,
     )
-    for candidate, expected in (
-        (common_dir / "HEAD", stat.S_ISREG),
-        (common_dir / "objects", stat.S_ISDIR),
-    ):
-        try:
-            candidate_stat = candidate.lstat()
-        except OSError as exc:
-            raise CustodyUnavailableError(
-                f"{common_dir} is not readable git metadata for {claimed_by}: {exc}"
-            ) from exc
-        if not expected(candidate_stat.st_mode):
-            raise CustodyUnavailableError(
-                f"{common_dir} is not git metadata for {claimed_by}: "
-                f"{candidate.name} has the wrong type"
-            )
+    head = common_dir / "HEAD"
+    try:
+        head_stat = head.lstat()
+    except OSError as exc:
+        raise CustodyUnavailableError(
+            f"{common_dir} is not readable git metadata for {claimed_by}: {exc}"
+        ) from exc
+    if not stat.S_ISREG(head_stat.st_mode):
+        raise CustodyUnavailableError(
+            f"{common_dir} is not git metadata for {claimed_by}: "
+            "HEAD has the wrong type"
+        )
     return common_dir
 
 

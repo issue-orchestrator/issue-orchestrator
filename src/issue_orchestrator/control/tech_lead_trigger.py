@@ -142,6 +142,10 @@ class TechLeadTerminationOutcome:
     # destruction custody exists to prevent (round 9 finding 2). Set here, the
     # two are mutually exclusive: `leaked_worktree` means an unprotected leak.
     retained_custody: "CustodyGrant | None" = None
+    # A fail-CLOSED refusal, where the store could not say whether a grant
+    # exists at all. Neither a known grant nor an unprotected leak, and it must
+    # never be rendered as permission to remove the checkout by hand.
+    custody_unavailable: str | None = None
 
     @property
     def clean(self) -> bool:

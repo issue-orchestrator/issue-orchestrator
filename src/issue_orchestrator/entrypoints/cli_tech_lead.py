@@ -525,6 +525,16 @@ def _report_incomplete_termination(
             "      to release it: issue-orchestrator worktree-custody release "
             f"{grant.path} --holder <you> --reason <why>"
         )
+    elif termination.custody_unavailable is not None:
+        console.print(
+            "    [yellow]⚠ scratch worktree RETAINED — custody status could "
+            "not be verified[/yellow]"
+        )
+        console.print(f"      {termination.custody_unavailable}")
+        console.print(
+            "      do not remove it manually; repair or inspect the "
+            "repository's custody metadata first"
+        )
     elif termination.leaked_worktree:
         console.print(
             "    [red]⚠ scratch worktree LEAKED — remove it manually:"

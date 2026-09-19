@@ -1939,6 +1939,66 @@ class TestRoundFourteenHostileStorage:
         assert manager.custody_of(checkout) is not None
 
 
+class TestRoundFifteenOverCorrection:
+    """Fourteen rounds of closing fail-opens, then the swing back.
+
+    Each of these is a refusal I added that was WRONG -- blocking legitimate
+    work rather than hostile input. Fail-shut is quieter than fail-open and
+    just as much a failure.
+    """
+
+    def test_a_hard_linked_custody_file_is_still_readable(
+        self, manager: GitWorktreeManager, repo: Path, checkout: Path, tmp_path: Path
+    ) -> None:
+        """Round 14 rejected st_nlink != 1 on backwards reasoning.
+
+        Every hard link names the SAME inode, so they all flock the same file.
+        The check bought no integrity and broke hard-link snapshots -- which is
+        how a great many backup tools work.
+        """
+        grant = manager.take_custody(checkout, holder=HOLDER, reason=REASON)
+        state = repo / ".git" / CUSTODY_FILE
+        os.link(state, tmp_path / "backup-snapshot.json")
+
+        assert manager.custody_of(checkout) == grant
+
+    def test_a_relocated_object_database_is_still_a_repository(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        """`objects` may legitimately live elsewhere via GIT_OBJECT_DIRECTORY.
+
+        HEAD is what a valid repository must have; requiring the default
+        `objects` path refused real repositories.
+        """
+        elsewhere = tmp_path / "relocated-objects"
+        (repo / ".git" / "objects").rename(elsewhere)
+
+        assert git_common_dir(repo) == (repo / ".git").resolve()
+
+    def test_unverifiable_custody_is_not_reported_as_a_leak(self) -> None:
+        """The checkout was KEPT because nobody could say who holds it.
+
+        `CustodyUnavailableError` was flattened into an ordinary leak, and the
+        operator was told to remove it manually -- which is the one instruction
+        that must not follow from "we could not determine this".
+        """
+        from issue_orchestrator.control.tech_lead_trigger import (
+            TechLeadTerminationOutcome,
+        )
+        from issue_orchestrator.domain.validated_work_commands import (
+            ValidatedWorkDispositionBatch,
+        )
+
+        outcome = TechLeadTerminationOutcome(
+            validated_work=ValidatedWorkDispositionBatch.no_work(1, "fixture"),
+            worktree_removed=False,
+            custody_unavailable="the custody store cannot be read",
+        )
+
+        assert outcome.leaked_worktree is None
+        assert outcome.custody_unavailable == "the custody store cannot be read"
+
+
 class TestEveryManagerNamesItsRepository:
     """No ``GitWorktreeManager()`` anywhere is built without a repository.
 
