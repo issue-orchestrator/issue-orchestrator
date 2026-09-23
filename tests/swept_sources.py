@@ -1,16 +1,19 @@
 """What a repo-wide source sweep reads, and the one file it must not trip over.
 
-Several guards enumerate the whole repository and read every source file:
+Several guards enumerate source trees and read every file in them:
 `test_worktree_custody` (unbound `GitWorktreeManager()`), `test_process_table_owner`
 (hand-built `ps` invocations), `test_working_copy_branch_contract` (unregistered
 `get_current_branch`) and `test_fixture_script_deadlines` (fixture lifetimes).
-All four walk `tests` as well as `src`.
+The first three walk `src` and `tests`; the fourth walks only `tests`. What they
+have in common is that all four read files under `tests/unit`.
 
-One file under `tests` is not source. `test_terminal_color_isolation` proves an
-autouse fixture is autouse by writing a real child suite into `tests/unit/` --
-where the shared conftest applies, which is the whole point, so it cannot live
-anywhere the sweeps do not walk -- and removing it in `finally`. Under xdist a
-sweep runs on another worker, globs that probe, and reads a path already gone:
+One file there is not source. `test_terminal_color_isolation` proves an autouse
+fixture is autouse by writing a real child suite into `tests/unit/` -- where the
+shared conftest applies, which is the whole point, so it cannot live anywhere the
+sweeps do not walk -- and removing it in `finally`. Under xdist a sweep runs on
+another worker, globs that probe, and reads a path already gone (the name below
+is the one the probe carried when this was diagnosed, before it moved behind
+`transient_probe_path`):
 
     FileNotFoundError: tests/unit/_autouse_probe_80119.py
 
@@ -23,6 +26,11 @@ probes are ever written to. A module in `src` that merely starts with the same
 prefix is still swept -- otherwise this exclusion would be a hole in every guard
 that uses it. Anything that vanishes for any other reason still raises, because
 that is a real problem and not one to paper over.
+
+The rule is by name, not by file identity, so a real source file committed under
+`tests/unit` with a probe's exact name would be hidden from every sweep. That is
+closed from the other side: `test_no_tracked_file_is_shaped_like_a_probe` fails
+if any tracked file matches, and a probe is untracked by construction.
 """
 
 from __future__ import annotations

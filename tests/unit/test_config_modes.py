@@ -336,6 +336,10 @@ def test_every_shipped_config_keeps_proposals_out_of_the_work_queue() -> None:
     which `docs/user/codespaces.md` tells users to select -- drifts unnoticed.
     That is exactly how it was missed. So this walks every shipped config there
     is and asserts the effective filter, not the YAML text.
+
+    `examples/config.example.yaml` is included for the same reason: the
+    quickstart tells users to copy it, and its exclusion was commented out, so a
+    copied config was runnable with no guard at all.
     """
     checked: dict[str, frozenset[str]] = {}
     for mode in list_modes(_REPO_ROOT):
@@ -350,6 +354,22 @@ def test_every_shipped_config_keeps_proposals_out_of_the_work_queue() -> None:
         f"this test would silently stop guarding it; found {sorted(checked)}"
     )
     assert len(checked) >= 7, f"expected every shipped config, found {sorted(checked)}"
+
+    # `docs/user/quickstart.md` offers copying the example into a runnable
+    # config, so it is a shipped work-queue configuration like any other. The
+    # maintenance config is deliberately absent: it declares no `filtering`
+    # section and `config_paths` refuses to launch a Repository Engine from one,
+    # so it can never pull an issue off the queue.
+    example = yaml.safe_load(
+        (_REPO_ROOT / "examples" / "config.example.yaml").read_text(encoding="utf-8")
+    )
+    # `filtering` itself must exist -- a missing section is a different problem
+    # and should fail loudly here. A missing `exclude_labels` defaults to empty,
+    # as `config_sections` does when parsing, so a commented-out exclusion is
+    # reported below as unguarded rather than raising `KeyError`.
+    checked["examples/config.example.yaml"] = frozenset(
+        example["filtering"].get("exclude_labels", ())
+    )
 
     unguarded = {
         name: sorted(_PROPOSAL_GUARD_LABELS - excluded)

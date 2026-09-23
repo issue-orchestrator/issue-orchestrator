@@ -2897,8 +2897,18 @@ class TestEveryManagerNamesItsRepository:
         probe = transient_probe_path(tmp_path, "sweep")
         probe.parent.mkdir(parents=True)
         probe.write_text("GitWorktreeManager()\n", encoding="utf-8")
+        # An ordinary module in the same directory, with the same violation.
+        # Asserting only that the probe is absent would pass just as well if the
+        # sweep skipped all of `tests/unit` -- which would blind this guard to
+        # every test that builds an unbound manager, the exact thing round 7
+        # added it to catch.
+        (probe.parent / "ordinary_test_module.py").write_text(
+            "GitWorktreeManager()\n", encoding="utf-8"
+        )
 
-        assert unbound_manager_call_sites(tmp_path) == []
+        assert unbound_manager_call_sites(tmp_path) == [
+            "tests/unit/ordinary_test_module.py:1"
+        ]
 
     def test_a_real_module_named_like_a_probe_is_still_swept(
         self, tmp_path: Path

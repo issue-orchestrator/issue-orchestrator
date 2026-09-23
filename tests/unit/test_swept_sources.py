@@ -8,6 +8,7 @@ overlap. These pin the parts the sweeps' own tests do not reach.
 from __future__ import annotations
 
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -119,8 +120,13 @@ def test_the_sweep_returns_sources_sorted_and_skips_caches_and_probes(
 
     assert found == [tree / "a.py", tree / "b.py", tree / "pkg" / "c.py"]
 
-    swept_tests = swept_source_files_in(tmp_path / "tests", root=tmp_path)
-    assert swept_tests == [], f"a probe was handed to a sweep: {swept_tests}"
+    # An ordinary module sits beside the probe on purpose. Asserting only that
+    # the probe is absent would pass just as well if the helper skipped the
+    # whole of `tests/unit`, which would silently blind every sweep using it.
+    ordinary = tmp_path / PROBE_DIRECTORY / "ordinary_test_module.py"
+    ordinary.write_text("", encoding="utf-8")
+
+    assert swept_source_files_in(tmp_path / "tests", root=tmp_path) == [ordinary]
 
 
 def test_other_suffixes_are_swept_when_asked_for(tmp_path: Path) -> None:
@@ -157,4 +163,38 @@ def test_the_probe_the_colour_test_writes_is_the_one_the_sweeps_skip() -> None:
     )
     assert is_transient_probe(
         transient_probe_path(_repo_root(), "autouse"), root=module_root
+    )
+
+
+def test_no_tracked_file_is_shaped_like_a_probe() -> None:
+    """Recognition is by name, so no committed file may wear a probe's name.
+
+    A probe is untracked by construction: it is written during a test and
+    removed in `finally`. A *tracked* file matching the shape would be hidden
+    from every sweep that shares this rule -- the same fail-open the broad prefix
+    had, just narrowed to one directory. Closing it from this side costs one
+    `git ls-files` and needs no filesystem identity check.
+    """
+    root = Path(swept_sources.__file__).resolve().parents[1]
+    tracked = subprocess.run(
+        ["git", "ls-files", "-z", "--", str(PROBE_DIRECTORY)],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split("\0")
+
+    names = [name for name in tracked if name]
+    # Without this the test passes trivially whenever `git ls-files` returns
+    # nothing -- a wrong cwd, a wrong pathspec, or a non-repository checkout.
+    assert len(names) > 100, (
+        f"`git ls-files -- {PROBE_DIRECTORY}` returned {len(names)} paths, so "
+        "this guard is not looking at the test tree"
+    )
+
+    shaped = [name for name in names if is_transient_probe(root / name, root=root)]
+
+    assert shaped == [], (
+        "these tracked files wear a transient probe's name, so every sweep "
+        f"sharing this rule skips them silently: {shaped}"
     )
