@@ -85,6 +85,7 @@ from pathlib import Path
 import pytest
 
 from tests.integration.test_condor_lane_executor import _ESCAPE_SCRIPT
+from tests.swept_sources import swept_source_files_in
 from tests.unit.lane_executor_contract import _TREE_SCRIPT, read_tree_pids
 
 # Short enough to keep this suite fast, long enough that the fixture is
@@ -330,7 +331,7 @@ def discover_fixture_lifetimes(tree: Path) -> tuple[DiscoveredLifetime, ...]:
     staleness check that keeps the allowlist honest.
     """
     found: list[DiscoveredLifetime] = []
-    for path in sorted(tree.rglob("*.py")):
+    for path in swept_source_files_in(tree, root=_REPO_ROOT):
         text = path.read_text(encoding="utf-8")
         if not any(hint in text for hint in _SCAN_HINTS):
             continue
