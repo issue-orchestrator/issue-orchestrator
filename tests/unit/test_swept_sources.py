@@ -1,8 +1,9 @@
 """The rule the repo-wide source sweeps share.
 
-Four guards read every source file in the repository, and one test writes a real
-test file into `tests/unit/` and deletes it again. `tests/swept_sources` owns the
-overlap. These pin the parts the sweeps' own tests do not reach.
+Four guards read every file in the source trees each one configures, and one test
+writes a real test file into `tests/unit/` and deletes it again.
+`tests/swept_sources` owns the overlap. These pin the parts the sweeps' own tests
+do not reach.
 """
 
 from __future__ import annotations
