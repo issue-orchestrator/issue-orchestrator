@@ -23,6 +23,7 @@ import pytest
 
 from tests.conftest import TERMINAL_TEST_COLUMNS
 from tests.process_group_run import run_in_process_group
+from tests.transient_probe import transient_probe_path
 
 # The exact tests #7155 reported failing, named individually rather than by
 # file. The child run has to stay small: this test already runs inside a lane
@@ -245,7 +246,9 @@ def test_the_colour_fixture_is_applied_without_being_requested() -> None:
     if the scrub loop is deleted (same). Serial by construction, and the probe
     file is removed in `finally`.
     """
-    probe = _repo_root() / "tests" / "unit" / f"_autouse_probe_{os.getpid()}.py"
+    # Named through the shared owner so the repo-wide source sweeps skip it;
+    # it is deleted below while those sweeps may still be globbing.
+    probe = transient_probe_path(_repo_root() / "tests" / "unit", "autouse")
     probe.write_text(
         "import os\n"
         "\n"

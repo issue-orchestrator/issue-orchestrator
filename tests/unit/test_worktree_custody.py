@@ -46,6 +46,7 @@ from issue_orchestrator.adapters.budgeted_validation_git import (
 )
 from issue_orchestrator.control.maintenance import _remove_local_worktree
 from tests.e2e.fixtures.cleanup import cleanup_local_worktrees
+from tests.transient_probe import is_transient_probe, transient_probe_path
 from issue_orchestrator.ports.worktree_custody import (
     CustodyUnavailableError,
     WorktreeCustody,
@@ -2833,6 +2834,36 @@ class TestRoundFifteenOverCorrection:
         assert git_common_dir(repo) == (repo / ".git").resolve()
 
 
+def unbound_manager_call_sites(root: Path) -> list[str]:
+    """Every `GitWorktreeManager()` under `root` built with no repository.
+
+    Walks the source trees rather than trusting pyright, which covers `src`
+    only (round 7 finding 7), so a test suite that builds an unbound manager
+    raises `TypeError` before its behaviour ever runs.
+
+    Transient probes are skipped by name. A test may legitimately write a real
+    test file into a swept directory and delete it again, and this sweep must
+    not race that deletion -- see `tests/transient_probe`. Anything else that
+    cannot be read is left to raise, because that is a real problem.
+    """
+    unbound: list[str] = []
+    for directory in ("src", "tests", "scripts", "tools", "repo-specific"):
+        for path in sorted((root / directory).rglob("*.py")):
+            if is_transient_probe(path):
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id == "GitWorktreeManager"
+                    and not node.args
+                    and not node.keywords
+                ):
+                    unbound.append(f"{path.relative_to(root)}:{node.lineno}")
+    return unbound
+
+
 class TestEveryManagerNamesItsRepository:
     """No ``GitWorktreeManager()`` anywhere is built without a repository.
 
@@ -2845,24 +2876,50 @@ class TestEveryManagerNamesItsRepository:
 
     def test_no_call_site_omits_the_repository(self) -> None:
         root = Path(__file__).resolve().parents[2]
-        unbound: list[str] = []
-        for directory in ("src", "tests", "scripts", "tools", "repo-specific"):
-            for path in sorted((root / directory).rglob("*.py")):
-                tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-                for node in ast.walk(tree):
-                    if (
-                        isinstance(node, ast.Call)
-                        and isinstance(node.func, ast.Name)
-                        and node.func.id == "GitWorktreeManager"
-                        and not node.args
-                        and not node.keywords
-                    ):
-                        rel = path.relative_to(root)
-                        unbound.append(f"{rel}:{node.lineno}")
+        unbound = unbound_manager_call_sites(root)
         assert unbound == [], (
             "these build a GitWorktreeManager with no repository, so it cannot "
             f"answer for a checkout that lost its .git file: {unbound}"
         )
+
+    def test_the_sweep_skips_a_probe_a_concurrent_test_is_deleting(
+        self, tmp_path: Path
+    ) -> None:
+        """A transient probe is skipped by name, not by swallowing its removal.
+
+        `tests/unit/test_terminal_color_isolation.py` writes a real test file
+        into `tests/unit/` and removes it in `finally`. This sweep also walks
+        `tests`, so it used to glob that probe and then read a path another
+        xdist worker had already deleted -- one `FileNotFoundError` out of 17k
+        tests, on a worker with no connection to the cause.
+
+        Goes red if the `is_transient_probe` skip is dropped: without it the
+        probe below is parsed, and its unbound call site is reported.
+        """
+        swept = tmp_path / "src"
+        swept.mkdir()
+        probe = transient_probe_path(swept, "sweep")
+        probe.write_text("GitWorktreeManager()\n", encoding="utf-8")
+
+        assert unbound_manager_call_sites(tmp_path) == []
+
+    def test_the_sweep_still_reports_a_real_unbound_call_site(
+        self, tmp_path: Path
+    ) -> None:
+        """The skip is narrow: an ordinary module is still read and reported.
+
+        Without this, a skip broad enough to hide every file would keep
+        `test_no_call_site_omits_the_repository` green by sweeping nothing.
+        """
+        swept = tmp_path / "src"
+        swept.mkdir()
+        (swept / "builds_one_unbound.py").write_text(
+            "GitWorktreeManager()\n", encoding="utf-8"
+        )
+
+        assert unbound_manager_call_sites(tmp_path) == [
+            "src/builds_one_unbound.py:1"
+        ]
 
 
 def _trail_entries(repo: Path) -> list[dict]:
