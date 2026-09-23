@@ -7,7 +7,7 @@
 # DELIBERATELY NOT PROVIDER-PURE ON MODEL. Spark is a small, speed-tuned
 # research preview. It is a good coder under load and a poor choice for the
 # independent review boundary, so agent:reviewer and agent:tech-lead stay on
-# gpt-6-astra. That is why this mode is exempt from the effort-ceiling pin in
+# gpt-5.6-sol. That is why this mode is exempt from the effort-ceiling pin in
 # tests/unit/test_config_modes.py and is NOT a controlled A/B arm: it is a
 # throughput configuration, not a like-for-like provider comparison.
 #
@@ -69,7 +69,7 @@ agents:
     prompt: repo-specific/prompts/reviewer.md
     provider: "codex"
     ai_system: "codex"
-    model: "gpt-6-astra"
+    model: "gpt-5.6-sol"
     timeout_minutes: 45
     provider_args:
       approval_mode: "full-auto"
@@ -79,7 +79,7 @@ agents:
     prompt: repo-specific/prompts/tech-lead.md
     provider: "codex"
     ai_system: "codex"
-    model: "gpt-6-astra"
+    model: "gpt-5.6-sol"
     timeout_minutes: 90
     reviewer: "agent:reviewer"
     provider_args:
@@ -215,13 +215,7 @@ validation:
       - "src/issue_orchestrator/generated/**"
 
 filtering:
-  # Tech-lead proposals land as issues under `create_issue: execute`. They are
-  # backlog candidates awaiting a human decision, not workable issues, so keep
-  # them out of the work queue until someone labels them in. Same guard porchpin
-  # carries; io lacked it, and every one of its 21 open proposals carries an
-  # `agent:*` label, so removing the scope filter without this would hand them
-  # straight to coding agents.
-  exclude_labels: ["io-e2e-test-data", "test-data", "proposed-tech-lead", "deferred"]
+  exclude_labels: ["io-e2e-test-data", "test-data"]
   exclude_label_prefixes: ["io:e2e:"]
 
 tech_lead:

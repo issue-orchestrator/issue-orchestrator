@@ -400,16 +400,7 @@ filtering:
   # milestone: "v1.0"
   # milestones: ["M1", "M2"]
   # issue: 123
-  # Tech-lead proposals land as issues under `create_issue: execute`. They are
-  # backlog candidates awaiting a human decision, not workable issues, so keep
-  # them out of the work queue until someone labels them in. Active rather than
-  # commented out because this file is meant to be copied and run: a proposal
-  # carries an `agent:*` label, so without this it goes straight to a coding
-  # agent. Add your own parked labels here; `deferred` is for real work you have
-  # deliberately postponed.
-  exclude_labels: ["proposed-tech-lead", "deferred"]
-  # Add repository-specific exclusions alongside them, e.g. test fixtures:
-  # exclude_labels: ["proposed-tech-lead", "deferred", "test-data"]
+  # exclude_labels: ["io-e2e-test-data", "test-data"]
   # exclude_label_prefixes: ["io:e2e:"]
   fetch_limit: 100
   max_to_start: 0

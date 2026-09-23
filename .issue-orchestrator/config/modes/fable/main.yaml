@@ -208,13 +208,7 @@ validation:
       - "src/issue_orchestrator/generated/**"
 
 filtering:
-  # Tech-lead proposals land as issues under `create_issue: execute`. They are
-  # backlog candidates awaiting a human decision, not workable issues, so keep
-  # them out of the work queue until someone labels them in. Same guard porchpin
-  # carries; io lacked it, and every one of its 21 open proposals carries an
-  # `agent:*` label, so removing the scope filter without this would hand them
-  # straight to coding agents.
-  exclude_labels: ["io-e2e-test-data", "test-data", "proposed-tech-lead", "deferred"]
+  exclude_labels: ["io-e2e-test-data", "test-data"]
   exclude_label_prefixes: ["io:e2e:"]
 
 tech_lead:
