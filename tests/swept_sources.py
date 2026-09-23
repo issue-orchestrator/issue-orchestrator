@@ -38,10 +38,19 @@ from pathlib import Path
 # `src`, `scripts` or `tools`.
 PROBE_DIRECTORY = Path("tests") / "unit"
 
+# One character class for both halves of the rule. `transient_probe_path`
+# validates a label against `_LABEL` and `is_transient_probe` recognises the name
+# built from it, so the writer and the reader cannot disagree about what a probe
+# is called. They did once: `str.isalnum()` accepts "café" and Arabic-Indic
+# digits, which this pattern then rejects -- a probe nothing recognised, and the
+# race quietly back.
+_LABEL = r"[A-Za-z0-9]+"
+
 # `label` is what the probe is for, and the pid keeps two xdist workers running
-# the same test from deleting each other's file. Anchored, so a real module that
-# merely starts with the prefix does not match.
-_PROBE_NAME = re.compile(r"_transient_probe_[A-Za-z0-9]+_[0-9]+\.py")
+# the same test from deleting each other's file. `[0-9]` rather than `\d`, which
+# matches unicode digits `os.getpid()` will never produce.
+_PROBE_LABEL = re.compile(_LABEL)
+_PROBE_NAME = re.compile(rf"_transient_probe_{_LABEL}_[0-9]+\.py")
 
 
 def transient_probe_path(root: Path, label: str) -> Path:
@@ -50,9 +59,11 @@ def transient_probe_path(root: Path, label: str) -> Path:
     Takes the repo root rather than a directory so a caller cannot put a probe
     somewhere the sweeps would still read it.
     """
-    if not label or not label.isalnum():
+    if _PROBE_LABEL.fullmatch(label) is None:
         raise ValueError(
-            f"a probe label names what it probes, in letters and digits: {label!r}"
+            "a probe label names what it probes, in ASCII letters and digits -- "
+            "anything else builds a name `is_transient_probe` would not "
+            f"recognise, putting the sweeps back in the race: {label!r}"
         )
     return root / PROBE_DIRECTORY / f"_transient_probe_{label}_{os.getpid()}.py"
 

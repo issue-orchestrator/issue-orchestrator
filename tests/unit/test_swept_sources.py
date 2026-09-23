@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+import tests.swept_sources as swept_sources
 from tests.swept_sources import (
     PROBE_DIRECTORY,
     is_transient_probe,
@@ -49,9 +50,39 @@ def test_a_name_that_is_not_the_generated_shape_is_source(tmp_path: Path) -> Non
         assert not is_transient_probe(directory / name, root=tmp_path), name
 
 
+def test_a_label_the_validator_accepts_always_builds_a_recognised_probe(
+    tmp_path: Path,
+) -> None:
+    """The writer and the reader must agree on what a probe is called.
+
+    They did not: an earlier version validated with `str.isalnum()`, which
+    accepts "café" and Arabic-Indic digits, while recognition used an ASCII
+    class that rejects the name built from them. That combination produces a
+    probe no sweep would skip -- so the `FileNotFoundError` race this module
+    exists to prevent would have come back, silently, for any caller who passed
+    a non-ASCII label. Both halves now share one character class, and this is
+    the invariant that holds them together.
+    """
+    for label in ("autouse", "colour", "a", "A1", "sweep2", "X" * 40):
+        probe = transient_probe_path(tmp_path, label)
+
+        assert is_transient_probe(probe, root=tmp_path), label
+
+
 def test_a_probe_label_has_to_name_something(tmp_path: Path) -> None:
-    """Fail fast on a label that would produce an unrecognisable name."""
-    for label in ("", "has space", "has_underscore", "has-dash"):
+    """Fail fast on a label that would produce an unrecognisable name.
+
+    The unicode cases are the ones `str.isalnum()` let through.
+    """
+    for label in (
+        "",
+        "has space",
+        "has_underscore",
+        "has-dash",
+        "café",  # isalnum() -> True
+        "٣",  # Arabic-Indic digit three; isalnum() -> True
+        "²",  # superscript two; isalnum() -> True
+    ):
         with pytest.raises(ValueError, match="label"):
             transient_probe_path(tmp_path, label)
 
@@ -103,3 +134,27 @@ def test_other_suffixes_are_swept_when_asked_for(tmp_path: Path) -> None:
     assert swept_source_files_in(
         tree, root=tmp_path, suffixes=(".py", ".sh")
     ) == [tree / "run.py", tree / "run.sh"]
+
+
+def test_the_probe_the_colour_test_writes_is_the_one_the_sweeps_skip() -> None:
+    """Writer and sweeps must mean the same directory by "the repo root".
+
+    Recognition compares `path.parent` against `root / PROBE_DIRECTORY`, so the
+    dangerous drift is not the fail-open -- it is a false NEGATIVE. If the test
+    that writes the probe computed a different root from the sweeps that read it,
+    a genuine probe would stop being recognised and the `FileNotFoundError` race
+    would come back with no test failing. Every root here is
+    `Path(__file__).resolve().parents[N]`, which normalises symlinks, so they
+    agree; this fails if any of them stops agreeing.
+    """
+    from tests.unit.test_terminal_color_isolation import _repo_root
+
+    module_root = Path(swept_sources.__file__).resolve().parents[1]
+
+    assert _repo_root() == module_root, (
+        "the colour test and the swept-sources module disagree about the repo "
+        f"root: {_repo_root()} vs {module_root}"
+    )
+    assert is_transient_probe(
+        transient_probe_path(_repo_root(), "autouse"), root=module_root
+    )
