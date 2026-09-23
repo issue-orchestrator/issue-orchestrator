@@ -294,7 +294,7 @@ _SINGLE_PROVIDER_MODES = {
         "effort_key": "reasoning_effort",
         # Spark is a speed-tuned research preview whose supported effort levels
         # are undocumented. The reviewer and tech-lead agents in this mode run
-        # on gpt-6-astra and DO pin the ceiling — only the Spark coders are
+        # on gpt-5.6-sol and DO pin the ceiling — only the Spark coders are
         # exempt. See the header of modes/spark/main.yaml.
         "unpinned_models": frozenset({"gpt-5.3-codex-spark"}),
     },
@@ -402,4 +402,4 @@ def test_shipped_main_modes_enable_bounded_tech_lead_autonomy() -> None:
         }
 
     codex = _load_shipped_mode("codex")
-    assert codex["agents"]["agent:tech-lead"]["model"] == "gpt-6-astra"
+    assert codex["agents"]["agent:tech-lead"]["model"] == "gpt-5.6-sol"
