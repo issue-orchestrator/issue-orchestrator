@@ -46,7 +46,7 @@ from issue_orchestrator.adapters.budgeted_validation_git import (
 )
 from issue_orchestrator.control.maintenance import _remove_local_worktree
 from tests.e2e.fixtures.cleanup import cleanup_local_worktrees
-from tests.transient_probe import is_transient_probe, transient_probe_path
+from tests.swept_sources import swept_source_files_in, transient_probe_path
 from issue_orchestrator.ports.worktree_custody import (
     CustodyUnavailableError,
     WorktreeCustody,
@@ -812,7 +812,7 @@ class TestOneRemovalOwner:
         root = Path(__file__).resolve().parents[2]
         found: dict[str, list[int]] = {}
         for directory in self.SEARCHED:
-            for path in sorted((root / directory).rglob("*.py")):
+            for path in swept_source_files_in(root / directory, root=root):
                 tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
                 lines = _removal_lines(tree)
                 if lines:
@@ -830,7 +830,7 @@ class TestOneRemovalOwner:
         scanned = {
             path.resolve()
             for directory in self.SEARCHED
-            for path in (root / directory).rglob("*.py")
+            for path in swept_source_files_in(root / directory, root=root)
         }
 
         assert (root / "tests/e2e/fixtures/cleanup.py").resolve() in scanned
@@ -931,7 +931,7 @@ class TestOneRemovalOwner:
         found: dict[str, list[int]] = {}
         outside: list[str] = []
         for directory in self.SEARCHED:
-            for path in sorted((root / directory).rglob("*.py")):
+            for path in swept_source_files_in(root / directory, root=root):
                 tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
                 deletions = _branch_deletion_nodes(tree)
                 if not deletions:
@@ -2841,16 +2841,14 @@ def unbound_manager_call_sites(root: Path) -> list[str]:
     only (round 7 finding 7), so a test suite that builds an unbound manager
     raises `TypeError` before its behaviour ever runs.
 
-    Transient probes are skipped by name. A test may legitimately write a real
-    test file into a swept directory and delete it again, and this sweep must
-    not race that deletion -- see `tests/transient_probe`. Anything else that
-    cannot be read is left to raise, because that is a real problem.
+    Enumeration is delegated to `tests/swept_sources`, which skips the transient
+    probe a test writes into `tests/unit/` and deletes again -- this sweep must
+    not race that deletion. Anything else that cannot be read is left to raise,
+    because that is a real problem.
     """
     unbound: list[str] = []
     for directory in ("src", "tests", "scripts", "tools", "repo-specific"):
-        for path in sorted((root / directory).rglob("*.py")):
-            if is_transient_probe(path):
-                continue
+        for path in swept_source_files_in(root / directory, root=root):
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
             for node in ast.walk(tree):
                 if (
@@ -2896,12 +2894,31 @@ class TestEveryManagerNamesItsRepository:
         Goes red if the `is_transient_probe` skip is dropped: without it the
         probe below is parsed, and its unbound call site is reported.
         """
-        swept = tmp_path / "src"
-        swept.mkdir()
-        probe = transient_probe_path(swept, "sweep")
+        probe = transient_probe_path(tmp_path, "sweep")
+        probe.parent.mkdir(parents=True)
         probe.write_text("GitWorktreeManager()\n", encoding="utf-8")
 
         assert unbound_manager_call_sites(tmp_path) == []
+
+    def test_a_real_module_named_like_a_probe_is_still_swept(
+        self, tmp_path: Path
+    ) -> None:
+        """The skip is a directory and a name shape, not a prefix anywhere.
+
+        An earlier version matched `startswith("_transient_probe_")` against any
+        path in any swept tree, so a real module in `src` called that would have
+        escaped the guard entirely -- a hole in every sweep sharing the rule.
+        Recognition is now confined to `tests/unit`, where probes are written.
+        """
+        swept = tmp_path / "src"
+        swept.mkdir()
+        (swept / "_transient_probe_notaprobe_1.py").write_text(
+            "GitWorktreeManager()\n", encoding="utf-8"
+        )
+
+        assert unbound_manager_call_sites(tmp_path) == [
+            "src/_transient_probe_notaprobe_1.py:1"
+        ]
 
     def test_the_sweep_still_reports_a_real_unbound_call_site(
         self, tmp_path: Path

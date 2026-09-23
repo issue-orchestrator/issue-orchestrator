@@ -301,6 +301,12 @@ _SINGLE_PROVIDER_MODES = {
 }
 
 
+# Labels that park an issue: a tech-lead proposal awaiting a human decision, and
+# anything deliberately deferred. Excluded by every shipped config -- see
+# `test_every_shipped_config_keeps_proposals_out_of_the_work_queue`.
+_PROPOSAL_GUARD_LABELS = frozenset({"proposed-tech-lead", "deferred"})
+
+
 def _load_shipped_mode(mode: str) -> dict:
     path = _SHIPPED_MODES_DIR / mode / "main.yaml"
     return yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -315,6 +321,45 @@ def test_shipped_modes_are_discoverable_and_load_clean() -> None:
         for name in config_names:
             config = Config.load(get_config_path(_REPO_ROOT, name, mode))
             assert config.validate() == [], f"{mode}/{name} failed validation"
+
+
+def test_every_shipped_config_keeps_proposals_out_of_the_work_queue() -> None:
+    """The proposal guard is a property of every shipped config, not of `main.yaml`.
+
+    Tech-lead proposals land as real issues under `create_issue: execute` and
+    carry `agent:*` labels, so a config that does not exclude them hands work
+    awaiting a human decision straight to a coding agent.
+
+    `test_single_provider_modes_match_default_outside_agents` cannot cover this:
+    it compares the five provider `main.yaml` files against default's, so a
+    separately selectable config in the same mode -- `default/z-codespaces.yaml`,
+    which `docs/user/codespaces.md` tells users to select -- drifts unnoticed.
+    That is exactly how it was missed. So this walks every shipped config there
+    is and asserts the effective filter, not the YAML text.
+    """
+    checked: dict[str, frozenset[str]] = {}
+    for mode in list_modes(_REPO_ROOT):
+        for name in list_configs(_REPO_ROOT, mode):
+            config = Config.load(get_config_path(_REPO_ROOT, name, mode))
+            checked[f"{mode}/{name}"] = config.get_issue_filter().exclude_labels
+
+    # Pins the enumeration itself: a config that stops being discovered would
+    # otherwise make this test pass by checking less.
+    assert "default/z-codespaces.yaml" in checked, (
+        "the separately selectable Codespaces config is no longer discovered, so "
+        f"this test would silently stop guarding it; found {sorted(checked)}"
+    )
+    assert len(checked) >= 7, f"expected every shipped config, found {sorted(checked)}"
+
+    unguarded = {
+        name: sorted(_PROPOSAL_GUARD_LABELS - excluded)
+        for name, excluded in checked.items()
+        if not _PROPOSAL_GUARD_LABELS <= excluded
+    }
+    assert unguarded == {}, (
+        "these shipped configs would pick tech-lead proposals up as workable "
+        f"issues, missing the labels shown: {unguarded}"
+    )
 
 
 @pytest.mark.parametrize("mode", sorted(_SINGLE_PROVIDER_MODES))

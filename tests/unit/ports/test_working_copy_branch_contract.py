@@ -39,6 +39,7 @@ from typing import Any
 
 import pytest
 
+from tests.swept_sources import swept_source_files_in
 from issue_orchestrator.ports.working_copy import WorkingCopy
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -199,7 +200,7 @@ def _static_definitions() -> dict[str, str]:
     """
     definitions: dict[str, str] = {}
     for tree in _SWEPT_TREES:
-        for source in sorted((_REPO_ROOT / tree).rglob("*.py")):
+        for source in swept_source_files_in(_REPO_ROOT / tree, root=_REPO_ROOT):
             module = _dotted_module(source)
             parsed = ast.parse(source.read_text(), filename=str(source))
 

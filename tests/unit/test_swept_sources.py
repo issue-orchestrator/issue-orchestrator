@@ -1,0 +1,105 @@
+"""The rule the repo-wide source sweeps share.
+
+Four guards read every source file in the repository, and one test writes a real
+test file into `tests/unit/` and deletes it again. `tests/swept_sources` owns the
+overlap. These pin the parts the sweeps' own tests do not reach.
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+import pytest
+
+from tests.swept_sources import (
+    PROBE_DIRECTORY,
+    is_transient_probe,
+    swept_source_files_in,
+    transient_probe_path,
+)
+
+
+def test_a_probe_is_recognised_only_in_the_directory_probes_are_written_to(
+    tmp_path: Path,
+) -> None:
+    """Same filename, two places: one is a probe, the other is source.
+
+    A prefix match alone would hide a real module from every sweep sharing this
+    rule, which is why the directory is part of the identity.
+    """
+    probe = transient_probe_path(tmp_path, "colour")
+
+    assert is_transient_probe(probe, root=tmp_path)
+    assert not is_transient_probe(tmp_path / "src" / probe.name, root=tmp_path)
+    assert probe.parent == tmp_path / PROBE_DIRECTORY
+
+
+def test_a_name_that_is_not_the_generated_shape_is_source(tmp_path: Path) -> None:
+    """The prefix is not enough: the label and pid shape have to match too."""
+    directory = tmp_path / PROBE_DIRECTORY
+
+    for name in (
+        "_transient_probe_.py",  # no label
+        "_transient_probe_colour.py",  # no pid
+        "_transient_probe_colour_12_extra.py",  # trailing segment
+        "_transient_probe_colour_notapid.py",  # pid not numeric
+        "not_a_transient_probe_colour_12.py",  # prefix not at the start
+    ):
+        assert not is_transient_probe(directory / name, root=tmp_path), name
+
+
+def test_a_probe_label_has_to_name_something(tmp_path: Path) -> None:
+    """Fail fast on a label that would produce an unrecognisable name."""
+    for label in ("", "has space", "has_underscore", "has-dash"):
+        with pytest.raises(ValueError, match="label"):
+            transient_probe_path(tmp_path, label)
+
+
+def test_the_probe_name_carries_this_process(tmp_path: Path) -> None:
+    """Two xdist workers running one test must not delete each other's file."""
+    assert str(os.getpid()) in transient_probe_path(tmp_path, "colour").name
+
+
+def test_a_missing_directory_yields_nothing_rather_than_raising(
+    tmp_path: Path,
+) -> None:
+    """Callers sweep a fixed list of trees; not every repo has all of them."""
+    assert swept_source_files_in(tmp_path / "absent", root=tmp_path) == []
+
+
+def test_the_sweep_returns_sources_sorted_and_skips_caches_and_probes(
+    tmp_path: Path,
+) -> None:
+    """One pass over what a sweep should and should not hand back."""
+    tree = tmp_path / "src"
+    (tree / "pkg").mkdir(parents=True)
+    (tree / "__pycache__").mkdir()
+    (tmp_path / PROBE_DIRECTORY).mkdir(parents=True)
+
+    (tree / "b.py").write_text("", encoding="utf-8")
+    (tree / "a.py").write_text("", encoding="utf-8")
+    (tree / "pkg" / "c.py").write_text("", encoding="utf-8")
+    (tree / "__pycache__" / "cached.py").write_text("", encoding="utf-8")
+    (tree / "notsource.txt").write_text("", encoding="utf-8")
+    transient_probe_path(tmp_path, "colour").write_text("", encoding="utf-8")
+
+    found = swept_source_files_in(tree, root=tmp_path)
+
+    assert found == [tree / "a.py", tree / "b.py", tree / "pkg" / "c.py"]
+
+    swept_tests = swept_source_files_in(tmp_path / "tests", root=tmp_path)
+    assert swept_tests == [], f"a probe was handed to a sweep: {swept_tests}"
+
+
+def test_other_suffixes_are_swept_when_asked_for(tmp_path: Path) -> None:
+    """`test_process_table_owner` also reads shell scripts through this."""
+    tree = tmp_path / "scripts"
+    tree.mkdir()
+    (tree / "run.sh").write_text("", encoding="utf-8")
+    (tree / "run.py").write_text("", encoding="utf-8")
+
+    assert swept_source_files_in(tree, root=tmp_path) == [tree / "run.py"]
+    assert swept_source_files_in(
+        tree, root=tmp_path, suffixes=(".py", ".sh")
+    ) == [tree / "run.py", tree / "run.sh"]

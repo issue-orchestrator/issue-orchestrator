@@ -22,6 +22,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.swept_sources import swept_source_files_in
 from issue_orchestrator.infra.process_table import (
     FULL_WIDTH_FLAG,
     ps_command,
@@ -64,11 +65,11 @@ class Invocation:
 def _iter_files() -> list[Path]:
     files: list[Path] = []
     for root in SEARCH_ROOTS:
-        base = REPO_ROOT / root
-        if not base.exists():
-            continue
-        files.extend(p for p in base.rglob("*.py") if "__pycache__" not in p.parts)
-        files.extend(base.rglob("*.sh"))
+        files.extend(
+            swept_source_files_in(
+                REPO_ROOT / root, root=REPO_ROOT, suffixes=(".py", ".sh")
+            )
+        )
     return sorted(files)
 
 
