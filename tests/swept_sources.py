@@ -27,10 +27,15 @@ prefix is still swept -- otherwise this exclusion would be a hole in every guard
 that uses it. Anything that vanishes for any other reason still raises, because
 that is a real problem and not one to paper over.
 
-The rule is by name, not by file identity, so a real source file committed under
-`tests/unit` with a probe's exact name would be hidden from every sweep. That is
-closed from the other side: `test_no_tracked_file_is_shaped_like_a_probe` fails
-if any tracked file matches, and a probe is untracked by construction.
+The rule is by name and directory, not by file identity. Two things keep that
+from hiding real source: `PROBE_DIRECTORY` is reserved, so nothing real is
+supposed to live there at all, and `test_the_probe_directory_holds_no_tracked_files`
+fails if anything is committed or staged into it.
+
+What that does NOT establish is that no real file is ever there: an ignored or
+merely untracked file in the reserved directory, with a probe's exact name,
+would still be skipped. The claim is that such a file is a mistake by
+declaration, not that it is impossible.
 """
 
 from __future__ import annotations
@@ -41,10 +46,12 @@ from collections.abc import Sequence
 from pathlib import Path
 
 # The one directory a transient probe is ever written to, relative to the repo
-# root. `tests/unit` is where the shared conftest applies, which is what the
-# probe's owner needs; narrowing recognition to it keeps the skip from reaching
-# `src`, `scripts` or `tools`.
-PROBE_DIRECTORY = Path("tests") / "unit"
+# root, and RESERVED for that: no real source belongs here, which is what lets a
+# sweep skip a name in it without hiding anything. It sits under `tests/` so the
+# shared `tests/conftest.py` still applies -- conftest reaches every descendant,
+# which is what the probe's owner actually needs -- while keeping the skip away
+# from the 670 real modules in `tests/unit` itself, let alone `src`.
+PROBE_DIRECTORY = Path("tests") / "unit" / "_probes"
 
 # One character class for both halves of the rule. `transient_probe_path`
 # validates a label against `_LABEL` and `is_transient_probe` recognises the name

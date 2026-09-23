@@ -249,6 +249,9 @@ def test_the_colour_fixture_is_applied_without_being_requested() -> None:
     # Named and placed through the shared owner so the repo-wide source sweeps
     # skip it; it is deleted below while those sweeps may still be globbing.
     probe = transient_probe_path(_repo_root(), "autouse")
+    # Reserved directory, created on demand and left in place: it holds nothing
+    # but probes, so an empty one is the normal resting state.
+    probe.parent.mkdir(parents=True, exist_ok=True)
     probe.write_text(
         "import os\n"
         "\n"

@@ -120,10 +120,10 @@ def test_the_sweep_returns_sources_sorted_and_skips_caches_and_probes(
 
     assert found == [tree / "a.py", tree / "b.py", tree / "pkg" / "c.py"]
 
-    # An ordinary module sits beside the probe on purpose. Asserting only that
-    # the probe is absent would pass just as well if the helper skipped the
-    # whole of `tests/unit`, which would silently blind every sweep using it.
-    ordinary = tmp_path / PROBE_DIRECTORY / "ordinary_test_module.py"
+    # An ordinary module in `tests/unit`, beside the reserved probe directory.
+    # Asserting only that the probe is absent would pass just as well if the
+    # helper skipped the whole test tree, silently blinding every sweep using it.
+    ordinary = tmp_path / "tests" / "unit" / "ordinary_test_module.py"
     ordinary.write_text("", encoding="utf-8")
 
     assert swept_source_files_in(tmp_path / "tests", root=tmp_path) == [ordinary]
@@ -166,35 +166,40 @@ def test_the_probe_the_colour_test_writes_is_the_one_the_sweeps_skip() -> None:
     )
 
 
-def test_no_tracked_file_is_shaped_like_a_probe() -> None:
-    """Recognition is by name, so no committed file may wear a probe's name.
+def test_the_probe_directory_holds_no_tracked_files() -> None:
+    """The reserved directory is what makes the skip safe, so keep it reserved.
 
-    A probe is untracked by construction: it is written during a test and
-    removed in `finally`. A *tracked* file matching the shape would be hidden
-    from every sweep that shares this rule -- the same fail-open the broad prefix
-    had, just narrowed to one directory. Closing it from this side costs one
-    `git ls-files` and needs no filesystem identity check.
+    Recognition is by directory and name, never by file identity, so the skip is
+    only harmless while nothing real lives in `PROBE_DIRECTORY`. A committed or
+    staged file there -- probe-shaped or not -- would be hidden from every sweep
+    sharing the rule, which is the same fail-open the broad prefix had.
+
+    This does not prove no real file is ever there: an ignored or untracked one
+    would still be skipped. It proves nothing real was ever *committed* there,
+    and the directory's reservation is what makes such a file a mistake rather
+    than a supported arrangement.
     """
     root = Path(swept_sources.__file__).resolve().parents[1]
-    tracked = subprocess.run(
-        ["git", "ls-files", "-z", "--", str(PROBE_DIRECTORY)],
-        cwd=root,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.split("\0")
 
-    names = [name for name in tracked if name]
-    # Without this the test passes trivially whenever `git ls-files` returns
-    # nothing -- a wrong cwd, a wrong pathspec, or a non-repository checkout.
-    assert len(names) > 100, (
-        f"`git ls-files -- {PROBE_DIRECTORY}` returned {len(names)} paths, so "
-        "this guard is not looking at the test tree"
+    def tracked(pathspec: str) -> list[str]:
+        out = subprocess.run(
+            ["git", "ls-files", "-z", "--", pathspec],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        return [name for name in out.split("\0") if name]
+
+    # Proves the listing works before concluding anything from an empty one: a
+    # wrong cwd or pathspec would otherwise make this test pass by looking at
+    # nothing. A known, permanent path is a stabler control than a file count.
+    assert "tests/unit/__init__.py" in tracked("tests/unit"), (
+        "`git ls-files` did not return the unit test tree, so the assertion "
+        "below would pass without checking anything"
     )
 
-    shaped = [name for name in names if is_transient_probe(root / name, root=root)]
-
-    assert shaped == [], (
-        "these tracked files wear a transient probe's name, so every sweep "
-        f"sharing this rule skips them silently: {shaped}"
+    assert tracked(str(PROBE_DIRECTORY)) == [], (
+        "files are committed or staged in the directory reserved for transient "
+        "probes, so every sweep sharing this rule may skip them"
     )
