@@ -266,7 +266,8 @@ html[data-embedded="true"] body > .container > header {
 
 body.column-focus-mode {
     height: 100vh;
-    overflow: hidden;
+    overflow-x: hidden;
+    overflow-y: auto;
 }
 body.column-focus-mode .container {
     height: 100vh;
