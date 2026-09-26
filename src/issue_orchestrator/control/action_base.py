@@ -71,6 +71,10 @@ class ActionType(Enum):
     # Act-level tech_lead execution: scratch reset via the reset owner (#6764)
     RESET_RETRY_ISSUE = "reset_retry_issue"
 
+    # Release a published PR's review: pr-pending on, then the stale
+    # blocked-failed block off, custody rechecked at apply time (#7293)
+    RELEASE_PUBLISHED_REVIEW = "release_published_review"
+
     # Act-level tech_lead execution: terminate issue runtime (#6778, approved ops)
     KILL_HUNG_SESSION = "kill_hung_session"
     REQUEST_REWORK = "request_rework"

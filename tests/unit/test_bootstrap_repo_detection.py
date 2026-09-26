@@ -1054,6 +1054,32 @@ class TestBuildOrchestrator:
                                 is operation._execution  # noqa: SLF001
                             )
 
+    def test_sweep_and_reset_share_the_published_review_owner(self, minimal_config) -> None:
+        """#7293: the sweep's ownership check is the owner the reset gate enforces.
+
+        Unwired, the fact gatherer's null default holds nothing, and a PR of
+        published validated work is investigated and escalated again.
+        """
+        from issue_orchestrator.control.published_review_custody import (
+            PublishedReviewCustody,
+        )
+
+        with patch("issue_orchestrator.entrypoints.bootstrap.install_gh_guard"), patch(
+            "issue_orchestrator.entrypoints.bootstrap.create_plugin_manager"
+        ), patch("issue_orchestrator.entrypoints.bootstrap.get_repo_from_git"), patch(
+            "issue_orchestrator.entrypoints.bootstrap.GitHubAdapter"
+        ) as mock_adapter, patch("issue_orchestrator.entrypoints.bootstrap.EventHub"):
+            adapter = scope_mock_github(mock_adapter, "test/repo")
+            adapter.get_rate_limit_snapshot.return_value = {}
+            adapter.get_token_scopes.return_value = []
+
+            orchestrator = build_orchestrator(minimal_config)
+
+        custody = orchestrator.deps.runtime_lifecycle.published_review
+        assert isinstance(custody, PublishedReviewCustody)
+        assert custody.pull_requests is adapter
+        assert orchestrator.deps.fact_gatherer.published_review is custody
+
     def test_build_orchestrator_auto_detects_repo_when_none(self) -> None:
         """Auto-detects repo from git when config.repo is None."""
         config = Config()

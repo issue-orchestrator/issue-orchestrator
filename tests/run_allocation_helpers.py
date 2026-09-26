@@ -93,7 +93,24 @@ def make_session_launcher(*args, **kwargs) -> SessionLauncher:
     ledger = kwargs.pop("issue_run_ledger", MemoryIssueRunLedger())
     configuration = kwargs["config"] if "config" in kwargs else args[0]
     kwargs.setdefault("issue_run_allocator", IssueRunAllocationService(output, ledger, branch_working_copy(), configuration=configuration))
+    _bind_no_published_review(kwargs["action_applier"] if "action_applier" in kwargs else args[3])
     return SessionLauncher(*args, **kwargs)
+
+
+def _bind_no_published_review(action_applier) -> None:
+    """A bare mock applier holds no published validated work (#7293).
+
+    The launch gate asks ``action_applier.runtime_lifecycle.published_review``;
+    an unconfigured MagicMock answers with a truthy mock, which would refuse
+    every launch. A test that exercises the gate binds a real custody instead.
+    """
+    from unittest.mock import NonCallableMock
+
+    from issue_orchestrator.control.published_review_custody import NO_PUBLISHED_REVIEW_HOLDS
+
+    lifecycle = getattr(action_applier, "runtime_lifecycle", None)
+    if isinstance(lifecycle, NonCallableMock) and isinstance(lifecycle.published_review, NonCallableMock):
+        lifecycle.published_review = NO_PUBLISHED_REVIEW_HOLDS
 
 
 def make_worktree_context(**kwargs):

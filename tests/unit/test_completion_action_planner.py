@@ -1,4 +1,5 @@
 """Direct tests for completion action planning policy."""
+from tests.runtime_lifecycle_helpers import unexpected_review_release
 
 from issue_orchestrator.domain.registered_completion import CompletionProcessingPolicy
 from tests.runtime_lifecycle_helpers import reset_snapshot
@@ -1755,6 +1756,7 @@ class TestResetRetryExecutionPipeline:
             ),
             runtime_snapshot=reset_snapshot,
             run_reset=run_reset,
+            release_review=unexpected_review_release,
         )
         applier = make_action_applier(
             labels=MagicMock(),

@@ -1,4 +1,5 @@
 """Tests for the tech_lead reset_retry execution owner (#6764, ADR-0031 §2)."""
+from tests.runtime_lifecycle_helpers import unexpected_review_release
 
 from issue_orchestrator.domain.registered_completion import CompletionProcessingPolicy
 from dataclasses import replace
@@ -102,6 +103,7 @@ def make_executor(
     issue: Issue | None = ...,
     active_session: bool = False,
     outcome: ResetRetryRunOutcome | None = None,
+    release_review=unexpected_review_release,
 ) -> tuple[TechLeadResetRetryExecutor, MagicMock, MagicMock]:
     """Executor with recording events + run_reset fakes."""
     events = MagicMock()
@@ -117,6 +119,7 @@ def make_executor(
         read_issue=lambda _n: resolved_issue,
         runtime_snapshot=lambda _n: reset_snapshot(_n, active_session),
         run_reset=run_reset,
+        release_review=release_review,
     )
     return executor, events, run_reset
 
@@ -1154,3 +1157,55 @@ def test_investigation_reset_skip_requires_positive_recovery(recovered):
     assert result.result_type is ActionResultType.SKIPPED
     assert evaluate_required_act_level_outcome([result]).committed is recovered
     run_reset.assert_not_called()
+
+
+def _release(status):
+    from issue_orchestrator.control.published_review_release import (
+        ReviewReleaseOutcome,
+    )
+
+    calls: list[int] = []
+
+    def release(issue_number):
+        calls.append(issue_number)
+        return ReviewReleaseOutcome(issue_number, status, (), "fixture")
+
+    return release, calls
+
+
+@pytest.mark.parametrize(
+    ("status", "committed"),
+    [
+        ("released", True),
+        # The refusal alone settles nothing: with the sweep disabled or the
+        # release failing, the issue is still stranded behind blocked-failed.
+        ("gate_failed", False),
+        ("block_removal_failed", False),
+        ("not_releasable", False),
+        ("not_held", False),
+    ],
+)
+def test_a_reset_refused_for_published_work_is_settled_only_by_a_release(status, committed):
+    """#7293: the refused reset hands the issue to the review-release owner."""
+    from issue_orchestrator.control.published_review_release import ReviewReleaseStatus
+    from issue_orchestrator.control.tech_lead_reset_retry import evaluate_required_act_level_outcome
+
+    release, calls = _release(ReviewReleaseStatus(status))
+    executor, _events, run_reset = make_executor(outcome=ResetRetryRunOutcome(
+        success=False, stale_reason="published_validated_work_under_review", details={}),
+        release_review=release)
+    result = executor.apply(make_action(requires_effective_disposition=True))
+    run_reset.assert_called_once()
+    assert calls == [17]
+    assert result.result_type is ActionResultType.SKIPPED
+    assert result.details["boundary"]["review_release"] == status
+    assert evaluate_required_act_level_outcome([result]).committed is committed
+
+
+def test_an_unresolved_work_refusal_releases_nothing():
+    from issue_orchestrator.control.tech_lead_reset_retry import evaluate_required_act_level_outcome
+
+    executor, _events, _run_reset = make_executor(outcome=ResetRetryRunOutcome(
+        success=False, stale_reason="validated_work_unresolved", details={}))
+    result = executor.apply(make_action(requires_effective_disposition=True))
+    assert evaluate_required_act_level_outcome([result]).committed is False

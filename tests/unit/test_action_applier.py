@@ -195,6 +195,35 @@ class TestAddLabelAction:
         assert result.details["no_op"] is True
         mock_labels.add_label.assert_not_called()
 
+    def test_a_fresh_presence_add_is_not_fooled_by_a_stale_cache(
+        self, applier, mock_labels, mock_fresh_issue_reader
+    ):
+        """#7293: a gate whose absence is dangerous must really be written.
+
+        The cache still says pr-pending is on; GitHub no longer has it.
+        """
+        mock_labels.has_label.return_value = True
+        mock_fresh_issue_reader.read_issue_labels.return_value = ["blocked-failed"]
+
+        result = applier.apply(AddLabelAction(
+            issue_number=123, label="pr-pending", reason="gate", fresh_presence=True))
+
+        assert result.success
+        assert not result.details.get("no_op")
+        mock_labels.add_label.assert_called_once_with(123, "pr-pending")
+
+    def test_a_fresh_presence_add_is_a_no_op_when_github_has_it(
+        self, applier, mock_labels, mock_fresh_issue_reader
+    ):
+        mock_labels.has_label.return_value = False
+        mock_fresh_issue_reader.read_issue_labels.return_value = ["pr-pending"]
+
+        result = applier.apply(AddLabelAction(
+            issue_number=123, label="pr-pending", reason="gate", fresh_presence=True))
+
+        assert result.details["no_op"] is True
+        mock_labels.add_label.assert_not_called()
+
     def test_add_label_raises_when_claim_lost(self, applier, mock_labels, mock_events):
         """Claim verification blocks external mutation when ownership is lost."""
         claim_manager = MagicMock(spec=ClaimManager)
@@ -3199,6 +3228,9 @@ class TestClaimGateAudit:
         ActionType.RECORD_TECH_LEAD_DISPOSITION,
         # Human outcome delegates every write through guarded label/comment handlers.
         ActionType.ESCALATE_TECH_LEAD_DISPOSITION,
+        # Review release (#7293) delegates every write through the guarded
+        # add/remove label handlers, which verify the claim themselves.
+        ActionType.RELEASE_PUBLISHED_REVIEW,
         ActionType.CLEANUP_SESSION,
         ActionType.RECONCILE_HISTORY_ENTRY,
         ActionType.CREATE_PR,

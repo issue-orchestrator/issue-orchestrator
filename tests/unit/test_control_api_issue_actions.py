@@ -410,6 +410,8 @@ class TestRetryIssueEndpoint:
             removed_labels.append((issue_number, label))
 
         mock_orch.repository_host = MagicMock()
+        # No open PR: Retry clears pr-pending too (#7293 keeps it otherwise).
+        mock_orch.repository_host.list_open_prs_complete.return_value = []
         mock_orch.repository_host.get_issue_labels = MagicMock(
             return_value=["agent:web", "blocked", "pr-pending"]
         )
@@ -458,6 +460,8 @@ class TestRetryIssueEndpoint:
 
         # Mock the repository_host to raise exception on label removal
         mock_orch.repository_host = MagicMock()
+        # No open PR: Retry clears pr-pending too (#7293 keeps it otherwise).
+        mock_orch.repository_host.list_open_prs_complete.return_value = []
         mock_orch.repository_host.get_issue_labels = MagicMock(
             return_value=["blocked", "pr-pending"]
         )
@@ -531,6 +535,8 @@ class TestRetryIssueEndpoint:
                 raise Exception("Label removal failed")
 
         mock_orch.repository_host = MagicMock()
+        # No open PR: Retry clears pr-pending too (#7293 keeps it otherwise).
+        mock_orch.repository_host.list_open_prs_complete.return_value = []
         mock_orch.repository_host.get_issue_labels = MagicMock(
             return_value=["agent:web", "blocked", "blocked-failed"]
         )
@@ -597,6 +603,8 @@ class TestRetryIssueEndpoint:
         mock_orch.deps.queue_cache_store = MagicMock()
 
         mock_orch.repository_host = MagicMock()
+        # No open PR: Retry clears pr-pending too (#7293 keeps it otherwise).
+        mock_orch.repository_host.list_open_prs_complete.return_value = []
         mock_orch.repository_host.get_issue_labels = MagicMock(
             return_value=["agent:web", "blocked-failed"]
         )
@@ -1059,6 +1067,59 @@ class TestBulkUnblockRunsTheOperatorRetryCommand:
         # Nothing after the refused block was touched, so its provenance stays.
         assert live[123] == {"blocked-failed", lm.needs_human, lm.tech_lead_needs_human}
         mock_orch.request_refresh.assert_not_called()
+
+    def test_a_bulk_unblock_of_many_issues_lists_open_prs_once_and_never_searches(
+        self, bulk_client
+    ):
+        """#7293: Retry keeps pr-pending while an open PR belongs to the issue.
+
+        The fact must not cost a GitHub SEARCH per issue: search is rate-limited
+        (30/min) far below a bulk unblock of many issues, and a ``#N`` search
+        over-matches PRs that merely mention the issue. One complete core-REST
+        listing serves the whole request.
+        """
+        from unittest.mock import PropertyMock
+
+        from issue_orchestrator.control.published_review_custody import (
+            NO_PUBLISHED_REVIEW_HOLDS,
+        )
+        from issue_orchestrator.entrypoints.bootstrap_operator_commands import (
+            build_operator_issue_command_factory,
+        )
+        from issue_orchestrator.ports.pull_request_tracker import PRInfo
+
+        client, mock_orch = bulk_client
+        issues = list(range(1, 21))
+        live = {n: {"blocked-failed", "pr-pending"} for n in issues}
+        host = MagicMock()
+        host.remove_label.side_effect = lambda n, label: live[n].discard(label)
+        host.list_open_prs_complete.return_value = [PRInfo(
+            number=900, title="work", url="u", branch="7-work", body="", state="open", labels=[])]
+        mock_orch.repository_host = host
+        mock_orch.request_refresh = MagicMock()
+
+        class _Fresh:
+            def read_issue_labels(self, number: int) -> list[str]:
+                return sorted(live[number])
+
+        factory = build_operator_issue_command_factory(
+            mock_orch.config, repository_host=host, label_manager=mock_orch.deps.label_manager,
+            needs_human_block=mock_orch.deps.needs_human_block, fresh_issue_reader=_Fresh(),
+            queue_cache_store=mock_orch.deps.queue_cache_store,
+            published_review=NO_PUBLISHED_REVIEW_HOLDS)
+        # As production: the facade composes one command per request.
+        type(mock_orch).operator_issue_commands = PropertyMock(
+            side_effect=lambda: factory(state=lambda: mock_orch.state, run_locked=lambda fn: fn()))
+
+        response = client.post("/api/unblock-retry", json={"issues": issues})
+
+        assert response.status_code == 200
+        assert response.json()["unblocked"] == issues
+        host.list_open_prs_complete.assert_called_once_with()
+        called = {name for name, _args, _kwargs in host.method_calls}
+        assert not {name for name in called if "search" in name or name == "get_prs_for_issue"}
+        assert live[7] == {"pr-pending"}, "the issue with an open PR keeps its gate"
+        assert all(live[n] == set() for n in issues if n != 7)
 
     def test_a_releasable_block_is_cleared_and_reported_unblocked(
         self, bulk_client, tmp_path

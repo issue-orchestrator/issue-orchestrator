@@ -91,6 +91,10 @@ class AddLabelAction(Action):
     # every uncaused site look correct while collapsing independent assertions
     # onto one row, where a single release erased them all.
     needs_human_cause: NeedsHumanCause | None = None
+    # Decide "already present" from a FRESH read, not the label cache: for a
+    # gate whose absence is dangerous, a stale cached "present" must not turn
+    # the write into a no-op (#7293).
+    fresh_presence: bool = False
     action_type: ActionType = field(default=ActionType.ADD_LABEL, init=False)
 
 
@@ -440,3 +444,20 @@ class EnqueueToMergeQueueAction(Action):
     pr_url: str = ""
     issue_key: str = ""  # stable_id for SSE events; falls back to str(issue_number) when empty
     action_type: ActionType = field(default=ActionType.ENQUEUE_TO_MERGE_QUEUE, init=False)
+
+
+@dataclass(frozen=True)
+class ReleasePublishedReviewAction(Action):
+    """Release the review of an issue whose open PR carries its published work.
+
+    An owner command, not a label sync: custody is rechecked when it applies,
+    and the stale ``blocked-failed`` block comes off only after ``pr-pending``
+    is confirmed on (#7293). See ``published_review_release``.
+    """
+
+    issue_number: int = 0
+    # The configured PR review label review discovery scans for ("" = none).
+    code_review_label: str = ""
+    action_type: ActionType = field(
+        default=ActionType.RELEASE_PUBLISHED_REVIEW, init=False
+    )

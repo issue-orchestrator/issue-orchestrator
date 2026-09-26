@@ -43,9 +43,11 @@ Design boundaries (kept deliberately narrow, ADR-0031):
   is SKIPPED this sweep only while a dedicated owner is actively handling it: an
   active session / pending tech_lead work, an open gated proposal (the ledger), a
   provider whose circuit is still open (the resilience manager will resume it),
-  a ``tech-lead-needs-human`` marker (the escalation reconciler owns it), or a
+  a ``tech-lead-needs-human`` marker (the escalation reconciler owns it), a
   live failure-investigation DISPOSITION (#6971 — a completed investigation
-  bound the issue to an open recovery tracker). Only ``proposed-tech-lead`` /
+  bound the issue to an open recovery tracker), or an open PR carrying the
+  issue's published validated work (#7293 — its review owns it; investigating
+  it only ends in a needs-human escalation or a reset that closes the PR). Only ``proposed-tech-lead`` /
   ``tech-lead-observation`` are true machinery labels never treated as work items.
 * **A diagnosed issue is not a stuck issue (#6971).** Budget exists to find
   issues whose diagnosis is MISSING. An issue whose completed investigation
@@ -69,6 +71,8 @@ from ..ports.repository_host import (
     RepositoryScanIncompleteError,
 )
 from .needs_human_block import NeedsHumanCause
+from .published_review_custody import NO_PUBLISHED_REVIEW_HOLDS, PublishedReviewHolds
+from .published_review_release import log_held_for_review, review_releasable
 from .tech_lead_dispositions import (
     NO_TECH_LEAD_DISPOSITIONS,
     StuckSweepDispositions,
@@ -126,14 +130,24 @@ class StuckSweepResult:
 
     recovered: tuple[DiscoveredFailure, ...] = ()
     exhausted: tuple[int, ...] = field(default_factory=tuple)
+    # Blocked issues whose published validated work sits under an open PR
+    # (#7293) and that carry a block this sweep may not lift (needs-human, a
+    # human's ``blocked``...): owned by whoever holds that block, so neither
+    # investigated nor escalated.
+    held_for_review: tuple[int, ...] = field(default_factory=tuple)
+    # Blocked ONLY by ``blocked-failed`` while an open PR holds their published
+    # work: the remedy is releasing that PR's review (pr-pending on, the stale
+    # failure block off), budgeted exactly like an investigation (#7293).
+    released_for_review: tuple[int, ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)
 class _StuckScan:
     """One scan's eligibility split (computed once, no extra GitHub reads)."""
 
-    # (issue, stuck_label) for issues eligible AND not currently owned.
-    candidates: tuple[tuple["Issue", str], ...]
+    # (issue, stuck_label, release) for issues eligible AND not currently
+    # owned; ``release`` picks review release over an investigation (#7293).
+    candidates: tuple[tuple["Issue", str, bool], ...]
     # Open issues still carrying ANY blocking label (recovered => absent here).
     blocked_numbers: frozenset[int]
     # Issues currently OWNED by a dedicated reconciler / open proposal / active
@@ -143,6 +157,8 @@ class _StuckScan:
     # (the acknowledgement that drops it from the durable pending set, #6824 R1).
     needs_human_numbers: frozenset[int]
     observed_numbers: frozenset[int]
+    # Stuck-labelled issues owned by an open PR of published validated work.
+    held_for_review: frozenset[int] = frozenset()
 
 
 def stuck_sweep_due(config: "Config", state: "OrchestratorState", now: float) -> bool:
@@ -188,6 +204,7 @@ def run_stuck_sweep(
     open_proposal_targets: frozenset[int] = frozenset(),
     provider_circuit_open: "Callable[[Issue], bool] | None" = None,
     dispositions: StuckSweepDispositions = NO_TECH_LEAD_DISPOSITIONS,
+    published_review: PublishedReviewHolds = NO_PUBLISHED_REVIEW_HOLDS,
 ) -> StuckSweepResult:
     """Find stuck issues and return recovered failures + exhausted numbers.
 
@@ -206,6 +223,10 @@ def run_stuck_sweep(
     issues a completed investigation parked on an OPEN recovery tracker are owned
     exactly like an open proposal, and the same owner is told who recovered so a
     stale binding cannot park a later, unrelated incident on the same number.
+    ``published_review`` answers whether an open PR carries the issue's
+    published validated work (#7293); such an issue is owned by that PR's
+    review, and investigating it only ends in a needs-human escalation or a
+    reset that closes the PR.
     """
     max_attempts = config.tech_lead.stuck_sweep.max_recovery_attempts
     # Resolved BEFORE the scan (it decides eligibility) and remembered, because
@@ -219,22 +240,30 @@ def run_stuck_sweep(
             _owned_issue_numbers(state) | open_proposal_targets | disposition_owned
         ),
         provider_circuit_open=provider_circuit_open,
+        published_review=published_review,
     )
     _clear_recovered_counters(state, scan, dispositions.incident_issue_numbers())
     released = dispositions.release_recovered(scan.blocked_numbers, scan.observed_numbers)
     for number in released - _owned_issue_numbers(state) - open_proposal_targets:
         state.recovery_attempts.pop(number, None)
     _ack_landed_escalations(state, scan)
+    # A held issue's review owns it (#7293): whatever budget an earlier remedy
+    # spent says nothing about the issue once that custody ends.
+    for number in scan.held_for_review:
+        state.recovery_attempts.pop(number, None)
+    state.review_release_budgets.difference_update(scan.held_for_review)
     recovered: list[DiscoveredFailure] = []
+    releases: list[int] = []
     exhausted: list[int] = []
-    for issue, blocking_label in scan.candidates:
+    for issue, blocking_label, release in scan.candidates:
+        remedy = _Remedy(issue, blocking_label, release, now, recovered, releases)
+        _restart_budget_on_remedy_change(state, issue.number, release)
         attempts = state.recovery_attempts.get(issue.number)
         if attempts is None:
             # First detection: an OUTSTANDING recovery, no failed cycle yet.
             # Injection alone never spends the budget (#6824 F1).
             state.recovery_attempts[issue.number] = 0
-            recovered.append(_recovered_failure(issue, blocking_label, now))
-            _log_reinject(issue, 0, max_attempts, blocking_label)
+            remedy.apply(0, max_attempts)
         elif attempts >= max_attempts:
             # Budget already spent + escalated: leave it for the human. Do NOT
             # re-inject or re-escalate; the counter clears when it recovers.
@@ -249,13 +278,38 @@ def run_stuck_sweep(
             # A prior recovery cycle failed (still stuck, not owned): spend one
             # unit of budget and re-inject.
             state.recovery_attempts[issue.number] = attempts + 1
-            recovered.append(_recovered_failure(issue, blocking_label, now))
-            _log_reinject(issue, attempts + 1, max_attempts, blocking_label)
+            remedy.apply(attempts + 1, max_attempts)
     # Newly exhausted issues join the durable pending-escalation set; they stay
     # there (re-labelled every sweep) until the needs-human label is observed
     # present, so a crash or apply failure never loses the escalation (#6824 R1).
     state.pending_stuck_sweep_escalations.update(exhausted)
-    return StuckSweepResult(recovered=tuple(recovered), exhausted=tuple(exhausted))
+    state.review_release_budgets.intersection_update(state.recovery_attempts)
+    return StuckSweepResult(
+        recovered=tuple(recovered),
+        exhausted=tuple(exhausted),
+        held_for_review=tuple(sorted(scan.held_for_review)),
+        released_for_review=tuple(releases),
+    )
+
+
+def _restart_budget_on_remedy_change(
+    state: "OrchestratorState", number: int, release: bool
+) -> None:
+    """A recovery budget counts failed cycles of ONE remedy (#7293).
+
+    An issue whose investigations were exhausted and whose work recovery then
+    published under an open PR has a new remedy - releasing that review - and
+    the investigation's budget and unlanded escalation say nothing about it.
+    The same holds back the other way when the PR is closed. Remedy switches
+    follow custody changes (a publication, a closed PR), never a sweep's own
+    retries, so restarting here cannot loop.
+    """
+    budgets_release = number in state.review_release_budgets
+    if budgets_release == release:
+        return
+    state.recovery_attempts.pop(number, None)
+    state.pending_stuck_sweep_escalations.discard(number)
+    (state.review_release_budgets.add if release else state.review_release_budgets.discard)(number)
 
 
 def _ack_landed_escalations(state: "OrchestratorState", scan: "_StuckScan") -> None:
@@ -265,11 +319,17 @@ def _ack_landed_escalations(state: "OrchestratorState", scan: "_StuckScan") -> N
     survives until its needs-human label is observed on the issue (the
     acknowledged outcome) — through any intervening crash or apply failure — or
     until the issue is no longer blocked (recovered), which supersedes it.
+
+    An escalation whose issue is now held by an open PR of published validated
+    work is withdrawn too (#7293): its premise - nothing owns this issue - no
+    longer holds, and landing it would park reviewable work behind a human.
     """
     state.pending_stuck_sweep_escalations = {
         number
         for number in state.pending_stuck_sweep_escalations
-        if number in scan.blocked_numbers and number not in scan.needs_human_numbers
+        if number in scan.blocked_numbers
+        and number not in scan.needs_human_numbers
+        and number not in scan.held_for_review
     }
 
 
@@ -310,6 +370,7 @@ def hydrate_stuck_sweep_state(
     # Unacknowledged escalations survive a restart so an exhausted issue is
     # re-escalated until its needs-human label lands (#6824 R1).
     state.pending_stuck_sweep_escalations = store.load_pending_escalations()
+    state.review_release_budgets = store.load_review_release_budgets()
 
 
 def persist_stuck_sweep_state(
@@ -329,6 +390,7 @@ def persist_stuck_sweep_state(
         store.save_last_stuck_sweep_at(state.last_stuck_sweep_at)
         store.save_recovery_attempts(state.recovery_attempts)
         store.save_pending_escalations(state.pending_stuck_sweep_escalations)
+        store.save_review_release_budgets(state.review_release_budgets)
     except Exception:
         logger.warning(
             "[STUCK_SWEEP] failed to persist recovery counters; a restart "
@@ -344,6 +406,7 @@ def _scan_stuck_issues(
     *,
     base_owned: set[int],
     provider_circuit_open: "Callable[[Issue], bool] | None",
+    published_review: PublishedReviewHolds,
 ) -> "_StuckScan":
     """Scan open issues and split them into eligible candidates vs owned.
 
@@ -355,6 +418,10 @@ def _scan_stuck_issues(
     needs-human marker). Provider-unavailable and needs-human are recoverable
     labels (#6824 F2), not blanket exclusions; only tech_lead machinery
     (proposed-tech-lead / observation case files) is never a work item.
+
+    An open PR carrying the issue's published validated work also owns it
+    (#7293). That question costs a store read, and a PR read only when a
+    published record exists, so it is asked last - of true candidates only.
     """
     scope = [value for value in (config.filtering.label,) if value] or None
     issues = repository_host.list_issues(
@@ -369,10 +436,11 @@ def _scan_stuck_issues(
     machinery = _machinery_blocking_folded()
     preferred = label_manager.blocked_failed.casefold()
     needs_human = label_manager.needs_human.casefold()
-    candidates: list[tuple["Issue", str]] = []
+    candidates: list[tuple["Issue", str, bool]] = []
     blocked: set[int] = set()
     owned: set[int] = set(base_owned)
     needs_human_numbers: set[int] = set()
+    held_for_review: set[int] = set()
     for issue in scoped:
         if issue.state != "open":
             continue
@@ -389,13 +457,21 @@ def _scan_stuck_issues(
         blocker = _stuck_blocking_label(issue, label_manager, machinery, preferred)
         if blocker is None:
             continue
-        candidates.append((issue, blocker))
+        holds = published_review.holds(issue.number)
+        releasable = bool(holds) and review_releasable(issue.labels, holds, label_manager)
+        if holds and not releasable:
+            owned.add(issue.number)
+            held_for_review.add(issue.number)
+            log_held_for_review(issue, blocker, holds)
+            continue
+        candidates.append((issue, blocker, releasable))
     return _StuckScan(
         candidates=tuple(candidates),
         blocked_numbers=frozenset(blocked),
         owned_numbers=frozenset(owned),
         needs_human_numbers=frozenset(needs_human_numbers),
         observed_numbers=frozenset(issue.number for issue in scoped),
+        held_for_review=frozenset(held_for_review),
     )
 
 
@@ -527,17 +603,38 @@ def _recovered_failure(
     )
 
 
-def _log_reinject(
-    issue: "Issue", attempts: int, max_attempts: int, blocking_label: str
-) -> None:
-    logger.info(
-        "[STUCK_SWEEP] re-injecting stuck issue #%d as a recovered failure "
-        "(failed cycles %d/%d, label=%s) (#6823)",
-        issue.number,
-        attempts,
-        max_attempts,
-        blocking_label,
-    )
+@dataclass(frozen=True)
+class _Remedy:
+    """One budgeted recovery cycle: investigate the issue, or release its review.
+
+    Both remedies spend the same budget (#7293): a review release that does not
+    stick - the issue is re-blocked - is a failed cycle like an investigation
+    that did not, and exhaustion escalates to needs-human either way.
+    """
+
+    issue: "Issue"
+    blocking_label: str
+    release: bool
+    now: float
+    recovered: list[DiscoveredFailure]
+    releases: list[int]
+
+    def apply(self, attempts: int, max_attempts: int) -> None:
+        if self.release:
+            self.releases.append(self.issue.number)
+        else:
+            self.recovered.append(
+                _recovered_failure(self.issue, self.blocking_label, self.now)
+            )
+        logger.info(
+            "[STUCK_SWEEP] stuck issue #%d: %s (failed cycles %d/%d, label=%s)",
+            self.issue.number,
+            "releasing its published PR's review (#7293)" if self.release
+            else "re-injecting as a recovered failure (#6823)",
+            attempts,
+            max_attempts,
+            self.blocking_label,
+        )
 
 
 def _log_exhausted(issue: "Issue", max_attempts: int, blocking_label: str) -> None:
@@ -593,6 +690,7 @@ def run_stuck_sweep_cycle(
     on_result: "Callable[[StuckSweepResult], None]",
     on_scan_incomplete: "Callable[[Exception], None]",
     dispositions: StuckSweepDispositions = NO_TECH_LEAD_DISPOSITIONS,
+    published_review: PublishedReviewHolds = NO_PUBLISHED_REVIEW_HOLDS,
 ) -> None:
     """Arm the sweep, absorb what it is allowed to absorb, record the rest.
 
@@ -635,6 +733,7 @@ def run_stuck_sweep_cycle(
             open_proposal_targets=open_proposal_targets,
             provider_circuit_open=provider_circuit_open,
             dispositions=dispositions,
+            published_review=published_review,
         )
     except RepositoryScanIncompleteError as error:
         logger.error(
@@ -662,6 +761,9 @@ def run_stuck_sweep_cycle(
     # escalation (the durable pending set) so a crash/apply failure retries
     # until it lands (#6824 R1). The durable set itself is persisted below.
     state.stuck_sweep_escalations = list(state.pending_stuck_sweep_escalations)
+    # One-shot: consumed by the next snapshot (a failed apply is simply the
+    # next sweep's failed cycle, never a blind per-tick re-send).
+    state.stuck_sweep_review_releases = list(result.released_for_review)
     state.last_stuck_sweep_at = now
     state.last_stuck_sweep_failure_at = 0.0
     persist_stuck_sweep_state(state, queue_cache_store)

@@ -250,6 +250,27 @@ class QueueCacheStore:
                 (payload,),
             )
 
+    def load_review_release_budgets(self) -> set[int]:
+        """Issues whose recovery counter budgets review releases (#7293)."""
+        conn = self._get_connection()
+        row = conn.execute(
+            "SELECT value FROM meta WHERE key = 'stuck_sweep_review_release_budgets'"
+        ).fetchone()
+        if row is None:
+            return set()
+        return {int(number) for number in json.loads(row["value"])}
+
+    def save_review_release_budgets(self, value: set[int]) -> None:
+        """Persist which counters budget review releases, as a JSON array (#7293)."""
+        payload = json.dumps(sorted(int(number) for number in value))
+        with self._transaction() as tx:
+            tx.execute(
+                "INSERT INTO meta (key, value) VALUES "
+                "('stuck_sweep_review_release_budgets', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (payload,),
+            )
+
     def save_snapshot(
         self,
         issues: Sequence["Issue"],

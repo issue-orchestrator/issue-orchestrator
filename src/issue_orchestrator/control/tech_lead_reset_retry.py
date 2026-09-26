@@ -77,6 +77,7 @@ from .actions import (
     SurfaceTechLeadProposalAction,
 )
 from .needs_human_block import NeedsHumanCause
+from .published_review_release import ReviewReleaseOutcome, refused_reset_disposition
 
 if TYPE_CHECKING:
     from ..domain.models import SessionHistoryEntry
@@ -243,6 +244,8 @@ class TechLeadResetRetryExecutor:
     read_issue: Callable[[int], "Issue | None"]
     runtime_snapshot: Callable[[int], IssueRuntimeResetSnapshot]
     run_reset: RunResetFn
+    # The owner a published-work refusal hands the issue to (#7293).
+    release_review: Callable[[int], ReviewReleaseOutcome]
 
     def stale_reason(self, issue_number: int) -> str | None:
         """Read-only applicability used when handing off to an existing proposal."""
@@ -265,7 +268,13 @@ class TechLeadResetRetryExecutor:
         assert issue is not None  # stale check rejects None
         outcome = self.run_reset(action.issue_number, list(issue.labels))
         if outcome.stale_reason is not None:
-            return self._downgrade(action, outcome.stale_reason, outcome.details)
+            # A reset refused because an open PR carries the issue's published
+            # validated work releases that PR's review instead; the
+            # investigation is settled only if the release happened (#7293).
+            settled, release = refused_reset_disposition(
+                outcome.stale_reason, action.issue_number, self.release_review)
+            return self._downgrade(action, outcome.stale_reason,
+                {**outcome.details, **release}, recovered=settled)
         if not outcome.success:
             logger.error(
                 issue_log(

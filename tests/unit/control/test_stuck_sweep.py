@@ -630,6 +630,7 @@ class _InMemoryQueueCache:
         self._at = 0.0
         self._attempts: dict[int, int] = {}
         self._pending: set[int] = set()
+        self._release_budgets: set[int] = set()
 
     def load_last_stuck_sweep_at(self) -> float:
         return self._at
@@ -648,6 +649,12 @@ class _InMemoryQueueCache:
 
     def save_pending_escalations(self, value: set[int]) -> None:
         self._pending = set(value)
+
+    def load_review_release_budgets(self) -> set[int]:
+        return set(self._release_budgets)
+
+    def save_review_release_budgets(self, value: set[int]) -> None:
+        self._release_budgets = set(value)
 
 
 def test_escalation_persists_until_needs_human_observed():

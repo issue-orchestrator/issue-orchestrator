@@ -146,6 +146,9 @@ def create_mock_orchestrator():
         composition is deferred to call time here — the builder, the command
         and the transition under test are the real ones either way.
         """
+        from issue_orchestrator.control.published_review_custody import (
+            NO_PUBLISHED_REVIEW_HOLDS,
+        )
         from issue_orchestrator.entrypoints.bootstrap_operator_commands import (
             build_operator_issue_command_factory,
         )
@@ -158,6 +161,7 @@ def create_mock_orchestrator():
                 needs_human_block=mock.deps.needs_human_block,
                 fresh_issue_reader=_FreshLabels(),
                 queue_cache_store=mock.deps.queue_cache_store,
+                published_review=NO_PUBLISHED_REVIEW_HOLDS,
             )
         )
         return mock.deps.operator_issue_command_factory(

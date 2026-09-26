@@ -52,6 +52,21 @@ def extract_issue_number(pr_body: str, fallback: int) -> int:
     return int(match.group(1)) if match else fallback
 
 
+def issues_with_open_prs(prs: Iterable[PRInfo]) -> frozenset[int]:
+    """Issues an orchestrator PR belongs to: its ``N-`` branch or ``Closes #N``.
+
+    Precise on purpose (#7293): a PR that merely mentions ``#N`` is not that
+    issue's PR, and treating it as one would keep an issue gated behind
+    someone else's work.
+    """
+    issues: set[int] = set()
+    for pr in prs:
+        from_branch = extract_issue_number_from_branch(pr.branch) if pr.branch else None
+        issues.update(number for number in (from_branch,) if number is not None)
+        issues.update(int(match.group(1)) for match in _CLOSING_ISSUE_RE.finditer(pr.body or ""))
+    return frozenset(issues)
+
+
 def pr_fields_reference_issue(
     *,
     branch: str | None,
