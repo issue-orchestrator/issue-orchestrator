@@ -42,6 +42,7 @@ from .launch_transaction import (
     LaunchWorkClaim,
     abandon_claim_unless_spawned,
 )
+from .launch_dependency_gate import dependency_blocked_result
 from .session_launch_types import LaunchDisposition, LaunchResult
 from .stack_base import StackBaseDecision
 from .session_review_support import copy_review_feedback_to_rework, format_reviewer_feedback, combine_rework_feedback
@@ -248,7 +249,9 @@ def _rework_preflight(
             "retryable": decision.retryable,
         },
     ))
-    return LaunchResult(None, False, f"Stack dependencies not satisfied: {reason}"), None
+    return dependency_blocked_result(
+        f"Stack dependencies not satisfied: {reason}", decision.host_rate_limit
+    ), None
 
 
 def _rework_launch_identity(

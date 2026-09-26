@@ -38,6 +38,7 @@ from datetime import UTC, datetime
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Optional, Sequence
 
+from ..domain.host_rate_limit import RateLimitEpisode
 from ..domain.models import PendingTechLeadReview
 from ..domain.pending_work import PendingWorkKind
 from ..ports.repository_host import host_rate_limit_of
@@ -160,20 +161,23 @@ class TechLeadLaunchAuthority:
                 if explicitly_disabled
                 else "No tech lead agent is configured for this repository.",
             )
-        # Checked before AND after revalidation: an open window means no read
-        # is attempted, and a read that is refused must not fall through to a
-        # launch "on the evidence we have" (#7297).
-        held = self._rate_limit_refusal(tech_lead, scope)
-        if held is not None:
-            return held
-        withdrawal = self._revalidate_subject(tech_lead, scope)
-        # A read the host refused proves nothing about the subject, so the
-        # rate limit - not "unreadable" - is the reason it is held.
-        held = self._rate_limit_refusal(tech_lead, scope)
-        if held is not None:
-            return held
-        if withdrawal is not None:
+        # Checked before AND after revalidation (#7297): an open window means
+        # no read is attempted, and a read the host refused proves nothing
+        # about the subject, so it must neither fall through to a launch "on
+        # the evidence we have" nor read as "unreadable".
+        episode = self._open_rate_limit()
+        withdrawal = (
+            None if episode is not None else self._revalidate_subject(tech_lead, scope)
+        )
+        episode = self._open_rate_limit()
+        if episode is not None and not episode.bound_exceeded:
+            return self._rate_limit_hold(tech_lead, scope, episode)
+        if episode is None and withdrawal is not None:
             return withdrawal
+        # Past the deferral bound the run is no longer held: the launch's own
+        # HostRateLimitLaunchGate refuses it before anything starts and counts
+        # that refusal against the queue's budget, so a limit that never lifts
+        # still reaches the needs-human escalation.
         barrier = self._local_scope_barrier(tech_lead)
         if barrier is not None:
             # The gate's own barrier vocabulary is the reason, so a local
@@ -186,13 +190,16 @@ class TechLeadLaunchAuthority:
             )
         return self._shared_execution_refusal(tech_lead, scope)
 
-    def _rate_limit_refusal(
-        self, tech_lead: PendingTechLeadReview, scope: TechLeadRunScope
-    ) -> Optional[TechLeadLaunchRefusal]:
+    def _open_rate_limit(self) -> Optional[RateLimitEpisode]:
+        return self._state.host_rate_limit.open_at(datetime.now(UTC))
+
+    @staticmethod
+    def _rate_limit_hold(
+        tech_lead: PendingTechLeadReview,
+        scope: TechLeadRunScope,
+        episode: RateLimitEpisode,
+    ) -> TechLeadLaunchRefusal:
         """Hold the run while the host's rate-limit window is open."""
-        episode = self._state.host_rate_limit.open_at(datetime.now(UTC))
-        if episode is None:
-            return None
         return TechLeadLaunchRefusal(
             scope.run_key,
             tech_lead.issue_number,

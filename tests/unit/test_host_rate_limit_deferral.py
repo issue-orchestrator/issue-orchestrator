@@ -15,10 +15,12 @@ import pytest
 
 from issue_orchestrator.adapters.github.rate_limit import github_http_failure
 from issue_orchestrator.control.actions import ActionType
+from issue_orchestrator.control.dependency_evaluator import DependencyEvaluator
 from issue_orchestrator.control.host_rate_limit_launch_gate import (
     RATE_LIMIT_DEFER_REASON,
     HostRateLimitLaunchGate,
 )
+from issue_orchestrator.control.launch_dependency_gate import LaunchDependencyGate
 from issue_orchestrator.control.planner import Planner
 from issue_orchestrator.control.scheduler import Scheduler
 from issue_orchestrator.control.session_launch_types import (
@@ -300,3 +302,76 @@ class TestPlannerHonoursTheWindow:
 
         assert [a.number for a in plan.actions_of_type(ActionType.LAUNCH_SESSION)] == [42]
 
+
+
+class TestPastTheBoundEveryRefusalCounts:
+    def test_open_window_past_the_bound_is_a_counted_failure(self) -> None:
+        """Codex r4: a path that only meets the open window must still escalate."""
+        clock = _Clock(T0)
+        gate = HostRateLimitLaunchGate(HostRateLimitWindow(), InMemoryEventSink(), clock)
+        gate.window.observe(_limit(T0 + RATE_LIMIT_DEFERRAL_BOUND + timedelta(hours=1)), T0)
+        clock.now = T0 + RATE_LIMIT_DEFERRAL_BOUND + timedelta(minutes=1)
+        attempts: list[int] = []
+
+        result = gate.launch(
+            lambda: attempts.append(1) or LaunchResult(None, True),
+            issue_number=7292,
+            work="tech_lead",
+        )
+
+        assert attempts == []
+        assert result.disposition is LaunchDisposition.RETRYABLE_FAILURE
+
+
+class _RateLimitedChecker:
+    def __init__(self) -> None:
+        self.reads = 0
+
+    def get_dependency_issue_snapshot(self, issue_number: int, repo: str | None = None):
+        self.reads += 1
+        raise _rate_limited_error(datetime.now(UTC) + timedelta(minutes=5))
+
+
+class _RateLimitedResolver:
+    def resolve(self, key):
+        raise _rate_limited_error(datetime.now(UTC) + timedelta(minutes=5))
+
+
+class TestLaunchTimeDependencyLookupsDefer:
+    """Codex r4: a refused predecessor lookup is UNKNOWN, never a failed launch."""
+
+    @staticmethod
+    def _gate(**evaluator_kwargs) -> LaunchDependencyGate:
+        events = InMemoryEventSink()
+        evaluator = DependencyEvaluator(
+            issue_checker=_RateLimitedChecker(), events=events, **evaluator_kwargs
+        )
+        return LaunchDependencyGate(
+            dependency_evaluator=evaluator, refresh_issue=None, events=events
+        )
+
+    def test_predecessor_lookup(self) -> None:
+        freshness = self._gate().verify_fresh(
+            make_issue(10, body="Depends-on: #100", milestone="M1")
+        )
+
+        assert freshness.failure is not None
+        assert freshness.failure.disposition is LaunchDisposition.HOST_RATE_LIMITED
+
+    def test_external_id_resolution(self) -> None:
+        freshness = self._gate(
+            issue_resolver=_RateLimitedResolver(), repo="o/r"
+        ).verify_fresh(make_issue(10, body="Depends-on: M1-010", milestone="M1"))
+
+        assert freshness.failure is not None
+        assert freshness.failure.disposition is LaunchDisposition.HOST_RATE_LIMITED
+
+    def test_stack_relaunch(self) -> None:
+        gate = self._gate()
+        decision = gate.stack_base_decision(10, "Stack-after: #100", "M1")
+
+        result = gate.relaunch_blocked_result(
+            issue_number=10, issue_title="t", decision=decision, context="rework"
+        )
+
+        assert result.disposition is LaunchDisposition.HOST_RATE_LIMITED

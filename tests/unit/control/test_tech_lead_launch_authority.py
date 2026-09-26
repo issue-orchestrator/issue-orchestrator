@@ -22,6 +22,10 @@ from typing import Optional
 import httpx
 
 from issue_orchestrator.adapters.github.rate_limit import github_http_failure
+from issue_orchestrator.domain.host_rate_limit import (
+    RATE_LIMIT_DEFERRAL_BOUND,
+    HostRateLimit,
+)
 from issue_orchestrator.control.tech_lead_launch_authority import (
     TechLeadLaunchAuthority,
 )
@@ -433,6 +437,29 @@ def test_a_rate_limited_subject_read_holds_a_focused_investigation():
     assert harness.held_reasons() == [REASON_GITHUB_RATE_LIMITED] * 2
     assert harness.state.pending_tech_lead_reviews == [investigation]
     assert host.reads == 1, "an open window is honoured before any further read"
+
+
+def test_past_the_deferral_bound_the_authority_stops_holding():
+    """Codex r4: held forever by the authority, the budget never applied.
+
+    Past the bound the run is handed to the launch, whose rate-limit gate
+    refuses it before anything starts and counts it against the queue budget.
+    No anchor read is attempted while the window is open.
+    """
+    now = datetime.now(UTC)
+    anchor = _health_anchor()
+    host = RateLimitedRepositoryHost(now + timedelta(minutes=20))
+    harness = _Harness(pending=[anchor], repository_host=host)
+    harness.state.host_rate_limit.observe(
+        HostRateLimit(resets_at=now + timedelta(minutes=5), kind="primary"),
+        now - RATE_LIMIT_DEFERRAL_BOUND - timedelta(minutes=1),
+    )
+
+    harness.launch(anchor)
+
+    assert harness.launched == [anchor]
+    assert REASON_GITHUB_RATE_LIMITED not in harness.held_reasons()
+    assert host.reads == 0
 
 
 def test_a_global_anchor_is_never_subject_to_blocked_label_eligibility():

@@ -86,6 +86,16 @@ class HostRateLimitLaunchGate:
             self._publish(
                 holding, issue_number=issue_number, work=work, attempted=False
             )
+            if holding.bound_exceeded:
+                # Refused just as surely as an attempt would be, and past the
+                # bound every refusal counts - or a path that only ever meets
+                # the open window (the tech-lead authority's own read opened
+                # it) would never reach the budget.
+                return _past_bound(
+                    f"GitHub rate limit ({holding.limit.kind}) holds launches until "
+                    f"{holding.limit.resets_at.isoformat()}",
+                    holding,
+                )
             return LaunchResult.host_rate_limited(
                 f"GitHub rate limit ({holding.limit.kind}) holds launches until "
                 f"{holding.limit.resets_at.isoformat()}",
@@ -111,15 +121,7 @@ class HostRateLimitLaunchGate:
         )
         if not episode.bound_exceeded:
             return result
-        return LaunchResult(
-            None,
-            False,
-            f"{result.reason} (GitHub has rate limited launches without a break "
-            f"for {_minutes(episode)} min, past the "
-            f"{int(RATE_LIMIT_DEFERRAL_BOUND.total_seconds() // 60)} min deferral "
-            "bound; counting this attempt as a failed launch)",
-            disposition=LaunchDisposition.RETRYABLE_FAILURE,
-        )
+        return _past_bound(result.reason, episode)
 
     def observe(
         self, limit: HostRateLimit, *, issue_number: int | None, work: str
@@ -165,7 +167,7 @@ class HostRateLimitLaunchGate:
                 "limited_since": episode.limited_since.isoformat(),
                 "limited_for_seconds": int(episode.limited_for.total_seconds()),
                 "attempted": attempted,
-                "retry_budget_spent": attempted and episode.bound_exceeded,
+                "retry_budget_spent": episode.bound_exceeded,
             },
         ))
 
@@ -287,6 +289,19 @@ def rate_limited_launch_skips(
         for item_type, number in items
         if number is not None
     ]
+
+
+def _past_bound(reason: str, episode: RateLimitEpisode) -> LaunchResult:
+    """A rate-limit refusal past the deferral bound: counted as a failed launch."""
+    return LaunchResult(
+        None,
+        False,
+        f"{reason} (GitHub has rate limited launches for {_minutes(episode)} min "
+        f"without a launch getting through, past the "
+        f"{int(RATE_LIMIT_DEFERRAL_BOUND.total_seconds() // 60)} min deferral "
+        "bound; counting this attempt as a failed launch)",
+        disposition=LaunchDisposition.RETRYABLE_FAILURE,
+    )
 
 
 def _minutes(episode: RateLimitEpisode) -> int:

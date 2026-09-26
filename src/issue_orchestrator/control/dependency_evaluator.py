@@ -38,7 +38,7 @@ from ..domain.dependency_gates import (
 from ..domain.issue_key import GitHubIssueKey
 from ..events import EventName
 from ..ports import EventSink, IssueResolver, make_trace_event
-from ..ports.repository_host import DependencyIssueSnapshot, RepositoryHostError
+from ..ports.repository_host import DependencyIssueSnapshot, RepositoryHostError, host_rate_limit_of
 from ..ports.stack_branch_ancestry import StackBranchAncestry
 from ..ports.stack_predecessor_facts import StackPredecessorFactsProvider
 from .dependency_error_messages import milestone_scope_error, source_missing_milestone_error
@@ -554,6 +554,7 @@ class DependencyEvaluator:
             return Dependency(
                 issue_number=issue_number, external_id=external_id, repository=repo,
                 mode=ref.mode, state=DependencyState.UNKNOWN, error=str(e),
+                host_rate_limit=host_rate_limit_of(e),
             )
 
     def _check_milestone_scope_for_edge(
@@ -760,6 +761,7 @@ class DependencyEvaluator:
                 issue_number=None, external_id=external_id,
                 state=DependencyState.UNKNOWN,
                 error=f"Resolver query failed for {external_id}: {e}",
+                host_rate_limit=host_rate_limit_of(e),
             ))
 
         if handle is None:

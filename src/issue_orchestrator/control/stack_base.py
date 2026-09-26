@@ -24,9 +24,10 @@ gate (PR creation).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from ..domain.dependency_gates import DependencyGateReport, Gate
+from ..domain.host_rate_limit import HostRateLimit
 
 
 @dataclass(frozen=True)
@@ -51,6 +52,9 @@ class StackBaseDecision:
     base_branch: str | None = None
     reason: str | None = None
     retryable: bool = False
+    #: The host rate limit behind a block, when a predecessor lookup was
+    #: refused (#7297); the launch defers on it instead of failing.
+    host_rate_limit: HostRateLimit | None = None
 
     @classmethod
     def not_stack(cls) -> "StackBaseDecision":
@@ -82,7 +86,8 @@ class StackBaseDecision:
         gate_decision = report.gate(gate)
         if gate_decision.is_open:
             return cls.allowed_on(report.stack_base_branch)
-        return cls.blocked(
+        blocked = cls.blocked(
             f"Stack {gate.value} gate blocked: {gate_decision.summary()}",
             retryable=False,
         )
+        return replace(blocked, host_rate_limit=report.host_rate_limit)
