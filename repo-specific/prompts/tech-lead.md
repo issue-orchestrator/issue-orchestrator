@@ -40,7 +40,8 @@ cat "$ISSUE_ORCHESTRATOR_RUN_DIR/tech-lead-data/board-snapshot.json"
 
 It contains active sessions (type/state/age, exact `terminal_id`/`run_id`
 generation, plus `idle_minutes`/`commits_ahead` hung-evidence), pending queues with reasons,
-blocked issues, `recent_failures` (context), `problem_cohort` (the issue
+blocked issues, `blocked_open_prs` (open PRs held by a blocking label),
+`recent_failures` (context), `problem_cohort` (the issue
 numbers a health review owns act-level authority over, empty otherwise), open
 pattern case files, per-area distinct patterns plus shipped-fix counts, a
 restart-safe `recent_shipped_fixes` list with issue/PR/area evidence,
@@ -50,6 +51,29 @@ spot cross-PR and systemic patterns worth `flag_pattern`/`create_issue` proposal
 investigations: start from your focus issue, then use the snapshot for board
 context (what else was running, queued, or failing at the same time). Health
 reviews: the snapshot IS your assignment - review it end to end.
+
+**`blocked_open_prs` is finished work the orchestrator will not look at.**
+`blocked_issues` lists only issues gated on a dependency. An issue labelled
+`blocked-failed` or `needs-human` whose PR is open is on `blocked_open_prs`
+instead, one entry per PR and scan `lane`: `review` (the PR carries the
+code-review label, so a review is waiting) or `rework` (it carries
+`needs-rework`). The PR scanner skips it on EVERY scan because of
+`blocking_labels`, sitting on the issue (`skip_reason` is `issue_blocked`) or on
+the PR itself (`pr_blocked`). `skip_count` counts the consecutive scans that skipped
+it since the orchestrator last started, between `first_skipped_at` and
+`last_skipped_at`; `draft` is the PR's draft state (`null` = not reported).
+
+- Such a PR never moves on its own: no review launches and no rework runs until
+  the blocking label is removed. Retrying the issue starts the work over; only
+  removing the label (Unblock) re-admits the existing PR.
+- Report every entry as a finding with its issue, PR, lane, `skip_reason` and
+  how long it has waited. Escalate (`escalate_to_human` on your tracking issue)
+  naming the PR and the label that holds it, and `flag_pattern` when several
+  entries share one cause.
+- Do not propose `request_rework` for these PRs: the rework scan skips a
+  blocked issue too, so the rework would never run.
+- `blocked_open_prs: null` means the snapshot predates the field, not that
+  nothing is blocked. An open PR carrying neither scan label is not listed.
 
 Completing with no code changes is normal and succeeds - the orchestrator will
 not attempt PR-creation noise for a clean audit. If you did commit

@@ -304,7 +304,7 @@ class TestPRScannerSessionFiltering:
         results = scanner.scan_for_reviews(
             already_queued=[],
             active_sessions=["review-42"],  # Active session for this PR
-        )
+        ).reviews
 
         assert len(results) == 0
 
@@ -328,7 +328,7 @@ class TestPRScannerSessionFiltering:
         results = scanner.scan_for_reviews(
             already_queued=[],
             active_sessions=[],
-        )
+        ).reviews
 
         assert len(results) == 1
         assert results[0].pr_number == 42
@@ -353,7 +353,7 @@ class TestPRScannerSessionFiltering:
         results = scanner.scan_for_reviews(
             already_queued=[],
             active_sessions=["issue-123"],  # Wrong prefix - not review-42
-        )
+        ).reviews
 
         assert len(results) == 1
         assert results[0].pr_number == 42
@@ -409,13 +409,13 @@ class TestReviewLaunchLoopPrevention:
         )
 
         # First scan: no active sessions
-        results1 = scanner.scan_for_reviews(already_queued=[], active_sessions=[])
+        results1 = scanner.scan_for_reviews(already_queued=[], active_sessions=[]).reviews
 
         # Second scan: still no active sessions (simulating the bug)
-        results2 = scanner.scan_for_reviews(already_queued=[], active_sessions=[])
+        results2 = scanner.scan_for_reviews(already_queued=[], active_sessions=[]).reviews
 
         # Third scan: still no active sessions
-        results3 = scanner.scan_for_reviews(already_queued=[], active_sessions=[])
+        results3 = scanner.scan_for_reviews(already_queued=[], active_sessions=[]).reviews
 
         # All three scans find the same PR - this is the bug behavior
         assert len(results1) == 1
@@ -441,12 +441,12 @@ class TestReviewLaunchLoopPrevention:
         )
 
         # First scan: finds the PR
-        results1 = scanner.scan_for_reviews(already_queued=[], active_sessions=[])
+        results1 = scanner.scan_for_reviews(already_queued=[], active_sessions=[]).reviews
         assert len(results1) == 1
 
         # Second scan: PR is now in already_queued
         queued = [results1[0]]
-        results2 = scanner.scan_for_reviews(already_queued=queued, active_sessions=[])
+        results2 = scanner.scan_for_reviews(already_queued=queued, active_sessions=[]).reviews
 
         # Should not find the PR again
         assert len(results2) == 0

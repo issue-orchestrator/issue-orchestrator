@@ -251,6 +251,9 @@ their `tech-lead-data/` directory, a typed **board snapshot**:
 
 - active sessions (type, state, age, issue, terminal),
 - pending/blocked queues with reasons,
+- open PRs the PR scanner keeps skipping because their issue or the PR carries
+  a blocking label (`blocked_open_prs`, #7294), with the skip reason and count
+  taken from the scanner's own verdicts,
 - recent failures with paths to session artifacts and failure diagnoses —
   board CONTEXT, never act-level authority (see §4),
 - the `problem_cohort` a health review owns act-level authority over (empty

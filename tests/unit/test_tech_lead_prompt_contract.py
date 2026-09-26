@@ -9,6 +9,7 @@ shows must actually validate against the domain contract.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import re
 from pathlib import Path
@@ -18,6 +19,11 @@ import pytest
 from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.control.tech_lead_issue_policy import (
     protected_tech_lead_label_violations,
+)
+from issue_orchestrator.domain.blocked_open_pr import BlockedPRLane, BlockedPRSkipReason
+from issue_orchestrator.domain.board_snapshot import BoardBlockedOpenPR
+from issue_orchestrator.execution.tech_lead_board_prompt import (
+    TECH_LEAD_BLOCKED_OPEN_PRS_SECTION,
 )
 from issue_orchestrator.domain.tech_lead_artifacts import (
     MAX_ACTION_BODY_CHARS,
@@ -457,6 +463,24 @@ def test_board_snapshot_fields_document_hung_evidence(variant: str) -> None:
     text = PROMPT_VARIANTS[variant]
     for token in ("`idle_minutes`", "`commits_ahead`"):
         assert token in text, f"{variant} does not document the {token} snapshot field"
+
+
+@pytest.mark.parametrize("variant", sorted(PROMPT_VARIANTS))
+def test_every_variant_teaches_the_blocked_open_pr_fields(variant: str) -> None:
+    """Each variant names ``blocked_open_prs`` and every field it carries (#7294).
+
+    The field list is derived from the snapshot type, so a field added there
+    without teaching the agent what it means fails here.
+    """
+    text = PROMPT_VARIANTS[variant]
+    assert "`blocked_open_prs`" in text
+    assert TECH_LEAD_BLOCKED_OPEN_PRS_SECTION in text, f"{variant} drifted"
+    for name in (f.name for f in dataclasses.fields(BoardBlockedOpenPR)):
+        if name in {"issue_number", "issue_title", "pr_number", "pr_url"}:
+            continue  # self-describing identity fields
+        assert f"`{name}`" in text, f"{variant} does not explain `{name}`"
+    for value in (*BlockedPRSkipReason, *BlockedPRLane):
+        assert f"`{value.value}`" in text, f"{variant} does not explain `{value}`"
 
 
 @pytest.mark.parametrize("variant", sorted(PROMPT_VARIANTS))

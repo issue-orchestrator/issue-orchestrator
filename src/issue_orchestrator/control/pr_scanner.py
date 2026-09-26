@@ -15,6 +15,11 @@ from typing import TYPE_CHECKING, Sequence, Protocol, Callable
 
 from ..infra.config import Config
 from ..events import EventName
+from ..domain.blocked_open_pr import (
+    BlockedOpenPRObservation,
+    BlockedPRLane,
+    BlockedPRSkipReason,
+)
 from ..domain.models import PendingReview, PendingRework
 from ..domain.issue_key import IssueKey
 from ..domain.pr_attempt_scope import scope_prs_to_active_issue_branch
@@ -40,13 +45,26 @@ class RepositoryScanner(Protocol):
     def get_issue(self, issue_number: int) -> "Issue | None": ...
 
 
-@dataclass
-class ScanResult:
-    """Result of scanning for PRs."""
+@dataclass(frozen=True)
+class ReviewScan:
+    """Result of one review scan.
 
-    reviews_to_queue: list[PendingReview]
-    reworks_to_queue: list[PendingRework]
+    ``blocked`` is every in-scope, current-attempt PR the scan skipped because
+    its issue or the PR carries a blocking label (#7294). It is the complete
+    set for this scan, so the caller can replace the review lane's ledger.
+    """
+
+    reviews: list[PendingReview]
+    blocked: list[BlockedOpenPRObservation]
+
+
+@dataclass(frozen=True)
+class ReworkScan:
+    """Result of one rework scan; ``blocked`` as on :class:`ReviewScan`."""
+
+    reworks: list[PendingRework]
     escalations: list[tuple[int, int, int]]  # (pr_number, issue_number, rework_cycle)
+    blocked: list[BlockedOpenPRObservation]
 
 
 @dataclass(frozen=True)
@@ -56,6 +74,8 @@ class _ReworkScanDecision:
     rework_cycle: int
     blocking_labels: list[str]
     reason: str
+    # Set when the skip was for a blocking label on the PR or its issue (#7294).
+    blocked: BlockedOpenPRObservation | None = None
 
 
 class PRScanner:
@@ -105,7 +125,7 @@ class PRScanner:
         already_queued: Sequence[PendingReview],
         active_sessions: Sequence[str],  # session names
         issue_branches: dict[int, str] | None = None,
-    ) -> list[PendingReview]:
+    ) -> ReviewScan:
         """Scan for PRs needing code review.
 
         Finds PRs with the code-review label that aren't already queued
@@ -116,10 +136,11 @@ class PRScanner:
             active_sessions: Active session names (to skip PRs being reviewed)
 
         Returns:
-            List of PendingReview for PRs that need to be queued
+            The PendingReviews to queue, plus every PR skipped for a blocking
+            label on its issue or on itself.
         """
         if not self.config.code_review_agent or not self.config.code_review_label:
-            return []
+            return ReviewScan(reviews=[], blocked=[])
 
         with gh_audit.context(
             reason=gh_audit.AuditReason.PR_SCAN,
@@ -127,6 +148,7 @@ class PRScanner:
         ):
             prs = self.repository.get_prs_with_label(self.config.code_review_label)
         results: list[PendingReview] = []
+        blocked: list[BlockedOpenPRObservation] = []
 
         queued_pr_numbers = {r.pr_number for r in already_queued}
         active_review_sessions = {s for s in active_sessions if s.startswith("review-")}
@@ -181,6 +203,19 @@ class PRScanner:
                     ",".join(validity.issue_labels) or "(missing)",
                     ",".join(validity.pr_labels) or "(none)",
                 )
+                if validity.blocking_labels:
+                    blocked.append(
+                        BlockedOpenPRObservation(
+                            lane=BlockedPRLane.REVIEW,
+                            issue_number=issue_number,
+                            issue_title=issue.title if issue is not None else None,
+                            pr_number=pr.number,
+                            pr_url=pr.url,
+                            draft=pr.draft,
+                            skip_reason=BlockedPRSkipReason(validity.reason),
+                            blocking_labels=validity.blocking_labels,
+                        )
+                    )
                 continue
 
             review = PendingReview(
@@ -202,14 +237,14 @@ class PRScanner:
                 )
             )
 
-        return results
+        return ReviewScan(reviews=results, blocked=blocked)
 
     def scan_for_reworks(
         self,
         already_queued: Sequence[PendingRework],
         active_sessions: Sequence[int],  # issue numbers being worked on
         issue_branches: dict[int, str] | None = None,
-    ) -> tuple[list[PendingRework], list[tuple[int, int, int]]]:
+    ) -> ReworkScan:
         """Scan for PRs needing rework.
 
         Finds PRs with the needs-rework label that aren't already queued
@@ -220,11 +255,12 @@ class PRScanner:
             active_sessions: Issue numbers of active work sessions
 
         Returns:
-            Tuple of (reworks to queue, escalations needed)
-            Escalations are (pr_number, issue_number, rework_cycle) tuples
+            The reworks to queue, the escalations needed as
+            (pr_number, issue_number, rework_cycle) tuples, and every
+            current-attempt PR skipped for a blocking label.
         """
         if not self.config.code_review_agent:
-            return [], []
+            return ReworkScan(reworks=[], escalations=[], blocked=[])
 
         rework_label = self._lm.needs_rework
         with gh_audit.context(
@@ -236,6 +272,7 @@ class PRScanner:
 
         results: list[PendingRework] = []
         escalations: list[tuple[int, int, int]] = []
+        blocked: list[BlockedOpenPRObservation] = []
 
         queued_issue_ids = self._collect_queued_issue_ids(already_queued)
         active_issue_numbers = set(active_sessions)
@@ -244,6 +281,12 @@ class PRScanner:
         for pr in prs:
             decision = self._decide_rework_candidate(pr, queued_issue_ids, active_issue_numbers)
             self._log_rework_decision(pr, decision, queued_issue_ids, active_issue_numbers)
+            if decision.blocked is not None:
+                if scope_prs_to_active_issue_branch(
+                    decision.issue_number, [pr], issue_branches=issue_branches
+                ).matching:
+                    blocked.append(decision.blocked)
+                continue
             if decision.decision == "skip":
                 continue
             if decision.decision == "escalate":
@@ -310,7 +353,7 @@ class PRScanner:
                 )
             )
 
-        return results, escalations
+        return ReworkScan(reworks=results, escalations=escalations, blocked=blocked)
 
     @staticmethod
     def _collect_queued_issue_ids(already_queued: Sequence[PendingRework]) -> set[int]:
@@ -358,23 +401,31 @@ class PRScanner:
             )
         rework_cycle = self._get_rework_cycle_from_labels(pr.labels)
         if self._lm.is_blocking_any(pr.labels):
+            pr_blocking = self._lm.get_blocking(pr.labels)
             return _ReworkScanDecision(
                 decision="skip",
                 issue_number=issue_number,
                 rework_cycle=rework_cycle,
-                blocking_labels=self._lm.get_blocking(pr.labels),
+                blocking_labels=pr_blocking,
                 reason="blocking_label",
+                blocked=_rework_blocked(
+                    pr, issue_number, scope.issue, BlockedPRSkipReason.PR_BLOCKED, pr_blocking
+                ),
             )
         # Also check the linked issue's labels — a publish failure marks the
         # issue as blocked-failed but may leave needs-rework on the PR.
         issue = scope.issue if scope.issue is not None else self.repository.get_issue(issue_number)
         if issue is not None and self._lm.is_blocking_any(issue.labels):
+            issue_blocking = self._lm.get_blocking(issue.labels)
             return _ReworkScanDecision(
                 decision="skip",
                 issue_number=issue_number,
                 rework_cycle=rework_cycle,
-                blocking_labels=self._lm.get_blocking(issue.labels),
+                blocking_labels=issue_blocking,
                 reason="issue_blocked",
+                blocked=_rework_blocked(
+                    pr, issue_number, issue, BlockedPRSkipReason.ISSUE_BLOCKED, issue_blocking
+                ),
             )
         if rework_cycle > self.config.max_rework_cycles:
             return _ReworkScanDecision(
@@ -447,3 +498,28 @@ class PRScanner:
         if cycle is not None:
             return cycle + 1  # Next cycle
         return 1  # First rework
+
+
+def _rework_blocked(
+    pr: PRInfo,
+    issue_number: int,
+    issue: "Issue | None",
+    reason: BlockedPRSkipReason,
+    blocking_labels: Sequence[str],
+) -> BlockedOpenPRObservation:
+    """The rework lane's record of a PR it skipped for a blocking label.
+
+    ``issue`` is whatever the scan already read; a PR-level block is decided
+    before the issue is fetched, and fetching it only for a title would add a
+    GitHub call per blocked PR.
+    """
+    return BlockedOpenPRObservation(
+        lane=BlockedPRLane.REWORK,
+        issue_number=issue_number,
+        issue_title=issue.title if issue is not None else None,
+        pr_number=pr.number,
+        pr_url=pr.url,
+        draft=pr.draft,
+        skip_reason=reason,
+        blocking_labels=tuple(blocking_labels),
+    )

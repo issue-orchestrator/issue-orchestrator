@@ -15,7 +15,8 @@ an injected callable so the builder is deterministic and trivially testable:
 
 Defensive bounds: the snapshot is written to a file that an agent with a
 finite context window reads, so every list is capped - sessions, queue
-entries, blocked issues, and failures at ``MAX_LIST_ENTRIES`` (100) each,
+entries, blocked issues, blocked open PRs, and failures at
+``MAX_LIST_ENTRIES`` (100) each,
 timeline extracts at ``MAX_TIMELINE_ISSUES`` (10) issues of at most
 ``timeline_limit`` records, and each log line / queue detail at
 ``MAX_LINE_CHARS`` (500) characters.
@@ -29,6 +30,7 @@ from ..domain.board_snapshot import (
     COMMITS_AHEAD_UNKNOWN,
     BoardAreaSignal,
     BoardBlockedIssue,
+    BoardBlockedOpenPR,
     BoardCaseFile,
     BoardE2EHealth,
     BoardFailure,
@@ -190,6 +192,12 @@ class BoardSnapshotBuilder:
                 for problem in list(state.dependency_problems.values())[
                     :MAX_LIST_ENTRIES
                 ]
+            ],
+            # Issues whose PR io keeps skipping for a blocking label (#7294):
+            # the scanner's own verdicts, so no GitHub read happens here.
+            blocked_open_prs=[
+                BoardBlockedOpenPR.project(entry)
+                for entry in state.blocked_open_prs.entries()[:MAX_LIST_ENTRIES]
             ],
             recent_failures=[
                 BoardFailure(

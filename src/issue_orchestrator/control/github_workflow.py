@@ -9,6 +9,7 @@ This module contains workflow methods extracted from the Orchestrator:
 
 import logging
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Optional, Callable
 
 if TYPE_CHECKING:
@@ -25,6 +26,7 @@ if TYPE_CHECKING:
 
 from ..infra.config import Config
 from ..events import EventName, EventContext
+from ..domain.blocked_open_pr import BlockedPRLane
 from ..domain.models import (
     DiscoveredReview,
     DiscoveredRework,
@@ -126,12 +128,20 @@ class GitHubWorkflow:
         state: "OrchestratorState",
         issue_branches: dict[int, str] | None = None,
     ) -> None:
-        """Scan for PRs that need code review and add to discovered_reviews."""
-        for r in self.pr_scanner.scan_for_reviews(
+        """Scan for PRs that need code review and add to discovered_reviews.
+
+        The PRs the scan skipped for a blocking label replace the review lane
+        of ``state.blocked_open_prs`` (#7294).
+        """
+        scan = self.pr_scanner.scan_for_reviews(
             state.pending_reviews,
             [s.terminal_id for s in state.active_sessions],
             issue_branches=issue_branches,
-        ):
+        )
+        state.blocked_open_prs.record_scan(
+            BlockedPRLane.REVIEW, scan.blocked, at=datetime.now(UTC)
+        )
+        for r in scan.reviews:
             state.discovered_reviews.append(
                 DiscoveredReview(r.issue_number, r.pr_number, r.pr_url, r.branch_name)
             )
@@ -141,15 +151,22 @@ class GitHubWorkflow:
         state: "OrchestratorState",
         issue_branches: dict[int, str] | None = None,
     ) -> None:
-        """Scan for PRs that need rework and add to discovered_reworks/escalations."""
-        reworks, escalations = self.pr_scanner.scan_for_reworks(
+        """Scan for PRs that need rework and add to discovered_reworks/escalations.
+
+        The PRs the scan skipped for a blocking label replace the rework lane
+        of ``state.blocked_open_prs`` (#7294).
+        """
+        scan = self.pr_scanner.scan_for_reworks(
             state.pending_reworks,
             [s.issue.number for s in state.active_sessions],
             issue_branches=issue_branches,
         )
-        for pr, issue, cycle in escalations:
+        state.blocked_open_prs.record_scan(
+            BlockedPRLane.REWORK, scan.blocked, at=datetime.now(UTC)
+        )
+        for pr, issue, cycle in scan.escalations:
             state.discovered_escalations.append(DiscoveredEscalation(issue, pr, cycle))
-        for r in reworks:
+        for r in scan.reworks:
             issue_number = r.resolve_issue_number()
             if issue_number is None:
                 logger.warning(

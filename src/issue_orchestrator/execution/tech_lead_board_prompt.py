@@ -1,10 +1,11 @@
 """How a tech-lead agent must READ the board snapshot (#7080, #6969).
 
-Two sections of the tech-lead prompt, kept here rather than inline in
+Sections of the tech-lead prompt, kept here rather than inline in
 :mod:`.setup_wizard_prompts`, which already carries five prompts and had grown
-past its size budget. They belong together: both are rules about not drawing a
-false conclusion from the snapshot -- one about the tech lead misreading its own
-health, one about it misreading whose work a timeline record was.
+past its size budget. They belong together: each is a rule about not drawing a
+false conclusion from the snapshot -- the tech lead misreading its own health,
+misreading whose work a timeline record was, or missing finished work that a
+blocking label holds out of every queue (#7294).
 """
 
 #: Whether the tech lead's OWN decisions are reaching GitHub (#7080).
@@ -53,3 +54,27 @@ saw an approval and a push, and reported the implementation as "review-approved
 (2 rounds)". It was not - all five exchanges ended in error with
 changes_requested - and that false conclusion was copied into recovery guidance
 that would have merged never-approved branches (#6969)."""
+
+#: Open PRs the orchestrator keeps skipping for a blocking label (#7294).
+TECH_LEAD_BLOCKED_OPEN_PRS_SECTION = """**`blocked_open_prs` is finished work the orchestrator will not look at.**
+`blocked_issues` lists only issues gated on a dependency. An issue labelled
+`blocked-failed` or `needs-human` whose PR is open is on `blocked_open_prs`
+instead, one entry per PR and scan `lane`: `review` (the PR carries the
+code-review label, so a review is waiting) or `rework` (it carries
+`needs-rework`). The PR scanner skips it on EVERY scan because of
+`blocking_labels`, sitting on the issue (`skip_reason` is `issue_blocked`) or on
+the PR itself (`pr_blocked`). `skip_count` counts the consecutive scans that skipped
+it since the orchestrator last started, between `first_skipped_at` and
+`last_skipped_at`; `draft` is the PR's draft state (`null` = not reported).
+
+- Such a PR never moves on its own: no review launches and no rework runs until
+  the blocking label is removed. Retrying the issue starts the work over; only
+  removing the label (Unblock) re-admits the existing PR.
+- Report every entry as a finding with its issue, PR, lane, `skip_reason` and
+  how long it has waited. Escalate (`escalate_to_human` on your tracking issue)
+  naming the PR and the label that holds it, and `flag_pattern` when several
+  entries share one cause.
+- Do not propose `request_rework` for these PRs: the rework scan skips a
+  blocked issue too, so the rework would never run.
+- `blocked_open_prs: null` means the snapshot predates the field, not that
+  nothing is blocked. An open PR carrying neither scan label is not listed."""

@@ -30,7 +30,7 @@ orchestrator state, not live state:
 
 | Source | Access | What It Tells You |
 |--------|--------|-------------------|
-| Board snapshot | `cat "$ISSUE_ORCHESTRATOR_RUN_DIR/tech-lead-data/board-snapshot.json"` | Active sessions (type/state/age), pending queues with reasons, blocked issues, recent failures, per-issue timeline extracts, orchestrator log tail |
+| Board snapshot | `cat "$ISSUE_ORCHESTRATOR_RUN_DIR/tech-lead-data/board-snapshot.json"` | Active sessions (type/state/age), pending queues with reasons, blocked issues, open PRs held by a blocking label (`blocked_open_prs`), recent failures, per-issue timeline extracts, orchestrator log tail |
 
 Batch reviews use it to spot cross-PR and systemic patterns worth
 `flag_pattern`/`create_issue` proposals; failure investigations start from
