@@ -58,6 +58,37 @@ make test-e2e-heavy
 
 Keep this tier out of normal fast validation. It is intended for explicit runs, nightly coverage, or future provider-acceptance journeys.
 
+## Tech-Lead Exam
+
+The tech-lead exam (#7304) checks OUTCOMES, not mechanisms. Each case plants a known
+fault on `io-e2e-test-data` issues, runs the real engine (and, where the case needs
+one, the real tech lead), and grades the result against a known right answer:
+
+- goal predicates on the final GitHub state (for example "the PR left draft and was reviewed");
+- the tech lead's diagnosis against the known root cause, and its remedy against the right one;
+- destructive actions taken (a PR closed unmerged, a deleted branch, an executed `reset_retry`);
+- GitHub calls per rate-limit class (search, GraphQL, core) and elapsed time;
+- for every unfinished item, where it stalled: last transition, the gate that refuses it, blocking labels, and any agent screen that never took its prompt.
+
+```bash
+make test-tech-lead-exam                                   # every case, engine at HEAD
+make test-tech-lead-exam EXAM_CASE=A                       # one case
+make test-tech-lead-exam EXAM_CASE=A EXAM_ENGINE_REF=c3784fe^   # engine at an older commit
+```
+
+`EXAM_ENGINE_REF` runs the engine from a fresh standalone clone of that commit, while the
+harness, its fault shims and the grader stay the current tree's, so the same exam can
+prove it fails before a fix and passes after it. Each run writes a JSON scorecard and a
+text summary to `$E2E_EXAM_OUT` (default `/tmp/e2e-orchestrator-logs/exam`). Case B uses
+a real tech-lead model (`E2E_EXAM_TECH_LEAD_MODEL`, default `opus`). The exam never runs
+inside `make validate-pr`; its grader, case answers and fault shim have unit tests under
+`tests/unit/testing/exam/` that do.
+
+| Case | Planted fault | Right answer |
+|------|---------------|--------------|
+| A | the review-exchange reviewer exits without answering, three exchanges in a row, after the work validated | recovery publishes the PR, code review runs, the PR leaves draft, no `blocked-failed`/`needs-human` remains |
+| B | the issue carries `blocked-failed` while its open, green PR waits on code review | a health review names the veto and proposes releasing the review (not `reset_retry`); nothing destroys the PR |
+
 Run the live agent-guided onboarding acceptance explicitly:
 
 ```bash

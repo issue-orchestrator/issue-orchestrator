@@ -434,6 +434,11 @@ class E2EFlow:
             register_inflight_issue(issue_key)
         return issue_key, issue_number
 
+    @property
+    def created_issue_numbers(self) -> tuple[int, ...]:
+        """GitHub numbers of the issues this flow created, in creation order."""
+        return tuple(self._created_issues)
+
     def cleanup_created_prs(self) -> int:
         """Close PRs created for issues owned by this flow."""
         labels: set[str] = set()

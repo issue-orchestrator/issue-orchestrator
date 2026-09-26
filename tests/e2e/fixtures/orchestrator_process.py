@@ -11,7 +11,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Mapping
 
 import yaml
 
@@ -37,6 +37,20 @@ E2E_LOG_DIR.mkdir(exist_ok=True)
 _GRACEFUL_STOP_TIMEOUT_SECONDS = 20
 
 
+def merge_config_overlay(
+    base: Mapping[str, Any], overlay: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Return ``base`` with ``overlay`` merged in: mappings recurse, values replace."""
+    merged = dict(base)
+    for key, value in overlay.items():
+        current = merged.get(key)
+        if isinstance(current, Mapping) and isinstance(value, Mapping):
+            merged[key] = merge_config_overlay(current, value)
+        else:
+            merged[key] = value
+    return merged
+
+
 def keep_artifacts() -> bool:
     """Return True if e2e cleanup should be skipped."""
     return os.environ.get("E2E_KEEP_ARTIFACTS") == "1"
@@ -56,10 +70,15 @@ class OrchestratorProcess:
         project_root: Path,
         *,
         source_root: Path | None = None,
+        config_overlay: Mapping[str, Any] | None = None,
     ):
         self.config = config
         self.project_root = project_root
         self.source_root = source_root or project_root
+        # YAML merged over the generated config, for settings the generator
+        # does not model (review-exchange loop bounds, the ``tech_lead:``
+        # section). Mappings merge key by key; any other value replaces.
+        self.config_overlay: Mapping[str, Any] = dict(config_overlay or {})
         self.process: subprocess.Popen | None = None
         self.ipc_socket_path: Path | None = None
         self._output_lines: list[str] = []
@@ -205,6 +224,7 @@ class OrchestratorProcess:
                 "lease_seconds": self.config.claims.lease_seconds,
                 "renew_before_expiry_seconds": self.config.claims.renew_before_expiry_seconds,
             }
+        data = merge_config_overlay(data, self.config_overlay)
         config_path.write_text(yaml.safe_dump(data, sort_keys=False))
         self._config_path = config_path
         return config_path

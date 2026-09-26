@@ -1,0 +1,114 @@
+"""Synthetic exam observations for grader tests."""
+
+from __future__ import annotations
+
+from issue_orchestrator.testing.exam import (
+    ExamObservation,
+    GitHubCallCounts,
+    PullRequestFact,
+    PullRequestState,
+    RunEnd,
+    StallFacts,
+    TechLeadActionDisposition,
+    TechLeadActionFact,
+    TechLeadRunFact,
+    WorkItemFact,
+)
+from issue_orchestrator.testing.exam.cases import SUBJECT
+
+ISSUE = 901
+PR = 902
+
+AUDIT = {
+    "by_command": {
+        "GET /repos/o/r/issues/901": 4,
+        "GET /search/issues": 2,
+        "POST /graphql": 3,
+    }
+}
+
+
+def pr(
+    *,
+    state: PullRequestState = PullRequestState.DRAFT,
+    labels: tuple[str, ...] = ("needs-code-review",),
+    branch_exists: bool = True,
+    number: int = PR,
+) -> PullRequestFact:
+    return PullRequestFact(
+        number=number,
+        state=state,
+        labels=frozenset(labels),
+        branch=f"{ISSUE}-exam",
+        branch_exists=branch_exists,
+        checks="SUCCESS",
+    )
+
+
+def stall(*, gate: str = "", labels: tuple[str, ...] = ()) -> StallFacts:
+    return StallFacts(
+        last_transition="review_exchange.completed",
+        last_transition_at="2026-09-26T12:00:00Z",
+        refusing_gate=gate,
+        blocking_labels=labels,
+        unanswered_screen="",
+    )
+
+
+def item(
+    *,
+    issue_labels: tuple[str, ...] = (),
+    prs: tuple[PullRequestFact, ...] = (),
+    gate: str = "",
+) -> WorkItemFact:
+    return WorkItemFact(
+        role=SUBJECT,
+        issue_number=ISSUE,
+        issue_state="open",
+        issue_labels=frozenset(issue_labels),
+        pull_requests=prs,
+        stall=stall(gate=gate, labels=tuple(label for label in issue_labels if "block" in label)),
+    )
+
+
+def action(
+    action_type: str,
+    body: str,
+    *,
+    target: int | None = 7000,
+    disposition: TechLeadActionDisposition = TechLeadActionDisposition.EXECUTED,
+) -> TechLeadActionFact:
+    return TechLeadActionFact(
+        action_type=action_type, target_number=target, body=body, disposition=disposition
+    )
+
+
+def run(*actions: TechLeadActionFact, summary: str = "", phase: str = "completed") -> TechLeadRunFact:
+    return TechLeadRunFact(
+        run_id="run-1",
+        flavor="health_review",
+        phase=phase,
+        detail="",
+        summary=summary,
+        findings_text="",
+        report_text="",
+        actions=tuple(actions),
+    )
+
+
+def observation(
+    case_id: str,
+    subject: WorkItemFact,
+    *,
+    runs: tuple[TechLeadRunFact, ...] = (),
+    ended_by: RunEnd = RunEnd.GOAL_REACHED,
+) -> ExamObservation:
+    return ExamObservation(
+        case_id=case_id,
+        engine_commit="c3784fe0000000000000000000000000000000000",
+        items=(subject,),
+        tech_lead_runs=runs,
+        github_calls=GitHubCallCounts.between(None, AUDIT),
+        elapsed_seconds=321.0,
+        ended_by=ended_by,
+    )
