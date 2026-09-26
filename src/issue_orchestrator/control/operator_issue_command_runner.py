@@ -71,7 +71,7 @@ class OperatorIssueCommandRunner:
             issue_number,
             OperatorCommandIntent.RETRY,
             self.unblocker.retry(issue_number, observed),
-            lambda removed: self._make_retryable(issue_number, observed, removed),
+            lambda settled: self._make_retryable(issue_number, observed, settled),
         )
 
     def dismiss(self, issue_number: int) -> OperatorCommandOutcome:
@@ -80,7 +80,7 @@ class OperatorIssueCommandRunner:
             issue_number,
             OperatorCommandIntent.DISMISS,
             self.unblocker.dismiss(issue_number),
-            lambda removed: self._remove_from_board(issue_number),
+            lambda settled: self._remove_from_board(issue_number),
         )
 
     # -- internals ---------------------------------------------------------
@@ -90,7 +90,7 @@ class OperatorIssueCommandRunner:
         issue_number: int,
         intent: OperatorCommandIntent,
         labels: OperatorUnblockOutcome,
-        commit: Callable[[tuple[str, ...]], None],
+        commit: Callable[[OperatorUnblockOutcome], None],
     ) -> OperatorCommandOutcome:
         """Apply the ordering invariant, for whichever command asked.
 
@@ -130,7 +130,7 @@ class OperatorIssueCommandRunner:
             return self._outcome(
                 issue_number, intent, OperatorCommandStatus.INCOMPLETE, labels
             )
-        self.run_locked(lambda: commit(labels.removed))
+        self.run_locked(lambda: commit(labels))
         logger.info(
             "[%s] Issue #%d settled, removed labels: %s",
             intent.value,
@@ -162,7 +162,7 @@ class OperatorIssueCommandRunner:
         self,
         issue_number: int,
         observed: tuple[str, ...],
-        removed: tuple[str, ...],
+        labels: OperatorUnblockOutcome,
     ) -> None:
         """Clear the retry gates, then reconcile the cached copy behind them.
 
@@ -197,7 +197,12 @@ class OperatorIssueCommandRunner:
         cached = self._cached_issue(state, issue_number)
         if cached is None or not is_dataclass(cached) or isinstance(cached, type):
             return
-        settled = tuple(label for label in observed if label not in removed)
+        # The pr-pending gate the command put on (#7293) must reach the cached
+        # copy too, or the planner launches from the cache before a refresh.
+        removed = labels.removed
+        settled = tuple(label for label in observed if label not in removed) + tuple(
+            label for label in labels.added if label not in observed
+        )
         updated = replace(cached, labels=settled)
         queue_cache = QueueCache(self.config, state, self.queue_cache_store)
         queue_cache.upsert_refreshed_issue(updated)

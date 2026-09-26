@@ -36,6 +36,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from .needs_human_block import BlockOutcome, SharedNeedsHumanBlock
+from .published_review_custody import PublishedReviewHolds
 from .retry_policy import retry_label_removals
 
 if TYPE_CHECKING:
@@ -50,7 +51,11 @@ class OperatorUnblockOutcome:
     """What an operator command managed to clear, and what stopped it."""
 
     removed: tuple[str, ...] = ()
-    #: Ordinary labels GitHub would not remove. A genuine FAILED WRITE, not a
+    #: Labels this command put ON the issue: the scheduler's pr-pending gate,
+    #: when an open PR carries the issue's published validated work (#7293).
+    added: tuple[str, ...] = ()
+    #: Ordinary labels GitHub would not remove (or, for the pr-pending gate,
+    #: would not add - in which case nothing else was touched). A genuine FAILED WRITE, not a
     #: label that was already gone: the repository adapter treats a 404 as
     #: idempotent success and retries transport faults itself, so anything
     #: surfacing here means the label is still on the issue (#6999 F5 round 7).
@@ -89,6 +94,10 @@ class OperatorUnblocker:
     repository_host: "RepositoryHost"
     labels: "LabelManager"
     block: SharedNeedsHumanBlock
+    #: Whether an open PR carries the issue's published validated work. Such an
+    #: issue's review owns it: unblocking must release that review, never let
+    #: the scheduler launch a fresh coder over the PR's branch (#7293).
+    published_review: PublishedReviewHolds
 
     def retry(
         self, issue_number: int, current_labels: Sequence[str]
@@ -123,7 +132,30 @@ class OperatorUnblocker:
     def _unblock(
         self, issue_number: int, labels: Sequence[str], intent: str
     ) -> OperatorUnblockOutcome:
-        """Clear ``labels``, shared block first, stopping if its owner refuses."""
+        """Clear ``labels``, shared block first, stopping if its owner refuses.
+
+        The pr-pending gate goes on BEFORE anything comes off when an open PR
+        holds published validated work: an issue briefly without a blocking
+        label and without pr-pending is exactly the window in which the
+        scheduler launches a coder whose worktree recreate deletes that PR's
+        branch. If the gate cannot be written, nothing is cleared.
+        """
+        added: tuple[str, ...] = ()
+        if self.published_review.holds(issue_number):
+            gate = self.labels.pr_pending
+            try:
+                self.repository_host.add_label(issue_number, gate)
+            except Exception:
+                logger.warning(
+                    "[%s] Issue #%d: could not keep %r on an issue whose open PR "
+                    "carries published validated work; nothing was cleared",
+                    intent,
+                    issue_number,
+                    gate,
+                )
+                return OperatorUnblockOutcome(failed=(gate,))
+            added = (gate,)
+            labels = [label for label in labels if label != gate]
         governed = [label for label in labels if self.block.owns(label)]
         rest = [label for label in labels if not self.block.owns(label)]
 
@@ -143,7 +175,7 @@ class OperatorUnblocker:
                     label,
                 )
                 return OperatorUnblockOutcome(
-                    removed=tuple(removed), blocked=label, held_by=held
+                    removed=tuple(removed), added=added, blocked=label, held_by=held
                 )
             if not outcome.committed:
                 logger.error(
@@ -153,7 +185,7 @@ class OperatorUnblocker:
                     issue_number,
                 )
                 return OperatorUnblockOutcome(
-                    removed=tuple(removed), blocked=label
+                    removed=tuple(removed), added=added, blocked=label
                 )
             removed.append(label)
 
@@ -168,7 +200,9 @@ class OperatorUnblocker:
                 failed.append(label)
                 continue
             removed.append(label)
-        return OperatorUnblockOutcome(removed=tuple(removed), failed=tuple(failed))
+        return OperatorUnblockOutcome(
+            removed=tuple(removed), added=added, failed=tuple(failed)
+        )
 
     def _holders(self, issue_number: int) -> tuple[str, ...]:
         """The causes a refusal is protecting, named for the operator."""

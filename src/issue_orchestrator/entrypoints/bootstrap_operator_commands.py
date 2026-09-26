@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..control.needs_human_block import SharedNeedsHumanBlock
+    from ..control.published_review_custody import PublishedReviewHolds
     from ..control.label_manager import LabelManager
     from ..infra.config import Config
     from ..ports.fresh_issue_reader import FreshIssueReader
@@ -33,6 +34,7 @@ def build_operator_issue_command_factory(
     needs_human_block: "SharedNeedsHumanBlock",
     fresh_issue_reader: "FreshIssueReader",
     queue_cache_store: "QueueCacheStore",
+    published_review: "PublishedReviewHolds",
 ) -> "OperatorIssueCommandFactory":
     """Implement ``ports.operator_issue_commands.OperatorIssueCommandFactory``."""
     from ..control.operator_issue_command_runner import OperatorIssueCommandRunner
@@ -42,6 +44,7 @@ def build_operator_issue_command_factory(
         repository_host=repository_host,
         labels=label_manager,
         block=needs_human_block,
+        published_review=published_review,
     )
 
     def factory(*, state, run_locked):

@@ -17,6 +17,9 @@ from issue_orchestrator.control.operator_issue_command_runner import (
     OperatorIssueCommandRunner,
 )
 from issue_orchestrator.control.operator_unblock import OperatorUnblocker
+from issue_orchestrator.control.published_review_custody import (
+    NO_PUBLISHED_REVIEW_HOLDS,
+)
 from issue_orchestrator.domain.models import (
     Issue,
     OrchestratorState,
@@ -98,7 +101,7 @@ def state() -> OrchestratorState:
 
 
 def _runner(sample_config, state, live, *, block=None, refuse=frozenset(), store=None,
-            host=None):
+            host=None, published_review=NO_PUBLISHED_REVIEW_HOLDS):
     from unittest.mock import MagicMock
 
     labels = LabelManager(sample_config)
@@ -108,6 +111,7 @@ def _runner(sample_config, state, live, *, block=None, refuse=frozenset(), store
             repository_host=host,
             labels=labels,
             block=block or _Block(labels.needs_human, live),
+            published_review=published_review,
         ),
         fresh_labels=_FreshLabels(live),
         config=sample_config,
@@ -609,3 +613,111 @@ class TestRetryKeepsAnOpenPrsReviewGate:
 
         assert outcome.status is OperatorCommandStatus.COMMITTED
         assert live[ISSUE] == {"agent:web"}
+
+
+class _GatedHost(_HostWithPullRequests):
+    """Also records label ADDS, and can refuse one."""
+
+    def __init__(self, live, prs, *, refuse_add=False) -> None:
+        super().__init__(live, prs)
+        self.refuse_add = refuse_add
+        self.writes: list[tuple[str, str]] = []
+
+    def add_label(self, issue_number: int, label: str) -> None:
+        if self.refuse_add:
+            raise RuntimeError(f"github refused to add {label}")
+        self.writes.append(("add", label))
+        self.live.setdefault(issue_number, set()).add(label)
+
+    def remove_label(self, issue_number: int, label: str) -> None:
+        self.writes.append(("remove", label))
+        super().remove_label(issue_number, label)
+
+
+class TestPublishedWorkKeepsTheSchedulerGate:
+    """#7293: no Retry/Dismiss may leave a published PR's issue launchable.
+
+    Without pr-pending, clearing the block makes the issue schedulable, and a
+    fresh coder's worktree recreate deletes the PR's branch - closing the PR.
+    """
+
+    @staticmethod
+    def _custody(pr_state="open"):
+        from issue_orchestrator.domain.validated_work import ValidatedWorkState
+        from tests.unit.control.published_review_support import (
+            DispositionStore, PullRequests, custody, disposition, pr,
+        )
+        store = DispositionStore(
+            {ISSUE: (disposition(ISSUE, ValidatedWorkState.RECOVERED, pr_number=77),)}
+        )
+        return custody(store, PullRequests({ISSUE: [pr(ISSUE, 77, state=pr_state)]}))
+
+    @pytest.mark.parametrize("intent", ["retry", "dismiss"])
+    def test_the_gate_goes_on_before_the_block_comes_off(
+        self, sample_config, state, intent
+    ):
+        labels = LabelManager(sample_config)
+        live = {ISSUE: {labels.blocked_failed, "agent:web"}}  # pr-pending absent
+        host = _GatedHost(live, [self._pr("open")])
+        _labels, runner = _runner(
+            sample_config, state, live, host=host, published_review=self._custody()
+        )
+
+        outcome = getattr(runner, intent)(ISSUE)
+
+        assert outcome.status is OperatorCommandStatus.COMMITTED
+        assert labels.pr_pending in live[ISSUE]
+        assert labels.blocked_failed not in live[ISSUE]
+        assert host.writes[0] == ("add", labels.pr_pending), host.writes
+
+    def test_retry_settles_the_cached_copy_with_the_gate(self, sample_config, state):
+        from issue_orchestrator.control.scheduler import Scheduler
+
+        labels = LabelManager(sample_config)
+        live = {ISSUE: {labels.blocked_failed, "agent:web"}}
+        cached = Issue(number=ISSUE, title="t", labels=sorted(live[ISSUE]),
+                       state="open", repo="owner/repo")
+        state.cached_queue_issues = [cached]
+        state.cached_scope_issues = [cached]
+        host = _GatedHost(live, [self._pr("open")])
+        _labels, runner = _runner(
+            sample_config, state, live, host=host, published_review=self._custody()
+        )
+
+        runner.retry(ISSUE)
+
+        queued = next(i for i in state.cached_scope_issues if i.number == ISSUE)
+        assert labels.pr_pending in queued.labels
+        decision = Scheduler(sample_config, label_manager=labels).evaluate_issues(
+            [queued], check_dependencies=False
+        )[0]
+        assert not decision.available
+
+    def test_an_unwritable_gate_clears_nothing(self, sample_config, state):
+        labels = LabelManager(sample_config)
+        live = {ISSUE: {labels.blocked_failed, "agent:web"}}
+        host = _GatedHost(live, [self._pr("open")], refuse_add=True)
+        _labels, runner = _runner(
+            sample_config, state, live, host=host, published_review=self._custody()
+        )
+
+        outcome = runner.retry(ISSUE)
+
+        assert outcome.status is OperatorCommandStatus.INCOMPLETE
+        assert labels.blocked_failed in live[ISSUE]
+        assert host.writes == []
+
+    def test_a_closed_pr_adds_no_gate(self, sample_config, state):
+        labels = LabelManager(sample_config)
+        live = {ISSUE: {labels.blocked_failed, "agent:web"}}
+        host = _GatedHost(live, [self._pr("closed")])
+        _labels, runner = _runner(
+            sample_config, state, live, host=host,
+            published_review=self._custody(pr_state="closed"),
+        )
+
+        runner.retry(ISSUE)
+
+        assert live[ISSUE] == {"agent:web"}
+
+    _pr = staticmethod(TestRetryKeepsAnOpenPrsReviewGate._pr)

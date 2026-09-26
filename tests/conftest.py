@@ -1363,6 +1363,7 @@ def build_test_orchestrator_deps(
             needs_human_block=needs_human_block,
             fresh_issue_reader=fresh_reader,
             queue_cache_store=infra_services.queue_cache_store,
+            published_review=runtime_lifecycle.published_review,
         ),
         repository_host=repo_host,
         e2e_issue_tracker=e2e_issue_tracker,

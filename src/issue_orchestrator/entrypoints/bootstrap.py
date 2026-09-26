@@ -853,7 +853,7 @@ def build_orchestrator(
             label_manager=label_manager,
             needs_human_block=pending_work.needs_human_block,
             fresh_issue_reader=fresh_issue_reader,
-            queue_cache_store=queue_cache_store,
+            queue_cache_store=queue_cache_store, published_review=runtime_lifecycle.published_review,
         ),
         board_snapshot_builder=create_board_snapshot_builder(
             config, timeline_store, tech_lead_board_publisher, working_copy
@@ -1300,7 +1300,7 @@ def build_orchestrator_for_testing(
             label_manager=label_manager,
             needs_human_block=pending_work.needs_human_block,
             fresh_issue_reader=fresh_issue_reader,
-            queue_cache_store=queue_cache_store,
+            queue_cache_store=queue_cache_store, published_review=runtime_lifecycle.published_review,
         ),
         board_snapshot_builder=create_board_snapshot_builder(
             config, timeline_store, tech_lead_board_publisher_for_testing, working_copy
