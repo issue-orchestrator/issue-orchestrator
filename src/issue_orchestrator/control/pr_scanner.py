@@ -23,7 +23,7 @@ from ..domain.blocked_open_pr import (
 from ..domain.models import PendingReview, PendingRework
 from ..domain.issue_key import IssueKey
 from ..domain.pr_attempt_scope import scope_prs_to_active_issue_branch
-from .review_validity import evaluate_review_validity
+from .review_validity import ReviewValidity, evaluate_review_validity
 from .review_scope import ReviewScopeChecker, extract_issue_number_from_pr
 from ..ports import EventSink,  make_trace_event
 from ..ports.pull_request_tracker import PRInfo
@@ -203,19 +203,7 @@ class PRScanner:
                     ",".join(validity.issue_labels) or "(missing)",
                     ",".join(validity.pr_labels) or "(none)",
                 )
-                if validity.blocking_labels:
-                    blocked.append(
-                        BlockedOpenPRObservation(
-                            lane=BlockedPRLane.REVIEW,
-                            issue_number=issue_number,
-                            issue_title=issue.title if issue is not None else None,
-                            pr_number=pr.number,
-                            pr_url=pr.url,
-                            draft=pr.draft,
-                            skip_reason=BlockedPRSkipReason(validity.reason),
-                            blocking_labels=validity.blocking_labels,
-                        )
-                    )
+                blocked.extend(_review_block(validity, pr, issue_number, issue))
                 continue
 
             review = PendingReview(
@@ -281,13 +269,8 @@ class PRScanner:
         for pr in prs:
             decision = self._decide_rework_candidate(pr, queued_issue_ids, active_issue_numbers)
             self._log_rework_decision(pr, decision, queued_issue_ids, active_issue_numbers)
-            if decision.blocked is not None:
-                if scope_prs_to_active_issue_branch(
-                    decision.issue_number, [pr], issue_branches=issue_branches
-                ).matching:
-                    blocked.append(decision.blocked)
-                continue
             if decision.decision == "skip":
+                blocked.extend(_current_attempt_block(decision, pr, issue_branches))
                 continue
             if decision.decision == "escalate":
                 escalations.append((pr.number, decision.issue_number, decision.rework_cycle))
@@ -498,6 +481,52 @@ class PRScanner:
         if cycle is not None:
             return cycle + 1  # Next cycle
         return 1  # First rework
+
+
+def _review_block(
+    validity: ReviewValidity,
+    pr: PRInfo,
+    issue_number: int,
+    issue: "Issue | None",
+) -> tuple[BlockedOpenPRObservation, ...]:
+    """The review lane's record of a skip, if a blocking label caused it.
+
+    Validity also rejects for reasons that are not a block (``pr_needs_rework``
+    and the like); those are not blocked PRs and yield nothing.
+    """
+    if not validity.held_by_block:
+        return ()
+    return (
+        BlockedOpenPRObservation(
+            lane=BlockedPRLane.REVIEW,
+            issue_number=issue_number,
+            issue_title=issue.title if issue is not None else None,
+            pr_number=pr.number,
+            pr_url=pr.url,
+            draft=pr.draft,
+            skip_reason=BlockedPRSkipReason(validity.reason),
+            blocking_labels=validity.blocking_labels,
+        ),
+    )
+
+
+def _current_attempt_block(
+    decision: _ReworkScanDecision,
+    pr: PRInfo,
+    issue_branches: dict[int, str],
+) -> tuple[BlockedOpenPRObservation, ...]:
+    """A rework skip's block record, scoped like the review lane's.
+
+    The rework scan decides a block before it checks the attempt branch, so a
+    prior attempt's PR would otherwise be reported; the review lane never
+    reports one because it scopes the branch first.
+    """
+    observation = decision.blocked
+    if observation is None or not scope_prs_to_active_issue_branch(
+        decision.issue_number, [pr], issue_branches=issue_branches
+    ).matching:
+        return ()
+    return (observation,)
 
 
 def _rework_blocked(
