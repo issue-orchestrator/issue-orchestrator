@@ -67,6 +67,7 @@ from .tech_lead_session_policy import (
     prepare_tech_lead_session_data,
     tech_lead_prep_failure,
 )
+from .host_rate_limit_launch_gate import apply_launch_mutations
 from ..ports import (
     ManifestDownloader,
     EventSink,
@@ -329,18 +330,7 @@ class SessionLauncher:
         }
     def _apply_actions(self, actions: list[Action], *, context: str) -> bool:
         """Apply mutations through the ActionApplier."""
-        all_ok = True
-        for action in actions:
-            result = self._action_applier.apply(action)
-            if not result.success:
-                all_ok = False
-                logger.warning(
-                    "[launch] Failed to apply %s (%s): %s",
-                    action.action_type.value,
-                    context,
-                    result.error,
-                )
-        return all_ok
+        return apply_launch_mutations(self._action_applier.apply, actions, context=context).ok
 
     def escalate_issue_needs_human(
         self,
@@ -945,7 +935,7 @@ class SessionLauncher:
             # Add in-progress label
             step_start = time.time()
             in_progress_label = self._lm.in_progress
-            label_ok = self._apply_actions([
+            label = apply_launch_mutations(self._action_applier.apply, [
                 AddLabelAction(
                     issue_number=issue.number,
                     label=in_progress_label,
@@ -953,17 +943,18 @@ class SessionLauncher:
                     issue_key=issue.key.stable_id(),
                 ),
             ], context="launch_in_progress_label")
-            if not label_ok:
+            if not label.ok:
                 log_transition("issue", issue.number, "LAUNCHING", "FAILED", "in-progress label failed")
                 logger.error(issue_log(issue.number, "FAILED: could not add in-progress label"))
-                self.events.publish(make_trace_event(
-                    EventName.SESSION_START_FAILED,
-                    {
-                        "issue_number": issue.number,
-                        "session_name": session_name,
-                        "reason": "in_progress_label_failed",
-                    },
-                ))
+                if label.host_rate_limit is None:  # a rate limit is a deferral the gate announces
+                    self.events.publish(make_trace_event(
+                        EventName.SESSION_START_FAILED,
+                        {
+                            "issue_number": issue.number,
+                            "session_name": session_name,
+                            "reason": "in_progress_label_failed",
+                        },
+                    ))
                 self._cleanup_pre_active_launch_worktree(
                     issue.number,
                     worktree_path,
@@ -971,7 +962,7 @@ class SessionLauncher:
                     failure_stage="in-progress label failure",
                 )
                 self._release_claim_if_held(issue.number, claim)
-                return LaunchResult(None, False, "Failed to add in-progress label")
+                return label.refused("Failed to add in-progress label")
             label_time = time.time() - step_start
             logger.info("[launch] Label added in %.1fs", label_time)
 
@@ -1317,7 +1308,7 @@ class SessionLauncher:
                 suffix="validation_retry",
             )
 
-            label_ok = self._apply_actions([
+            label = apply_launch_mutations(self._action_applier.apply, [
                 AddLabelAction(
                     issue_number=issue.number,
                     label=self._lm.in_progress,
@@ -1325,10 +1316,10 @@ class SessionLauncher:
                     issue_key=issue.key.stable_id(),
                 ),
             ], context="launch_validation_retry_in_progress_label")
-            if not label_ok:
+            if not label.ok:
                 log_transition("issue", issue.number, "LAUNCHING", "FAILED", "in-progress label failed")
                 self._release_claim_if_held(issue.number, claim)
-                return LaunchResult(None, False, "Failed to add in-progress label")
+                return label.refused("Failed to add in-progress label")
 
             prompt_path = self._persist_session_prompt(run.run_dir, retry_prompt)
             self._session_output.write_retry_prompt(run.run_dir, retry_prompt)

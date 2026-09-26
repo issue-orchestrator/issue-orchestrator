@@ -12,7 +12,9 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Optional, Protocol
 
+from ..domain.host_rate_limit import HostRateLimit
 from ..domain.validated_work_commands import ValidatedWorkDispositionBatch
+from ..ports.repository_host import host_rate_limit_of
 
 if TYPE_CHECKING:
     from .action_base import Action
@@ -42,6 +44,9 @@ class ActionResult:
     error: Optional[str] = None
     details: dict[str, Any] = field(default_factory=dict)
     validated_work: ValidatedWorkDispositionBatch | None = None
+    #: Set when the mutation failed because the repository host refused it on
+    #: a rate limit (#7297), so a launch can defer instead of failing.
+    host_rate_limit: HostRateLimit | None = None
 
     @property
     def success(self) -> bool:
@@ -87,6 +92,16 @@ class ActionResult:
             result_type=ActionResultType.FAILURE,
             error=error,
             details=details,
+        )
+
+    @classmethod
+    def fail_from(cls, action: "Action", error: Exception) -> "ActionResult":
+        """A failure raised by ``error``, keeping any typed host rate limit behind it."""
+        return cls(
+            action=action,
+            result_type=ActionResultType.FAILURE,
+            error=str(error),
+            host_rate_limit=host_rate_limit_of(error),
         )
 
     @classmethod

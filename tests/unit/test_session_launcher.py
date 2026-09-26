@@ -34,6 +34,7 @@ from datetime import UTC, datetime, timedelta
 import httpx
 
 from issue_orchestrator.adapters.github.rate_limit import github_http_failure
+from issue_orchestrator.control import host_rate_limit_launch_gate
 from issue_orchestrator.domain.host_rate_limit import (
     RATE_LIMIT_DEFERRAL_BOUND,
     HostRateLimit,
@@ -9635,20 +9636,23 @@ class TestLaunchDefersOnGitHubRateLimit:
         )
 
     def test_repeated_rate_limited_prep_spends_nothing_and_escalates_nothing(
-        self, launcher_bundle, mock_events, tmp_path
+        self, launcher_bundle, mock_events, tmp_path, monkeypatch
     ):
         config = launcher_bundle.launcher.config
         TestLaunchTechLeadIssueSessionFlavors.enable_tech_lead_agent(config, tmp_path)
-        # A reset GitHub reports as already passed, so every retry reaches prep
-        # again and is refused again - the incident's 60 s cadence, compressed.
         launcher_bundle.board_snapshot_provider.error = self._rate_limited(
-            datetime.now(UTC) - timedelta(seconds=1)
+            datetime.now(UTC) + timedelta(seconds=30)
         )
         state = OrchestratorState()
         self._queue_health_review(state)
+        # The incident's cadence: one retry every ~60 s, each after the reset
+        # has passed and each refused again.
+        now = [datetime.now(UTC)]
+        monkeypatch.setattr(host_rate_limit_launch_gate, "_utc_now", lambda: now[0])
 
         for _ in range(TECH_LEAD_LAUNCH_RETRY_LIMIT + 2):
             assert self._launch_queued(state, config, launcher_bundle) is None
+            now[0] += timedelta(seconds=61)
 
         (queued,) = state.pending_tech_lead_reviews
         assert queued.retryable_launch_failures == 0
@@ -9687,6 +9691,32 @@ class TestLaunchDefersOnGitHubRateLimit:
         ]
         assert [d["attempted"] for d in deferrals] == [True, False]
         assert state.pending_tech_lead_reviews[0].retryable_launch_failures == 0
+
+    def test_rate_limited_in_progress_label_defers_the_launch(
+        self, launcher_bundle, mock_events, tmp_path
+    ):
+        """Prep succeeds but GitHub refuses the launch's own label write."""
+        config = launcher_bundle.launcher.config
+        TestLaunchTechLeadIssueSessionFlavors.enable_tech_lead_agent(config, tmp_path)
+        limited = self._rate_limited(datetime.now(UTC) + timedelta(minutes=5))
+
+        def apply_action(action):
+            if isinstance(action, AddLabelAction) and action.label == LabelManager(config).in_progress:
+                return ActionResult.fail_from(action, limited)
+            return ActionResult.ok(action)
+
+        launcher_bundle.action_applier.apply = MagicMock(side_effect=apply_action)
+        state = OrchestratorState()
+        self._queue_health_review(state)
+
+        assert self._launch_queued(state, config, launcher_bundle) is None
+
+        (queued,) = state.pending_tech_lead_reviews
+        assert queued.retryable_launch_failures == 0
+        assert state.host_rate_limit.open_at(datetime.now(UTC)) is not None
+        names = [str(e.name) for e in mock_events.events]
+        assert str(EventName.SESSION_START_FAILED) not in names
+        assert str(EventName.SESSION_LAUNCH_DEFERRED_RATE_LIMIT) in names
 
     def test_a_limit_past_the_bound_spends_the_retry_budget(
         self, launcher_bundle, tmp_path

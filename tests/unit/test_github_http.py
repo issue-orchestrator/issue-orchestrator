@@ -3039,7 +3039,7 @@ def test_merged_prs_closing_issues_refuses_a_malformed_answer(repository, match)
 # #7297: a rate limit is a TYPED refusal carrying its reset, on every chokepoint
 # ---------------------------------------------------------------------------
 
-_INCIDENT_RESET_EPOCH = 1_790_000_000  # an absolute x-ratelimit-reset
+_INCIDENT_RESET_EPOCH = 4_000_000_000  # an absolute x-ratelimit-reset, far ahead
 
 
 def _rate_limited_handler(
@@ -3111,6 +3111,38 @@ def test_untimed_secondary_rate_limit_waits_the_documented_minute() -> None:
         client.get_issue(7)
 
     assert caught.value.rate_limit.kind == "secondary"
+    assert caught.value.rate_limit.resets_at >= before + UNTIMED_RATE_LIMIT_WAIT
+
+
+def test_bare_429_is_a_rate_limit_whatever_its_body() -> None:
+    from issue_orchestrator.adapters.github.errors import GitHubRateLimitedError
+
+    client = _client_with_transport(httpx.MockTransport(_rate_limited_handler(
+        429, {}, {"message": "Too Many Requests"}
+    )))
+
+    with pytest.raises(GitHubRateLimitedError) as caught:
+        client.get_issue(7)
+
+    assert caught.value.rate_limit.kind == "primary"
+
+
+def test_a_reset_already_past_still_waits_the_minimum() -> None:
+    """Clock skew or ``retry-after: 0`` must not open a window that is already shut."""
+    from issue_orchestrator.adapters.github.errors import GitHubRateLimitedError
+    from issue_orchestrator.adapters.github.rate_limit import UNTIMED_RATE_LIMIT_WAIT
+
+    stale = datetime.now(UTC) - timedelta(minutes=30)
+    client = _client_with_transport(httpx.MockTransport(_rate_limited_handler(
+        403,
+        {"x-ratelimit-remaining": "0", "x-ratelimit-reset": str(int(stale.timestamp()))},
+        {"message": "API rate limit exceeded"},
+    )))
+    before = datetime.now(UTC)
+
+    with pytest.raises(GitHubRateLimitedError) as caught:
+        client.get_issue(7)
+
     assert caught.value.rate_limit.resets_at >= before + UNTIMED_RATE_LIMIT_WAIT
 
 

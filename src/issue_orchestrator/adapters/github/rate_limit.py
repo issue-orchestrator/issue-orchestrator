@@ -49,6 +49,15 @@ def _header_int(headers: Mapping[str, str], name: str) -> int | None:
     return int(raw) if raw.isdigit() else None
 
 
+def _not_already_past(resets_at: datetime, now: datetime) -> datetime:
+    """A reset at or before ``now`` (clock skew, ``retry-after: 0``) still waits.
+
+    Otherwise the window would read as closed the instant it opened and the
+    next tick would ask GitHub again - the very retry loop this exists to stop.
+    """
+    return resets_at if resets_at > now else now + UNTIMED_RATE_LIMIT_WAIT
+
+
 def github_rate_limit(
     status_code: int,
     headers: Mapping[str, str],
@@ -66,21 +75,22 @@ def github_rate_limit(
     retry_after = _header_int(headers, "retry-after")
     if retry_after is not None:
         return HostRateLimit(
-            resets_at=now + timedelta(seconds=retry_after),
+            resets_at=_not_already_past(now + timedelta(seconds=retry_after), now),
             kind="secondary",
             resource=resource,
         )
     reset = _header_int(headers, "x-ratelimit-reset")
     if _header_int(headers, "x-ratelimit-remaining") == 0 and reset is not None:
         return HostRateLimit(
-            resets_at=datetime.fromtimestamp(reset, UTC),
+            resets_at=_not_already_past(datetime.fromtimestamp(reset, UTC), now),
             kind="primary",
             resource=resource,
         )
     lowered = body.lower()
-    if "rate limit" not in lowered:
+    if status_code == 403 and "rate limit" not in lowered:
         # A 403 that names no rate limit is a genuine refusal (a missing
-        # scope, a blocked resource); it stays an ordinary HTTP error.
+        # scope, a blocked resource); it stays an ordinary HTTP error. A 429
+        # is "too many requests" by definition, whatever its body says.
         return None
     return HostRateLimit(
         resets_at=now + UNTIMED_RATE_LIMIT_WAIT,
@@ -104,7 +114,7 @@ def graphql_rate_limit(
     reset = _header_int(headers, "x-ratelimit-reset")
     return HostRateLimit(
         resets_at=(
-            datetime.fromtimestamp(reset, UTC)
+            _not_already_past(datetime.fromtimestamp(reset, UTC), now)
             if reset is not None
             else now + UNTIMED_RATE_LIMIT_WAIT
         ),

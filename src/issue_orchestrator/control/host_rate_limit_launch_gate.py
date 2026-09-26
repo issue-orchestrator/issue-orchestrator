@@ -28,6 +28,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Callable
 
 from ..domain.host_rate_limit import (
@@ -43,6 +44,8 @@ from ..ports.repository_host import host_rate_limit_of
 from .session_launch_types import LaunchDisposition, LaunchResult
 
 if TYPE_CHECKING:
+    from .action_base import Action
+    from .action_results import ActionResult
     from .planner_types import OrchestratorSnapshot, SkippedItem
 
 logger = logging.getLogger(__name__)
@@ -58,7 +61,7 @@ class HostRateLimitLaunchGate:
 
     window: HostRateLimitWindow
     events: EventSink
-    clock: Callable[[], datetime] = field(default=_utc_now)
+    clock: Callable[[], datetime] = field(default=lambda: _utc_now())
 
     def launch(
         self,
@@ -161,6 +164,48 @@ class HostRateLimitLaunchGate:
         ))
 
 
+@dataclass(frozen=True)
+class LaunchMutations:
+    """How a launch's own GitHub writes went, typed rather than a bare bool.
+
+    A launch that could not write its in-progress label because GitHub
+    rate-limited the write has not failed any more than one whose preparation
+    read was refused (#7297); ``refused`` keeps the two apart.
+    """
+
+    ok: bool
+    host_rate_limit: HostRateLimit | None = None
+
+    def refused(self, reason: str) -> LaunchResult:
+        """The launch result for a failed batch: deferred on a rate limit."""
+        if self.host_rate_limit is not None:
+            return LaunchResult.host_rate_limited(reason, self.host_rate_limit)
+        return LaunchResult(None, False, reason)
+
+
+def apply_launch_mutations(
+    apply: Callable[["Action"], "ActionResult"],
+    actions: Sequence["Action"],
+    *,
+    context: str,
+) -> LaunchMutations:
+    """Apply every mutation; report failure with any host rate limit behind it."""
+    ok, limit = True, None
+    for action in actions:
+        result = apply(action)
+        if result.success:
+            continue
+        ok = False
+        limit = limit or result.host_rate_limit
+        logger.warning(
+            "[launch] Failed to apply %s (%s): %s",
+            action.action_type.value,
+            context,
+            result.error,
+        )
+    return LaunchMutations(ok, limit)
+
+
 #: The one deferral reason a rate-limited tick records, stable across ticks so
 #: the on-change launch logs report the wait once rather than every tick.
 RATE_LIMIT_DEFER_REASON = "github_rate_limited"
@@ -211,5 +256,7 @@ def _minutes(episode: RateLimitEpisode) -> int:
 __all__ = [
     "RATE_LIMIT_DEFER_REASON",
     "HostRateLimitLaunchGate",
+    "LaunchMutations",
+    "apply_launch_mutations",
     "rate_limited_launch_skips",
 ]

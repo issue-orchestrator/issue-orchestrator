@@ -63,6 +63,7 @@ def _rate_limited_error(resets_at: datetime) -> Exception:
         response_text='{"message": "API rate limit exceeded for installation"}',
         method="GET",
         url="/search/issues",
+        now=lambda: T0,
     )
 
 
