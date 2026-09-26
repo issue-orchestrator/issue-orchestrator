@@ -241,6 +241,19 @@ class MockRepositoryHost:
     def get_prs_for_issue(self, issue_number: int, state: str = "open") -> list[PRInfo]:
         return self.prs.get(issue_number, [])
 
+    def merged_prs_closing_issues(self, issue_numbers) -> frozenset[int]:
+        wanted = set(issue_numbers)
+        return frozenset(
+            pr.number
+            for number, prs in self.prs.items()
+            if number in wanted
+            for pr in prs
+            if pr.state.lower() == "merged"
+        )
+
+    def list_open_prs_complete(self) -> list[PRInfo]:
+        return [pr for prs in self.prs.values() for pr in prs if pr.state.lower() == "open"]
+
     def list_issues(
         self,
         labels: list[str] | None = None,

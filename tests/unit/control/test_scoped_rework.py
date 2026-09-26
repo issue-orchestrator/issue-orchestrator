@@ -1112,3 +1112,95 @@ def test_planned_scoped_remedy_satisfies_trusted_obligation_only_with_real_effec
         assert receipt.status == ("forward_fix" if scenario == "forward-fix" else "queued")
     if scenario == "declined":
         assert receipt is None
+
+
+class _NoSearchHost:
+    """A repository whose per-issue PR search must never be used."""
+
+    def __init__(self, prs):
+        self._prs = {pr.number: pr for pr in prs}
+        self.listings = 0
+        self.closing_lookups: list[tuple[int, ...]] = []
+
+    def list_open_prs_complete(self):
+        self.listings += 1
+        return [pr for pr in self._prs.values() if pr.state == "open"]
+
+    def merged_prs_closing_issues(self, issue_numbers):
+        self.closing_lookups.append(tuple(issue_numbers))
+        wanted = set(issue_numbers)
+        return frozenset(
+            pr.number for pr in self._prs.values()
+            if pr.state == "merged" and int(pr.branch.split("-")[0]) in wanted
+        )
+
+    def get_prs_for_issue(self, issue_number, state="open"):
+        raise AssertionError(f"per-issue /search/issues call for #{issue_number}")
+
+    def get_pr(self, number):
+        return self._prs.get(number)
+
+    def get_issue(self, number):
+        return Issue(number, f"Issue {number}", ["agent:backend"], repo="owner/repo")
+
+
+def _pr(number: int, issue: int, state: str = "open"):
+    from issue_orchestrator.ports.pull_request_tracker import PRInfo
+
+    return PRInfo(
+        number, f"PR {number}", f"https://github.com/owner/repo/pull/{number}",
+        f"{issue}-work", f"Fixes #{issue}", state, [], head_sha="a" * 40,
+    )
+
+
+def test_problem_issues_resolve_through_one_listing_not_a_search_each():
+    """A health review over 60 blocked issues makes ONE listing call (io, 2026-09-25).
+
+    Per-issue /search/issues spent GitHub's 30-per-minute search budget, so a
+    health review over a large board 403'd in launch prep on every retry.
+    """
+    from issue_orchestrator.control.scoped_rework_observation import (
+        observe_rework_targets,
+    )
+
+    host = _NoSearchHost([
+        _pr(900, 7),               # open, wanted
+        _pr(901, 8, "closed"),     # wanted, but closed unmerged: no rework
+        _pr(902, 9999),            # open, but not a problem issue
+        _pr(903, 10, "merged"),    # wanted and merged: rework files a forward fix
+    ])
+
+    targets = observe_rework_targets(
+        host, pr_numbers=[], issue_numbers=list(range(1, 61))
+    )
+
+    assert host.listings == 1
+    assert host.closing_lookups == [tuple(range(1, 61))]
+    assert [(t.pr_number, t.issue_number) for t in targets] == [(900, 7), (903, 10)]
+
+
+def test_no_problem_issues_means_no_listing():
+    from issue_orchestrator.control.scoped_rework_observation import (
+        observe_rework_targets,
+    )
+
+    host = _NoSearchHost([_pr(900, 7)])
+
+    assert observe_rework_targets(host, pr_numbers=[], issue_numbers=[]) == ()
+    assert host.listings == 0
+    assert host.closing_lookups == []
+
+
+def test_an_incomplete_listing_fails_the_observation_instead_of_shortening_it():
+    from issue_orchestrator.adapters.github.errors import GitHubScanIncompleteError
+    from issue_orchestrator.control.scoped_rework_observation import (
+        observe_rework_targets,
+    )
+
+    host = _NoSearchHost([])
+    host.list_open_prs_complete = MagicMock(
+        side_effect=GitHubScanIncompleteError("capped", method="GET", url="/pulls")
+    )
+
+    with pytest.raises(GitHubScanIncompleteError):
+        observe_rework_targets(host, pr_numbers=[], issue_numbers=[7])
