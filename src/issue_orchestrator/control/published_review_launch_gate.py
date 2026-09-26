@@ -47,6 +47,7 @@ def refuse_launch_over_published_review(
         AddLabelAction(
             issue_number=issue_number,
             label=labels.pr_pending,
+            fresh_presence=True,
             reason=f"published validated work is under review: {described}",
         )
     )

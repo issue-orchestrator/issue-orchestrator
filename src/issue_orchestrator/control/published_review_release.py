@@ -39,7 +39,7 @@ from .published_review_custody import (
     PublishedReviewHolds,
     PublishedValidatedWorkHeld,
 )
-from .reconciliation import build_expected_for_mutation
+from .reconciliation import ReconciliationRequired, build_expected_for_mutation
 
 if TYPE_CHECKING:
     from ..ports import Issue
@@ -116,20 +116,29 @@ class PublishedReviewRelease:
                                  f"blocks {self.labels.get_blocking(current)} are not only blocked-failed")
         described = "; ".join(hold.describe() for hold in holds)
         gate = self.apply(AddLabelAction(
-            issue_number=issue_number, label=self.labels.pr_pending,
+            issue_number=issue_number, label=self.labels.pr_pending, fresh_presence=True,
             reason=f"published validated work is under review: {described}"))
         if not gate.success:
             return self._outcome(issue_number, ReviewReleaseStatus.GATE_FAILED, holds,
                                  f"pr-pending not added: {gate.error}")
-        lifted = self.apply(RemoveLabelAction(
-            issue_number=issue_number, label=self.labels.blocked_failed,
-            reason=f"published validated work is under review: {described}",
-            expected=build_expected_for_mutation(
-                required={self.labels.blocked_failed}, forbidden={self.labels.needs_human})))
+        try:
+            lifted = self._lift(issue_number, described)
+        except ReconciliationRequired as refused:
+            # The board moved (pr-pending gone, needs-human landed): not released.
+            return self._outcome(issue_number, ReviewReleaseStatus.BLOCK_REMOVAL_FAILED, holds,
+                                 f"blocked-failed kept: {refused}")
         if not lifted.success:
             return self._outcome(issue_number, ReviewReleaseStatus.BLOCK_REMOVAL_FAILED, holds,
                                  f"blocked-failed not removed: {lifted.error}")
         return self._outcome(issue_number, ReviewReleaseStatus.RELEASED, holds, described)
+
+    def _lift(self, issue_number: int, described: str) -> ActionResult:
+        return self.apply(RemoveLabelAction(
+            issue_number=issue_number, label=self.labels.blocked_failed,
+            reason=f"published validated work is under review: {described}",
+            expected=build_expected_for_mutation(
+                required={self.labels.blocked_failed, self.labels.pr_pending},
+                forbidden={self.labels.needs_human})))
 
     @staticmethod
     def _outcome(issue_number: int, status: ReviewReleaseStatus,

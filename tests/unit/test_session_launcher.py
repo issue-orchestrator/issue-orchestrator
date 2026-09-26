@@ -9623,9 +9623,8 @@ class TestLaunchNeverStartsACoderOverAPublishedPR:
         assert launcher_bundle.create_session_calls == []
         actions = [call.args[0] for call in launcher_bundle.action_applier.apply.call_args_list]
         pr_pending = LabelManager(launcher_bundle.launcher.config).pr_pending
-        assert [(a.issue_number, a.label) for a in actions if isinstance(a, AddLabelAction)] == [
-            (123, pr_pending)
-        ]
+        assert [(a.issue_number, a.label, a.fresh_presence) for a in actions
+                if isinstance(a, AddLabelAction)] == [(123, pr_pending, True)]
 
     def test_launches_once_the_operator_closed_the_pr(self, launcher_bundle, sample_issue):
         launcher_bundle.action_applier.runtime_lifecycle.published_review = self._custody("closed")

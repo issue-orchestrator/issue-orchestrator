@@ -9,6 +9,7 @@ from issue_orchestrator.control.actions import (
     RemoveLabelAction,
 )
 from issue_orchestrator.control.label_manager import LabelManager
+from issue_orchestrator.control.reconciliation import ExternalSnapshot, ReconciliationRequired
 from issue_orchestrator.control.published_review_release import (
     PublishedReviewRelease,
     ReviewReleaseStatus,
@@ -32,7 +33,8 @@ LM = LabelManager(Config())
 class _Labels:
     """Live issue labels plus the guarded writes the owner delegates to."""
 
-    def __init__(self, labels, *, refuse_add=False, refuse_remove=False):
+    def __init__(self, labels, *, refuse_add=False, refuse_remove=False, board_moved=False):
+        self.board_moved = board_moved
         self.live = set(labels)
         self.refuse_add = refuse_add
         self.refuse_remove = refuse_remove
@@ -44,6 +46,7 @@ class _Labels:
 
     def apply(self, action):
         if isinstance(action, AddLabelAction):
+            assert action.fresh_presence, "the gate must not be a cached no-op"
             if self.refuse_add:
                 return ActionResult.fail(action, "github refused the add")
             self.writes.append(("add", action.label))
@@ -52,6 +55,14 @@ class _Labels:
         assert isinstance(action, RemoveLabelAction)
         assert action.expected is not None
         assert LM.blocked_failed in action.expected.required_labels
+        assert LM.pr_pending in action.expected.required_labels
+        if self.board_moved:
+            raise ReconciliationRequired(
+                entity_type="issue", entity_id=ISSUE,
+                expected=ExternalSnapshot.for_issue(ISSUE, {LM.blocked_failed, LM.pr_pending}),
+                actual=ExternalSnapshot.for_issue(ISSUE, {LM.blocked_failed}),
+                reason="pr-pending was removed on GitHub",
+            )
         assert LM.needs_human in action.expected.forbidden_labels
         if self.refuse_remove:
             return ActionResult.fail(action, "github refused the remove")
@@ -132,3 +143,13 @@ def test_the_applier_maps_each_outcome(monkeypatch):
         owner = _owner(labels)
         monkeypatch.setattr(module, "published_review_release_for", lambda _applier, o=owner: o)
         assert apply_release_published_review(action, object()).result_type.value == expected
+
+
+def test_a_moved_board_keeps_the_block_and_reports_no_release():
+    """pr-pending vanished (or needs-human landed) between the add and the lift."""
+    labels = _Labels(["agent:web", LM.blocked_failed], board_moved=True)
+
+    outcome = _owner(labels).release(ISSUE)
+
+    assert outcome.status is ReviewReleaseStatus.BLOCK_REMOVAL_FAILED
+    assert LM.blocked_failed in labels.live
