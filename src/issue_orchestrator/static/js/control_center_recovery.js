@@ -144,6 +144,9 @@
                     `/api/control-center/repositories/${encodeURIComponent(repoKey)}/validated-work`,
                 );
                 if (!response.ok) {
+                    if (response.status === 409) {
+                        throw new Error('Selected repository configuration is missing. Restore it or choose an available configuration for this repository.');
+                    }
                     throw new Error(`recovery request failed with HTTP ${response.status}`);
                 }
                 return {

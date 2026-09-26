@@ -18,6 +18,7 @@ from ..domain.validated_work_owner_stop import (
     StopOwnerOutcome,
     StopOwnerStatus,
 )
+from ..ports.configured_repository_registry import SelectedRepositoryConfigMissingError
 from ..view_models.control_center_recovery import ControlCenterRecoveryTransportMapper
 from ..view_models.control_center_recovery_stop import (
     ControlCenterRecoveryStopTransportMapper,
@@ -43,6 +44,8 @@ def get_repository_validated_work(
             status_code=404,
             detail="Configured repository was not found",
         ) from error
+    except SelectedRepositoryConfigMissingError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     return ControlCenterRecoveryTransportMapper.to_contract(rows).model_dump(
         mode="json"
     )
@@ -88,6 +91,13 @@ def stop_repository_validated_work_owner(
             "Configured repository was not found",
         )
         status_code = 404
+    except SelectedRepositoryConfigMissingError as error:
+        outcome = StopOwnerOutcome(
+            StopOwnerStatus.REPO_MISMATCH,
+            None,
+            str(error),
+        )
+        status_code = 409
     else:
         status_code = _stop_owner_status_code(outcome.status)
     response = ControlCenterRecoveryStopTransportMapper.outcome(outcome)

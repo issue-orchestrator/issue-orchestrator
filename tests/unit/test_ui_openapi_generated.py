@@ -63,6 +63,10 @@ def test_control_center_recovery_read_is_registered_in_ui_openapi() -> None:
     assert operation["responses"]["200"]["content"]["application/json"]["schema"] == {
         "$ref": "#/components/schemas/ControlCenterRecoveryRowsPayload"
     }
+    assert (
+        "selected configuration is missing"
+        in operation["responses"]["409"]["description"]
+    )
 
 
 def test_control_center_recovery_stop_is_registered_in_ui_openapi() -> None:

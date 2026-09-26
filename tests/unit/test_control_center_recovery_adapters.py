@@ -4,6 +4,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 from issue_orchestrator.adapters.configured_repository_registry import (
     RegisteredConfiguredRepositoryRegistry,
     configured_repository_key,
@@ -16,10 +18,14 @@ from issue_orchestrator.domain.control_center_recovery import (
 )
 from issue_orchestrator.domain.repository_engine_lifecycle import EngineIdentity
 from issue_orchestrator.domain.validated_work_claim import ProcessIdentity
+from issue_orchestrator.infra.config import Config
 from issue_orchestrator.ports.repository_engine_supervisor import (
     MultiInstanceStatus,
     SupervisorOps,
     SupervisorStatus,
+)
+from issue_orchestrator.ports.configured_repository_registry import (
+    SelectedRepositoryConfigMissingError,
 )
 
 OWNER_INCARNATION = "linux-proc-v1:boot-id:123"
@@ -65,6 +71,51 @@ def test_configured_repository_registry_resolves_only_opaque_registered_key(
     assert resolved.repo_root == str(Path(second.path).resolve())
     assert resolved.repo_slug == "owner/second"
     assert all(call.args[0] is second for call in slug.call_args_list)
+
+
+def test_configured_repository_registry_reports_missing_selected_config(
+    tmp_path: Path,
+) -> None:
+    registered = SimpleNamespace(
+        path=str(tmp_path),
+        selected_config="deleted.yaml",
+        selected_mode="default",
+    )
+    registry = RegisteredConfiguredRepositoryRegistry(
+        repositories=lambda: (registered,),
+    )
+
+    with pytest.raises(
+        SelectedRepositoryConfigMissingError,
+        match="Selected repository configuration is missing:.*deleted.yaml",
+    ):
+        registry.resolve(configured_repository_key(tmp_path))
+
+
+def test_configured_repository_registry_does_not_mislabel_nested_missing_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / ".issue-orchestrator/config/modes/default/main.yaml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text("repo: owner/repo\n")
+    monkeypatch.setattr(
+        Config,
+        "load",
+        MagicMock(side_effect=FileNotFoundError("Referenced file is missing")),
+    )
+    registered = SimpleNamespace(
+        path=str(tmp_path),
+        selected_config="main.yaml",
+        selected_mode="default",
+    )
+    registry = RegisteredConfiguredRepositoryRegistry(
+        repositories=lambda: (registered,),
+    )
+
+    with pytest.raises(FileNotFoundError) as error:
+        registry.resolve(configured_repository_key(tmp_path))
+    assert type(error.value) is FileNotFoundError
 
 
 def test_engine_presentation_distinguishes_exact_missing_and_replaced(
