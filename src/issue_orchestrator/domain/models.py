@@ -2090,6 +2090,10 @@ class OrchestratorState:
     # present) — persisted like ``recovery_attempts`` so an escalation survives a
     # crash or an apply failure and is retried until it lands (#6824 R1).
     pending_stuck_sweep_escalations: set[int] = field(default_factory=set)
+    # DURABLE: issues whose ``recovery_attempts`` counter budgets published-PR
+    # review releases rather than investigations (#7293). A counter measures
+    # ONE remedy; switching remedy restarts it.
+    review_release_budgets: set[int] = field(default_factory=set)
     # Tick-scoped buffer seeded from the durable set each sweep: every unacked
     # escalation gets an idempotent, retry-safe needs-human label (the
     # authoritative, label-only escalation, #6824 R1).

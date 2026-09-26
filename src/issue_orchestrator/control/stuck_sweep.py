@@ -252,6 +252,7 @@ def run_stuck_sweep(
     exhausted: list[int] = []
     for issue, blocking_label, release in scan.candidates:
         remedy = _Remedy(issue, blocking_label, release, now, recovered, releases)
+        _restart_budget_on_remedy_change(state, issue.number, release)
         attempts = state.recovery_attempts.get(issue.number)
         if attempts is None:
             # First detection: an OUTSTANDING recovery, no failed cycle yet.
@@ -277,12 +278,33 @@ def run_stuck_sweep(
     # there (re-labelled every sweep) until the needs-human label is observed
     # present, so a crash or apply failure never loses the escalation (#6824 R1).
     state.pending_stuck_sweep_escalations.update(exhausted)
+    state.review_release_budgets.intersection_update(state.recovery_attempts)
     return StuckSweepResult(
         recovered=tuple(recovered),
         exhausted=tuple(exhausted),
         held_for_review=tuple(sorted(scan.held_for_review)),
         released_for_review=tuple(releases),
     )
+
+
+def _restart_budget_on_remedy_change(
+    state: "OrchestratorState", number: int, release: bool
+) -> None:
+    """A recovery budget counts failed cycles of ONE remedy (#7293).
+
+    An issue whose investigations were exhausted and whose work recovery then
+    published under an open PR has a new remedy - releasing that review - and
+    the investigation's budget and unlanded escalation say nothing about it.
+    The same holds back the other way when the PR is closed. Remedy switches
+    follow custody changes (a publication, a closed PR), never a sweep's own
+    retries, so restarting here cannot loop.
+    """
+    budgets_release = number in state.review_release_budgets
+    if budgets_release == release:
+        return
+    state.recovery_attempts.pop(number, None)
+    state.pending_stuck_sweep_escalations.discard(number)
+    (state.review_release_budgets.add if release else state.review_release_budgets.discard)(number)
 
 
 def _ack_landed_escalations(state: "OrchestratorState", scan: "_StuckScan") -> None:
@@ -343,6 +365,7 @@ def hydrate_stuck_sweep_state(
     # Unacknowledged escalations survive a restart so an exhausted issue is
     # re-escalated until its needs-human label lands (#6824 R1).
     state.pending_stuck_sweep_escalations = store.load_pending_escalations()
+    state.review_release_budgets = store.load_review_release_budgets()
 
 
 def persist_stuck_sweep_state(
@@ -362,6 +385,7 @@ def persist_stuck_sweep_state(
         store.save_last_stuck_sweep_at(state.last_stuck_sweep_at)
         store.save_recovery_attempts(state.recovery_attempts)
         store.save_pending_escalations(state.pending_stuck_sweep_escalations)
+        store.save_review_release_budgets(state.review_release_budgets)
     except Exception:
         logger.warning(
             "[STUCK_SWEEP] failed to persist recovery counters; a restart "

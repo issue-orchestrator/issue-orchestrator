@@ -119,6 +119,12 @@ class _FakeStore:
     def save_pending_escalations(self, value: set[int]) -> None:
         pass
 
+    def load_review_release_budgets(self) -> set[int]:
+        return set()
+
+    def save_review_release_budgets(self, value: set[int]) -> None:
+        pass
+
 
 class _AnchorTracker:
     """RepositoryHost fake honoring GitHub's label AND-filter, state, and limit."""

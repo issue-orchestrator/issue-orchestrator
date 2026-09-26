@@ -109,12 +109,68 @@ def test_a_release_that_does_not_stick_exhausts_like_any_remedy():
     records, prs = _published(HELD)
     gatherer = _gatherer([_failed(HELD)], records=records, prs=prs)
     state = OrchestratorState()
-    state.recovery_attempts = {HELD: 2}  # one failed cycle short of the ceiling
+    state.recovery_attempts = {HELD: 2}  # two releases already failed to stick
+    state.review_release_budgets = {HELD}
 
     snapshot = gatherer.create_snapshot(state, issues=[])
 
     assert snapshot.stuck_sweep_escalations == (HELD,)
     assert snapshot.stuck_sweep_review_releases == ()
+
+
+def test_an_exhausted_investigation_does_not_block_the_release_that_supersedes_it():
+    """Investigations ran out, THEN recovery published the green PR (#7293).
+
+    The investigation's budget and its unlanded escalation say nothing about
+    the new remedy: the sweep releases the review instead of landing
+    needs-human on reviewable work.
+    """
+    from issue_orchestrator.control.published_review_release import PublishedReviewRelease
+    from tests.unit.control.test_published_review_release import _Labels
+
+    records, prs = _published(HELD)
+    gatherer = _gatherer([_failed(HELD)], records=records, prs=prs)
+    state = OrchestratorState()
+    state.recovery_attempts = {HELD: 3}
+    state.pending_stuck_sweep_escalations = {HELD}
+
+    snapshot = gatherer.create_snapshot(state, issues=[])
+
+    assert snapshot.stuck_sweep_escalations == ()
+    (release,) = _release_actions(snapshot, HELD)
+    lm = LabelManager(_config())
+    assert not [
+        a for a in Planner(config=_config(), scheduler=Scheduler(_config())).plan(snapshot).actions
+        if getattr(a, "label", None) == lm.needs_human
+    ]
+    assert state.review_release_budgets == {HELD}
+    assert state.recovery_attempts[HELD] == 0
+
+    labels = _Labels(["agent:web", lm.blocked_failed])
+    owner = PublishedReviewRelease(
+        custody=gatherer.published_review, labels=lm, read_labels=labels.read, apply=labels.apply
+    )
+    assert owner.release(release.issue_number).released
+    assert labels.live == {"agent:web", lm.pr_pending}
+
+
+def test_the_remedy_a_budget_counts_survives_a_restart():
+    from issue_orchestrator.control.stuck_sweep import (
+        hydrate_stuck_sweep_state,
+        persist_stuck_sweep_state,
+    )
+    from tests.unit.control.test_stuck_sweep import _InMemoryQueueCache
+
+    store = _InMemoryQueueCache()
+    before = OrchestratorState()
+    before.recovery_attempts = {HELD: 1}
+    before.review_release_budgets = {HELD}
+    persist_stuck_sweep_state(before, store)
+
+    after = OrchestratorState()
+    hydrate_stuck_sweep_state(after, store)
+
+    assert after.review_release_budgets == {HELD}
 
 
 def test_a_block_with_its_own_owner_is_held_not_released():
