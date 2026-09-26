@@ -361,7 +361,7 @@ def _claude_handler(working_directory: Path, timers: _ManualTimers):
 
 _CLAUDE_TRUST_PREAMBLE = (
     b"Accessing workspace: /tmp/w Quick safety check: Is this a project you "
-    b"created or one you trust? "
+    b"created or one you trust?\r\n\r\n"
 )
 
 
@@ -404,3 +404,45 @@ def test_the_claude_trust_screen_is_answered_by_what_is_highlighted(
     timers.settle()
 
     assert sent == answer
+
+
+_CLAUDE_TRUST_HEADER = (
+    b"\x1b[2J\x1b[1;1HQuick safety check: Is this a project you created or one you trust?"
+)
+_NO_HIGHLIGHTED = b"\x1b[3;2H\xe2\x9d\xaf No, exit\x1b[4;2H  Yes, I trust this folder"
+_YES_HIGHLIGHTED = b"\x1b[3;2H  No, exit\x1b[K\x1b[4;2H\xe2\x9d\xaf Yes, I trust this folder"
+
+
+def test_keys_come_from_the_screen_as_it_is_now_not_from_history(
+    working_directory: Path,
+) -> None:
+    """#7299 review round 3: a repaint moved the highlight to "Yes", but the
+    earlier "No, exit" frame was still in a cumulative buffer and won, so the
+    handler pressed Down onto "No, exit". The screen model forgets the old
+    highlight."""
+    timers = _ManualTimers()
+    handler, sent = _claude_handler(working_directory, timers)
+
+    handler.on_output(_CLAUDE_TRUST_HEADER + _NO_HIGHLIGHTED)
+    handler.on_output(_YES_HIGHLIGHTED)
+    assert sent == []
+    timers.settle()
+
+    assert sent == [""]
+
+
+def test_a_glyph_or_word_split_across_reads_still_matches(
+    working_directory: Path,
+) -> None:
+    """PTY reads split anywhere: the highlight's UTF-8 bytes, a marker word."""
+    timers = _ManualTimers()
+    handler, sent = _claude_handler(working_directory, timers)
+    frame = _CLAUDE_TRUST_HEADER + _NO_HIGHLIGHTED
+    glyph = frame.index(b"\xe2\x9d\xaf") + 1
+    word = frame.index(b"trust this") + 3
+
+    for chunk in (frame[:glyph], frame[glyph:word], frame[word:]):
+        handler.on_output(chunk)
+    timers.settle()
+
+    assert sent == ["\x1b[B"]

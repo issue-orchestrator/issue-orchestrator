@@ -273,6 +273,8 @@ class AgentRunner(BaseAgentRunner):
         logger.info("Agent argv: %s", _format_command_for_log(spec.command))
 
         cols, rows = shutil.get_terminal_size(fallback=(_DEFAULT_PTY_COLS, _DEFAULT_PTY_ROWS))
+        if interaction_handler is not None:
+            interaction_handler.set_geometry(rows=rows, cols=cols)
         log_writer = None
         if spec.log_path is not None:
             log_writer = MirroredTerminalRecordingWriter(

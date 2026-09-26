@@ -9,9 +9,10 @@ import threading
 from dataclasses import dataclass
 from typing import Callable, Protocol, Sequence
 
+from ..infra.terminal_viewport import DEFAULT_COLS, DEFAULT_ROWS, TerminalViewport
+
 logger = logging.getLogger(__name__)
 
-_MAX_BUFFER_CHARS = 12000
 _ANSI_ESCAPE_RE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 _OSC_ESCAPE_RE = re.compile(r"\x1b\][^\x07]*(?:\x07|\x1b\\)")
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -135,12 +136,14 @@ class SessionInteractionHandler:
         *,
         session_name: str,
         rules: Sequence[SessionInteractionRule],
-        max_buffer_chars: int = _MAX_BUFFER_CHARS,
         timer_factory: TimerFactory = _thread_timer,
     ) -> None:
         self._session_name = session_name
-        self._max_buffer_chars = max(256, max_buffer_chars)
-        self._buffer = ""
+        # What is on the terminal NOW. Rules match this, never the history of
+        # everything printed: a repainted prompt must not leave its old
+        # highlight behind, and a chunk boundary must not split a glyph or a
+        # word (#7299 review round 3).
+        self._viewport = TerminalViewport(rows=DEFAULT_ROWS, cols=DEFAULT_COLS)
         self._sender: Callable[[str], bool] | None = None
         self._fired_rules: set[str] = set()
         self._timer_factory = timer_factory
@@ -163,6 +166,18 @@ class SessionInteractionHandler:
             )
             for rule in rules
         )
+
+    def set_geometry(self, *, rows: int, cols: int) -> None:
+        """Match the PTY the session was spawned with, before it prints.
+
+        Cursor addressing only lands on the right rows at the real size.
+        """
+        with self._lock:
+            self._viewport = TerminalViewport(rows=rows, cols=cols)
+
+    def _screen(self) -> str:
+        """The written rows of the current screen, as one normalized line."""
+        return normalize_terminal_text(" ".join(self._viewport.render().written_rows))
 
     def bind_sender(self, sender: Callable[[str], bool]) -> None:
         """Attach a line-oriented sender once the PTY session exists."""
@@ -193,31 +208,27 @@ class SessionInteractionHandler:
         return all(compiled.rule.name in self._fired_rules for compiled in self._rules)
 
     def on_output(self, data: bytes | str) -> None:
-        """Observe PTY output and fire (or start settling) matching rules."""
+        """Apply PTY output to the screen, then fire (or start settling) rules."""
         if not data:
             return
-        text = data.decode("utf-8", errors="ignore") if isinstance(data, bytes) else data
-        normalized = normalize_terminal_text(text)
+        raw = data if isinstance(data, bytes) else data.encode("utf-8")
         with self._lock:
             # Any output, even a pure redraw, means the screen is not settled.
             for name in list(self._settling):
                 self._restart_settle(self._compiled(name))
-            if not normalized:
-                return
-            combined = f"{self._buffer} {normalized}".strip() if self._buffer else normalized
-            self._buffer = combined[-self._max_buffer_chars :]
-            self._scan_rules()
+            self._viewport.feed(raw)
+            self._scan_rules(self._screen())
 
-    def _scan_rules(self) -> None:
+    def _scan_rules(self, screen: str) -> None:
         """Expire rules whose startup is over, then answer (or settle) matches."""
         for compiled in self._rules:
-            if compiled.expired_by(self._buffer):
+            if compiled.expired_by(screen):
                 self._expire(compiled.rule.name)
         for compiled in self._rules:
             rule = compiled.rule
             if rule.name in self._fired_rules | self._expired | self._settling.keys():
                 continue
-            response = compiled.response_for(self._buffer)
+            response = compiled.response_for(screen)
             if response is None:
                 continue
             if rule.settle_seconds > 0:
@@ -245,7 +256,7 @@ class SessionInteractionHandler:
             del self._settling[rule.name]
             # Choose the keys from the SETTLED screen: an earlier, half-drawn
             # frame may not yet show which option is highlighted.
-            response = compiled.response_for(self._buffer)
+            response = compiled.response_for(self._screen())
             if response is not None:
                 self._respond(rule, response)
 
