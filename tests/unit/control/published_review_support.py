@@ -102,6 +102,15 @@ class PullRequests:
     by_issue: dict[int, list[PRInfo]] = field(default_factory=dict)
     reads: list[tuple[int, str]] = field(default_factory=list)
 
+    def get_open_prs_for_branch_complete(self, branch_name: str) -> list[PRInfo]:
+        self.reads.append((branch_name, "open-complete"))
+        return [
+            item
+            for prs in self.by_issue.values()
+            for item in prs
+            if item.branch == branch_name and item.state == "open"
+        ]
+
     def get_prs_for_issue(self, issue_number: int, state: str = "open") -> list[PRInfo]:
         self.reads.append((issue_number, state))
         prs = self.by_issue.get(issue_number, [])

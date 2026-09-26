@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from ..control.review_exchange_lifecycle import CoreIssueRuntimeOwners, IssueRuntimeLifecycleOwners, IssuePublishRetryRuntime
 from ..control.fact_gatherer import FactGatherer
 from ..control.issue_run_evidence import IssueRunEvidenceService
-from ..control.published_review_custody import IssuePullRequestReader, PublishedReviewCustody
+from ..control.published_review_custody import BranchPullRequestReader, PublishedReviewCustody
 from ..control.validated_work_preservation import ValidatedWorkPreservationService
 from ..domain.issue_run_evidence import IssueRunRecord, RunTerminalBinding
 from ..ports.issue_run_evidence import IssueRunLedger
@@ -24,7 +24,7 @@ def build_issue_runtime(*, state: OrchestratorState, ledger: IssueRunLedger,
         pair_registry: PersistentExchangePairRegistry | None,
         supervisor: BackgroundJobSupervisor | None,
         publish_recovery: IssuePublishRetryRuntime, events: EventSink,
-        pull_requests: IssuePullRequestReader, stuck_sweep: FactGatherer | None) -> IssueRuntimeLifecycleOwners:
+        pull_requests: BranchPullRequestReader, stuck_sweep: FactGatherer | None) -> IssueRuntimeLifecycleOwners:
     def live_runs(issue_number: int) -> tuple[IssueRunRecord, ...]:
         return tuple(IssueRunRecord(session.key, session.run_assets, session.run_assets.started_at, session.branch_name, RunTerminalBinding(session.terminal_id))
             for session in state.active_sessions if session.issue.number == issue_number)

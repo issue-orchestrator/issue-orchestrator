@@ -6,13 +6,13 @@ from issue_orchestrator.domain.issue_run_evidence import IssueRunEvidence, Issue
 from issue_orchestrator.domain.validated_work_commands import ValidatedWorkDispositionBatch
 from issue_orchestrator.ports.issue_run_evidence import IssueRunEvidenceSource
 from issue_orchestrator.ports.validated_work_preservation import ValidatedWorkPreservation
-from issue_orchestrator.control.published_review_custody import IssuePullRequestReader, PublishedReviewCustody
+from issue_orchestrator.control.published_review_custody import BranchPullRequestReader, PublishedReviewCustody
 
 
 def no_open_pull_requests():
     """A PR reader for fixtures whose issues have no PRs at all."""
-    reader = Mock(spec=IssuePullRequestReader)
-    reader.get_prs_for_issue.return_value = []
+    reader = Mock(spec=BranchPullRequestReader)
+    reader.get_open_prs_for_branch_complete.return_value = []
     return reader
 
 

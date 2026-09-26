@@ -869,6 +869,10 @@ class GitHubAdapter:
 
     # PRRepository implementation
 
+    def get_open_prs_for_branch_complete(self, branch: str) -> list[PRInfo]:
+        """Uncached, complete open-PR set for a head branch (fails if capped)."""
+        return [self._pr_info_from_api(raw) for raw in self._client.read_publication_prs(branch)]
+
     def get_prs_for_branch(self, branch: str, state: str = "open") -> list[PRInfo]:
         """Get all pull requests for a specific branch.
 

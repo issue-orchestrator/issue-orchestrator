@@ -16,8 +16,8 @@ risk?" answers no. That is correct for the store, and wrong for the issue:
 This module is the one owner of the question those paths got wrong: *does an
 open pull request for this issue carry its published validated work?* It is
 answered from the durable validated-work record (never inferred from labels)
-and one authoritative read of the issue's PRs, which is made only when a
-published record exists.
+and one authoritative, uncached read of the open PRs on each published
+record's branch, which is made only when a published record exists.
 
 A PR carries the work when it is open, on the record's branch, and is either the
 PR the work was published into or points at the exact published head. A later
@@ -49,6 +49,10 @@ class ValidatedWorkDispositionReader(Protocol):
 
 class IssuePullRequestReader(Protocol):
     def get_prs_for_issue(self, issue_number: int, state: str = "open") -> list["PRInfo"]: ...
+
+
+class BranchPullRequestReader(Protocol):
+    def get_open_prs_for_branch_complete(self, branch: str) -> list["PRInfo"]: ...
 
 
 def open_pull_requests(
@@ -164,16 +168,21 @@ class PublishedReviewCustody:
     """Answers, and enforces, "an open PR carries this issue's published work"."""
 
     work: ValidatedWorkDispositionReader
-    pull_requests: IssuePullRequestReader
+    pull_requests: BranchPullRequestReader
 
     def holds(self, issue_number: int) -> tuple[PublishedReviewHold, ...]:
         batch = self.work.for_issue(issue_number)
-        if not _published(batch):
+        published = _published(batch)
+        if not published:
             # No published record: nothing to protect, and no GitHub read spent.
             return ()
-        return published_review_holds(
-            batch, open_pull_requests(self.pull_requests, issue_number)
-        )
+        # Read by the records' own branches - uncached and complete, so a PR
+        # cannot hide behind a capped issue search or a stale cache entry.
+        branches = sorted({record.key.branch_name for record in published})
+        return published_review_holds(batch, [
+            pr for branch in branches
+            for pr in self.pull_requests.get_open_prs_for_branch_complete(branch)
+        ])
 
     def require_released(self, issue_number: int) -> None:
         """Refuse a destructive issue operation while an open PR holds its work."""
@@ -198,6 +207,7 @@ NO_PUBLISHED_REVIEW_HOLDS: PublishedReviewHolds = _NoPublishedReviewHolds()
 
 
 __all__ = [
+    "BranchPullRequestReader",
     "IssuePullRequestReader",
     "NO_PUBLISHED_REVIEW_HOLDS",
     "PublishedReviewCustody",

@@ -40,8 +40,8 @@ def test_open_pr_at_the_published_head_holds_the_issue():
         ISSUE, 500, branch(ISSUE)
     )
     assert hold.published_head_sha == PUBLISHED
-    # Authoritative complete set: the "open" answer comes from a one-entry cache.
-    assert pulls.reads == [(ISSUE, "all")]
+    # Uncached, complete read by the published record's own branch.
+    assert pulls.reads == [(branch(ISSUE), "open-complete")]
 
 
 def test_the_published_pr_still_holds_after_a_later_push():
