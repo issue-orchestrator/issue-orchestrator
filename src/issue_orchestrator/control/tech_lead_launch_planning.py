@@ -28,6 +28,10 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Optional, Sequence
 
 from ..domain.models import PendingTechLeadReview
+
+# Withdrawal reason for a queued investigation whose subject's published
+# validated work an open PR now carries (#7293).
+PUBLISHED_REVIEW_WITHDRAWAL = "published_validated_work_under_review"
 from ..domain.tech_lead_run import (
     BARRIER_GLOBAL_AWAITING_DRAIN,
     BARRIER_GLOBAL_RUN_ACTIVE,
@@ -183,6 +187,7 @@ def plan_tech_lead_launch_revalidation(
     board: "Sequence[Issue]",
     is_blocking_any: "Callable[[Sequence[str]], bool]",
     subjects: "Sequence[Issue]" = (),
+    published_review_subjects: frozenset[int] = frozenset(),
 ) -> TechLeadRevalidation:
     """Re-check every queued INVESTIGATION against this tick's live evidence.
 
@@ -215,6 +220,11 @@ def plan_tech_lead_launch_revalidation(
     eligible: list[PendingTechLeadReview] = []
     withdrawn: list[TechLeadRunWithdrawal] = []
     for item in pending:
+        if item.issue_number in published_review_subjects:
+            # #7293: an open PR carries this subject's published validated work.
+            withdrawn.append(TechLeadRunWithdrawal(item, PUBLISHED_REVIEW_WITHDRAWAL,
+                "an open PR carries the issue's published validated work; its review owns it"))
+            continue
         issue = (
             None if is_global_pending(item) else by_number.get(item.issue_number)
         )

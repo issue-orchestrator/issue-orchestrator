@@ -33,6 +33,7 @@ from ..ports.repository_host import RepositoryHost, RepositoryHostError
 from ..ports import EventSink,  make_trace_event
 from .provider_launch_readiness import ProviderLaunchReadiness
 from .published_review_custody import NO_PUBLISHED_REVIEW_HOLDS, PublishedReviewHolds
+from .published_review_release import held_investigation_subjects
 from .health_review_trigger import (
     classify_tech_lead_anchor_issues,
     discover_open_tech_lead_anchor_issues,
@@ -275,6 +276,8 @@ class FactGatherer:
             stuck_sweep_review_releases=tuple(state.stuck_sweep_review_releases),
             tech_lead_facts=tech_lead_facts,
             tech_lead_subjects=tech_lead_subjects,
+            published_review_subjects=held_investigation_subjects(
+                state.pending_tech_lead_reviews, self.published_review),
             cleanup_facts=cleanup_facts,
             stale_in_progress_issues=tuple(stale_in_progress_issues or []),
             stale_claim_issues=tuple(stale_claim_issues or []),

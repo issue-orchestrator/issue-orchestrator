@@ -268,3 +268,78 @@ def test_a_hold_that_ends_starts_a_fresh_investigation_budget():
 
     reopened = gatherer.create_snapshot(state, issues=[])
     assert HELD in {f.issue_number for f in reopened.discovered_failures}
+
+
+def _queued_investigation(number: int):
+    from issue_orchestrator.control.stuck_sweep import _recovered_failure
+    from issue_orchestrator.domain.models import PendingTechLeadReview
+    from issue_orchestrator.domain.tech_lead_session import TechLeadSessionFlavor
+
+    return PendingTechLeadReview(
+        issue_number=number, title=f"Issue {number}",
+        flavor=TechLeadSessionFlavor.FAILURE_INVESTIGATION,
+        failure=_recovered_failure(_failed(number), "blocked-failed", 0.0),
+    )
+
+
+def _revalidate(snapshot, lm):
+    """The planner's launch-time revalidation, over the snapshot's facts."""
+    from issue_orchestrator.control.tech_lead_launch_planning import (
+        plan_tech_lead_launch_revalidation,
+    )
+
+    return plan_tech_lead_launch_revalidation(
+        snapshot.pending_tech_lead, snapshot.issues, lm.is_blocking_any,
+        snapshot.tech_lead_subjects, published_review_subjects=snapshot.published_review_subjects)
+
+
+def test_a_queued_investigation_yields_to_work_published_after_it_was_queued():
+    """#7293 round 11: the sweep queued an investigation, THEN recovery published.
+
+    The queued run owns the issue, so the sweep skips it - but the run would
+    only escalate or reset reviewable work. Launch revalidation withdraws it;
+    the next sweep finds the issue unowned and releases its review instead of
+    landing the unlanded escalation.
+    """
+    from issue_orchestrator.control.pending_session_queues import PendingSessionQueues
+
+    records, prs = _published(HELD)
+    gatherer = _gatherer([_failed(HELD)], records=records, prs=prs)
+    state = OrchestratorState()
+    state.pending_tech_lead_reviews = [_queued_investigation(HELD)]
+    state.recovery_attempts = {HELD: 3}
+    state.pending_stuck_sweep_escalations = {HELD}
+    lm = LabelManager(_config())
+
+    snapshot = gatherer.create_snapshot(state, issues=[_failed(HELD)])
+    revalidated = _revalidate(snapshot, lm)
+
+    assert snapshot.published_review_subjects == frozenset({HELD})
+    assert [w.item.issue_number for w in revalidated.withdrawn] == [HELD]
+    assert revalidated.withdrawn[0].reason == "published_validated_work_under_review"
+    assert revalidated.still_eligible == ()
+
+    # The drop applies (the queue's single writer), and the next sweep runs.
+    PendingSessionQueues(state).remove_tech_lead(HELD)
+    state.last_stuck_sweep_at = 0.0
+    state.stuck_sweep_escalations.clear()
+    after = gatherer.create_snapshot(state, issues=[_failed(HELD)])
+
+    assert after.stuck_sweep_review_releases == (HELD,)
+    assert after.stuck_sweep_escalations == ()
+    assert state.pending_stuck_sweep_escalations == set()
+
+
+def test_a_queued_investigation_without_published_work_is_kept():
+    """Control: no carrying PR, no withdrawal."""
+
+    gatherer = _gatherer([_failed(HELD)], records={}, prs={})
+    state = OrchestratorState()
+    state.pending_tech_lead_reviews = [_queued_investigation(HELD)]
+
+    snapshot = gatherer.create_snapshot(state, issues=[_failed(HELD)])
+    revalidated = _revalidate(snapshot, LabelManager(_config()))
+
+    assert snapshot.published_review_subjects == frozenset()
+    assert revalidated.withdrawn == ()
+    assert [item.issue_number for item in revalidated.still_eligible] == [HELD]

@@ -30,7 +30,12 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
-from ..domain.tech_lead_session import PROPOSED_TECH_LEAD_LABEL, TECH_LEAD_OBSERVATION_LABEL
+from ..domain.tech_lead_session import (
+    PROPOSED_TECH_LEAD_LABEL,
+    TECH_LEAD_OBSERVATION_LABEL,
+    TechLeadSessionFlavor,
+)
+from ..ports.repository_host import RepositoryHostError
 from ..infra.logging_config import issue_log
 from .action_results import ActionResult
 from .actions import AddLabelAction, ReleasePublishedReviewAction, RemoveLabelAction
@@ -42,6 +47,7 @@ from .published_review_custody import (
 from .reconciliation import ReconciliationRequired, build_expected_for_mutation
 
 if TYPE_CHECKING:
+    from ..domain.models import PendingTechLeadReview
     from ..ports import Issue
     from .action_applier import ActionApplier
     from .actions import Action
@@ -244,3 +250,29 @@ def refused_reset_disposition(
         return False, {}
     outcome = release(issue_number)
     return outcome.released, {"review_release": outcome.status.value}
+
+
+def held_investigation_subjects(
+    pending: Sequence["PendingTechLeadReview"], custody: PublishedReviewHolds
+) -> frozenset[int]:
+    """Queued failure investigations whose subject a published PR now owns.
+
+    A failure investigation queued before recovery published the issue's work
+    must not run over it (#7293): its likely remedies are an escalation to
+    needs-human or a reset, and the review is what the issue actually needs.
+    Launch-time revalidation withdraws these runs; the stuck sweep then finds
+    the issue unowned and releases its review. An unreadable custody answer
+    keeps the run - every destructive remedy it could reach rechecks custody
+    and fails closed on its own.
+    """
+    held: set[int] = set()
+    for item in pending:
+        investigation = item.flavor is TechLeadSessionFlavor.FAILURE_INVESTIGATION
+        try:
+            owned = investigation and bool(custody.holds(item.issue_number))
+        except RepositoryHostError as error:
+            logger.warning(issue_log(item.issue_number,
+                "Published-review custody unreadable; keeping the queued investigation: %s"), error)
+            continue
+        held.update({item.issue_number} if owned else set())
+    return frozenset(held)

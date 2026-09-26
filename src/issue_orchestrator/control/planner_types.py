@@ -102,6 +102,9 @@ class OrchestratorSnapshot:
     # consults these so a subject CLOSED while queued is observed as closed
     # rather than merely absent.
     tech_lead_subjects: tuple["Issue", ...] = ()
+    # Queued failure-investigation subjects whose published validated work an
+    # open PR now carries (#7293): their review owns them; withdraw the run.
+    published_review_subjects: frozenset[int] = frozenset()
     cleanup_facts: Optional[CleanupFacts] = None
     # Issues with stale in-progress labels (label present but no active session)
     stale_in_progress_issues: tuple[Issue, ...] = field(default_factory=tuple)
