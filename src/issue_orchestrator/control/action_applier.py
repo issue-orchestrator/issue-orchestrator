@@ -117,6 +117,7 @@ from .provider_impact import ApplyProviderImpactAction, apply_provider_impact
 from ..ports.completion_intake import CompletionIntakeRuntime
 from .session_manager import SessionManager, SessionRef, SessionType, SessionContext
 from .tech_lead_applier_handlers import tech_lead_action_handlers
+from .published_review_release import apply_release_published_review
 from .tech_lead_issue_creation import apply_create_tech_lead_issue
 from .history_reconciliation import apply_history_reconciliation
 from .tech_lead_proposals import execute_approved_tech_lead_op
@@ -299,6 +300,7 @@ class ActionApplier:
             ActionType.DROP_TECH_LEAD: self._apply_queue_operation,
             ActionType.ESCALATE_TO_HUMAN: self._apply_escalate,
             ActionType.ENQUEUE_TO_MERGE_QUEUE: self._apply_enqueue_to_merge_queue,
+            ActionType.RELEASE_PUBLISHED_REVIEW: lambda action: apply_release_published_review(action, self),
             # Every tech-lead action type -> its extracted apply-time owner.
             **tech_lead_action_handlers(
                 create_tech_lead_issue=self._apply_create_tech_lead_issue,

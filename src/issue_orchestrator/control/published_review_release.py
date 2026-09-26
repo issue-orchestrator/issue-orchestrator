@@ -1,0 +1,196 @@
+"""Release the review of a PR that carries an issue's published validated work (#7293).
+
+Validated-work recovery publishes a halted run's validated head and routes its
+PR to review, but review discovery drops a PR whose issue is blocked. An issue
+blocked only by the failed run's ``blocked-failed`` label, whose open PR still
+carries that published work, needs its review RELEASED: not a failure
+investigation, and never a reset that closes the PR.
+
+This is the one owner of that transition. Both callers - the stuck sweep's
+budgeted remedy (through ``ReleasePublishedReviewAction`` and the applier) and a
+tech-lead ``reset_retry`` that the reset gate refused - get the same ordered,
+revalidated writes and the same typed outcome:
+
+1. custody is rechecked NOW: a PR closed since it was observed is the
+   operator's abandonment, and the issue is left for an ordinary investigation;
+2. the live labels are read: any block other than ``blocked-failed`` (a
+   human's ``blocked``, needs-human, recovery-pending) has an owner of its own
+   and is never lifted here;
+3. ``pr-pending`` goes on, and must be confirmed before anything comes off -
+   an issue with neither gate is exactly what launches a coder over the PR;
+4. only then does ``blocked-failed`` come off, guarded on still being present
+   and on no needs-human escalation having landed.
+"""
+
+from __future__ import annotations
+
+import logging
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+from enum import StrEnum
+from typing import TYPE_CHECKING
+
+from ..domain.tech_lead_session import PROPOSED_TECH_LEAD_LABEL, TECH_LEAD_OBSERVATION_LABEL
+from ..infra.logging_config import issue_log
+from .action_results import ActionResult
+from .actions import AddLabelAction, ReleasePublishedReviewAction, RemoveLabelAction
+from .published_review_custody import (
+    PublishedReviewHold,
+    PublishedReviewHolds,
+    PublishedValidatedWorkHeld,
+)
+from .reconciliation import build_expected_for_mutation
+
+if TYPE_CHECKING:
+    from ..ports import Issue
+    from .action_applier import ActionApplier
+    from .actions import Action
+    from .label_manager import LabelManager
+
+logger = logging.getLogger(__name__)
+
+_MACHINERY = frozenset(
+    {PROPOSED_TECH_LEAD_LABEL.casefold(), TECH_LEAD_OBSERVATION_LABEL.casefold()}
+)
+
+
+def only_failure_blocked(labels: Sequence[str], label_manager: "LabelManager") -> bool:
+    """Whether ``blocked-failed`` is the ONLY recoverable block on ``labels``."""
+    blockers = {
+        name.casefold()
+        for name in label_manager.get_blocking(labels)
+        if name.casefold() not in _MACHINERY
+    }
+    return blockers == {label_manager.blocked_failed.casefold()}
+
+
+class ReviewReleaseStatus(StrEnum):
+    RELEASED = "released"
+    #: No open PR carries published work any more; nothing was written.
+    NOT_HELD = "not_held"
+    #: Another block owns the issue, or blocked-failed is already gone.
+    NOT_RELEASABLE = "not_releasable"
+    #: pr-pending could not be put on; nothing was removed.
+    GATE_FAILED = "gate_failed"
+    #: pr-pending is on, but blocked-failed would not come off.
+    BLOCK_REMOVAL_FAILED = "block_removal_failed"
+
+
+_LEFT_ALONE = frozenset({ReviewReleaseStatus.NOT_HELD, ReviewReleaseStatus.NOT_RELEASABLE})
+_PUBLISHED_WORK_REFUSAL = PublishedValidatedWorkHeld.STALE_REASON
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewReleaseOutcome:
+    issue_number: int
+    status: ReviewReleaseStatus
+    holds: tuple[PublishedReviewHold, ...]
+    detail: str
+
+    @property
+    def released(self) -> bool:
+        return self.status is ReviewReleaseStatus.RELEASED
+
+    @property
+    def left_alone(self) -> bool:
+        """Nothing was written because nothing was the owner's to release."""
+        return self.status in _LEFT_ALONE
+
+
+@dataclass(frozen=True, slots=True)
+class PublishedReviewRelease:
+    custody: PublishedReviewHolds
+    labels: "LabelManager"
+    read_labels: Callable[[int], list[str]]
+    apply: Callable[["Action"], ActionResult]
+
+    def release(self, issue_number: int) -> ReviewReleaseOutcome:
+        holds = self.custody.holds(issue_number)
+        if not holds:
+            return self._outcome(issue_number, ReviewReleaseStatus.NOT_HELD, holds,
+                                 "no open PR carries published validated work")
+        current = self.read_labels(issue_number)
+        releasable = only_failure_blocked(current, self.labels)
+        if not releasable:
+            return self._outcome(issue_number, ReviewReleaseStatus.NOT_RELEASABLE, holds,
+                                 f"blocks {self.labels.get_blocking(current)} are not only blocked-failed")
+        described = "; ".join(hold.describe() for hold in holds)
+        gate = self.apply(AddLabelAction(
+            issue_number=issue_number, label=self.labels.pr_pending,
+            reason=f"published validated work is under review: {described}"))
+        if not gate.success:
+            return self._outcome(issue_number, ReviewReleaseStatus.GATE_FAILED, holds,
+                                 f"pr-pending not added: {gate.error}")
+        lifted = self.apply(RemoveLabelAction(
+            issue_number=issue_number, label=self.labels.blocked_failed,
+            reason=f"published validated work is under review: {described}",
+            expected=build_expected_for_mutation(
+                required={self.labels.blocked_failed}, forbidden={self.labels.needs_human})))
+        if not lifted.success:
+            return self._outcome(issue_number, ReviewReleaseStatus.BLOCK_REMOVAL_FAILED, holds,
+                                 f"blocked-failed not removed: {lifted.error}")
+        return self._outcome(issue_number, ReviewReleaseStatus.RELEASED, holds, described)
+
+    @staticmethod
+    def _outcome(issue_number: int, status: ReviewReleaseStatus,
+                 holds: tuple[PublishedReviewHold, ...], detail: str) -> ReviewReleaseOutcome:
+        logger.info(issue_log(issue_number, "Published review release: %s (%s) (#7293)"),
+                    status.value, detail)
+        return ReviewReleaseOutcome(issue_number, status, holds, detail)
+
+
+def published_review_release_for(applier: "ActionApplier") -> PublishedReviewRelease:
+    """The owner over the applier's custody, labels and guarded label writes."""
+    if applier.label_manager is None or applier.repository_host is None:
+        raise RuntimeError("published review release requires labels and a repository host")
+    return PublishedReviewRelease(
+        custody=applier.runtime_lifecycle.published_review,
+        labels=applier.label_manager,
+        read_labels=applier.repository_host.get_issue_labels_fresh,
+        apply=applier.apply,
+    )
+
+
+def apply_release_published_review(action: "Action", applier: "ActionApplier") -> ActionResult:
+    """The applier handler: map the owner's typed outcome onto an ActionResult."""
+    assert isinstance(action, ReleasePublishedReviewAction)
+    outcome = published_review_release_for(applier).release(action.issue_number)
+    number, status = action.issue_number, outcome.status.value
+    if outcome.released:
+        return ActionResult.ok(action, issue_number=number, status=status)
+    refuse = ActionResult.skip if outcome.left_alone else ActionResult.fail
+    return refuse(action, outcome.detail, issue_number=number, status=status)
+
+
+def build_stuck_sweep_review_release_actions(issue_numbers: "tuple[int, ...]") -> "list[Action]":
+    """The sweep's budgeted remedy for each held issue: one owner command each."""
+    return [ReleasePublishedReviewAction(issue_number=number) for number in issue_numbers]
+
+
+def log_held_for_review(
+    issue: "Issue", blocking_label: str, holds: tuple[PublishedReviewHold, ...]
+) -> None:
+    logger.info(
+        "[STUCK_SWEEP] issue #%d (label=%s) is not stuck: %s; its review owns "
+        "it, so it is neither investigated nor escalated (#7293)",
+        issue.number,
+        blocking_label,
+        "; ".join(hold.describe() for hold in holds),
+    )
+
+
+def refused_reset_disposition(
+    refusal: str, issue_number: int, release: Callable[[int], ReviewReleaseOutcome]
+) -> tuple[bool, dict[str, str]]:
+    """Whether a refused tech-lead reset still settled the issue, and how.
+
+    Only the published-work refusal names an owner that can make progress: the
+    PR's review. The refusal then releases that review through this module's
+    owner, and the investigation is satisfied only if the release happened -
+    never on the refusal alone (the sweep may be disabled, or the release may
+    fail, and then the issue is still stranded).
+    """
+    if refusal != _PUBLISHED_WORK_REFUSAL:
+        return False, {}
+    outcome = release(issue_number)
+    return outcome.released, {"review_release": outcome.status.value}

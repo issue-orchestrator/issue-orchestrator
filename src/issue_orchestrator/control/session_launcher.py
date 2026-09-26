@@ -1153,6 +1153,10 @@ class SessionLauncher:
             )
         if result := self._check_provider_ready(agent_config, issue.number):
             return result
+        # A retry of work already published under an open PR must not start a
+        # second coder on that PR's branch (#7293).
+        if result := refuse_launch_over_published_review(self._action_applier, self._lm, issue.number, tech_lead=False):
+            return result
         return issue, agent_config, agent_label, prepared_coder_prompt
 
     def launch_validation_retry_session(

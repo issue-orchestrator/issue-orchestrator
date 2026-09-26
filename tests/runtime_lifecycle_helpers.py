@@ -72,3 +72,8 @@ def bind_action_runtime(applier):
 
 def cancel_empty_exchange(issue_number: int, reason: str) -> ReviewExchangeCancellation:
     return ReviewExchangeCancellation(issue_number, (), ValidatedWorkDispositionBatch.no_work(issue_number, reason))
+
+
+def unexpected_review_release(issue_number: int):
+    """For executors whose tests never refuse a reset over published work."""
+    raise AssertionError(f"issue #{issue_number}: no published-review release expected")

@@ -9644,3 +9644,30 @@ class TestLaunchNeverStartsACoderOverAPublishedPR:
 
         assert refuse_launch_over_published_review(applier, MagicMock(), 123, tech_lead=True) is None
         applier.apply.assert_not_called()
+
+    def test_a_validation_retry_never_starts_a_second_coder_on_the_pr(
+        self, launcher_bundle, mock_worktree_manager
+    ):
+        """A durable retry for work since published under an open PR (#7293)."""
+        launcher_bundle.action_applier.runtime_lifecycle.published_review = self._custody()
+        launcher_bundle.action_applier.apply.return_value = MagicMock(success=True)
+        retry = PendingValidationRetry(
+            issue_number=123,
+            issue_title="Fix checkout",
+            agent_label="agent:web",
+            worktree_path="/tmp/worktree-123",
+            branch_name="123-validated",
+            original_prompt="Work on issue #123: Fix checkout",
+            validation_error="Validation failed",
+            validation_error_file="/tmp/validation-errors.txt",
+            retry_count=1,
+            source_task=TaskKind.CODE,
+            validation_cmd="make test",
+        )
+
+        result = launcher_bundle.launcher.launch_validation_retry_session(retry, active_sessions=[])
+
+        assert result.success is False
+        assert "PR #500" in result.reason
+        assert mock_worktree_manager.create_calls == []
+        assert launcher_bundle.create_session_calls == []

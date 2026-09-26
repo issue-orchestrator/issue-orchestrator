@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Sequence
 
+from ..control.published_review_release import published_review_release_for
 from ..control.queue_cache import QueueCache
 from ..control.tech_lead_kill_session import (
     KillSessionRunOutcome,
@@ -148,4 +149,7 @@ def build_tech_lead_reset_retry_executor(
         read_issue=_read_issue,
         runtime_snapshot=deps.runtime_lifecycle.reset_snapshot,
         run_reset=_run_reset,
+        release_review=lambda issue_number: published_review_release_for(
+            deps.action_applier
+        ).release(issue_number),
     )

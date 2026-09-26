@@ -155,16 +155,27 @@ def _tech_lead_executor(pr_state: str):
         number=ISSUE, title="t", labels=["agent:web", lm.blocked_failed, lm.pr_pending],
         state="open", repo="owner/repo",
     )
-    action_applier = MagicMock()
+    lifecycle = runtime_owners(
+        active_sessions=state.active_sessions, published_review=_custody(pr_state)
+    )
+    live = {"agent:web", lm.blocked_failed}
+    repository_host.get_issue_labels_fresh.side_effect = lambda _n: sorted(live)
+    action_applier = MagicMock(label_manager=lm, repository_host=repository_host,
+                               runtime_lifecycle=lifecycle)
+
+    def apply(action):
+        from issue_orchestrator.control.actions import AddLabelAction
+        (live.add if isinstance(action, AddLabelAction) else live.discard)(action.label)
+        return Mock(success=True, error=None)
+
+    action_applier.apply.side_effect = apply
     deps = SimpleNamespace(
         label_manager=lm,
         events=MagicMock(),
         repository_host=repository_host,
         queue_cache_store=MagicMock(),
         action_applier=action_applier,
-        runtime_lifecycle=runtime_owners(
-            active_sessions=state.active_sessions, published_review=_custody(pr_state)
-        ),
+        runtime_lifecycle=lifecycle,
     )
     orchestrator = SimpleNamespace(
         deps=deps, config=Config(), state=state, repository_host=repository_host
@@ -172,8 +183,16 @@ def _tech_lead_executor(pr_state: str):
     return build_tech_lead_reset_retry_executor(orchestrator), action_applier
 
 
-def test_tech_lead_reset_retry_downgrades_instead_of_closing_the_pr():
-    """The porchpin#392 path, through the production executor wiring."""
+def test_tech_lead_reset_retry_releases_the_review_instead_of_closing_the_pr():
+    """The porchpin#392 path, through the production executor wiring.
+
+    The reset is refused, and the same investigation releases the PR's review:
+    pr-pending on, then blocked-failed off - so the review can proceed even
+    with the stuck sweep disabled (its default).
+    """
+    from issue_orchestrator.control.actions import AddLabelAction, RemoveLabelAction
+    from issue_orchestrator.control.tech_lead_reset_retry import evaluate_required_act_level_outcome
+
     executor, action_applier = _tech_lead_executor("open")
 
     with patch("issue_orchestrator.control.maintenance.reset_issue") as reset_issue_mock:
@@ -181,6 +200,7 @@ def test_tech_lead_reset_retry_downgrades_instead_of_closing_the_pr():
             ResetRetryIssueAction(
                 issue_number=ISSUE, rationale="stuck", proposal_id="A1",
                 finding_ids=("T1",), anchor_issue_number=ISSUE,
+                requires_effective_disposition=True,
             )
         )
 
@@ -189,4 +209,8 @@ def test_tech_lead_reset_retry_downgrades_instead_of_closing_the_pr():
     assert result.details["boundary"]["stale_reason"] == STALE
     assert result.details["boundary"]["published_review"]["holds"][0]["pr_number"] == PR_NUMBER
     reset_issue_mock.assert_not_called()
-    action_applier.apply.assert_not_called()
+    writes = [(type(c.args[0]), c.args[0].label) for c in action_applier.apply.call_args_list]
+    lm = LabelManager(Config())
+    assert writes == [(AddLabelAction, lm.pr_pending), (RemoveLabelAction, lm.blocked_failed)]
+    assert result.details["boundary"]["review_release"] == "released"
+    assert evaluate_required_act_level_outcome([result]).committed

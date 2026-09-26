@@ -1,4 +1,5 @@
 """Required diagnosis and proposal reuse at planner/executor boundaries."""
+from tests.runtime_lifecycle_helpers import unexpected_review_release
 from dataclasses import replace
 import hashlib
 from unittest.mock import MagicMock
@@ -72,7 +73,8 @@ def harness(op_type="reset_retry"):
     authority.record_op(issue_number=7000, op=op)
     reset = TechLeadResetRetryExecutor(events=MagicMock(), label_manager=LabelManager(Config()),
         read_issue=host.get_issue, runtime_snapshot=reset_snapshot,
-        run_reset=lambda n, labels: ResetRetryRunOutcome(success=True))
+        run_reset=lambda n, labels: ResetRetryRunOutcome(success=True),
+        release_review=unexpected_review_release)
     kill = TechLeadKillSessionExecutor(events=MagicMock(), run_kill=lambda target, reason: KillSessionRunOutcome(success=True),
         read_generation_stale_reason=lambda target: None)
     applier = ActionApplier(labels=MagicMock(), sessions=MagicMock(), events=MagicMock(),

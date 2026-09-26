@@ -89,7 +89,7 @@ from .worker_budget import (
 from .reactive_tech_lead_planning import plan_tech_lead_launch_queue
 from .reconciliation import build_expected_for_mutation
 from .stuck_sweep import build_stuck_sweep_escalation_actions
-from .stuck_sweep_review_release import build_stuck_sweep_review_release_actions
+from .published_review_release import build_stuck_sweep_review_release_actions
 from .planner_types import OrchestratorSnapshot, Plan, PlanContext, SkippedItem
 from .tech_lead_issue_policy import (
     plan_batch_review_issue,
@@ -276,7 +276,7 @@ class Planner:
             snapshot.stuck_sweep_escalations, self._lm.needs_human))
         # ...and release the review of a published PR it found held (#7293).
         actions.extend(build_stuck_sweep_review_release_actions(
-            snapshot.stuck_sweep_review_releases, self._lm))
+            snapshot.stuck_sweep_review_releases))
 
         # 1d2. Handle post-publish escalations (CI checks stuck > timeout,
         # or branch protection blocking merge despite checks passing).

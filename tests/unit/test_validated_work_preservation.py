@@ -1,4 +1,5 @@
 """Real Git/SQLite/intake/escrow preservation across destructive boundaries."""
+from tests.runtime_lifecycle_helpers import unexpected_review_release
 
 from issue_orchestrator.control.validated_work_admission import RankedEvidenceAdmission
 
@@ -341,7 +342,8 @@ def test_reset_snapshot_and_downgrade_keep_each_retained_member(custody):
     run_reset = Mock()
     events = Mock()
     executor = TechLeadResetRetryExecutor(events, LabelManager(Config()),
-        lambda issue: make_issue(number=issue), custody.lifecycle.reset_snapshot, run_reset)
+        lambda issue: make_issue(number=issue), custody.lifecycle.reset_snapshot, run_reset,
+        unexpected_review_release)
     result = executor.apply(make_action(issue_number=42))
     run_reset.assert_not_called()
     observed = result.details["boundary"]["validated_work"]["dispositions"]

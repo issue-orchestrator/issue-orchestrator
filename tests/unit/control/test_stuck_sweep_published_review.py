@@ -11,7 +11,7 @@ control case beside each so none can pass vacuously.
 
 from __future__ import annotations
 
-from issue_orchestrator.control.actions import SyncLabelsAction
+from issue_orchestrator.control.actions import ReleasePublishedReviewAction
 from issue_orchestrator.control.fact_gatherer import FactGatherer
 from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.control.planner import Planner
@@ -60,7 +60,7 @@ def _release_actions(snapshot, number):
     return [
         action
         for action in planner.plan(snapshot).actions
-        if isinstance(action, SyncLabelsAction) and action.issue_number == number
+        if isinstance(action, ReleasePublishedReviewAction) and action.issue_number == number
     ]
 
 
@@ -84,12 +84,7 @@ def test_a_failure_block_on_published_work_releases_its_review():
     assert event.data["released_for_review"] == [HELD]
 
     (release,) = _release_actions(snapshot, HELD)
-    lm = LabelManager(_config())
-    assert release.add_labels == (lm.pr_pending,)
-    assert release.remove_labels == (lm.blocked_failed,)
-    assert release.expected is not None
-    assert lm.blocked_failed in release.expected.required_labels
-    assert lm.needs_human in release.expected.forbidden_labels
+    assert release == ReleasePublishedReviewAction(issue_number=HELD)
 
 
 def test_the_released_issue_passes_review_validity():

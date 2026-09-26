@@ -3199,6 +3199,9 @@ class TestClaimGateAudit:
         ActionType.RECORD_TECH_LEAD_DISPOSITION,
         # Human outcome delegates every write through guarded label/comment handlers.
         ActionType.ESCALATE_TECH_LEAD_DISPOSITION,
+        # Review release (#7293) delegates every write through the guarded
+        # add/remove label handlers, which verify the claim themselves.
+        ActionType.RELEASE_PUBLISHED_REVIEW,
         ActionType.CLEANUP_SESSION,
         ActionType.RECONCILE_HISTORY_ENTRY,
         ActionType.CREATE_PR,
