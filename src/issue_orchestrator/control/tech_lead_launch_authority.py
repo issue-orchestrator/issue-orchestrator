@@ -38,6 +38,9 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Optional, Sequence
 
 from ..domain.models import PendingTechLeadReview
+from ..domain.pending_work import PendingWorkKind
+from ..ports.repository_host import host_rate_limit_of
+from .host_rate_limit_launch_gate import HostRateLimitLaunchGate
 from ..domain.tech_lead_run import (
     REASON_ANCHOR_CLOSED,
     REASON_ANCHOR_UNREADABLE,
@@ -353,7 +356,13 @@ class TechLeadLaunchAuthority:
         assert self._repository_host is not None
         try:
             return self._repository_host.get_issue(number)
-        except Exception as exc:  # pragma: no cover - transport specific
+        except Exception as exc:
+            if (limit := host_rate_limit_of(exc)) is not None:
+                # Opens the window every launch honours (#7297), so the planner
+                # stops re-reading this subject every tick until the reset.
+                HostRateLimitLaunchGate(self._state.host_rate_limit, self._events).observe(
+                    limit, issue_number=number, work=PendingWorkKind.TECH_LEAD.value
+                )
             logger.warning(
                 "[TECH_LEAD_RUN] Could not revalidate subject #%d before launch:"
                 " %s; launching on the evidence we have",

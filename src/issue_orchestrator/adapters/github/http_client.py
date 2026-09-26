@@ -8,6 +8,7 @@ import time
 import threading
 from collections import OrderedDict
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from collections.abc import Sequence
 from typing import Any, Iterator, Literal, cast
 from urllib.parse import quote
@@ -27,9 +28,11 @@ from .auth import (
 from .errors import (
     GitHubAuthError,
     GitHubHttpError,
+    GitHubRateLimitedError,
     GitHubScanIncompleteError,
     GitHubTransportError,
 )
+from .rate_limit import github_http_failure, graphql_rate_limit
 from .tokens import (
     KEYRING_SERVICE,
     KEYRING_USERNAME,
@@ -263,6 +266,8 @@ def classify_github_http_failure(exc: GitHubHttpError) -> _RollupCapability:
     """
     if exc.status_code == 401:
         return "permission_denied"
+    if isinstance(exc, GitHubRateLimitedError):
+        return "transient_error"
     haystack = f"{exc} {getattr(exc, 'response_text', '') or ''}".lower()
     if any(marker in haystack for marker in _ROLLUP_PERMISSION_MARKERS):
         return "permission_denied"
@@ -702,11 +707,12 @@ class GitHubHttpClient:
                 error = f"{status_code} {response_text.strip()}"
                 summary = _summarize_github_error(response_text)
                 detail = f" — {summary}" if summary else ""
-                raise GitHubHttpError(
+                raise github_http_failure(
                     (f"GitHub {method.upper()} {path} failed: {status_code}{detail}"),
                     method=method,
                     url=str(response.url),
                     status_code=status_code,
+                    headers=response.headers,
                     response_text=response_text,
                 )
             payload = _decode_response_payload(response_text, response_kind)
@@ -801,11 +807,12 @@ class GitHubHttpClient:
 
             if status_code >= 400:
                 error = f"{status_code} {response_text.strip()}"
-                raise GitHubHttpError(
+                raise github_http_failure(
                     f"GitHub GraphQL request failed: {status_code}",
                     method="POST",
                     url="/graphql",
                     status_code=status_code,
+                    headers=response.headers,
                     response_text=response_text,
                 )
 
@@ -815,6 +822,18 @@ class GitHubHttpClient:
             if "errors" in payload and payload["errors"]:
                 error_messages = [e.get("message", str(e)) for e in payload["errors"]]
                 error = f"GraphQL errors: {error_messages}"
+                rate_limit = graphql_rate_limit(
+                    payload["errors"], response.headers, now=datetime.now(UTC)
+                )
+                if rate_limit is not None:
+                    raise GitHubRateLimitedError(
+                        f"GitHub GraphQL error: {error_messages[0]}",
+                        rate_limit=rate_limit,
+                        method="POST",
+                        url="/graphql",
+                        status_code=status_code,
+                        response_text=response_text,
+                    )
                 raise GitHubHttpError(
                     f"GitHub GraphQL error: {error_messages[0]}",
                     method="POST",
@@ -1218,14 +1237,16 @@ class GitHubHttpClient:
                     original=exc,
                 ) from exc
             if response.status_code != 200:
-                raise GitHubScanIncompleteError(
+                raise github_http_failure(
                     f"GitHub returned status {response.status_code} while paging"
                     f" {what} (page {page}); refusing to treat the partial"
                     f" {what} as complete",
                     method="GET",
                     url=path,
                     status_code=response.status_code,
+                    headers=response.headers,
                     response_text=response.text,
+                    scan_incomplete=True,
                 )
             batch = response.json()
             if not isinstance(batch, list):
@@ -2915,11 +2936,12 @@ class GitHubHttpClient:
                 error = f"{status_code} {response_text.strip()}"
                 summary = _summarize_github_error(response_text)
                 detail = f" — {summary}" if summary else ""
-                raise GitHubHttpError(
+                raise github_http_failure(
                     f"GitHub GET /user failed: {status_code}{detail}",
                     method="GET",
                     url=str(response.url),
                     status_code=status_code,
+                    headers=response.headers,
                     response_text=response_text,
                 )
             header = response.headers.get("X-OAuth-Scopes", "")

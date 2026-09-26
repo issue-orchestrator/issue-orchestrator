@@ -29,7 +29,15 @@ import shlex
 from dataclasses import replace
 import pytest
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
+
+import httpx
+
+from issue_orchestrator.adapters.github.rate_limit import github_http_failure
+from issue_orchestrator.domain.host_rate_limit import (
+    RATE_LIMIT_DEFERRAL_BOUND,
+    HostRateLimit,
+)
 from pathlib import Path
 from typing import Any, Optional, cast
 from unittest.mock import MagicMock, patch
@@ -9585,3 +9593,204 @@ class TestAValidationRetryCarriesItsLaunchAuthority:
             store.load(run_id=resumed.run_id, session_name=resumed.session_name)
             is None
         )
+
+
+class TestLaunchDefersOnGitHubRateLimit:
+    """#7297: a GitHub rate limit in launch prep defers; it never escalates.
+
+    Reproduces the 2026-09-25 incident through the real launcher and routing:
+    tech-lead prep's board snapshot raised ``403 — API rate limit exceeded``,
+    each ~60 s retry spent one of three attempts, and the third applied
+    ``tech-lead-needs-human`` + ``needs-human`` to the health-review anchor.
+    """
+
+    @staticmethod
+    def _rate_limited(resets_at: datetime) -> Exception:
+        return github_http_failure(
+            "GitHub GET /search/issues failed: 403 — API rate limit exceeded for installation",
+            status_code=403,
+            headers=httpx.Headers({
+                "x-ratelimit-remaining": "0",
+                "x-ratelimit-reset": str(int(resets_at.timestamp())),
+                "x-ratelimit-resource": "search",
+            }),
+            response_text='{"message": "API rate limit exceeded for installation ID 1"}',
+            method="GET",
+            url="/search/issues",
+        )
+
+    @staticmethod
+    def _queue_health_review(state: OrchestratorState) -> None:
+        PendingSessionQueues(state).queue_health_review(7292, "Health review")
+
+    @staticmethod
+    def _launch_queued(state, config, launcher_bundle):
+        return orchestrator_launch_tech_lead_session(
+            state.pending_tech_lead_reviews[0],
+            state,
+            config,
+            launcher_bundle.launcher,
+            MagicMock(),
+            _claims_store(),
+        )
+
+    def test_repeated_rate_limited_prep_spends_nothing_and_escalates_nothing(
+        self, launcher_bundle, mock_events, tmp_path
+    ):
+        config = launcher_bundle.launcher.config
+        TestLaunchTechLeadIssueSessionFlavors.enable_tech_lead_agent(config, tmp_path)
+        # A reset GitHub reports as already passed, so every retry reaches prep
+        # again and is refused again - the incident's 60 s cadence, compressed.
+        launcher_bundle.board_snapshot_provider.error = self._rate_limited(
+            datetime.now(UTC) - timedelta(seconds=1)
+        )
+        state = OrchestratorState()
+        self._queue_health_review(state)
+
+        for _ in range(TECH_LEAD_LAUNCH_RETRY_LIMIT + 2):
+            assert self._launch_queued(state, config, launcher_bundle) is None
+
+        (queued,) = state.pending_tech_lead_reviews
+        assert queued.retryable_launch_failures == 0
+        names = [str(e.name) for e in mock_events.events]
+        assert str(EventName.ISSUE_NEEDS_HUMAN) not in names
+        assert str(EventName.SESSION_START_FAILED) not in names
+        assert names.count(str(EventName.SESSION_LAUNCH_DEFERRED_RATE_LIMIT)) == (
+            TECH_LEAD_LAUNCH_RETRY_LIMIT + 2
+        )
+        applied = [c.args[0] for c in launcher_bundle.action_applier.apply.call_args_list]
+        assert not any(
+            isinstance(a, AddLabelAction) and a.issue_number == 7292 for a in applied
+        ), "a rate limit must never label the anchor needs-human"
+
+    def test_open_window_defers_without_touching_github(
+        self, launcher_bundle, mock_events, tmp_path
+    ):
+        config = launcher_bundle.launcher.config
+        TestLaunchTechLeadIssueSessionFlavors.enable_tech_lead_agent(config, tmp_path)
+        resets = datetime.now(UTC) + timedelta(minutes=10)
+        launcher_bundle.board_snapshot_provider.error = self._rate_limited(resets)
+        state = OrchestratorState()
+        self._queue_health_review(state)
+
+        self._launch_queued(state, config, launcher_bundle)
+        prep_reads = len(launcher_bundle.board_snapshot_provider.calls)
+        self._launch_queued(state, config, launcher_bundle)
+
+        assert len(launcher_bundle.board_snapshot_provider.calls) == prep_reads == 1
+        held = state.host_rate_limit.open_at(datetime.now(UTC))
+        assert held is not None
+        assert held.limit.resets_at == resets.replace(microsecond=0)
+        deferrals = [
+            e.data for e in mock_events.events
+            if str(e.name) == str(EventName.SESSION_LAUNCH_DEFERRED_RATE_LIMIT)
+        ]
+        assert [d["attempted"] for d in deferrals] == [True, False]
+        assert state.pending_tech_lead_reviews[0].retryable_launch_failures == 0
+
+    def test_a_limit_past_the_bound_spends_the_retry_budget(
+        self, launcher_bundle, tmp_path
+    ):
+        """Bounded: a token rate limited without a break still reaches a human."""
+        config = launcher_bundle.launcher.config
+        TestLaunchTechLeadIssueSessionFlavors.enable_tech_lead_agent(config, tmp_path)
+        now = datetime.now(UTC)
+        launcher_bundle.board_snapshot_provider.error = self._rate_limited(
+            now - timedelta(seconds=1)
+        )
+        state = OrchestratorState()
+        self._queue_health_review(state)
+        # Refused hourly, re-attempted a minute after each reset, until now.
+        seen = now - RATE_LIMIT_DEFERRAL_BOUND - timedelta(minutes=5)
+        while seen < now - timedelta(minutes=2):
+            state.host_rate_limit.observe(
+                HostRateLimit(
+                    resets_at=min(seen + timedelta(hours=1), now - timedelta(minutes=1)),
+                    kind="primary",
+                ),
+                seen,
+            )
+            seen += timedelta(hours=1, minutes=1)
+
+        self._launch_queued(state, config, launcher_bundle)
+
+        assert state.pending_tech_lead_reviews[0].retryable_launch_failures == 1
+
+    def test_rate_limited_review_read_is_deferred_not_raised(
+        self, launcher_bundle, mock_repo_host, mock_events
+    ):
+        """Paths that let the read escape are classified by the same gate."""
+        resets = datetime.now(UTC) + timedelta(minutes=5)
+
+        def rate_limited_get_issue(issue_number: int):
+            raise self._rate_limited(resets)
+
+        mock_repo_host.get_issue = rate_limited_get_issue
+        review = PendingReview(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="123"),
+            pr_number=456,
+            pr_url="https://github.com/test/repo/pull/456",
+            branch_name="123-feature",
+            _issue_number=123,
+        )
+        state = OrchestratorState()
+        state.pending_reviews = [review]
+
+        result = orchestrator_launch_review_session(
+            review, state, launcher_bundle.launcher, MagicMock(), _claims_store()
+        )
+
+        assert result is None
+        assert state.pending_reviews == [review]
+        assert state.host_rate_limit.open_at(datetime.now(UTC)) is not None
+        assert any(
+            str(e.name) == str(EventName.SESSION_LAUNCH_DEFERRED_RATE_LIMIT)
+            and e.data["work"] == "review"
+            for e in mock_events.events
+        )
+
+    def test_rate_limited_validation_retry_refresh_is_deferred_not_raised(
+        self,
+        sample_config,
+        mock_events,
+        mock_repo_host,
+        mock_worktree_manager,
+        mock_working_copy,
+        mock_command_runner,
+    ):
+        resets = datetime.now(UTC) + timedelta(minutes=5)
+
+        def rate_limited_refresh(issue_number: int):
+            raise self._rate_limited(resets)
+
+        bundle = _build_launcher_bundle(
+            sample_config,
+            mock_events,
+            mock_repo_host,
+            mock_worktree_manager,
+            mock_working_copy,
+            mock_command_runner,
+            refresh_issue_fn=rate_limited_refresh,
+        )
+        retry = PendingValidationRetry(
+            issue_number=123,
+            issue_title="Fix checkout",
+            agent_label="agent:web",
+            worktree_path="/tmp/worktree-123",
+            branch_name="123-fix-checkout",
+            original_prompt="original task",
+            validation_error="dirty worktree",
+            validation_error_file=None,
+            retry_count=1,
+            source_task=TaskKind.CODE,
+            validation_cmd="make test",
+        )
+        state = OrchestratorState(pending_validation_retries=[retry])
+
+        result = orchestrator_launch_validation_retry_session(
+            retry, state, bundle.launcher, MagicMock(), _claims_store()
+        )
+
+        assert result is None
+        assert state.pending_validation_retries == [retry]
+        assert state.host_rate_limit.open_at(datetime.now(UTC)) is not None

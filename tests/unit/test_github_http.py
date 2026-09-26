@@ -10,6 +10,8 @@ import json
 import subprocess
 import threading
 from collections import OrderedDict
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -3031,3 +3033,148 @@ def test_merged_prs_closing_issues_refuses_a_malformed_answer(repository, match)
 
     with pytest.raises(GitHubScanIncompleteError, match=match):
         client.merged_prs_closing_issues([5])
+
+
+# ---------------------------------------------------------------------------
+# #7297: a rate limit is a TYPED refusal carrying its reset, on every chokepoint
+# ---------------------------------------------------------------------------
+
+_INCIDENT_RESET_EPOCH = 1_790_000_000  # an absolute x-ratelimit-reset
+
+
+def _rate_limited_handler(
+    status: int, headers: dict[str, str], body: dict
+) -> Callable[[httpx.Request], httpx.Response]:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status, json=body, headers=headers)
+
+    return handler
+
+
+def test_primary_rate_limit_on_search_raises_typed_error_with_its_reset() -> None:
+    """The 2026-09-25 incident response: 403 on /search/issues, budget spent.
+
+    It must arrive as the typed refusal - still a GitHubHttpError for every
+    existing handler - carrying the absolute reset GitHub named, not as a
+    generic error whose text a caller would have to sniff.
+    """
+    from issue_orchestrator.adapters.github.errors import GitHubRateLimitedError
+
+    client = _client_with_transport(httpx.MockTransport(_rate_limited_handler(
+        403,
+        {
+            "x-ratelimit-remaining": "0",
+            "x-ratelimit-reset": str(_INCIDENT_RESET_EPOCH),
+            "x-ratelimit-resource": "search",
+        },
+        {"message": "API rate limit exceeded for installation ID 1."},
+    )))
+
+    with pytest.raises(GitHubRateLimitedError) as caught:
+        client.get_issue(7)
+
+    assert isinstance(caught.value, GitHubHttpError)
+    assert caught.value.status_code == 403
+    limit = caught.value.rate_limit
+    assert limit.kind == "primary"
+    assert limit.resource == "search"
+    assert limit.resets_at == datetime.fromtimestamp(_INCIDENT_RESET_EPOCH, UTC)
+
+
+def test_secondary_rate_limit_waits_for_retry_after() -> None:
+    from issue_orchestrator.adapters.github.errors import GitHubRateLimitedError
+
+    client = _client_with_transport(httpx.MockTransport(_rate_limited_handler(
+        429, {"retry-after": "90"}, {"message": "You have exceeded a secondary rate limit."}
+    )))
+    before = datetime.now(UTC)
+
+    with pytest.raises(GitHubRateLimitedError) as caught:
+        client.get_issue(7)
+
+    limit = caught.value.rate_limit
+    assert limit.kind == "secondary"
+    assert before + timedelta(seconds=90) <= limit.resets_at
+    assert limit.resets_at <= datetime.now(UTC) + timedelta(seconds=90)
+
+
+def test_untimed_secondary_rate_limit_waits_the_documented_minute() -> None:
+    from issue_orchestrator.adapters.github.errors import GitHubRateLimitedError
+    from issue_orchestrator.adapters.github.rate_limit import UNTIMED_RATE_LIMIT_WAIT
+
+    client = _client_with_transport(httpx.MockTransport(_rate_limited_handler(
+        403, {}, {"message": "You have exceeded a secondary rate limit."}
+    )))
+    before = datetime.now(UTC)
+
+    with pytest.raises(GitHubRateLimitedError) as caught:
+        client.get_issue(7)
+
+    assert caught.value.rate_limit.kind == "secondary"
+    assert caught.value.rate_limit.resets_at >= before + UNTIMED_RATE_LIMIT_WAIT
+
+
+def test_permission_403_stays_an_ordinary_http_error() -> None:
+    """A 403 naming no rate limit, with budget left, is a genuine refusal."""
+    from issue_orchestrator.adapters.github.errors import GitHubRateLimitedError
+
+    client = _client_with_transport(httpx.MockTransport(_rate_limited_handler(
+        403,
+        {"x-ratelimit-remaining": "4999", "x-ratelimit-reset": str(_INCIDENT_RESET_EPOCH)},
+        {"message": "Resource not accessible by integration"},
+    )))
+
+    with pytest.raises(GitHubHttpError) as caught:
+        client.get_issue(7)
+
+    assert not isinstance(caught.value, GitHubRateLimitedError)
+
+
+def test_graphql_rate_limited_error_type_is_typed() -> None:
+    """GraphQL can refuse on its points budget with HTTP 200 + RATE_LIMITED."""
+    from issue_orchestrator.adapters.github.errors import GitHubRateLimitedError
+
+    client = _client_with_transport(httpx.MockTransport(_rate_limited_handler(
+        200,
+        {"x-ratelimit-reset": str(_INCIDENT_RESET_EPOCH)},
+        {"errors": [{"type": "RATE_LIMITED", "message": "API rate limit exceeded"}]},
+    )))
+
+    with pytest.raises(GitHubRateLimitedError) as caught:
+        client.get_prs_with_label_graphql("needs-code-review")
+
+    assert caught.value.rate_limit.resource == "graphql"
+    assert caught.value.rate_limit.resets_at == datetime.fromtimestamp(
+        _INCIDENT_RESET_EPOCH, UTC
+    )
+
+
+def test_graphql_http_403_rate_limit_is_typed() -> None:
+    from issue_orchestrator.adapters.github.errors import GitHubRateLimitedError
+
+    client = _client_with_transport(httpx.MockTransport(_rate_limited_handler(
+        403, {"retry-after": "30"}, {"message": "You have exceeded a secondary rate limit."}
+    )))
+
+    with pytest.raises(GitHubRateLimitedError):
+        client.get_prs_with_label_graphql("needs-code-review")
+
+
+def test_rate_limited_page_keeps_the_scan_incomplete_contract() -> None:
+    """An exhaustive pager stopped by a rate limit is BOTH incomplete and typed."""
+    from issue_orchestrator.adapters.github.errors import (
+        GitHubRateLimitedError,
+        GitHubScanIncompleteError,
+    )
+
+    client = _client_with_transport(httpx.MockTransport(_rate_limited_handler(
+        403,
+        {"x-ratelimit-remaining": "0", "x-ratelimit-reset": str(_INCIDENT_RESET_EPOCH)},
+        {"message": "API rate limit exceeded"},
+    )))
+
+    with pytest.raises(GitHubScanIncompleteError) as caught:
+        client.list_all_labels()
+
+    assert isinstance(caught.value, GitHubRateLimitedError)
+    assert caught.value.rate_limit.kind == "primary"

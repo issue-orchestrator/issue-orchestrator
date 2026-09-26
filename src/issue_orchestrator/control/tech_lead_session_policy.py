@@ -52,6 +52,11 @@ from ..ports.validated_work_recovery_authority import (
     ValidatedWorkRecoveryAuthorityReader,
 )
 from .completion_pr_collision import NoCommitsBetweenError
+from ..events import EventName
+from ..infra.logging_config import issue_log
+from .transition_log import log_transition
+from ..ports.event_sink import make_trace_event
+from .session_launch_types import LaunchResult
 from .scoped_rework_observation import observe_rework_targets
 from .completion_types import ERROR_PREFIX_PUBLISH_BLOCKED, ProcessingResult
 from .tech_lead_evidence import build_evidence_map, write_evidence_map
@@ -68,6 +73,7 @@ if TYPE_CHECKING:
     from .completion_ports import GitAdapter
     from ..ports.board_snapshot_provider import BoardSnapshotProvider
     from ..infra.config import Config
+    from ..ports import EventSink
     from ..ports import ManifestDownloader, RepositoryHost
     from ..ports.issue import Issue
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
@@ -493,6 +499,42 @@ def _resolve_health_review_cohort(
         return tech_lead_scope.problem_issue_numbers
     cohort = tech_lead_authority.load_storm_cohort(anchor_issue_number=issue.number)
     return tuple(sorted({problem.issue_number for problem in cohort or ()}))
+
+
+def tech_lead_prep_failure(
+    events: "EventSink", *, issue_number: int, session_name: str, error: Exception
+) -> "LaunchResult":
+    """What a tech_lead launch whose required inputs failed to prepare reports.
+
+    A GitHub rate limit behind ``error`` is a deferral, not a failure (#7297):
+    it reports ``HOST_RATE_LIMITED`` and publishes no start failure, because the
+    rate-limit gate announces the deferral itself. Anything else is the bounded
+    ``RETRYABLE_FAILURE`` it always was, announced as a failed start.
+    """
+    result = LaunchResult.input_preparation_failed(
+        "Tech Lead session data preparation failed", error
+    )
+    if result.host_rate_limit is not None:
+        logger.warning(
+            "[TECH_LEAD] #%d session data preparation hit a GitHub rate limit; "
+            "deferring until %s: %s",
+            issue_number,
+            result.host_rate_limit.resets_at.isoformat(),
+            error,
+        )
+        return result
+    log_transition("issue", issue_number, "LAUNCHING", "FAILED", "tech_lead session data preparation failed")
+    logger.error(issue_log(issue_number, "FAILED: tech_lead session data preparation failed: %s"), error)
+    events.publish(make_trace_event(
+        EventName.SESSION_START_FAILED,
+        {
+            "issue_number": issue_number,
+            "session_name": session_name,
+            "reason": "tech_lead_session_data_failed",
+            "error": str(error),
+        },
+    ))
+    return result
 
 
 def prepare_tech_lead_session_data(

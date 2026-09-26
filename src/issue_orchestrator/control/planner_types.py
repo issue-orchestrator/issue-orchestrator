@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from ..domain.budgeted_validation import BudgetedValidationNotice
+from ..domain.host_rate_limit import RateLimitEpisode
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Optional, Sequence
 
@@ -126,6 +127,11 @@ class OrchestratorSnapshot:
     provider_launch: ProviderLaunchReadiness = field(
         default_factory=ProviderLaunchReadiness.empty
     )
+    # The host rate-limit episode still holding launches back when the tick
+    # sampled it (#7297), or None when launches may proceed. While set, the
+    # planner launches nothing: every launch path's preparation reads GitHub,
+    # and asking before the reset only turns a known wait into a failure.
+    host_rate_limit_hold: Optional[RateLimitEpisode] = None
 
     @property
     def active_count(self) -> int:

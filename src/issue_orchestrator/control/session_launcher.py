@@ -65,6 +65,7 @@ from .tech_lead_session_policy import (
     failure_investigation_scratch_identity,
     is_tech_lead_session,
     prepare_tech_lead_session_data,
+    tech_lead_prep_failure,
 )
 from ..ports import (
     ManifestDownloader,
@@ -636,19 +637,12 @@ class SessionLauncher:
         disposable_worktree: bool,
     ) -> LaunchResult:
         """Fail the launch when required tech_lead inputs cannot be prepared; the
-        result is retry-queued (transient inputs; queue owner bounds retries) and
-        prep's authority row is discarded (post-prep guard never runs here)."""
-        log_transition("issue", issue.number, "LAUNCHING", "FAILED", "tech_lead session data preparation failed")
-        logger.error(issue_log(issue.number, "FAILED: tech_lead session data preparation failed: %s"), error)
-        self.events.publish(make_trace_event(
-            EventName.SESSION_START_FAILED,
-            {
-                "issue_number": issue.number,
-                "session_name": session_name,
-                "reason": "tech_lead_session_data_failed",
-                "error": str(error),
-            },
-        ))
+        result is retry-queued (transient inputs; queue owner bounds retries), or
+        deferred without a spend on a GitHub rate limit (#7297), and prep's
+        authority row is discarded (post-prep guard never runs here)."""
+        result = tech_lead_prep_failure(
+            self.events, issue_number=issue.number, session_name=session_name, error=error
+        )
         self._cleanup_pre_active_launch_worktree(
             issue.number,
             worktree_path,
@@ -657,7 +651,7 @@ class SessionLauncher:
         )
         self._discard_tech_lead_authority_after_failed_launch(issue, ctx)
         self._release_claim_if_held(issue.number, claim)
-        return LaunchResult(None, False, f"Tech Lead session data preparation failed: {error}", disposition=LaunchDisposition.RETRYABLE_FAILURE)
+        return result
 
     def launch_issue_session(  # noqa: C901, PLR0912 - coordinator with claim acquisition, worktree setup, and error handling phases
         self,

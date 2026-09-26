@@ -77,6 +77,7 @@ from .awaiting_merge_post_publish_policy import (
 )
 from .queue_decision_log import QueueDecisionLog
 from .reactive_tech_lead_planning import plan_reactive_tech_lead
+from .host_rate_limit_launch_gate import RATE_LIMIT_DEFER_REASON, rate_limited_launch_skips
 from .tech_lead_launch_log import TechLeadLaunchLog
 from .tech_lead_ledger_planning import plan_tech_lead_ledger_actions
 from .tech_lead_reaction import TechLeadReactionPolicy
@@ -315,7 +316,7 @@ class Planner:
         history_reconciliation_actions = self._plan_awaiting_merge_reconciliations(snapshot)
         actions.extend(history_reconciliation_actions)
 
-        launch_actions, launch_skipped = self._plan_session_launches(
+        launch_actions, launch_skipped = self._plan_launches_unless_rate_limited(
             snapshot,
             plan_context,
             # Suppress individual investigation launches only when the cohort
@@ -371,6 +372,26 @@ class Planner:
         caller's job (``retain``)."""
         assert slot.reason is not None  # invariant of TechLeadSlotAvailability
         self._tech_lead_launch_log.defer_all(snapshot.pending_tech_lead, slot.reason)
+
+    def _plan_launches_unless_rate_limited(
+        self,
+        snapshot: OrchestratorSnapshot,
+        plan_context: PlanContext,
+        *,
+        suppressed_tech_lead_issue_numbers: frozenset[int],
+    ) -> tuple[list[Action], list[SkippedItem]]:
+        """GitHub has said when it will answer again (#7297): launch nothing
+        before then, or each attempt is a refusal counted as a failure."""
+        hold = snapshot.host_rate_limit_hold
+        if hold is None:
+            return self._plan_session_launches(
+                snapshot,
+                plan_context,
+                suppressed_tech_lead_issue_numbers=suppressed_tech_lead_issue_numbers,
+            )
+        self._tech_lead_launch_log.defer_all(snapshot.pending_tech_lead, RATE_LIMIT_DEFER_REASON)
+        self._tech_lead_launch_log.retain(snapshot.pending_tech_lead)
+        return [], rate_limited_launch_skips(snapshot, hold)
 
     def _plan_session_launches(
         self,

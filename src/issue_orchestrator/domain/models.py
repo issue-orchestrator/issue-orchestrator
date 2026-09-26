@@ -12,6 +12,7 @@ from typing import Any, Iterable, Literal, Optional, TYPE_CHECKING, TypeAlias
 from unittest.mock import Mock
 
 from .dependency_gates import DependencyGateSnapshot
+from .host_rate_limit import HostRateLimitWindow
 from .issue_key import IssueKey, GitHubIssueKey, parse_external_id
 from .session_key import SessionKey, TaskKind  # re-exported for callers
 from .sandbox_scope import (
@@ -1990,6 +1991,9 @@ class OrchestratorState:
     # carrying. A terminal whose stored claim cannot be read is quarantined
     # rather than restored, so it can never appear here as claimless (F6).
     in_flight_work: list["InFlightWork"] = field(default_factory=list)
+    # #7297: the repository host's rate-limit window. One per token, shared by
+    # every launch path; opened only through HostRateLimitLaunchGate.
+    host_rate_limit: HostRateLimitWindow = field(default_factory=HostRateLimitWindow)
     startup_status: str = "pending"  # "pending", "running", "complete"
     startup_message: str = ""  # Current startup task description
     cached_scope_issues: list["IssueProtocol"] = field(default_factory=list)  # Cached full in-scope issue snapshot for dashboard/runtime recovery

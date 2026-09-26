@@ -14,11 +14,14 @@ start?" is a fact, not an inference.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional
 
+import httpx
+
+from issue_orchestrator.adapters.github.rate_limit import github_http_failure
 from issue_orchestrator.control.tech_lead_launch_authority import (
     TechLeadLaunchAuthority,
 )
@@ -369,6 +372,48 @@ def test_an_unreadable_subject_keeps_its_run_rather_than_cancelling_it():
 
     assert harness.launch(investigation) is not None
     assert harness.launched == [investigation]
+
+
+class RateLimitedRepositoryHost:
+    """The anchor read GitHub refuses on a spent rate limit (#7297)."""
+
+    def __init__(self, resets_at: datetime) -> None:
+        self.resets_at = resets_at
+
+    def get_issue(self, number: int):
+        raise github_http_failure(
+            f"GitHub GET /repos/o/r/issues/{number} failed: 403",
+            status_code=403,
+            headers=httpx.Headers({
+                "x-ratelimit-remaining": "0",
+                "x-ratelimit-reset": str(int(self.resets_at.timestamp())),
+            }),
+            response_text='{"message": "API rate limit exceeded"}',
+            method="GET",
+            url=f"/repos/o/r/issues/{number}",
+        )
+
+
+def test_a_rate_limited_anchor_read_opens_the_shared_launch_window():
+    """The authority's own GitHub read defers every launch, not just this one.
+
+    It catches the error (an unreadable anchor holds the run), so without
+    opening the window here the planner would re-read the anchor - and be
+    refused again - every tick until the reset (#7297).
+    """
+    resets = datetime.now(UTC) + timedelta(minutes=20)
+    anchor = _health_anchor()
+    harness = _Harness(pending=[anchor], repository_host=RateLimitedRepositoryHost(resets))
+
+    assert harness.launch(anchor) is None
+
+    assert harness.launched == []
+    assert harness.held_reasons() == [REASON_ANCHOR_UNREADABLE]
+    held = harness.state.host_rate_limit.open_at(datetime.now(UTC))
+    assert held is not None
+    assert held.limit.resets_at == datetime.fromtimestamp(int(resets.timestamp()), UTC)
+    (deferral,) = harness.events.payloads(EventName.SESSION_LAUNCH_DEFERRED_RATE_LIMIT)
+    assert deferral["issue_number"] == 900
 
 
 def test_a_global_anchor_is_never_subject_to_blocked_label_eligibility():

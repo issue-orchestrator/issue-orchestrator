@@ -5,6 +5,7 @@ from datetime import datetime
 from enum import Enum
 
 from ..domain.models import Session
+from ..ports.repository_host import HostRateLimit, host_rate_limit_of
 
 
 class LaunchDisposition(Enum):
@@ -39,6 +40,14 @@ class LaunchDisposition(Enum):
     #: failed input read, and calling it an input failure would have made
     #: routing it here a lie.
     RETRYABLE_FAILURE = "retryable_failure"
+    #: The repository host refused on a rate limit that resets at a known
+    #: instant (#7297). Like a provider refusal, nothing about the WORK failed,
+    #: so the item stays queued with its budget untouched; unlike one, the wait
+    #: has a deadline, which :class:`HostRateLimitLaunchGate` holds every
+    #: launch to. It is also the only deferral with a bound: a limit that never
+    #: lifts is turned back into a ``RETRYABLE_FAILURE`` by that gate, so the
+    #: work still reaches a human eventually instead of waiting forever.
+    HOST_RATE_LIMITED = "host_rate_limited"
     #: The durable pending-work claim could not be recorded, so the launch
     #: never happened AND nothing about this request exists in the ledger
     #: (#6999 F1 round 2). Deliberately distinct from ``RETRYABLE_FAILURE``,
@@ -66,10 +75,19 @@ class LaunchResult:
     #: treated as the launcher having given up — the historical behaviour — and
     #: is normalised to ``LAUNCHED`` whenever the launch actually succeeded.
     disposition: LaunchDisposition = LaunchDisposition.PERMANENT_FAILURE
+    #: Present exactly when the disposition is ``HOST_RATE_LIMITED``: the typed
+    #: reset the deferral waits for, never re-derived from ``reason`` text.
+    host_rate_limit: HostRateLimit | None = None
 
     def __post_init__(self) -> None:
         if self.success:
             self.disposition = LaunchDisposition.LAUNCHED
+        rate_limited = self.disposition is LaunchDisposition.HOST_RATE_LIMITED
+        if rate_limited != (self.host_rate_limit is not None):
+            raise ValueError(
+                "a HOST_RATE_LIMITED launch result must carry its host rate "
+                "limit, and no other result may"
+            )
 
     @classmethod
     def terminal_spawn_failed(cls) -> "LaunchResult":
@@ -102,6 +120,36 @@ class LaunchResult:
             False,
             f"Required launch input unavailable: {reason}",
             disposition=LaunchDisposition.RETRYABLE_FAILURE,
+        )
+
+    @classmethod
+    def host_rate_limited(
+        cls, reason: str, rate_limit: HostRateLimit
+    ) -> "LaunchResult":
+        """The host refused until ``rate_limit.resets_at``; defer, spend nothing."""
+        return cls(
+            None,
+            False,
+            reason,
+            disposition=LaunchDisposition.HOST_RATE_LIMITED,
+            host_rate_limit=rate_limit,
+        )
+
+    @classmethod
+    def input_preparation_failed(cls, what: str, error: Exception) -> "LaunchResult":
+        """A required launch input could not be prepared (#7297).
+
+        A rate limit anywhere behind ``error`` is a deferral with a reset, not
+        a failure: classifying it here is what keeps a launch that CATCHES its
+        preparation errors from spending the retry budget on a request GitHub
+        already said it would refuse.
+        """
+        reason = f"{what}: {error}"
+        rate_limit = host_rate_limit_of(error)
+        if rate_limit is not None:
+            return cls.host_rate_limited(reason, rate_limit)
+        return cls(
+            None, False, reason, disposition=LaunchDisposition.RETRYABLE_FAILURE
         )
 
     @property
