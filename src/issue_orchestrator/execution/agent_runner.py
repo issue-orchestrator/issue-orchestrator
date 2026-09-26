@@ -94,7 +94,7 @@ class AgentSession:
         try:
             self._child.send(f"{text}\r")
             return True
-        except Exception:  # noqa: BLE001
+        except (OSError, pexpect.ExceptionPexpect):
             return False
 
     def send(self, text: str) -> bool:
