@@ -3001,3 +3001,33 @@ def test_merged_prs_closing_issues_refuses_a_partial_page() -> None:
 
     with pytest.raises(GitHubScanIncompleteError, match="more than one page"):
         client.merged_prs_closing_issues([5])
+
+
+def test_list_open_prs_complete_refuses_a_page_without_page_info() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": {"repository": {"pullRequests": {
+            "nodes": [_pr_node(1)]}}}})
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    with pytest.raises(GitHubScanIncompleteError, match="pageInfo"):
+        client.list_open_prs_complete()
+
+
+@pytest.mark.parametrize(
+    ("repository", "match"),
+    [
+        pytest.param({}, "omitted #5", id="alias-missing"),
+        pytest.param({"i5": _closing_refs({"number": 9})}, "malformed node", id="merged-missing"),
+        pytest.param({"i5": {"closedByPullRequestsReferences": {"nodes": []}}}, "pageInfo",
+                     id="page-info-missing"),
+    ],
+)
+def test_merged_prs_closing_issues_refuses_a_malformed_answer(repository, match) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": {"repository": repository}})
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    with pytest.raises(GitHubScanIncompleteError, match=match):
+        client.merged_prs_closing_issues([5])

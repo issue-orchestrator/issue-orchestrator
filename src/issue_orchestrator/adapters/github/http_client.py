@@ -2162,8 +2162,10 @@ class GitHubHttpClient:
                 ):
                     raise self._incomplete_open_prs(f"returned a malformed node: {node!r}")
                 prs.append({**node, "state": "open"})
-            page_info = connection.get("pageInfo") or {}
-            if not page_info.get("hasNextPage"):
+            page_info = connection.get("pageInfo")
+            if not isinstance(page_info, dict) or type(page_info.get("hasNextPage")) is not bool:
+                raise self._incomplete_open_prs("returned no pageInfo.hasNextPage")
+            if not page_info["hasNextPage"]:
                 return prs
             after = page_info.get("endCursor")
             if not isinstance(after, str) or not after:
@@ -2211,20 +2213,36 @@ class GitHubHttpClient:
             if not isinstance(repository, dict):
                 raise self._incomplete_closing_prs("returned no repository")
             for n in batch:
-                issue = repository.get(f"i{n}")
-                if issue is None:
-                    continue
-                refs = issue.get("closedByPullRequestsReferences") if isinstance(issue, dict) else None
-                if not isinstance(refs, dict) or not isinstance(refs.get("nodes"), list):
-                    raise self._incomplete_closing_prs(f"returned no references for #{n}")
-                if (refs.get("pageInfo") or {}).get("hasNextPage"):
-                    raise self._incomplete_closing_prs(f"has more than one page for #{n}")
-                for node in refs["nodes"]:
-                    if not (isinstance(node, dict) and type(node.get("number")) is int):
-                        raise self._incomplete_closing_prs(f"returned a malformed node for #{n}")
-                    if node.get("merged") is True:
-                        merged.add(node["number"])
+                merged.update(self._merged_closing_prs_of(repository, n))
         return frozenset(merged)
+
+    def _merged_closing_prs_of(self, repository: dict[str, Any], n: int) -> set[int]:
+        """One issue's merged closing PRs from a batched answer; malformed raises."""
+        alias = f"i{n}"
+        if alias not in repository:
+            raise self._incomplete_closing_prs(f"omitted #{n}")
+        issue = repository[alias]
+        if issue is None:  # explicitly null: no such issue, so no PRs
+            return set()
+        refs = issue.get("closedByPullRequestsReferences") if isinstance(issue, dict) else None
+        if not isinstance(refs, dict) or not isinstance(refs.get("nodes"), list):
+            raise self._incomplete_closing_prs(f"returned no references for #{n}")
+        page_info = refs.get("pageInfo")
+        if not isinstance(page_info, dict) or type(page_info.get("hasNextPage")) is not bool:
+            raise self._incomplete_closing_prs(f"returned no pageInfo for #{n}")
+        if page_info["hasNextPage"]:
+            raise self._incomplete_closing_prs(f"has more than one page for #{n}")
+        merged: set[int] = set()
+        for node in refs["nodes"]:
+            if not (
+                isinstance(node, dict)
+                and type(node.get("number")) is int
+                and type(node.get("merged")) is bool
+            ):
+                raise self._incomplete_closing_prs(f"returned a malformed node for #{n}")
+            if node["merged"]:
+                merged.add(node["number"])
+        return merged
 
     def _incomplete_closing_prs(self, why: str) -> GitHubScanIncompleteError:
         return GitHubScanIncompleteError(
