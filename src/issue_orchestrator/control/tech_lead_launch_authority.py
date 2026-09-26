@@ -38,7 +38,7 @@ from datetime import UTC, datetime
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Optional, Sequence
 
-from ..domain.host_rate_limit import RateLimitEpisode
+from ..domain.host_rate_limit import RateLimitEpisode, episode_key
 from ..domain.models import PendingTechLeadReview
 from ..domain.pending_work import PendingWorkKind
 from ..ports.repository_host import host_rate_limit_of
@@ -165,11 +165,11 @@ class TechLeadLaunchAuthority:
         # no read is attempted, and a read the host refused proves nothing
         # about the subject, so it must neither fall through to a launch "on
         # the evidence we have" nor read as "unreadable".
-        episode = self._open_rate_limit()
+        episode = self._open_rate_limit(tech_lead)
         if episode is not None and not episode.bound_exceeded:
             return self._rate_limit_hold(tech_lead, scope, episode)
         withdrawal = self._revalidate_subject(tech_lead, scope)
-        episode = self._open_rate_limit()
+        episode = self._open_rate_limit(tech_lead)
         if episode is None:
             if withdrawal is not None:
                 return withdrawal
@@ -195,9 +195,12 @@ class TechLeadLaunchAuthority:
             )
         return self._shared_execution_refusal(tech_lead, scope)
 
-    def _open_rate_limit(self) -> Optional[RateLimitEpisode]:
+    def _open_rate_limit(
+        self, tech_lead: PendingTechLeadReview
+    ) -> Optional[RateLimitEpisode]:
         return self._state.host_rate_limit.open_at(
-            datetime.now(UTC), PendingWorkKind.TECH_LEAD.value
+            datetime.now(UTC),
+            episode_key(PendingWorkKind.TECH_LEAD.value, tech_lead.issue_number),
         )
 
     @staticmethod

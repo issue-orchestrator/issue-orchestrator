@@ -9802,7 +9802,7 @@ class TestLaunchDefersOnGitHubRateLimit:
                     kind="primary",
                 ),
                 seen,
-                "tech_lead",
+                "tech_lead:7292",
             )
             seen += timedelta(hours=1, minutes=1)
 
@@ -9829,13 +9829,41 @@ class TestLaunchDefersOnGitHubRateLimit:
         state.host_rate_limit.observe(
             HostRateLimit(resets_at=now + timedelta(hours=1), kind="secondary"),
             now - RATE_LIMIT_DEFERRAL_BOUND - timedelta(minutes=1),
-            "tech_lead",
+            "tech_lead:7292",
         )
 
         assert self._launch_queued(state, config, launcher_bundle) is None
 
         assert state.pending_tech_lead_reviews[0].retryable_launch_failures == 1
         assert len(launcher_bundle.board_snapshot_provider.calls) == 1
+
+    def test_another_items_old_episode_never_counts_against_this_one(
+        self, launcher_bundle, mock_events, tmp_path
+    ):
+        """Codex r8: a withdrawn item's history must not make B's first refusal count."""
+        config = launcher_bundle.launcher.config
+        TestLaunchTechLeadIssueSessionFlavors.enable_tech_lead_agent(config, tmp_path)
+        now = datetime.now(UTC)
+        launcher_bundle.board_snapshot_provider.error = self._rate_limited(
+            now + timedelta(minutes=5)
+        )
+        state = OrchestratorState()
+        # Item #111 was refused for hours, then withdrawn without recovering.
+        state.host_rate_limit.observe(
+            HostRateLimit(resets_at=now - timedelta(minutes=1), kind="primary"),
+            now - RATE_LIMIT_DEFERRAL_BOUND - timedelta(hours=1),
+            "tech_lead:111",
+        )
+        self._queue_health_review(state)
+
+        assert self._launch_queued(state, config, launcher_bundle) is None
+
+        assert state.pending_tech_lead_reviews[0].retryable_launch_failures == 0
+        (deferral,) = [
+            e.data for e in mock_events.events
+            if str(e.name) == str(EventName.SESSION_LAUNCH_DEFERRED_RATE_LIMIT)
+        ]
+        assert deferral["counted_as_failure"] is False
 
     def test_rate_limited_review_read_is_deferred_not_raised(
         self, launcher_bundle, mock_repo_host, mock_events

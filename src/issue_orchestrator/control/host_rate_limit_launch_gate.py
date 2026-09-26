@@ -36,6 +36,7 @@ from ..domain.host_rate_limit import (
     HostRateLimit,
     HostRateLimitWindow,
     RateLimitEpisode,
+    episode_key,
 )
 from ..events import EventName
 from ..ports import EventSink
@@ -80,7 +81,8 @@ class HostRateLimitLaunchGate:
         whose issue cannot be resolved, which its launcher refuses before any
         GitHub read.
         """
-        holding = self.window.open_at(self.clock(), work)
+        key = episode_key(work, issue_number)
+        holding = self.window.open_at(self.clock(), key)
         # Past the bound the window no longer holds the launch back: it is
         # attempted, so a refusal lands AFTER the launch holds its durable
         # pending-work claim. That is the only kind of failure the queue's
@@ -110,7 +112,7 @@ class HostRateLimitLaunchGate:
             if result.success:
                 # Positive evidence the host answers again: only this ends an
                 # episode, so the bound cannot be dodged by a late tick.
-                self.window.recovered(work)
+                self.window.recovered(key)
             return result
         episode = self.observe(
             result.host_rate_limit, issue_number=issue_number, work=work
@@ -128,7 +130,9 @@ class HostRateLimitLaunchGate:
         tech-lead launch authority's subject revalidation): they must open the
         same window, or the planner would keep asking GitHub every tick.
         """
-        episode = self.window.observe(limit, self.clock(), work)
+        episode = self.window.observe(
+            limit, self.clock(), episode_key(work, issue_number)
+        )
         self._publish(episode, issue_number=issue_number, work=work, attempted=True)
         log = logger.error if episode.bound_exceeded else logger.warning
         log(

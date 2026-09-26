@@ -73,45 +73,64 @@ class RateLimitEpisode:
         return self.limited_for >= RATE_LIMIT_DEFERRAL_BOUND
 
 
+def episode_key(work: str, subject: int | None) -> str:
+    """The identity an episode is kept under: one launch path for one item."""
+    return f"{work}:{subject}"
+
+
+@dataclass(frozen=True, slots=True)
+class _Episode:
+    since: datetime
+    #: Reset of the last limit this item was refused under.
+    resets_at: datetime
+
+
 @dataclass(slots=True)
 class HostRateLimitWindow:
     """The host's current rate-limit window, shared by every launch path.
 
     The HOLD is shared: one token, one reset, so no launch is attempted before
     it. The EPISODE - how long the limit has held, measured against the bound -
-    is kept per launch path (``work``). Different paths spend different GitHub
-    budgets: a review that gets through on ``core`` proves nothing about the
-    ``search`` budget tech-lead prep needs. So only the refused path getting
-    through again ends its episode.
+    is kept per queued item (see :func:`episode_key`). Different paths spend
+    different GitHub budgets: a review that gets through on ``core`` proves
+    nothing about the ``search`` budget tech-lead prep needs. And an episode
+    belongs to the work that was refused, so one item's history can never
+    shorten another's deferral.
+
+    Only positive evidence ends an episode: that item getting through
+    (:meth:`recovered`). An episode whose item stopped being attempted - it
+    was withdrawn, or its issue closed - lapses once its own reset is more
+    than a whole bound in the past. That long silence cannot be a late tick:
+    a still-queued item is re-attempted on the first tick after each reset.
     """
 
     _limit: HostRateLimit | None = None
-    _refused_since: dict[str, datetime] = field(default_factory=dict)
+    _episodes: dict[str, _Episode] = field(default_factory=dict)
 
-    def open_at(self, now: datetime, work: str | None = None) -> RateLimitEpisode | None:
+    def open_at(self, now: datetime, key: str | None = None) -> RateLimitEpisode | None:
         """The episode still holding launches back at ``now``, if any.
 
-        ``work`` names the launch path whose episode is measured; ``None``
-        (the planner's whole-tick view) measures the oldest one, so a tick is
-        past the bound as soon as any path is.
+        ``key`` names the item whose episode is measured; ``None`` (the
+        planner's whole-tick view) measures the oldest live one, so a tick is
+        past the bound as soon as any item is.
         """
         limit = self._limit
         if limit is None or now >= limit.resets_at:
             return None
-        since = (
-            min(self._refused_since.values(), default=now)
-            if work is None
-            else self._refused_since.get(work, now)
-        )
+        live = self._live(now)
+        if key is None:
+            since = min((e.since for e in live.values()), default=now)
+        else:
+            episode = live.get(key)
+            since = episode.since if episode is not None else now
         return RateLimitEpisode(limit=limit, limited_since=since, observed_at=now)
 
-    def observe(self, limit: HostRateLimit, now: datetime, work: str) -> RateLimitEpisode:
-        """Record that the host refused a ``work`` launch under ``limit``.
+    def observe(self, limit: HostRateLimit, now: datetime, key: str) -> RateLimitEpisode:
+        """Record that the host refused ``key``'s launch under ``limit``.
 
-        Extends that path's episode however long ago the window closed: only
-        positive evidence of recovery (:meth:`recovered`) ends it. Elapsed time
-        alone proves nothing - a tick that happens to arrive late would
-        otherwise restart the clock and keep the bound out of reach.
+        Extends that item's episode however long ago the window closed:
+        elapsed time between refusals proves nothing, since a tick that
+        happens to arrive late must not restart the clock.
         """
         previous = self._limit
         governing = (
@@ -120,14 +139,24 @@ class HostRateLimitWindow:
             else previous
         )
         self._limit = governing
-        since = self._refused_since.setdefault(work, now)
+        self._episodes = self._live(now)
+        current = self._episodes.get(key)
+        since = current.since if current is not None else now
+        self._episodes[key] = _Episode(since=since, resets_at=limit.resets_at)
         return RateLimitEpisode(limit=governing, limited_since=since, observed_at=now)
 
-    def recovered(self, work: str) -> None:
-        """A ``work`` launch got through: that path's episode is over."""
-        self._refused_since.pop(work, None)
-        if not self._refused_since:
+    def recovered(self, key: str) -> None:
+        """``key``'s launch got through: that item's episode is over."""
+        self._episodes.pop(key, None)
+        if not self._episodes:
             self._limit = None
+
+    def _live(self, now: datetime) -> dict[str, _Episode]:
+        return {
+            key: episode
+            for key, episode in self._episodes.items()
+            if now <= episode.resets_at + RATE_LIMIT_DEFERRAL_BOUND
+        }
 
 
 __all__ = [
@@ -136,4 +165,5 @@ __all__ = [
     "HostRateLimitKind",
     "HostRateLimitWindow",
     "RateLimitEpisode",
+    "episode_key",
 ]
