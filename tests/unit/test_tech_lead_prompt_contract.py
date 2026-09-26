@@ -497,8 +497,66 @@ def test_blocked_open_prs_are_reported_per_cause_within_the_finding_cap(
 
     assert MAX_LIST_ENTRIES > MAX_TECH_LEAD_FINDINGS  # the premise of the rule
     text = PROMPT_VARIANTS[variant]
-    assert "ONE finding per cause, not one per entry" in text
+    assert "fold several causes into one finding" in text
+    assert "Never spend a finding or an evidence reference per PR" in text
+    assert "ONE `escalate_to_human`" in text
     assert "as a finding with its issue" not in text
+    assert "ONE finding per cause" not in text
+
+
+def test_a_full_blocked_open_pr_list_fits_one_finding_and_one_escalation() -> None:
+    """The reporting rule the prompt teaches is one a valid decision can obey.
+
+    A full list of distinct causes -- more than the finding cap -- is named in
+    one finding's ``details`` and one escalation body (#7294 review round 2).
+    """
+    from issue_orchestrator.control.board_snapshot_builder import MAX_LIST_ENTRIES
+
+    lines = "\n".join(
+        f"- issue #{9000 + n} / PR #{19000 + n} (https://github.com/o/r/pull/{19000 + n})"
+        f" lane review, issue_blocked by blocked-custom-{n}, 999 scans since"
+        " 2026-09-23T05:53:00+00:00"
+        for n in range(MAX_LIST_ENTRIES)
+    )
+    decision = TechLeadDecision.from_agent_payload(
+        {
+            "schema_version": 1,
+            "summary": "Open PRs held by blocking labels.",
+            "findings": [
+                {
+                    "id": "T1",
+                    "title": f"{MAX_LIST_ENTRIES} open PRs held by blocking labels",
+                    "classification": "infra",
+                    "evidence": ["board-snapshot.json blocked_open_prs"],
+                    "details": lines,
+                }
+            ],
+            "proposed_actions": [
+                {
+                    "id": "A1",
+                    "action_type": "escalate_to_human",
+                    "target_number": 7,
+                    "body": lines,
+                    "finding_ids": ["T1"],
+                }
+            ],
+        }
+    )
+
+    assert len(decision.findings) == 1
+    assert all(f"PR #{19000 + n} " in decision.proposed_actions[0].body
+               for n in range(MAX_LIST_ENTRIES))
+    assert len(lines) <= MAX_ACTION_BODY_CHARS
+
+
+@pytest.mark.parametrize("variant", sorted(PROMPT_VARIANTS))
+def test_blocked_open_prs_say_where_the_label_sits_decides_what_clears_it(
+    variant: str,
+) -> None:
+    """A PR-level block is not cleared by retrying the issue (review round 2)."""
+    text = PROMPT_VARIANTS[variant]
+    assert "Retrying the issue does NOT\n    remove it" in text
+    assert "remove that label from the PR" in text
 
 
 @pytest.mark.parametrize("variant", sorted(PROMPT_VARIANTS))

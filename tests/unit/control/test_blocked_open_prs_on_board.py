@@ -267,3 +267,25 @@ def test_a_prior_attempt_pr_is_not_reported(
     )
 
     assert scan.blocked == []
+
+
+def test_a_pr_level_block_stays_on_the_board_after_the_issue_is_cleared(
+    config: Config, github: CountingGitHub
+) -> None:
+    """Retry clears the ISSUE's labels; a label on the PR still holds it.
+
+    The prompt tells the tech lead that a ``pr_blocked`` entry needs the PR's
+    label removed, not an issue retry; this is the behaviour that claim rests on.
+    """
+    _issue(github, 320, "blocked-failed")
+    _pr(github, 376, 320, "needs-code-review", "blocked-failed")
+    workflow = _workflow(config, github)
+    state = OrchestratorState()
+    workflow.scan_needs_code_review_prs(state, issue_branches={})
+
+    github.issues[0].labels.remove("blocked-failed")
+    workflow.scan_needs_code_review_prs(state, issue_branches={})
+
+    (entry,) = _snapshot(state).blocked_open_prs or []
+    assert entry.skip_reason == BlockedPRSkipReason.PR_BLOCKED.value
+    assert state.discovered_reviews == []

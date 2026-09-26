@@ -73,14 +73,18 @@ it since the orchestrator last started, between `first_skipped_at` and
 `last_skipped_at`; `draft` is the PR's draft state (`null` = not reported).
 
 - Such a PR never moves on its own: no review launches and no rework runs while
-  the blocking label stays. Clearing that label (the operator's Retry does)
-  re-admits the existing PR at the next scan; say so in your escalation.
-- Group the entries by cause (the same `blocking_labels` and `skip_reason`)
-  into ONE finding per cause, not one per entry: the list can hold more entries
-  than your decision may carry findings. Name every affected issue and PR, with
-  lane and how long it has waited, in that finding's evidence and in your
-  `escalate_to_human` on your tracking issue; `flag_pattern` a cause that
-  recurs.
+  the blocking label stays. Where it sits decides what clears it - say which in
+  your escalation:
+  - `issue_blocked`: the label is on the issue. Clearing it (the operator's
+    Retry on the issue does) re-admits the existing PR at the next scan.
+  - `pr_blocked`: the label is on the PR itself. Retrying the issue does NOT
+    remove it; the operator has to remove that label from the PR.
+- Stay inside the decision limits (at most 50 findings, 20 evidence references
+  each): group the entries by cause, and fold several causes into one finding
+  when there are many. Never spend a finding or an evidence reference per PR.
+  List every affected issue and PR, with its lane, `skip_reason` and how long it
+  has waited, in that finding's `details` and in ONE `escalate_to_human` on your
+  tracking issue; `flag_pattern` a cause that recurs.
 - Do not propose `request_rework` for these PRs: the rework scan skips a
   blocked issue too, so the rework would never run.
 - `blocked_open_prs: null` means the snapshot predates the field, not that
