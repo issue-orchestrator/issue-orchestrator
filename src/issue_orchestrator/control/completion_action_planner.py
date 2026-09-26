@@ -311,7 +311,9 @@ class CompletionActionPlanner:
         ``recovery_holds_validated_work`` is the capture this completion just
         made: the recovery lane holds unresolved validated work for the issue.
         A halted exchange then leaves the issue to recovery instead of blocking
-        it (see ``_generate_review_exchange_halted_actions``).
+        it (see ``_generate_review_exchange_halted_actions``). A capture that
+        faulted proves no custody, so its caller passes False and the halt
+        keeps its own block.
         """
         expected = build_expected_for_mutation()
 
