@@ -80,22 +80,17 @@ class HostRateLimitLaunchGate:
         GitHub read.
         """
         holding = self.window.open_at(self.clock())
-        if holding is not None:
+        # Past the bound the window no longer holds the launch back: it is
+        # attempted, so a refusal lands AFTER the launch holds its durable
+        # pending-work claim. That is the only kind of failure the queue's
+        # budget can count ("no durable spend, no spend"), so refusing on the
+        # open window here would defer forever, never escalating.
+        if holding is not None and not holding.bound_exceeded:
             # Not attempted, so not an observation: the episode and its bound
             # advance only when the host actually refuses again.
             self._publish(
                 holding, issue_number=issue_number, work=work, attempted=False
             )
-            if holding.bound_exceeded:
-                # Refused just as surely as an attempt would be, and past the
-                # bound every refusal counts - or a path that only ever meets
-                # the open window (the tech-lead authority's own read opened
-                # it) would never reach the budget.
-                return _past_bound(
-                    f"GitHub rate limit ({holding.limit.kind}) holds launches until "
-                    f"{holding.limit.resets_at.isoformat()}",
-                    holding,
-                )
             return LaunchResult.host_rate_limited(
                 f"GitHub rate limit ({holding.limit.kind}) holds launches until "
                 f"{holding.limit.resets_at.isoformat()}",
@@ -167,7 +162,7 @@ class HostRateLimitLaunchGate:
                 "limited_since": episode.limited_since.isoformat(),
                 "limited_for_seconds": int(episode.limited_for.total_seconds()),
                 "attempted": attempted,
-                "retry_budget_spent": episode.bound_exceeded,
+                "retry_budget_spent": attempted and episode.bound_exceeded,
             },
         ))
 

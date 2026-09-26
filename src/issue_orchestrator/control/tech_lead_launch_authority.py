@@ -174,10 +174,10 @@ class TechLeadLaunchAuthority:
             return self._rate_limit_hold(tech_lead, scope, episode)
         if episode is None and withdrawal is not None:
             return withdrawal
-        # Past the deferral bound the run is no longer held: the launch's own
-        # HostRateLimitLaunchGate refuses it before anything starts and counts
-        # that refusal against the queue's budget, so a limit that never lifts
-        # still reaches the needs-human escalation.
+        # Past the deferral bound the run is no longer held: the launch is
+        # attempted, and a refusal it meets once it holds its durable claim is
+        # counted against the queue's budget, so a limit that never lifts still
+        # reaches the needs-human escalation.
         barrier = self._local_scope_barrier(tech_lead)
         if barrier is not None:
             # The gate's own barrier vocabulary is the reason, so a local

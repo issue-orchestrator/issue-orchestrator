@@ -294,6 +294,20 @@ class TestPlannerHonoursTheWindow:
         reasons = {(item.item_type, item.number): item.reason for item in plan.skipped}
         assert reasons[("tech_lead", 7292)].startswith(RATE_LIMIT_DEFER_REASON)
 
+    def test_past_the_bound_the_planner_launches_again(self) -> None:
+        """Codex r5: a window longer than the bound must not starve the budget."""
+        config = make_config(max_concurrent_sessions=3)
+        planner = Planner(config=config, scheduler=Scheduler(config))
+        window = HostRateLimitWindow()
+        window.observe(_limit(T0 + timedelta(hours=3), "secondary"), T0)
+        past_bound = T0 + RATE_LIMIT_DEFERRAL_BOUND + timedelta(minutes=1)
+
+        plan = planner.plan(make_snapshot(
+            issues=[make_issue(42)], host_rate_limit_hold=window.open_at(past_bound)
+        ))
+
+        assert [a.number for a in plan.actions_of_type(ActionType.LAUNCH_SESSION)] == [42]
+
     def test_closed_window_launches_as_before(self) -> None:
         config = make_config(max_concurrent_sessions=3)
         planner = Planner(config=config, scheduler=Scheduler(config))
@@ -305,21 +319,18 @@ class TestPlannerHonoursTheWindow:
 
 
 class TestPastTheBoundEveryRefusalCounts:
-    def test_open_window_past_the_bound_is_a_counted_failure(self) -> None:
-        """Codex r4: a path that only meets the open window must still escalate."""
+    def test_past_the_bound_the_open_window_no_longer_holds_the_launch(self) -> None:
+        """Codex r4/r5: only an ATTEMPTED refusal can be counted durably."""
         clock = _Clock(T0)
         gate = HostRateLimitLaunchGate(HostRateLimitWindow(), InMemoryEventSink(), clock)
         gate.window.observe(_limit(T0 + RATE_LIMIT_DEFERRAL_BOUND + timedelta(hours=1)), T0)
         clock.now = T0 + RATE_LIMIT_DEFERRAL_BOUND + timedelta(minutes=1)
-        attempts: list[int] = []
 
-        result = gate.launch(
-            lambda: attempts.append(1) or LaunchResult(None, True),
-            issue_number=7292,
-            work="tech_lead",
-        )
+        def refused() -> LaunchResult:
+            raise _rate_limited_error(clock.now + timedelta(hours=1))
 
-        assert attempts == []
+        result = gate.launch(refused, issue_number=7292, work="tech_lead")
+
         assert result.disposition is LaunchDisposition.RETRYABLE_FAILURE
 
 

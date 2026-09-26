@@ -381,9 +381,12 @@ class Planner:
         suppressed_tech_lead_issue_numbers: frozenset[int],
     ) -> tuple[list[Action], list[SkippedItem]]:
         """GitHub has said when it will answer again (#7297): launch nothing
-        before then, or each attempt is a refusal counted as a failure."""
+        before then, or each attempt is a refusal counted as a failure. Past the
+        deferral bound, plan as usual: each launch is attempted again, and a
+        refusal it meets is counted against the queue's budget, which is how a
+        limit that never lifts reaches the escalation."""
         hold = snapshot.host_rate_limit_hold
-        if hold is None:
+        if hold is None or hold.bound_exceeded:
             return self._plan_session_launches(
                 snapshot,
                 plan_context,

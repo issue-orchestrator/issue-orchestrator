@@ -9809,6 +9809,32 @@ class TestLaunchDefersOnGitHubRateLimit:
 
         assert state.pending_tech_lead_reviews[0].retryable_launch_failures == 1
 
+    def test_open_window_past_the_bound_reattempts_and_spends(
+        self, launcher_bundle, tmp_path
+    ):
+        """Codex r5: a Retry-After longer than the bound must still reach the budget.
+
+        The launch is attempted again, so its refusal lands after the durable
+        claim is held - the only failure the ledger lets the queue count.
+        """
+        config = launcher_bundle.launcher.config
+        TestLaunchTechLeadIssueSessionFlavors.enable_tech_lead_agent(config, tmp_path)
+        launcher_bundle.board_snapshot_provider.error = self._rate_limited(
+            datetime.now(UTC) + timedelta(hours=1)
+        )
+        state = OrchestratorState()
+        self._queue_health_review(state)
+        now = datetime.now(UTC)
+        state.host_rate_limit.observe(
+            HostRateLimit(resets_at=now + timedelta(hours=1), kind="secondary"),
+            now - RATE_LIMIT_DEFERRAL_BOUND - timedelta(minutes=1),
+        )
+
+        assert self._launch_queued(state, config, launcher_bundle) is None
+
+        assert state.pending_tech_lead_reviews[0].retryable_launch_failures == 1
+        assert len(launcher_bundle.board_snapshot_provider.calls) == 1
+
     def test_rate_limited_review_read_is_deferred_not_raised(
         self, launcher_bundle, mock_repo_host, mock_events
     ):
