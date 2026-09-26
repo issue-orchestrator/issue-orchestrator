@@ -553,8 +553,16 @@ def test_a_full_blocked_open_pr_list_fits_one_finding_and_one_escalation() -> No
 def test_blocked_open_prs_say_where_the_label_sits_decides_what_clears_it(
     variant: str,
 ) -> None:
-    """A PR-level block is not cleared by retrying the issue (review round 2)."""
+    """A PR-level block is not cleared by retrying the issue (review round 2),
+    and an issue-level shared block can refuse the retry (review round 3).
+
+    The refusal itself is ``OperatorUnblocker``'s contract, covered in
+    ``tests/unit/control/test_operator_issue_commands.py``
+    (``test_a_refused_block_leaves_the_retry_gates_alone``); this pins that
+    the tech lead is told about it.
+    """
     text = PROMPT_VARIANTS[variant]
+    assert "Retry is then refused, names that\n    holder" in text
     assert "Retrying the issue does NOT\n    remove it" in text
     assert "remove that label from the PR" in text
 

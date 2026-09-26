@@ -75,8 +75,11 @@ it since the orchestrator last started, between `first_skipped_at` and
 - Such a PR never moves on its own: no review launches and no rework runs while
   the blocking label stays. Where it sits decides what clears it - say which in
   your escalation:
-  - `issue_blocked`: the label is on the issue. Clearing it (the operator's
-    Retry on the issue does) re-admits the existing PR at the next scan.
+  - `issue_blocked`: the label is on the issue. Clearing it re-admits the
+    existing PR at the next scan. The operator's Retry on the issue clears it
+    unless a shared `needs-human` block is still required by another cause (a
+    quarantine or a tech-lead escalation): Retry is then refused, names that
+    holder, and the PR stays blocked until the holder is resolved.
   - `pr_blocked`: the label is on the PR itself. Retrying the issue does NOT
     remove it; the operator has to remove that label from the PR.
 - Stay inside the decision limits (at most 50 findings, 20 evidence references
