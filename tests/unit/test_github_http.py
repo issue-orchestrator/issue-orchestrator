@@ -2892,3 +2892,48 @@ class TestGitDataBlobAndTreeEndpoints:
         ):
             with pytest.raises(GitHubHttpError, match="was not an object"):
                 call()
+
+
+def _open_pr(number: int) -> dict:
+    return {"number": number, "state": "open"}
+
+
+def test_list_open_prs_complete_walks_every_page_without_search() -> None:
+    """One /pulls walk replaces a /search/issues call per issue (search: 30/min)."""
+    seen: list[tuple[str, str | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.url.path, request.url.params.get("page")))
+        page = int(request.url.params.get("page") or 1)
+        batch = {1: [_open_pr(n) for n in range(100)], 2: [_open_pr(n) for n in range(100, 150)]}[page]
+        return httpx.Response(200, json=batch)
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    prs = client.list_open_prs_complete()
+
+    assert [pr["number"] for pr in prs] == list(range(150))
+    assert {path for path, _ in seen} == {"/repos/owner/repo/pulls"}
+    assert [page for _, page in seen] == [None, "2"]
+
+
+def test_list_open_prs_complete_refuses_a_partial_walk() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.params.get("page") == "2":
+            return httpx.Response(403, json={"message": "API rate limit exceeded"})
+        return httpx.Response(200, json=[_open_pr(n) for n in range(100)])
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    with pytest.raises(GitHubScanIncompleteError, match="open pull requests"):
+        client.list_open_prs_complete()
+
+
+def test_list_open_prs_complete_refuses_a_capped_walk() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[_open_pr(n) for n in range(100)])
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    with pytest.raises(GitHubScanIncompleteError, match="page cap"):
+        client.list_open_prs_complete(page_cap=3)

@@ -20,15 +20,25 @@ def observe_rework_targets(
     issue_numbers: Sequence[int],
     expected_heads: Mapping[int, str] | None = None,
 ) -> tuple[ReworkTarget, ...]:
-    """Resolve only the supplied manifest or problem issues, never the whole repo.
+    """Resolve only the supplied manifest or problem issues' PRs.
+
+    Problem issues resolve through ONE complete listing of open PRs, matched to
+    their issue the same way the grant below links them. It used to be one
+    ``/search/issues`` call per issue: a health review over ~50 blocked issues
+    blew GitHub's 30-per-minute search budget and could never launch. Only open
+    PRs can take scoped rework.
 
     Missing head/link facts give no grant; they cannot become guessed authority.
-    A transport failure propagates instead of silently shortening the grant.
+    A transport failure, or a listing that cannot be proven complete,
+    propagates instead of silently shortening the grant.
     """
     numbers = set(pr_numbers)
-    for issue_number in issue_numbers:
+    wanted = set(issue_numbers)
+    if wanted:
         numbers.update(
-            pr.number for pr in repository.get_prs_for_issue(issue_number, state="all")
+            pr.number
+            for pr in repository.list_open_prs_complete()
+            if extract_issue_number_from_pr(pr) in wanted
         )
     targets: list[ReworkTarget] = []
     for number in sorted(numbers):

@@ -1210,6 +1210,14 @@ class GitHubAdapter:
             return [self._pr_info_from_api(pr) for pr in output if isinstance(pr, dict)]
         return []
 
+    def list_open_prs_complete(self) -> list[PRInfo]:
+        """Every open PR; raises rather than returning a partial list."""
+        return [
+            self._pr_info_from_api(pr)
+            for pr in self._client.list_open_prs_complete()
+            if isinstance(pr, dict)
+        ]
+
     def create_pr(
         self,
         title: str,

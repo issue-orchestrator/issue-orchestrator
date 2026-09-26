@@ -2116,6 +2116,39 @@ class GitHubHttpClient:
             return []
         return payload[:limit]
 
+    def list_open_prs_complete(self, *, page_cap: int = 20) -> list[dict[str, Any]]:
+        """Every open PR, or an error: never a silently truncated list.
+
+        One paginated ``/pulls`` walk on the core API. Callers that need a
+        PR-per-issue answer for many issues use this instead of one
+        ``/search/issues`` call per issue, which spends GitHub's 30-per-minute
+        search budget. Page 1 is ETag-cached; later pages go through the
+        fail-loud pager (#6779 R17), so a failed or capped walk raises.
+        """
+        path = f"/repos/{self._config.repo}/pulls"
+        params: dict[str, Any] = {"state": "open", "per_page": 100}
+        first = self._request_json(
+            "GET", path, params=params, caller="list_open_prs_complete"
+        )
+        if not isinstance(first, list):
+            raise GitHubScanIncompleteError(
+                "GitHub returned a non-list body for the first page of open pull"
+                " requests; refusing to treat it as a complete list",
+                method="GET",
+                url=path,
+            )
+        prs = list(first)
+        if len(first) >= int(params["per_page"]):
+            for batch in self._paginate_fresh(
+                path,
+                params=params,
+                start_page=2,
+                page_cap=page_cap,
+                what="open pull requests",
+            ):
+                prs.extend(batch)
+        return prs
+
     def close_pr(self, pr_number: int) -> None:
         self._request_json(
             "PATCH",

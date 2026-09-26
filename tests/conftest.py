@@ -487,6 +487,12 @@ class MockGitHubAdapter:
                     result.append(pr)
         return result[:limit]
 
+    def list_open_prs_complete(self) -> list[PRInfo]:
+        """Every open PR, as the complete listing contract promises."""
+        return [
+            pr for prs in self.prs.values() for pr in prs if pr.state.lower() == "open"
+        ]
+
     def get_pr(self, pr_number: int) -> Optional[PRInfo]:
         """Get a specific PR."""
         for prs in self.prs.values():

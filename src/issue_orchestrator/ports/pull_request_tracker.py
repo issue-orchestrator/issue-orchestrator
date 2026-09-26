@@ -467,6 +467,18 @@ class PullRequestTracker(Protocol):
         """
         ...
 
+    def list_open_prs_complete(self) -> list[PRInfo]:
+        """List EVERY open pull request.
+
+        For callers that need to resolve many issues to their PRs at once: one
+        paginated listing instead of one per-issue search.
+
+        Raises:
+            RepositoryError: If any page cannot be read, or the listing cannot
+                be proven complete. Never returns a truncated list.
+        """
+        ...
+
     def create_pr(
         self, title: str, body: str, head: str, base: str = "main", draft: bool | None = None
     ) -> PRInfo:
