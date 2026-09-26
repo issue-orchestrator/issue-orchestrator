@@ -54,6 +54,23 @@ _DYNAMIC_SLOT = {
     "DynamicSlot": True,
     "LastHeardFrom": _NOW - 5,
 }
+
+
+@pytest.fixture(autouse=True)
+def _heartbeats_stamped_when_the_test_runs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stamp slot heartbeats when each test RUNS, not when this module was imported.
+
+    Under xdist the whole suite is collected first; on a loaded host a test in
+    this module started 960+ s later, past the reader's 2 x 300 s staleness
+    window, so a "5 s ago" heartbeat read as ~970 s old and every
+    PoolOnline assertion failed (validate-pr, 2026-09-26).
+    """
+    import sys
+
+    now = int(time.time())
+    monkeypatch.setattr(sys.modules[__name__], "_NOW", now)
+    monkeypatch.setitem(_IDLE_SLOT, "LastHeardFrom", now - 5)
+    monkeypatch.setitem(_DYNAMIC_SLOT, "LastHeardFrom", now - 5)
 _RUNNING_LANE_JOB = {
     "JobStatus": 2,
     "JobBatchName": "test-unit",
