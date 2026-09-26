@@ -101,6 +101,10 @@ class HostRateLimitLaunchGate:
                 f"Launch refused by a GitHub rate limit: {exc}", limit
             )
         if result.host_rate_limit is None:
+            if result.success:
+                # Positive evidence the host answers again: only this ends an
+                # episode, so the bound cannot be dodged by a late tick.
+                self.window.recovered()
             return result
         episode = self.observe(
             result.host_rate_limit, issue_number=issue_number, work=work

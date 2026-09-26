@@ -34,6 +34,7 @@ wait out a lease for work that never started.
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Optional, Sequence
 
@@ -45,6 +46,7 @@ from ..domain.tech_lead_run import (
     REASON_ANCHOR_CLOSED,
     REASON_ANCHOR_UNREADABLE,
     REASON_CLAIMED_BY_PEER,
+    REASON_GITHUB_RATE_LIMITED,
     REASON_NO_TECH_LEAD_AGENT,
     REASON_RUN_CLAIM_UNAVAILABLE,
     REASON_TECH_LEAD_DISABLED,
@@ -158,7 +160,18 @@ class TechLeadLaunchAuthority:
                 if explicitly_disabled
                 else "No tech lead agent is configured for this repository.",
             )
+        # Checked before AND after revalidation: an open window means no read
+        # is attempted, and a read that is refused must not fall through to a
+        # launch "on the evidence we have" (#7297).
+        held = self._rate_limit_refusal(tech_lead, scope)
+        if held is not None:
+            return held
         withdrawal = self._revalidate_subject(tech_lead, scope)
+        # A read the host refused proves nothing about the subject, so the
+        # rate limit - not "unreadable" - is the reason it is held.
+        held = self._rate_limit_refusal(tech_lead, scope)
+        if held is not None:
+            return held
         if withdrawal is not None:
             return withdrawal
         barrier = self._local_scope_barrier(tech_lead)
@@ -172,6 +185,21 @@ class TechLeadLaunchAuthority:
                 f"Held by tech-lead scope exclusivity ({barrier}).",
             )
         return self._shared_execution_refusal(tech_lead, scope)
+
+    def _rate_limit_refusal(
+        self, tech_lead: PendingTechLeadReview, scope: TechLeadRunScope
+    ) -> Optional[TechLeadLaunchRefusal]:
+        """Hold the run while the host's rate-limit window is open."""
+        episode = self._state.host_rate_limit.open_at(datetime.now(UTC))
+        if episode is None:
+            return None
+        return TechLeadLaunchRefusal(
+            scope.run_key,
+            tech_lead.issue_number,
+            REASON_GITHUB_RATE_LIMITED,
+            f"GitHub rate limit ({episode.limit.kind}) holds launches until"
+            f" {episode.limit.resets_at.isoformat()}.",
+        )
 
     def _revalidate_subject(
         self, tech_lead: PendingTechLeadReview, scope: TechLeadRunScope

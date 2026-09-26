@@ -42,6 +42,7 @@ from issue_orchestrator.domain.tech_lead_run import (
     IssueInvestigationScope,
     REASON_ANCHOR_CLOSED,
     REASON_ANCHOR_UNREADABLE,
+    REASON_GITHUB_RATE_LIMITED,
     REASON_ISSUE_CLOSED,
     REASON_NO_LONGER_BLOCKED,
     REASON_TECH_LEAD_DISABLED,
@@ -379,8 +380,10 @@ class RateLimitedRepositoryHost:
 
     def __init__(self, resets_at: datetime) -> None:
         self.resets_at = resets_at
+        self.reads = 0
 
     def get_issue(self, number: int):
+        self.reads += 1
         raise github_http_failure(
             f"GitHub GET /repos/o/r/issues/{number} failed: 403",
             status_code=403,
@@ -408,12 +411,28 @@ def test_a_rate_limited_anchor_read_opens_the_shared_launch_window():
     assert harness.launch(anchor) is None
 
     assert harness.launched == []
-    assert harness.held_reasons() == [REASON_ANCHOR_UNREADABLE]
+    assert harness.held_reasons() == [REASON_GITHUB_RATE_LIMITED]
     held = harness.state.host_rate_limit.open_at(datetime.now(UTC))
     assert held is not None
     assert held.limit.resets_at == datetime.fromtimestamp(int(resets.timestamp()), UTC)
     (deferral,) = harness.events.payloads(EventName.SESSION_LAUNCH_DEFERRED_RATE_LIMIT)
     assert deferral["issue_number"] == 900
+
+
+def test_a_rate_limited_subject_read_holds_a_focused_investigation():
+    """Codex r3: a refused read must not fall through to "launch on what we have"."""
+    resets = datetime.now(UTC) + timedelta(minutes=20)
+    investigation = _investigation(42)
+    host = RateLimitedRepositoryHost(resets)
+    harness = _Harness(pending=[investigation], repository_host=host)
+
+    assert harness.launch(investigation) is None
+    assert harness.launch(investigation) is None
+
+    assert harness.launched == [], "no session may start on a refused revalidation"
+    assert harness.held_reasons() == [REASON_GITHUB_RATE_LIMITED] * 2
+    assert harness.state.pending_tech_lead_reviews == [investigation]
+    assert host.reads == 1, "an open window is honoured before any further read"
 
 
 def test_a_global_anchor_is_never_subject_to_blocked_label_eligibility():

@@ -9,7 +9,7 @@ launch is attempted - and no retry spent - until it has passed.
 It is also bounded. A token that is rate limited forever (a runaway loop
 elsewhere draining it, an installation whose quota is misconfigured) must still
 reach a human rather than defer in silence, so the window remembers how long
-the limit has held without a break. Past :data:`RATE_LIMIT_DEFERRAL_BOUND` a
+the limit has held - until a launch gets through again. Past :data:`RATE_LIMIT_DEFERRAL_BOUND` a
 rate-limited launch is treated as the ordinary retryable failure it would have
 been before, and the queue's bounded budget and escalation take over.
 
@@ -33,10 +33,6 @@ HostRateLimitKind = Literal["primary", "secondary"]
 #: clear window is not a burst any more.
 RATE_LIMIT_DEFERRAL_BOUND = timedelta(hours=2)
 
-#: How long after a window closes a fresh rate limit still counts as the SAME
-#: episode. Deferred work is re-attempted on the first tick after the reset, so
-#: a token that is still spent is re-observed well inside this.
-RATE_LIMIT_CONTINUITY_GRACE = timedelta(minutes=10)
 
 
 @dataclass(frozen=True)
@@ -94,26 +90,25 @@ class HostRateLimitWindow:
     def observe(self, limit: HostRateLimit, now: datetime) -> RateLimitEpisode:
         """Record that the host refused a launch under ``limit``.
 
-        Extends the current episode when this refusal follows the previous
-        window closely enough to be the same outage; otherwise starts a new
-        one, so a token that recovered in between is not held against the
-        bound.
+        Extends the current episode however long ago its window closed: only
+        positive evidence of recovery (:meth:`recovered`) ends it. Elapsed time
+        alone proves nothing - a tick that happens to arrive late would
+        otherwise restart the clock and keep the bound out of reach.
         """
         previous, since = self._limit, self._limited_since
-        if (
-            previous is not None
-            and since is not None
-            and now <= previous.resets_at + RATE_LIMIT_CONTINUITY_GRACE
-        ):
+        if previous is not None and since is not None:
             governing = limit if limit.resets_at >= previous.resets_at else previous
         else:
             governing, since = limit, now
         self._limit, self._limited_since = governing, since
         return RateLimitEpisode(limit=governing, limited_since=since, observed_at=now)
 
+    def recovered(self) -> None:
+        """The host answered a launch: the episode, and its bound, are over."""
+        self._limit, self._limited_since = None, None
+
 
 __all__ = [
-    "RATE_LIMIT_CONTINUITY_GRACE",
     "RATE_LIMIT_DEFERRAL_BOUND",
     "HostRateLimit",
     "HostRateLimitKind",

@@ -26,7 +26,6 @@ from issue_orchestrator.control.session_launch_types import (
     LaunchResult,
 )
 from issue_orchestrator.domain.host_rate_limit import (
-    RATE_LIMIT_CONTINUITY_GRACE,
     RATE_LIMIT_DEFERRAL_BOUND,
     HostRateLimit,
     HostRateLimitWindow,
@@ -96,10 +95,23 @@ class TestHostRateLimitWindow:
         assert episode.limited_since == T0
         assert episode.limited_for >= RATE_LIMIT_DEFERRAL_BOUND
 
-    def test_a_clear_gap_starts_a_new_episode(self) -> None:
+    def test_a_late_tick_does_not_restart_the_episode(self) -> None:
+        """Codex r3: only positive recovery ends an episode, never elapsed time."""
+        window = HostRateLimitWindow()
+        now = T0
+        episode = window.observe(_limit(now + timedelta(hours=1)), now)
+        while not episode.bound_exceeded:
+            # Each refusal lands eleven minutes after the previous reset.
+            now = episode.limit.resets_at + timedelta(minutes=11)
+            episode = window.observe(_limit(now + timedelta(hours=1)), now)
+
+        assert episode.limited_since == T0
+
+    def test_recovery_starts_the_next_episode_afresh(self) -> None:
         window = HostRateLimitWindow()
         window.observe(_limit(T0 + timedelta(hours=1)), T0)
-        later = T0 + timedelta(hours=1) + RATE_LIMIT_CONTINUITY_GRACE + timedelta(seconds=1)
+        window.recovered()
+        later = T0 + timedelta(hours=3)
 
         episode = window.observe(_limit(later + timedelta(minutes=1)), later)
 
@@ -228,6 +240,22 @@ class TestHostRateLimitLaunchGate:
 
         assert gate.launch(lambda: launched, issue_number=1, work="issue") is launched
         assert _deferral_events(events) == []
+
+    def test_a_launch_that_gets_through_ends_the_episode(self) -> None:
+        clock = _Clock(T0)
+        gate, _ = self._gate(clock)
+        gate.window.observe(_limit(T0 + timedelta(minutes=1)), T0)
+        clock.now = T0 + timedelta(hours=5)
+
+        gate.launch(lambda: LaunchResult(None, True), issue_number=1, work="issue")
+
+        def refused() -> LaunchResult:
+            raise _rate_limited_error(clock.now + timedelta(minutes=1))
+
+        result = gate.launch(refused, issue_number=1, work="issue")
+        assert result.disposition is LaunchDisposition.HOST_RATE_LIMITED, (
+            "a fresh episode after recovery must defer, not hit the old bound"
+        )
 
 
 class TestLaunchResultInvariant:
