@@ -23,7 +23,7 @@ _CLOSES_KEYWORD = "Closes"
 _REFS_KEYWORD = "Refs"
 
 # The two forms the orchestrator writes. Each links a PR to its issue.
-_CLOSES_RE = re.compile(r"\bCloses\s+#(\d+)\b", re.IGNORECASE)
+_LINK_RE = re.compile(r"\b(?:Closes|Refs)\s+#(\d+)\b", re.IGNORECASE)
 _REFS_RE = re.compile(r"\bRefs\s+#(\d+)\b", re.IGNORECASE)
 
 # Every keyword GitHub accepts as a closing reference, with or without the colon
@@ -46,21 +46,18 @@ def issue_reference_line(issue_number: int, *, partial: bool) -> str:
 def linked_issue_number(body: str) -> int | None:
     """The issue a PR body links to, or None when it names none.
 
-    A closing reference wins over a partial one, so a body that says both
-    links to the issue it closes.
+    The first link in body order wins. The orchestrator's own reference is
+    the body's first line, so text further down (the agent's implementation
+    notes, or a second "Closes #M") cannot take the PR away from its issue.
     """
-    match = _CLOSES_RE.search(body) or _REFS_RE.search(body)
+    match = _LINK_RE.search(body)
     return int(match.group(1)) if match else None
 
 
 def body_links_issue(body: str, issue_numbers: Iterable[int]) -> bool:
     """Whether the body links (closing or partial) any of ``issue_numbers``."""
     wanted = set(issue_numbers)
-    return any(
-        int(match.group(1)) in wanted
-        for pattern in (_CLOSES_RE, _REFS_RE)
-        for match in pattern.finditer(body)
-    )
+    return any(int(match.group(1)) in wanted for match in _LINK_RE.finditer(body))
 
 
 def declares_partial_delivery(body: str, issue_number: int) -> bool:
@@ -77,3 +74,15 @@ def declares_partial_delivery(body: str, issue_number: int) -> bool:
     if issue_number in closes:
         return False
     return any(int(m.group(1)) == issue_number for m in _REFS_RE.finditer(body))
+
+
+def honors_partial_claim(body: str, issue_number: int, *, partial: bool) -> bool:
+    """Whether an existing PR's body can carry a completion's partial claim.
+
+    Publication can reuse a PR that an earlier session opened. Only a partial
+    claim can be broken by that PR: if its body still closes the issue,
+    merging it would close an issue the agent says is not finished. A
+    completion that makes no partial claim keeps whatever the PR already
+    says, because leaving an issue open is recoverable and closing it is not.
+    """
+    return not partial or declares_partial_delivery(body, issue_number)

@@ -55,8 +55,10 @@ def test_the_reference_line_closes_a_whole_delivery_and_refs_a_partial_one() -> 
     [
         ("Closes #320\n\nbody", 320),
         ("Refs #320\n\nbody", 320),
-        # A closing reference wins over a partial one.
-        ("Refs #1\nCloses #320", 320),
+        # The first link in body order wins: the orchestrator's own line is
+        # line 1, so a later "Closes #M" in agent-written text cannot move it.
+        ("Refs #320\nCloses #1", 320),
+        ("Closes #320\n\nAlso Refs #1", 320),
         ("No reference here, see #320", None),
         # A word-boundary-defeated reference links nothing, as before.
         ("done.\\n\\nCloses #45.", None),

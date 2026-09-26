@@ -592,6 +592,90 @@ class TestStackPublishGatePRReuse:
         assert any("retarget failed" in e for e in result.errors)
 
 
+class TestPartialPRReference:
+    """#7288: a partial completion must never publish through a closing PR.
+
+    Publication can reuse an open PR (the issue-scoped preflight) or get one
+    back from an idempotent ``create_pr``. Either can be a PR an earlier
+    session opened with "Closes #123". Merging it would close an issue the
+    agent said is not finished, so publication halts instead. A completion
+    that makes no partial claim keeps whatever the PR says.
+    """
+
+    @staticmethod
+    def _record(*, partial: bool) -> CompletionRecord:
+        return make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR],
+            implementation="One slice",
+            partial_pr=partial,
+        )
+
+    @staticmethod
+    def _pr(body: str) -> PRInfo:
+        return PRInfo(
+            number=99, title="#123 Existing PR",
+            url="https://github.com/owner/repo/pull/99", branch="123-feature",
+            body=body, state="open", labels=[],
+        )
+
+    def _run(self, processor, mock_git_adapter, worktree_with_completion, *, partial):
+        mock_git_adapter.get_current_branch.return_value = "123-feature"
+        worktree = worktree_with_completion(self._record(partial=partial))
+        return processor.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
+            issue_title="Test Issue",
+        )
+
+    @pytest.mark.parametrize(
+        ("existing", "partial", "published"),
+        [
+            ("Closes #123\n\nBody", True, False),
+            ("Refs #123\n\nBody", True, True),
+            # No partial claim: an existing partial PR keeps its "Refs" line.
+            ("Refs #123\n\nBody", False, True),
+            ("Closes #123\n\nBody", False, True),
+        ],
+    )
+    def test_reuse_refuses_only_a_closing_pr_for_a_partial_completion(
+        self, processor, mock_pr_adapter, mock_git_adapter, worktree_with_completion,
+        existing, partial, published,
+    ):
+        mock_pr_adapter.get_prs_for_issue.return_value = [self._pr(existing)]
+
+        result = self._run(
+            processor, mock_git_adapter, worktree_with_completion, partial=partial
+        )
+
+        assert result.success is published
+        mock_pr_adapter.create_pr.assert_not_called()
+        if not published:
+            assert any("closes it on merge" in e for e in result.errors)
+
+    def test_a_created_pr_that_closes_the_issue_is_refused_for_a_partial_completion(
+        self, processor, mock_pr_adapter, mock_git_adapter, worktree_with_completion,
+    ):
+        """An idempotent create can return an earlier "Closes" PR."""
+        mock_pr_adapter.create_pr.return_value = self._pr("Closes #123\n\nBody")
+
+        result = self._run(processor, mock_git_adapter, worktree_with_completion, partial=True)
+
+        assert not result.success
+        assert any("closes it on merge" in e for e in result.errors)
+
+    def test_a_fresh_partial_pr_is_created_with_a_refs_line_and_published(
+        self, processor, mock_pr_adapter, mock_git_adapter, worktree_with_completion,
+    ):
+        mock_pr_adapter.create_pr.side_effect = lambda **kwargs: self._pr(kwargs["body"])
+
+        result = self._run(processor, mock_git_adapter, worktree_with_completion, partial=True)
+
+        assert result.success
+        assert mock_pr_adapter.create_pr.call_args.kwargs["body"].startswith("Refs #123\n")
+
+
 class TestStackCreatedPRBaseEnforcement:
     """Every stack PR from the create/collision path must target the gate's base.
 

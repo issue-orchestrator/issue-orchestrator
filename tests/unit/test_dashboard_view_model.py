@@ -7,6 +7,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.control.awaiting_merge_post_publish_policy import (
     POST_PUBLISH_VALIDATION_SOURCE,
@@ -2500,24 +2502,48 @@ def test_queue_card_embeds_producer_stack_gate_view():
     assert stack["stack_base_branch"] == "feat/base"
 
 
-def test_queue_wait_reason_does_not_blame_history_for_a_partial_merge():
-    """#7288: after a merged partial PR the issue's next slice is launchable,
-    so the queue card must not say it waits on "previous run state"."""
-    from issue_orchestrator.domain.models import SessionHistoryEntry
+@pytest.mark.parametrize("partial", [False, True])
+def test_a_merged_partial_pr_does_not_complete_its_issue_on_the_board(partial):
+    """#7288: a merged partial PR finished a slice, not the issue.
+
+    The board keeps the merged PR in history but must not show the issue as
+    completed, even while the open issue is missing from the cached queue.
+    Its queue wait reason must not blame "previous run state" either,
+    because the issue can launch again. A whole merge still completes.
+    """
     from issue_orchestrator.view_models.dashboard import _queue_wait_reason
 
-    def reason(*, partial: bool) -> str:
-        state = OrchestratorState(startup_status="complete", session_history=[
-            SessionHistoryEntry(
-                issue_number=4, title="t", agent_type="agent:web", status="merged",
-                runtime_minutes=1, pr_url="https://github.com/o/r/pull/904",
-                partial_pr_merged=partial,
-            )
-        ])
-        return _queue_wait_reason(
-            state=state, config=_make_config(), issue_number=4,
-            dep_problem=None, queue_position=1,
-        )
+    config = _make_config()
+    entry = SessionHistoryEntry(
+        issue_number=320, title="Split oversized files", agent_type="agent:web",
+        status="merged", runtime_minutes=5,
+        pr_url="https://github.com/owner/repo/pull/362",
+        status_reason="Partial PR merged; issue stays open for its remaining work",
+        partial_pr_merged=partial,
+    )
+    state = OrchestratorState(startup_status="complete", session_history=[entry])
 
-    assert reason(partial=False) == "Waiting: previous run state"
-    assert reason(partial=True) == "Waiting: next scheduler tick"
+    view_model = build_dashboard_view_model(
+        _OrchestratorStub(state=state, config=config),
+        provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
+        tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    completed = {item["issue_number"] for item in view_model.completed_items}
+    history_item = next(i for i in view_model.history_items if i["issue_number"] == 320)
+    assert history_item["pr_url"] == "https://github.com/owner/repo/pull/362"
+    wait = _queue_wait_reason(
+        state=state, config=config, issue_number=320, dep_problem=None, queue_position=1
+    )
+    if partial:
+        assert 320 not in completed
+        assert history_item["flow_stage"] == "queued"
+        assert wait == "Waiting: next scheduler tick"
+    else:
+        assert 320 in completed
+        assert history_item["flow_stage"] == "done"
+        assert wait == "Waiting: previous run state"

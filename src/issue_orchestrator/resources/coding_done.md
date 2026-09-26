@@ -98,7 +98,9 @@ The PR body then says `Refs #N` instead of `Closes #N`, so merging it leaves the
 issue open and the orchestrator schedules the next slice. Leave `--partial` off
 the PR that finishes the issue. Do not use it to avoid finishing work you were
 asked to do. The reference line is set when the PR is first opened; rework on
-an existing PR keeps it.
+an existing PR keeps it. If the existing PR already says `Closes #N`, a
+`--partial` completion is refused rather than merged as a close, and a human
+has to change that PR's reference line.
 
 If you discovered unrelated ancillary work while staying focused on the assigned issue, write those proposals to a JSON or JSONL file first, then add `--follow-up-file path` to the completed command above.
 Each entry should include `title` and `reason`, and may include `evidence`, `suggested_labels`, and `blocking`.

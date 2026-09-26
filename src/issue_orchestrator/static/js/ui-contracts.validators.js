@@ -5104,6 +5104,7 @@
                         "remote_unreadable",
                         "pr_closed_or_merged",
                         "pr_branch_mismatch",
+                        "pr_issue_reference_mismatch",
                         "issue_unreadable",
                         "runtime_active",
                         "push_failed",

@@ -1205,6 +1205,34 @@ def test_a_merged_partial_pr_stays_in_the_rework_grant():
     assert [(t.pr_number, t.issue_number) for t in targets] == [(904, 10)]
 
 
+def test_a_partial_pr_that_also_closes_another_issue_stays_with_its_own():
+    """A merged partial PR whose first line is "Refs #320" and whose text later
+    says "Closes #321" belongs to #320. The grant must link it by its first
+    reference; ranking closing references first would move it to #321 and
+    drop it from #320's rework grant."""
+    from issue_orchestrator.control.scoped_rework_observation import (
+        observe_rework_targets,
+    )
+    from issue_orchestrator.ports.pull_request_tracker import PRInfo
+
+    partial = PRInfo(
+        905, "slice", "https://github.com/owner/repo/pull/905", "split-package-b",
+        "Refs #320\n\nSplits package B. Closes #321 as a side effect.", "merged", [],
+        head_sha="c" * 40,
+    )
+
+    class _ReferencingHost(_NoSearchHost):
+        def merged_prs_referencing_issues(self, issue_numbers):
+            self.reference_lookups.append(tuple(issue_numbers))
+            return frozenset({905})
+
+    targets = observe_rework_targets(
+        _ReferencingHost([partial]), pr_numbers=[], issue_numbers=[320]
+    )
+
+    assert [(t.pr_number, t.issue_number) for t in targets] == [(905, 320)]
+
+
 def test_no_problem_issues_means_no_listing():
     from issue_orchestrator.control.scoped_rework_observation import (
         observe_rework_targets,

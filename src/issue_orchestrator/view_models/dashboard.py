@@ -836,9 +836,14 @@ def _history_status_belongs_in_completed_lane(
     status: SessionHistoryStatus,
     *,
     merge_pending: bool,
+    partial_pr_merged: bool,
 ) -> bool:
-    """Only terminal done rows that are no longer awaiting merge enter Completed."""
-    return status in DONE_HISTORY_STATUSES and not merge_pending
+    """Only terminal done rows that are no longer awaiting merge enter Completed.
+
+    A merged partial PR is terminal for its PR, not for its issue (#7288):
+    the issue stays open for its next slice, so it is never Completed.
+    """
+    return status in DONE_HISTORY_STATUSES and not merge_pending and not partial_pr_merged
 
 
 def _build_history_items(state, config) -> HistoryLaneProjection:
@@ -855,7 +860,10 @@ def _build_history_items(state, config) -> HistoryLaneProjection:
         if not status_reason:
             status_reason = _history_status_label(entry.status)
 
-        if entry.status in DONE_HISTORY_STATUSES:
+        if entry.partial_pr_merged:
+            # One slice merged; the issue is back in the queue for the next one.
+            flow_stage = "queued"
+        elif entry.status in DONE_HISTORY_STATUSES:
             flow_stage = "done"
         elif entry.status in BLOCKED_HISTORY_STATUSES:
             flow_stage = "blocked"
@@ -908,6 +916,7 @@ def _build_history_items(state, config) -> HistoryLaneProjection:
             if _history_status_belongs_in_completed_lane(
                 entry.status,
                 merge_pending=merge_pending,
+                partial_pr_merged=entry.partial_pr_merged,
             ):
                 completed_items.append(item)
 

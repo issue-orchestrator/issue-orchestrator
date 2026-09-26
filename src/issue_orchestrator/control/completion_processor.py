@@ -24,6 +24,7 @@ from ..domain.prepared_completion import PreparedCompletionEvidence
 from ..domain.publication_workspace import PublicationWorkspace
 from ..domain.review_validation import ReviewValidationEvidence
 from ..domain.publication_remote import attributed_publication_body
+from ..domain.pr_issue_reference import honors_partial_claim
 from ..domain.manual_publication import PreparedManualPublication
 from ..domain.validated_head_publication import PublishValidatedHeadOutcome
 from .retained_completion_policy import prepare_retained_completion
@@ -2217,6 +2218,7 @@ class CompletionProcessor:
         # Check for existing PR to reuse after review exchange succeeds.
         reused = self._reuse_existing_pr_if_available(
             issue_number=issue_number,
+            partial=record.partial_pr,
             branch=branch,
             exchange_mode=exchange_mode,
             exchange_result=exchange_result,
@@ -2304,6 +2306,7 @@ class CompletionProcessor:
         self,
         *,
         issue_number: int,
+        partial: bool,
         branch: str,
         exchange_mode: str | None,
         exchange_result: Any | None,
@@ -2321,6 +2324,11 @@ class CompletionProcessor:
         )
         if not existing_pr:
             return None
+        refused = self._refuse_pr_that_closes_a_partial_issue(
+            existing_pr, issue_number=issue_number, partial=partial, errors=errors
+        )
+        if refused is not None:
+            return refused
         # Stack invariant (ADR-0029 / #6596): an existing PR may only be reused
         # if it already targets the base the stack publish gate requires. A
         # successor PR opened against ``main`` (or still on a now-merged
@@ -2388,6 +2396,41 @@ class CompletionProcessor:
             actions_taken=actions_taken,
             errors=errors,
         )
+
+    def _refuse_pr_that_closes_a_partial_issue(
+        self,
+        pr: PRInfo,
+        *,
+        issue_number: int,
+        partial: bool,
+        errors: list[str],
+    ) -> "_ActionResult | None":
+        """Halt when an existing PR would close an issue the agent called partial.
+
+        ``create_pr`` and the reuse preflight can both hand back a PR an
+        earlier session opened with "Closes #N". Its body is not rewritten
+        here: a maintainer may have edited it, and merging it as it is would
+        close an issue whose work is not finished (#7288). A human edits the
+        PR's reference line or drops the partial claim. Not retryable: nothing
+        changes until someone does.
+        """
+        if honors_partial_claim(pr.body, issue_number, partial=partial):
+            return None
+        reason = (
+            f"completion declared partial delivery of #{issue_number}, but "
+            f"existing PR #{pr.number} closes it on merge; change its "
+            f"reference line to 'Refs #{issue_number}' or publish without --partial"
+        )
+        errors.append(f"{ERROR_PREFIX_CREATE_PR}: {reason}")
+        logger.error("Partial PR reuse blocked for #%d: %s", issue_number, reason)
+        self._emit_publish_failed(
+            issue_number=issue_number,
+            stage=ERROR_PREFIX_CREATE_PR,
+            error=reason,
+            retryable=False,
+            branch=pr.branch,
+        )
+        return self._ActionResult(halt=True)
 
     def _retarget_reused_pr_base(
         self,
@@ -2529,16 +2572,23 @@ class CompletionProcessor:
     ) -> "_ActionResult | None":
         """Everything a freshly returned PR must satisfy before it is used.
 
-        One guard rather than two, because both answer the same question - is
-        this PR fit to inherit review finalization? - and both halt when it is
-        not:
+        One guard rather than several, because each answers the same question -
+        is this PR fit to inherit review finalization? - and each halts when it
+        is not:
 
         * its BASE, because ``create_pr`` is idempotent by head branch and can
           return an existing PR targeting the wrong one even when the
           issue-scoped reuse preflight missed it (#6596 F2);
         * its LABELS, because the record that produced it is agent-authored and
-          may have asked for the shared human block (#6999 F2).
+          may have asked for the shared human block (#6999 F2);
+        * its ISSUE REFERENCE, because an idempotent ``create_pr`` can return
+          an earlier "Closes #N" PR for a partial completion (#7288).
         """
+        refused = self._refuse_pr_that_closes_a_partial_issue(
+            pr, issue_number=issue_number, partial=record.partial_pr, errors=errors
+        )
+        if refused is not None:
+            return refused
         base_failure = self._enforce_created_pr_base(
             pr=pr,
             stack_decision=stack_decision,
