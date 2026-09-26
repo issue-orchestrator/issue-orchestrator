@@ -1015,6 +1015,83 @@ class TestOperatorCommandsRespectTheSharedBlockOwner:
         assert lm.needs_human not in live[123]
 
 
+class TestBulkUnblockRunsTheOperatorRetryCommand:
+    """The dashboard's bulk "Unblock & Retry" against a REAL shared block (porchpin #400).
+
+    The bulk route used to remove each label with a plain write. The shared
+    ``needs-human`` block refused the uncaused write, every other label came off
+    (the tech-lead marker included), and the route reported the issue unblocked
+    while GitHub still blocked it. It now runs the per-issue retry command, so a
+    refusal means the same thing from either button.
+    """
+
+    @pytest.fixture
+    def bulk_client(self, client_with_orchestrator):
+        from issue_orchestrator.entrypoints import web
+
+        _control, mock_orch = client_with_orchestrator
+        web.set_orchestrator(mock_orch)
+        try:
+            yield TestClient(web.app), mock_orch
+        finally:
+            web.set_orchestrator(None)
+
+    def test_a_refused_block_is_reported_failed_and_keeps_its_marker(
+        self, bulk_client, tmp_path
+    ):
+        client, mock_orch = bulk_client
+        live = {123: {"blocked-failed", "blocked-needs-human", "tech-lead-needs-human"}}
+        lm = TestOperatorCommandsRespectTheSharedBlockOwner()._wire_real_block(
+            mock_orch, tmp_path, live
+        )
+        mock_orch.request_refresh = MagicMock()
+
+        response = client.post("/api/unblock-retry", json={"issues": [123]})
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["unblocked"] == []
+        [failure] = body["failed"]
+        assert failure["issue"] == 123
+        assert "blocked-needs-human is still on the issue" in failure["error"]
+        assert "tech_lead_escalation" in failure["error"]
+        assert body["refresh_triggered"] is False
+        # Nothing after the refused block was touched, so its provenance stays.
+        assert live[123] == {"blocked-failed", lm.needs_human, lm.tech_lead_needs_human}
+        mock_orch.request_refresh.assert_not_called()
+
+    def test_a_releasable_block_is_cleared_and_reported_unblocked(
+        self, bulk_client, tmp_path
+    ):
+        from issue_orchestrator.domain.models import SessionHistoryEntry
+
+        client, mock_orch = bulk_client
+        live = {123: {"blocked-failed", "blocked-needs-human"}}
+        lm = TestOperatorCommandsRespectTheSharedBlockOwner()._wire_real_block(
+            mock_orch, tmp_path, live
+        )
+        mock_orch.request_refresh = MagicMock()
+        mock_orch.state.session_history = [
+            SessionHistoryEntry(
+                issue_number=123,
+                title="Test Issue",
+                agent_type="agent:claude",
+                status="failed",
+                runtime_minutes=10,
+            )
+        ]
+
+        response = client.post("/api/unblock-retry", json={"issues": [123]})
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body == {"unblocked": [123], "failed": [], "refresh_triggered": True}
+        assert live[123] == set()
+        assert lm.needs_human not in live[123]
+        assert mock_orch.state.session_history == []
+        mock_orch.request_refresh.assert_called_once()
+
+
 class TestTheRouteMapsTheTypedOutcome:
     """The transport half of the seam (#6999 F6 round 7).
 

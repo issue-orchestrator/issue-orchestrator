@@ -192,7 +192,7 @@ def test_subprocess_session_auto_accepts_claude_trust_prompt(tmp_path, monkeypat
     fake_claude.write_text(
         "#!/bin/sh\n"
         "printf 'Quick safety check: Is this a project you created or one you trust?\\n'\n"
-        "printf '1. Yes, I trust this folder\\n'\n"
+        "printf '❯ 1. Yes, I trust this folder\\n'\n"
         "printf '2. No, exit\\n'\n"
         "read -r response\n"
         "printf 'AUTO-RESPONSE:%s\\n' \"$response\"\n",

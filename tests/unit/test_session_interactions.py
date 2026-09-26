@@ -87,3 +87,30 @@ def test_session_interaction_rules_only_support_one_shot_rules() -> None:
             response="y",
             fire_once=False,
         )
+
+
+def test_an_agent_session_answers_prompts_with_a_carriage_return() -> None:
+    """codex 0.156 ignores a line feed on its choice dialogs; Enter is ``\\r`` (#7287).
+
+    ``AgentSession.send`` uses ``sendline`` (a line feed) for relayed input,
+    so the interaction handler must be bound to ``answer_prompt`` instead.
+    """
+    from unittest.mock import MagicMock
+
+    from issue_orchestrator.execution.agent_runner import AgentSession
+    from issue_orchestrator.execution.session_interactions import (
+        SessionInteractionHandler,
+        SessionInteractionRule,
+    )
+
+    child = MagicMock()
+    handler = SessionInteractionHandler(
+        session_name="review-376",
+        rules=(SessionInteractionRule("dialog", ("Open restricted",), ""),),
+    )
+    AgentSession(child, None, MagicMock(), 0.0, interaction_handler=handler)
+
+    handler.on_output(b"Folder access  1. Open restricted  2. Quit")
+
+    child.send.assert_called_once_with("\r")
+    child.sendline.assert_not_called()

@@ -33,6 +33,7 @@ from .invalid_record_actions import (
 from .label_manager import LabelManager
 from .provider_availability import ProviderAvailabilityPolicy
 from .provider_blocked_completion import provider_blocked_actions
+from .review_exchange_halt_actions import review_exchange_halted_actions
 from .reconciliation import ExpectedState, build_expected_for_mutation
 from ..domain.registered_completion import CompletionProcessingPolicy
 from ..ports.provider_resilience import ProviderErrorType
@@ -297,6 +298,7 @@ class CompletionActionPlanner:
         completion_detail: Optional[dict[str, Any]] = None,
         provider_error_type: ProviderErrorType | None = None,
         *, processing_policy: CompletionProcessingPolicy,
+        recovery_holds_validated_work: bool = False,
     ) -> tuple[Action, ...]:
         """Generate label/comment actions for session completion.
 
@@ -306,6 +308,13 @@ class CompletionActionPlanner:
         ``provider_error_type`` carries the typed verdict a provider-caused
         block ended on. It is what routes the block to the provider-impact
         owner instead of generic blocked handling, for every session kind.
+
+        ``recovery_holds_validated_work`` is the capture this completion just
+        made: the recovery lane holds unresolved validated work for the issue.
+        A halted exchange then leaves the issue to recovery instead of blocking
+        it (see ``review_exchange_halted_actions``). A capture that
+        faulted proves no custody, so its caller passes False and the halt
+        keeps its own block.
         """
         expected = build_expected_for_mutation()
 
@@ -326,11 +335,16 @@ class CompletionActionPlanner:
 
         if status == SessionStatus.COMPLETED and review_exchange_halted:
             logger.info(
-                "[COMPLETION] Review exchange halted - generating blocked-failed actions: issue=%d",
+                "[COMPLETION] Review exchange halted - %s: issue=%d",
+                "recovery holds the validated work" if recovery_holds_validated_work
+                else "generating blocked-failed actions",
                 session.issue.number,
             )
             return tuple(
-                self._generate_review_exchange_halted_actions(session, expected)
+                review_exchange_halted_actions(
+                    session, expected, self._lm,
+                    recovery_holds_validated_work=recovery_holds_validated_work,
+                )
             )
 
         if status == SessionStatus.TIMED_OUT:
@@ -724,38 +738,3 @@ class CompletionActionPlanner:
         # Review/rework BLOCKED completions do not map to issue-blocking labels;
         # their parent workflows own any PR/review state transitions.
         return []
-
-    def _generate_review_exchange_halted_actions(
-        self,
-        session: Session,
-        expected: ExpectedState,
-    ) -> list[Action]:
-        """Generate hold actions when a review exchange halts without progress."""
-        issue_number = session.issue.number
-        return [
-            AddLabelAction(
-                issue_number=issue_number,
-                label=self._lm.blocked_failed,
-                reason="Review exchange halted with no progress",
-                expected=expected,
-            ),
-            AddCommentAction(
-                number=issue_number,
-                comment=(
-                    "⚠️ **Review Exchange Halted**\n\n"
-                    "The automated review exchange stopped because it could not make further progress.\n\n"
-                    f"- Session: `{session.terminal_id}`\n"
-                    f"- Runtime: {session.runtime_minutes:.1f} minutes\n\n"
-                    f"This issue has been marked as `{self._lm.blocked_failed}` and will not be retried automatically.\n"
-                    "Use Retry/Unblock when you want to run it again."
-                ),
-                reason="Notify that review exchange halted and issue is on hold",
-                expected=expected,
-            ),
-            RemoveLabelAction(
-                issue_number=issue_number,
-                label=self._lm.in_progress,
-                reason="Review exchange halted - releasing claim",
-                expected=expected,
-            ),
-        ]

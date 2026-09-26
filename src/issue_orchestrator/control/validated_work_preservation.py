@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from ..domain.completion_intake import CompletionIntakeError
 from ..domain.prepared_completion import PreparedCompletionEvidence
@@ -12,7 +12,7 @@ from ..domain.publication_remote import PublicationRemoteError
 from ..domain.validated_work import RemoteBaselineStatus, ValidatedWorkState
 from ..domain.validated_work_capture import (
     AutomaticCaptureDecision, ValidatedWorkRemoteFacts, ValidatedWorkRemoteRequest,
-    candidate_evidence, newest_per_work,
+    candidate_evidence, candidate_key, newest_per_work,
 )
 from ..domain.validated_work_remote_authority import classify_remote_pr
 from ..domain.validated_work_escrow import EscrowArtifacts
@@ -50,9 +50,13 @@ class ValidatedWorkPreservationService:
         observations: dict[
             ValidatedWorkRemoteRequest, ValidatedWorkRemoteFacts | _RemoteUnavailable
         ] = {}
-        for candidate in newest_per_work(candidates, command.issue_number):
+        selected = newest_per_work(candidates, command.issue_number)
+        for candidate in selected:
             self._capture(candidate, command, observations)
-        return self._store.for_issue(command.issue_number)
+        return replace(
+            self._store.for_issue(command.issue_number),
+            captured_keys=frozenset(candidate_key(c, command.issue_number) for c in selected),
+        )
 
     def _capture(
         self, candidate: PreparedCompletionEvidence, command: AutomaticCaptureCommand,

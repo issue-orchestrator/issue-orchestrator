@@ -536,3 +536,37 @@ def test_receive_order_uses_exact_attestation_and_idempotent_receipt(custody):
     custody.lifecycle.preserve(42, "stop")
     evidence = custody.store.retained_evidence(42)[0].admission.evidence
     assert custody.ledger.evidence_receive_sequence(evidence) == custody.ledger.entry_for_receipt(second.entry_id).receive_sequence
+
+
+
+def test_completed_run_reports_recovery_custody_of_its_own_work_only(custody):
+    """A halted exchange leaves blocking to recovery only for work THIS run validated.
+
+    Custody is read off the capture itself, never a second store read that
+    could fail after recovery took the work (#7295 review rounds 1-2). An
+    issue-wide read proves nothing about any run.
+    """
+    submit(custody, "validated")
+
+    assert custody.lifecycle.preserve_completed_run(
+        42, "issue-42", "session-completion", run=custody.run) is True
+    issue_wide = custody.lifecycle.validated_work.for_issue(42)
+    assert issue_wide.unresolved
+    assert issue_wide.captured_keys == frozenset()
+    assert issue_wide.recovery_holds_captured_work is False
+
+
+def test_a_run_that_validated_nothing_holds_no_recovery_custody(custody):
+    assert custody.lifecycle.preserve_completed_run(
+        42, "issue-42", "session-completion", run=custody.run) is False
+
+
+def test_a_faulted_capture_holds_no_recovery_custody(custody, monkeypatch):
+    submit(custody, "validated")
+    monkeypatch.setattr(
+        type(custody.lifecycle.validated_work), "dispose_at_termination",
+        lambda self, command: (_ for _ in ()).throw(RuntimeError("escrow unreadable")),
+    )
+
+    assert custody.lifecycle.preserve_completed_run(
+        42, "issue-42", "session-completion", run=custody.run) is False

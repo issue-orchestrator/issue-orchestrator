@@ -614,6 +614,18 @@ class IssueRuntimeLifecycleOwners:
             issue_number=issue_number, reason=reason, events=self.events,
         )
 
+    def preserve_completed_run(self, issue_number: int, terminal_id: str, reason: str, *,
+                               run: SessionRunAssets) -> bool:
+        """`preserve_completed_terminal`, then whether recovery holds this run's work.
+
+        Read off the capture itself (``captured_keys``), never a second store
+        read that could fail after recovery took the work. A faulted capture
+        answers False: nothing proves recovery holds anything, so the
+        completion keeps its own block.
+        """
+        batch = self.preserve_completed_terminal(issue_number, terminal_id, reason, run=run)
+        return batch is not None and batch.recovery_holds_captured_work
+
     def _observe(self, batch: ValidatedWorkDispositionBatch) -> None:
         self.events.publish(make_trace_event(EventName.VALIDATED_WORK_DISPOSITION_OBSERVED, disposition_observation(batch)))
 
