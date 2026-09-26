@@ -104,6 +104,20 @@ class BranchPathsResult:
     error: str | None = None
 
 
+@dataclass(frozen=True)
+class BranchCommitMessagesResult:
+    """Full messages of the commits on the branch that its base lacks.
+
+    GitHub closes an issue named by a closing keyword in a commit message
+    that reaches the default branch, so publication policy reads them whole.
+    ``success`` is ``False`` on a git failure so callers can fail closed.
+    """
+
+    success: bool
+    messages: tuple[str, ...] = ()
+    error: str | None = None
+
+
 @dataclass
 class RebaseResult:
     """Result of a git rebase operation."""
@@ -330,6 +344,12 @@ class WorkingCopy(ExactGit, Protocol):
         returns unified diff *text* for content-oriented scans and cannot see
         no-hunk changes.
         """
+        ...
+
+    def branch_commit_messages_against_base(
+        self, worktree: Path, base_ref: str
+    ) -> BranchCommitMessagesResult:
+        """Full messages of the commits in ``HEAD`` that ``base_ref`` lacks."""
         ...
 
     def get_issue_number_from_branch(self, worktree: Path) -> int | None:

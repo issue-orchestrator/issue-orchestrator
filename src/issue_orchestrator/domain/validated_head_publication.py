@@ -25,12 +25,18 @@ class PublicationContent:
     title: str
     body: str
     draft: bool
+    # The completion's typed partial-delivery claim (#7288), carried rather
+    # than re-read from ``body``: agent-written text in the body can contain
+    # a closing keyword that would make the body alone look whole.
+    partial_pr: bool
 
     def __post_init__(self) -> None:
         if type(self.title) is not str or not self.title.strip():
             raise ValueError("publication title must be nonempty")
         if type(self.body) is not str or type(self.draft) is not bool:
             raise ValueError("publication content must have a body and typed draft state")
+        if type(self.partial_pr) is not bool:
+            raise ValueError("publication content must carry a typed partial claim")
 
 
 @dataclass(frozen=True, slots=True)

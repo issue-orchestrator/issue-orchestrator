@@ -160,6 +160,33 @@ def test_coding_done_without_partial_records_a_whole_delivery() -> None:
     assert CompletionRecord.from_dict(written.to_dict()).partial_pr is False
 
 
+@pytest.mark.parametrize(
+    ("implementation", "refused"),
+    [
+        ("Split package A. Fixes #320 once B lands.", True),
+        ("Split package A. Refs #320.", False),
+        # Another issue's closing keyword does not close this one.
+        ("Split package A. Closes #321.", False),
+    ],
+)
+def test_coding_done_partial_refuses_text_that_would_close_the_issue(
+    monkeypatch: pytest.MonkeyPatch, implementation: str, refused: bool
+) -> None:
+    """#7288 R2: the implementation text goes into the PR body, and a closing
+    keyword there closes the issue on merge despite "Refs". The agent learns
+    this while it can still reword, not after publication is refused."""
+    monkeypatch.setenv("ISSUE_ORCHESTRATOR_ISSUE_NUMBER", "320")
+    args = coding_done.build_parser().parse_args(
+        ["completed", "--implementation", implementation, "--problems", "None", "--partial"]
+    )
+
+    if refused:
+        with pytest.raises(SystemExit):
+            agent_done.validate_fields("completed", args)
+    else:
+        agent_done.validate_fields("completed", args)
+
+
 def test_coding_done_refuses_partial_on_an_escalation() -> None:
     args = coding_done.build_parser().parse_args(
         ["blocked", "--reason", "r", "--attempted", "a", "--partial"]

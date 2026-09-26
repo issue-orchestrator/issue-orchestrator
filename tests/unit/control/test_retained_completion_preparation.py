@@ -186,3 +186,33 @@ def test_create_pr_only_cannot_authorize_an_exact_push_to_master(retained):
     assert isinstance(result, ProcessingResult) and not result.success
     assert "protected branch" in result.message
     assert_no_effects(rig)
+
+
+def test_a_partial_completion_carries_its_typed_claim_into_the_command(retained):
+    """#7288: the recovery command carries the completion's partial claim,
+    typed, so the PR adoption check does not re-read it from rendered text."""
+    raw = json.loads(completion())
+    raw["partial_pr"] = True
+    rig = prepare(retained, raw=raw)
+
+    result = rig.owner.prepare(rig.row, rig.workspace, "Retained feature")
+
+    assert isinstance(result, PreparedRecoveryPublication)
+    assert result.command.content.partial_pr is True
+    assert result.command.content.body.startswith("Refs #42\n")
+
+
+def test_a_partial_completion_whose_text_closes_the_issue_is_refused_before_any_pr(retained):
+    """#7288 R2: agent-written text with "Closes #42" would close the issue on
+    merge despite the "Refs" line. Recovery refuses before any PR effect."""
+    raw = json.loads(completion())
+    raw["partial_pr"] = True
+    raw["implementation"] = "Slice one. Closes #42 when the rest lands."
+    rig = prepare(retained, raw=raw)
+
+    result = rig.owner.prepare(rig.row, rig.workspace, "Retained feature")
+
+    assert isinstance(result, ProcessingResult)
+    assert not result.success
+    assert any("closes it by keyword" in e for e in result.errors)
+    assert_no_effects(rig)

@@ -24,7 +24,7 @@ from ..domain.prepared_completion import PreparedCompletionEvidence
 from ..domain.publication_workspace import PublicationWorkspace
 from ..domain.review_validation import ReviewValidationEvidence
 from ..domain.publication_remote import attributed_publication_body
-from ..domain.pr_issue_reference import honors_partial_claim
+from ..domain.pr_issue_reference import declares_partial_delivery, honors_partial_claim
 from ..domain.manual_publication import PreparedManualPublication
 from ..domain.validated_head_publication import PublishValidatedHeadOutcome
 from .retained_completion_policy import prepare_retained_completion
@@ -2167,6 +2167,11 @@ class CompletionProcessor:
             runtime_identity=self._runtime_identity,
         )
         pr_body = attributed_publication_body(pr_body, issue_number, branch)
+        if self._refuse_unkeepable_partial_claim(
+            record=record, pr_body=pr_body, worktree=worktree,
+            issue_number=issue_number, errors=errors,
+        ):
+            return None
         exchange_mode, exchange_resolution_failed = self._review_exchange.resolve_create_pr_exchange_mode(
             exchange_mode=exchange_mode,
             agent_label=agent_label,
@@ -2180,7 +2185,41 @@ class CompletionProcessor:
             )
             return None
 
-        return PreparedPullRequest(pr_title, pr_body, expected_base, stack_decision, exchange_mode)
+        return PreparedPullRequest(
+            pr_title, pr_body, expected_base, stack_decision, exchange_mode, record.partial_pr
+        )
+
+    def _refuse_unkeepable_partial_claim(
+        self, *, record: CompletionRecord, pr_body: str, worktree: Path,
+        issue_number: int, errors: list[str],
+    ) -> bool:
+        """Refuse a partial completion whose own PR would still close its issue.
+
+        Runs for every publication path before any PR is created or adopted.
+        The body carries agent-written text, and the branch carries
+        agent-written commit messages. A closing keyword for the issue in
+        either would make GitHub close it on merge despite the "Refs" line
+        (#7288). Not retryable: the agent's words have to change first.
+        """
+        if not record.partial_pr:
+            return False
+        if declares_partial_delivery(pr_body, issue_number):
+            refusal = self._publication_source_guards.partial_delivery(worktree, issue_number)
+        else:
+            refusal = (
+                f"completion declared partial delivery of #{issue_number}, but its "
+                f"implementation or problems text closes it by keyword; reword it to "
+                f"'Refs #{issue_number}' or publish without --partial"
+            )
+        if refusal is None:
+            return False
+        errors.append(f"{ERROR_PREFIX_CREATE_PR}: {refusal}")
+        logger.error("Partial publication refused for #%d: %s", issue_number, refusal)
+        self._emit_publish_failed(
+            issue_number=issue_number, stage=ERROR_PREFIX_CREATE_PR,
+            error=refusal, retryable=False,
+        )
+        return True
 
     def _execute_create_pr_action(
         self,

@@ -60,6 +60,16 @@ def body_links_issue(body: str, issue_numbers: Iterable[int]) -> bool:
     return any(int(match.group(1)) in wanted for match in _LINK_RE.finditer(body))
 
 
+def names_issue_in_closing_keyword(text: str, issue_number: int) -> bool:
+    """Whether ``text`` names the issue in a keyword GitHub closes it by.
+
+    GitHub applies these in a PR body when the PR merges, and in a commit
+    message when the commit reaches the default branch. A partial delivery
+    must not contain one anywhere.
+    """
+    return any(int(m.group(1)) == issue_number for m in _GITHUB_CLOSING_RE.finditer(text))
+
+
 def declares_partial_delivery(body: str, issue_number: int) -> bool:
     """Whether a PR body says it delivers only part of ``issue_number``.
 
@@ -70,8 +80,7 @@ def declares_partial_delivery(body: str, issue_number: int) -> bool:
     is a broken closing reference, and the close-on-merge fallback still
     handles it.
     """
-    closes = {int(m.group(1)) for m in _GITHUB_CLOSING_RE.finditer(body)}
-    if issue_number in closes:
+    if names_issue_in_closing_keyword(body, issue_number):
         return False
     return any(int(m.group(1)) == issue_number for m in _REFS_RE.finditer(body))
 

@@ -16,6 +16,7 @@ from issue_orchestrator.ports.completion_intake import CompletionIntakeRuntime
 from issue_orchestrator.domain.registered_completion import CompletionRolePolicy
 from tests.run_allocation_helpers import make_completion_processor
 
+import dataclasses
 import json
 import pytest
 
@@ -78,6 +79,7 @@ from issue_orchestrator.ports.review_artifact_reader import (
     ReviewArtifactReadCommand,
 )
 from issue_orchestrator.ports.working_copy import (
+    BranchCommitMessagesResult,
     BranchPathsResult,
     BranchTextFile,
     BranchTextFilesResult,
@@ -619,9 +621,17 @@ class TestPartialPRReference:
             body=body, state="open", labels=[],
         )
 
-    def _run(self, processor, mock_git_adapter, worktree_with_completion, *, partial):
+    def _run(
+        self, processor, mock_git_adapter, worktree_with_completion, *, partial,
+        implementation="One slice", commit_messages=("Split package A",),
+    ):
         mock_git_adapter.get_current_branch.return_value = "123-feature"
-        worktree = worktree_with_completion(self._record(partial=partial))
+        mock_git_adapter.branch_commit_messages_against_base.return_value = (
+            BranchCommitMessagesResult(success=True, messages=tuple(commit_messages))
+        )
+        worktree = worktree_with_completion(
+            dataclasses.replace(self._record(partial=partial), implementation=implementation)
+        )
         return processor.process(
             worktree,
             run_assets=make_session_run_assets(worktree),
@@ -674,6 +684,52 @@ class TestPartialPRReference:
 
         assert result.success
         assert mock_pr_adapter.create_pr.call_args.kwargs["body"].startswith("Refs #123\n")
+
+
+    @pytest.mark.parametrize(
+        ("implementation", "commit_messages", "refused_because"),
+        [
+            ("Split A. Closes #123 once B lands.", ("Split A",), "implementation or problems text"),
+            ("Split A", ("Split A\n\nFixes #123",), "commit(s) close it by keyword"),
+        ],
+    )
+    def test_a_partial_completion_whose_own_words_close_the_issue_is_refused_before_any_pr(
+        self, processor, mock_pr_adapter, mock_git_adapter, worktree_with_completion,
+        implementation, commit_messages, refused_because,
+    ):
+        """#7288 R2: the body carries agent text and the branch carries agent
+        commits. A closing keyword for the issue in either closes it on merge
+        despite the "Refs" line. Publication halts before any PR is created
+        or reused."""
+        mock_pr_adapter.get_prs_for_issue.return_value = [self._pr("Refs #123\n\nBody")]
+
+        result = self._run(
+            processor, mock_git_adapter, worktree_with_completion, partial=True,
+            implementation=implementation, commit_messages=commit_messages,
+        )
+
+        assert not result.success
+        assert any(refused_because in e for e in result.errors)
+        mock_pr_adapter.create_pr.assert_not_called()
+        mock_pr_adapter.get_prs_for_issue.assert_not_called()
+
+    def test_an_unreadable_commit_history_refuses_a_partial_completion(
+        self, processor, mock_pr_adapter, mock_git_adapter, worktree_with_completion,
+    ):
+        mock_git_adapter.get_current_branch.return_value = "123-feature"
+        mock_git_adapter.branch_commit_messages_against_base.return_value = (
+            BranchCommitMessagesResult(success=False, error="bad ref")
+        )
+        worktree = worktree_with_completion(self._record(partial=True))
+
+        result = processor.process(
+            worktree, run_assets=make_session_run_assets(worktree),
+            issue_number=123, issue_title="Test Issue",
+        )
+
+        assert not result.success
+        assert any("Could not read branch commit messages" in e for e in result.errors)
+        mock_pr_adapter.create_pr.assert_not_called()
 
 
 class TestStackCreatedPRBaseEnforcement:
@@ -6353,7 +6409,7 @@ def test_manual_settlement_preserves_requested_effects_without_generic_publish(
     receipt = CompletionIntakeReceipt("a" * 64, "b" * 64)
     command = PublishValidatedHeadCommand(123, "owner/repo", "issue-123", "c" * 40,
         RemoteHeadExpectation.UNCONSTRAINED, None, tmp_path, None, "main",
-        PublicationContent("#123: Test Issue", "Implementation", True))
+        PublicationContent("#123: Test Issue", "Implementation", True, False))
     record = make_record(CompletionOutcome.COMPLETED,
         [RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR, RequestedAction.REMOVE_NEEDS_REWORK_LABEL],
         pr_labels=["feature"])

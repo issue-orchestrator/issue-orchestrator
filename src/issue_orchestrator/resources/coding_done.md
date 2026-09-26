@@ -95,7 +95,10 @@ coding-done completed \
   --partial
 ```
 The PR body then says `Refs #N` instead of `Closes #N`, so merging it leaves the
-issue open and the orchestrator schedules the next slice. Leave `--partial` off
+issue open and the orchestrator schedules the next slice. Do not write a closing
+keyword for the issue (`Closes`, `Fixes` or `Resolves` followed by `#N`) in the
+implementation or problems text or in any commit message: GitHub would close the
+issue on merge, so the orchestrator refuses to publish that PR. Leave `--partial` off
 the PR that finishes the issue. Do not use it to avoid finishing work you were
 asked to do. The reference line is set when the PR is first opened; rework on
 an existing PR keeps it. If the existing PR already says `Closes #N`, a
