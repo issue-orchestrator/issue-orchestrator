@@ -88,10 +88,8 @@ from .worker_budget import (
 )
 from .reactive_tech_lead_planning import plan_tech_lead_launch_queue
 from .reconciliation import build_expected_for_mutation
-from .stuck_sweep import (
-    build_stuck_sweep_escalation_actions,
-    build_stuck_sweep_review_release_actions,
-)
+from .stuck_sweep import build_stuck_sweep_escalation_actions
+from .stuck_sweep_review_release import build_stuck_sweep_review_release_actions
 from .planner_types import OrchestratorSnapshot, Plan, PlanContext, SkippedItem
 from .tech_lead_issue_policy import (
     plan_batch_review_issue,

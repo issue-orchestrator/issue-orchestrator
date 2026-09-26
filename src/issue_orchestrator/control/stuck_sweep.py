@@ -71,11 +71,8 @@ from ..ports.repository_host import (
     RepositoryScanIncompleteError,
 )
 from .needs_human_block import NeedsHumanCause
-from .published_review_custody import (
-    NO_PUBLISHED_REVIEW_HOLDS,
-    PublishedReviewHold,
-    PublishedReviewHolds,
-)
+from .published_review_custody import NO_PUBLISHED_REVIEW_HOLDS, PublishedReviewHolds
+from .stuck_sweep_review_release import log_held_for_review, only_failure_blocked
 from .tech_lead_dispositions import (
     NO_TECH_LEAD_DISPOSITIONS,
     StuckSweepDispositions,
@@ -432,11 +429,11 @@ def _scan_stuck_issues(
         if blocker is None:
             continue
         holds = published_review.holds(issue.number)
-        releasable = bool(holds) and _only_failure_blocked(issue, label_manager, machinery)
+        releasable = bool(holds) and only_failure_blocked(issue, label_manager, machinery)
         if holds and not releasable:
             owned.add(issue.number)
             held_for_review.add(issue.number)
-            _log_held_for_review(issue, blocker, holds)
+            log_held_for_review(issue, blocker, holds)
             continue
         candidates.append((issue, blocker, releasable))
     return _StuckScan(
@@ -611,36 +608,6 @@ class _Remedy:
         )
 
 
-def _only_failure_blocked(
-    issue: "Issue", label_manager: "LabelManager", machinery_folded: frozenset[str]
-) -> bool:
-    """Whether ``blocked-failed`` is the issue's ONLY recoverable block.
-
-    That label records a failed run; with the run's validated work already
-    published under an open PR it is the one block this sweep may lift, to let
-    the review proceed. Any other block (needs-human, a human's ``blocked``)
-    has an owner of its own and is never lifted here.
-    """
-    blockers = {
-        name.casefold()
-        for name in label_manager.get_blocking(issue.labels)
-        if name.casefold() not in machinery_folded
-    }
-    return blockers == {label_manager.blocked_failed.casefold()}
-
-
-def _log_held_for_review(
-    issue: "Issue", blocking_label: str, holds: tuple[PublishedReviewHold, ...]
-) -> None:
-    logger.info(
-        "[STUCK_SWEEP] issue #%d (label=%s) is not stuck: %s; its review owns "
-        "it, so it is neither investigated nor escalated (#7293)",
-        issue.number,
-        blocking_label,
-        "; ".join(hold.describe() for hold in holds),
-    )
-
-
 def _log_exhausted(issue: "Issue", max_attempts: int, blocking_label: str) -> None:
     logger.warning(
         "[STUCK_SWEEP] issue #%d exhausted recovery budget (%d failed cycles, "
@@ -679,35 +646,6 @@ def build_stuck_sweep_escalation_actions(
             expected=build_expected_for_mutation(),
         )
         for issue_number in label_issue_numbers
-    ]
-
-
-def build_stuck_sweep_review_release_actions(
-    issue_numbers: "tuple[int, ...]",
-    label_manager: "LabelManager",
-) -> "list[Action]":
-    """Release a published PR's review by lifting the stale failure block (#7293).
-
-    One label transition per issue: pr-pending goes on (the adds precede the
-    removals) so the scheduler never sees the issue unblocked without it, and
-    ``blocked-failed`` comes off - but only while it is still the block the
-    sweep saw and no needs-human escalation has landed since.
-    """
-    from .actions import SyncLabelsAction
-    from .reconciliation import build_expected_for_mutation
-
-    return [
-        SyncLabelsAction(
-            issue_number=issue_number,
-            add_labels=(label_manager.pr_pending,),
-            remove_labels=(label_manager.blocked_failed,),
-            reason="stuck sweep: published validated work is under review (#7293)",
-            expected=build_expected_for_mutation(
-                required={label_manager.blocked_failed},
-                forbidden={label_manager.needs_human},
-            ),
-        )
-        for issue_number in issue_numbers
     ]
 
 
