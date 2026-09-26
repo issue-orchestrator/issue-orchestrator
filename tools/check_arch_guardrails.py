@@ -865,6 +865,11 @@ _NON_PROVIDER_TEXT_CLASSIFIERS = frozenset(
         # table this guardrail removed from the same module cannot come back
         # beside it.
         "infra/hooks/_ai_gate.py::_detect_blocked_from_output",
+        # --- test support: grading a tech lead's written decision (#7304) ---
+        # The tech-lead exam checks whether a finished run's decision/report
+        # NAMES a known root cause. That text is the run's own artifact, read
+        # after the fact by a test harness, never provider CLI output.
+        "testing/exam/case.py::TermGroup.matched_term",
         # --- session transcripts, read after the fact ---
         #
         # These four do read agent output, so the exemption is narrower than it
