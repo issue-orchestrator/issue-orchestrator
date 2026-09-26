@@ -2272,18 +2272,18 @@
       "rule_id": "ruff_noqa_suppressions",
       "value": 1
     },
-    "ruff_noqa_suppressions:src/issue_orchestrator/execution/agent_runner.py:25d30ad79690:line-174": {
-      "detail": "line 174: # noqa: BLE001",
+    "ruff_noqa_suppressions:src/issue_orchestrator/execution/agent_runner.py:25d30ad79690:line-190": {
+      "detail": "line 190: # noqa: BLE001",
       "kind": "ruff_noqa_suppression",
-      "metric_id": "src/issue_orchestrator/execution/agent_runner.py:25d30ad79690:line-174",
+      "metric_id": "src/issue_orchestrator/execution/agent_runner.py:25d30ad79690:line-190",
       "path": "src/issue_orchestrator/execution/agent_runner.py",
       "rule_id": "ruff_noqa_suppressions",
       "value": 1
     },
-    "ruff_noqa_suppressions:src/issue_orchestrator/execution/agent_runner.py:25d30ad79690:line-181": {
-      "detail": "line 181: # noqa: BLE001",
+    "ruff_noqa_suppressions:src/issue_orchestrator/execution/agent_runner.py:25d30ad79690:line-197": {
+      "detail": "line 197: # noqa: BLE001",
       "kind": "ruff_noqa_suppression",
-      "metric_id": "src/issue_orchestrator/execution/agent_runner.py:25d30ad79690:line-181",
+      "metric_id": "src/issue_orchestrator/execution/agent_runner.py:25d30ad79690:line-197",
       "path": "src/issue_orchestrator/execution/agent_runner.py",
       "rule_id": "ruff_noqa_suppressions",
       "value": 1
