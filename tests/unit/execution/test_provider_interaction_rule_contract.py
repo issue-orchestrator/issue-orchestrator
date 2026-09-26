@@ -446,3 +446,48 @@ def test_a_glyph_or_word_split_across_reads_still_matches(
     timers.settle()
 
     assert sent == ["\x1b[B"]
+
+
+def test_a_finished_handler_stops_modelling_the_screen(working_directory: Path) -> None:
+    """Once every rule answered or expired, a long session's output costs nothing."""
+    timers = _ManualTimers()
+    handler, sent = _codex_handler(working_directory, timers)
+    assert handler.watching
+
+    handler.on_output(b"Working (1s \xe2\x80\xa2 esc to interrupt)")
+    handler.on_output(_CODEX_0_156_FOLDER_ACCESS_FRAME)
+    timers.settle()
+
+    assert not handler.watching
+    assert sent == []
+
+
+def test_no_screen_work_after_the_last_rule_but_full_work_while_one_settles(
+    working_directory: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#7299 review round 4: post-startup output of a long session still fed
+    and rendered the whole screen on every chunk (2.4 s CPU per 10k chunks)."""
+    from issue_orchestrator.infra.terminal_viewport import TerminalViewport
+
+    calls: list[str] = []
+    feed, render = TerminalViewport.feed, TerminalViewport.render
+    monkeypatch.setattr(
+        TerminalViewport, "feed", lambda self, data: (calls.append("feed"), feed(self, data))[1]
+    )
+    monkeypatch.setattr(
+        TerminalViewport, "render", lambda self: (calls.append("render"), render(self))[1]
+    )
+    timers = _ManualTimers()
+    handler, sent = _codex_handler(working_directory, timers)
+
+    handler.on_output(_CODEX_0_156_FOLDER_ACCESS_FRAME)
+    calls.clear()
+    handler.on_output(b"\x1b[?2026h\x1b[?2026l")  # still settling: must be modelled
+    assert "feed" in calls
+    timers.settle()
+    assert sent == [""]
+
+    calls.clear()
+    for _ in range(100):
+        handler.on_output(b"agent output line\r\n")
+    assert calls == []

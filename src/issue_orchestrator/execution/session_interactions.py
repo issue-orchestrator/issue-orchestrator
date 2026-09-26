@@ -213,6 +213,8 @@ class SessionInteractionHandler:
             return
         raw = data if isinstance(data, bytes) else data.encode("utf-8")
         with self._lock:
+            if not self._watching():
+                return  # every rule answered or expired: stop modelling the screen
             # Any output, even a pure redraw, means the screen is not settled.
             for name in list(self._settling):
                 self._restart_settle(self._compiled(name))
@@ -235,6 +237,19 @@ class SessionInteractionHandler:
                 self._restart_settle(compiled)
             else:
                 self._respond(rule, response)
+
+    @property
+    def watching(self) -> bool:
+        """Whether any rule can still answer, i.e. output is still modelled."""
+        with self._lock:
+            return self._watching()
+
+    def _watching(self) -> bool:
+        return bool(self._settling) or any(
+            compiled.rule.name not in self._fired_rules
+            and compiled.rule.name not in self._expired
+            for compiled in self._rules
+        )
 
     def _compiled(self, name: str) -> _CompiledRule:
         return next(compiled for compiled in self._rules if compiled.rule.name == name)
