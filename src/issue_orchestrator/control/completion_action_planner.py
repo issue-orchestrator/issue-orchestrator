@@ -297,6 +297,7 @@ class CompletionActionPlanner:
         completion_detail: Optional[dict[str, Any]] = None,
         provider_error_type: ProviderErrorType | None = None,
         *, processing_policy: CompletionProcessingPolicy,
+        recovery_holds_validated_work: bool = False,
     ) -> tuple[Action, ...]:
         """Generate label/comment actions for session completion.
 
@@ -306,6 +307,11 @@ class CompletionActionPlanner:
         ``provider_error_type`` carries the typed verdict a provider-caused
         block ended on. It is what routes the block to the provider-impact
         owner instead of generic blocked handling, for every session kind.
+
+        ``recovery_holds_validated_work`` is the capture this completion just
+        made: the recovery lane holds unresolved validated work for the issue.
+        A halted exchange then leaves the issue to recovery instead of blocking
+        it (see ``_generate_review_exchange_halted_actions``).
         """
         expected = build_expected_for_mutation()
 
@@ -326,11 +332,15 @@ class CompletionActionPlanner:
 
         if status == SessionStatus.COMPLETED and review_exchange_halted:
             logger.info(
-                "[COMPLETION] Review exchange halted - generating blocked-failed actions: issue=%d",
+                "[COMPLETION] Review exchange halted - %s: issue=%d",
+                "recovery holds the validated work" if recovery_holds_validated_work
+                else "generating blocked-failed actions",
                 session.issue.number,
             )
             return tuple(
-                self._generate_review_exchange_halted_actions(session, expected)
+                self._generate_review_exchange_halted_actions(
+                    session, expected, recovery_holds_validated_work
+                )
             )
 
         if status == SessionStatus.TIMED_OUT:
@@ -729,9 +739,46 @@ class CompletionActionPlanner:
         self,
         session: Session,
         expected: ExpectedState,
+        recovery_holds_validated_work: bool,
     ) -> list[Action]:
-        """Generate hold actions when a review exchange halts without progress."""
+        """Generate hold actions when a review exchange halts without progress.
+
+        When recovery already holds the run's validated work, recovery owns the
+        issue: it blocks it with ``recovery-pending``, publishes the work as a PR
+        and routes it to code review, or escalates it itself. Adding
+        ``blocked-failed`` on top would veto that review and leave the issue for
+        the stuck sweep to escalate, so the halt only reports and releases.
+        """
         issue_number = session.issue.number
+        header = (
+            "⚠️ **Review Exchange Halted**\n\n"
+            "The automated review exchange stopped because it could not make further progress.\n\n"
+            f"- Session: `{session.terminal_id}`\n"
+            f"- Runtime: {session.runtime_minutes:.1f} minutes\n\n"
+        )
+        release = RemoveLabelAction(
+            issue_number=issue_number,
+            label=self._lm.in_progress,
+            reason="Review exchange halted - releasing claim",
+            expected=expected,
+        )
+        if recovery_holds_validated_work:
+            return [
+                AddCommentAction(
+                    number=issue_number,
+                    comment=(
+                        header
+                        + "This run's validated work is held by recovery "
+                        f"(`{self._lm.recovery_pending}`), so this issue is not marked "
+                        f"`{self._lm.blocked_failed}`. Once recovery publishes it, the pull "
+                        "request goes to code review. Until then recovery keeps the issue "
+                        "blocked, and escalates it if the work cannot be published."
+                    ),
+                    reason="Notify that review exchange halted and recovery holds the work",
+                    expected=expected,
+                ),
+                release,
+            ]
         return [
             AddLabelAction(
                 issue_number=issue_number,
@@ -742,20 +789,12 @@ class CompletionActionPlanner:
             AddCommentAction(
                 number=issue_number,
                 comment=(
-                    "⚠️ **Review Exchange Halted**\n\n"
-                    "The automated review exchange stopped because it could not make further progress.\n\n"
-                    f"- Session: `{session.terminal_id}`\n"
-                    f"- Runtime: {session.runtime_minutes:.1f} minutes\n\n"
-                    f"This issue has been marked as `{self._lm.blocked_failed}` and will not be retried automatically.\n"
+                    header
+                    + f"This issue has been marked as `{self._lm.blocked_failed}` and will not be retried automatically.\n"
                     "Use Retry/Unblock when you want to run it again."
                 ),
                 reason="Notify that review exchange halted and issue is on hold",
                 expected=expected,
             ),
-            RemoveLabelAction(
-                issue_number=issue_number,
-                label=self._lm.in_progress,
-                reason="Review exchange halted - releasing claim",
-                expected=expected,
-            ),
+            release,
         ]

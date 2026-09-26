@@ -2,6 +2,8 @@
 
 # ruff: noqa: F403,F405
 
+from types import SimpleNamespace
+
 from tests.unit import test_web as _support
 from tests.unit.test_web import *  # noqa: F403
 
@@ -103,41 +105,43 @@ class TestHistoryEndpoints:
         assert len(mock_orch.state.session_history) == 0
         assert 1 not in mock_orch.state.completed_today
 
-    def test_unblock_retry_removes_blocking_and_pr_pending_labels(self):
-        """Unblock endpoint removes all labels that prevent scheduling."""
+    def test_unblock_retry_reports_only_committed_retries_as_unblocked(self):
+        """Each issue runs the operator retry command; its outcome decides the lists."""
+        from issue_orchestrator.ports.operator_issue_commands import (
+            OperatorCommandIntent,
+            OperatorCommandOutcome,
+            OperatorCommandStatus,
+        )
+
         mock_orch = create_mock_orchestrator()
-        lm = LabelManager(mock_orch.config)
-        mock_orch.deps.label_manager = lm
-        mock_orch.deps.action_applier = MagicMock()
-        mock_orch.deps.action_applier.apply.return_value = Mock(success=True, error=None)
-        mock_orch.repository_host.get_issue_labels.return_value = [
-            "agent:web",
-            lm.blocked,
-            lm.pr_pending,
-        ]
-        mock_orch.state.session_history = [
-            SessionHistoryEntry(
-                issue_number=4057,
-                title="Issue 4057",
-                agent_type="agent:web",
-                status="blocked",
-                runtime_minutes=5,
+        outcomes = {
+            4057: OperatorCommandOutcome(
+                OperatorCommandIntent.RETRY, OperatorCommandStatus.COMMITTED, 4057,
+                removed=("blocked", "pr-pending"),
             ),
-        ]
-        mock_orch.state.completed_today = [4057]
+            4058: OperatorCommandOutcome(
+                OperatorCommandIntent.RETRY, OperatorCommandStatus.INCOMPLETE, 4058,
+                removed=("blocked",), failed=("blocked-failed",),
+            ),
+        }
+        mock_orch.operator_issue_commands = SimpleNamespace(retry=outcomes.__getitem__)
 
         set_orchestrator(mock_orch)
 
         client = TestClient(app)
-        response = client.post("/api/unblock-retry", json={"issues": [4057]})
+        response = client.post("/api/unblock-retry", json={"issues": [4057, 4058]})
 
         assert response.status_code == 200
-        assert response.json()["unblocked"] == [4057]
-        removed = [call.args[0].label for call in mock_orch.deps.action_applier.apply.call_args_list]
-        assert lm.blocked in removed
-        assert lm.pr_pending in removed
-        assert all(entry.issue_number != 4057 for entry in mock_orch.state.session_history)
-        assert 4057 not in mock_orch.state.completed_today
+        body = response.json()
+        assert body["unblocked"] == [4057]
+        assert body["failed"] == [{
+            "issue": 4058,
+            "error": (
+                "Issue #4058 was not retried: failed to remove ['blocked-failed'] "
+                "from GitHub. Removed ['blocked'] successfully; retry the action."
+            ),
+        }]
+        assert body["refresh_triggered"] is True
         mock_orch.request_refresh.assert_called_once()
 
     def test_reset_retry_sets_pending_label_and_queues_immediately(self):

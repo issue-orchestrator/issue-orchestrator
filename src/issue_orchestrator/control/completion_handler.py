@@ -218,6 +218,7 @@ class CompletionHandler:
         finalize_terminal: bool = True,
         provider_error_type: "ProviderErrorType | None" = None,
         *, processing_policy: CompletionProcessingPolicy,
+        recovery_holds_validated_work: bool = False,
     ) -> CompletionResult:
         """Process a session completion and update all state machines.
 
@@ -320,6 +321,7 @@ class CompletionHandler:
                 completion_detail=completion_detail,
                 provider_error_type=provider_error_type,
                 processing_policy=processing_policy,
+                recovery_holds_validated_work=recovery_holds_validated_work,
             )
         )
         completion_actions.extend(

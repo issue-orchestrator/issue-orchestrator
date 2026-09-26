@@ -1415,6 +1415,86 @@ class TestHandleSessionCompletion:
         )
         assert 1 in orchestrator.state.completed_today
 
+    @staticmethod
+    def _complete_halted_exchange(orchestrator, session) -> None:
+        """Drive the production completion path for a halted review exchange."""
+        from issue_orchestrator.control.session_completion import (
+            handle_session_completion,
+            unprocessed_session_policy,
+        )
+
+        handle_session_completion(
+            session,
+            SessionStatus.COMPLETED,
+            orchestrator.state,
+            orchestrator._completion_handler,
+            orchestrator.deps.action_applier,
+            orchestrator.observer,
+            orchestrator.deps.worktree_manager,
+            orchestrator._kill_session,
+            orchestrator.config,
+            session_output=orchestrator.deps.session_output,
+            pending_work_claims=orchestrator.deps.pending_work_claims,
+            processing_policy=unprocessed_session_policy(session, orchestrator.config),
+            review_exchange_halted=True,
+        )
+
+    @staticmethod
+    def _added_labels(orchestrator) -> set[str]:
+        return {
+            recorded.args[1]
+            for recorded in orchestrator.deps.action_applier.labels.add_label.call_args_list
+        }
+
+    @pytest.mark.parametrize(
+        ("capture", "blocked"),
+        [
+            pytest.param("unresolved", False, id="recovery-holds-work"),
+            pytest.param("no-work", True, id="nothing-captured"),
+            pytest.param("fault", True, id="capture-faulted"),
+        ],
+    )
+    def test_halted_exchange_blocks_only_when_recovery_does_not_hold_the_work(
+        self,
+        sample_config,
+        mock_worktree_manager,
+        tmp_path,
+        capture,
+        blocked,
+    ):
+        """The halt reads THIS completion's capture, never a second lookup.
+
+        Recovery holding unresolved validated work owns the issue's block and
+        routes the published PR to review; a halt-applied ``blocked-failed``
+        would veto that review forever (porchpin #382). Without proven custody
+        -- nothing captured, or the capture faulted -- the halt keeps its block.
+        """
+        from issue_orchestrator.domain.validated_work_commands import (
+            ValidatedWorkDispositionBatch,
+        )
+        from tests.unit.validated_work_support import Rig, capture as admission
+
+        issue = create_issue(6914)
+        session = create_session(issue)
+        orchestrator = create_test_orchestrator(sample_config, worktree_manager=mock_worktree_manager)
+        track_session(orchestrator, session)
+        # The issue starts without the label, so an add is a real write.
+        orchestrator.deps.action_applier.labels.has_label = MagicMock(return_value=False)
+        preservation = orchestrator.deps.action_applier.runtime_lifecycle.validated_work
+        if capture == "unresolved":
+            held = Rig(tmp_path / "work.sqlite").open().admit(admission()).disposition
+            outcome = {"return_value": ValidatedWorkDispositionBatch(6914, (held,), "held")}
+        elif capture == "no-work":
+            outcome = {"return_value": ValidatedWorkDispositionBatch.no_work(6914, "none")}
+        else:
+            outcome = {"side_effect": ValueError("capture fault")}
+
+        with patch.object(type(preservation), "dispose_at_termination", **outcome):
+            self._complete_halted_exchange(orchestrator, session)
+
+        assert ("blocked-failed" in self._added_labels(orchestrator)) is blocked
+        assert orchestrator.state.active_sessions == []
+
     def test_handle_completion_calls_monitor_handler(
         self,
         sample_config,

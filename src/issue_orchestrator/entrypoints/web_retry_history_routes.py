@@ -27,6 +27,7 @@ from ..control.validation_retry_retirement import ValidationRetryRetirement
 from ..events import EventName
 from ..history import latest_history_entries_by_issue
 from ..ports.event_sink import make_trace_event
+from .operator_command_wording import unsettled_operator_command_error
 from .web_issue_number_payload import parse_issue_numbers_payload
 from .web_session_context import WebOrchestratorDependency
 
@@ -162,18 +163,21 @@ async def bulk_deprioritize(
 
 
 @web_retry_history_router.post("/api/unblock-retry")
-async def unblock_and_retry(  # noqa: C901 - multi-step unblock with state transitions
+async def unblock_and_retry(
     request: Request,
     orchestrator: WebOrchestratorDependency,
 ) -> JSONResponse:
-    """Remove retry-blocking labels from issues and trigger a refresh."""
+    """Run the operator retry command on each issue, then trigger a refresh.
+
+    Each issue goes through the SAME owner command as the per-issue Retry
+    button, so the bulk button cannot grow its own label list or ordering. It
+    once removed every label with plain writes: the shared ``needs-human`` block
+    refused (no cause), the tech-lead marker came off anyway, and the issue was
+    reported unblocked while GitHub still blocked it (porchpin #400). An issue
+    counts as unblocked only when its command COMMITTED.
+    """
     if orchestrator is None:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
-
-    # Lazy imports keep this action-heavy path out of module import time and preserve
-    # tests' ability to patch action classes at the source module.
-    from ..control.actions import RemoveLabelAction
-    from ..control.retry_policy import labels_to_remove_for_retry
 
     try:
         body = await request.json()
@@ -187,48 +191,23 @@ async def unblock_and_retry(  # noqa: C901 - multi-step unblock with state trans
             status_code=400,
         )
 
-    state = orchestrator.state
-    retry_history = RetryHistoryState(state)
-    repository_host = orchestrator.repository_host
-    action_applier = orchestrator.deps.action_applier
-    lm = orchestrator.deps.label_manager
-
-    unblocked = []
-    failed = []
+    commands = orchestrator.operator_issue_commands
+    unblocked: list[int] = []
+    failed: list[dict[str, object]] = []
 
     for issue_number in issue_numbers:
         try:
-            current_labels = repository_host.get_issue_labels(issue_number)
-            labels_to_remove = labels_to_remove_for_retry(current_labels, lm)
-
-            if labels_to_remove:
-                for label in labels_to_remove:
-                    action = RemoveLabelAction(
-                        issue_number=issue_number,
-                        label=label,
-                        reason="unblock via web",
-                    )
-                    result = action_applier.apply(action)
-                    if result.success:
-                        logger.info(
-                            "[unblock] Removed label '%s' from issue #%d",
-                            label,
-                            issue_number,
-                        )
-                    else:
-                        logger.warning(
-                            "[unblock] Failed to remove label '%s' from #%d: %s",
-                            label,
-                            issue_number,
-                            result.error or "unknown error",
-                        )
-
-            retry_history.remove_issue_from_history(issue_number)
-
-            unblocked.append(issue_number)
+            outcome = commands.retry(issue_number)
         except Exception as e:
             logger.error("[unblock] Failed to unblock issue #%d: %s", issue_number, e)
             failed.append({"issue": issue_number, "error": str(e)})
+            continue
+        if outcome.committed:
+            unblocked.append(issue_number)
+            continue
+        error = unsettled_operator_command_error(outcome)
+        logger.warning("[unblock] %s", error)
+        failed.append({"issue": issue_number, "error": error})
 
     if unblocked:
         orchestrator.request_refresh()

@@ -54,13 +54,21 @@ async function unblockSelectedIssues() {
         });
         const data = await res.json();
 
-        if (data.unblocked && data.unblocked.length > 0) {
-            applyOptimisticRequeue(data.unblocked, ['blocked']);
-            showToast(`Unblocked ${data.unblocked.length} issue${data.unblocked.length > 1 ? 's' : ''}`);
-            closeBlockedModal();
+        const unblocked = data.unblocked || [];
+        const failed = data.failed || [];
+        const unblockedText = `Unblocked ${unblocked.length} issue${unblocked.length === 1 ? '' : 's'}`;
+        // One toast slot: a failure must not be replaced by the success
+        // message, so a partial result reports both in one sticky error.
+        if (failed.length > 0) {
+            const prefix = unblocked.length > 0 ? `${unblockedText}. ` : '';
+            showToast(`${prefix}Failed to unblock ${failed.length}: ${failed.map(f => f.error).join('; ')}`, 'error');
+        } else if (unblocked.length > 0) {
+            showToast(unblockedText);
+        }
+        if (unblocked.length > 0) {
+            applyOptimisticRequeue(unblocked, ['blocked']);
+            if (failed.length === 0) closeBlockedModal();
             await refreshViewModel();
-        } else if (data.failed && data.failed.length > 0) {
-            showToast(`Failed to unblock some issues: ${data.failed.map(f => f.error).join(', ')}`, 'error');
         }
     } catch (err) {
         console.error('Failed to unblock issues:', err);

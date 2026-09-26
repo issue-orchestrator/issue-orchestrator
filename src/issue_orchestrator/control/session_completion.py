@@ -296,7 +296,7 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
     # next tick rediscovers the session and logs the SAME terminal transition
     # again, forever (#7255: 218 re-completions in two hours, 566 wasted GitHub
     # reads, and no label ever written).
-    action_applier.runtime_lifecycle.preserve_completed_terminal(
+    preserved = action_applier.runtime_lifecycle.preserve_completed_terminal(
         session.issue.number, session.terminal_id, "session-completion", run=session.run_assets
     )
 
@@ -366,6 +366,9 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
             # Routes a provider-caused block to the provider-impact owner
             # rather than generic blocked handling (#6999 F5).
             provider_error_type=provider_error_type,
+            # A failed capture reports None: recovery is then not proven to
+            # hold the work, and the completion keeps its own block.
+            recovery_holds_validated_work=preserved is not None and preserved.unresolved,
         )
     finally:
         # Completion state is orchestrator-authoritative. Runtime session

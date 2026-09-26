@@ -37,6 +37,10 @@ from ..ports.operator_issue_commands import (
     OperatorCommandStatus,
 )
 from .control_api_issue_support import ControlApiIssueDependency, StateLockFn
+from .operator_command_wording import (
+    OPERATOR_COMMAND_WORDING,
+    unsettled_operator_command_error,
+)
 
 if TYPE_CHECKING:
     from ..infra.orchestrator import Orchestrator
@@ -45,15 +49,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 control_issue_router = APIRouter()
-
-
-#: What each command is called once it has happened, for the operator reading
-#: the toast. Wording is transport policy: the command reports the transition,
-#: this decides how to say it (#6999 F6 round 7).
-_OPERATOR_COMMAND_WORDING = {
-    OperatorCommandIntent.RETRY: ("queued for retry", "retried"),
-    OperatorCommandIntent.DISMISS: ("dismissed", "dismissed"),
-}
 
 
 def _operator_command(
@@ -101,18 +96,10 @@ def _settled_body(outcome: OperatorCommandOutcome, done: str, attempted: str) ->
 def _still_blocked_body(
     outcome: OperatorCommandOutcome, done: str, attempted: str
 ) -> dict:
-    del done
-    cause = (
-        f"{', '.join(outcome.held_by)} still requires it"
-        if outcome.held_by
-        else "it could not be cleared"
-    )
+    del done, attempted
     return {
         "success": False,
-        "error": (
-            f"Issue #{outcome.issue_number} was not {attempted}: "
-            f"{outcome.blocked} is still on the issue because {cause}."
-        ),
+        "error": unsettled_operator_command_error(outcome),
         "removed_labels": list(outcome.removed),
         "failed_labels": [outcome.blocked],
         "held_by": list(outcome.held_by),
@@ -122,14 +109,10 @@ def _still_blocked_body(
 def _incomplete_body(
     outcome: OperatorCommandOutcome, done: str, attempted: str
 ) -> dict:
-    del done
+    del done, attempted
     return {
         "success": False,
-        "error": (
-            f"Issue #{outcome.issue_number} was not {attempted}: failed to "
-            f"remove {list(outcome.failed)} from GitHub. Removed "
-            f"{list(outcome.removed)} successfully; retry the action."
-        ),
+        "error": unsettled_operator_command_error(outcome),
         "removed_labels": list(outcome.removed),
         "failed_labels": list(outcome.failed),
     }
@@ -153,7 +136,7 @@ _OPERATOR_RESPONSE_BY_STATUS = {
 
 def _operator_command_response(outcome: OperatorCommandOutcome) -> JSONResponse:
     """Turn one typed outcome into this API's response contract."""
-    done, attempted = _OPERATOR_COMMAND_WORDING[outcome.intent]
+    done, attempted = OPERATOR_COMMAND_WORDING[outcome.intent]
     build, code = _OPERATOR_RESPONSE_BY_STATUS[outcome.status]
     return JSONResponse(build(outcome, done, attempted), status_code=code)
 

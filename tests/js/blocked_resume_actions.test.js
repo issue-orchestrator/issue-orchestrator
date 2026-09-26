@@ -156,3 +156,64 @@ test('resumeIssue refuses missing run_dir before fetch', async () => {
         'error',
     ]);
 });
+
+function loadUnblock(response) {
+    const checked = [7, 8].map((issue) => ({ dataset: { issue: String(issue), needsHuman: 'false' } }));
+    const loaded = loadDiagnosticsActions({
+        blockedList: {
+            querySelectorAll: () => checked,
+        },
+        blockedUnblockBtn: { disabled: false, textContent: '' },
+        blockedResetBtn: { disabled: false, textContent: '' },
+        showConfirm: async () => true,
+        uiActionContract: {
+            buildUnblockRequest: (issues) => ({ endpoint: '/api/unblock-retry', method: 'POST', body: { issues } }),
+        },
+        fetch: async () => ({ json: async () => response }),
+    });
+    loaded.context.applyOptimisticRequeue = (issues) => loaded.calls.push(['requeue', [...issues]]);
+    loaded.context.refreshViewModel = async () => loaded.calls.push(['refresh']);
+    return loaded;
+}
+
+test('unblockSelectedIssues never hides a failure behind a success toast', async () => {
+    const { context, calls } = loadUnblock({
+        unblocked: [7],
+        failed: [{ issue: 8, error: 'Issue #8 was not retried: needs-human is still on the issue' }],
+        refresh_triggered: true,
+    });
+
+    await context.unblockSelectedIssues();
+
+    const toasts = calls.filter((call) => call[0] === 'toast');
+    assert.deepEqual(toasts, [[
+        'toast',
+        'Unblocked 1 issue. Failed to unblock 1: Issue #8 was not retried: needs-human is still on the issue',
+        'error',
+    ]]);
+    assert.ok(calls.some((call) => call[0] === 'requeue' && call[1].join() === '7'));
+    assert.ok(!calls.some((call) => call[0] === 'closeBlockedModal'), 'modal stays open while an issue is still blocked');
+});
+
+test('unblockSelectedIssues reports an all-failed result as an error', async () => {
+    const { context, calls } = loadUnblock({
+        unblocked: [],
+        failed: [{ issue: 7, error: 'a' }, { issue: 8, error: 'b' }],
+        refresh_triggered: false,
+    });
+
+    await context.unblockSelectedIssues();
+
+    assert.deepEqual(calls.filter((call) => call[0] === 'toast'), [['toast', 'Failed to unblock 2: a; b', 'error']]);
+    assert.ok(!calls.some((call) => call[0] === 'requeue' || call[0] === 'refresh'));
+});
+
+test('unblockSelectedIssues confirms and closes on a full success', async () => {
+    const { context, calls } = loadUnblock({ unblocked: [7, 8], failed: [], refresh_triggered: true });
+
+    await context.unblockSelectedIssues();
+
+    assert.deepEqual(calls.filter((call) => call[0] === 'toast'), [['toast', 'Unblocked 2 issues', undefined]]);
+    assert.ok(calls.some((call) => call[0] === 'closeBlockedModal'));
+    assert.ok(calls.some((call) => call[0] === 'refresh'));
+});
