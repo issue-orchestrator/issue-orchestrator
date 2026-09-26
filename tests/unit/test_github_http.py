@@ -2894,46 +2894,110 @@ class TestGitDataBlobAndTreeEndpoints:
                 call()
 
 
-def _open_pr(number: int) -> dict:
-    return {"number": number, "state": "open"}
+
+def _graphql_body(request: httpx.Request) -> dict:
+    import json as _json
+
+    return _json.loads(request.content)
 
 
-def test_list_open_prs_complete_walks_every_page_without_search() -> None:
-    """One /pulls walk replaces a /search/issues call per issue (search: 30/min)."""
-    seen: list[tuple[str, str | None]] = []
+def _pr_node(number: int) -> dict:
+    return {"number": number, "title": f"PR {number}", "url": "u", "body": "",
+            "headRefName": f"{number}-work", "headRefOid": "a" * 40, "baseRefName": "main"}
+
+
+def test_list_open_prs_complete_walks_by_cursor_without_search() -> None:
+    """A PR closing mid-walk cannot push another past a page boundary.
+
+    Offset pagination would: closing PR 1 after page 1 shifts PR 3 onto page 1
+    and page 2 starts after it. A cursor names the last PR already read.
+    """
+    open_prs = [1, 2, 3, 4]
+    requests: list[dict] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        seen.append((request.url.path, request.url.params.get("page")))
-        page = int(request.url.params.get("page") or 1)
-        batch = {1: [_open_pr(n) for n in range(100)], 2: [_open_pr(n) for n in range(100, 150)]}[page]
-        return httpx.Response(200, json=batch)
+        assert request.url.path == "/graphql"
+        variables = _graphql_body(request)["variables"]
+        requests.append(variables)
+        after = int(variables["after"]) if variables["after"] else 0
+        page = [n for n in open_prs if n > after][:2]
+        if after == 0:
+            open_prs.remove(1)  # closes after page 1 was served
+        more = bool(page) and any(n > page[-1] for n in open_prs)
+        return httpx.Response(200, json={"data": {"repository": {"pullRequests": {
+            "pageInfo": {"hasNextPage": more, "endCursor": str(page[-1]) if page else None},
+            "nodes": [_pr_node(n) for n in page],
+        }}}})
 
     client = _client_with_transport(httpx.MockTransport(handler))
 
     prs = client.list_open_prs_complete()
 
-    assert [pr["number"] for pr in prs] == list(range(150))
-    assert {path for path, _ in seen} == {"/repos/owner/repo/pulls"}
-    assert [page for _, page in seen] == [None, "2"]
+    assert [pr["number"] for pr in prs] == [1, 2, 3, 4]
+    assert all(pr["state"] == "open" for pr in prs)
+    assert [r["after"] for r in requests] == [None, "2"]
 
 
-def test_list_open_prs_complete_refuses_a_partial_walk() -> None:
+def test_list_open_prs_complete_refuses_a_malformed_node() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.params.get("page") == "2":
-            return httpx.Response(403, json={"message": "API rate limit exceeded"})
-        return httpx.Response(200, json=[_open_pr(n) for n in range(100)])
+        return httpx.Response(200, json={"data": {"repository": {"pullRequests": {
+            "pageInfo": {"hasNextPage": False, "endCursor": None},
+            "nodes": [_pr_node(1), {"number": "2"}],
+        }}}})
 
     client = _client_with_transport(httpx.MockTransport(handler))
 
-    with pytest.raises(GitHubScanIncompleteError, match="open pull requests"):
+    with pytest.raises(GitHubScanIncompleteError, match="malformed node"):
         client.list_open_prs_complete()
 
 
 def test_list_open_prs_complete_refuses_a_capped_walk() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=[_open_pr(n) for n in range(100)])
+        return httpx.Response(200, json={"data": {"repository": {"pullRequests": {
+            "pageInfo": {"hasNextPage": True, "endCursor": "c"},
+            "nodes": [_pr_node(1)],
+        }}}})
 
     client = _client_with_transport(httpx.MockTransport(handler))
 
     with pytest.raises(GitHubScanIncompleteError, match="page cap"):
         client.list_open_prs_complete(page_cap=3)
+
+
+def _closing_refs(*nodes: dict, more: bool = False) -> dict:
+    return {"closedByPullRequestsReferences": {
+        "pageInfo": {"hasNextPage": more}, "nodes": list(nodes)}}
+
+
+def test_merged_prs_closing_issues_batches_and_keeps_only_merged() -> None:
+    queries: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/graphql"
+        query = _graphql_body(request)["query"]
+        queries.append(query)
+        repository = {}
+        for n in range(1, 61):
+            if f"i{n}: issue(number: {n})" in query:
+                repository[f"i{n}"] = (
+                    None if n == 3 else
+                    _closing_refs({"number": 700 + n, "merged": n == 7},
+                                  {"number": 800 + n, "merged": False})
+                )
+        return httpx.Response(200, json={"data": {"repository": repository}})
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    assert client.merged_prs_closing_issues(list(range(60, 0, -1))) == frozenset({707})
+    assert len(queries) == 2
+
+
+def test_merged_prs_closing_issues_refuses_a_partial_page() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": {"repository": {
+            "i5": _closing_refs({"number": 9, "merged": True}, more=True)}}})
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    with pytest.raises(GitHubScanIncompleteError, match="more than one page"):
+        client.merged_prs_closing_issues([5])

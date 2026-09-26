@@ -8,6 +8,7 @@ import time
 import threading
 from collections import OrderedDict
 from dataclasses import dataclass
+from collections.abc import Sequence
 from typing import Any, Iterator, Literal, cast
 from urllib.parse import quote
 
@@ -2117,37 +2118,120 @@ class GitHubHttpClient:
         return payload[:limit]
 
     def list_open_prs_complete(self, *, page_cap: int = 20) -> list[dict[str, Any]]:
-        """Every open PR, or an error: never a silently truncated list.
+        """Every open PR, or an error: never a silently partial list.
 
-        One paginated ``/pulls`` walk on the core API. Callers that need a
-        PR-per-issue answer for many issues use this instead of one
-        ``/search/issues`` call per issue, which spends GitHub's 30-per-minute
-        search budget. Page 1 is ETag-cached; later pages go through the
-        fail-loud pager (#6779 R17), so a failed or capped walk raises.
+        For callers that resolve many issues to their PRs at once: a /search
+        call per issue spends GitHub's 30-per-minute search budget. This walks
+        GraphQL ``pullRequests(states: OPEN)`` by CURSOR, so a PR that closes
+        mid-walk cannot shift another one past a page boundary the way offset
+        pagination does. Every node is validated; a malformed node, a missing
+        connection or a walk longer than ``page_cap`` pages raises
+        ``GitHubScanIncompleteError``.
         """
-        path = f"/repos/{self._config.repo}/pulls"
-        params: dict[str, Any] = {"state": "open", "per_page": 100}
-        first = self._request_json(
-            "GET", path, params=params, caller="list_open_prs_complete"
-        )
-        if not isinstance(first, list):
-            raise GitHubScanIncompleteError(
-                "GitHub returned a non-list body for the first page of open pull"
-                " requests; refusing to treat it as a complete list",
-                method="GET",
-                url=path,
+        owner, repo = self._config.repo.split("/", 1)
+        query = """
+        query($owner: String!, $repo: String!, $after: String) {
+            repository(owner: $owner, name: $repo) {
+                pullRequests(states: OPEN, first: 100, after: $after,
+                             orderBy: {field: CREATED_AT, direction: ASC}) {
+                    pageInfo { hasNextPage endCursor }
+                    nodes { number title url body headRefName headRefOid baseRefName }
+                }
+            }
+        }
+        """
+        prs: list[dict[str, Any]] = []
+        after: str | None = None
+        for _page in range(page_cap):
+            result = self._graphql(
+                query, {"owner": owner, "repo": repo, "after": after},
+                caller="list_open_prs_complete",
             )
-        prs = list(first)
-        if len(first) >= int(params["per_page"]):
-            for batch in self._paginate_fresh(
-                path,
-                params=params,
-                start_page=2,
-                page_cap=page_cap,
-                what="open pull requests",
+            connection = ((result.get("data") or {}).get("repository") or {}).get(
+                "pullRequests"
+            )
+            if not isinstance(connection, dict) or not isinstance(
+                connection.get("nodes"), list
             ):
-                prs.extend(batch)
-        return prs
+                raise self._incomplete_open_prs("returned no pullRequests connection")
+            for node in connection["nodes"]:
+                if not (
+                    isinstance(node, dict)
+                    and type(node.get("number")) is int
+                    and isinstance(node.get("headRefName"), str)
+                ):
+                    raise self._incomplete_open_prs(f"returned a malformed node: {node!r}")
+                prs.append({**node, "state": "open"})
+            page_info = connection.get("pageInfo") or {}
+            if not page_info.get("hasNextPage"):
+                return prs
+            after = page_info.get("endCursor")
+            if not isinstance(after, str) or not after:
+                raise self._incomplete_open_prs("reported another page without a cursor")
+        raise self._incomplete_open_prs(f"exceeded the {page_cap * 100}-PR page cap")
+
+    def _incomplete_open_prs(self, why: str) -> GitHubScanIncompleteError:
+        return GitHubScanIncompleteError(
+            f"Listing open pull requests {why}; refusing to treat it as complete",
+            method="POST",
+            url="/graphql",
+        )
+
+    def merged_prs_closing_issues(
+        self, issue_numbers: Sequence[int], *, batch_size: int = 50
+    ) -> frozenset[int]:
+        """Merged PRs that close any of ``issue_numbers``, without the search API.
+
+        One GraphQL request per ``batch_size`` issues, reading each issue's
+        ``closedByPullRequestsReferences``: the PRs linked by a closing
+        reference ("Closes #N"). An issue with more linked PRs than one page
+        holds raises rather than returning part of them. A missing issue has
+        no PRs.
+        """
+        owner, repo = self._config.repo.split("/", 1)
+        numbers = sorted(set(issue_numbers))
+        merged: set[int] = set()
+        for offset in range(0, len(numbers), batch_size):
+            batch = numbers[offset:offset + batch_size]
+            fields = "\n".join(
+                f"i{n}: issue(number: {int(n)}) {{ closedByPullRequestsReferences("
+                "first: 100, includeClosedPrs: true) { pageInfo { hasNextPage } "
+                "nodes { number merged } } }"
+                for n in batch
+            )
+            query = (
+                "query($owner: String!, $repo: String!) { "
+                f"repository(owner: $owner, name: $repo) {{ {fields} }} }}"
+            )
+            result = self._graphql(
+                query, {"owner": owner, "repo": repo},
+                caller="merged_prs_closing_issues",
+            )
+            repository = (result.get("data") or {}).get("repository")
+            if not isinstance(repository, dict):
+                raise self._incomplete_closing_prs("returned no repository")
+            for n in batch:
+                issue = repository.get(f"i{n}")
+                if issue is None:
+                    continue
+                refs = issue.get("closedByPullRequestsReferences") if isinstance(issue, dict) else None
+                if not isinstance(refs, dict) or not isinstance(refs.get("nodes"), list):
+                    raise self._incomplete_closing_prs(f"returned no references for #{n}")
+                if (refs.get("pageInfo") or {}).get("hasNextPage"):
+                    raise self._incomplete_closing_prs(f"has more than one page for #{n}")
+                for node in refs["nodes"]:
+                    if not (isinstance(node, dict) and type(node.get("number")) is int):
+                        raise self._incomplete_closing_prs(f"returned a malformed node for #{n}")
+                    if node.get("merged") is True:
+                        merged.add(node["number"])
+        return frozenset(merged)
+
+    def _incomplete_closing_prs(self, why: str) -> GitHubScanIncompleteError:
+        return GitHubScanIncompleteError(
+            f"Reading issues' closing pull requests {why}; refusing a partial answer",
+            method="POST",
+            url="/graphql",
+        )
 
     def close_pr(self, pr_number: int) -> None:
         self._request_json(

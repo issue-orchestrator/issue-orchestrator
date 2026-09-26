@@ -9,6 +9,7 @@ This is an execution-layer interface.
 
 from dataclasses import dataclass
 from enum import Enum
+from collections.abc import Sequence
 from typing import Any, Literal, Protocol
 
 
@@ -476,6 +477,18 @@ class PullRequestTracker(Protocol):
         Raises:
             RepositoryError: If any page cannot be read, or the listing cannot
                 be proven complete. Never returns a truncated list.
+        """
+        ...
+
+    def merged_prs_closing_issues(self, issue_numbers: Sequence[int]) -> frozenset[int]:
+        """Numbers of MERGED pull requests that close any of ``issue_numbers``.
+
+        Linked by a closing reference ("Closes #N"), resolved without the
+        search API. Together with :meth:`list_open_prs_complete` this answers
+        "which PRs belong to these issues" for many issues at once.
+
+        Raises:
+            RepositoryError: If the answer cannot be proven complete.
         """
         ...
 

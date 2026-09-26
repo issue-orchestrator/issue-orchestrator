@@ -22,11 +22,14 @@ def observe_rework_targets(
 ) -> tuple[ReworkTarget, ...]:
     """Resolve only the supplied manifest or problem issues' PRs.
 
-    Problem issues resolve through ONE complete listing of open PRs, matched to
-    their issue the same way the grant below links them. It used to be one
-    ``/search/issues`` call per issue: a health review over ~50 blocked issues
-    blew GitHub's 30-per-minute search budget and could never launch. Only open
-    PRs can take scoped rework.
+    Problem issues resolve without the search API: one complete listing of open
+    PRs, matched to their issue the same way the grant below links them, plus
+    the merged PRs whose closing reference names them (rework on a merged PR
+    files a forward fix). It used to be one ``/search/issues`` call per issue:
+    a health review over ~50 blocked issues blew GitHub's 30-per-minute search
+    budget and could never launch. Closed-unmerged PRs take no rework, and a
+    merged PR linked only by its branch name, with no closing reference, is
+    not found.
 
     Missing head/link facts give no grant; they cannot become guessed authority.
     A transport failure, or a listing that cannot be proven complete,
@@ -40,6 +43,7 @@ def observe_rework_targets(
             for pr in repository.list_open_prs_complete()
             if extract_issue_number_from_pr(pr) in wanted
         )
+        numbers.update(repository.merged_prs_closing_issues(sorted(wanted)))
     targets: list[ReworkTarget] = []
     for number in sorted(numbers):
         pr = repository.get_pr(number)

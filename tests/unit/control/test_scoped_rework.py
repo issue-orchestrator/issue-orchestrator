@@ -1120,10 +1120,19 @@ class _NoSearchHost:
     def __init__(self, prs):
         self._prs = {pr.number: pr for pr in prs}
         self.listings = 0
+        self.closing_lookups: list[tuple[int, ...]] = []
 
     def list_open_prs_complete(self):
         self.listings += 1
         return [pr for pr in self._prs.values() if pr.state == "open"]
+
+    def merged_prs_closing_issues(self, issue_numbers):
+        self.closing_lookups.append(tuple(issue_numbers))
+        wanted = set(issue_numbers)
+        return frozenset(
+            pr.number for pr in self._prs.values()
+            if pr.state == "merged" and int(pr.branch.split("-")[0]) in wanted
+        )
 
     def get_prs_for_issue(self, issue_number, state="open"):
         raise AssertionError(f"per-issue /search/issues call for #{issue_number}")
@@ -1156,8 +1165,9 @@ def test_problem_issues_resolve_through_one_listing_not_a_search_each():
 
     host = _NoSearchHost([
         _pr(900, 7),               # open, wanted
-        _pr(901, 8, "closed"),     # wanted, but closed: cannot take rework
+        _pr(901, 8, "closed"),     # wanted, but closed unmerged: no rework
         _pr(902, 9999),            # open, but not a problem issue
+        _pr(903, 10, "merged"),    # wanted and merged: rework files a forward fix
     ])
 
     targets = observe_rework_targets(
@@ -1165,7 +1175,8 @@ def test_problem_issues_resolve_through_one_listing_not_a_search_each():
     )
 
     assert host.listings == 1
-    assert [(t.pr_number, t.issue_number) for t in targets] == [(900, 7)]
+    assert host.closing_lookups == [tuple(range(1, 61))]
+    assert [(t.pr_number, t.issue_number) for t in targets] == [(900, 7), (903, 10)]
 
 
 def test_no_problem_issues_means_no_listing():
@@ -1177,6 +1188,7 @@ def test_no_problem_issues_means_no_listing():
 
     assert observe_rework_targets(host, pr_numbers=[], issue_numbers=[]) == ()
     assert host.listings == 0
+    assert host.closing_lookups == []
 
 
 def test_an_incomplete_listing_fails_the_observation_instead_of_shortening_it():
