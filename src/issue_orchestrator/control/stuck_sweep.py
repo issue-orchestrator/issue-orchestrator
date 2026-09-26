@@ -247,6 +247,11 @@ def run_stuck_sweep(
     for number in released - _owned_issue_numbers(state) - open_proposal_targets:
         state.recovery_attempts.pop(number, None)
     _ack_landed_escalations(state, scan)
+    # A held issue's review owns it (#7293): whatever budget an earlier remedy
+    # spent says nothing about the issue once that custody ends.
+    for number in scan.held_for_review:
+        state.recovery_attempts.pop(number, None)
+    state.review_release_budgets.difference_update(scan.held_for_review)
     recovered: list[DiscoveredFailure] = []
     releases: list[int] = []
     exhausted: list[int] = []

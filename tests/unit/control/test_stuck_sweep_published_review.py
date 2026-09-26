@@ -233,3 +233,35 @@ def test_a_pr_with_its_own_block_is_held_not_released():
         config=_config(), label_manager=lm, issue=_issue(HELD, labels=["agent:web"]),
         pr=blocked_pr, review_label_confirmed=True)
     assert validity.reason == "pr_blocked", "lifting the issue block alone would not help"
+
+
+def test_a_hold_that_ends_starts_a_fresh_investigation_budget():
+    """#7293 round 6: held work supersedes an exhausted investigation.
+
+    Exhausted investigations, then recovery publishes under a PR that carries
+    its own block (held). When that PR closes, the issue must be investigated
+    afresh - not skipped forever behind the old, already-withdrawn escalation.
+    """
+    lm = LabelManager(_config())
+    records = {HELD: (disposition(HELD, ValidatedWorkState.RECOVERED, pr_number=500),)}
+    pulls = PullRequests({HELD: [pr(HELD, 500, labels=(lm.blocked_failed,))]})
+    gatherer = FactGatherer(
+        config=_config(), repository_host=_RecordingHost([_failed(HELD)]),
+        published_review=custody(DispositionStore(records), pulls),
+    )
+    state = OrchestratorState()
+    state.recovery_attempts = {HELD: 3}
+    state.pending_stuck_sweep_escalations = {HELD}
+
+    held = gatherer.create_snapshot(state, issues=[])
+    assert held.stuck_sweep_review_releases == ()
+    assert held.stuck_sweep_escalations == ()
+    assert HELD not in {f.issue_number for f in held.discovered_failures}
+
+    pulls.by_issue[HELD] = [pr(HELD, 500, state="closed", labels=(lm.blocked_failed,))]
+    state.last_stuck_sweep_at = 0.0
+    state.discovered_failures.clear()
+    state.stuck_sweep_escalations.clear()
+
+    reopened = gatherer.create_snapshot(state, issues=[])
+    assert HELD in {f.issue_number for f in reopened.discovered_failures}
