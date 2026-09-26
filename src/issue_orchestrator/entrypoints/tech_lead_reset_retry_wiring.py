@@ -150,6 +150,6 @@ def build_tech_lead_reset_retry_executor(
         runtime_snapshot=deps.runtime_lifecycle.reset_snapshot,
         run_reset=_run_reset,
         release_review=lambda issue_number: published_review_release_for(
-            deps.action_applier
+            deps.action_applier, orchestrator.config.code_review_label or ""
         ).release(issue_number),
     )

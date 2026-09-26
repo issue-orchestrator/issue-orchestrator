@@ -84,6 +84,8 @@ class ReviewReleaseStatus(StrEnum):
     NOT_RELEASABLE = "not_releasable"
     #: pr-pending could not be put on; nothing was removed.
     GATE_FAILED = "gate_failed"
+    #: The PR's review label could not be restored; nothing was removed.
+    ROUTE_FAILED = "route_failed"
     #: pr-pending is on, but blocked-failed would not come off.
     BLOCK_REMOVAL_FAILED = "block_removal_failed"
 
@@ -115,6 +117,8 @@ class PublishedReviewRelease:
     labels: "LabelManager"
     read_labels: Callable[[int], list[str]]
     apply: Callable[["Action"], ActionResult]
+    #: The PR label review discovery scans for; empty when none is configured.
+    review_label: str
 
     def release(self, issue_number: int) -> ReviewReleaseOutcome:
         holds = self.custody.holds(issue_number)
@@ -134,6 +138,10 @@ class PublishedReviewRelease:
         if not gate.success:
             return self._outcome(issue_number, ReviewReleaseStatus.GATE_FAILED, holds,
                                  f"pr-pending not added: {gate.error}")
+        routed = self._route(holds, described)
+        if routed is not None and not routed.success:
+            return self._outcome(issue_number, ReviewReleaseStatus.ROUTE_FAILED, holds,
+                                 f"review label not restored: {routed.error}")
         try:
             lifted = self._lift(issue_number, described)
         except ReconciliationRequired as refused:
@@ -144,6 +152,20 @@ class PublishedReviewRelease:
             return self._outcome(issue_number, ReviewReleaseStatus.BLOCK_REMOVAL_FAILED, holds,
                                  f"blocked-failed not removed: {lifted.error}")
         return self._outcome(issue_number, ReviewReleaseStatus.RELEASED, holds, described)
+
+    def _route(self, holds: tuple[PublishedReviewHold, ...], described: str) -> ActionResult | None:
+        """Make sure review discovery will find the PR: it scans the review label.
+
+        A released issue whose PR lost that label has no route to review, so
+        the label is restored on the first unblocked held PR before the issue
+        block comes off. Nothing to do when no review label is configured.
+        """
+        if not self.review_label:
+            return None
+        target = next(hold for hold in holds if not self.labels.get_blocking(hold.pr_labels))
+        return self.apply(AddLabelAction(
+            issue_number=target.pr_number, label=self.review_label, fresh_presence=True,
+            reason=f"published validated work is under review: {described}"))
 
     def _lift(self, issue_number: int, described: str) -> ActionResult:
         return self.apply(RemoveLabelAction(
@@ -161,7 +183,7 @@ class PublishedReviewRelease:
         return ReviewReleaseOutcome(issue_number, status, holds, detail)
 
 
-def published_review_release_for(applier: "ActionApplier") -> PublishedReviewRelease:
+def published_review_release_for(applier: "ActionApplier", review_label: str) -> PublishedReviewRelease:
     """The owner over the applier's custody, labels and guarded label writes."""
     if applier.label_manager is None or applier.repository_host is None:
         raise RuntimeError("published review release requires labels and a repository host")
@@ -170,13 +192,14 @@ def published_review_release_for(applier: "ActionApplier") -> PublishedReviewRel
         labels=applier.label_manager,
         read_labels=applier.repository_host.get_issue_labels_fresh,
         apply=applier.apply,
+        review_label=review_label,
     )
 
 
 def apply_release_published_review(action: "Action", applier: "ActionApplier") -> ActionResult:
     """The applier handler: map the owner's typed outcome onto an ActionResult."""
     assert isinstance(action, ReleasePublishedReviewAction)
-    outcome = published_review_release_for(applier).release(action.issue_number)
+    outcome = published_review_release_for(applier, action.code_review_label).release(action.issue_number)
     number, status = action.issue_number, outcome.status.value
     if outcome.released:
         return ActionResult.ok(action, issue_number=number, status=status)
@@ -184,9 +207,14 @@ def apply_release_published_review(action: "Action", applier: "ActionApplier") -
     return refuse(action, outcome.detail, issue_number=number, status=status)
 
 
-def build_stuck_sweep_review_release_actions(issue_numbers: "tuple[int, ...]") -> "list[Action]":
+def build_stuck_sweep_review_release_actions(
+    issue_numbers: "tuple[int, ...]", code_review_label: str
+) -> "list[Action]":
     """The sweep's budgeted remedy for each held issue: one owner command each."""
-    return [ReleasePublishedReviewAction(issue_number=number) for number in issue_numbers]
+    return [
+        ReleasePublishedReviewAction(issue_number=number, code_review_label=code_review_label)
+        for number in issue_numbers
+    ]
 
 
 def log_held_for_review(

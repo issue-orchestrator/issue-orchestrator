@@ -456,6 +456,8 @@ class ReleasePublishedReviewAction(Action):
     """
 
     issue_number: int = 0
+    # The configured PR review label review discovery scans for ("" = none).
+    code_review_label: str = ""
     action_type: ActionType = field(
         default=ActionType.RELEASE_PUBLISHED_REVIEW, init=False
     )

@@ -27,14 +27,19 @@ from tests.unit.control.published_review_support import (
 )
 
 ISSUE = 382
+PR = 500
+REVIEW_LABEL = "needs-code-review"
 LM = LabelManager(Config())
 
 
 class _Labels:
     """Live issue labels plus the guarded writes the owner delegates to."""
 
-    def __init__(self, labels, *, refuse_add=False, refuse_remove=False, board_moved=False):
+    def __init__(self, labels, *, refuse_add=False, refuse_remove=False, board_moved=False,
+                 refuse_route=False):
         self.board_moved = board_moved
+        self.refuse_route = refuse_route
+        self.pr_live: set[str] = set()
         self.live = set(labels)
         self.refuse_add = refuse_add
         self.refuse_remove = refuse_remove
@@ -47,6 +52,12 @@ class _Labels:
     def apply(self, action):
         if isinstance(action, AddLabelAction):
             assert action.fresh_presence, "the gate must not be a cached no-op"
+            if action.issue_number == PR:
+                if self.refuse_route:
+                    return ActionResult.fail(action, "github refused the PR label")
+                self.writes.append(("add-pr", action.label))
+                self.pr_live.add(action.label)
+                return ActionResult.ok(action)
             if self.refuse_add:
                 return ActionResult.fail(action, "github refused the add")
             self.writes.append(("add", action.label))
@@ -80,6 +91,7 @@ def _owner(labels: _Labels, pr_state: str = "open", pr_labels=()) -> PublishedRe
         labels=LM,
         read_labels=labels.read,
         apply=labels.apply,
+        review_label=REVIEW_LABEL,
     )
 
 
@@ -89,7 +101,9 @@ def test_the_gate_goes_on_before_the_block_comes_off():
     outcome = _owner(labels).release(ISSUE)
 
     assert outcome.status is ReviewReleaseStatus.RELEASED
-    assert labels.writes == [("add", LM.pr_pending), ("remove", LM.blocked_failed)]
+    assert labels.writes == [
+        ("add", LM.pr_pending), ("add-pr", REVIEW_LABEL), ("remove", LM.blocked_failed)
+    ]
     assert labels.live == {"agent:web", LM.pr_pending}
 
 
@@ -141,7 +155,7 @@ def test_the_applier_maps_each_outcome(monkeypatch):
         (_Labels(["agent:web", LM.blocked_failed], refuse_add=True), "failure"),
     ):
         owner = _owner(labels)
-        monkeypatch.setattr(module, "published_review_release_for", lambda _applier, o=owner: o)
+        monkeypatch.setattr(module, "published_review_release_for", lambda _applier, _label, o=owner: o)
         assert apply_release_published_review(action, object()).result_type.value == expected
 
 
@@ -165,3 +179,25 @@ def test_a_pr_with_its_own_block_is_not_released():
     assert outcome.status is ReviewReleaseStatus.NOT_RELEASABLE
     assert labels.writes == []
     assert LM.blocked_failed in labels.live
+
+
+def test_a_pr_that_lost_its_review_label_is_routed_before_the_block_lifts():
+    """#7293 round 9: review discovery scans the review label; without it a
+    released issue has no route to review."""
+    labels = _Labels(["agent:web", LM.blocked_failed])
+
+    outcome = _owner(labels).release(ISSUE)
+
+    assert outcome.released
+    assert labels.pr_live == {REVIEW_LABEL}
+    assert labels.writes.index(("add-pr", REVIEW_LABEL)) < labels.writes.index(("remove", LM.blocked_failed))
+
+
+def test_an_unroutable_pr_keeps_the_block():
+    labels = _Labels(["agent:web", LM.blocked_failed], refuse_route=True)
+
+    outcome = _owner(labels).release(ISSUE)
+
+    assert outcome.status is ReviewReleaseStatus.ROUTE_FAILED
+    assert LM.blocked_failed in labels.live
+    assert ("remove", LM.blocked_failed) not in labels.writes

@@ -84,7 +84,8 @@ def test_a_failure_block_on_published_work_releases_its_review():
     assert event.data["released_for_review"] == [HELD]
 
     (release,) = _release_actions(snapshot, HELD)
-    assert release == ReleasePublishedReviewAction(issue_number=HELD)
+    assert release == ReleasePublishedReviewAction(
+        issue_number=HELD, code_review_label=_config().code_review_label or "")
 
 
 def test_the_released_issue_passes_review_validity():
@@ -148,10 +149,12 @@ def test_an_exhausted_investigation_does_not_block_the_release_that_supersedes_i
 
     labels = _Labels(["agent:web", lm.blocked_failed])
     owner = PublishedReviewRelease(
-        custody=gatherer.published_review, labels=lm, read_labels=labels.read, apply=labels.apply
+        custody=gatherer.published_review, labels=lm, read_labels=labels.read, apply=labels.apply,
+        review_label="needs-code-review",
     )
     assert owner.release(release.issue_number).released
     assert labels.live == {"agent:web", lm.pr_pending}
+    assert labels.pr_live == {"needs-code-review"}
 
 
 def test_the_remedy_a_budget_counts_survives_a_restart():

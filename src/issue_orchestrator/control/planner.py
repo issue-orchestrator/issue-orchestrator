@@ -276,7 +276,7 @@ class Planner:
             snapshot.stuck_sweep_escalations, self._lm.needs_human))
         # ...and release the review of a published PR it found held (#7293).
         actions.extend(build_stuck_sweep_review_release_actions(
-            snapshot.stuck_sweep_review_releases))
+            snapshot.stuck_sweep_review_releases, self.config.code_review_label or ""))
 
         # 1d2. Handle post-publish escalations (CI checks stuck > timeout,
         # or branch protection blocking merge despite checks passing).
