@@ -320,12 +320,15 @@ def test_a_queued_review_whose_issue_is_then_blocked_reaches_the_board(
         )
     )
     state.discovered_reviews.clear()
+    state.cached_scope_issues = list(github.issues)  # the last refresh's facts
 
     github.issues[0].labels.append("blocked-failed")
+    github.issue_reads.clear()
     workflow.scan_needs_code_review_prs(state, issue_branches={})
     workflow.scan_needs_code_review_prs(state, issue_branches={})
 
     assert state.discovered_reviews == []
+    assert github.issue_reads == []  # judged from facts io held, not a new read
     (entry,) = _snapshot(state).blocked_open_prs or []
     assert (entry.pr_number, entry.skip_reason, entry.skip_count) == (
         376,
@@ -353,10 +356,35 @@ def test_a_queued_review_that_is_still_valid_is_not_queued_twice(
         )
     )
     state.discovered_reviews.clear()
+    state.cached_scope_issues = list(github.issues)
+    github.issue_reads.clear()
 
     workflow.scan_needs_code_review_prs(state, issue_branches={})
 
     assert state.discovered_reviews == []
+    assert _snapshot(state).blocked_open_prs == []
+    assert github.issue_reads == []  # a queued PR costs no read, as before
+
+
+def test_a_queued_pr_whose_issue_io_does_not_hold_is_skipped_without_a_read(
+    config: Config, github: CountingGitHub
+) -> None:
+    _issue(github, 320, "blocked-failed")
+    _pr(github, 376, 320, "needs-code-review")
+    state = OrchestratorState()
+    state.pending_reviews.append(
+        PendingReview(
+            issue_key=github.create_issue_key(320),
+            pr_number=376,
+            pr_url="https://github.com/owner/repo/pull/376",
+            branch_name="320-work",
+            _issue_number=320,
+        )
+    )
+
+    _workflow(config, github).scan_needs_code_review_prs(state, issue_branches={})
+
+    assert github.issue_reads == []
     assert _snapshot(state).blocked_open_prs == []
 
 
@@ -376,6 +404,7 @@ def test_a_queued_rework_whose_issue_is_then_blocked_reaches_the_board(
             pr_number=378,
         )
     )
+    state.cached_scope_issues = list(github.issues)
 
     workflow.scan_needs_rework_prs(state, issue_branches={})
 
@@ -386,3 +415,26 @@ def test_a_queued_rework_whose_issue_is_then_blocked_reaches_the_board(
         378,
         "issue_blocked",
     )
+
+
+def test_a_pr_block_can_mask_an_issue_block_behind_it(
+    config: Config, github: CountingGitHub
+) -> None:
+    """Only the first block is reported; clearing it can reveal another.
+
+    The prompt tells the tech lead to check both places for that reason
+    (review round 5).
+    """
+    _issue(github, 320, "blocked-failed")
+    _pr(github, 376, 320, "needs-code-review", "needs-human")
+    workflow = _workflow(config, github)
+    state = OrchestratorState()
+    workflow.scan_needs_code_review_prs(state, issue_branches={})
+    (first,) = _snapshot(state).blocked_open_prs or []
+
+    github.prs["320-work"][0].labels.remove("needs-human")
+    workflow.scan_needs_code_review_prs(state, issue_branches={})
+
+    (then,) = _snapshot(state).blocked_open_prs or []
+    assert (first.skip_reason, then.skip_reason) == ("pr_blocked", "issue_blocked")
+    assert state.discovered_reviews == []

@@ -11,7 +11,8 @@ what to do with the results.
 
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Sequence, Protocol, Callable
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Mapping, Sequence, Protocol, Callable
 
 from ..infra.config import Config
 from ..events import EventName
@@ -35,6 +36,9 @@ if TYPE_CHECKING:
     from .label_manager import LabelManager
 
 logger = logging.getLogger(__name__)
+
+#: No issue facts supplied: a queued PR is then skipped without a block check.
+_NO_KNOWN_ISSUES: Mapping[int, "Issue"] = MappingProxyType({})
 
 
 class RepositoryScanner(Protocol):
@@ -125,6 +129,7 @@ class PRScanner:
         already_queued: Sequence[PendingReview],
         active_sessions: Sequence[str],  # session names
         issue_branches: dict[int, str] | None = None,
+        known_issues: Mapping[int, "Issue"] = _NO_KNOWN_ISSUES,
     ) -> ReviewScan:
         """Scan for PRs needing code review.
 
@@ -155,6 +160,16 @@ class PRScanner:
         issue_branches = issue_branches if issue_branches is not None else self.load_issue_branches()
 
         for pr in prs:
+            # Skip if already queued -- but a queued PR whose issue io already
+            # knows is blocked still reaches the board, without a new read.
+            if pr.number in queued_pr_numbers:
+                blocked.extend(
+                    self._queued_block(
+                        BlockedPRLane.REVIEW, pr, known_issues, issue_branches
+                    )
+                )
+                continue
+
             # Skip if already being reviewed
             session_name = f"review-{pr.number}"
             if session_name in active_review_sessions:
@@ -202,12 +217,6 @@ class PRScanner:
                 blocked.extend(_review_block(validity, pr, issue_number, issue))
                 continue
 
-            # Skip if already queued. Checked only after validity: a queued PR
-            # whose issue has since been blocked waits in the queue for a slot
-            # it will be dropped at, and must still reach the board (#7294).
-            if pr.number in queued_pr_numbers:
-                continue
-
             review = PendingReview(
                 issue_key=self.repository.create_issue_key(issue_number),
                 pr_number=pr.number,
@@ -234,6 +243,7 @@ class PRScanner:
         already_queued: Sequence[PendingRework],
         active_sessions: Sequence[int],  # issue numbers being worked on
         issue_branches: dict[int, str] | None = None,
+        known_issues: Mapping[int, "Issue"] = _NO_KNOWN_ISSUES,
     ) -> ReworkScan:
         """Scan for PRs needing rework.
 
@@ -269,7 +279,9 @@ class PRScanner:
         issue_branches = issue_branches if issue_branches is not None else self.load_issue_branches()
 
         for pr in prs:
-            decision = self._decide_rework_candidate(pr, queued_issue_ids, active_issue_numbers)
+            decision = self._decide_rework_candidate(
+                pr, queued_issue_ids, active_issue_numbers, known_issues
+            )
             self._log_rework_decision(pr, decision, queued_issue_ids, active_issue_numbers)
             if decision.decision == "skip":
                 blocked.extend(_current_attempt_block(decision, pr, issue_branches))
@@ -340,6 +352,58 @@ class PRScanner:
 
         return ReworkScan(reworks=results, escalations=escalations, blocked=blocked)
 
+    def _queued_block(
+        self,
+        lane: BlockedPRLane,
+        pr: PRInfo,
+        known_issues: Mapping[int, "Issue"],
+        issue_branches: dict[int, str],
+    ) -> tuple[BlockedOpenPRObservation, ...]:
+        """:meth:`_queued_observation`, for a current-attempt PR only."""
+        observation = self._queued_observation(lane, pr, known_issues)
+        if observation is None or not scope_prs_to_active_issue_branch(
+            observation.issue_number, [pr], issue_branches=issue_branches
+        ).matching:
+            return ()
+        return (observation,)
+
+    def _queued_observation(
+        self,
+        lane: BlockedPRLane,
+        pr: PRInfo,
+        known_issues: Mapping[int, "Issue"],
+    ) -> BlockedOpenPRObservation | None:
+        """Whether an already-queued PR is held by a blocking label (#7294).
+
+        A queued PR is skipped before its issue is read, and it can wait in the
+        queue for a slot indefinitely while capacity is full -- so if its issue
+        is blocked after it was queued, only this check puts it on the board.
+        It reads nothing: the issue's labels come from ``known_issues`` (the
+        facts io already holds), and a PR whose issue is not among them is
+        skipped exactly as before. The caller scopes it to the current attempt.
+        """
+        issue_number = extract_issue_number_from_pr(pr)
+        issue = known_issues.get(issue_number)
+        if issue is None:
+            return None
+        for reason, labels in (
+            (BlockedPRSkipReason.PR_BLOCKED, pr.labels),
+            (BlockedPRSkipReason.ISSUE_BLOCKED, issue.labels),
+        ):
+            blocking = self._lm.get_blocking(labels)
+            if blocking:
+                return BlockedOpenPRObservation(
+                    lane=lane,
+                    issue_number=issue_number,
+                    issue_title=issue.title,
+                    pr_number=pr.number,
+                    pr_url=pr.url,
+                    draft=pr.draft,
+                    skip_reason=reason,
+                    blocking_labels=tuple(blocking),
+                )
+        return None
+
     @staticmethod
     def _collect_queued_issue_ids(already_queued: Sequence[PendingRework]) -> set[int]:
         queued_issue_ids: set[int] = set()
@@ -354,6 +418,7 @@ class PRScanner:
         pr: PRInfo,
         queued_issue_ids: set[int],
         active_issue_numbers: set[int],
+        known_issues: Mapping[int, "Issue"],
     ) -> _ReworkScanDecision:
         scope = self._review_scope.check_pr(pr)
         issue_number = scope.issue_number
@@ -368,6 +433,15 @@ class PRScanner:
                 reason="out_of_scope",
             )
 
+        if issue_number in queued_issue_ids:
+            return _ReworkScanDecision(
+                decision="skip",
+                issue_number=issue_number,
+                rework_cycle=0,
+                blocking_labels=[],
+                reason="already_queued",
+                blocked=self._queued_observation(BlockedPRLane.REWORK, pr, known_issues),
+            )
         if issue_number in active_issue_numbers:
             return _ReworkScanDecision(
                 decision="skip",
@@ -403,16 +477,6 @@ class PRScanner:
                 blocked=_rework_blocked(
                     pr, issue_number, issue, BlockedPRSkipReason.ISSUE_BLOCKED, issue_blocking
                 ),
-            )
-        # Queued work is checked after the blocks, so a queued PR whose issue
-        # has since been blocked still reaches the board (#7294).
-        if issue_number in queued_issue_ids:
-            return _ReworkScanDecision(
-                decision="skip",
-                issue_number=issue_number,
-                rework_cycle=rework_cycle,
-                blocking_labels=[],
-                reason="already_queued",
             )
         if rework_cycle > self.config.max_rework_cycles:
             return _ReworkScanDecision(

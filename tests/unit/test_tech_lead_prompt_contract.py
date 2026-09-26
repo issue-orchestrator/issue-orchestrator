@@ -565,6 +565,7 @@ def test_blocked_open_prs_say_where_the_label_sits_decides_what_clears_it(
     assert "Retry is then refused, names that\n    holder" in text
     assert "Retrying the issue does NOT\n    remove it" in text
     assert "remove that label from the PR" in text
+    assert "a PR block can hide an issue block" in text
 
 
 @pytest.mark.parametrize("variant", sorted(PROMPT_VARIANTS))

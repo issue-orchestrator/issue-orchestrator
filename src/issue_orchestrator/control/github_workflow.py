@@ -137,6 +137,7 @@ class GitHubWorkflow:
             state.pending_reviews,
             [s.terminal_id for s in state.active_sessions],
             issue_branches=issue_branches,
+            known_issues=_known_issues(state),
         )
         state.blocked_open_prs.record_scan(
             BlockedPRLane.REVIEW, scan.blocked, at=datetime.now(UTC)
@@ -160,6 +161,7 @@ class GitHubWorkflow:
             state.pending_reworks,
             [s.issue.number for s in state.active_sessions],
             issue_branches=issue_branches,
+            known_issues=_known_issues(state),
         )
         state.blocked_open_prs.record_scan(
             BlockedPRLane.REWORK, scan.blocked, at=datetime.now(UTC)
@@ -379,3 +381,13 @@ def launch_issue_by_number(
     if s:
         increment_count_fn()
     return s
+
+
+def _known_issues(state: "OrchestratorState") -> dict[int, "Issue"]:
+    """The in-scope issues io already holds, as of the last queue refresh.
+
+    Lets the scanner tell whether an already-queued PR's issue is blocked
+    without reading it again (#7294). One refresh stale at worst: the refresh
+    updates this cache after its PR scan.
+    """
+    return {issue.number: issue for issue in state.cached_scope_issues}

@@ -82,6 +82,10 @@ it since the orchestrator last started, between `first_skipped_at` and
     holder, and the PR stays blocked until the holder is resolved.
   - `pr_blocked`: the label is on the PR itself. Retrying the issue does NOT
     remove it; the operator has to remove that label from the PR.
+  `skip_reason` and `blocking_labels` name only the FIRST block found (the PR
+  is checked before the issue), so a PR block can hide an issue block behind
+  it: ask the operator to check both and confirm the entry is gone after the
+  next scan.
 - Stay inside the decision limits (at most 50 findings, 20 evidence references
   each): group the entries by cause, and fold several causes into one finding
   when there are many. Never spend a finding or an evidence reference per PR.
