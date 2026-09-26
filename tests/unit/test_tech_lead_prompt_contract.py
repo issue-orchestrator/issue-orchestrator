@@ -484,6 +484,24 @@ def test_every_variant_teaches_the_blocked_open_pr_fields(variant: str) -> None:
 
 
 @pytest.mark.parametrize("variant", sorted(PROMPT_VARIANTS))
+def test_blocked_open_prs_are_reported_per_cause_within_the_finding_cap(
+    variant: str,
+) -> None:
+    """The snapshot may list more blocked PRs than a decision may carry findings.
+
+    One finding per entry would make a board with more than
+    ``MAX_TECH_LEAD_FINDINGS`` blocked PRs produce a rejected decision, so the
+    prompt must group them by cause (#7294 review round 1).
+    """
+    from issue_orchestrator.control.board_snapshot_builder import MAX_LIST_ENTRIES
+
+    assert MAX_LIST_ENTRIES > MAX_TECH_LEAD_FINDINGS  # the premise of the rule
+    text = PROMPT_VARIANTS[variant]
+    assert "ONE finding per cause, not one per entry" in text
+    assert "as a finding with its issue" not in text
+
+
+@pytest.mark.parametrize("variant", sorted(PROMPT_VARIANTS))
 def test_health_flow_teaches_evidence_based_hung_judgment(variant: str) -> None:
     """The health review must judge HUNG from EVIDENCE, not age alone (#6823).
 

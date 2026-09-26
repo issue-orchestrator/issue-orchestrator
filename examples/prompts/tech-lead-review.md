@@ -75,10 +75,12 @@ it since the orchestrator last started, between `first_skipped_at` and
 - Such a PR never moves on its own: no review launches and no rework runs while
   the blocking label stays. Clearing that label (the operator's Retry does)
   re-admits the existing PR at the next scan; say so in your escalation.
-- Report every entry as a finding with its issue, PR, lane, `skip_reason` and
-  how long it has waited. Escalate (`escalate_to_human` on your tracking issue)
-  naming the PR and the label that holds it, and `flag_pattern` when several
-  entries share one cause.
+- Group the entries by cause (the same `blocking_labels` and `skip_reason`)
+  into ONE finding per cause, not one per entry: the list can hold more entries
+  than your decision may carry findings. Name every affected issue and PR, with
+  lane and how long it has waited, in that finding's evidence and in your
+  `escalate_to_human` on your tracking issue; `flag_pattern` a cause that
+  recurs.
 - Do not propose `request_rework` for these PRs: the rework scan skips a
   blocked issue too, so the rework would never run.
 - `blocked_open_prs: null` means the snapshot predates the field, not that
