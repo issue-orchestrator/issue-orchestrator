@@ -272,6 +272,7 @@ class FactGatherer:
             ),
             discovered_failures=tuple(state.discovered_failures),
             stuck_sweep_escalations=tuple(state.stuck_sweep_escalations),
+            stuck_sweep_review_releases=tuple(state.stuck_sweep_review_releases),
             tech_lead_facts=tech_lead_facts,
             tech_lead_subjects=tech_lead_subjects,
             cleanup_facts=cleanup_facts,
@@ -599,7 +600,8 @@ class FactGatherer:
         recovered = [failure.issue_number for failure in result.recovered]
         exhausted = list(result.exhausted)
         held_for_review = list(result.held_for_review)
-        if not recovered and not exhausted and not held_for_review:
+        released_for_review = list(result.released_for_review)
+        if not (recovered or exhausted or held_for_review or released_for_review):
             return
         self.events.publish(
             make_trace_event(
@@ -608,6 +610,7 @@ class FactGatherer:
                     "recovered": recovered,
                     "exhausted": exhausted,
                     "held_for_review": held_for_review,
+                    "released_for_review": released_for_review,
                 },
             )
         )

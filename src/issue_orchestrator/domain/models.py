@@ -2094,6 +2094,9 @@ class OrchestratorState:
     # escalation gets an idempotent, retry-safe needs-human label (the
     # authoritative, label-only escalation, #6824 R1).
     stuck_sweep_escalations: list[int] = field(default_factory=list)
+    # One-shot buffer of issues whose published PR's review the sweep releases
+    # (#7293); the next snapshot consumes it.
+    stuck_sweep_review_releases: list[int] = field(default_factory=list)
 
     @property
     def paused(self) -> bool:

@@ -9585,3 +9585,62 @@ class TestAValidationRetryCarriesItsLaunchAuthority:
             store.load(run_id=resumed.run_id, session_name=resumed.session_name)
             is None
         )
+
+
+class TestLaunchNeverStartsACoderOverAPublishedPR:
+    """#7293: the launch boundary asks the custody owner, not the pr-pending label.
+
+    pr-pending can be missing (review discovery drops a review while the issue
+    is blocked) or a human can lift the block on GitHub directly. A coder
+    launched then recreates its worktree and deletes the published PR's branch.
+    """
+
+    @staticmethod
+    def _custody(pr_state: str = "open"):
+        from issue_orchestrator.domain.validated_work import ValidatedWorkState
+        from tests.unit.control.published_review_support import (
+            DispositionStore, PullRequests, custody, disposition, pr,
+        )
+        store = DispositionStore(
+            {123: (disposition(123, ValidatedWorkState.RECOVERED, pr_number=500),)}
+        )
+        return custody(store, PullRequests({123: [pr(123, 500, state=pr_state)]}))
+
+    def test_refuses_before_any_worktree_and_restores_the_gate(
+        self, launcher_bundle, mock_worktree_manager, sample_issue
+    ):
+        from issue_orchestrator.control.actions import AddLabelAction
+
+        lifecycle = launcher_bundle.action_applier.runtime_lifecycle
+        lifecycle.published_review = self._custody()
+        launcher_bundle.action_applier.apply.return_value = MagicMock(success=True)
+
+        result = launcher_bundle.launcher.launch_issue_session(sample_issue, active_sessions=[])
+
+        assert result.success is False
+        assert "PR #500" in result.reason
+        assert mock_worktree_manager.create_calls == []
+        assert launcher_bundle.create_session_calls == []
+        actions = [call.args[0] for call in launcher_bundle.action_applier.apply.call_args_list]
+        pr_pending = LabelManager(launcher_bundle.launcher.config).pr_pending
+        assert [(a.issue_number, a.label) for a in actions if isinstance(a, AddLabelAction)] == [
+            (123, pr_pending)
+        ]
+
+    def test_launches_once_the_operator_closed_the_pr(self, launcher_bundle, sample_issue):
+        launcher_bundle.action_applier.runtime_lifecycle.published_review = self._custody("closed")
+
+        result = launcher_bundle.launcher.launch_issue_session(sample_issue, active_sessions=[])
+
+        assert result.success is True
+
+    def test_tech_lead_sessions_are_exempt(self):
+        from issue_orchestrator.control.published_review_launch_gate import (
+            refuse_launch_over_published_review,
+        )
+
+        applier = MagicMock()
+        applier.runtime_lifecycle.published_review = self._custody()
+
+        assert refuse_launch_over_published_review(applier, MagicMock(), 123, tech_lead=True) is None
+        applier.apply.assert_not_called()

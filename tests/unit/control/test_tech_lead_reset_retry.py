@@ -1154,3 +1154,24 @@ def test_investigation_reset_skip_requires_positive_recovery(recovered):
     assert result.result_type is ActionResultType.SKIPPED
     assert evaluate_required_act_level_outcome([result]).committed is recovered
     run_reset.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("stale_reason", "committed"),
+    [
+        # #7293: the refusal names an owner - the published PR's review - so
+        # the investigation's disposition is satisfied, not a failed remedy
+        # that escalates the reviewable issue to needs-human.
+        ("published_validated_work_under_review", True),
+        # Control: unresolved custody is still a remedy that did not happen.
+        ("validated_work_unresolved", False),
+    ],
+)
+def test_a_reset_refused_for_published_work_satisfies_the_investigation(stale_reason, committed):
+    from issue_orchestrator.control.tech_lead_reset_retry import evaluate_required_act_level_outcome
+    executor, _events, run_reset = make_executor(outcome=ResetRetryRunOutcome(
+        success=False, stale_reason=stale_reason, details={}))
+    result = executor.apply(make_action(requires_effective_disposition=True))
+    run_reset.assert_called_once()
+    assert result.result_type is ActionResultType.SKIPPED
+    assert evaluate_required_act_level_outcome([result]).committed is committed

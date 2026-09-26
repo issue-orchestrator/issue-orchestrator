@@ -94,6 +94,8 @@ class OrchestratorSnapshot:
     # Unacknowledged stuck-sweep escalations to (re-)label needs-human; the
     # planner emits the idempotent label via the Applier (#6824 R1, label-only).
     stuck_sweep_escalations: tuple[int, ...] = field(default_factory=tuple)
+    # Published PRs whose review the stuck sweep releases this tick (#7293).
+    stuck_sweep_review_releases: tuple[int, ...] = field(default_factory=tuple)
     tech_lead_facts: Optional[TechLeadFacts] = None
     # Authoritative lifecycle reads of queued investigation subjects the
     # filtered board did not carry (#6994 F4). Launch-time revalidation

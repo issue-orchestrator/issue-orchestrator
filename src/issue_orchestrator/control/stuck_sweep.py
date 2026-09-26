@@ -134,16 +134,23 @@ class StuckSweepResult:
     recovered: tuple[DiscoveredFailure, ...] = ()
     exhausted: tuple[int, ...] = field(default_factory=tuple)
     # Blocked issues whose published validated work sits under an open PR
-    # (#7293): owned by that PR's review, so neither investigated nor escalated.
+    # (#7293) and that carry a block this sweep may not lift (needs-human, a
+    # human's ``blocked``...): owned by whoever holds that block, so neither
+    # investigated nor escalated.
     held_for_review: tuple[int, ...] = field(default_factory=tuple)
+    # Blocked ONLY by ``blocked-failed`` while an open PR holds their published
+    # work: the remedy is releasing that PR's review (pr-pending on, the stale
+    # failure block off), budgeted exactly like an investigation (#7293).
+    released_for_review: tuple[int, ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)
 class _StuckScan:
     """One scan's eligibility split (computed once, no extra GitHub reads)."""
 
-    # (issue, stuck_label) for issues eligible AND not currently owned.
-    candidates: tuple[tuple["Issue", str], ...]
+    # (issue, stuck_label, release) for issues eligible AND not currently
+    # owned; ``release`` picks review release over an investigation (#7293).
+    candidates: tuple[tuple["Issue", str, bool], ...]
     # Open issues still carrying ANY blocking label (recovered => absent here).
     blocked_numbers: frozenset[int]
     # Issues currently OWNED by a dedicated reconciler / open proposal / active
@@ -244,15 +251,16 @@ def run_stuck_sweep(
         state.recovery_attempts.pop(number, None)
     _ack_landed_escalations(state, scan)
     recovered: list[DiscoveredFailure] = []
+    releases: list[int] = []
     exhausted: list[int] = []
-    for issue, blocking_label in scan.candidates:
+    for issue, blocking_label, release in scan.candidates:
+        remedy = _Remedy(issue, blocking_label, release, now, recovered, releases)
         attempts = state.recovery_attempts.get(issue.number)
         if attempts is None:
             # First detection: an OUTSTANDING recovery, no failed cycle yet.
             # Injection alone never spends the budget (#6824 F1).
             state.recovery_attempts[issue.number] = 0
-            recovered.append(_recovered_failure(issue, blocking_label, now))
-            _log_reinject(issue, 0, max_attempts, blocking_label)
+            remedy.apply(0, max_attempts)
         elif attempts >= max_attempts:
             # Budget already spent + escalated: leave it for the human. Do NOT
             # re-inject or re-escalate; the counter clears when it recovers.
@@ -267,8 +275,7 @@ def run_stuck_sweep(
             # A prior recovery cycle failed (still stuck, not owned): spend one
             # unit of budget and re-inject.
             state.recovery_attempts[issue.number] = attempts + 1
-            recovered.append(_recovered_failure(issue, blocking_label, now))
-            _log_reinject(issue, attempts + 1, max_attempts, blocking_label)
+            remedy.apply(attempts + 1, max_attempts)
     # Newly exhausted issues join the durable pending-escalation set; they stay
     # there (re-labelled every sweep) until the needs-human label is observed
     # present, so a crash or apply failure never loses the escalation (#6824 R1).
@@ -277,6 +284,7 @@ def run_stuck_sweep(
         recovered=tuple(recovered),
         exhausted=tuple(exhausted),
         held_for_review=tuple(sorted(scan.held_for_review)),
+        released_for_review=tuple(releases),
     )
 
 
@@ -402,7 +410,7 @@ def _scan_stuck_issues(
     machinery = _machinery_blocking_folded()
     preferred = label_manager.blocked_failed.casefold()
     needs_human = label_manager.needs_human.casefold()
-    candidates: list[tuple["Issue", str]] = []
+    candidates: list[tuple["Issue", str, bool]] = []
     blocked: set[int] = set()
     owned: set[int] = set(base_owned)
     needs_human_numbers: set[int] = set()
@@ -424,12 +432,13 @@ def _scan_stuck_issues(
         if blocker is None:
             continue
         holds = published_review.holds(issue.number)
-        if holds:
+        releasable = bool(holds) and _only_failure_blocked(issue, label_manager, machinery)
+        if holds and not releasable:
             owned.add(issue.number)
             held_for_review.add(issue.number)
             _log_held_for_review(issue, blocker, holds)
             continue
-        candidates.append((issue, blocker))
+        candidates.append((issue, blocker, releasable))
     return _StuckScan(
         candidates=tuple(candidates),
         blocked_numbers=frozenset(blocked),
@@ -568,17 +577,56 @@ def _recovered_failure(
     )
 
 
-def _log_reinject(
-    issue: "Issue", attempts: int, max_attempts: int, blocking_label: str
-) -> None:
-    logger.info(
-        "[STUCK_SWEEP] re-injecting stuck issue #%d as a recovered failure "
-        "(failed cycles %d/%d, label=%s) (#6823)",
-        issue.number,
-        attempts,
-        max_attempts,
-        blocking_label,
-    )
+@dataclass(frozen=True)
+class _Remedy:
+    """One budgeted recovery cycle: investigate the issue, or release its review.
+
+    Both remedies spend the same budget (#7293): a review release that does not
+    stick - the issue is re-blocked - is a failed cycle like an investigation
+    that did not, and exhaustion escalates to needs-human either way.
+    """
+
+    issue: "Issue"
+    blocking_label: str
+    release: bool
+    now: float
+    recovered: list[DiscoveredFailure]
+    releases: list[int]
+
+    def apply(self, attempts: int, max_attempts: int) -> None:
+        if self.release:
+            self.releases.append(self.issue.number)
+        else:
+            self.recovered.append(
+                _recovered_failure(self.issue, self.blocking_label, self.now)
+            )
+        logger.info(
+            "[STUCK_SWEEP] stuck issue #%d: %s (failed cycles %d/%d, label=%s)",
+            self.issue.number,
+            "releasing its published PR's review (#7293)" if self.release
+            else "re-injecting as a recovered failure (#6823)",
+            attempts,
+            max_attempts,
+            self.blocking_label,
+        )
+
+
+def _only_failure_blocked(
+    issue: "Issue", label_manager: "LabelManager", machinery_folded: frozenset[str]
+) -> bool:
+    """Whether ``blocked-failed`` is the issue's ONLY recoverable block.
+
+    That label records a failed run; with the run's validated work already
+    published under an open PR it is the one block this sweep may lift, to let
+    the review proceed. Any other block (needs-human, a human's ``blocked``)
+    has an owner of its own and is never lifted here.
+    """
+    blockers = {
+        name.casefold()
+        for name in label_manager.get_blocking(issue.labels)
+        if name.casefold() not in machinery_folded
+    }
+    return blockers == {label_manager.blocked_failed.casefold()}
 
 
 def _log_held_for_review(
@@ -631,6 +679,35 @@ def build_stuck_sweep_escalation_actions(
             expected=build_expected_for_mutation(),
         )
         for issue_number in label_issue_numbers
+    ]
+
+
+def build_stuck_sweep_review_release_actions(
+    issue_numbers: "tuple[int, ...]",
+    label_manager: "LabelManager",
+) -> "list[Action]":
+    """Release a published PR's review by lifting the stale failure block (#7293).
+
+    One label transition per issue: pr-pending goes on (the adds precede the
+    removals) so the scheduler never sees the issue unblocked without it, and
+    ``blocked-failed`` comes off - but only while it is still the block the
+    sweep saw and no needs-human escalation has landed since.
+    """
+    from .actions import SyncLabelsAction
+    from .reconciliation import build_expected_for_mutation
+
+    return [
+        SyncLabelsAction(
+            issue_number=issue_number,
+            add_labels=(label_manager.pr_pending,),
+            remove_labels=(label_manager.blocked_failed,),
+            reason="stuck sweep: published validated work is under review (#7293)",
+            expected=build_expected_for_mutation(
+                required={label_manager.blocked_failed},
+                forbidden={label_manager.needs_human},
+            ),
+        )
+        for issue_number in issue_numbers
     ]
 
 
@@ -717,6 +794,9 @@ def run_stuck_sweep_cycle(
     # escalation (the durable pending set) so a crash/apply failure retries
     # until it lands (#6824 R1). The durable set itself is persisted below.
     state.stuck_sweep_escalations = list(state.pending_stuck_sweep_escalations)
+    # One-shot: consumed by the next snapshot (a failed apply is simply the
+    # next sweep's failed cycle, never a blind per-tick re-send).
+    state.stuck_sweep_review_releases = list(result.released_for_review)
     state.last_stuck_sweep_at = now
     state.last_stuck_sweep_failure_at = 0.0
     persist_stuck_sweep_state(state, queue_cache_store)

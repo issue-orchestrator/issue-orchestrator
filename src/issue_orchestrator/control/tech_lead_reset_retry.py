@@ -77,6 +77,7 @@ from .actions import (
     SurfaceTechLeadProposalAction,
 )
 from .needs_human_block import NeedsHumanCause
+from .published_review_custody import PublishedValidatedWorkHeld
 
 if TYPE_CHECKING:
     from ..domain.models import SessionHistoryEntry
@@ -265,7 +266,13 @@ class TechLeadResetRetryExecutor:
         assert issue is not None  # stale check rejects None
         outcome = self.run_reset(action.issue_number, list(issue.labels))
         if outcome.stale_reason is not None:
-            return self._downgrade(action, outcome.stale_reason, outcome.details)
+            # A reset refused because an open PR carries the issue's published
+            # validated work is a disposition, not a failed remedy: that PR's
+            # review owns the issue, and the stuck sweep releases its stale
+            # failure block on its own budget (#7293). Escalating the target to
+            # needs-human here is exactly the outcome the refusal prevents.
+            return self._downgrade(action, outcome.stale_reason, outcome.details,
+                recovered=outcome.stale_reason == PublishedValidatedWorkHeld.STALE_REASON)
         if not outcome.success:
             logger.error(
                 issue_log(

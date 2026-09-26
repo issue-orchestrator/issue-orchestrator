@@ -56,7 +56,8 @@ from ..domain.coder_prompt import (
 from ..domain.session_run import SessionRunAssets
 from ..ports.issue_run_allocator import IssueRunAllocator
 from .worktree import WorktreeSetupError
-from .worktree_context import WorktreeContext
+from .worktree_context import WorktreeContext, worktree_reuse_options
+from .published_review_launch_gate import refuse_launch_over_published_review
 from ..infra.validation_state import DEFAULT_RETRY_TEMPLATE, _truncate_with_tail
 from ..domain.tech_lead_session import TechLeadLaunchScope
 from .tech_lead_session_policy import (
@@ -280,24 +281,10 @@ class SessionLauncher:
             events=self.events,
         )
 
-    def _worktree_reuse_options(
-        self,
-        *,
-        allow_remote_branch_delete: bool = True,
-        force_fresh: bool = False,
-        preserve_branch: bool = False,
-    ) -> WorktreeReuseOptions:
-        options = WorktreeReuseOptions(
-            reuse_push_preflight=self.config.reuse_push_preflight,
-            worktree_branch_on_recreate=self.config.worktree_branch_on_recreate,
-            allow_no_verify_dry_run_preflight=self.config.allow_no_verify_dry_run_preflight,
-            allow_remote_branch_delete=allow_remote_branch_delete,
-            preserve_branch=preserve_branch,
-        )
-        if force_fresh:
-            options.disable_reuse = True
-            options.worktree_branch_on_recreate = "create_new_branch"
-        return options
+    def _worktree_reuse_options(self, *, allow_remote_branch_delete: bool = True, force_fresh: bool = False,
+                                preserve_branch: bool = False) -> WorktreeReuseOptions:
+        return worktree_reuse_options(self.config, allow_remote_branch_delete=allow_remote_branch_delete,
+                                      force_fresh=force_fresh, preserve_branch=preserve_branch)
 
     @staticmethod
     def _extra_provider_args_from_labels(labels: Sequence[str]) -> dict[str, str] | None:
@@ -738,6 +725,10 @@ class SessionLauncher:
 
         # Provider circuit breaker check
         if result := self._check_provider_ready(agent_config, issue.number):
+            return result
+        # An open PR carrying published validated work owns the issue (#7293).
+        if result := refuse_launch_over_published_review(self._action_applier, self._lm, issue.number,
+                                                         tech_lead=self._is_tech_lead_session(issue.agent_type)):
             return result
 
         log_transition("issue", issue.number, "AVAILABLE", "LAUNCHING", "no conflicts")
