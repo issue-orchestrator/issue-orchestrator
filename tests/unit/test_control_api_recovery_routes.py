@@ -38,6 +38,9 @@ from issue_orchestrator.entrypoints.control_api_repo_support import (
     ControlApiRepoDependencies,
     get_control_api_repo_dependencies,
 )
+from issue_orchestrator.ports.configured_repository_registry import (
+    SelectedRepositoryConfigMissingError,
+)
 
 REPO_KEY = "repo-" + "a" * 64
 
@@ -126,6 +129,26 @@ def test_recovery_read_rejects_unknown_and_malformed_repository_keys(
         headers=fake_browser_auth.bearer_headers(),
     )
     assert malformed.status_code == 422
+
+
+def test_recovery_read_reports_missing_selected_config_without_server_error(
+    auth_enabled_control_client,
+    fake_browser_auth,
+    recovery_queries: MagicMock,
+) -> None:
+    recovery_queries.repository.side_effect = SelectedRepositoryConfigMissingError(
+        "Selected repository configuration is missing: /repo/deleted.yaml"
+    )
+
+    response = auth_enabled_control_client.get(
+        f"/api/control-center/repositories/{REPO_KEY}/validated-work",
+        headers=fake_browser_auth.bearer_headers(),
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "detail": "Selected repository configuration is missing: /repo/deleted.yaml"
+    }
 
 
 def test_recovery_read_serializes_available_unowned_work(
@@ -241,6 +264,18 @@ def test_authenticated_stop_posts_exact_rendered_owner_command(
     assert command.expected_owner_fence == 7
     assert command.actor == "control-center.validated-work-stop"
     assert command.reason == "Engine is wedged"
+
+    stops.stop_owning_engine.side_effect = SelectedRepositoryConfigMissingError(
+        "Selected repository configuration is missing: /repo/deleted.yaml"
+    )
+    missing_config = auth_enabled_control_client.post(
+        f"/api/control-center/repositories/{REPO_KEY}/engines/worker-a/stop-validated-work-owner",
+        json=body,
+        headers=fake_browser_auth.bearer_headers(),
+    )
+    assert missing_config.status_code == 409
+    assert missing_config.json()["status"] == "repo_mismatch"
+    assert "deleted.yaml" in missing_config.json()["message"]
 
 
 @pytest.mark.parametrize(

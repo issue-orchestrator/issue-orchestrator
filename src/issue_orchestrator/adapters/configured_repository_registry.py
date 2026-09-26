@@ -8,6 +8,7 @@ from typing import Protocol
 
 from ..domain.control_center_recovery import ConfiguredRepository
 from ..infra.repo_identity import configured_repository_key, normalize_repo_root
+from ..ports.configured_repository_registry import SelectedRepositoryConfigMissingError
 
 
 class RegisteredRepository(Protocol):
@@ -34,7 +35,12 @@ def _configured_repo_slug(repository: RegisteredRepository) -> str:
         repository.selected_config,
         repository.selected_mode,
     )
-    repo_slug = Config.load(path).repo
+    try:
+        repo_slug = Config.load(path).repo
+    except FileNotFoundError as error:
+        raise SelectedRepositoryConfigMissingError(
+            f"Selected repository configuration is missing: {path}"
+        ) from error
     if type(repo_slug) is not str or not repo_slug.strip():
         raise ValueError(f"Configured repository slug is missing from {path}")
     return repo_slug

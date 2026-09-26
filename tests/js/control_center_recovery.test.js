@@ -234,6 +234,21 @@ test('turns malformed and failed responses into a visible per-repo status', asyn
     assert.match(view.render(repos[0]), /repository key mismatch/);
 });
 
+test('shows a missing selected config as a repository-level recovery error', async () => {
+    const view = createRecoveryView({
+        escapeHtml,
+        fetch: async () => ({ ok: false, status: 409 }),
+    });
+    const repos = [{ repo_key: REPO_KEY }];
+
+    await view.load(repos);
+
+    assert.equal(repos[0].validated_work, null);
+    assert.match(repos[0].validated_work_error, /Choose an available configuration/);
+    assert.match(view.render(repos[0]), /role="status"/);
+    assert.match(view.render(repos[0]), /Selected repository configuration is missing/);
+});
+
 test('rejects records on unavailable discriminants', () => {
     const view = createRecoveryView({ escapeHtml, fetch: async () => {} });
     const payload = availablePayload();

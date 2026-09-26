@@ -4,6 +4,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 from issue_orchestrator.adapters.configured_repository_registry import (
     RegisteredConfiguredRepositoryRegistry,
     configured_repository_key,
@@ -20,6 +22,9 @@ from issue_orchestrator.ports.repository_engine_supervisor import (
     MultiInstanceStatus,
     SupervisorOps,
     SupervisorStatus,
+)
+from issue_orchestrator.ports.configured_repository_registry import (
+    SelectedRepositoryConfigMissingError,
 )
 
 OWNER_INCARNATION = "linux-proc-v1:boot-id:123"
@@ -65,6 +70,25 @@ def test_configured_repository_registry_resolves_only_opaque_registered_key(
     assert resolved.repo_root == str(Path(second.path).resolve())
     assert resolved.repo_slug == "owner/second"
     assert all(call.args[0] is second for call in slug.call_args_list)
+
+
+def test_configured_repository_registry_reports_missing_selected_config(
+    tmp_path: Path,
+) -> None:
+    registered = SimpleNamespace(
+        path=str(tmp_path),
+        selected_config="deleted.yaml",
+        selected_mode="default",
+    )
+    registry = RegisteredConfiguredRepositoryRegistry(
+        repositories=lambda: (registered,),
+    )
+
+    with pytest.raises(
+        SelectedRepositoryConfigMissingError,
+        match="Selected repository configuration is missing:.*deleted.yaml",
+    ):
+        registry.resolve(configured_repository_key(tmp_path))
 
 
 def test_engine_presentation_distinguishes_exact_missing_and_replaced(
