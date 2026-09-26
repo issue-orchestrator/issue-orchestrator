@@ -9,6 +9,7 @@ shows must actually validate against the domain contract.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import re
 from pathlib import Path
@@ -18,6 +19,11 @@ import pytest
 from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.control.tech_lead_issue_policy import (
     protected_tech_lead_label_violations,
+)
+from issue_orchestrator.domain.blocked_open_pr import BlockedPRLane, BlockedPRSkipReason
+from issue_orchestrator.domain.board_snapshot import BoardBlockedOpenPR
+from issue_orchestrator.execution.tech_lead_board_prompt import (
+    TECH_LEAD_BLOCKED_OPEN_PRS_SECTION,
 )
 from issue_orchestrator.domain.tech_lead_artifacts import (
     MAX_ACTION_BODY_CHARS,
@@ -457,6 +463,109 @@ def test_board_snapshot_fields_document_hung_evidence(variant: str) -> None:
     text = PROMPT_VARIANTS[variant]
     for token in ("`idle_minutes`", "`commits_ahead`"):
         assert token in text, f"{variant} does not document the {token} snapshot field"
+
+
+@pytest.mark.parametrize("variant", sorted(PROMPT_VARIANTS))
+def test_every_variant_teaches_the_blocked_open_pr_fields(variant: str) -> None:
+    """Each variant names ``blocked_open_prs`` and every field it carries (#7294).
+
+    The field list is derived from the snapshot type, so a field added there
+    without teaching the agent what it means fails here.
+    """
+    text = PROMPT_VARIANTS[variant]
+    assert "`blocked_open_prs`" in text
+    assert TECH_LEAD_BLOCKED_OPEN_PRS_SECTION in text, f"{variant} drifted"
+    for name in (f.name for f in dataclasses.fields(BoardBlockedOpenPR)):
+        if name in {"issue_number", "issue_title", "pr_number", "pr_url"}:
+            continue  # self-describing identity fields
+        assert f"`{name}`" in text, f"{variant} does not explain `{name}`"
+    for value in (*BlockedPRSkipReason, *BlockedPRLane):
+        assert f"`{value.value}`" in text, f"{variant} does not explain `{value}`"
+
+
+@pytest.mark.parametrize("variant", sorted(PROMPT_VARIANTS))
+def test_blocked_open_prs_are_reported_per_cause_within_the_finding_cap(
+    variant: str,
+) -> None:
+    """The snapshot may list more blocked PRs than a decision may carry findings.
+
+    One finding per entry would make a board with more than
+    ``MAX_TECH_LEAD_FINDINGS`` blocked PRs produce a rejected decision, so the
+    prompt must group them by cause (#7294 review round 1).
+    """
+    from issue_orchestrator.control.board_snapshot_builder import MAX_LIST_ENTRIES
+
+    assert MAX_LIST_ENTRIES > MAX_TECH_LEAD_FINDINGS  # the premise of the rule
+    text = PROMPT_VARIANTS[variant]
+    assert "fold several causes into one finding" in text
+    assert "Never spend a finding or an evidence reference per PR" in text
+    assert "ONE `escalate_to_human`" in text
+    assert "as a finding with its issue" not in text
+    assert "ONE finding per cause" not in text
+
+
+def test_a_full_blocked_open_pr_list_fits_one_finding_and_one_escalation() -> None:
+    """The reporting rule the prompt teaches is one a valid decision can obey.
+
+    A full list of distinct causes -- more than the finding cap -- is named in
+    one finding's ``details`` and one escalation body (#7294 review round 2).
+    """
+    from issue_orchestrator.control.board_snapshot_builder import MAX_LIST_ENTRIES
+
+    lines = "\n".join(
+        f"- issue #{9000 + n} / PR #{19000 + n} (https://github.com/o/r/pull/{19000 + n})"
+        f" lane review, issue_blocked by blocked-custom-{n}, 999 scans since"
+        " 2026-09-23T05:53:00+00:00"
+        for n in range(MAX_LIST_ENTRIES)
+    )
+    decision = TechLeadDecision.from_agent_payload(
+        {
+            "schema_version": 1,
+            "summary": "Open PRs held by blocking labels.",
+            "findings": [
+                {
+                    "id": "T1",
+                    "title": f"{MAX_LIST_ENTRIES} open PRs held by blocking labels",
+                    "classification": "infra",
+                    "evidence": ["board-snapshot.json blocked_open_prs"],
+                    "details": lines,
+                }
+            ],
+            "proposed_actions": [
+                {
+                    "id": "A1",
+                    "action_type": "escalate_to_human",
+                    "target_number": 7,
+                    "body": lines,
+                    "finding_ids": ["T1"],
+                }
+            ],
+        }
+    )
+
+    assert len(decision.findings) == 1
+    assert all(f"PR #{19000 + n} " in decision.proposed_actions[0].body
+               for n in range(MAX_LIST_ENTRIES))
+    assert len(lines) <= MAX_ACTION_BODY_CHARS
+
+
+@pytest.mark.parametrize("variant", sorted(PROMPT_VARIANTS))
+def test_blocked_open_prs_say_where_the_label_sits_decides_what_clears_it(
+    variant: str,
+) -> None:
+    """A PR-level block is not cleared by retrying the issue (review round 2),
+    and an issue-level shared block can refuse the retry (review round 3).
+
+    The refusal itself is ``OperatorUnblocker``'s contract, covered in
+    ``tests/unit/control/test_operator_issue_commands.py``
+    (``test_a_refused_block_leaves_the_retry_gates_alone``); this pins that
+    the tech lead is told about it.
+    """
+    text = PROMPT_VARIANTS[variant]
+    assert "Retry is then refused, names that\n    holder" in text
+    assert "Retrying the issue does NOT\n    remove it" in text
+    assert "remove that label from the PR" in text
+    assert "a PR block can hide an issue block" in text
 
 
 @pytest.mark.parametrize("variant", sorted(PROMPT_VARIANTS))

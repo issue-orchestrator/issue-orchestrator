@@ -22,6 +22,16 @@ class ReviewValidity:
     pr_labels: tuple[str, ...] = ()
     blocking_labels: tuple[str, ...] = ()
 
+    @property
+    def held_by_block(self) -> bool:
+        """Rejected because a blocking label sits on the issue or the PR.
+
+        Only ``issue_blocked`` and ``pr_blocked`` carry blocking labels; every
+        other rejection (``pr_needs_rework``, ``review_label_missing``, ...) is
+        not a block (#7294).
+        """
+        return bool(self.blocking_labels)
+
 
 def evaluate_review_validity(
     *,
