@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from .needs_human_block import BlockOutcome, SharedNeedsHumanBlock
-from .retry_policy import labels_to_remove_for_retry
+from .retry_policy import retry_label_removals
 
 if TYPE_CHECKING:
     from ..ports.repository_host import RepositoryHost
@@ -104,7 +104,9 @@ class OperatorUnblocker:
         """
         return self._unblock(
             issue_number,
-            labels_to_remove_for_retry(current_labels, self.labels),
+            retry_label_removals(
+                issue_number, current_labels, self.labels, self.repository_host
+            ),
             "retry",
         )
 

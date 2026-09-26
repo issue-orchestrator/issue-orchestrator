@@ -560,3 +560,52 @@ class TestARecoveredRetrySettlesTheCachedCopy:
             [queued], check_dependencies=False
         )[0]
         assert decision.available, decision.reason
+
+
+class _HostWithPullRequests(_RepositoryHost):
+    """A repository host that also answers which PRs the issue has."""
+
+    def __init__(self, live: dict[int, set[str]], prs) -> None:
+        super().__init__(live)
+        self.prs = list(prs)
+
+    def get_prs_for_issue(self, issue_number: int, state: str = "open"):
+        assert issue_number == ISSUE and state == "all"
+        return self.prs
+
+
+class TestRetryKeepsAnOpenPrsReviewGate:
+    """#7293: Retry on an issue with an open PR releases the review, not a relaunch."""
+
+    @staticmethod
+    def _pr(state_value: str):
+        from issue_orchestrator.ports.pull_request_tracker import PRInfo
+
+        return PRInfo(number=77, title=f"#{ISSUE}: work", url="u",
+                      branch=f"{ISSUE}-work", body="", state=state_value, labels=[])
+
+    def test_retry_keeps_pr_pending_while_the_issue_has_an_open_pr(
+        self, sample_config, state
+    ):
+        labels = LabelManager(sample_config)
+        live = {ISSUE: {labels.blocked_failed, labels.pr_pending, "agent:web"}}
+        host = _HostWithPullRequests(live, [self._pr("open")])
+        _labels, runner = _runner(sample_config, state, live, host=host)
+
+        outcome = runner.retry(ISSUE)
+
+        assert outcome.status is OperatorCommandStatus.COMMITTED
+        assert live[ISSUE] == {labels.pr_pending, "agent:web"}
+
+    def test_retry_clears_pr_pending_once_the_pr_is_closed(
+        self, sample_config, state
+    ):
+        labels = LabelManager(sample_config)
+        live = {ISSUE: {labels.blocked_failed, labels.pr_pending, "agent:web"}}
+        host = _HostWithPullRequests(live, [self._pr("closed")])
+        _labels, runner = _runner(sample_config, state, live, host=host)
+
+        outcome = runner.retry(ISSUE)
+
+        assert outcome.status is OperatorCommandStatus.COMMITTED
+        assert live[ISSUE] == {"agent:web"}

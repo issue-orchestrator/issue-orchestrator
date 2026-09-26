@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from ..control.published_review_custody import PublishedValidatedWorkHeld
 from ..control.queue_cache import (
     QueueCache,
     QueueMutationStatus,
@@ -319,6 +320,9 @@ def reset_and_retry_issue(  # noqa: PLR0913
             issue_number,
             from_scratch,
         )
+        # Refuse before terminating anything: an open PR carrying published
+        # validated work would be closed by the reset (#7293).
+        deps.runtime_lifecycle.require_published_work_released(issue_number)
         # Reset is a hard issue-runtime boundary. Stop visible issue/rework
         # terminals and hidden review-exchange pair/job work before local
         # state or worktrees are removed, otherwise a live subprocess can keep
@@ -457,6 +461,10 @@ def reset_and_retry_issue(  # noqa: PLR0913
             elapsed_ms(issue_started_at),
         )
         return success, None
+    except PublishedValidatedWorkHeld as exc:
+        logger.warning("[reset-retry] Refused reset of issue #%d: %s", issue_number, exc)
+        return None, {"issue": issue_number, "error": str(exc), "stale_reason": exc.STALE_REASON,
+            "published_review": exc.observation()}
     except UnresolvedValidatedWork as exc:
         from ..domain.validated_work_observation import disposition_observation
         return None, {"issue": issue_number, "error": str(exc), "stale_reason": "validated_work_unresolved",
