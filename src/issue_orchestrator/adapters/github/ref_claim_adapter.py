@@ -149,7 +149,9 @@ class GitHubRefRunLedgerAdapter:
                 request.run_key,
                 exc,
             )
-            return RunLedgerOutcome.unavailable(request.run_key, str(exc))
+            return RunLedgerOutcome.unavailable(
+                request.run_key, str(exc), host_rate_limit=host_rate_limit_of(exc)
+            )
 
     def read(self) -> "RunLedger | None":
         """The live ledger, or None when it is unreachable OR undecodable."""

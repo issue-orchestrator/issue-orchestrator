@@ -491,13 +491,13 @@ def test_a_closed_subject_is_withdrawn_even_while_github_holds_launches():
     window.observe(
         HostRateLimit(resets_at=now + timedelta(minutes=30), kind="primary"),
         now,
-        "review",
+        "review", live=frozenset({"review"}),
     )
     plan = _planner().plan(
         make_snapshot(
             issues=[_issue(42, ["agent:backend", "blocked-failed"], state="closed")],
             pending_tech_lead=[_investigation(42)],
-            host_rate_limit_hold=window.open_at(now),
+            host_rate_limit_hold=window.open_at(now, live=frozenset({"review"})),
         )
     )
 

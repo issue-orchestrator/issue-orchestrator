@@ -121,13 +121,14 @@ class TestFactGathererHostRateLimit:
     ):
         from datetime import UTC, datetime, timedelta
 
+        from issue_orchestrator.control.host_rate_limit_launch_gate import live_episode_keys
         from issue_orchestrator.domain.host_rate_limit import HostRateLimit
 
         now = datetime.now(UTC)
         resets = now + timedelta(minutes=30)
         sample_state.host_rate_limit.observe(
             HostRateLimit(resets_at=resets, kind="primary", resource="search"), now,
-            "tech_lead",
+            "tech_lead", live=live_episode_keys(sample_state),
         )
 
         snapshot = fact_gatherer.create_snapshot(sample_state, sample_issues)

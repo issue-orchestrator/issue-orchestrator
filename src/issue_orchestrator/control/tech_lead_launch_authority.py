@@ -42,7 +42,7 @@ from ..domain.host_rate_limit import RateLimitEpisode, episode_key
 from ..domain.models import PendingTechLeadReview
 from ..domain.pending_work import PendingWorkKind
 from ..ports.repository_host import host_rate_limit_of
-from .host_rate_limit_launch_gate import HostRateLimitLaunchGate
+from .host_rate_limit_launch_gate import HostRateLimitLaunchGate, live_episode_keys
 from ..domain.tech_lead_run import (
     REASON_ANCHOR_CLOSED,
     REASON_ANCHOR_UNREADABLE,
@@ -201,6 +201,7 @@ class TechLeadLaunchAuthority:
         return self._state.host_rate_limit.open_at(
             datetime.now(UTC),
             episode_key(PendingWorkKind.TECH_LEAD.value, tech_lead.issue_number),
+            live=live_episode_keys(self._state),
         )
 
     @staticmethod
@@ -332,6 +333,16 @@ class TechLeadLaunchAuthority:
                 admission.barrier_reason or REASON_LAUNCH_SCOPE_BARRIER,
                 admission.detail,
             )
+        if admission.host_rate_limit is not None:
+            # The shared ledger was refused on a rate limit (#7297): hold the
+            # run on the same window every launch honours, so the ledger is
+            # not asked again - by this run or any other - before the reset.
+            episode = HostRateLimitLaunchGate.for_state(self._state, self._events).observe(
+                admission.host_rate_limit,
+                issue_number=tech_lead.issue_number,
+                work=PendingWorkKind.TECH_LEAD.value,
+            )
+            return self._rate_limit_hold(tech_lead, scope, episode)
         if admission.verdict is RunExecutionVerdict.UNAVAILABLE:
             return TechLeadLaunchRefusal(
                 scope.run_key,
@@ -405,7 +416,7 @@ class TechLeadLaunchAuthority:
             if (limit := host_rate_limit_of(exc)) is not None:
                 # Opens the window every launch honours (#7297), so the planner
                 # stops re-reading this subject every tick until the reset.
-                HostRateLimitLaunchGate(self._state.host_rate_limit, self._events).observe(
+                HostRateLimitLaunchGate.for_state(self._state, self._events).observe(
                     limit, issue_number=number, work=PendingWorkKind.TECH_LEAD.value
                 )
             logger.warning(

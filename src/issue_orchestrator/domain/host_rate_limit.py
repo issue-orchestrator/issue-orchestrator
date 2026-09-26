@@ -78,13 +78,6 @@ def episode_key(work: str, subject: int | None) -> str:
     return f"{work}:{subject}"
 
 
-@dataclass(frozen=True, slots=True)
-class _Episode:
-    since: datetime
-    #: Reset of the last limit this item was refused under.
-    resets_at: datetime
-
-
 @dataclass(slots=True)
 class HostRateLimitWindow:
     """The host's current rate-limit window, shared by every launch path.
@@ -97,17 +90,24 @@ class HostRateLimitWindow:
     belongs to the work that was refused, so one item's history can never
     shorten another's deferral.
 
-    Only positive evidence ends an episode: that item getting through
-    (:meth:`recovered`). An episode whose item stopped being attempted - it
-    was withdrawn, or its issue closed - lapses once its own reset is more
-    than a whole bound in the past. That long silence cannot be a late tick:
-    a still-queued item is re-attempted on the first tick after each reset.
+    An episode ends on positive evidence only: that item getting through
+    (:meth:`recovered`), or the item no longer existing. Every read and write
+    is told which items are ``live`` (still queued or still a launch
+    candidate); an episode whose item is gone is retired, however recent, and
+    one whose item is still waiting is kept, however long ago it was refused -
+    an item held behind a barrier or full capacity is still limited.
     """
 
     _limit: HostRateLimit | None = None
-    _episodes: dict[str, _Episode] = field(default_factory=dict)
+    _since: dict[str, datetime] = field(default_factory=dict)
 
-    def open_at(self, now: datetime, key: str | None = None) -> RateLimitEpisode | None:
+    def open_at(
+        self,
+        now: datetime,
+        key: str | None = None,
+        *,
+        live: frozenset[str],
+    ) -> RateLimitEpisode | None:
         """The episode still holding launches back at ``now``, if any.
 
         ``key`` names the item whose episode is measured; ``None`` (the
@@ -117,20 +117,25 @@ class HostRateLimitWindow:
         limit = self._limit
         if limit is None or now >= limit.resets_at:
             return None
-        live = self._live(now)
+        episodes = {k: since for k, since in self._since.items() if k in live}
         if key is None:
-            since = min((e.since for e in live.values()), default=now)
+            since = min(episodes.values(), default=now)
         else:
-            episode = live.get(key)
-            since = episode.since if episode is not None else now
+            since = episodes.get(key, now)
         return RateLimitEpisode(limit=limit, limited_since=since, observed_at=now)
 
-    def observe(self, limit: HostRateLimit, now: datetime, key: str) -> RateLimitEpisode:
+    def observe(
+        self,
+        limit: HostRateLimit,
+        now: datetime,
+        key: str,
+        *,
+        live: frozenset[str],
+    ) -> RateLimitEpisode:
         """Record that the host refused ``key``'s launch under ``limit``.
 
-        Extends that item's episode however long ago the window closed:
-        elapsed time between refusals proves nothing, since a tick that
-        happens to arrive late must not restart the clock.
+        Extends that item's episode however long ago it was last refused, and
+        retires the episodes of items that no longer exist.
         """
         previous = self._limit
         governing = (
@@ -139,24 +144,15 @@ class HostRateLimitWindow:
             else previous
         )
         self._limit = governing
-        self._episodes = self._live(now)
-        current = self._episodes.get(key)
-        since = current.since if current is not None else now
-        self._episodes[key] = _Episode(since=since, resets_at=limit.resets_at)
+        self._since = {k: v for k, v in self._since.items() if k in live or k == key}
+        since = self._since.setdefault(key, now)
         return RateLimitEpisode(limit=governing, limited_since=since, observed_at=now)
 
     def recovered(self, key: str) -> None:
         """``key``'s launch got through: that item's episode is over."""
-        self._episodes.pop(key, None)
-        if not self._episodes:
+        self._since.pop(key, None)
+        if not self._since:
             self._limit = None
-
-    def _live(self, now: datetime) -> dict[str, _Episode]:
-        return {
-            key: episode
-            for key, episode in self._episodes.items()
-            if now <= episode.resets_at + RATE_LIMIT_DEFERRAL_BOUND
-        }
 
 
 __all__ = [

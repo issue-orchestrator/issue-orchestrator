@@ -10,6 +10,7 @@ These tests verify:
 Tests mock at port boundaries, not internal patches, following the hexagonal architecture.
 """
 
+from issue_orchestrator.control.host_rate_limit_launch_gate import live_episode_keys
 from issue_orchestrator.domain.tech_lead_scratch_identity import (
     names_one_scratch_checkout,
     parse_scratch_worktree_name,
@@ -9682,7 +9683,7 @@ class TestLaunchDefersOnGitHubRateLimit:
         self._launch_queued(state, config, launcher_bundle)
 
         assert len(launcher_bundle.board_snapshot_provider.calls) == prep_reads == 1
-        held = state.host_rate_limit.open_at(datetime.now(UTC))
+        held = state.host_rate_limit.open_at(datetime.now(UTC), live=live_episode_keys(state))
         assert held is not None
         assert held.limit.resets_at == resets.replace(microsecond=0)
         deferrals = [
@@ -9713,7 +9714,7 @@ class TestLaunchDefersOnGitHubRateLimit:
 
         (queued,) = state.pending_tech_lead_reviews
         assert queued.retryable_launch_failures == 0
-        assert state.host_rate_limit.open_at(datetime.now(UTC)) is not None
+        assert state.host_rate_limit.open_at(datetime.now(UTC), live=live_episode_keys(state)) is not None
         names = [str(e.name) for e in mock_events.events]
         assert str(EventName.SESSION_START_FAILED) not in names
         assert str(EventName.SESSION_LAUNCH_DEFERRED_RATE_LIMIT) in names
@@ -9802,7 +9803,7 @@ class TestLaunchDefersOnGitHubRateLimit:
                     kind="primary",
                 ),
                 seen,
-                "tech_lead:7292",
+                "tech_lead:7292", live=live_episode_keys(state),
             )
             seen += timedelta(hours=1, minutes=1)
 
@@ -9829,7 +9830,7 @@ class TestLaunchDefersOnGitHubRateLimit:
         state.host_rate_limit.observe(
             HostRateLimit(resets_at=now + timedelta(hours=1), kind="secondary"),
             now - RATE_LIMIT_DEFERRAL_BOUND - timedelta(minutes=1),
-            "tech_lead:7292",
+            "tech_lead:7292", live=live_episode_keys(state),
         )
 
         assert self._launch_queued(state, config, launcher_bundle) is None
@@ -9852,7 +9853,7 @@ class TestLaunchDefersOnGitHubRateLimit:
         state.host_rate_limit.observe(
             HostRateLimit(resets_at=now - timedelta(minutes=1), kind="primary"),
             now - RATE_LIMIT_DEFERRAL_BOUND - timedelta(hours=1),
-            "tech_lead:111",
+            "tech_lead:111", live=live_episode_keys(state),
         )
         self._queue_health_review(state)
 
@@ -9891,7 +9892,7 @@ class TestLaunchDefersOnGitHubRateLimit:
 
         assert result is None
         assert state.pending_reviews == [review]
-        assert state.host_rate_limit.open_at(datetime.now(UTC)) is not None
+        assert state.host_rate_limit.open_at(datetime.now(UTC), live=live_episode_keys(state)) is not None
         assert any(
             str(e.name) == str(EventName.SESSION_LAUNCH_DEFERRED_RATE_LIMIT)
             and e.data["work"] == "review"
@@ -9942,4 +9943,4 @@ class TestLaunchDefersOnGitHubRateLimit:
 
         assert result is None
         assert state.pending_validation_retries == [retry]
-        assert state.host_rate_limit.open_at(datetime.now(UTC)) is not None
+        assert state.host_rate_limit.open_at(datetime.now(UTC), live=live_episode_keys(state)) is not None

@@ -32,6 +32,7 @@ from ..infra.config import Config
 from ..events import EventName
 from ..ports.repository_host import RepositoryHost, RepositoryHostError
 from ..ports import EventSink,  make_trace_event
+from .host_rate_limit_launch_gate import live_episode_keys
 from .provider_launch_readiness import ProviderLaunchReadiness
 from .health_review_trigger import (
     classify_tech_lead_anchor_issues,
@@ -241,7 +242,9 @@ class FactGatherer:
             pending_reworks=tuple(state.pending_reworks),
             pending_tech_lead=tuple(state.pending_tech_lead_reviews),
             pending_validation_retries=tuple(state.pending_validation_retries),
-            host_rate_limit_hold=state.host_rate_limit.open_at(datetime.now(UTC)),
+            host_rate_limit_hold=state.host_rate_limit.open_at(
+                datetime.now(UTC), live=live_episode_keys(state)
+            ),
             paused=state.paused,
             priority_queue=tuple(state.priority_queue),
             issues_started_count=state.issues_started_count,

@@ -400,7 +400,7 @@ def _rate_limit_gate(
     One gate over the one shared window, so a limit observed by any launch
     path defers all of them, and none counts the wait as a failure.
     """
-    return HostRateLimitLaunchGate(state.host_rate_limit, session_launcher.events)
+    return HostRateLimitLaunchGate.for_state(state, session_launcher.events)
 
 
 def session_launcher_callback(

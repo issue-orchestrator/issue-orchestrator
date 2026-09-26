@@ -21,6 +21,7 @@ from typing import Optional
 
 import httpx
 
+from issue_orchestrator.control.host_rate_limit_launch_gate import live_episode_keys
 from issue_orchestrator.adapters.github.rate_limit import github_http_failure
 from issue_orchestrator.domain.host_rate_limit import (
     RATE_LIMIT_DEFERRAL_BOUND,
@@ -416,7 +417,7 @@ def test_a_rate_limited_anchor_read_opens_the_shared_launch_window():
 
     assert harness.launched == []
     assert harness.held_reasons() == [REASON_GITHUB_RATE_LIMITED]
-    held = harness.state.host_rate_limit.open_at(datetime.now(UTC))
+    held = harness.state.host_rate_limit.open_at(datetime.now(UTC), live=live_episode_keys(harness.state))
     assert held is not None
     assert held.limit.resets_at == datetime.fromtimestamp(int(resets.timestamp()), UTC)
     (deferral,) = harness.events.payloads(EventName.SESSION_LAUNCH_DEFERRED_RATE_LIMIT)
@@ -453,7 +454,7 @@ def test_past_the_deferral_bound_the_authority_stops_holding():
     harness.state.host_rate_limit.observe(
         HostRateLimit(resets_at=now + timedelta(minutes=5), kind="primary"),
         now - RATE_LIMIT_DEFERRAL_BOUND - timedelta(minutes=1),
-        "tech_lead:900",
+        "tech_lead:900", live=live_episode_keys(harness.state),
     )
 
     harness.launch(anchor)
@@ -474,13 +475,37 @@ def test_past_the_bound_a_closed_anchor_is_still_withdrawn():
     harness.state.host_rate_limit.observe(
         HostRateLimit(resets_at=now + timedelta(minutes=5), kind="primary"),
         now - RATE_LIMIT_DEFERRAL_BOUND - timedelta(minutes=1),
-        "tech_lead:900",
+        "tech_lead:900", live=live_episode_keys(harness.state),
     )
 
     assert harness.launch(anchor) is None
 
     assert harness.launched == [], "a finished anchor must never start a duplicate review"
     assert harness.state.pending_tech_lead_reviews == []
+
+
+def test_a_rate_limited_run_ledger_holds_the_run_on_the_shared_window():
+    """Codex r9: an UNAVAILABLE ledger caused by a rate limit opens the window,
+    so the ledger is not asked again - by this run or another - before reset."""
+    now = datetime.now(UTC)
+    anchor = _health_anchor()
+    shared = SharedRunLedger()
+    shared.unavailable = True
+    shared.rate_limit = HostRateLimit(resets_at=now + timedelta(minutes=20), kind="secondary")
+    harness = _Harness(
+        pending=[anchor], issues={900: FakeIssue(900, labels=())}, shared=shared
+    )
+
+    assert harness.launch(anchor) is None
+    requests_after_first = len(shared.submissions)
+    assert harness.launch(anchor) is None
+
+    assert harness.launched == []
+    assert harness.held_reasons() == [REASON_GITHUB_RATE_LIMITED] * 2
+    assert len(shared.submissions) == requests_after_first, "no ledger request before reset"
+    assert harness.state.host_rate_limit.open_at(
+        now, live=live_episode_keys(harness.state)
+    ) is not None
 
 
 def test_a_global_anchor_is_never_subject_to_blocked_label_eligibility():

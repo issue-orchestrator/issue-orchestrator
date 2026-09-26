@@ -45,6 +45,7 @@ from ..ports.repository_host import host_rate_limit_of
 from .session_launch_types import LaunchDisposition, LaunchResult
 
 if TYPE_CHECKING:
+    from ..domain.models import OrchestratorState
     from ..ports.claim_manager import ClaimManager
     from .action_base import Action
     from .session_launch_types import ClaimAcquisitionResult
@@ -65,7 +66,17 @@ class HostRateLimitLaunchGate:
 
     window: HostRateLimitWindow
     events: EventSink
+    #: The episode keys of every item that still exists (queued, or a launch
+    #: candidate); an episode whose item is gone is retired (#7297 r9).
+    live: Callable[[], frozenset[str]]
     clock: Callable[[], datetime] = field(default=lambda: _utc_now())
+
+    @classmethod
+    def for_state(
+        cls, state: "OrchestratorState", events: EventSink
+    ) -> "HostRateLimitLaunchGate":
+        """The gate over ``state``'s shared window and its live work."""
+        return cls(state.host_rate_limit, events, lambda: live_episode_keys(state))
 
     def launch(
         self,
@@ -82,7 +93,7 @@ class HostRateLimitLaunchGate:
         GitHub read.
         """
         key = episode_key(work, issue_number)
-        holding = self.window.open_at(self.clock(), key)
+        holding = self.window.open_at(self.clock(), key, live=self.live())
         # Past the bound the window no longer holds the launch back: it is
         # attempted, so a refusal lands AFTER the launch holds its durable
         # pending-work claim. That is the only kind of failure the queue's
@@ -131,7 +142,7 @@ class HostRateLimitLaunchGate:
         same window, or the planner would keep asking GitHub every tick.
         """
         episode = self.window.observe(
-            limit, self.clock(), episode_key(work, issue_number)
+            limit, self.clock(), episode_key(work, issue_number), live=self.live()
         )
         self._publish(episode, issue_number=issue_number, work=work, attempted=True)
         log = logger.error if episode.bound_exceeded else logger.warning
@@ -250,6 +261,35 @@ def converge_claim(
     )
 
 
+def live_episode_keys(state: "OrchestratorState") -> frozenset[str]:
+    """The episode key of every item a launch could still be made for.
+
+    Mirrors the keys ``session_routing`` launches under, one per pending
+    queue plus the ordinary issue candidates, so an episode lives exactly as
+    long as the work it measures.
+    """
+    rework_issues = (rework.resolve_issue_number() for rework in state.pending_reworks)
+    return frozenset(
+        [
+            *(episode_key("review", item.issue_number) for item in state.pending_reviews),
+            *(
+                episode_key("retrospective_review", item.issue_number)
+                for item in state.pending_retrospective_reviews
+            ),
+            *(episode_key("rework", number) for number in rework_issues),
+            *(
+                episode_key("validation_retry", item.issue_number)
+                for item in state.pending_validation_retries
+            ),
+            *(
+                episode_key("tech_lead", item.issue_number)
+                for item in state.pending_tech_lead_reviews
+            ),
+            *(episode_key("issue", issue.number) for issue in state.cached_queue_issues),
+        ]
+    )
+
+
 #: The one deferral reason a rate-limited tick records, stable across ticks so
 #: the on-change launch logs report the wait once rather than every tick.
 RATE_LIMIT_DEFER_REASON = "github_rate_limited"
@@ -344,6 +384,7 @@ __all__ = [
     "LaunchMutations",
     "apply_launch_mutations",
     "converge_claim",
+    "live_episode_keys",
     "plan_launches_or_wait",
     "rate_limited_launch_skips",
 ]
