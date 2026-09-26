@@ -63,9 +63,9 @@ the PR itself (`pr_blocked`). `skip_count` counts the consecutive scans that ski
 it since the orchestrator last started, between `first_skipped_at` and
 `last_skipped_at`; `draft` is the PR's draft state (`null` = not reported).
 
-- Such a PR never moves on its own: no review launches and no rework runs until
-  the blocking label is removed. Retrying the issue starts the work over; only
-  removing the label (Unblock) re-admits the existing PR.
+- Such a PR never moves on its own: no review launches and no rework runs while
+  the blocking label stays. Clearing that label (the operator's Retry does)
+  re-admits the existing PR at the next scan; say so in your escalation.
 - Report every entry as a finding with its issue, PR, lane, `skip_reason` and
   how long it has waited. Escalate (`escalate_to_human` on your tracking issue)
   naming the PR and the label that holds it, and `flag_pattern` when several
