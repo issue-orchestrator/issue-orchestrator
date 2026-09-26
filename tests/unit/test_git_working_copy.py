@@ -1668,3 +1668,43 @@ class TestBranchPostImagePathsAgainstBase:
             assert result.success is False
             assert result.paths == ()
             assert result.error
+
+
+class TestBranchCommitMessagesAgainstBase:
+    """Full commit messages on the branch, read for the partial-delivery check (#7288).
+
+    GitHub closes an issue named by a closing keyword anywhere in a commit
+    message that reaches the default branch, so the read must return whole
+    multi-line messages, only for commits the base lacks.
+    """
+
+    def test_returns_whole_messages_of_branch_commits_only(self, tmp_path):
+        root = tmp_path / "repo"
+        TestBranchPostImagePathsAgainstBase._init_repo(root)
+        (root / "a.txt").write_text("a\n")
+        _run_git_cmd(root, "add", "-A")
+        _run_git_cmd(root, "commit", "-q", "-m", "base\n\nFixes #9 on main already")
+        base = _run_git_cmd(root, "rev-parse", "HEAD")
+        _run_git_cmd(root, "checkout", "-q", "-b", "feature")
+        for n, message in enumerate(("Split package A\n\nFixes #320", "Tidy")):
+            (root / f"f{n}.txt").write_text(f"{n}\n")
+            _run_git_cmd(root, "add", "-A")
+            _run_git_cmd(root, "commit", "-q", "-m", message)
+
+        result = GitWorkingCopy().branch_commit_messages_against_base(root, base)
+
+        assert result.success
+        assert sorted(m.strip() for m in result.messages) == [
+            "Split package A\n\nFixes #320",
+            "Tidy",
+        ]
+
+    def test_git_error_fails_closed(self, git_wc, worktree_path):
+        with patch.object(git_wc, "_run_git") as mock_run:
+            mock_run.side_effect = git_error(stderr="fatal: bad revision")
+
+            result = git_wc.branch_commit_messages_against_base(worktree_path, "origin/main")
+
+        assert result.success is False
+        assert result.messages == ()
+        assert result.error

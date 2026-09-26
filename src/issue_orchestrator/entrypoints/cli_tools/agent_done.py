@@ -53,6 +53,7 @@ RUNTIME_PROPOSED_FOLLOW_UP_ISSUE: Any = RuntimeProposedFollowUpIssue
 RUNTIME_REQUESTED_ACTION: Any = RuntimeRequestedAction
 from ...control.validation import AgentGate, AgentGateResult
 from ...domain.artifact_contracts import ValidationFailed, ValidationPassed
+from ...domain.pr_issue_reference import names_issue_in_closing_keyword
 from ...domain.session_run import ValidationArtifactPaths
 from ...execution.run_evidence import RunEvidenceRecorder
 from ...execution.session_output_adapter import FileSystemSessionOutput
@@ -280,6 +281,22 @@ def get_issue_number() -> Optional[int]:
     return None
 
 
+#: Boolean flags that only one status may carry. ``--partial`` declares a PR
+#: that delivers part of its issue, so only a completion can make it (#7288).
+_FLAGS_OWNED_BY_ONE_STATUS: dict[str, str] = {"partial": AgentStatus.COMPLETED}
+
+
+def _flags_set_for_another_status(
+    status: str, args: argparse.Namespace
+) -> list[tuple[str, str]]:
+    """The owned flags this invocation set although it reports another status."""
+    return [
+        (flag, owner)
+        for flag, owner in _FLAGS_OWNED_BY_ONE_STATUS.items()
+        if getattr(args, flag, False) and owner != status
+    ]
+
+
 def validate_fields(status: str, args: argparse.Namespace) -> None:
     """Validate all required fields are present for the status."""
     required = REQUIRED_FIELDS[status]
@@ -292,6 +309,30 @@ def validate_fields(status: str, args: argparse.Namespace) -> None:
 
     if missing:
         die(f"Status '{status}' requires: {', '.join(missing)}")
+    for flag, owner in _flags_set_for_another_status(status, args):
+        die(f"--{flag} is only valid with '{owner}', not '{status}'")
+    if getattr(args, "partial", False):
+        _refuse_closing_keyword_in_partial_text(args)
+
+
+def _refuse_closing_keyword_in_partial_text(args: argparse.Namespace) -> None:
+    """Catch, while the agent can still fix it, text that would close the issue.
+
+    The implementation and problems text goes into the PR body. A closing
+    keyword for the issue there makes GitHub close it on merge despite the
+    "Refs" line, and the orchestrator refuses to publish it (#7288).
+    """
+    issue_number = get_issue_number()
+    if issue_number is None:
+        return
+    text = "\n".join(part for part in (args.implementation, args.problems) if part)
+    if names_issue_in_closing_keyword(text, issue_number):
+        die(
+            f"--partial: your --implementation/--problems text closes #{issue_number} "
+            f"with a closing keyword (Closes/Fixes/Resolves), so merging would close "
+            f"the issue. Write 'Refs #{issue_number}' instead. Commit messages must "
+            f"not close it either."
+        )
 
 
 def format_comment_body(status: str, args: argparse.Namespace) -> str:  # noqa: C901 - distinct markdown templates for each status type
@@ -468,6 +509,7 @@ def build_completion_record(status: str, args: argparse.Namespace) -> Completion
         # PR labels
         pr_labels=getattr(args, 'pr_labels', None),
         follow_up_issues=follow_up_issues,
+        partial_pr=bool(getattr(args, "partial", False)),
         ),
     )
 

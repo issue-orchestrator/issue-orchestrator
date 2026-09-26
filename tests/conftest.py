@@ -487,7 +487,7 @@ class MockGitHubAdapter:
                     result.append(pr)
         return result[:limit]
 
-    def merged_prs_closing_issues(self, issue_numbers) -> frozenset[int]:
+    def merged_prs_referencing_issues(self, issue_numbers) -> frozenset[int]:
         wanted = set(issue_numbers)
         return frozenset(
             pr.number

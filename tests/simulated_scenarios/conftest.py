@@ -14,6 +14,7 @@ import pytest
 from issue_orchestrator.domain.models import Issue, AgentConfig
 from issue_orchestrator.execution.agent_runner import AgentRunner, AgentSpec
 from issue_orchestrator.ports.working_copy import (
+    BranchCommitMessagesResult,
     BranchPathsResult,
     BranchStatus,
     BranchTextFilesResult,
@@ -408,6 +409,11 @@ class StubWorkingCopy:
         self, worktree: Path, base_ref: str
     ) -> BranchPathsResult:
         return BranchPathsResult(success=True, paths=())
+
+    def branch_commit_messages_against_base(
+        self, worktree: Path, base_ref: str
+    ) -> BranchCommitMessagesResult:
+        return BranchCommitMessagesResult(success=True, messages=())
 
     def get_issue_number_from_branch(self, worktree: Path) -> int | None:
         parts = self.get_current_branch(worktree).split("-")

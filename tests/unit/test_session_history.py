@@ -115,6 +115,7 @@ def test_reconcile_awaiting_merge_follows_session_history_replacement() -> None:
         pr_url=pr_url,
         status="merged",
         status_reason="PR merged",
+        partial_pr=False,
     )
 
     assert isinstance(result, HistoryReconciliationMutation)
@@ -148,6 +149,7 @@ def test_reconcile_awaiting_merge_concrete_list_still_supported() -> None:
         pr_url=pr_url,
         status="closed",
         status_reason="PR closed",
+        partial_pr=False,
     )
 
     assert isinstance(result, HistoryReconciliationMutation)

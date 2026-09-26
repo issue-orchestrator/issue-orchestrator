@@ -86,7 +86,8 @@ class ManualCompletionPreparation:
             source_workspace=worktree, pr_number=locators.pr_number,
             pr_base_branch=publication.base_branch,
             content=PublicationContent(publication.title, publication.body,
-                                       publication.exchange_mode not in {"via-mcp", "via-local-loop"}),
+                                       publication.exchange_mode not in {"via-mcp", "via-local-loop"},
+                                       publication.partial_pr),
         )
         return PreparedManualPublication(
             command=command, receipt=receipt, run=evidence.run.run,

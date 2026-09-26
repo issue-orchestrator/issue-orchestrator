@@ -235,18 +235,47 @@ def test_read_completion_record_accepts_absolute_validation_path(
     assert result.validation_record_path == absolute_validation
 
 
-def test_every_pr_body_carries_the_closing_reference_rework_resolves_by() -> None:
-    """Tech-lead rework finds a problem issue's MERGED PRs by closing reference.
+def test_a_partial_completion_refs_its_issue_instead_of_closing_it() -> None:
+    """#7288: ``coding-done completed --partial`` must not close the issue.
 
-    ``observe_rework_targets`` resolves merged PRs through the issue's
-    ``closedByPullRequestsReferences`` (no search API), so a merged io PR is
-    only reachable for a forward fix while its body names the issue in a
-    closing reference. If this line changes (e.g. to "Refs #N" for a
-    multi-PR issue, #7288), move that lookup to a link that still finds the
-    PR first, or merged PRs silently drop out of the rework grant (#7298).
+    porchpin #320 needed one PR per package, and every io PR opened with
+    "Closes #320", so the first merged slice closed the issue. A partial
+    record now writes "Refs #N" and names the issue in no GitHub closing
+    keyword. A whole completion still writes "Closes #N".
     """
-    from issue_orchestrator.control.review_scope import extract_issue_number
+    from dataclasses import replace
 
-    body = build_pr_body(_record(), issue_number=123)
+    from issue_orchestrator.domain.pr_issue_reference import declares_partial_delivery
 
-    assert extract_issue_number(body, fallback=0) == 123
+    whole = build_pr_body(_record(), issue_number=123)
+    partial = build_pr_body(replace(_record(), partial_pr=True), issue_number=123)
+
+    assert whole.splitlines()[0] == "Closes #123"
+    assert not declares_partial_delivery(whole, 123)
+    assert partial.splitlines()[0] == "Refs #123"
+    assert declares_partial_delivery(partial, 123)
+
+
+def test_every_pr_body_links_the_issue_that_scoped_rework_resolves_it_by() -> None:
+    """Tech-lead rework keeps finding a merged io PR, closing or partial.
+
+    ``observe_rework_targets`` finds an issue's merged PRs through the
+    issue's timeline cross-references (no search API). It keeps one only when
+    the PR's own body links the issue. So every PR body, including a partial
+    "Refs #N" one, must link its issue by the same rule; otherwise a merged
+    slice drops out of the rework grant (#7298, #7288).
+    """
+    from dataclasses import replace
+
+    from issue_orchestrator.control.review_scope import (
+        extract_issue_number,
+        pr_fields_reference_issue,
+    )
+
+    for record in (_record(), replace(_record(), partial_pr=True)):
+        body = build_pr_body(record, issue_number=123)
+
+        assert extract_issue_number(body, fallback=0) == 123
+        assert pr_fields_reference_issue(
+            branch=None, title="", body=body, issue_numbers=[123]
+        )

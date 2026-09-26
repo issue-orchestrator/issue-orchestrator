@@ -132,6 +132,7 @@ class SessionHistoryOwner:
         pr_url: str,
         status: AwaitingMergeTerminalStatus,
         status_reason: str,
+        partial_pr: bool,
         before_transition: Callable[[SessionHistoryEntry], None] | None = None,
     ) -> HistoryReconciliationResult:
         """Mark the latest matching awaiting-merge history entry terminal.
@@ -181,6 +182,7 @@ class SessionHistoryOwner:
             before_transition(entry)
         entry.status = status
         entry.status_reason = status_reason
+        entry.partial_pr_merged = partial_pr and status == "merged"
         logger.info(
             "reconcile_awaiting_merge: mutated issue=#%d pr_url=%s %s -> %s (%s)",
             issue_number,

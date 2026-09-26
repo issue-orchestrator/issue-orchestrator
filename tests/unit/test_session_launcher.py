@@ -241,7 +241,7 @@ class MockRepositoryHost:
     def get_prs_for_issue(self, issue_number: int, state: str = "open") -> list[PRInfo]:
         return self.prs.get(issue_number, [])
 
-    def merged_prs_closing_issues(self, issue_numbers) -> frozenset[int]:
+    def merged_prs_referencing_issues(self, issue_numbers) -> frozenset[int]:
         wanted = set(issue_numbers)
         return frozenset(
             pr.number

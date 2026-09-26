@@ -116,7 +116,7 @@ def setup(tmp_path, monkeypatch):
         rig.root,
         None,
         "main",
-        PublicationContent("#1: Feature", "Closes #1\n\nImplementation details", True),
+        PublicationContent("#1: Feature", "Closes #1\n\nImplementation details", True, False),
     )
     return rig, remote, executor, command
 
@@ -466,3 +466,57 @@ def test_bound_push_preserves_original_pre_push_hook(setup):
     )
     assert marker.exists()
     assert remote.read_branch(command) == rig.target
+
+
+@pytest.mark.parametrize(
+    ("existing_line", "refused"),
+    [("Closes #1", True), ("Refs #1", False)],
+)
+def test_partial_publication_refuses_a_pr_that_closes_its_issue(setup, existing_line, refused):
+    """#7288: a recovery publication whose content declares partial delivery
+    ("Refs #1") must not adopt a PR an earlier session opened with
+    "Closes #1". Merging that PR would close an issue whose work is not
+    finished. A PR that already refs the issue is fine."""
+    _, remote, executor, command = setup
+    partial = replace(
+        command,
+        content=PublicationContent("#1: Feature", "Refs #1\n\nOne slice", True, True),
+    )
+    remote.add_pr(
+        partial,
+        body=f"{existing_line}\n\n{publication_marker(partial.issue_number, partial.branch_name)}",
+    )
+
+    outcome = executor.publish_or_reconcile(partial)
+
+    if refused:
+        assert outcome.status is PublishValidatedHeadStatus.REJECTED
+        assert outcome.failure is ValidatedWorkFailure.PR_ISSUE_REFERENCE_MISMATCH
+    else:
+        assert outcome.status is PublishValidatedHeadStatus.PUBLISHED
+    assert remote.created == 0
+
+
+def test_the_typed_partial_claim_decides_not_the_rendered_body(setup):
+    """#7288 R2: the claim travels typed. Content whose body reads like a
+    whole delivery still carries a partial claim, and an adopted PR that
+    closes the issue is refused on the claim, not on body text."""
+    _, remote, executor, command = setup
+    claimed = replace(
+        command,
+        content=PublicationContent("#1: Feature", "Closes #1\n\nText", True, True),
+    )
+    remote.add_pr(
+        claimed,
+        body=f"Closes #1\n\n{publication_marker(claimed.issue_number, claimed.branch_name)}",
+    )
+
+    outcome = executor.publish_or_reconcile(claimed)
+
+    assert outcome.failure is ValidatedWorkFailure.PR_ISSUE_REFERENCE_MISMATCH
+    assert remote.created == 0
+
+
+def test_publication_content_refuses_an_untyped_partial_claim():
+    with pytest.raises(ValueError, match="typed partial claim"):
+        PublicationContent("#1: Feature", "Refs #1", True, "yes")  # type: ignore[arg-type]

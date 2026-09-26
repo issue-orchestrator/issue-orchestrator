@@ -83,6 +83,28 @@ coding-done completed \
   --problems "Any issues encountered, or 'None'"
 ```
 
+**Completed one slice of an issue that needs several PRs:**
+
+Some issues say their acceptance spans several PRs (for example "one PR per
+package; this issue closes when the last one lands"). If your PR delivers only
+part of the issue and more PRs must follow, add `--partial`:
+```bash
+coding-done completed \
+  --implementation "What this slice did, and what remains" \
+  --problems "Any issues encountered, or 'None'" \
+  --partial
+```
+The PR body then says `Refs #N` instead of `Closes #N`, so merging it leaves the
+issue open and the orchestrator schedules the next slice. Do not write a closing
+keyword for the issue (`Closes`, `Fixes` or `Resolves` followed by `#N`) in the
+implementation or problems text or in any commit message: GitHub would close the
+issue on merge, so the orchestrator refuses to publish that PR. Leave `--partial` off
+the PR that finishes the issue. Do not use it to avoid finishing work you were
+asked to do. The reference line is set when the PR is first opened; rework on
+an existing PR keeps it. If the existing PR already says `Closes #N`, a
+`--partial` completion is refused rather than merged as a close, and a human
+has to change that PR's reference line.
+
 If you discovered unrelated ancillary work while staying focused on the assigned issue, write those proposals to a JSON or JSONL file first, then add `--follow-up-file path` to the completed command above.
 Each entry should include `title` and `reason`, and may include `evidence`, `suggested_labels`, and `blocking`.
 
@@ -122,6 +144,7 @@ All statuses support:
 
 Completed status also supports:
 - `--follow-up-file path` - Structured proposals for ancillary follow-up issues discovered during the work
+- `--partial` - This PR delivers part of the issue; it references the issue instead of closing it
 
 ## What happens after coding-done
 

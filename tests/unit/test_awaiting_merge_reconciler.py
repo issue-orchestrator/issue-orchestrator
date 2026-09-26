@@ -13,8 +13,8 @@ from issue_orchestrator.control.awaiting_merge_reconciler import (
     POST_PUBLISH_VALIDATION_SOURCE,
     AwaitingMergeReconciler,
     classify_post_approval_state,
-    classify_pr_set_drift,
 )
+from issue_orchestrator.control.awaiting_merge_drift_policy import classify_pr_set_drift
 from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.control.session_history import SessionHistoryOwner
 from issue_orchestrator.domain.models import (
@@ -280,6 +280,63 @@ def test_merged_pr_with_open_issue_flags_close_on_merge_fallback() -> None:
     repository_host.issue_closed_on_or_after.assert_called_once_with(
         228, _MERGED_AT,
     )
+
+
+def test_merged_partial_pr_leaves_its_issue_open_without_a_close_check() -> None:
+    """#7288: a merged "Refs #N" PR delivered one slice of a multi-PR issue.
+
+    Its issue is open because the work is not finished, not because an
+    auto-close failed. So the reconciler must not flag the close-on-merge
+    fallback, and it does not even read the issue to decide. The fact carries
+    ``partial_pr`` so the apply side releases the issue for its next slice.
+    Without the partial rule this PR would be closed by the fallback, as the
+    first merged slice of porchpin #320 was.
+    """
+    entry = _history_entry()
+    state = OrchestratorState(session_history=[entry])
+    repository_host = MagicMock()
+    repository_host.get_pr.return_value = replace(
+        _pr("merged"), body="Refs #228\n\nPartial delivery."
+    )
+    repository_host.get_issue.return_value = _issue("open")
+    repository_host.issue_closed_on_or_after.return_value = False
+
+    result = AwaitingMergeReconciler(
+        repository_host,
+        clock=lambda: 1234.5,
+    ).discover(state)
+
+    assert result.discovered == 1
+    [fact] = result.reconciliations
+    assert fact.status == "merged"
+    assert fact.partial_pr is True
+    assert fact.issue_open is False
+    assert fact.status_reason == (
+        "Partial PR merged; issue stays open for its remaining work"
+    )
+    repository_host.issue_closed_on_or_after.assert_not_called()
+
+
+def test_merged_pr_that_refs_and_closes_its_issue_is_not_partial() -> None:
+    """GitHub closes an issue that any closing keyword names, so "Refs #N"
+    beside "Fixes #N" is a whole delivery and keeps the close check."""
+    entry = _history_entry()
+    state = OrchestratorState(session_history=[entry])
+    repository_host = MagicMock()
+    repository_host.get_pr.return_value = replace(
+        _pr("merged"), body="Refs #228\nFixes #228"
+    )
+    repository_host.get_issue.return_value = _issue("open")
+    repository_host.issue_closed_on_or_after.return_value = False
+
+    result = AwaitingMergeReconciler(
+        repository_host,
+        clock=lambda: 1234.5,
+    ).discover(state)
+
+    [fact] = result.reconciliations
+    assert fact.partial_pr is False
+    assert fact.issue_open is True
 
 
 def test_merged_then_reopened_issue_is_never_reclosed() -> None:
@@ -554,6 +611,36 @@ def test_only_merged_pr_does_not_discover_drift() -> None:
 
     assert result.drift_discovered == 0
     assert result.drifts == ()
+
+
+def test_pr_pending_issue_whose_latest_pr_merged_partially_is_released() -> None:
+    """#7288: an untracked pr-pending issue (for example after a restart)
+    whose latest PR merged as a partial slice has no PR awaiting merge. The
+    label is stale, and the issue has work left. The scan must produce a
+    terminal recovery that sheds the label, not blocked:pr-closed drift and
+    not nothing. Nothing, the pre-#7288 answer for every merged PR, leaves
+    the issue stuck on pr-pending forever."""
+    issue = _issue("open")
+    state = OrchestratorState(cached_queue_issues=[issue])
+    repository_host = MagicMock()
+    repository_host.get_prs_for_issue.return_value = [
+        _pr("merged", number=401),
+        replace(_pr("merged", number=428), body="Refs #228"),
+    ]
+
+    result = AwaitingMergeReconciler(
+        repository_host,
+        label_manager=_label_manager(),
+        clock=lambda: 1234.5,
+    ).discover(state)
+
+    assert result.drifts == ()
+    assert result.discovered == 1
+    [fact] = result.reconciliations
+    assert (fact.issue_number, fact.pr_number, fact.status) == (228, 428, "merged")
+    assert fact.partial_pr is True
+    assert fact.issue_open is False
+    assert fact.merged_at == _MERGED_AT
 
 
 def test_closed_unmerged_latest_pr_flags_despite_older_merged_pr() -> None:
@@ -1183,6 +1270,8 @@ def test_classify_post_approval_state(
         # Single terminal PR: the leaf predicate decides.
         ([("closed", 318)], True, 318),
         ([("merged", 318)], False, None),
+        # A merged partial PR suppresses drift too; it reports partial_merge.
+        ([("merged-partial", 318)], False, None),
         # Any open PR suppresses drift regardless of older terminal PRs.
         ([("merged", 428), ("open", 437)], False, None),
         ([("closed", 428), ("open", 437)], False, None),
@@ -1200,7 +1289,17 @@ def test_classify_pr_set_drift(
     expected_pr_number: int | None,
 ) -> None:
     decision = classify_pr_set_drift(
-        [_pr(state, number=number) for state, number in prs]
+        [
+            replace(_pr("merged", number=number), body="Refs #228")
+            if state == "merged-partial"
+            else _pr(state, number=number)
+            for state, number in prs
+        ],
+        issue_number=228,
+    )
+    partial = [number for state, number in prs if state == "merged-partial"]
+    assert (decision.partial_merge.number if decision.partial_merge else None) == (
+        partial[0] if partial else None
     )
     assert decision.drifting is expected_drifting
     if expected_pr_number is None:

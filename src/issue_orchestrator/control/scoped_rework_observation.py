@@ -24,12 +24,14 @@ def observe_rework_targets(
 
     Problem issues resolve without the search API: one complete listing of open
     PRs, matched to their issue the same way the grant below links them, plus
-    the merged PRs whose closing reference names them (rework on a merged PR
-    files a forward fix). It used to be one ``/search/issues`` call per issue:
-    a health review over ~50 blocked issues blew GitHub's 30-per-minute search
-    budget and could never launch. Closed-unmerged PRs take no rework, and a
-    merged PR linked only by its branch name, with no closing reference, is
-    not found.
+    the merged PRs that reference them (rework on a merged PR files a forward
+    fix). The references come from each issue's timeline, so they include a
+    merged partial PR ("Refs #N", #7288) as well as a closing one; the link
+    check below still decides which of them belong to the issue. It used to be
+    one ``/search/issues`` call per issue: a health review over ~50 blocked
+    issues blew GitHub's 30-per-minute search budget and could never launch.
+    Closed-unmerged PRs take no rework. A merged PR whose body never names the
+    issue (linked only by its branch name) is not found.
 
     Missing head/link facts give no grant; they cannot become guessed authority.
     A transport failure, or a listing that cannot be proven complete,
@@ -43,7 +45,7 @@ def observe_rework_targets(
             for pr in repository.list_open_prs_complete()
             if extract_issue_number_from_pr(pr) in wanted
         )
-        numbers.update(repository.merged_prs_closing_issues(sorted(wanted)))
+        numbers.update(repository.merged_prs_referencing_issues(sorted(wanted)))
     targets: list[ReworkTarget] = []
     for number in sorted(numbers):
         pr = repository.get_pr(number)

@@ -12,6 +12,7 @@ from ..domain.completion_intake import CompletionIntakeReceipt
 from ..domain.completion_processing import CompletionPublication
 from ..domain.events import SessionEvent
 from ..domain.models import COMPLETION_RECORD_PATH, CompletionRecord, RequestedAction
+from ..domain.pr_issue_reference import issue_reference_line
 from ..domain.runtime_identity import RuntimeIdentity
 from ..domain.session_run import SessionRunAssets
 from ..ports.session_output import SessionOutput
@@ -232,9 +233,15 @@ def build_pr_body(
     creation injects a runtime identity so the audit section is always present.
     """
     parts = [
-        f"Closes #{issue_number}",
+        issue_reference_line(issue_number, partial=record.partial_pr),
         "",
     ]
+    if record.partial_pr:
+        parts.extend([
+            f"Partial delivery: this PR does not finish #{issue_number}. "
+            "The issue stays open after merge for its remaining work.",
+            "",
+        ])
 
     if record.implementation:
         parts.extend([

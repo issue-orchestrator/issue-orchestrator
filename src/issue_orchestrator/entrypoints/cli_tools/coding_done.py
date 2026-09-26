@@ -304,6 +304,9 @@ EXAMPLES:
     First write the ancillary proposals to a JSON or JSONL file, then pass
     --follow-up-file <existing-path> to the completed command above.
 
+  Completed one slice of an issue that needs several PRs:
+    coding-done completed --implementation "Split package A" --problems "None" --partial
+
   Completed with resume (debug session):
     coding-done completed --implementation "Fixed the bug" --problems "None" --resume
 
@@ -353,6 +356,16 @@ STATUSES:
         help=(
             "Path to JSON or JSONL file describing ancillary follow-up issues. "
             "Use this for unrelated fixes discovered while completing the assigned issue."
+        ),
+    )
+
+    parser.add_argument(
+        "--partial",
+        action="store_true",
+        help=(
+            "Completed only: this PR delivers part of the issue, which needs "
+            "more PRs. The PR body says 'Refs #N' instead of 'Closes #N', so "
+            "merging it leaves the issue open for the next PR."
         ),
     )
 

@@ -2179,15 +2179,31 @@ class GitHubHttpClient:
             url="/graphql",
         )
 
-    def merged_prs_closing_issues(
-        self, issue_numbers: Sequence[int], *, batch_size: int = 50
-    ) -> frozenset[int]:
-        """Merged PRs that close any of ``issue_numbers``, without the search API.
+    _REFERENCE_TIMELINE = (
+        "timelineItems(itemTypes: [CROSS_REFERENCED_EVENT], first: 100{after}) "
+        "{{ pageInfo {{ hasNextPage endCursor }} nodes {{ ... on CrossReferencedEvent "
+        "{{ isCrossRepository source {{ __typename ... on PullRequest "
+        "{{ number merged }} }} }} }} }}"
+    )
 
-        One GraphQL request per ``batch_size`` issues, reading each issue's
-        ``closedByPullRequestsReferences``: the PRs linked by a closing
-        reference ("Closes #N"). An issue with more linked PRs than one page
-        holds raises rather than returning part of them. A missing issue has
+    def merged_prs_referencing_issues(
+        self,
+        issue_numbers: Sequence[int],
+        *,
+        batch_size: int = 50,
+        page_cap: int = 10,
+    ) -> frozenset[int]:
+        """Merged same-repository PRs that reference any of ``issue_numbers``.
+
+        Reads each issue's timeline cross-references, which GitHub records
+        for every PR whose body names the issue: a closing ``Closes #N`` PR
+        and a partial ``Refs #N`` PR alike (#7288). The issue's
+        ``closedByPullRequestsReferences`` field only lists closing PRs, so a
+        merged partial PR would be missing from it. There is one GraphQL
+        request per ``batch_size`` issues and no search API call. An issue
+        with more than one page of references is read page by page. A walk
+        past ``page_cap`` pages, a missing cursor, or a malformed answer
+        raises instead of returning part of the answer. A missing issue has
         no PRs.
         """
         owner, repo = self._config.repo.split("/", 1)
@@ -2196,57 +2212,112 @@ class GitHubHttpClient:
         for offset in range(0, len(numbers), batch_size):
             batch = numbers[offset:offset + batch_size]
             fields = "\n".join(
-                f"i{n}: issue(number: {int(n)}) {{ closedByPullRequestsReferences("
-                "first: 100, includeClosedPrs: true) { pageInfo { hasNextPage } "
-                "nodes { number merged } } }"
+                f"i{n}: issue(number: {int(n)}) {{ "
+                + self._REFERENCE_TIMELINE.format(after="")
+                + " }"
                 for n in batch
             )
-            query = (
-                "query($owner: String!, $repo: String!) { "
-                f"repository(owner: $owner, name: $repo) {{ {fields} }} }}"
-            )
-            result = self._graphql(
-                query, {"owner": owner, "repo": repo},
-                caller="merged_prs_closing_issues",
-            )
-            repository = (result.get("data") or {}).get("repository")
-            if not isinstance(repository, dict):
-                raise self._incomplete_closing_prs("returned no repository")
+            repository = self._reference_query(owner, repo, fields, variables={})
             for n in batch:
-                merged.update(self._merged_closing_prs_of(repository, n))
+                timeline = self._reference_timeline_of(repository, n)
+                if timeline is None:  # explicitly null: no such issue, so no PRs
+                    continue
+                merged.update(self._merged_reference_prs(owner, repo, n, timeline, page_cap))
         return frozenset(merged)
 
-    def _merged_closing_prs_of(self, repository: dict[str, Any], n: int) -> set[int]:
-        """One issue's merged closing PRs from a batched answer; malformed raises."""
+    def _merged_reference_prs(
+        self, owner: str, repo: str, n: int, timeline: dict[str, Any], page_cap: int
+    ) -> set[int]:
+        """Walk one issue's reference timeline to its end, starting from page one."""
+        merged: set[int] = set()
+        for page in range(1, page_cap + 1):
+            merged.update(self._merged_prs_on_page(timeline, n))
+            page_info = timeline["pageInfo"]
+            if not page_info["hasNextPage"]:
+                return merged
+            if page == page_cap:
+                break
+            cursor = page_info.get("endCursor")
+            if not isinstance(cursor, str) or not cursor:
+                raise self._incomplete_reference_prs(
+                    f"reported another page without a cursor for #{n}"
+                )
+            fields = f"i{n}: issue(number: {int(n)}) {{ " + self._REFERENCE_TIMELINE.format(
+                after=", after: $after"
+            ) + " }"
+            repository = self._reference_query(
+                owner, repo, fields, variables={"after": cursor}, cursor=True
+            )
+            next_timeline = self._reference_timeline_of(repository, n)
+            if next_timeline is None:
+                raise self._incomplete_reference_prs(f"lost #{n} while paging")
+            timeline = next_timeline
+        raise self._incomplete_reference_prs(
+            f"exceeded the {page_cap * 100}-reference page cap for #{n}"
+        )
+
+    def _reference_query(
+        self,
+        owner: str,
+        repo: str,
+        fields: str,
+        *,
+        variables: dict[str, Any],
+        cursor: bool = False,
+    ) -> dict[str, Any]:
+        after_decl = ", $after: String!" if cursor else ""
+        query = (
+            f"query($owner: String!, $repo: String!{after_decl}) {{ "
+            f"repository(owner: $owner, name: $repo) {{ {fields} }} }}"
+        )
+        result = self._graphql(
+            query, {"owner": owner, "repo": repo, **variables},
+            caller="merged_prs_referencing_issues",
+        )
+        repository = (result.get("data") or {}).get("repository")
+        if not isinstance(repository, dict):
+            raise self._incomplete_reference_prs("returned no repository")
+        return repository
+
+    def _reference_timeline_of(
+        self, repository: dict[str, Any], n: int
+    ) -> dict[str, Any] | None:
+        """One issue's reference timeline page; None for a missing issue."""
         alias = f"i{n}"
         if alias not in repository:
-            raise self._incomplete_closing_prs(f"omitted #{n}")
+            raise self._incomplete_reference_prs(f"omitted #{n}")
         issue = repository[alias]
-        if issue is None:  # explicitly null: no such issue, so no PRs
-            return set()
-        refs = issue.get("closedByPullRequestsReferences") if isinstance(issue, dict) else None
-        if not isinstance(refs, dict) or not isinstance(refs.get("nodes"), list):
-            raise self._incomplete_closing_prs(f"returned no references for #{n}")
-        page_info = refs.get("pageInfo")
+        if issue is None:
+            return None
+        timeline = issue.get("timelineItems") if isinstance(issue, dict) else None
+        if not isinstance(timeline, dict) or not isinstance(timeline.get("nodes"), list):
+            raise self._incomplete_reference_prs(f"returned no timeline for #{n}")
+        page_info = timeline.get("pageInfo")
         if not isinstance(page_info, dict) or type(page_info.get("hasNextPage")) is not bool:
-            raise self._incomplete_closing_prs(f"returned no pageInfo for #{n}")
-        if page_info["hasNextPage"]:
-            raise self._incomplete_closing_prs(f"has more than one page for #{n}")
+            raise self._incomplete_reference_prs(f"returned no pageInfo for #{n}")
+        return timeline
+
+    def _merged_prs_on_page(self, timeline: dict[str, Any], n: int) -> set[int]:
         merged: set[int] = set()
-        for node in refs["nodes"]:
-            if not (
-                isinstance(node, dict)
-                and type(node.get("number")) is int
-                and type(node.get("merged")) is bool
-            ):
-                raise self._incomplete_closing_prs(f"returned a malformed node for #{n}")
-            if node["merged"]:
-                merged.add(node["number"])
+        for node in timeline["nodes"]:
+            if not isinstance(node, dict) or type(node.get("isCrossRepository")) is not bool:
+                raise self._incomplete_reference_prs(f"returned a malformed node for #{n}")
+            if node["isCrossRepository"]:
+                continue  # another repository's PR number means nothing here
+            source = node.get("source")
+            if not isinstance(source, dict) or not isinstance(source.get("__typename"), str):
+                raise self._incomplete_reference_prs(f"returned a malformed node for #{n}")
+            if source["__typename"] != "PullRequest":
+                continue  # an issue that mentions this one
+            if type(source.get("number")) is not int or type(source.get("merged")) is not bool:
+                raise self._incomplete_reference_prs(f"returned a malformed node for #{n}")
+            if source["merged"]:
+                merged.add(source["number"])
         return merged
 
-    def _incomplete_closing_prs(self, why: str) -> GitHubScanIncompleteError:
+    def _incomplete_reference_prs(self, why: str) -> GitHubScanIncompleteError:
         return GitHubScanIncompleteError(
-            f"Reading issues' closing pull requests {why}; refusing a partial answer",
+            f"Reading issues' referencing pull requests {why}; refusing a partial answer",
             method="POST",
             url="/graphql",
         )

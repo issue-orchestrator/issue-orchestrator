@@ -24,10 +24,11 @@ from .git_branch_identity import issue_number_from_branch
 from ..domain.exact_git import ExactPushDestination, ExactPushResult, RefPinOutcome, RetainedRef
 from ..domain.validated_work_store import AncestryRelation
 from ..ports.git import Git, GitError, GitResult
+from .git_branch_content_reader import GitBranchContentReader, git_error_output as _git_error_output
 from .git_revision_reader import GitRevisionReader
 from ..ports.working_copy import (
+    BranchCommitMessagesResult,
     BranchPathsResult,
-    BranchTextFile,
     BranchTextFilesResult,
     CommitInfo,
     BranchStatus,
@@ -335,27 +336,8 @@ class GitWorkingCopy:
     def read_branch_text_files(
         self, worktree: Path, paths: tuple[str, ...]
     ) -> BranchTextFilesResult:
-        """Return exact tracked ``HEAD`` content for selected text files.
-
-        Read byte-exactly, on the same terms as :meth:`diff_against_base`, so
-        blob content and the patch text it is matched against agree on where
-        every line ends.
-        """
-
-        files: list[BranchTextFile] = []
-        try:
-            for path in paths:
-                result = self._run_git_output_exact(worktree, ["show", f"HEAD:{path}"])
-                files.append(BranchTextFile(path=path, content=result.stdout))
-            return BranchTextFilesResult(success=True, files=tuple(files))
-        except GitError as exc:
-            error = _git_error_output(exc)
-            logger.warning(
-                "Failed to read branch-tip text files in %s: %s",
-                worktree,
-                error,
-            )
-            return BranchTextFilesResult(success=False, error=error)
+        """Exact ``HEAD`` text files, read on the same byte-exact terms as the diff."""
+        return self._branch_content().text_files(worktree, paths)
 
     def branch_post_image_paths_against_base(
         self, worktree: Path, base_ref: str
@@ -392,6 +374,14 @@ class GitWorkingCopy:
                 error,
             )
             return BranchPathsResult(success=False, error=error)
+
+    def branch_commit_messages_against_base(
+        self, worktree: Path, base_ref: str
+    ) -> BranchCommitMessagesResult:
+        return self._branch_content().commit_messages_against_base(worktree, base_ref)
+
+    def _branch_content(self) -> GitBranchContentReader:
+        return GitBranchContentReader(self._run_git_output_exact, self._run_git_nul_paths)
 
     def get_commits_ahead_of_main(self, worktree: Path) -> list[CommitInfo]:
         """Get commits that are ahead of main branch."""
@@ -826,17 +816,3 @@ class GitWorkingCopy:
         return GitRevisionReader(self._run_git).verify_historical_selection(
             repo_root, branch_name, head_sha
         )
-
-
-def _git_error_output(error: GitError) -> str:
-    """Return the full user-facing output from a failed git command."""
-    parts: list[str] = []
-    stdout = (error.result.stdout or "").strip()
-    stderr = (error.result.stderr or "").strip()
-    if stdout:
-        parts.append(stdout)
-    if stderr and stderr != stdout:
-        parts.append(stderr)
-    if parts:
-        return "\n".join(parts)
-    return str(error)

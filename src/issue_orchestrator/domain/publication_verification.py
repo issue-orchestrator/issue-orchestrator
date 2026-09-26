@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 
+from .pr_issue_reference import honors_partial_claim
 from .publication_remote import PublicationPullRequest, PublicationPrState, publication_marker
 from .validated_head_publication import PublishValidatedHeadCommand, RemoteHeadExpectation
 from .validated_work import DispositionPhase, ValidatedWorkFailure
@@ -15,6 +16,12 @@ def publication_pr_identity_failure(command: PublishValidatedHeadCommand,
         command.repo_slug, command.repo_slug, command.branch_name, command.pr_base_branch,
     ):
         return ValidatedWorkFailure.PR_BRANCH_MISMATCH
+    # A PR opened earlier with "Closes #N" must not carry a partial claim:
+    # merging it would close an unfinished issue (#7288).
+    if not honors_partial_claim(
+        pr.body, command.issue_number, partial=command.content.partial_pr
+    ):
+        return ValidatedWorkFailure.PR_ISSUE_REFERENCE_MISMATCH
     return None
 
 

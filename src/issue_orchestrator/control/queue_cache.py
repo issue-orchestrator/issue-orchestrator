@@ -13,6 +13,7 @@ import time
 import traceback
 from typing import TYPE_CHECKING
 
+from ..history import issues_held_by_session_history
 from .issue_scope import issue_scope_skip_detail
 
 
@@ -157,7 +158,7 @@ class QueueCache:
         if not _matches_scope(self._config, issue):
             return QueueMutationStatus.REJECTED_OUT_OF_SCOPE
 
-        excluded_numbers = {entry.issue_number for entry in self._state.session_history}
+        excluded_numbers = set(issues_held_by_session_history(self._state.session_history))
         excluded_numbers.update(session.issue.number for session in self._state.active_sessions)
         if issue.number in excluded_numbers:
             return QueueMutationStatus.REJECTED_EXCLUDED

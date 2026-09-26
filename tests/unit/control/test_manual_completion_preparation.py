@@ -37,7 +37,7 @@ def rig(custody):
     shared.prepare_completion.return_value = PreparedCompletion(
         record, custody.run.session_name, CompletionProcessingPolicy("agent:test", TaskKind.CODE), "feature", str(evidence.entry.normalized_path),
         PreparedActionPlan(PublishPipelinePlan(tuple(record.requested_actions), False), None, None, False, False))
-    shared.prepare_pull_request.return_value = PreparedPullRequest("#42: Feature", "Prepared body", "main", None, None)
+    shared.prepare_pull_request.return_value = PreparedPullRequest("#42: Feature", "Prepared body", "main", None, None, False)
     owner = ManualCompletionPreparation(intake=custody.intake, completion=shared,
                                         working_copy=custody.wc, repo_slug="owner/repo")
     return custody, evidence, locators, shared, owner
@@ -58,6 +58,18 @@ def test_manual_command_uses_owned_bytes_and_immutable_attestation(rig):
     assert supplied["agent_label"] is None
     assert supplied["completion_path"] is None
     assert result.remaining_actions == ()
+
+
+@pytest.mark.parametrize("partial", [False, True])
+def test_manual_command_carries_the_prepared_partial_claim(rig, partial):
+    """#7288: the typed claim, not the rendered body, reaches the command."""
+    custody, _, locators, shared, owner = rig
+    shared.prepare_pull_request.return_value = PreparedPullRequest(
+        "#42: Feature", "Prepared body", "main", None, None, partial
+    )
+    result = owner.prepare_manual_publication(locators, "Feature")
+    assert isinstance(result, PreparedManualPublication)
+    assert result.command.content.partial_pr is partial
 
 
 @pytest.mark.parametrize("damage", ["receipt", "run", "issue", "branch", "session", "workspace", "missing-receipt"])

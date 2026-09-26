@@ -160,6 +160,8 @@ class ValidatedWorkFailure(StrEnum):
     REMOTE_UNREADABLE = "remote_unreadable"  # read failed != "absent"
     PR_CLOSED_OR_MERGED = "pr_closed_or_merged"
     PR_BRANCH_MISMATCH = "pr_branch_mismatch"
+    # The PR closes an issue the publication declared only partly delivered (#7288).
+    PR_ISSUE_REFERENCE_MISMATCH = "pr_issue_reference_mismatch"
     ISSUE_UNREADABLE = "issue_unreadable"
     RUNTIME_ACTIVE = "runtime_active"
     PUSH_FAILED = "push_failed"
