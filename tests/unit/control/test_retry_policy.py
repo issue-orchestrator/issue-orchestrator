@@ -3,8 +3,8 @@ from __future__ import annotations
 from unittest.mock import Mock
 
 from issue_orchestrator.control.label_manager import LabelManager
-from issue_orchestrator.control.published_review_custody import IssuePullRequestReader
 from issue_orchestrator.control.retry_policy import (
+    OpenPullRequestProbe,
     labels_to_remove_for_retry,
     retry_label_removals,
 )
@@ -24,8 +24,8 @@ def _pr(number: int, state: str) -> PRInfo:
 
 
 def _reader(*prs: PRInfo) -> Mock:
-    reader = Mock(spec=IssuePullRequestReader)
-    reader.get_prs_for_issue.return_value = list(prs)
+    reader = Mock(spec=OpenPullRequestProbe)
+    reader.has_open_pr_for_issue_complete.return_value = any(pr.state == "open" for pr in prs)
     return reader
 
 
@@ -76,8 +76,8 @@ def test_retry_keeps_pr_pending_when_the_issue_has_an_open_pr() -> None:
     result = retry_label_removals(ISSUE, [lm.blocked_failed, lm.pr_pending], lm, reader)
 
     assert result == [lm.blocked_failed]
-    # The complete set, never the one-entry "open" cache answer.
-    reader.get_prs_for_issue.assert_called_once_with(ISSUE, state="all")
+    # The complete, uncached probe - never a capped or cached PR list.
+    reader.has_open_pr_for_issue_complete.assert_called_once_with(ISSUE)
 
 
 def test_retry_strips_pr_pending_when_every_pr_is_closed_or_merged() -> None:
@@ -96,4 +96,4 @@ def test_retry_without_pr_pending_spends_no_pr_read() -> None:
     result = retry_label_removals(ISSUE, [lm.blocked_failed], lm, reader)
 
     assert result == [lm.blocked_failed]
-    reader.get_prs_for_issue.assert_not_called()
+    reader.has_open_pr_for_issue_complete.assert_not_called()

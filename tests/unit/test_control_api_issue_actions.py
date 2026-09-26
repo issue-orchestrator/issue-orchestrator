@@ -410,6 +410,8 @@ class TestRetryIssueEndpoint:
             removed_labels.append((issue_number, label))
 
         mock_orch.repository_host = MagicMock()
+        # No open PR: Retry clears pr-pending too (#7293 keeps it otherwise).
+        mock_orch.repository_host.has_open_pr_for_issue_complete.return_value = False
         mock_orch.repository_host.get_issue_labels = MagicMock(
             return_value=["agent:web", "blocked", "pr-pending"]
         )
@@ -458,6 +460,8 @@ class TestRetryIssueEndpoint:
 
         # Mock the repository_host to raise exception on label removal
         mock_orch.repository_host = MagicMock()
+        # No open PR: Retry clears pr-pending too (#7293 keeps it otherwise).
+        mock_orch.repository_host.has_open_pr_for_issue_complete.return_value = False
         mock_orch.repository_host.get_issue_labels = MagicMock(
             return_value=["blocked", "pr-pending"]
         )
@@ -531,6 +535,8 @@ class TestRetryIssueEndpoint:
                 raise Exception("Label removal failed")
 
         mock_orch.repository_host = MagicMock()
+        # No open PR: Retry clears pr-pending too (#7293 keeps it otherwise).
+        mock_orch.repository_host.has_open_pr_for_issue_complete.return_value = False
         mock_orch.repository_host.get_issue_labels = MagicMock(
             return_value=["agent:web", "blocked", "blocked-failed"]
         )
@@ -597,6 +603,8 @@ class TestRetryIssueEndpoint:
         mock_orch.deps.queue_cache_store = MagicMock()
 
         mock_orch.repository_host = MagicMock()
+        # No open PR: Retry clears pr-pending too (#7293 keeps it otherwise).
+        mock_orch.repository_host.has_open_pr_for_issue_complete.return_value = False
         mock_orch.repository_host.get_issue_labels = MagicMock(
             return_value=["agent:web", "blocked-failed"]
         )

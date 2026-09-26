@@ -2639,6 +2639,32 @@ class GitHubHttpClient:
         )
         return _search_items(payload)
 
+    def count_open_prs_for_issue(self, issue_number: int) -> int:
+        """How many OPEN PRs the issue has - uncached, and complete or raising.
+
+        Same association as ``get_prs_for_issue``, but the ``is:open`` filter
+        runs server-side and the answer is ``total_count``, so no page cap can
+        hide an open PR behind closed ones (#7293). A search GitHub reports as
+        ``incomplete_results`` cannot prove the count and fails closed.
+        """
+        query = (
+            f"repo:{self._config.repo} is:pr is:open "
+            f"(head:{issue_number} OR #{issue_number})"
+        )
+        payload = self._request_json(
+            "GET",
+            "/search/issues",
+            params={"q": query, "per_page": 1},
+            caller="count_open_prs_for_issue",
+            use_cache=False,
+        )
+        if not isinstance(payload, dict) or payload.get("incomplete_results") is not False:
+            raise GitHubHttpError("Open PR search could not prove completeness")
+        count = payload.get("total_count")
+        if type(count) is not int or count < 0:
+            raise GitHubHttpError("Malformed open PR search count")
+        return count
+
     def search_issues_by_title(
         self,
         query_terms: list[str],

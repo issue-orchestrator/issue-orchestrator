@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Sequence
+from typing import Protocol, Sequence
 
 from .label_manager import LabelManager
-from .published_review_custody import IssuePullRequestReader, open_pull_requests
+
+
+class OpenPullRequestProbe(Protocol):
+    def has_open_pr_for_issue_complete(self, issue_number: int) -> bool: ...
 
 
 def labels_to_remove_for_retry(
@@ -34,14 +37,14 @@ def retry_label_removals(
     issue_number: int,
     labels: Sequence[str],
     lm: LabelManager,
-    pull_requests: IssuePullRequestReader,
+    pull_requests: OpenPullRequestProbe,
 ) -> list[str]:
     """The one owner of WHICH labels a retry clears, observation included.
 
     The open-PR fact is read only when it can change the answer (pr-pending is
     present), so a retry on an ordinary blocked issue costs no PR read.
     """
-    has_open_pr = lm.is_pr_pending(labels) and bool(
-        open_pull_requests(pull_requests, issue_number)
+    has_open_pr = lm.is_pr_pending(labels) and pull_requests.has_open_pr_for_issue_complete(
+        issue_number
     )
     return labels_to_remove_for_retry(labels, lm, has_open_pr=has_open_pr)

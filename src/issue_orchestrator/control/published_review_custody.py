@@ -47,29 +47,8 @@ class ValidatedWorkDispositionReader(Protocol):
     def for_issue(self, issue_number: int) -> "ValidatedWorkDispositionBatch": ...
 
 
-class IssuePullRequestReader(Protocol):
-    def get_prs_for_issue(self, issue_number: int, state: str = "open") -> list["PRInfo"]: ...
-
-
 class BranchPullRequestReader(Protocol):
     def get_open_prs_for_branch_complete(self, branch: str) -> list["PRInfo"]: ...
-
-
-def open_pull_requests(
-    pull_requests: IssuePullRequestReader, issue_number: int
-) -> tuple["PRInfo", ...]:
-    """Every open PR associated with the issue, read authoritatively.
-
-    Reads ``state="all"`` and filters locally: the adapter answers ``"open"``
-    from a one-entry per-issue cache that proves *a* PR exists but not that it
-    is the complete set, and both questions asked here ("is any PR open?",
-    "is THIS PR open?") need the complete set.
-    """
-    return tuple(
-        pr
-        for pr in pull_requests.get_prs_for_issue(issue_number, state="all")
-        if pr.state.strip().lower() == "open"
-    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -208,13 +187,11 @@ NO_PUBLISHED_REVIEW_HOLDS: PublishedReviewHolds = _NoPublishedReviewHolds()
 
 __all__ = [
     "BranchPullRequestReader",
-    "IssuePullRequestReader",
     "NO_PUBLISHED_REVIEW_HOLDS",
     "PublishedReviewCustody",
     "PublishedReviewHold",
     "PublishedReviewHolds",
     "PublishedValidatedWorkHeld",
     "ValidatedWorkDispositionReader",
-    "open_pull_requests",
     "published_review_holds",
 ]

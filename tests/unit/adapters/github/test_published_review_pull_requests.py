@@ -72,3 +72,29 @@ def test_a_scan_that_cannot_prove_completeness_fails_closed(monkeypatch):
 
     with pytest.raises(RepositoryHostError):
         custody.holds(ISSUE)
+
+
+@pytest.mark.parametrize(("total", "expected"), [(0, False), (1, True), (250, True)])
+def test_retry_asks_github_for_an_uncached_open_only_count(monkeypatch, total, expected):
+    """Retry's pr-pending decision (#7293): server-side ``is:open``, so a page
+    of closed PRs can never hide the open one behind it."""
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.url.path == "/search/issues"
+        return httpx.Response(200, json={"total_count": total, "incomplete_results": False,
+                                         "items": []})
+
+    assert _adapter(monkeypatch, handler).has_open_pr_for_issue_complete(ISSUE) is expected
+    (request,) = requests
+    assert "is:open" in request.url.params["q"] and f"#{ISSUE}" in request.url.params["q"]
+    assert "if-none-match" not in request.headers
+
+
+def test_an_incomplete_open_count_fails_closed(monkeypatch):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"total_count": 0, "incomplete_results": True, "items": []})
+
+    with pytest.raises(RepositoryHostError):
+        _adapter(monkeypatch, handler).has_open_pr_for_issue_complete(ISSUE)

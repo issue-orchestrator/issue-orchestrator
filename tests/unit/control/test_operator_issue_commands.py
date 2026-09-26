@@ -573,9 +573,9 @@ class _HostWithPullRequests(_RepositoryHost):
         super().__init__(live)
         self.prs = list(prs)
 
-    def get_prs_for_issue(self, issue_number: int, state: str = "open"):
-        assert issue_number == ISSUE and state == "all"
-        return self.prs
+    def has_open_pr_for_issue_complete(self, issue_number: int) -> bool:
+        assert issue_number == ISSUE
+        return any(pr.state == "open" for pr in self.prs)
 
 
 class TestRetryKeepsAnOpenPrsReviewGate:

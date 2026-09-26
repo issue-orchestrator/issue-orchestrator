@@ -869,6 +869,10 @@ class GitHubAdapter:
 
     # PRRepository implementation
 
+    def has_open_pr_for_issue_complete(self, issue_number: int) -> bool:
+        """Whether any open PR is associated with the issue (uncached, complete)."""
+        return self._client.count_open_prs_for_issue(issue_number) > 0
+
     def get_open_prs_for_branch_complete(self, branch: str) -> list[PRInfo]:
         """Uncached, complete open-PR set for a head branch (fails if capped)."""
         return [self._pr_info_from_api(raw) for raw in self._client.read_publication_prs(branch)]
