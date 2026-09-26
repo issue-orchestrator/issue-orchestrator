@@ -894,6 +894,9 @@
           },
           "404": {
             "description": "Configured repository key was not found"
+          },
+          "409": {
+            "description": "The registered repository's selected configuration is missing"
           }
         }
       }

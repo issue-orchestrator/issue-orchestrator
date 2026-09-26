@@ -244,7 +244,7 @@ test('shows a missing selected config as a repository-level recovery error', asy
     await view.load(repos);
 
     assert.equal(repos[0].validated_work, null);
-    assert.match(repos[0].validated_work_error, /Choose an available configuration/);
+    assert.match(repos[0].validated_work_error, /Restore it or choose an available configuration/);
     assert.match(view.render(repos[0]), /role="status"/);
     assert.match(view.render(repos[0]), /Selected repository configuration is missing/);
 });

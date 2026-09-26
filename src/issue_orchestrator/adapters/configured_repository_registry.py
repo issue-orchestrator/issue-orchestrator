@@ -38,6 +38,8 @@ def _configured_repo_slug(repository: RegisteredRepository) -> str:
     try:
         repo_slug = Config.load(path).repo
     except FileNotFoundError as error:
+        if path.is_file():
+            raise
         raise SelectedRepositoryConfigMissingError(
             f"Selected repository configuration is missing: {path}"
         ) from error
