@@ -44,7 +44,9 @@ from ..ports.repository_host import host_rate_limit_of
 from .session_launch_types import LaunchDisposition, LaunchResult
 
 if TYPE_CHECKING:
+    from ..ports.claim_manager import ClaimManager
     from .action_base import Action
+    from .session_launch_types import ClaimAcquisitionResult
     from .action_results import ActionResult
     from .planner_types import OrchestratorSnapshot, SkippedItem
 
@@ -206,6 +208,40 @@ def apply_launch_mutations(
     return LaunchMutations(ok, limit)
 
 
+def converge_claim(
+    claims: "ClaimManager", issue_number: int, lease_id: str
+) -> "bool | ClaimAcquisitionResult":
+    """Confirm a just-taken claim, or defer when the host is rate limited.
+
+    The claim store cannot be asked before the reset, so the claim is handed
+    back (best effort: the release is itself a request, and the lease expires
+    anyway) and the launch defers instead of reading "another claimant won".
+    """
+    from .session_launch_types import ClaimAcquisitionResult
+
+    try:
+        return claims.run_convergence(issue_number, lease_id)
+    except Exception as exc:
+        limit = host_rate_limit_of(exc)
+        if limit is None:
+            raise
+        refusal = str(exc)
+    try:
+        claims.release_claim(issue_number, lease_id)
+    except Exception as release_error:
+        logger.warning(
+            "[GITHUB] #%d: could not release a rate-limited claim; its lease "
+            "expires on its own: %s",
+            issue_number,
+            release_error,
+        )
+    return ClaimAcquisitionResult(
+        success=False,
+        error=f"Claim convergence refused by a GitHub rate limit: {refusal}",
+        host_rate_limit=limit,
+    )
+
+
 #: The one deferral reason a rate-limited tick records, stable across ticks so
 #: the on-change launch logs report the wait once rather than every tick.
 RATE_LIMIT_DEFER_REASON = "github_rate_limited"
@@ -258,5 +294,6 @@ __all__ = [
     "HostRateLimitLaunchGate",
     "LaunchMutations",
     "apply_launch_mutations",
+    "converge_claim",
     "rate_limited_launch_skips",
 ]

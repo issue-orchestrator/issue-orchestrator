@@ -34,6 +34,7 @@ from ...domain.run_ledger import (
 )
 from ...infra import gh_audit
 from ...ports.claim_manager import ClaimManager
+from ...ports.repository_host import host_rate_limit_of
 from .claim_parser import format_claim_comment, parse_claim_comment
 from .ref_store import GitRefCasStore, GitRefSnapshot
 
@@ -269,7 +270,8 @@ class GitHubRefClaimAdapter(ClaimManager):
                 except Exception as exc:
                     self._release_owned_claim(issue_number, lease_id, remove_label=False)
                     return ClaimResult.failed(
-                        f"Acquired claim but failed to label issue #{issue_number}: {exc}"
+                        f"Acquired claim but failed to label issue #{issue_number}: {exc}",
+                        host_rate_limit=host_rate_limit_of(exc),
                     )
 
                 self._emit_event("CLAIM_ATTEMPTED", {
@@ -290,12 +292,9 @@ class GitHubRefClaimAdapter(ClaimManager):
             return ClaimResult.failed(
                 f"GitHub claim ref changed during acquisition for issue #{issue_number}"
             )
-        except ClaimFetchError as exc:
-            logger.error("Failed to acquire claim for issue #%d: %s", issue_number, exc)
-            return ClaimResult.failed(str(exc))
         except Exception as exc:
             logger.error("Failed to acquire claim for issue #%d: %s", issue_number, exc)
-            return ClaimResult.failed(str(exc))
+            return ClaimResult.failed(str(exc), host_rate_limit=host_rate_limit_of(exc))
 
     def run_convergence(self, issue_number: int, lease_id: str) -> bool:
         """Confirm ownership.
@@ -312,6 +311,11 @@ class GitHubRefClaimAdapter(ClaimManager):
             try:
                 winner = self.get_current_claim(issue_number)
             except ClaimFetchError as exc:
+                if host_rate_limit_of(exc) is not None:
+                    # Polling a rate-limited host cannot confirm anything
+                    # before the reset, and reporting "lost" would drop the
+                    # work as if a peer had won it (#7297).
+                    raise
                 logger.warning(
                     "Issue #%d: failed to confirm GitHub ref claim ownership: %s",
                     issue_number,

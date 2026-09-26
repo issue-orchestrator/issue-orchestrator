@@ -9718,6 +9718,69 @@ class TestLaunchDefersOnGitHubRateLimit:
         assert str(EventName.SESSION_START_FAILED) not in names
         assert str(EventName.SESSION_LAUNCH_DEFERRED_RATE_LIMIT) in names
 
+    @pytest.mark.parametrize("limited_from", ["claim_read", "convergence"])
+    def test_rate_limited_claim_store_defers_the_launch(
+        self,
+        limited_from,
+        sample_config,
+        mock_events,
+        mock_repo_host,
+        mock_worktree_manager,
+        mock_working_copy,
+        mock_command_runner,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Codex r2: the ref claim swallowed a rate limit into a string failure."""
+        from issue_orchestrator.adapters.github.ref_claim_adapter import (
+            GitHubRefClaimAdapter,
+        )
+        from issue_orchestrator.domain.lease_config import LeaseConfig
+        from tests.unit.adapters.github.test_ref_claim_adapter import (
+            FakeLabels,
+            RateLimitedRefClient,
+        )
+
+        client = RateLimitedRefClient(limited=limited_from == "claim_read")
+        claims = GitHubRefClaimAdapter(
+            client=client,
+            claimant_id="engine-a",
+            config=LeaseConfig(convergence_timeout_seconds=0.1, convergence_poll_min_ms=1, convergence_poll_max_ms=1),
+            label_adapter=FakeLabels(),
+        )
+        if limited_from == "convergence":
+            original = claims.attempt_claim
+
+            def claim_then_limit(issue_number: int):
+                result = original(issue_number)
+                # Only the confirming read is refused; the hand-back that
+                # follows gets through, or the next launch would find its own
+                # stale claim and read it as a peer's.
+                client.limit_next = 1
+                return result
+
+            monkeypatch.setattr(claims, "attempt_claim", claim_then_limit)
+        bundle = _build_launcher_bundle(
+            sample_config, mock_events, mock_repo_host, mock_worktree_manager,
+            mock_working_copy, mock_command_runner, claim_manager=claims,
+        )
+        config = bundle.launcher.config
+        TestLaunchTechLeadIssueSessionFlavors.enable_tech_lead_agent(config, tmp_path)
+        state = OrchestratorState()
+        self._queue_health_review(state)
+        now = [datetime.now(UTC)]
+        monkeypatch.setattr(host_rate_limit_launch_gate, "_utc_now", lambda: now[0])
+
+        for _ in range(TECH_LEAD_LAUNCH_RETRY_LIMIT + 1):
+            assert self._launch_queued(state, config, bundle) is None
+            now[0] += timedelta(hours=1)
+
+        (queued,) = state.pending_tech_lead_reviews
+        assert queued.retryable_launch_failures == 0
+        applied = [c.args[0] for c in bundle.action_applier.apply.call_args_list]
+        assert not any(isinstance(a, AddLabelAction) and a.issue_number == 7292 for a in applied)
+        assert str(EventName.ISSUE_NEEDS_HUMAN) not in [str(e.name) for e in mock_events.events]
+
     def test_a_limit_past_the_bound_spends_the_retry_budget(
         self, launcher_bundle, tmp_path
     ):

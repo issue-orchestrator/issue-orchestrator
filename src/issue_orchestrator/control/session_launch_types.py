@@ -171,7 +171,11 @@ class ClaimAcquisitionResult:
     lease_acquired_at: datetime | None = None
     lease_expires_at: datetime | None = None
     error: str | None = None
+    host_rate_limit: HostRateLimit | None = None
 
     def as_launch_failure(self) -> LaunchResult:
-        """Convert a failed claim to a launch result."""
-        return LaunchResult(None, False, self.error or "Claim acquisition failed")
+        """Convert a failed claim to a launch result; a rate limit defers (#7297)."""
+        reason = self.error or "Claim acquisition failed"
+        if self.host_rate_limit is not None:
+            return LaunchResult.host_rate_limited(reason, self.host_rate_limit)
+        return LaunchResult(None, False, reason)

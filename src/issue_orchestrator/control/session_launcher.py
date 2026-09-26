@@ -67,7 +67,7 @@ from .tech_lead_session_policy import (
     prepare_tech_lead_session_data,
     tech_lead_prep_failure,
 )
-from .host_rate_limit_launch_gate import apply_launch_mutations
+from .host_rate_limit_launch_gate import apply_launch_mutations, converge_claim
 from ..ports import (
     ManifestDownloader,
     EventSink,
@@ -495,12 +495,15 @@ class SessionLauncher:
             ))
             return ClaimAcquisitionResult(
                 success=False,
-                error=f"Failed to claim issue: {claim_result.error}"
+                error=f"Failed to claim issue: {claim_result.error}",
+                host_rate_limit=claim_result.host_rate_limit,
             )
 
         # Run convergence to confirm ownership
         logger.info(issue_log(issue.number, "Running claim convergence..."))
-        converged = self._claim_manager.run_convergence(issue.number, claim_result.lease_id or "")
+        converged = converge_claim(self._claim_manager, issue.number, claim_result.lease_id or "")
+        if isinstance(converged, ClaimAcquisitionResult):
+            return converged
 
         if not converged:
             log_transition(
