@@ -1,7 +1,6 @@
 """Required admission-only lifecycle capability; grants no publication authority."""
 
 from typing import Protocol
-from ..domain.session_run import SessionRunIdentity
 from ..domain.validated_work_commands import AutomaticCaptureCommand, ValidatedWorkDispositionBatch
 from ..domain.validated_work_store import AdmissionOutcome, EvidenceAdmission, EvidenceLookup, EvidenceRow, EvidenceAdmissionSelection
 
@@ -18,9 +17,6 @@ class ValidatedWorkPreservation(Protocol):
     def dispose_at_termination(self, command: AutomaticCaptureCommand) -> ValidatedWorkDispositionBatch: ...
     def has_unresolved_work(self, issue_number: int) -> bool: ...
     def for_issue(self, issue_number: int) -> ValidatedWorkDispositionBatch: ...
-    def holds_run_work(self, batch: ValidatedWorkDispositionBatch, run: SessionRunIdentity) -> bool:
-        """Whether recovery owns work THIS run validated, not just any record of the issue."""
-        ...
 
 
 class ValidatedWorkAdmissionBackend(ValidatedWorkAdmissionStore, Protocol):

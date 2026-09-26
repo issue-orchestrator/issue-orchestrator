@@ -24,7 +24,7 @@ from ..domain.validated_work_observation import disposition_observation
 from ..ports.session_runner import SessionRunner
 from .background_job_supervisor import drain_background_jobs
 from ..domain.session_key import TaskKind
-from ..domain.session_run import SessionRunAssets, SessionRunIdentity
+from ..domain.session_run import SessionRunAssets
 from ..domain.issue_run_evidence import IssueRunEvidence
 from ..domain.tech_lead_session import TechLeadSessionGeneration
 from .completion_review_exchange import is_review_exchange_job_for_issue
@@ -618,28 +618,13 @@ class IssueRuntimeLifecycleOwners:
                                run: SessionRunAssets) -> bool:
         """`preserve_completed_terminal`, then whether recovery holds this run's work.
 
-        The completion's halt policy needs only that answer (see
-        ``review_exchange_halt_actions``); a faulted capture answers False.
+        Read off the capture itself (``captured_keys``), never a second store
+        read that could fail after recovery took the work. A faulted capture
+        answers False: nothing proves recovery holds anything, so the
+        completion keeps its own block.
         """
-        return self.recovery_holds_run_work(
-            self.preserve_completed_terminal(issue_number, terminal_id, reason, run=run), run.identity)
-
-    def recovery_holds_run_work(self, batch: ValidatedWorkDispositionBatch | None, run: SessionRunIdentity) -> bool:
-        """Whether recovery owns this completed run's validated work.
-
-        Answers False, keeping the completion's own block, when the capture
-        faulted (``batch`` None) or this read does. It runs on the same
-        already-terminal path as ``preserve_completed_terminal`` and must not
-        raise there (#7255).
-        """
-        if batch is None:
-            return False
-        try:
-            return self.validated_work.holds_run_work(batch, run)
-        except Exception:
-            logger.warning("[VALIDATED_WORK] could not read custody for #%d; keeping the completion's block",
-                           batch.issue_number, exc_info=True)
-            return False
+        batch = self.preserve_completed_terminal(issue_number, terminal_id, reason, run=run)
+        return batch is not None and batch.recovery_holds_captured_work
 
     def _observe(self, batch: ValidatedWorkDispositionBatch) -> None:
         self.events.publish(make_trace_event(EventName.VALIDATED_WORK_DISPOSITION_OBSERVED, disposition_observation(batch)))

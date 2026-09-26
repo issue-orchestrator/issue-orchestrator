@@ -1483,26 +1483,20 @@ class TestHandleSessionCompletion:
         # The issue starts without the label, so an add is a real write.
         orchestrator.deps.action_applier.labels.has_label = MagicMock(return_value=False)
         preservation = orchestrator.deps.action_applier.runtime_lifecycle.validated_work
-        asked: list[object] = []
-
-        def holds(_self, batch, run):
-            asked.append(run)
-            return capture == "this-run" and run == session.run_assets.identity
-
         if capture == "fault":
             outcome = {"side_effect": ValueError("capture fault")}
         elif capture == "no-work":
             outcome = {"return_value": ValidatedWorkDispositionBatch.no_work(6914, "none")}
         else:
             held = Rig(tmp_path / "work.sqlite").open().admit(admission()).disposition
-            outcome = {"return_value": ValidatedWorkDispositionBatch(6914, (held,), "held")}
+            captured = frozenset({held.key}) if capture == "this-run" else frozenset()
+            outcome = {"return_value": ValidatedWorkDispositionBatch(
+                6914, (held,), "held", captured_keys=captured)}
 
-        with patch.object(type(preservation), "dispose_at_termination", **outcome), \
-                patch.object(type(preservation), "holds_run_work", holds):
+        with patch.object(type(preservation), "dispose_at_termination", **outcome):
             self._complete_halted_exchange(orchestrator, session)
 
         assert ("blocked-failed" in self._added_labels(orchestrator)) is blocked
-        assert asked == ([] if capture == "fault" else [session.run_assets.identity])
         assert orchestrator.state.active_sessions == []
 
     def test_handle_completion_calls_monitor_handler(

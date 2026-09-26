@@ -538,22 +538,22 @@ def test_receive_order_uses_exact_attestation_and_idempotent_receipt(custody):
     assert custody.ledger.evidence_receive_sequence(evidence) == custody.ledger.entry_for_receipt(second.entry_id).receive_sequence
 
 
+
 def test_completed_run_reports_recovery_custody_of_its_own_work_only(custody):
     """A halted exchange leaves blocking to recovery only for work THIS run validated.
 
-    An older run's parked record must not suppress this run's block (#7295
-    adversarial review F1), and a run that validated nothing holds nothing.
+    Custody is read off the capture itself, never a second store read that
+    could fail after recovery took the work (#7295 review rounds 1-2). An
+    issue-wide read proves nothing about any run.
     """
-    from issue_orchestrator.domain.session_run import SessionRunIdentity
-
     submit(custody, "validated")
 
     assert custody.lifecycle.preserve_completed_run(
         42, "issue-42", "session-completion", run=custody.run) is True
-    batch = custody.lifecycle.validated_work.for_issue(42)
-    assert batch.unresolved
-    other_run = SessionRunIdentity("coding-2", "another-run", custody.run.identity.started_at)
-    assert custody.lifecycle.recovery_holds_run_work(batch, other_run) is False
+    issue_wide = custody.lifecycle.validated_work.for_issue(42)
+    assert issue_wide.unresolved
+    assert issue_wide.captured_keys == frozenset()
+    assert issue_wide.recovery_holds_captured_work is False
 
 
 def test_a_run_that_validated_nothing_holds_no_recovery_custody(custody):
@@ -561,13 +561,12 @@ def test_a_run_that_validated_nothing_holds_no_recovery_custody(custody):
         42, "issue-42", "session-completion", run=custody.run) is False
 
 
-def test_custody_read_failure_keeps_the_completion_block(custody, monkeypatch):
+def test_a_faulted_capture_holds_no_recovery_custody(custody, monkeypatch):
     submit(custody, "validated")
-    batch = custody.lifecycle.preserve(42, "stop")
     monkeypatch.setattr(
-        type(custody.lifecycle.validated_work), "holds_run_work",
-        lambda self, batch, run: (_ for _ in ()).throw(RuntimeError("store unreadable")),
+        type(custody.lifecycle.validated_work), "dispose_at_termination",
+        lambda self, command: (_ for _ in ()).throw(RuntimeError("escrow unreadable")),
     )
 
-    assert custody.lifecycle.recovery_holds_run_work(batch, custody.run.identity) is False
-    assert custody.lifecycle.recovery_holds_run_work(None, custody.run.identity) is False
+    assert custody.lifecycle.preserve_completed_run(
+        42, "issue-42", "session-completion", run=custody.run) is False

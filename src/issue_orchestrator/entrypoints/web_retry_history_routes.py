@@ -185,7 +185,7 @@ async def unblock_and_retry(
     commands = orchestrator.operator_issue_commands
     unblocked: list[int] = []
     failed: list[dict[str, object]] = []
-    labels_changed = False
+    labels_may_have_changed = False
 
     for issue_number in parsed.issue_numbers:
         try:
@@ -193,8 +193,10 @@ async def unblock_and_retry(
         except Exception as e:
             logger.error("[unblock] Failed to unblock issue #%d: %s", issue_number, e)
             failed.append({"issue": issue_number, "error": str(e)})
+            # It may have removed labels before it raised.
+            labels_may_have_changed = True
             continue
-        labels_changed = labels_changed or bool(outcome.removed)
+        labels_may_have_changed = labels_may_have_changed or bool(outcome.removed)
         if outcome.committed:
             unblocked.append(issue_number)
             continue
@@ -203,7 +205,7 @@ async def unblock_and_retry(
         failed.append({"issue": issue_number, "error": error})
 
     # A partial retry still changed GitHub's labels; the board must re-read them.
-    refresh = bool(unblocked) or labels_changed
+    refresh = bool(unblocked) or labels_may_have_changed
     if refresh:
         orchestrator.request_refresh()
         logger.info("[unblock] Unblocked %d issues, refresh triggered", len(unblocked))

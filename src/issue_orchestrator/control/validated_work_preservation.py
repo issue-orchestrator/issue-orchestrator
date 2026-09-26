@@ -2,18 +2,17 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from ..domain.completion_intake import CompletionIntakeError
 from ..domain.prepared_completion import PreparedCompletionEvidence
-from ..domain.session_run import SessionRunIdentity
 from ..domain.validated_work import ValidatedWorkFailure
 from ..domain.validated_work_commands import AutomaticCaptureCommand, ValidatedWorkDispositionBatch
 from ..domain.publication_remote import PublicationRemoteError
 from ..domain.validated_work import RemoteBaselineStatus, ValidatedWorkState
 from ..domain.validated_work_capture import (
     AutomaticCaptureDecision, ValidatedWorkRemoteFacts, ValidatedWorkRemoteRequest,
-    candidate_evidence, newest_per_work,
+    candidate_evidence, candidate_key, newest_per_work,
 )
 from ..domain.validated_work_remote_authority import classify_remote_pr
 from ..domain.validated_work_escrow import EscrowArtifacts
@@ -42,23 +41,6 @@ class ValidatedWorkPreservationService:
     def for_issue(self, issue_number: int) -> ValidatedWorkDispositionBatch:
         return self._store.for_issue(issue_number)
 
-    def holds_run_work(self, batch: ValidatedWorkDispositionBatch, run: SessionRunIdentity) -> bool:
-        """Whether recovery owns a record whose current evidence ``run`` produced.
-
-        Every state but ABANDONED leaves recovery owning what happens next: it
-        blocks the issue (QUEUED/PARKED/PUBLISHING hold ``recovery-pending``,
-        FAILED asserts ``needs-human``) or has already routed the published PR
-        to review (RECOVERED). A record another run produced says nothing about
-        this run's work, so it does not count.
-        """
-        for disposition in batch.dispositions:
-            if disposition.state is ValidatedWorkState.ABANDONED:
-                continue
-            found = self._store.evidence_for_id(disposition.evidence_id)
-            if found is not None and found.evidence.admission.evidence.identity.run_identity == run:
-                return True
-        return False
-
     def dispose_at_termination(self, command: AutomaticCaptureCommand) -> ValidatedWorkDispositionBatch:
         candidates = self._intake.prepare_termination(command.run_evidence, command.scope)
         report = self._repair.reconcile_escrow_orphans()
@@ -68,9 +50,13 @@ class ValidatedWorkPreservationService:
         observations: dict[
             ValidatedWorkRemoteRequest, ValidatedWorkRemoteFacts | _RemoteUnavailable
         ] = {}
-        for candidate in newest_per_work(candidates, command.issue_number):
+        selected = newest_per_work(candidates, command.issue_number)
+        for candidate in selected:
             self._capture(candidate, command, observations)
-        return self._store.for_issue(command.issue_number)
+        return replace(
+            self._store.for_issue(command.issue_number),
+            captured_keys=frozenset(candidate_key(c, command.issue_number) for c in selected),
+        )
 
     def _capture(
         self, candidate: PreparedCompletionEvidence, command: AutomaticCaptureCommand,

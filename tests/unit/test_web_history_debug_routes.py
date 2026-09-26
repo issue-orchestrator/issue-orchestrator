@@ -194,6 +194,23 @@ class TestHistoryEndpoints:
         assert body["refresh_triggered"] is True
         mock_orch.request_refresh.assert_called_once()
 
+    def test_unblock_retry_refreshes_after_a_retry_that_raised(self):
+        """A command that raised may already have removed labels on GitHub."""
+        mock_orch = create_mock_orchestrator()
+
+        def retry(issue_number):
+            raise RuntimeError("queue cache snapshot failed after label removal")
+
+        mock_orch.operator_issue_commands = SimpleNamespace(retry=retry)
+        set_orchestrator(mock_orch)
+
+        body = TestClient(app).post("/api/unblock-retry", json={"issues": [55]}).json()
+
+        assert body["unblocked"] == []
+        assert body["failed"] == [{"issue": 55, "error": "queue cache snapshot failed after label removal"}]
+        assert body["refresh_triggered"] is True
+        mock_orch.request_refresh.assert_called_once()
+
     def test_reset_retry_sets_pending_label_and_queues_immediately(self):
         """Reset+retry should persist pending state and enqueue without waiting for refresh."""
         from issue_orchestrator.control.maintenance import ResetResult
