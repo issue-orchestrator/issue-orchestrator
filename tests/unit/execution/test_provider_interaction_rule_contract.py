@@ -226,3 +226,74 @@ def test_managed_codex_never_checks_for_updates_at_startup(
     for rule in builtin_session_interaction_rules(shlex.join(command)):
         markers = (rule.required_substrings, *rule.alternatives)
         assert not any("update" in m.casefold() for group in markers for m in group)
+
+
+def test_a_working_agent_quoting_the_dialog_gets_no_keystroke(
+    working_directory: Path,
+) -> None:
+    """Startup rules stop listening once the agent works (#7299 review F1).
+
+    A Codex reviewer reading THIS change prints "Folder access" and "Open
+    restricted" in the middle of its review. Before the fix the cumulative
+    buffer matched and an Enter was typed into the live session.
+    """
+    timers = _ManualTimers()
+    handler, sent = _codex_handler(working_directory, timers)
+
+    handler.on_output(b"Working (3s \xe2\x80\xa2 esc to interrupt)")
+    handler.on_output(b"diff: Folder access ... 1. Open restricted 2. Quit")
+    timers.settle()
+
+    assert sent == []
+    assert timers.live == [], "an expired rule must not even start settling"
+
+
+def test_the_agent_starting_work_cancels_a_pending_answer(
+    working_directory: Path,
+) -> None:
+    timers = _ManualTimers()
+    handler, sent = _codex_handler(working_directory, timers)
+
+    handler.on_output(_CODEX_0_156_FOLDER_ACCESS_FRAME)
+    handler.on_output(b"Working (0s \xe2\x80\xa2 esc to interrupt)")
+    timers.settle()
+
+    assert sent == []
+
+
+def test_disarm_ends_the_startup_window(working_directory: Path) -> None:
+    timers = _ManualTimers()
+    handler, sent = _codex_handler(working_directory, timers)
+
+    handler.on_output(_CODEX_0_156_FOLDER_ACCESS_FRAME)
+    handler.disarm()
+    timers.settle()
+    handler.on_output(_CODEX_0_156_FOLDER_ACCESS_FRAME)
+    timers.settle()
+
+    assert sent == []
+
+
+def test_the_review_exchange_startup_wait_disarms_before_the_first_prompt(
+    working_directory: Path,
+) -> None:
+    """After ``prepare_startup_interactions`` the caller writes its prompt;
+    nothing the session prints afterwards may be answered as startup."""
+    from issue_orchestrator.execution.persistent_round_interactions import (
+        PersistentInteractionState,
+        prepare_startup_interactions,
+    )
+
+    timers = _ManualTimers()
+    handler, sent = _codex_handler(working_directory, timers)
+    state = PersistentInteractionState(handler=handler)
+    clock = iter(range(0, 1000, 5))
+
+    prepare_startup_interactions(
+        state, drain_output=lambda: None, now=lambda: float(next(clock)),
+        sleep=lambda _seconds: None,
+    )
+    state.observe(_CODEX_0_156_FOLDER_ACCESS_FRAME)
+    timers.settle()
+
+    assert sent == []

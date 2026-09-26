@@ -68,6 +68,9 @@ def prepare_startup_interactions(
         if state.handler.all_rules_fired:
             break
         sleep(min(_STARTUP_INTERACTION_POLL_SECONDS, max(deadline - now(), 0.0)))
+    # The caller writes its first prompt next; from here nothing the session
+    # prints may be answered as a startup prompt.
+    state.handler.disarm()
     state.prepared = True
 
 

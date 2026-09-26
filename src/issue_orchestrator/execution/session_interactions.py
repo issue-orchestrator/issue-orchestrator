@@ -20,6 +20,9 @@ _SHELL_COMMAND_SEPARATORS = frozenset({"&&", ";", "||"})
 # 0.156.1: an Enter sent on the frame that drew the prompt was dropped every
 # time; 0.3 s after it, accepted every time.
 _TUI_SETTLE_SECONDS = 0.5
+# Both Claude Code and Codex show this while the agent is working, and never
+# before startup prompts are done. Past it, a startup rule must stay silent.
+_AGENT_WORKING_MARKERS = ("esc to interrupt",)
 
 
 def normalize_terminal_text(text: str) -> str:
@@ -57,6 +60,10 @@ class SessionInteractionRule:
     # key that arrives while it is still drawing the prompt (codex 0.156 does);
     # any further output restarts the wait.
     settle_seconds: float = 0.0
+    # Markers that mean startup is over (the agent is working). Seeing one
+    # disarms the rule for good: later agent output that merely QUOTES the
+    # prompt's text must never get an answer typed into the live session.
+    expires_on: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.required_substrings or any(not group for group in self.alternatives):
@@ -71,6 +78,10 @@ class SessionInteractionRule:
 class _CompiledRule:
     rule: SessionInteractionRule
     marker_sets: tuple[tuple[str, ...], ...]
+    expiry_markers: tuple[str, ...]
+
+    def expired_by(self, buffer: str) -> bool:
+        return any(marker in buffer for marker in self.expiry_markers)
 
     def matches(self, buffer: str) -> bool:
         return any(markers and all(m in buffer for m in markers) for markers in self.marker_sets)
@@ -113,6 +124,8 @@ class SessionInteractionHandler:
         self._timer_factory = timer_factory
         # Matched rules waiting for the screen to settle, keyed by rule name.
         self._settling: dict[str, _Timer] = {}
+        # Rules that will never answer again: startup ended before they fired.
+        self._expired: set[str] = set()
         self._lock = threading.RLock()
         self._rules = tuple(
             _CompiledRule(
@@ -121,6 +134,7 @@ class SessionInteractionHandler:
                     _compile_markers(group)
                     for group in (rule.required_substrings, *rule.alternatives)
                 ),
+                expiry_markers=_compile_markers(rule.expires_on),
             )
             for rule in rules
         )
@@ -128,6 +142,25 @@ class SessionInteractionHandler:
     def bind_sender(self, sender: Callable[[str], bool]) -> None:
         """Attach a line-oriented sender once the PTY session exists."""
         self._sender = sender
+
+    def disarm(self) -> None:
+        """End the startup window: no unfired rule may answer from now on.
+
+        Called once the caller has finished waiting for startup prompts and
+        is about to drive the session itself. A pending (settling) answer is
+        cancelled, not sent.
+        """
+        with self._lock:
+            for compiled in self._rules:
+                self._expire(compiled.rule.name)
+
+    def _expire(self, name: str) -> None:
+        if name in self._fired_rules:
+            return
+        self._expired.add(name)
+        timer = self._settling.pop(name, None)
+        if timer is not None:
+            timer.cancel()
 
     @property
     def all_rules_fired(self) -> bool:
@@ -148,16 +181,23 @@ class SessionInteractionHandler:
                 return
             combined = f"{self._buffer} {normalized}".strip() if self._buffer else normalized
             self._buffer = combined[-self._max_buffer_chars :]
-            for compiled in self._rules:
-                rule = compiled.rule
-                if rule.name in self._fired_rules or rule.name in self._settling:
-                    continue
-                if not compiled.matches(self._buffer):
-                    continue
-                if rule.settle_seconds > 0:
-                    self._restart_settle(compiled)
-                else:
-                    self._respond(rule)
+            self._scan_rules()
+
+    def _scan_rules(self) -> None:
+        """Expire rules whose startup is over, then answer (or settle) matches."""
+        for compiled in self._rules:
+            if compiled.expired_by(self._buffer):
+                self._expire(compiled.rule.name)
+        for compiled in self._rules:
+            rule = compiled.rule
+            if rule.name in self._fired_rules | self._expired | self._settling.keys():
+                continue
+            if not compiled.matches(self._buffer):
+                continue
+            if rule.settle_seconds > 0:
+                self._restart_settle(compiled)
+            else:
+                self._respond(rule)
 
     def _compiled(self, name: str) -> _CompiledRule:
         return next(compiled for compiled in self._rules if compiled.rule.name == name)
@@ -173,8 +213,8 @@ class SessionInteractionHandler:
 
     def _settled(self, rule: SessionInteractionRule, timer: _Timer) -> None:
         with self._lock:
-            if self._settling.get(rule.name) is not timer:
-                return  # superseded by later output
+            if self._settling.get(rule.name) is not timer or rule.name in self._expired:
+                return  # superseded by later output, or startup already ended
             del self._settling[rule.name]
             self._respond(rule)
 
@@ -220,6 +260,7 @@ def builtin_session_interaction_rules(command: str) -> tuple[SessionInteractionR
                     "No, exit",
                 ),
                 response="",
+                expires_on=_AGENT_WORKING_MARKERS,
             ),
         )
     if _looks_like_interactive_codex_command(command):
@@ -241,6 +282,7 @@ def builtin_session_interaction_rules(command: str) -> tuple[SessionInteractionR
                 response="",
                 # 0.156 drops a key that arrives while it is drawing the choice.
                 settle_seconds=_TUI_SETTLE_SECONDS,
+                expires_on=_AGENT_WORKING_MARKERS,
             ),
         )
     return tuple(rules)
