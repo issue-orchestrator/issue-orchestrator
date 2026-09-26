@@ -162,7 +162,9 @@ class HostRateLimitLaunchGate:
                 "limited_since": episode.limited_since.isoformat(),
                 "limited_for_seconds": int(episode.limited_for.total_seconds()),
                 "attempted": attempted,
-                "retry_budget_spent": attempted and episode.bound_exceeded,
+                # The gate hands the attempt back as a failure; whether the
+                # queue can spend a unit on it is the settlement's decision.
+                "counted_as_failure": attempted and episode.bound_exceeded,
             },
         ))
 

@@ -459,7 +459,26 @@ def test_past_the_deferral_bound_the_authority_stops_holding():
 
     assert harness.launched == [anchor]
     assert REASON_GITHUB_RATE_LIMITED not in harness.held_reasons()
-    assert host.reads == 0
+    assert REASON_ANCHOR_UNREADABLE not in harness.held_reasons()
+    assert host.reads == 1, "past the bound the anchor is revalidated again"
+
+
+def test_past_the_bound_a_closed_anchor_is_still_withdrawn():
+    """Codex r6: past the bound, positive evidence still withdraws the run."""
+    now = datetime.now(UTC)
+    anchor = _health_anchor()
+    harness = _Harness(
+        pending=[anchor], issues={900: FakeIssue(900, state="closed", labels=())}
+    )
+    harness.state.host_rate_limit.observe(
+        HostRateLimit(resets_at=now + timedelta(minutes=5), kind="primary"),
+        now - RATE_LIMIT_DEFERRAL_BOUND - timedelta(minutes=1),
+    )
+
+    assert harness.launch(anchor) is None
+
+    assert harness.launched == [], "a finished anchor must never start a duplicate review"
+    assert harness.state.pending_tech_lead_reviews == []
 
 
 def test_a_global_anchor_is_never_subject_to_blocked_label_eligibility():

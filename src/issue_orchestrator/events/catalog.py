@@ -108,9 +108,9 @@ class EventName(str, Enum):
     # with a known reset (#7297). Deliberately NOT a start failure: the work
     # keeps its retry budget and waits for ``resets_at``. The payload says
     # when, which budget ran out, how long the limit has held, and whether the
-    # deferral bound was passed (``retry_budget_spent``) - the one case where
-    # the launch IS counted as a failure, so a limit that never lifts still
-    # reaches a human.
+    # deferral bound was passed (``counted_as_failure``) - the one case where
+    # the launch IS handed back as a failure, for the queue's budget to count,
+    # so a limit that never lifts still reaches a human.
     SESSION_LAUNCH_DEFERRED_RATE_LIMIT = "session.launch_deferred_rate_limit"
     # A session that *did* launch and is being terminated because its provider
     # is not authenticated. A separate name because the reader's question is

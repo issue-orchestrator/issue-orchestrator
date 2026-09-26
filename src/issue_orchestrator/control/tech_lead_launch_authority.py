@@ -166,18 +166,23 @@ class TechLeadLaunchAuthority:
         # about the subject, so it must neither fall through to a launch "on
         # the evidence we have" nor read as "unreadable".
         episode = self._open_rate_limit()
-        withdrawal = (
-            None if episode is not None else self._revalidate_subject(tech_lead, scope)
-        )
-        episode = self._open_rate_limit()
         if episode is not None and not episode.bound_exceeded:
             return self._rate_limit_hold(tech_lead, scope, episode)
-        if episode is None and withdrawal is not None:
+        withdrawal = self._revalidate_subject(tech_lead, scope)
+        episode = self._open_rate_limit()
+        if episode is None:
+            if withdrawal is not None:
+                return withdrawal
+        elif not episode.bound_exceeded:
+            return self._rate_limit_hold(tech_lead, scope, episode)
+        elif withdrawal is not None and not withdrawal.retained:
+            # Positive evidence still wins past the bound: a subject read that
+            # got through and shows the run is finished withdraws it.
             return withdrawal
-        # Past the deferral bound the run is no longer held: the launch is
-        # attempted, and a refusal it meets once it holds its durable claim is
-        # counted against the queue's budget, so a limit that never lifts still
-        # reaches the needs-human escalation.
+        # Past the deferral bound a run is no longer held on the window or on
+        # an unreadable subject: the launch is attempted, and a refusal it
+        # meets once it holds its durable claim is counted against the queue's
+        # budget, so a limit that never lifts still reaches its escalation.
         barrier = self._local_scope_barrier(tech_lead)
         if barrier is not None:
             # The gate's own barrier vocabulary is the reason, so a local

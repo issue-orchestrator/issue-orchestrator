@@ -158,7 +158,7 @@ class TestHostRateLimitLaunchGate:
         assert event["resets_at"] == resets.isoformat()
         assert event["resource"] == "search"
         assert event["attempted"] is True
-        assert event["retry_budget_spent"] is False
+        assert event["counted_as_failure"] is False
 
     def test_a_wrapped_rate_limit_is_still_a_rate_limit(self) -> None:
         clock = _Clock(T0)
@@ -234,7 +234,7 @@ class TestHostRateLimitLaunchGate:
         assert result.disposition is LaunchDisposition.RETRYABLE_FAILURE
         assert result.host_rate_limit is None
         assert "deferral bound" in result.reason
-        assert _deferral_events(events)[-1]["retry_budget_spent"] is True
+        assert _deferral_events(events)[-1]["counted_as_failure"] is True
 
     def test_success_passes_through_untouched(self) -> None:
         gate, events = self._gate(_Clock(T0))
