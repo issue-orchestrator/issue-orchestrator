@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from ..domain.completion_intake import CompletionIntakeError
 from ..domain.prepared_completion import PreparedCompletionEvidence
+from ..domain.session_run import SessionRunIdentity
 from ..domain.validated_work import ValidatedWorkFailure
 from ..domain.validated_work_commands import AutomaticCaptureCommand, ValidatedWorkDispositionBatch
 from ..domain.publication_remote import PublicationRemoteError
@@ -40,6 +41,23 @@ class ValidatedWorkPreservationService:
 
     def for_issue(self, issue_number: int) -> ValidatedWorkDispositionBatch:
         return self._store.for_issue(issue_number)
+
+    def holds_run_work(self, batch: ValidatedWorkDispositionBatch, run: SessionRunIdentity) -> bool:
+        """Whether recovery owns a record whose current evidence ``run`` produced.
+
+        Every state but ABANDONED leaves recovery owning what happens next: it
+        blocks the issue (QUEUED/PARKED/PUBLISHING hold ``recovery-pending``,
+        FAILED asserts ``needs-human``) or has already routed the published PR
+        to review (RECOVERED). A record another run produced says nothing about
+        this run's work, so it does not count.
+        """
+        for disposition in batch.dispositions:
+            if disposition.state is ValidatedWorkState.ABANDONED:
+                continue
+            found = self._store.evidence_for_id(disposition.evidence_id)
+            if found is not None and found.evidence.admission.evidence.identity.run_identity == run:
+                return True
+        return False
 
     def dispose_at_termination(self, command: AutomaticCaptureCommand) -> ValidatedWorkDispositionBatch:
         candidates = self._intake.prepare_termination(command.run_evidence, command.scope)

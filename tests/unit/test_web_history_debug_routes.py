@@ -144,6 +144,56 @@ class TestHistoryEndpoints:
         assert body["refresh_triggered"] is True
         mock_orch.request_refresh.assert_called_once()
 
+    def test_unblock_retry_normalizes_issue_numbers_before_running_commands(self):
+        """Duplicates and non-issue values never reach the stateful retry command."""
+        from issue_orchestrator.ports.operator_issue_commands import (
+            OperatorCommandIntent,
+            OperatorCommandOutcome,
+            OperatorCommandStatus,
+        )
+
+        mock_orch = create_mock_orchestrator()
+        calls: list[object] = []
+
+        def retry(issue_number):
+            calls.append(issue_number)
+            return OperatorCommandOutcome(
+                OperatorCommandIntent.RETRY, OperatorCommandStatus.COMMITTED, issue_number,
+                removed=("blocked",),
+            )
+
+        mock_orch.operator_issue_commands = SimpleNamespace(retry=retry)
+        set_orchestrator(mock_orch)
+
+        response = TestClient(app).post(
+            "/api/unblock-retry", json={"issues": [123, "123", 123, "x", -4, True, "7"]}
+        )
+
+        assert response.status_code == 200
+        assert calls == [123, 7]
+        assert response.json()["unblocked"] == [123, 7]
+
+    def test_unblock_retry_refreshes_after_a_partial_retry_changed_labels(self):
+        from issue_orchestrator.ports.operator_issue_commands import (
+            OperatorCommandIntent,
+            OperatorCommandOutcome,
+            OperatorCommandStatus,
+        )
+
+        mock_orch = create_mock_orchestrator()
+        mock_orch.operator_issue_commands = SimpleNamespace(retry=lambda n: OperatorCommandOutcome(
+            OperatorCommandIntent.RETRY, OperatorCommandStatus.INCOMPLETE, n,
+            removed=("blocked-failed",), failed=("pr-pending",),
+        ))
+        set_orchestrator(mock_orch)
+
+        body = TestClient(app).post("/api/unblock-retry", json={"issues": [55]}).json()
+
+        assert body["unblocked"] == []
+        assert [f["issue"] for f in body["failed"]] == [55]
+        assert body["refresh_triggered"] is True
+        mock_orch.request_refresh.assert_called_once()
+
     def test_reset_retry_sets_pending_label_and_queues_immediately(self):
         """Reset+retry should persist pending state and enqueue without waiting for refresh."""
         from issue_orchestrator.control.maintenance import ResetResult

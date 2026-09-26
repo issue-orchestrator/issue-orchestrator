@@ -217,3 +217,17 @@ test('unblockSelectedIssues confirms and closes on a full success', async () => 
     assert.ok(calls.some((call) => call[0] === 'closeBlockedModal'));
     assert.ok(calls.some((call) => call[0] === 'refresh'));
 });
+
+test('unblockSelectedIssues refreshes after a partial retry that changed labels', async () => {
+    const { context, calls } = loadUnblock({
+        unblocked: [],
+        failed: [{ issue: 7, error: 'pr-pending would not come off' }],
+        refresh_triggered: true,
+    });
+
+    await context.unblockSelectedIssues();
+
+    assert.ok(calls.some((call) => call[0] === 'refresh'));
+    assert.ok(!calls.some((call) => call[0] === 'requeue'));
+    assert.ok(!calls.some((call) => call[0] === 'closeBlockedModal'));
+});

@@ -1449,12 +1449,13 @@ class TestHandleSessionCompletion:
     @pytest.mark.parametrize(
         ("capture", "blocked"),
         [
-            pytest.param("unresolved", False, id="recovery-holds-work"),
+            pytest.param("this-run", False, id="recovery-holds-this-runs-work"),
+            pytest.param("other-run", True, id="recovery-holds-only-another-runs-work"),
             pytest.param("no-work", True, id="nothing-captured"),
             pytest.param("fault", True, id="capture-faulted"),
         ],
     )
-    def test_halted_exchange_blocks_only_when_recovery_does_not_hold_the_work(
+    def test_halted_exchange_blocks_only_when_recovery_holds_this_runs_work(
         self,
         sample_config,
         mock_worktree_manager,
@@ -1462,12 +1463,13 @@ class TestHandleSessionCompletion:
         capture,
         blocked,
     ):
-        """The halt reads THIS completion's capture, never a second lookup.
+        """The halt defers only to recovery custody of THIS run's validated work.
 
-        Recovery holding unresolved validated work owns the issue's block and
-        routes the published PR to review; a halt-applied ``blocked-failed``
-        would veto that review forever (porchpin #382). Without proven custody
-        -- nothing captured, or the capture faulted -- the halt keeps its block.
+        Recovery then owns the block and routes the published PR to review; a
+        halt-applied ``blocked-failed`` would veto that review forever
+        (porchpin #382). An issue-wide unresolved record from another run proves
+        nothing about this run (#7295 review F1), and without proven custody --
+        nothing captured, or the capture faulted -- the halt keeps its block.
         """
         from issue_orchestrator.domain.validated_work_commands import (
             ValidatedWorkDispositionBatch,
@@ -1481,18 +1483,26 @@ class TestHandleSessionCompletion:
         # The issue starts without the label, so an add is a real write.
         orchestrator.deps.action_applier.labels.has_label = MagicMock(return_value=False)
         preservation = orchestrator.deps.action_applier.runtime_lifecycle.validated_work
-        if capture == "unresolved":
-            held = Rig(tmp_path / "work.sqlite").open().admit(admission()).disposition
-            outcome = {"return_value": ValidatedWorkDispositionBatch(6914, (held,), "held")}
+        asked: list[object] = []
+
+        def holds(_self, batch, run):
+            asked.append(run)
+            return capture == "this-run" and run == session.run_assets.identity
+
+        if capture == "fault":
+            outcome = {"side_effect": ValueError("capture fault")}
         elif capture == "no-work":
             outcome = {"return_value": ValidatedWorkDispositionBatch.no_work(6914, "none")}
         else:
-            outcome = {"side_effect": ValueError("capture fault")}
+            held = Rig(tmp_path / "work.sqlite").open().admit(admission()).disposition
+            outcome = {"return_value": ValidatedWorkDispositionBatch(6914, (held,), "held")}
 
-        with patch.object(type(preservation), "dispose_at_termination", **outcome):
+        with patch.object(type(preservation), "dispose_at_termination", **outcome), \
+                patch.object(type(preservation), "holds_run_work", holds):
             self._complete_halted_exchange(orchestrator, session)
 
         assert ("blocked-failed" in self._added_labels(orchestrator)) is blocked
+        assert asked == ([] if capture == "fault" else [session.run_assets.identity])
         assert orchestrator.state.active_sessions == []
 
     def test_handle_completion_calls_monitor_handler(

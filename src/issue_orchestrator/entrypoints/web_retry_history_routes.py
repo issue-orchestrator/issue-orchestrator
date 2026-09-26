@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import time
 from collections.abc import Callable, Sequence
@@ -179,29 +178,23 @@ async def unblock_and_retry(
     if orchestrator is None:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
-    try:
-        body = await request.json()
-    except (json.JSONDecodeError, ValueError):
-        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
-
-    issue_numbers = body.get("issues", [])
-    if not issue_numbers or not isinstance(issue_numbers, list):
-        return JSONResponse(
-            {"error": "issues must be a non-empty list"},
-            status_code=400,
-        )
+    parsed = await parse_issue_numbers_payload(request)
+    if parsed.error_response is not None:
+        return parsed.error_response
 
     commands = orchestrator.operator_issue_commands
     unblocked: list[int] = []
     failed: list[dict[str, object]] = []
+    labels_changed = False
 
-    for issue_number in issue_numbers:
+    for issue_number in parsed.issue_numbers:
         try:
             outcome = commands.retry(issue_number)
         except Exception as e:
             logger.error("[unblock] Failed to unblock issue #%d: %s", issue_number, e)
             failed.append({"issue": issue_number, "error": str(e)})
             continue
+        labels_changed = labels_changed or bool(outcome.removed)
         if outcome.committed:
             unblocked.append(issue_number)
             continue
@@ -209,14 +202,16 @@ async def unblock_and_retry(
         logger.warning("[unblock] %s", error)
         failed.append({"issue": issue_number, "error": error})
 
-    if unblocked:
+    # A partial retry still changed GitHub's labels; the board must re-read them.
+    refresh = bool(unblocked) or labels_changed
+    if refresh:
         orchestrator.request_refresh()
         logger.info("[unblock] Unblocked %d issues, refresh triggered", len(unblocked))
 
     return JSONResponse({
         "unblocked": unblocked,
         "failed": failed,
-        "refresh_triggered": len(unblocked) > 0,
+        "refresh_triggered": refresh,
     })
 
 

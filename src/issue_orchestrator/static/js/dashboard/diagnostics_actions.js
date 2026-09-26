@@ -68,6 +68,9 @@ async function unblockSelectedIssues() {
         if (unblocked.length > 0) {
             applyOptimisticRequeue(unblocked, ['blocked']);
             if (failed.length === 0) closeBlockedModal();
+        }
+        // A partial retry can change labels without unblocking anything.
+        if (unblocked.length > 0 || data.refresh_triggered) {
             await refreshViewModel();
         }
     } catch (err) {
